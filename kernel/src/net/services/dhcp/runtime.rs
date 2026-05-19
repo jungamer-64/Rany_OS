@@ -374,7 +374,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             interface_runtime.mac(),
                             lease.ip_address
                         );
-                        crate::net::runtime::command::enqueue_command_ignore_in(
+                        let _ = crate::net::runtime::command::try_enqueue_command_in(
                             runtime,
                             crate::net::runtime::command::RuntimeCommand::Control(
                                 crate::net::runtime::command::ControlCommand::DhcpApplyLease {

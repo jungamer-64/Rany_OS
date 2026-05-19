@@ -112,7 +112,7 @@ pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
 }
 
 pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Control(
             crate::net::runtime::command::ControlCommand::ArpInsert {

@@ -84,6 +84,12 @@ pub struct X509VerificationContext<'a> {
     pub allow_subject_cn_fallback: bool,
 }
 
+pub struct X509Parser;
+
+pub enum CertificatePolicy<'ctx> {
+    Tls13ServerAuth(X509VerificationContext<'ctx>),
+}
+
 impl X509Certificate<'_> {
     pub fn is_valid_at(&self, unix_secs: u64) -> bool {
         unix_secs >= self.not_before && unix_secs <= self.not_after
@@ -97,12 +103,12 @@ struct DerTlv<'a> {
     full: PayloadSpanRef<'a>,
 }
 
-struct DerCursor<'a> {
+struct StrictDerCursor<'a> {
     span: PayloadSpanRef<'a>,
     pos: usize,
 }
 
-impl<'a> DerCursor<'a> {
+impl<'a> StrictDerCursor<'a> {
     const fn new(span: PayloadSpanRef<'a>) -> Self {
         Self { span, pos: 0 }
     }
@@ -133,10 +139,16 @@ impl<'a> DerCursor<'a> {
         if count == 0 || count > 4 {
             return None;
         }
+        if self.span.read_u8(self.pos)? == 0 {
+            return None;
+        }
         let mut length = 0usize;
         for _ in 0..count {
             length = length.checked_shl(8)?;
             length = length.checked_add(self.read_u8()? as usize)?;
+        }
+        if length < 0x80 {
+            return None;
         }
         Some(length)
     }
@@ -168,7 +180,18 @@ impl<'a> DerCursor<'a> {
     }
 
     fn read_integer(&mut self) -> Option<PayloadSpanRef<'a>> {
-        Some(self.read_tlv_tag(0x02)?.value)
+        let value = self.read_tlv_tag(0x02)?.value;
+        if value.is_empty() {
+            return None;
+        }
+        if value.total_len() > 1 {
+            let first = value.byte_at(0)?;
+            let second = value.byte_at(1)?;
+            if (first == 0x00 && second < 0x80) || (first == 0xFF && second >= 0x80) {
+                return None;
+            }
+        }
+        Some(value)
     }
 
     fn read_oid(&mut self) -> Option<PayloadSpanRef<'a>> {
@@ -180,7 +203,19 @@ impl<'a> DerCursor<'a> {
         if value.is_empty() {
             return None;
         }
-        value.subspan(1, value.total_len() - 1)
+        let unused_bits = value.byte_at(0)?;
+        if unused_bits > 7 {
+            return None;
+        }
+        let bits = value.subspan(1, value.total_len() - 1)?;
+        if unused_bits > 0 {
+            let last = bits.byte_at(bits.total_len().checked_sub(1)?)?;
+            let mask = (1u8 << unused_bits) - 1;
+            if last & mask != 0 {
+                return None;
+            }
+        }
+        Some(bits)
     }
 
     fn read_octet_string(&mut self) -> Option<PayloadSpanRef<'a>> {
@@ -228,7 +263,7 @@ fn is_der_null(tlv: DerTlv<'_>) -> bool {
 }
 
 fn parse_signature_algorithm(value: PayloadSpanRef<'_>) -> Option<SignatureAlgorithmId> {
-    let mut cursor = DerCursor::new(value);
+    let mut cursor = StrictDerCursor::new(value);
     let oid = cursor.read_oid()?;
     let algorithm = parse_signature_algorithm_id(oid);
     if matches!(algorithm, SignatureAlgorithmId::Unknown) {
@@ -279,7 +314,11 @@ fn is_leap_year(year: u32) -> bool {
 }
 
 fn datetime_to_unix(year: u32, month: u32, day: u32, hour: u32, min: u32, sec: u32) -> Option<u64> {
-    if month < 1 || month > 12 || day < 1 || day > 31 || hour > 23 || min > 59 || sec > 59 {
+    if year < 1970 || month < 1 || month > 12 || day < 1 || hour > 23 || min > 59 || sec > 59 {
+        return None;
+    }
+    let max_day = DAYS_IN_MONTH[(month - 1) as usize] + u32::from(month == 2 && is_leap_year(year));
+    if day > max_day {
         return None;
     }
     let mut days = 0u64;
@@ -301,7 +340,7 @@ fn parse_time_value(tag: u8, value: PayloadSpanRef<'_>) -> Option<u64> {
     let data = bytes.as_slice();
     match tag {
         0x17 => {
-            if data.len() < 13 || data[12] != b'Z' {
+            if data.len() != 13 || data[12] != b'Z' {
                 return None;
             }
             let yy = parse_two_digits(data, 0)?;
@@ -316,7 +355,7 @@ fn parse_time_value(tag: u8, value: PayloadSpanRef<'_>) -> Option<u64> {
             )
         }
         0x18 => {
-            if data.len() < 15 || data[14] != b'Z' {
+            if data.len() != 15 || data[14] != b'Z' {
                 return None;
             }
             datetime_to_unix(
@@ -332,22 +371,25 @@ fn parse_time_value(tag: u8, value: PayloadSpanRef<'_>) -> Option<u64> {
     }
 }
 
-fn parse_validity(tbs: &mut DerCursor<'_>) -> Option<(u64, u64)> {
+fn parse_validity(tbs: &mut StrictDerCursor<'_>) -> Option<(u64, u64)> {
     let validity = tbs.read_sequence()?;
-    let mut cursor = DerCursor::new(validity.value);
+    let mut cursor = StrictDerCursor::new(validity.value);
     let not_before = cursor
         .read_tlv()
         .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))?;
     let not_after = cursor
         .read_tlv()
         .and_then(|tlv| parse_time_value(tlv.tag, tlv.value))?;
+    if !cursor.is_empty() {
+        return None;
+    }
     Some((not_before, not_after))
 }
 
 fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
-    let mut cursor = DerCursor::new(spki);
+    let mut cursor = StrictDerCursor::new(spki);
     let alg = cursor.read_sequence()?.value;
-    let mut alg_cursor = DerCursor::new(alg);
+    let mut alg_cursor = StrictDerCursor::new(alg);
     let alg_oid = alg_cursor.read_oid()?;
     let pubkey_bits = cursor.read_bitstring()?;
 
@@ -358,9 +400,9 @@ fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
                 return None;
             }
         }
-        let mut rsa = DerCursor::new(pubkey_bits);
+        let mut rsa = StrictDerCursor::new(pubkey_bits);
         let rsa_seq = rsa.read_sequence()?.value;
-        let mut rsa_inner = DerCursor::new(rsa_seq);
+        let mut rsa_inner = StrictDerCursor::new(rsa_seq);
         let mut modulus = rsa_inner.read_integer()?;
         if modulus.total_len() > 1 && modulus.byte_at(0) == Some(0) {
             modulus = modulus.subspan(1, modulus.total_len() - 1)?;
@@ -392,7 +434,7 @@ fn parse_spki(spki: PayloadSpanRef<'_>) -> Option<SubjectPublicKeyInfo> {
     Some(SubjectPublicKeyInfo::Unknown)
 }
 
-fn parse_tbs_preamble(tbs: &mut DerCursor<'_>) -> Option<SignatureAlgorithmId> {
+fn parse_tbs_preamble(tbs: &mut StrictDerCursor<'_>) -> Option<SignatureAlgorithmId> {
     if tbs.peek_tag() == Some(0xA0) {
         tbs.skip_tlv()?;
     }
@@ -402,10 +444,10 @@ fn parse_tbs_preamble(tbs: &mut DerCursor<'_>) -> Option<SignatureAlgorithmId> {
 }
 
 fn parse_basic_constraints(value: PayloadSpanRef<'_>) -> (bool, Option<u32>) {
-    let Some(seq) = DerCursor::new(value).read_sequence() else {
+    let Some(seq) = StrictDerCursor::new(value).read_sequence() else {
         return (false, None);
     };
-    let mut inner = DerCursor::new(seq.value);
+    let mut inner = StrictDerCursor::new(seq.value);
     let mut is_ca = false;
     if inner.peek_tag() == Some(0x01) {
         if let Some(boolean) = inner.read_tlv() {
@@ -430,7 +472,7 @@ fn parse_basic_constraints(value: PayloadSpanRef<'_>) -> (bool, Option<u32>) {
 }
 
 fn parse_key_usage(value: PayloadSpanRef<'_>) -> Option<KeyUsage> {
-    let bits = DerCursor::new(value).read_bitstring()?;
+    let bits = StrictDerCursor::new(value).read_bitstring()?;
     let first = bits.byte_at(0).unwrap_or(0);
     Some(KeyUsage {
         digital_signature: (first & 0x80) != 0,
@@ -440,8 +482,8 @@ fn parse_key_usage(value: PayloadSpanRef<'_>) -> Option<KeyUsage> {
 }
 
 fn parse_extended_key_usage(value: PayloadSpanRef<'_>) -> Option<ExtendedKeyUsage> {
-    let seq = DerCursor::new(value).read_sequence()?;
-    let mut cursor = DerCursor::new(seq.value);
+    let seq = StrictDerCursor::new(value).read_sequence()?;
+    let mut cursor = StrictDerCursor::new(seq.value);
     let mut usage = ExtendedKeyUsage::default();
     while !cursor.is_empty() {
         let oid = cursor.read_oid()?;
@@ -461,18 +503,18 @@ struct ParsedExtensions<'a> {
     extended_key_usage: Option<ExtendedKeyUsage>,
 }
 
-fn parse_extensions<'a>(tbs: &mut DerCursor<'a>) -> Option<ParsedExtensions<'a>> {
+fn parse_extensions<'a>(tbs: &mut StrictDerCursor<'a>) -> Option<ParsedExtensions<'a>> {
     let mut parsed = ParsedExtensions::default();
     while !tbs.is_empty() {
         let tlv = tbs.read_tlv()?;
         if tlv.tag != 0xA3 {
             continue;
         }
-        let ext_seq = DerCursor::new(tlv.value).read_sequence()?;
-        let mut extensions = DerCursor::new(ext_seq.value);
+        let ext_seq = StrictDerCursor::new(tlv.value).read_sequence()?;
+        let mut extensions = StrictDerCursor::new(ext_seq.value);
         while !extensions.is_empty() {
             let ext = extensions.read_sequence()?;
-            let mut item = DerCursor::new(ext.value);
+            let mut item = StrictDerCursor::new(ext.value);
             let oid = item.read_oid()?;
             let critical = if item.peek_tag() == Some(0x01) {
                 let value = item.read_tlv()?;
@@ -517,7 +559,7 @@ fn parse_tbs_fields<'a>(
     Option<KeyUsage>,
     Option<ExtendedKeyUsage>,
 )> {
-    let mut tbs = DerCursor::new(tbs_content);
+    let mut tbs = StrictDerCursor::new(tbs_content);
     let signature_algorithm = parse_tbs_preamble(&mut tbs)?;
     let issuer_raw = tbs.read_tlv()?.full;
     let (not_before, not_after) = parse_validity(&mut tbs)?;
@@ -542,9 +584,24 @@ fn parse_tbs_fields<'a>(
     ))
 }
 
-fn parse_x509_certificate_lenient_deleted<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certificate<'a>> {
-    let outer = DerCursor::new(der).read_sequence()?;
-    let mut cert = DerCursor::new(outer.value);
+impl X509Parser {
+    pub fn parse_certificate<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certificate<'a>> {
+        let mut outer_cursor = StrictDerCursor::new(der);
+        let outer = outer_cursor.read_sequence()?;
+        if !outer_cursor.is_empty() {
+            return None;
+        }
+        parse_certificate_outer(outer.value)
+    }
+}
+
+fn parse_certificate_outer<'a>(outer_value: PayloadSpanRef<'a>) -> Option<X509Certificate<'a>> {
+    let outer = DerTlv {
+        tag: 0x30,
+        value: outer_value,
+        full: outer_value,
+    };
+    let mut cert = StrictDerCursor::new(outer.value);
     let tbs = cert.read_sequence()?;
     let (
         signature_algorithm,
@@ -564,6 +621,9 @@ fn parse_x509_certificate_lenient_deleted<'a>(der: PayloadSpanRef<'a>) -> Option
         return None;
     }
     let signature_value = cert.read_bitstring()?;
+    if !cert.is_empty() {
+        return None;
+    }
 
     Some(X509Certificate {
         raw_tbs: tbs.full,
@@ -580,6 +640,16 @@ fn parse_x509_certificate_lenient_deleted<'a>(der: PayloadSpanRef<'a>) -> Option
         key_usage,
         extended_key_usage,
     })
+}
+
+impl<'ctx> CertificatePolicy<'ctx> {
+    pub fn verify_chain<'a>(&self, chain: &[PayloadSpanRef<'a>]) -> Option<SubjectPublicKeyInfo> {
+        match self {
+            CertificatePolicy::Tls13ServerAuth(context) => {
+                validate_tls13_server_auth_chain(chain, context)
+            }
+        }
+    }
 }
 
 fn span_eq(a: PayloadSpanRef<'_>, b: PayloadSpanRef<'_>) -> bool {
@@ -613,9 +683,9 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
     Some(())
 }
 
-fn validate_certificate_chain_lenient_deleted<'a, 'ctx>(
+fn validate_tls13_server_auth_chain<'a, 'ctx>(
     chain: &[PayloadSpanRef<'a>],
-    context: X509VerificationContext<'ctx>,
+    context: &X509VerificationContext<'ctx>,
 ) -> Option<SubjectPublicKeyInfo> {
     if chain.is_empty() || chain.len() > 8 {
         return None;
@@ -623,7 +693,7 @@ fn validate_certificate_chain_lenient_deleted<'a, 'ctx>(
 
     let mut certs = ArrayVec::<X509Certificate<'a>, 8>::new();
     for cert in chain {
-        certs.try_push(parse_x509_certificate(*cert)?).ok()?;
+        certs.try_push(X509Parser::parse_certificate(*cert)?).ok()?;
     }
 
     for cert in &certs {
@@ -634,7 +704,7 @@ fn validate_certificate_chain_lenient_deleted<'a, 'ctx>(
 
     let leaf = certs.first()?;
     if let Some(key_usage) = leaf.key_usage {
-        if !key_usage.digital_signature && !key_usage.key_encipherment {
+        if !key_usage.digital_signature {
             return None;
         }
     }
@@ -656,7 +726,7 @@ fn validate_certificate_chain_lenient_deleted<'a, 'ctx>(
     let chain_tip = certs.last()?;
     let mut trusted = false;
     for trust in context.trusted_roots {
-        let trust_cert = parse_x509_certificate(*trust)?;
+        let trust_cert = X509Parser::parse_certificate(*trust)?;
         let issued_by_trust = span_eq(chain_tip.issuer_raw, trust_cert.subject_raw)
             && verify_signature(chain_tip, &trust_cert.subject_public_key_info);
         let exact_trust = span_eq(chain_tip.subject_raw, trust_cert.subject_raw)
@@ -685,10 +755,10 @@ fn match_hostname(
 }
 
 fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
-    let Some(seq) = DerCursor::new(san_der).read_sequence() else {
+    let Some(seq) = StrictDerCursor::new(san_der).read_sequence() else {
         return false;
     };
-    let mut names = DerCursor::new(seq.value);
+    let mut names = StrictDerCursor::new(seq.value);
     while let Some(name) = names.read_tlv() {
         if name.tag == 0x82 && match_dns_name(name.value, hostname) {
             return true;
@@ -701,17 +771,17 @@ fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
 }
 
 fn match_hostname_in_subject(subject_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
-    let Some(seq) = DerCursor::new(subject_der).read_sequence() else {
+    let Some(seq) = StrictDerCursor::new(subject_der).read_sequence() else {
         return false;
     };
-    let mut rdns = DerCursor::new(seq.value);
+    let mut rdns = StrictDerCursor::new(seq.value);
     while let Some(rdn) = rdns.read_tlv() {
         if rdn.tag != 0x31 {
             return false;
         }
-        let mut attrs = DerCursor::new(rdn.value);
+        let mut attrs = StrictDerCursor::new(rdn.value);
         while let Some(attr) = attrs.read_sequence() {
-            let mut attr = DerCursor::new(attr.value);
+            let mut attr = StrictDerCursor::new(attr.value);
             let oid = attr.read_oid();
             let value = attr.read_tlv();
             if let (Some(oid), Some(value)) = (oid, value) {
@@ -898,7 +968,7 @@ pub mod qemu_tests {
     pub fn x509_der_parse_tag_length_smoke() -> bool {
         let payload = test_cert_payload();
         let span = PayloadSpanRef::from_payload(&payload);
-        let Some(tlv) = DerCursor::new(span).read_tlv() else {
+        let Some(tlv) = StrictDerCursor::new(span).read_tlv() else {
             return false;
         };
         tlv.tag == 0x30 && tlv.value.total_len() == 151
@@ -907,7 +977,7 @@ pub mod qemu_tests {
     pub fn x509_der_parse_integer_smoke() -> bool {
         let payload = test_cert_payload();
         let span = PayloadSpanRef::from_payload(&payload);
-        let Some(cert) = parse_x509_certificate(span) else {
+        let Some(cert) = X509Parser::parse_certificate(span) else {
             return false;
         };
         matches!(
@@ -918,12 +988,13 @@ pub mod qemu_tests {
 
     pub fn x509_der_parse_sequence_smoke() -> bool {
         let payload = test_cert_payload();
-        parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).is_some()
+        X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_some()
     }
 
     pub fn x509_parse_self_signed_smoke() -> bool {
         let payload = test_cert_payload();
-        let Some(cert) = parse_x509_certificate(PayloadSpanRef::from_payload(&payload)) else {
+        let Some(cert) = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+        else {
             return false;
         };
         cert.raw_tbs.total_len() == 129
@@ -933,7 +1004,8 @@ pub mod qemu_tests {
 
     pub fn x509_extract_rsa_pubkey_smoke() -> bool {
         let payload = test_cert_payload();
-        let Some(cert) = parse_x509_certificate(PayloadSpanRef::from_payload(&payload)) else {
+        let Some(cert) = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+        else {
             return false;
         };
         match cert.subject_public_key_info {
@@ -948,7 +1020,8 @@ pub mod qemu_tests {
 
     pub fn x509_signature_algorithm_oid_smoke() -> bool {
         let payload = test_cert_payload();
-        let Some(cert) = parse_x509_certificate(PayloadSpanRef::from_payload(&payload)) else {
+        let Some(cert) = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+        else {
             return false;
         };
         cert.signature_algorithm == SignatureAlgorithmId::Sha256WithRsa

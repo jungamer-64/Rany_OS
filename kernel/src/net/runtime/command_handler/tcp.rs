@@ -76,7 +76,7 @@ impl RuntimeCommandHandler {
                             return None;
                         }
 
-                        let send_payload = inner.take_send_payload_prefix(len)?;
+                        let send_payload = inner.take_send_segment_window(len)?;
                         Some((
                             send_payload,
                             tcb.snd_nxt,
@@ -219,7 +219,10 @@ impl RuntimeCommandHandler {
         };
 
         let local_port = if local.port() == 0 {
-            crate::net::l4::socket::allocate_tcp_ephemeral_port_in(runtime).unwrap_or(49152)
+            let Some(port) = crate::net::l4::socket::allocate_tcp_ephemeral_port_in(runtime) else {
+                return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+            };
+            port
         } else {
             local.port()
         };

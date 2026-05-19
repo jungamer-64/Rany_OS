@@ -53,7 +53,7 @@ impl DhcpClient {
     /// OFFER 受信時の副作用を適用する
     pub(super) fn apply_offer(&self, lease: DhcpLease, current_tick: u64) -> DhcpResponseResult {
         // Best-effort: ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::runtime::command::enqueue_command_ignore_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_in(
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {
@@ -706,7 +706,7 @@ impl DhcpClient {
         current_tick: u64,
     ) -> bool {
         // ARP probe をイベントキュー経由で送信（デッドロック回避）
-        crate::net::runtime::command::enqueue_command_ignore_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_in(
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {
@@ -739,7 +739,7 @@ impl DhcpClient {
         }
 
         // また、将来的な競合を防ぐため、追加のプローブを定期的に送信
-        crate::net::runtime::command::enqueue_command_ignore_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_in(
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {

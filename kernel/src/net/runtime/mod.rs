@@ -13,6 +13,7 @@ pub mod command_loop;
 pub mod context;
 pub mod device;
 pub(crate) mod entropy;
+pub(crate) mod icmp;
 pub mod manager;
 pub mod stack;
 pub mod timeouts;

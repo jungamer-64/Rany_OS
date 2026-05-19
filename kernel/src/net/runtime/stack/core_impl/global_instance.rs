@@ -29,7 +29,7 @@ pub(crate) fn receive_batch_on_in(
     // Offload each packet in the batch to the async event queue to avoid
     // taking the global stack lock in interrupt/polling contexts.
     for pkt in batch.into_iter() {
-        crate::net::runtime::command::enqueue_command_ignore_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_in(
             runtime,
             crate::net::runtime::command::RuntimeCommand::Ingress(
                 crate::net::runtime::command::IngressCommand::Packet { if_id, packet: pkt },
@@ -54,7 +54,7 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
         );
     }
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawUdpSend {
@@ -88,7 +88,7 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
         );
     }
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawUdpV6Send {
@@ -114,7 +114,7 @@ pub(crate) fn enqueue_tcp_send_in(
     completion_id: Option<u64>,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawTcpSend {
@@ -137,7 +137,7 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     completion_id: Option<u64>,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawTcpV6Send {
@@ -175,7 +175,7 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
         // イベントキュー経由でタイムアウト処理をリクエスト
         // イベントハンドラ側でNETWORK_STACKロックを取得して処理するため、
         // asyncタスク内での同期ロック取得を回避
-        crate::net::runtime::command::enqueue_command_ignore_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_in(
             runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessTimeouts,
@@ -303,7 +303,7 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     ttl: u8,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawUdpSendOn {
@@ -331,7 +331,7 @@ pub(crate) fn enqueue_tcp_send_on_in(
     completion_id: Option<u64>,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawTcpSendOn {
@@ -358,7 +358,7 @@ fn enqueue_udp_v6_send_on_in(
     ttl: u8,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
@@ -386,7 +386,7 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     completion_id: Option<u64>,
 ) -> bool {
     let reply = new_detached_command_channel_in(runtime);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {

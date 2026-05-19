@@ -8,7 +8,7 @@ use core::ops::{Deref, DerefMut};
 
 use crate::net::l4::tcp::TcpStats;
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
-use crate::net::payload::append_payload;
+use crate::net::payload::packet_payload_from_segments;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -77,8 +77,7 @@ pub(crate) struct TcpSocketEntry {
     pub accept_backlog: usize,
     pub recv_payload_queue: VecDeque<QueuedPayload>,
     pub recv_payload_bytes: usize,
-    pub send_payload_queue: VecDeque<QueuedPayload>,
-    pub send_payload_bytes: usize,
+    pub send_buffer: TcpSendBuffer,
     pub nodelay: bool,
     pub urgent_pending: bool,
     pub stats: TcpStats,
@@ -87,6 +86,11 @@ pub(crate) struct TcpSocketEntry {
 pub(crate) struct QueuedPayload {
     payload: PacketPayload,
     consumed: usize,
+}
+
+pub(crate) struct TcpSendBuffer {
+    chunks: VecDeque<QueuedPayload>,
+    len: usize,
 }
 
 impl QueuedPayload {
@@ -109,6 +113,112 @@ impl QueuedPayload {
         let len = self.remaining_len();
         crate::net::payload::move_payload_window_owned(self.payload, self.consumed, len)
     }
+
+    fn take_front(&mut self, len: usize) -> Option<PacketPayload> {
+        if len == 0 || len > self.remaining_len() {
+            return None;
+        }
+
+        let mut remaining = len;
+        let mut skip = self.consumed;
+        let mut segments = alloc::vec::Vec::new();
+
+        for segment in self.payload.segments() {
+            if skip >= segment.len() {
+                skip -= segment.len();
+                continue;
+            }
+
+            let segment_offset = skip;
+            let available = segment.len() - segment_offset;
+            let take = remaining.min(available);
+            let mut cloned = segment.try_clone_ref()?;
+            if segment_offset > 0 && !cloned.advance(segment_offset) {
+                return None;
+            }
+            if !cloned.set_len(take) {
+                return None;
+            }
+            segments.push(cloned);
+            remaining -= take;
+            skip = 0;
+            if remaining == 0 {
+                break;
+            }
+        }
+
+        if remaining != 0 {
+            return None;
+        }
+        self.consumed = self.consumed.saturating_add(len);
+        Some(packet_payload_from_segments(segments))
+    }
+}
+
+impl TcpSendBuffer {
+    fn new() -> Self {
+        Self {
+            chunks: VecDeque::new(),
+            len: 0,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.len
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len == 0
+    }
+
+    fn clear(&mut self) {
+        self.chunks.clear();
+        self.len = 0;
+    }
+
+    fn push(&mut self, payload: PacketPayload, limit: usize) -> SocketResult<()> {
+        let payload_len = payload.total_len();
+        let available = limit.saturating_sub(self.len);
+        if payload_len == 0 {
+            return Ok(());
+        }
+        if payload_len > available {
+            return Err(EndpointError::BufferFull);
+        }
+        self.len = self.len.saturating_add(payload_len);
+        self.chunks.push_back(QueuedPayload::new(payload));
+        Ok(())
+    }
+
+    fn trim_empty(&mut self) {
+        while matches!(self.chunks.front(), Some(payload) if payload.is_empty()) {
+            self.chunks.pop_front();
+        }
+    }
+
+    fn take_segment_window(&mut self, max_len: usize) -> Option<PacketPayload> {
+        if max_len == 0 || self.len == 0 {
+            return None;
+        }
+        self.trim_empty();
+        let take = self.len.min(max_len);
+        let mut remaining = take;
+        let mut segments = alloc::vec::Vec::new();
+
+        while remaining > 0 {
+            let front = self.chunks.front_mut()?;
+            let front_take = remaining.min(front.remaining_len());
+            let payload = front.take_front(front_take)?;
+            segments.extend(payload.into_segments());
+            remaining -= front_take;
+            if front.is_empty() {
+                self.chunks.pop_front();
+            }
+        }
+
+        self.len = self.len.saturating_sub(take);
+        Some(packet_payload_from_segments(segments))
+    }
 }
 
 impl TcpSocketEntry {
@@ -121,8 +231,7 @@ impl TcpSocketEntry {
             accept_backlog: Self::DEFAULT_BACKLOG,
             recv_payload_queue: VecDeque::new(),
             recv_payload_bytes: 0,
-            send_payload_queue: VecDeque::new(),
-            send_payload_bytes: 0,
+            send_buffer: TcpSendBuffer::new(),
             nodelay: false,
             urgent_pending: false,
             stats: TcpStats::default(),
@@ -328,8 +437,7 @@ impl SocketState {
                 tcp.state = TcpSocketState::Closed;
                 tcp.recv_payload_queue.clear();
                 tcp.recv_payload_bytes = 0;
-                tcp.send_payload_queue.clear();
-                tcp.send_payload_bytes = 0;
+                tcp.send_buffer.clear();
             }
             SocketEntry::Udp(udp) => {
                 udp.state = UdpSocketState::Closed;
@@ -349,30 +457,6 @@ impl SocketState {
         }
     }
 
-    fn drain_send_prefix(queue: &mut VecDeque<QueuedPayload>, len: usize) -> Option<PacketPayload> {
-        if len == 0 {
-            return Some(PacketPayload::default());
-        }
-
-        let mut remaining = len;
-        let mut taken = PacketPayload::default();
-
-        while remaining > 0 {
-            let front = queue.pop_front()?;
-            let front_len = front.remaining_len();
-            if front_len <= remaining {
-                append_payload(&mut taken, front.into_remaining_payload()?);
-                remaining -= front_len;
-                continue;
-            }
-
-            queue.push_front(front);
-            break;
-        }
-
-        (!taken.is_empty()).then_some(taken)
-    }
-
     #[inline]
     pub fn set_urgent_pending(&mut self, pending: bool) {
         if let Some(tcp) = self.tcp_mut() {
@@ -387,7 +471,7 @@ impl SocketState {
 
     #[inline]
     pub fn send_payload_bytes(&self) -> usize {
-        self.tcp().map_or(0, |tcp| tcp.send_payload_bytes)
+        self.tcp().map_or(0, |tcp| tcp.send_buffer.len())
     }
 
     #[inline]
@@ -432,22 +516,17 @@ impl SocketState {
 
     #[inline]
     pub fn send_payload(&mut self, payload: PacketPayload) -> SocketResult<()> {
-        let available = self
-            .send_buffer_limit
-            .saturating_sub(self.send_payload_bytes());
-
-        if available == 0 || payload.total_len() > available {
-            return Err(EndpointError::BufferFull);
-        }
-
-        let queued = payload;
-        let len = queued.total_len();
+        let limit = self.send_buffer_limit;
         let Some(tcp) = self.tcp_mut() else {
             return Err(EndpointError::InvalidArgument);
         };
-        tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
-        tcp.send_payload_queue.push_back(QueuedPayload::new(queued));
-        Ok(())
+        tcp.send_buffer.push(payload, limit)
+    }
+
+    #[inline]
+    pub fn take_send_segment_window(&mut self, max_len: usize) -> Option<PacketPayload> {
+        let tcp = self.tcp_mut()?;
+        tcp.send_buffer.take_segment_window(max_len)
     }
 
     #[inline]
@@ -514,17 +593,20 @@ pub mod tests {
 
     #[cfg_attr(target_os = "linux", test)]
     #[cfg_attr(not(target_os = "linux"), test_case)]
-    pub fn test_take_send_payload_prefix_does_not_split_front_payload() {
+    pub fn test_take_send_segment_window_splits_front_payload() {
         let mut state = SocketState::new_tcp(TcpSocketState::Connected);
         assert_eq!(state.send_payload(payload_bytes(b"abcde")), Ok(()));
 
-        assert!(state.take_send_payload_prefix(4).is_none());
-        assert_eq!(state.send_payload_bytes(), 5);
+        let prefix = state
+            .take_send_segment_window(4)
+            .expect("front payload should be sliced as a byte stream");
+        assert_eq!(prefix.total_len(), 4);
+        assert_eq!(state.send_payload_bytes(), 1);
 
         let payload = state
-            .take_send_payload_prefix(5)
-            .expect("whole payload should be moved");
-        assert_eq!(payload.total_len(), 5);
+            .take_send_segment_window(5)
+            .expect("remaining byte should stay queued");
+        assert_eq!(payload.total_len(), 1);
         assert_eq!(state.send_payload_bytes(), 0);
     }
 

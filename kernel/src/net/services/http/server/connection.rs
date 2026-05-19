@@ -164,7 +164,9 @@ fn process_received_payload(
     }
 
     *saw_payload = true;
-    super::BYTES_RX.fetch_add(len as u64, Ordering::Relaxed);
+    super::http_runtime_in(runtime)
+        .bytes_rx
+        .fetch_add(len as u64, Ordering::Relaxed);
     parser.push_payload(payload);
 
     if let Some(plan) = plan_from_buffered_payload(runtime, parser) {
@@ -253,7 +255,9 @@ async fn write_response(
         .await
         .map_err(|_| "socket write error")?;
     client.drain_tx().await.map_err(|_| "socket drain error")?;
-    super::BYTES_TX.fetch_add(total_len as u64, Ordering::Relaxed);
+    super::http_runtime_in(client.runtime())
+        .bytes_tx
+        .fetch_add(total_len as u64, Ordering::Relaxed);
     Ok(())
 }
 

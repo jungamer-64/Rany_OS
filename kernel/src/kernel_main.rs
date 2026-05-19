@@ -148,18 +148,17 @@ pub(crate) fn init_network_infra() {
         panic!("[NET] boot-time hash secret entropy unavailable: {error:?}");
     }
 
+    let net_runtime = crate::net::runtime::default_runtime();
+
     // Initialize firewall with secure default rules
-    crate::net::security::firewall::setup_default_firewall();
+    crate::net::security::firewall::setup_default_firewall_in(net_runtime);
 
     // Initialize TCP SYN cookies
-    if let Err(error) =
-        crate::net::runtime::transport::tcp_table_in(crate::net::runtime::default_runtime())
-            .init_syncookies()
+    if let Err(error) = crate::net::runtime::transport::tcp_table_in(net_runtime).init_syncookies()
     {
         panic!("[NET] boot-time TCP secret entropy unavailable: {error:?}");
     }
 
-    let net_runtime = crate::net::runtime::default_runtime();
     let stack_initialized = crate::net::runtime::device::is_initialized_in(net_runtime);
     let port_runtime_initialized =
         !crate::net::runtime::device::list_port_ids_in(net_runtime).is_empty();
@@ -204,8 +203,8 @@ pub(crate) fn init_network_infra() {
     );
 
     // OOOキューとタイミングホイールを初期化
-    crate::net::l4::tcp::ooo_queue::init_ooo_queues();
-    crate::net::l4::tcp::retransmit::init_timer_wheel();
+    crate::net::l4::tcp::ooo_queue::init_ooo_queues_in(net_runtime);
+    crate::net::l4::tcp::retransmit::init_timer_wheel_in(net_runtime);
     info!(target: "init", "OOO queues and retransmit timer wheel initialized");
 
     info!(target: "init", "Network driver class init deferred to async bootstrap");

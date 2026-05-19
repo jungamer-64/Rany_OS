@@ -544,7 +544,7 @@ fn try_fast_path(
         return Err(data_payload);
     }
 
-    if ooo_queue::has_ooo_segments(tcb.local, tcb.remote) {
+    if ooo_queue::has_ooo_segments(runtime, tcb.local, tcb.remote) {
         return Err(data_payload);
     }
 
@@ -853,7 +853,7 @@ fn handle_synchronized_segment(
             if let Some(blocks) = parser.find_sack_blocks() {
                 if !blocks.is_empty() {
                     crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
-                        tcb.local, tcb.remote, &blocks,
+                        runtime, tcb.local, tcb.remote, &blocks,
                     );
                 }
             }
@@ -985,7 +985,7 @@ fn handle_data_received_with_delayed_ack(
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
-        ooo_queue::insert_ooo_segment(tcb.local, tcb.remote, seq_num, data_payload, fin);
+        ooo_queue::insert_ooo_segment(runtime, tcb.local, tcb.remote, seq_num, data_payload, fin);
         send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
         return;
     }
@@ -1014,6 +1014,7 @@ fn handle_data_received_with_delayed_ack(
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
         let (drained_nxt, ooo_fin) = ooo_queue::drain_ooo_contiguous(
+            runtime,
             tcb.local,
             tcb.remote,
             new_rcv_nxt,
@@ -1525,8 +1526,8 @@ fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
         }
 
         // リソースクリーンアップ
-        retransmit_queue_remove(tcb.local, tcb.remote);
-        ooo_queue::remove_ooo_queue(tcb.local, tcb.remote);
+        retransmit_queue_remove(runtime, tcb.local, tcb.remote);
+        ooo_queue::remove_ooo_queue(runtime, tcb.local, tcb.remote);
         tcp_table_in(runtime).remove(tcb.local, tcb.remote);
     } else {
         // RFC 5961: ウィンドウ内ならChallenge ACKを送信
@@ -1591,7 +1592,7 @@ fn create_accepted_socket(
     tcp_table_in(runtime).set_socket_id(local, remote, new_socket_id);
 
     // 再送キューを作成
-    get_or_create_retransmit_queue(local, remote);
+    get_or_create_retransmit_queue(runtime, local, remote);
 
     Some(AcceptedConnection::new(
         new_socket_id,

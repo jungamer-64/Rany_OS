@@ -71,8 +71,13 @@ impl NetworkStack {
                 sequence,
             } => {
                 let rtt_us = 0;
-                crate::net::api::icmp::notify_icmp_echo_reply(*src_ip.as_bytes(), sequence, rtt_us);
-                crate::net::runtime::command::enqueue_command_ignore_in(
+                crate::net::api::icmp::notify_icmp_echo_reply_in(
+                    runtime,
+                    *src_ip.as_bytes(),
+                    sequence,
+                    rtt_us,
+                );
+                let _ = crate::net::runtime::command::try_enqueue_command_in(
                     self.runtime,
                     crate::net::runtime::command::RuntimeCommand::Control(
                         crate::net::runtime::command::ControlCommand::IcmpEchoReply {
@@ -281,7 +286,7 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Reassembled(payload) => {
                 // Reassembled IPv6 payload is offloaded to endpoint async path.
-                crate::net::runtime::command::enqueue_command_ignore_in(
+                let _ = crate::net::runtime::command::try_enqueue_command_in(
                     self.runtime,
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {

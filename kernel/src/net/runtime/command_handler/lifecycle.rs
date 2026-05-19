@@ -130,7 +130,7 @@ impl RuntimeCommandHandler {
                 crate::net::l4::tcp::tcp_rx::flush_delayed_acks_in(runtime);
 
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
-                crate::net::api::icmp::cleanup_icmp_echo_waiters();
+                crate::net::api::icmp::cleanup_icmp_echo_waiters_in(runtime);
                 // ARP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
                 crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
                 // NDP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ

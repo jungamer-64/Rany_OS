@@ -99,7 +99,8 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         let payload_len = payload.total_len();
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             src_ip.octets(),
             dst_ip.octets(),
             17,

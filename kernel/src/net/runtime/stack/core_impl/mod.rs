@@ -306,7 +306,8 @@ impl NetworkStack {
             _ => (0, 0, 0),
         };
 
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             src_ip.octets(),
             dst_ip.octets(),
             protocol,
@@ -435,7 +436,8 @@ impl NetworkStack {
             _ => (0, 0, 0),
         };
 
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             crate::net::security::firewall::IpAddress::V6(src_ip.octets()),
             crate::net::security::firewall::IpAddress::V6(dst_ip.octets()),
             next_header,
@@ -924,7 +926,8 @@ impl NetworkStack {
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let tcp_flags = header[13];
 
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             src_ip.octets(),
             dst_ip.octets(),
             6,

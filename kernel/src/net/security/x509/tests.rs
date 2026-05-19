@@ -103,8 +103,8 @@ fn test_der_cursor_rejects_invalid_input() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_certificate_basic_fields() {
     let payload = test_cert_payload();
-    let cert =
-        parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).expect("parse test cert");
+    let cert = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+        .expect("parse test cert");
 
     assert_eq!(
         cert.signature_algorithm,
@@ -119,8 +119,8 @@ fn test_parse_x509_certificate_basic_fields() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_certificate_extracts_owned_rsa_spki() {
     let payload = test_cert_payload();
-    let cert =
-        parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).expect("parse test cert");
+    let cert = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+        .expect("parse test cert");
 
     match cert.subject_public_key_info {
         SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
@@ -188,7 +188,7 @@ fn test_parse_x509_certificate_rejects_signature_algorithm_mismatch() {
     assert_eq!(seen, 2);
 
     let payload = der_payload(&der);
-    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -198,9 +198,9 @@ fn test_parse_x509_certificate_rejects_invalid_input() {
     let not_sequence = der_payload(&[0x02, 0x01, 0x00]);
     let truncated = der_payload(&[0x30, 0x03, 0x02, 0x01]);
 
-    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&empty)).is_none());
-    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&not_sequence)).is_none());
-    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&truncated)).is_none());
+    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&empty)).is_none());
+    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&not_sequence)).is_none());
+    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&truncated)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -210,7 +210,7 @@ fn test_parse_x509_certificate_rejects_malformed_validity() {
     der[47] = 0x13;
     let payload = der_payload(&der);
 
-    assert!(parse_x509_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -332,7 +332,7 @@ fn test_chain_link_rejects_ca_path_len_violation() {
 fn test_validate_certificate_chain_requires_trust_anchor() {
     let payload = test_cert_payload();
     let chain = [PayloadSpanRef::from_payload(&payload)];
-    let cert = parse_x509_certificate(chain[0]).expect("test certificate parses");
+    let cert = X509Parser::parse_certificate(chain[0]).expect("test certificate parses");
     let context = X509VerificationContext {
         now_unix: cert.not_before,
         server_name: None,
@@ -340,7 +340,11 @@ fn test_validate_certificate_chain_requires_trust_anchor() {
         allow_subject_cn_fallback: false,
     };
 
-    assert!(validate_certificate_chain(&chain, context).is_none());
+    assert!(
+        CertificatePolicy::Tls13ServerAuth(context)
+            .verify_chain(&chain)
+            .is_none()
+    );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -350,42 +354,36 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     let span = PayloadSpanRef::from_payload(&payload);
     let chain = [span];
     let trusted = [span];
-    let cert = parse_x509_certificate(span).expect("test certificate parses");
+    let cert = X509Parser::parse_certificate(span).expect("test certificate parses");
 
     assert!(
-        validate_certificate_chain(
-            &chain,
-            X509VerificationContext {
-                now_unix: cert.not_before,
-                server_name: Some("Test"),
-                trusted_roots: &trusted,
-                allow_subject_cn_fallback: true,
-            },
-        )
+        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+            now_unix: cert.not_before,
+            server_name: Some("Test"),
+            trusted_roots: &trusted,
+            allow_subject_cn_fallback: true,
+        })
+        .verify_chain(&chain)
         .is_some()
     );
     assert!(
-        validate_certificate_chain(
-            &chain,
-            X509VerificationContext {
-                now_unix: cert.not_before,
-                server_name: Some("example.com"),
-                trusted_roots: &trusted,
-                allow_subject_cn_fallback: true,
-            },
-        )
+        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+            now_unix: cert.not_before,
+            server_name: Some("example.com"),
+            trusted_roots: &trusted,
+            allow_subject_cn_fallback: true,
+        })
+        .verify_chain(&chain)
         .is_none()
     );
     assert!(
-        validate_certificate_chain(
-            &chain,
-            X509VerificationContext {
-                now_unix: cert.not_before,
-                server_name: Some("Test"),
-                trusted_roots: &trusted,
-                allow_subject_cn_fallback: false,
-            },
-        )
+        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+            now_unix: cert.not_before,
+            server_name: Some("Test"),
+            trusted_roots: &trusted,
+            allow_subject_cn_fallback: false,
+        })
+        .verify_chain(&chain)
         .is_none()
     );
 }
@@ -394,15 +392,13 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_rejects_empty_chain() {
     assert!(
-        validate_certificate_chain(
-            &[],
-            X509VerificationContext {
-                now_unix: 0,
-                server_name: None,
-                trusted_roots: &[],
-                allow_subject_cn_fallback: false,
-            },
-        )
+        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+            now_unix: 0,
+            server_name: None,
+            trusted_roots: &[],
+            allow_subject_cn_fallback: false,
+        })
+        .verify_chain(&[])
         .is_none()
     );
 }

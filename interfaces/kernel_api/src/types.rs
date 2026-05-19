@@ -216,6 +216,7 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub clone_storage: unsafe fn(&PacketRefStorage) -> Option<PacketRefStorage>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -308,6 +309,12 @@ impl PacketRef {
     #[inline]
     pub fn retreat(&mut self, size: usize) -> bool {
         unsafe { (self.vtable.retreat)(&mut self.storage, size) }
+    }
+
+    #[inline]
+    pub fn try_clone_ref(&self) -> Option<Self> {
+        let storage = unsafe { (self.vtable.clone_storage)(&self.storage) }?;
+        Some(unsafe { Self::from_opaque_parts(storage, self.vtable) })
     }
 
     #[inline]
@@ -708,7 +715,7 @@ pub enum NvmeIoResult {
 mod packet_ref_tests {
     use super::*;
     use alloc::boxed::Box;
-    use alloc::rc::Rc;
+    use core::ptr::NonNull;
     use core::sync::atomic::{AtomicUsize, Ordering};
 
     static DMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
@@ -720,9 +727,13 @@ mod packet_ref_tests {
     }
 
     struct DmaPacketState {
-        backing: Rc<SharedDmaBuffer>,
+        backing: NonNull<SharedDmaBuffer>,
         offset: usize,
         len: usize,
+    }
+
+    fn dma_backing(state: &DmaPacketState) -> &SharedDmaBuffer {
+        unsafe { state.backing.as_ref() }
     }
 
     unsafe fn dma_state_ref(storage: &PacketRefStorage) -> &DmaPacketState {
@@ -735,12 +746,12 @@ mod packet_ref_tests {
 
     unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
         let state = unsafe { dma_state_ref(storage) };
-        state.backing.dma.as_ptr().wrapping_add(state.offset)
+        dma_backing(state).dma.as_ptr().wrapping_add(state.offset)
     }
 
     unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
         let state = unsafe { dma_state_mut(storage) };
-        state.backing.dma.as_ptr().wrapping_add(state.offset)
+        dma_backing(state).dma.as_ptr().wrapping_add(state.offset)
     }
 
     unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
@@ -749,7 +760,7 @@ mod packet_ref_tests {
 
     unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
         let state = unsafe { dma_state_mut(storage) };
-        if len > state.backing.dma.size().saturating_sub(state.offset) {
+        if len > dma_backing(state).dma.size().saturating_sub(state.offset) {
             return false;
         }
         state.len = len;
@@ -757,7 +768,7 @@ mod packet_ref_tests {
     }
 
     unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-        unsafe { dma_state_ref(storage) }.backing.dma.size()
+        dma_backing(unsafe { dma_state_ref(storage) }).dma.size()
     }
 
     unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
@@ -766,12 +777,12 @@ mod packet_ref_tests {
 
     unsafe fn dma_phys(storage: &PacketRefStorage) -> u64 {
         let state = unsafe { dma_state_ref(storage) };
-        state.backing.phys_addr + state.offset as u64
+        dma_backing(state).phys_addr + state.offset as u64
     }
 
     unsafe fn dma_device(storage: &PacketRefStorage) -> u64 {
         let state = unsafe { dma_state_ref(storage) };
-        state.backing.device_addr + state.offset as u64
+        dma_backing(state).device_addr + state.offset as u64
     }
 
     unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
@@ -793,7 +804,7 @@ mod packet_ref_tests {
             return false;
         };
         let new_offset = state.offset - size;
-        if new_len > state.backing.dma.size().saturating_sub(new_offset) {
+        if new_len > dma_backing(state).dma.size().saturating_sub(new_offset) {
             return false;
         }
         state.offset = new_offset;
@@ -801,8 +812,18 @@ mod packet_ref_tests {
         true
     }
 
+    unsafe fn dma_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
+        let _ = storage;
+        None
+    }
+
     unsafe fn dma_drop(storage: &mut PacketRefStorage) {
-        unsafe { ptr::drop_in_place(storage.as_state_mut::<DmaPacketState>()) };
+        let state = unsafe { storage.as_state_mut::<DmaPacketState>() };
+        let backing = state.backing;
+        unsafe {
+            ptr::drop_in_place(state);
+            drop(Box::from_raw(backing.as_ptr()));
+        }
     }
 
     static DMA_VTABLE: PacketRefVTable = PacketRefVTable {
@@ -816,6 +837,7 @@ mod packet_ref_tests {
         headroom: dma_headroom,
         advance: dma_advance,
         retreat: dma_retreat,
+        clone_storage: dma_clone_storage,
         drop_storage: dma_drop,
     };
 
@@ -842,11 +864,11 @@ mod packet_ref_tests {
             )
         };
         let state = DmaPacketState {
-            backing: Rc::new(SharedDmaBuffer {
+            backing: NonNull::from(Box::leak(Box::new(SharedDmaBuffer {
                 phys_addr: 0x3000,
                 device_addr: 0x4000,
                 dma: Box::new(dma),
-            }),
+            }))),
             offset: 0,
             len: 7,
         };

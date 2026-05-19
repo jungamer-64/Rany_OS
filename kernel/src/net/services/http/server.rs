@@ -17,16 +17,33 @@ mod connection;
 mod index_html;
 mod router;
 
-static HOST_HTTP_SERVICE_STARTED: AtomicBool = AtomicBool::new(false);
-static HTTP_POLLER_SIGNAL_WAKER: AtomicWaker = AtomicWaker::new();
-static HTTP_POLLER_SIGNAL_SEQ: AtomicU64 = AtomicU64::new(1);
+pub(crate) struct HttpRuntimeState {
+    started: AtomicBool,
+    poller_signal_waker: AtomicWaker,
+    poller_signal_seq: AtomicU64,
+    active_connections: AtomicU32,
+    total_requests: AtomicU64,
+    bytes_rx: AtomicU64,
+    bytes_tx: AtomicU64,
+}
 
-/// アクティブな同時接続数を追跡
-pub(super) static ACTIVE_CONNECTIONS: AtomicU32 = AtomicU32::new(0);
-pub(super) static TOTAL_REQUESTS: core::sync::atomic::AtomicU64 =
-    core::sync::atomic::AtomicU64::new(0);
-pub(super) static BYTES_RX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
-pub(super) static BYTES_TX: core::sync::atomic::AtomicU64 = core::sync::atomic::AtomicU64::new(0);
+impl HttpRuntimeState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            started: AtomicBool::new(false),
+            poller_signal_waker: AtomicWaker::new(),
+            poller_signal_seq: AtomicU64::new(1),
+            active_connections: AtomicU32::new(0),
+            total_requests: AtomicU64::new(0),
+            bytes_rx: AtomicU64::new(0),
+            bytes_tx: AtomicU64::new(0),
+        }
+    }
+}
+
+fn http_runtime_in(runtime: NetRuntimeHandle) -> &'static HttpRuntimeState {
+    &runtime.context().http
+}
 
 /// 同時接続数の上限
 const MAX_CONCURRENT_CONNECTIONS: u32 = 16;
@@ -46,6 +63,7 @@ pub(super) const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
 pub(super) const HOST_HTTP_READ_DEADLINE_CHECK_STRIDE: usize = 2;
 
 struct HttpPollerSignalFuture {
+    runtime: NetRuntimeHandle,
     observed_seq: u64,
 }
 
@@ -53,14 +71,15 @@ impl Future for HttpPollerSignalFuture {
     type Output = u64;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let current = HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire);
+        let state = http_runtime_in(self.runtime);
+        let current = state.poller_signal_seq.load(Ordering::Acquire);
         if current != self.observed_seq {
             return Poll::Ready(current);
         }
 
-        HTTP_POLLER_SIGNAL_WAKER.register(cx.waker());
+        state.poller_signal_waker.register(cx.waker());
 
-        let current = HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire);
+        let current = state.poller_signal_seq.load(Ordering::Acquire);
         if current != self.observed_seq {
             Poll::Ready(current)
         } else {
@@ -69,13 +88,16 @@ impl Future for HttpPollerSignalFuture {
     }
 }
 
-fn current_http_poller_signal_seq() -> u64 {
-    HTTP_POLLER_SIGNAL_SEQ.load(Ordering::Acquire)
+fn current_http_poller_signal_seq(runtime: NetRuntimeHandle) -> u64 {
+    http_runtime_in(runtime)
+        .poller_signal_seq
+        .load(Ordering::Acquire)
 }
 
-fn notify_http_poller_signal() {
-    HTTP_POLLER_SIGNAL_SEQ.fetch_add(1, Ordering::AcqRel);
-    HTTP_POLLER_SIGNAL_WAKER.wake();
+fn notify_http_poller_signal(runtime: NetRuntimeHandle) {
+    let state = http_runtime_in(runtime);
+    state.poller_signal_seq.fetch_add(1, Ordering::AcqRel);
+    state.poller_signal_waker.wake();
 }
 
 const fn host_http_idle_wait_ms(consecutive_idle: u32) -> u64 {
@@ -99,9 +121,14 @@ fn enqueue_runtime_poll_events_in(runtime: NetRuntimeHandle) -> usize {
     queued
 }
 
-async fn wait_http_poller_signal_or_timeout(observed_seq: &mut u64, timeout_ms: u64) -> bool {
+async fn wait_http_poller_signal_or_timeout(
+    runtime: NetRuntimeHandle,
+    observed_seq: &mut u64,
+    timeout_ms: u64,
+) -> bool {
     match task::with_timeout(
         HttpPollerSignalFuture {
+            runtime,
             observed_seq: *observed_seq,
         },
         timeout_ms,
@@ -123,7 +150,8 @@ enum ServiceRestartCause {
 }
 
 pub fn start_once(runtime: NetRuntimeHandle) {
-    if HOST_HTTP_SERVICE_STARTED
+    if http_runtime_in(runtime)
+        .started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
@@ -159,7 +187,7 @@ pub fn start_once(runtime: NetRuntimeHandle) {
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller_in(runtime: NetRuntimeHandle) {
     let mut consecutive_idle: u32 = 0;
-    let mut observed_signal_seq = current_http_poller_signal_seq();
+    let mut observed_signal_seq = current_http_poller_signal_seq(runtime);
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // ISR + runtime_command_task が非同期にパケット処理を行うため、
@@ -167,7 +195,9 @@ async fn run_net_poller_in(runtime: NetRuntimeHandle) {
         // Poll event は non-ISR の文脈で device event queue に投入する。
         task::yield_now().await;
 
-        let active = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        let active = http_runtime_in(runtime)
+            .active_connections
+            .load(Ordering::Acquire);
         let wait_ms = if active > 0 {
             consecutive_idle = 0;
             1
@@ -177,7 +207,7 @@ async fn run_net_poller_in(runtime: NetRuntimeHandle) {
             host_http_idle_wait_ms(consecutive_idle)
         };
 
-        if wait_http_poller_signal_or_timeout(&mut observed_signal_seq, wait_ms).await {
+        if wait_http_poller_signal_or_timeout(runtime, &mut observed_signal_seq, wait_ms).await {
             consecutive_idle = 0;
         }
 
@@ -322,10 +352,12 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                 task::yield_now().await;
             }
             TimeoutResult::Completed(Ok((client, peer))) => {
-                let Some(active_after) = try_acquire_connection_slot() else {
+                let Some(active_after) = try_acquire_connection_slot(runtime) else {
                     log::warn!(
                         "[HOST-HTTP] connection limit reached ({}), rejecting {:?}",
-                        ACTIVE_CONNECTIONS.load(Ordering::Acquire),
+                        http_runtime_in(runtime)
+                            .active_connections
+                            .load(Ordering::Acquire),
                         peer
                     );
                     // 接続を閉じて次を受け付ける
@@ -343,11 +375,13 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
                 crate::task::spawn_task(Task::new(async move {
                     connection::handle_client(runtime, client).await;
-                    ACTIVE_CONNECTIONS.fetch_sub(1, Ordering::AcqRel);
-                    notify_http_poller_signal();
+                    http_runtime_in(runtime)
+                        .active_connections
+                        .fetch_sub(1, Ordering::AcqRel);
+                    notify_http_poller_signal(runtime);
                 }));
 
-                notify_http_poller_signal();
+                notify_http_poller_signal(runtime);
             }
             TimeoutResult::Completed(Err(err)) => {
                 return Err(err);
@@ -356,15 +390,16 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
     }
 }
 
-fn try_acquire_connection_slot() -> Option<u32> {
+fn try_acquire_connection_slot(runtime: NetRuntimeHandle) -> Option<u32> {
+    let active_connections = &http_runtime_in(runtime).active_connections;
     loop {
-        let current = ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+        let current = active_connections.load(Ordering::Acquire);
         if current >= MAX_CONCURRENT_CONNECTIONS {
             return None;
         }
 
         let next = current.checked_add(1)?;
-        if ACTIVE_CONNECTIONS
+        if active_connections
             .compare_exchange(current, next, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
         {
@@ -426,9 +461,10 @@ mod tests {
 
     #[test]
     fn http_poller_signal_sequence_advances_on_notify() {
-        let before = current_http_poller_signal_seq();
-        notify_http_poller_signal();
-        let after = current_http_poller_signal_seq();
+        let runtime = crate::net::runtime::default_runtime();
+        let before = current_http_poller_signal_seq(runtime);
+        notify_http_poller_signal(runtime);
+        let after = current_http_poller_signal_seq(runtime);
         assert!(after > before);
     }
 

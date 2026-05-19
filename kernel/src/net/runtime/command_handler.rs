@@ -90,7 +90,7 @@ impl RuntimeCommandHandler {
                     rtt_us,
                 },
             ) => {
-                crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
+                crate::net::api::icmp::notify_icmp_echo_reply_in(runtime, source, sequence, rtt_us);
                 EventHandleResult::Success
             }
             // ============================================================
@@ -210,7 +210,7 @@ impl RuntimeCommandHandler {
                 // しかし、runtime-owned TCB テーブルのメンテナンスは実行する
                 tcp_table_in(runtime).tick(runtime);
 
-                crate::net::api::icmp::cleanup_icmp_echo_waiters();
+                crate::net::api::icmp::cleanup_icmp_echo_waiters_in(runtime);
                 crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
                 crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
                 EventHandleResult::Success
@@ -380,7 +380,7 @@ impl RuntimeCommandHandler {
                 },
             ) => {
                 // ICMP応答をFutureレジストリに通知（スタックロック保持版）
-                crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
+                crate::net::api::icmp::notify_icmp_echo_reply_in(runtime, source, sequence, rtt_us);
                 EventHandleResult::Success
             }
             lifecycle_event @ RuntimeCommand::Control(

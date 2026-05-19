@@ -5,7 +5,7 @@
 
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{RuntimeCommand, TransportCommand, enqueue_command_ignore_in};
+use crate::net::runtime::command::{RuntimeCommand, TransportCommand, try_enqueue_command_in};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
@@ -343,12 +343,13 @@ impl Socket {
             inner.accept_waker.wake();
         });
 
-        enqueue_command_ignore_in(
+        try_enqueue_command_in(
             self.runtime,
             RuntimeCommand::Transport(TransportCommand::CloseSocket {
                 socket_id: self.socket_id,
             }),
-        );
+        )
+        .map_err(|_| EndpointError::BufferFull)?;
         Ok(())
     }
 }

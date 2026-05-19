@@ -156,7 +156,9 @@ fn build_response_for_request(
     request: HttpInboundRequest,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    super::TOTAL_REQUESTS.fetch_add(1, Ordering::Relaxed);
+    super::http_runtime_in(runtime)
+        .total_requests
+        .fetch_add(1, Ordering::Relaxed);
 
     if request.method == HttpMethod::Get {
         return build_get_response(runtime, &request, keep_alive);
@@ -181,7 +183,7 @@ fn build_get_response(
         return build_health_response_in(runtime, keep_alive);
     }
     if request.uri_eq("/stats") {
-        return build_stats_response(keep_alive);
+        return build_stats_response(runtime, keep_alive);
     }
     if request.uri_eq("/info") {
         return build_info_response(keep_alive);
@@ -328,11 +330,15 @@ fn build_memory_info_response(keep_alive: bool) -> Result<PacketPayload, HttpRes
     build_json_response("200 OK", &json, keep_alive)
 }
 
-fn build_stats_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let requests = super::TOTAL_REQUESTS.load(Ordering::Relaxed);
-    let bytes_rx = super::BYTES_RX.load(Ordering::Relaxed);
-    let bytes_tx = super::BYTES_TX.load(Ordering::Relaxed);
-    let connections = super::ACTIVE_CONNECTIONS.load(Ordering::Acquire);
+fn build_stats_response(
+    runtime: NetRuntimeHandle,
+    keep_alive: bool,
+) -> Result<PacketPayload, HttpResponseBuildError> {
+    let state = super::http_runtime_in(runtime);
+    let requests = state.total_requests.load(Ordering::Relaxed);
+    let bytes_rx = state.bytes_rx.load(Ordering::Relaxed);
+    let bytes_tx = state.bytes_tx.load(Ordering::Relaxed);
+    let connections = state.active_connections.load(Ordering::Acquire);
 
     let (heap_used, heap_free) = crate::heap::heap_stats();
     let timer_ticks = crate::interrupts::get_timer_ticks();

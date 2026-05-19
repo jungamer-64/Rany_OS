@@ -166,6 +166,7 @@ struct DmaBuffer {
     pub(super) phys_addr: PhysAddr,
     pub(super) device_addr: u64,
     pub(super) size: usize,
+    ref_count: AtomicU64,
     _owner: DmaBufferOwner,
 }
 
@@ -191,6 +192,7 @@ impl DmaBuffer {
             phys_addr: phys,
             device_addr,
             size,
+            ref_count: AtomicU64::new(1),
             _owner: DmaBufferOwner::Kernel {
                 _slice: PoisonLock::new(slice),
             },
@@ -208,6 +210,7 @@ impl DmaBuffer {
             phys_addr: PhysAddr::new(device_addr),
             device_addr,
             size,
+            ref_count: AtomicU64::new(1),
             _owner: DmaBufferOwner::Kapi {
                 _slice: PoisonLock::new(slice),
             },
@@ -322,6 +325,14 @@ unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
     }
 }
 
+unsafe fn pooled_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
+    unsafe {
+        let state = pooled_state_ref(storage);
+        state.buffer.as_ref().add_ref();
+        Some(PacketRefStorage::from_state(*state))
+    }
+}
+
 static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: pooled_data_ptr,
     data_mut_ptr: pooled_data_mut_ptr,
@@ -333,6 +344,7 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: pooled_headroom,
     advance: pooled_advance,
     retreat: pooled_retreat,
+    clone_storage: pooled_clone_storage,
     drop_storage: pooled_drop,
 };
 
@@ -414,12 +426,25 @@ unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE. The
     // DmaBuffer was allocated with Box::leak by the DMA packet constructors and
-    // is reclaimed exactly once when PacketRef drops this storage.
+    // is reclaimed exactly once when the last PacketRef drops this storage.
     unsafe {
         let state = storage.as_state_mut::<DmaPacketState>();
         let buf = state.buf;
-        core::ptr::drop_in_place(state);
-        drop(Box::from_raw(buf.as_ptr()));
+        if buf.as_ref().ref_count.fetch_sub(1, Ordering::Release) == 1 {
+            core::ptr::drop_in_place(state);
+            drop(Box::from_raw(buf.as_ptr()));
+        }
+    }
+}
+
+unsafe fn dma_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
+    unsafe {
+        let state = dma_state_ref(storage);
+        state.buf.as_ref().ref_count.fetch_add(1, Ordering::Relaxed);
+        Some(PacketRefStorage::from_state(DmaPacketState {
+            buf: state.buf,
+            window: state.window,
+        }))
     }
 }
 
@@ -434,6 +459,7 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: dma_headroom,
     advance: dma_advance,
     retreat: dma_retreat,
+    clone_storage: dma_clone_storage,
     drop_storage: dma_drop,
 };
 
@@ -520,6 +546,11 @@ unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool 
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
+    unsafe { Some(PacketRefStorage::from_state(*borrowed_state_ref(storage))) }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
 static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: borrowed_data_ptr,
     data_mut_ptr: borrowed_data_mut_ptr,
@@ -531,6 +562,7 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: borrowed_headroom,
     advance: borrowed_advance,
     retreat: borrowed_retreat,
+    clone_storage: borrowed_clone_storage,
     drop_storage: borrowed_drop,
 };
 

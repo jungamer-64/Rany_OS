@@ -15,6 +15,8 @@
 // Building block: Out-of-order queue implementation
 
 use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_before};
+use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::transport::tcp_runtime_in;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -30,9 +32,6 @@ const MAX_OOO_CONNECTIONS: usize = 128;
 /// 全接続での最大合計OOOセグメント数 (Mempool 4096 の 1/8)
 /// これにより、攻撃者がOOOセグメントでMempoolを使い果たすことを防ぐ。
 const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
-
-/// 現在のグローバルなOOOセグメント合計数
-static GLOBAL_OOO_COUNT: AtomicUsize = AtomicUsize::new(0);
 
 /// 接続ごとのOOOキュー
 struct ConnectionOooQueue {
@@ -51,7 +50,7 @@ impl ConnectionOooQueue {
     }
 
     /// セグメントを挿入
-    fn insert(&mut self, seq: u32, data: PacketPayload, fin: bool) {
+    fn insert(&mut self, total_count: &AtomicUsize, seq: u32, data: PacketPayload, fin: bool) {
         if fin {
             let seg_end = seq.wrapping_add(data.total_len() as u32);
             self.fin_seq = Some(seg_end);
@@ -68,14 +67,15 @@ impl ConnectionOooQueue {
             let existing_seq = *s;
             let existing_end = existing_seq.wrapping_add(p.total_len() as u32);
 
-            // Check if [seq, fragment_end) overlaps with [existing_seq, existing_end)
-            let overlap = !seq_before(existing_end, seq) && !seq_before(fragment_end, existing_seq);
+            // Check if [seq, fragment_end) overlaps with [existing_seq, existing_end).
+            // Adjacent half-open ranges share no bytes and must remain queueable.
+            let overlap = seq_before(seq, existing_end) && seq_before(existing_seq, fragment_end);
             if overlap {
                 log::warn!(
                     "[NET-TCP] Overlapping OOO segment detected at seq {}, dropping entire OOO queue for connection",
                     seq
                 );
-                self.clear(); // Drop everything to be safe
+                self.clear(total_count); // Drop everything to be safe
                 return;
             }
         }
@@ -85,7 +85,7 @@ impl ConnectionOooQueue {
             if let Some(&(last_seq, _)) = self.segments.last() {
                 if seq_before(seq, last_seq) {
                     self.segments.pop();
-                    GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                    total_count.fetch_sub(1, Ordering::Relaxed);
                 } else {
                     return; // 新しいセグメントがさらに遠いので破棄
                 }
@@ -93,7 +93,7 @@ impl ConnectionOooQueue {
         }
 
         // グローバル制限チェック
-        if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
+        if total_count.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
             return;
         }
 
@@ -104,11 +104,11 @@ impl ConnectionOooQueue {
             .position(|(s, _)| seq_before(seq, *s))
             .unwrap_or(self.segments.len());
         self.segments.insert(pos, (seq, data));
-        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+        total_count.fetch_add(1, Ordering::Relaxed);
     }
 
     /// rcv_nxtより前のセグメントを削除、または部分的な重複をトリム
-    fn prune_outdated(&mut self, rcv_nxt: u32) {
+    fn prune_outdated(&mut self, total_count: &AtomicUsize, rcv_nxt: u32) {
         let mut to_reinsert = Vec::new();
         let mut i = 0;
 
@@ -127,15 +127,15 @@ impl ConnectionOooQueue {
                         overlap,
                         seg_end.wrapping_sub(rcv_nxt) as usize,
                     ) else {
-                        GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                        total_count.fetch_sub(1, Ordering::Relaxed);
                         continue;
                     };
                     to_reinsert.push((rcv_nxt, trimmed));
-                    // GLOBAL_OOO_COUNT remains the same because this segment is
+                    // total_count remains the same because this segment is
                     // essentially replaced by a trimmed version.
                 } else {
                     // 完全に受信済み、または重複部分のみだった
-                    GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                    total_count.fetch_sub(1, Ordering::Relaxed);
                 }
                 // Don't increment i, next element shifted here
             } else {
@@ -148,7 +148,7 @@ impl ConnectionOooQueue {
             if self.segments.iter().any(|(s, _)| *s == seq) {
                 // If it already exists (e.g. from a concurrent process or overlap),
                 // just drop the trimmed version.
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                total_count.fetch_sub(1, Ordering::Relaxed);
                 continue;
             }
 
@@ -163,11 +163,16 @@ impl ConnectionOooQueue {
     }
 
     /// rcv_nxtから連続するデータをドレイン
-    fn drain_contiguous_with<F>(&mut self, mut rcv_nxt: u32, mut f: F) -> (u32, bool)
+    fn drain_contiguous_with<F>(
+        &mut self,
+        total_count: &AtomicUsize,
+        mut rcv_nxt: u32,
+        mut f: F,
+    ) -> (u32, bool)
     where
         F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
     {
-        self.prune_outdated(rcv_nxt);
+        self.prune_outdated(total_count, rcv_nxt);
         let mut fin_encountered = false;
 
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
@@ -176,7 +181,7 @@ impl ConnectionOooQueue {
             let pos = self.segments.iter().position(|(s, _)| *s == rcv_nxt);
             if let Some(i) = pos {
                 let (_, payload) = self.segments.remove(i);
-                GLOBAL_OOO_COUNT.fetch_sub(1, Ordering::Relaxed);
+                total_count.fetch_sub(1, Ordering::Relaxed);
                 let payload_len = payload.total_len();
                 let (pushed, remainder) = f(rcv_nxt, payload);
                 let pushed = pushed.min(payload_len);
@@ -192,7 +197,7 @@ impl ConnectionOooQueue {
                             .position(|(s, _)| seq_before(rcv_nxt, *s))
                             .unwrap_or(self.segments.len());
                         self.segments.insert(pos, (rcv_nxt, remainder));
-                        GLOBAL_OOO_COUNT.fetch_add(1, Ordering::Relaxed);
+                        total_count.fetch_add(1, Ordering::Relaxed);
                     }
                     break;
                 }
@@ -204,7 +209,7 @@ impl ConnectionOooQueue {
                         break;
                     }
                 }
-                self.prune_outdated(rcv_nxt);
+                self.prune_outdated(total_count, rcv_nxt);
             } else {
                 if let Some(fs) = self.fin_seq {
                     if fs == rcv_nxt {
@@ -221,11 +226,11 @@ impl ConnectionOooQueue {
         self.segments.is_empty() && self.fin_seq.is_none()
     }
 
-    fn clear(&mut self) {
+    fn clear(&mut self, total_count: &AtomicUsize) {
         let count = self.segments.len();
         self.segments.clear();
         self.fin_seq = None;
-        GLOBAL_OOO_COUNT.fetch_sub(count, Ordering::Relaxed);
+        total_count.fetch_sub(count, Ordering::Relaxed);
     }
 }
 
@@ -242,27 +247,39 @@ fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
     (conn_key_hash(local, remote) as usize) & OOO_SHARD_MASK
 }
 
-/// シャード化されたグローバルOOOキューマップ
-static OOO_SHARDS: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARD_COUNT] = {
-    const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> = PoisonLock::new(None);
-    [EMPTY; OOO_SHARD_COUNT]
-};
+pub(crate) struct OooRuntimeState {
+    total_count: AtomicUsize,
+    shards: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARD_COUNT],
+}
 
-/// OOOキューを初期化
-pub fn init_ooo_queues() {
-    GLOBAL_OOO_COUNT.store(0, Ordering::SeqCst);
-    for shard in &OOO_SHARDS {
-        match shard.lock() {
-            Ok(mut g) => {
-                *g = Some(BTreeMap::new());
+impl OooRuntimeState {
+    pub(crate) const fn new() -> Self {
+        const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> =
+            PoisonLock::new(None);
+        Self {
+            total_count: AtomicUsize::new(0),
+            shards: [EMPTY; OOO_SHARD_COUNT],
+        }
+    }
+
+    fn reset(&self) {
+        self.total_count.store(0, Ordering::SeqCst);
+        for shard in &self.shards {
+            if let Ok(mut guard) = shard.lock() {
+                *guard = Some(BTreeMap::new());
             }
-            Err(_) => {}
         }
     }
 }
 
+/// OOOキューを初期化
+pub fn init_ooo_queues_in(runtime: NetRuntimeHandle) {
+    tcp_runtime_in(runtime).ooo().reset();
+}
+
 /// OOOセグメントを挿入
 pub fn insert_ooo_segment(
+    runtime: NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
@@ -274,12 +291,13 @@ pub fn insert_ooo_segment(
     }
 
     // まずグローバル上限チェック
-    if GLOBAL_OOO_COUNT.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
+    let state = tcp_runtime_in(runtime).ooo();
+    if state.total_count.load(Ordering::Relaxed) >= GLOBAL_MAX_OOO_SEGMENTS {
         return;
     }
 
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
+    let Ok(mut guard) = state.shards[idx].lock() else {
         return;
     };
     let queues = guard.get_or_insert_with(BTreeMap::new);
@@ -294,12 +312,13 @@ pub fn insert_ooo_segment(
         .entry((local, remote))
         .or_insert_with(ConnectionOooQueue::new);
 
-    conn_queue.insert(seq, data, fin);
+    conn_queue.insert(&state.total_count, seq, data, fin);
 }
 
 /// OOOキューから連続データをクロージャにプッシュしてドレイン
 /// 戻り値: (新rcv_nxt, fin_encountered)
 pub fn drain_ooo_contiguous<F>(
+    runtime: NetRuntimeHandle,
     local: EndpointAddr,
     remote: EndpointAddr,
     mut rcv_nxt: u32,
@@ -308,8 +327,9 @@ pub fn drain_ooo_contiguous<F>(
 where
     F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
 {
+    let state = tcp_runtime_in(runtime).ooo();
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
+    let Ok(mut guard) = state.shards[idx].lock() else {
         return (rcv_nxt, false);
     };
     let Some(queues) = guard.as_mut() else {
@@ -317,7 +337,7 @@ where
     };
 
     if let Some(conn_queue) = queues.get_mut(&(local, remote)) {
-        let (new_rcv_nxt, fin) = conn_queue.drain_contiguous_with(rcv_nxt, f);
+        let (new_rcv_nxt, fin) = conn_queue.drain_contiguous_with(&state.total_count, rcv_nxt, f);
         rcv_nxt = new_rcv_nxt;
         // 空になったキューを削除
         if conn_queue.is_empty() {
@@ -330,14 +350,15 @@ where
 }
 
 /// 接続のOOOキューを削除
-pub fn remove_ooo_queue(local: EndpointAddr, remote: EndpointAddr) {
+pub fn remove_ooo_queue(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
+    let state = tcp_runtime_in(runtime).ooo();
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = OOO_SHARDS[idx].lock() else {
+    let Ok(mut guard) = state.shards[idx].lock() else {
         return;
     };
     if let Some(queues) = guard.as_mut() {
         if let Some(mut conn_queue) = queues.remove(&(local, remote)) {
-            conn_queue.clear();
+            conn_queue.clear(&state.total_count);
         }
     }
 }
@@ -348,9 +369,14 @@ pub fn remove_ooo_queue(local: EndpointAddr, remote: EndpointAddr) {
 /// OOOセグメントが存在する場合、ファストパスでは正しい順序
 /// のドレインができないため、スローパスへフォールバックする。
 #[inline]
-pub fn has_ooo_segments(local: EndpointAddr, remote: EndpointAddr) -> bool {
+pub fn has_ooo_segments(
+    runtime: NetRuntimeHandle,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) -> bool {
+    let state = tcp_runtime_in(runtime).ooo();
     let idx = ooo_shard_index(&local, &remote);
-    let Ok(guard) = OOO_SHARDS[idx].lock() else {
+    let Ok(guard) = state.shards[idx].lock() else {
         return false; // ロック取得失敗 → 安全側でfalse
     };
     guard

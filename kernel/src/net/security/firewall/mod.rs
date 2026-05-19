@@ -34,18 +34,26 @@ pub use rules::{
 };
 pub use stats::FirewallStats;
 
+use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 
 extern crate alloc;
 
-// ============================================================================
-// グローバルインスタンス
-// ============================================================================
+pub(crate) struct FirewallRuntimeState {
+    engine: PoisonLock<FirewallEngine>,
+}
 
-/// グローバルファイアウォールエンジン
-///
-/// PoisonLock による排他制御で、パニック時もデッドロックしない。
-static FIREWALL: PoisonLock<FirewallEngine> = PoisonLock::new(FirewallEngine::new_const());
+impl FirewallRuntimeState {
+    pub(crate) const fn new() -> Self {
+        Self {
+            engine: PoisonLock::new(FirewallEngine::new_const()),
+        }
+    }
+}
+
+fn firewall_in(runtime: NetRuntimeHandle) -> &'static FirewallRuntimeState {
+    &runtime.context().firewall
+}
 
 /// Ingress パケットをファイアウォールルールに照合する
 ///
@@ -60,7 +68,8 @@ static FIREWALL: PoisonLock<FirewallEngine> = PoisonLock::new(FirewallEngine::ne
 /// ## 戻り値
 /// - `true`: パケットを許可
 /// - `false`: パケットを拒否（ドロップ）
-pub fn check_ingress(
+pub fn check_ingress_in(
+    runtime: NetRuntimeHandle,
     src_ip: impl Into<IpAddress>,
     dst_ip: impl Into<IpAddress>,
     protocol: u8,
@@ -70,7 +79,7 @@ pub fn check_ingress(
 ) -> bool {
     let src_ip = src_ip.into();
     let dst_ip = dst_ip.into();
-    match FIREWALL.lock() {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.evaluate_mut(
                 FirewallDirection::Ingress,
@@ -93,7 +102,8 @@ pub fn check_ingress(
 }
 
 /// Egress パケットをファイアウォールルールに照合する
-pub fn check_egress(
+pub fn check_egress_in(
+    runtime: NetRuntimeHandle,
     src_ip: impl Into<IpAddress>,
     dst_ip: impl Into<IpAddress>,
     protocol: u8,
@@ -103,7 +113,7 @@ pub fn check_egress(
 ) -> bool {
     let src_ip = src_ip.into();
     let dst_ip = dst_ip.into();
-    match FIREWALL.lock() {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.evaluate_mut(
                 FirewallDirection::Egress,
@@ -126,16 +136,16 @@ pub fn check_egress(
 ///
 /// ルールは優先度（`priority`）の昇順に自動ソートされる。
 /// 同じ優先度の場合は追加順が維持される。
-pub fn add_rule(rule: FirewallRule) -> Result<RuleId, &'static str> {
-    match FIREWALL.lock() {
+pub fn add_rule_in(runtime: NetRuntimeHandle, rule: FirewallRule) -> Result<RuleId, &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => Ok(fw.add_rule(rule)),
         Err(_) => Err("firewall lock poisoned"),
     }
 }
 
 /// セキュリティ向上のためのデフォルトルールセットを構築する
-pub fn setup_default_firewall() {
-    match FIREWALL.lock() {
+pub fn setup_default_firewall_in(runtime: NetRuntimeHandle) {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             // 全てのルールをクリア（初期化用）
             fw.clear_rules();
@@ -225,16 +235,16 @@ pub fn setup_default_firewall() {
 }
 
 /// ファイアウォールルールを削除する
-pub fn remove_rule(id: RuleId) -> Result<bool, &'static str> {
-    match FIREWALL.lock() {
+pub fn remove_rule_in(runtime: NetRuntimeHandle, id: RuleId) -> Result<bool, &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => Ok(fw.remove_rule(id)),
         Err(_) => Err("firewall lock poisoned"),
     }
 }
 
 /// 全ルールをクリアする
-pub fn clear_rules() -> Result<(), &'static str> {
-    match FIREWALL.lock() {
+pub fn clear_rules_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.clear_rules();
             Ok(())
@@ -244,11 +254,12 @@ pub fn clear_rules() -> Result<(), &'static str> {
 }
 
 /// デフォルトポリシーを設定する
-pub fn set_default_policy(
+pub fn set_default_policy_in(
+    runtime: NetRuntimeHandle,
     direction: FirewallDirection,
     action: FirewallAction,
 ) -> Result<(), &'static str> {
-    match FIREWALL.lock() {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.set_default_policy(direction, action);
             Ok(())
@@ -258,8 +269,8 @@ pub fn set_default_policy(
 }
 
 /// ファイアウォールを有効化する
-pub fn enable() -> Result<(), &'static str> {
-    match FIREWALL.lock() {
+pub fn enable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.set_enabled(true);
             Ok(())
@@ -269,8 +280,8 @@ pub fn enable() -> Result<(), &'static str> {
 }
 
 /// ファイアウォールを無効化する
-pub fn disable() -> Result<(), &'static str> {
-    match FIREWALL.lock() {
+pub fn disable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(mut fw) => {
             fw.set_enabled(false);
             Ok(())
@@ -280,24 +291,27 @@ pub fn disable() -> Result<(), &'static str> {
 }
 
 /// 現在のルール一覧をロック内で参照する
-pub fn with_rules<R>(f: impl FnOnce(&[FirewallRule]) -> R) -> Result<R, &'static str> {
-    match FIREWALL.lock() {
+pub fn with_rules_in<R>(
+    runtime: NetRuntimeHandle,
+    f: impl FnOnce(&[FirewallRule]) -> R,
+) -> Result<R, &'static str> {
+    match firewall_in(runtime).engine.lock() {
         Ok(fw) => Ok(f(fw.rules())),
         Err(_) => Err("firewall lock poisoned"),
     }
 }
 
 /// ファイアウォール統計を取得する
-pub fn get_stats() -> FirewallStats {
-    match FIREWALL.lock() {
+pub fn get_stats_in(runtime: NetRuntimeHandle) -> FirewallStats {
+    match firewall_in(runtime).engine.lock() {
         Ok(fw) => fw.stats(),
         Err(_) => FirewallStats::default(),
     }
 }
 
 /// ファイアウォールが有効かどうかを返す
-pub fn is_enabled() -> bool {
-    match FIREWALL.lock() {
+pub fn is_enabled_in(runtime: NetRuntimeHandle) -> bool {
+    match firewall_in(runtime).engine.lock() {
         Ok(fw) => fw.enabled(),
         Err(_) => false,
     }

@@ -2,6 +2,7 @@
 // kernel/src/net/runtime/context.rs - ランタイム / context
 // ============================================================================
 
+use crate::net::datapath::mempool::Mempool;
 use crate::net::l4::socket::SocketRegistry;
 use crate::net::obs::NetObservability;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
@@ -9,11 +10,14 @@ use crate::net::runtime::command::{CommandReplyRegistry, RuntimeCommandQueue};
 use crate::net::runtime::device::{
     NetDeviceManager, TxCompletionState, TxLeaseState, TxOwnerGroupState,
 };
+use crate::net::runtime::icmp::IcmpRuntimeState;
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::runtime::transport::TransportState;
+use crate::net::security::firewall::FirewallRuntimeState;
 use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
+use crate::net::services::http::server::HttpRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;
 use crate::net::{l2::arp::ArpWaiterRegistry, l3::ndp::NdpWaiterRegistry};
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
@@ -75,6 +79,8 @@ pub struct NetRuntimeContext {
     pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) sockets: SocketRegistry,
     pub(crate) transport: TransportState,
+    pub(crate) firewall: FirewallRuntimeState,
+    pub(crate) icmp: IcmpRuntimeState,
     pub(crate) observability: NetObservability,
     pub(crate) arp_waiters: ArpWaiterRegistry,
     pub(crate) ndp_waiters: NdpWaiterRegistry,
@@ -84,6 +90,7 @@ pub struct NetRuntimeContext {
     pub(crate) tx_owner_groups: PoisonLock<BTreeMap<u64, TxOwnerGroupState>>,
     pub(crate) tx_lease_next_id: AtomicU64,
     pub(crate) tx_leases: PoisonLock<BTreeMap<u64, TxLeaseState>>,
+    pub(crate) packet_pool: spin::Once<Mempool>,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
     pub(crate) dhcp_bound_primary_selected: AtomicBool,
@@ -91,6 +98,7 @@ pub struct NetRuntimeContext {
     pub(crate) bridge: NetBridgeRuntimeState,
     pub(crate) dhcp: DhcpRuntimeState,
     pub(crate) dns: DnsRuntimeState,
+    pub(crate) http: HttpRuntimeState,
     pub(crate) mdns: MdnsRuntimeState,
 }
 
@@ -106,6 +114,8 @@ impl NetRuntimeContext {
             command_task_ready_waiters: WakerQueue::new(),
             sockets: SocketRegistry::new(),
             transport: TransportState::new(),
+            firewall: FirewallRuntimeState::new(),
+            icmp: IcmpRuntimeState::new(),
             observability: NetObservability::new(),
             arp_waiters: ArpWaiterRegistry::new(),
             ndp_waiters: NdpWaiterRegistry::new(),
@@ -115,6 +125,7 @@ impl NetRuntimeContext {
             tx_owner_groups: PoisonLock::new(BTreeMap::new()),
             tx_lease_next_id: AtomicU64::new(1),
             tx_leases: PoisonLock::new(BTreeMap::new()),
+            packet_pool: spin::Once::new(),
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),
             dhcp_bound_primary_selected: AtomicBool::new(false),
@@ -122,6 +133,7 @@ impl NetRuntimeContext {
             bridge: NetBridgeRuntimeState::new(),
             dhcp: DhcpRuntimeState::new(),
             dns: DnsRuntimeState::new(),
+            http: HttpRuntimeState::new(),
             mdns: MdnsRuntimeState::new(),
         }
     }

@@ -7,8 +7,8 @@ use crate::net::l4::socket::{Socket, TcpSocketState};
 use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
-    CommandFuture, CommandReplyPayload, CommandReplyTicket, RuntimeCommand,
-    enqueue_command_ignore_in, new_command_channel_in, send_command_in,
+    CommandFuture, CommandReplyPayload, CommandReplyTicket, RuntimeCommand, new_command_channel_in,
+    send_command_in, try_enqueue_command_in,
 };
 use crate::net::runtime::transport::tcp_table_in;
 use crate::net::types::InterfaceScope;
@@ -70,6 +70,46 @@ fn on_recv_progress(
     if let (Some(local), Some(remote)) = (local, remote) {
         let _ = tcp_table_in(runtime).record_data_consumed(local, remote, len as u32);
     }
+}
+
+fn close_socket_abortively_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    let _ = tcp_table_in(runtime).remove_by_socket_id(socket_id);
+    if let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, socket_id) {
+        let _ = socket.with_inner_mut(|inner| {
+            inner.mark_closed();
+            inner.recv_waker.wake();
+            inner.send_waker.wake();
+            inner.connect_waker.wake();
+            inner.accept_waker.wake();
+        });
+    }
+    let _ = crate::net::l4::socket::unregister_socket_in(runtime, socket_id);
+}
+
+fn try_enqueue_close_socket_in(
+    runtime: NetRuntimeHandle,
+    socket_id: SocketId,
+) -> Result<(), TcpError> {
+    try_enqueue_command_in(
+        runtime,
+        RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
+        ),
+    )
+    .map_err(|_| TcpError::BufferFull)
+}
+
+fn try_enqueue_tcp_data_ready_in(
+    runtime: NetRuntimeHandle,
+    socket_id: SocketId,
+) -> Result<(), TcpError> {
+    try_enqueue_command_in(
+        runtime,
+        RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+        ),
+    )
+    .map_err(|_| TcpError::BufferFull)
 }
 
 fn socket_inner_stats(socket: &Socket) -> TcpStats {
@@ -395,14 +435,7 @@ impl TcpConnection {
             })
             .unwrap_or(Err(TcpError::InvalidState))?;
 
-        enqueue_command_ignore_in(
-            self.runtime,
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::CloseSocket {
-                    socket_id: self.socket.socket_id(),
-                },
-            ),
-        );
+        try_enqueue_close_socket_in(self.runtime, self.socket.socket_id())?;
         Ok(())
     }
 }
@@ -413,14 +446,7 @@ impl Drop for TcpConnection {
             return;
         }
 
-        enqueue_command_ignore_in(
-            self.runtime,
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::CloseSocket {
-                    socket_id: self.socket.socket_id(),
-                },
-            ),
-        );
+        close_socket_abortively_in(self.runtime, self.socket.socket_id());
     }
 }
 
@@ -503,14 +529,7 @@ impl Drop for TcpAcceptor {
             return;
         }
 
-        enqueue_command_ignore_in(
-            self.runtime,
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::CloseSocket {
-                    socket_id: self.socket.socket_id(),
-                },
-            ),
-        );
+        close_socket_abortively_in(self.runtime, self.socket.socket_id());
     }
 }
 
@@ -585,14 +604,7 @@ impl<'a> Future for ConnectTimeoutFuture<'a> {
             .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)));
 
         if matches!(outcome, Poll::Ready(Err(TcpError::Timeout))) {
-            enqueue_command_ignore_in(
-                this.connection.runtime,
-                RuntimeCommand::Transport(
-                    crate::net::runtime::command::TransportCommand::CloseSocket {
-                        socket_id: this.connection.socket.socket_id(),
-                    },
-                ),
-            );
+            close_socket_abortively_in(this.connection.runtime, this.connection.socket.socket_id());
         }
         outcome
     }
@@ -711,30 +723,22 @@ impl<'a> Future for SendPayloadFuture<'a> {
                 .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
 
         match outcome {
-            SendOutcome::Enqueued => {
-                enqueue_command_ignore_in(
-                    this.connection.runtime,
-                    RuntimeCommand::Transport(
-                        crate::net::runtime::command::TransportCommand::TcpDataReady {
-                            socket_id: this.connection.socket.socket_id(),
-                        },
-                    ),
-                );
-                Poll::Ready(Ok(()))
-            }
+            SendOutcome::Enqueued => Poll::Ready(try_enqueue_tcp_data_ready_in(
+                this.connection.runtime,
+                this.connection.socket.socket_id(),
+            )),
             SendOutcome::Pending {
                 payload,
                 has_queued_data,
             } => {
                 if has_queued_data {
-                    enqueue_command_ignore_in(
+                    if let Err(error) = try_enqueue_tcp_data_ready_in(
                         this.connection.runtime,
-                        RuntimeCommand::Transport(
-                            crate::net::runtime::command::TransportCommand::TcpDataReady {
-                                socket_id: this.connection.socket.socket_id(),
-                            },
-                        ),
-                    );
+                        this.connection.socket.socket_id(),
+                    ) {
+                        this.payload = Some(payload);
+                        return Poll::Ready(Err(error));
+                    }
                 }
                 this.payload = Some(payload);
                 Poll::Pending
@@ -774,14 +778,12 @@ impl<'a> Future for DrainTxFuture<'a> {
             return Poll::Ready(Ok(()));
         }
 
-        enqueue_command_ignore_in(
+        if let Err(error) = try_enqueue_tcp_data_ready_in(
             this.connection.runtime,
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TcpDataReady {
-                    socket_id: this.connection.socket.socket_id(),
-                },
-            ),
-        );
+            this.connection.socket.socket_id(),
+        ) {
+            return Poll::Ready(Err(error));
+        }
         Poll::Pending
     }
 }

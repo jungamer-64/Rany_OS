@@ -3,7 +3,8 @@
 // ============================================================================
 
 use super::super::{
-    CipherSuite, ServerPublicKey, TLS_SERVER_NAME_CAPACITY, TlsBytes, TlsState, TlsVersion,
+    CipherSuite, ServerPublicKey, TLS_SERVER_NAME_CAPACITY, TlsBytes, TlsError, TlsResult,
+    TlsState, TlsVersion,
 };
 use crate::net::payload::{append_payload, move_payload_window_owned};
 use crate::net::security::ecdh;
@@ -40,8 +41,8 @@ pub(super) struct RecordProtectionState {
     pub(super) write_key: TlsBytes<32>,
     pub(super) read_iv: TlsBytes<16>,
     pub(super) write_iv: TlsBytes<16>,
-    pub(super) read_seq: u64,
-    pub(super) write_seq: u64,
+    pub(super) read_seq: TlsSeqNo,
+    pub(super) write_seq: TlsSeqNo,
     pub(super) ingress: TlsRecordIngressQueue,
 }
 
@@ -52,10 +53,37 @@ impl Default for RecordProtectionState {
             write_key: TlsBytes::new(),
             read_iv: TlsBytes::new(),
             write_iv: TlsBytes::new(),
-            read_seq: 0,
-            write_seq: 0,
+            read_seq: TlsSeqNo::new(),
+            write_seq: TlsSeqNo::new(),
             ingress: TlsRecordIngressQueue::default(),
         }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(super) struct TlsSeqNo(u64);
+
+impl TlsSeqNo {
+    pub(super) const fn new() -> Self {
+        Self(0)
+    }
+
+    pub(super) fn current(self) -> TlsResult<u64> {
+        if self.0 == u64::MAX {
+            Err(TlsError::SequenceExhausted)
+        } else {
+            Ok(self.0)
+        }
+    }
+
+    pub(super) fn advance(&mut self) -> TlsResult<()> {
+        let current = self.current()?;
+        self.0 = current.checked_add(1).ok_or(TlsError::SequenceExhausted)?;
+        Ok(())
+    }
+
+    pub(super) fn reset(&mut self) {
+        self.0 = 0;
     }
 }
 
@@ -146,8 +174,8 @@ pub(super) struct Tls13State {
     pub(super) hs_read_iv: TlsBytes<16>,
     pub(super) hs_write_key: TlsBytes<32>,
     pub(super) hs_write_iv: TlsBytes<16>,
-    pub(super) hs_read_seq: u64,
-    pub(super) hs_write_seq: u64,
+    pub(super) hs_read_seq: TlsSeqNo,
+    pub(super) hs_write_seq: TlsSeqNo,
     pub(super) pending_key_update_response: bool,
 }
 
@@ -162,8 +190,8 @@ impl Default for Tls13State {
             hs_read_iv: TlsBytes::new(),
             hs_write_key: TlsBytes::new(),
             hs_write_iv: TlsBytes::new(),
-            hs_read_seq: 0,
-            hs_write_seq: 0,
+            hs_read_seq: TlsSeqNo::new(),
+            hs_write_seq: TlsSeqNo::new(),
             pending_key_update_response: false,
         }
     }

@@ -13,6 +13,39 @@ use crate::net::security::tls::crypto::{
 };
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
+const TLS13_MAX_PLAINTEXT_LEN: usize = 16 * 1024;
+const TLS13_MAX_CIPHERTEXT_LEN: usize = TLS13_MAX_PLAINTEXT_LEN + 256;
+
+#[derive(Clone, Copy)]
+struct TlsPlaintextLen(usize);
+
+impl TlsPlaintextLen {
+    fn new(len: usize) -> TlsResult<Self> {
+        (len <= TLS13_MAX_PLAINTEXT_LEN)
+            .then_some(Self(len))
+            .ok_or(TlsError::RecordTooLarge)
+    }
+
+    const fn get(self) -> usize {
+        self.0
+    }
+}
+
+#[derive(Clone, Copy)]
+struct TlsCiphertextLen(usize);
+
+impl TlsCiphertextLen {
+    fn new(len: usize) -> TlsResult<Self> {
+        (len <= TLS13_MAX_CIPHERTEXT_LEN)
+            .then_some(Self(len))
+            .ok_or(TlsError::RecordTooLarge)
+    }
+
+    const fn get(self) -> usize {
+        self.0
+    }
+}
+
 fn constant_time_tag_eq(a: &[u8; 16], b: &[u8; 16]) -> bool {
     let mut diff = 0u8;
     for i in 0..16 {
@@ -143,14 +176,14 @@ impl ExperimentalTlsConnection {
             (
                 &self.tls13.hs_read_key,
                 &self.tls13.hs_read_iv,
-                self.tls13.hs_read_seq,
+                self.tls13.hs_read_seq.current()?,
                 true,
             )
         } else {
             (
                 &self.record.read_key,
                 &self.record.read_iv,
-                self.record.read_seq,
+                self.record.read_seq.current()?,
                 false,
             )
         };
@@ -210,9 +243,9 @@ impl ExperimentalTlsConnection {
         }
 
         if is_handshake {
-            self.tls13.hs_read_seq = self.tls13.hs_read_seq.saturating_add(1);
+            self.tls13.hs_read_seq.advance()?;
         } else {
-            self.record.read_seq = self.record.read_seq.saturating_add(1);
+            self.record.read_seq.advance()?;
         }
         let decrypted = PayloadSpanRef::from_range(payload, body_offset, ciphertext_len)
             .ok_or(TlsError::DecodeError)?;
@@ -236,6 +269,7 @@ impl ExperimentalTlsConnection {
             .ok_or(TlsError::DecodeError)?;
         let content_type = header[0];
         let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+        let record_len = TlsCiphertextLen::new(record_len)?.get();
         let body_offset = record_offset.checked_add(5).ok_or(TlsError::DecodeError)?;
         let body = PayloadSpanRef::from_range(record, body_offset, record_len)
             .ok_or(TlsError::DecodeError)?;
@@ -250,17 +284,13 @@ impl ExperimentalTlsConnection {
                     .ok_or(TlsError::DecodeError)?;
                 match ContentType::from_u8(inner_ct) {
                     Some(ContentType::ApplicationData) => {
-                        if record_offset != 0 || record.total_len() != 5 + record_len {
-                            return Err(TlsError::DecodeError);
-                        }
-                        let owned = crate::net::payload::move_payload_window_owned(
-                            core::mem::take(record),
+                        let owned = crate::net::payload::clone_payload_window_owned(
+                            record,
                             body_offset,
                             inner_len,
                         )
                         .ok_or(TlsError::DecodeError)?;
                         append_payload(plaintext, owned);
-                        return Ok(true);
                     }
                     Some(ContentType::Handshake) => {
                         if self.negotiation.state == TlsState::Established {
@@ -294,6 +324,7 @@ impl ExperimentalTlsConnection {
                 .read_array::<5>(consumed)
                 .ok_or(TlsError::DecodeError)?;
             let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
+            let record_len = TlsCiphertextLen::new(record_len)?.get();
             let total_len = 5usize
                 .checked_add(record_len)
                 .ok_or(TlsError::DecodeError)?;
@@ -316,14 +347,15 @@ impl ExperimentalTlsConnection {
     }
 
     pub(super) fn handle_alert_payload(&mut self, payload: PayloadSpanRef<'_>) -> TlsResult<()> {
-        if payload.total_len() >= 2 {
-            let description = payload.read_u8(1).ok_or(TlsError::DecodeError)?;
-            if description == AlertDescription::CloseNotify as u8 {
-                self.negotiation.state = TlsState::Closed;
-            } else {
-                self.negotiation.state = TlsState::Error;
-                return Err(TlsError::Alert(description));
-            }
+        if payload.total_len() != 2 {
+            return Err(TlsError::DecodeError);
+        }
+        let description = payload.read_u8(1).ok_or(TlsError::DecodeError)?;
+        if description == AlertDescription::CloseNotify as u8 {
+            self.negotiation.state = TlsState::Closed;
+        } else {
+            self.negotiation.state = TlsState::Error;
+            return Err(TlsError::Alert(description));
         }
         Ok(())
     }
@@ -397,6 +429,7 @@ impl ExperimentalTlsConnection {
         inner_plaintext: PacketPayload,
         is_handshake: bool,
     ) -> TlsResult<PacketPayload> {
+        let plaintext_len = TlsPlaintextLen::new(inner_plaintext.total_len())?.get();
         let cipher = self
             .negotiation
             .negotiated_cipher
@@ -405,13 +438,13 @@ impl ExperimentalTlsConnection {
             (
                 &self.tls13.hs_write_key,
                 &self.tls13.hs_write_iv,
-                self.tls13.hs_write_seq,
+                self.tls13.hs_write_seq.current()?,
             )
         } else {
             (
                 &self.record.write_key,
                 &self.record.write_iv,
-                self.record.write_seq,
+                self.record.write_seq.current()?,
             )
         };
         if key.is_empty() || iv.len() < 12 {
@@ -425,7 +458,7 @@ impl ExperimentalTlsConnection {
             nonce[4 + i] ^= seq_bytes[i];
         }
 
-        let encrypted_len = inner_plaintext.total_len() + 16;
+        let encrypted_len = TlsCiphertextLen::new(plaintext_len + 16)?.get();
         let aad = Self::tls13_record_aad(encrypted_len);
         let (ciphertext, auth_tag) = Self::encrypt_aead_payload_owned(
             cipher,
@@ -436,9 +469,9 @@ impl ExperimentalTlsConnection {
         )?;
 
         if is_handshake {
-            self.tls13.hs_write_seq += 1;
+            self.tls13.hs_write_seq.advance()?;
         } else {
-            self.record.write_seq += 1;
+            self.record.write_seq.advance()?;
         }
 
         let encrypted_len_bytes = (encrypted_len as u16).to_be_bytes();
@@ -587,7 +620,7 @@ impl ExperimentalTlsConnection {
         }
         Self::set_tls_bytes(&mut self.record.read_key, &new_read_key[..key_len])?;
         Self::set_tls_bytes(&mut self.record.read_iv, &new_read_iv)?;
-        self.record.read_seq = 0;
+        self.record.read_seq.reset();
 
         if request_update == 1 {
             self.tls13.pending_key_update_response = true;
@@ -622,8 +655,8 @@ impl ExperimentalTlsConnection {
             return None;
         }
         let inner = [
+            1,
             AlertDescription::CloseNotify as u8,
-            0,
             ContentType::Alert as u8,
         ];
         let record = self.tls13_encrypt_record(&inner, false).ok()?;

@@ -1123,7 +1123,7 @@ impl DhcpV6Client {
                 }
 
                 // Apply IPv6 lease info to the running NetworkStack (fire-and-forget via event queue)
-                crate::net::runtime::command::enqueue_command_ignore_in(
+                let _ = crate::net::runtime::command::try_enqueue_command_in(
                     self.runtime,
                     crate::net::runtime::command::RuntimeCommand::Control(
                         crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {
@@ -1198,7 +1198,7 @@ impl DhcpV6Client {
                 *sd = Some(src);
             }
 
-            crate::net::runtime::command::enqueue_command_ignore_in(
+            let _ = crate::net::runtime::command::try_enqueue_command_in(
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease {

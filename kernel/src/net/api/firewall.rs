@@ -25,10 +25,10 @@ use crate::net::security::firewall::{
 extern crate alloc;
 
 /// ファイアウォールの状態を文字列化する（イベントハンドラ内部用）
-pub(crate) fn firewall_status_text() -> String {
-    let enabled = firewall::is_enabled();
-    let stats = firewall::get_stats();
-    let rule_count = firewall::with_rules(|rules| rules.len()).unwrap_or_default();
+pub(crate) fn firewall_status_text_in(runtime: NetRuntimeHandle) -> String {
+    let enabled = firewall::is_enabled_in(runtime);
+    let stats = firewall::get_stats_in(runtime);
+    let rule_count = firewall::with_rules_in(runtime, |rules| rules.len()).unwrap_or_default();
     format!(
         "Firewall: {}\nRules: {}\nStats: {}",
         if enabled { "ENABLED" } else { "DISABLED" },
@@ -38,8 +38,8 @@ pub(crate) fn firewall_status_text() -> String {
 }
 
 /// ルール一覧を文字列化する（イベントハンドラ内部用）
-pub(crate) fn firewall_list_rules_text() -> String {
-    match firewall::with_rules(|rules| {
+pub(crate) fn firewall_list_rules_text_in(runtime: NetRuntimeHandle) -> String {
+    match firewall::with_rules_in(runtime, |rules| {
         if rules.is_empty() {
             return String::from("(no rules)");
         }
@@ -55,8 +55,8 @@ pub(crate) fn firewall_list_rules_text() -> String {
 }
 
 /// 統計情報を文字列化する（イベントハンドラ内部用）
-pub(crate) fn firewall_stats_text() -> String {
-    format!("{}", firewall::get_stats())
+pub(crate) fn firewall_stats_text_in(runtime: NetRuntimeHandle) -> String {
+    format!("{}", firewall::get_stats_in(runtime))
 }
 
 pub async fn firewall_enable_in(runtime: NetRuntimeHandle) -> Result<(), &'static str> {

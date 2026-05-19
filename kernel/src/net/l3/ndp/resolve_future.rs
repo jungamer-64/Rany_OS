@@ -15,7 +15,7 @@ use core::task::{Context, Poll, Waker};
 use super::Ipv6Address;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::enqueue_command_ignore_in;
+use crate::net::runtime::command::try_enqueue_command_in;
 use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
@@ -257,7 +257,7 @@ impl Future for NdpResolveFuture {
         }
 
         if !self.request_sent || self.poll_count % 10 == 0 {
-            enqueue_command_ignore_in(
+            let _ = try_enqueue_command_in(
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::NdpResolveRequest {

@@ -713,6 +713,14 @@ pub(crate) fn command_queue_in(runtime: NetRuntimeHandle) -> &'static RuntimeCom
     &runtime_context_for(runtime).command_queue
 }
 
+#[inline]
+pub(crate) fn try_enqueue_command_in(
+    runtime: NetRuntimeHandle,
+    command: RuntimeCommand,
+) -> Result<(), RuntimeCommand> {
+    command_queue_in(runtime).send_owned(command)
+}
+
 pub(crate) fn mark_command_task_running_in(runtime: NetRuntimeHandle) {
     let context = runtime_context_for(runtime);
     let was_running = context.command_task_running.swap(true, Ordering::AcqRel);
@@ -814,6 +822,10 @@ impl CommandDispatch {
             runtime,
             enqueue: None,
         }
+    }
+
+    pub(crate) const fn runtime(&self) -> NetRuntimeHandle {
+        self.runtime
     }
 
     pub(crate) fn poll<F>(

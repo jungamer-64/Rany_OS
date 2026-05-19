@@ -8,8 +8,7 @@ extern crate alloc;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::CommandDispatch;
-use crate::sync::{AtomicWaker, PoisonLock};
-use alloc::collections::BTreeMap;
+pub use crate::net::runtime::icmp::IcmpEchoResult;
 use core::future::Future;
 use core::pin::Pin;
 use core::task::{Context, Poll};
@@ -22,7 +21,7 @@ use core::task::{Context, Poll};
 /// エグゼキュータが起動しているasyncコンテキストから呼び出す。
 /// 応答を待機するには `ping_in(runtime, ...)` または `IcmpEchoFuture` を使用すること。
 pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16) -> bool {
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Control(
             crate::net::runtime::command::ControlCommand::IcmpEchoRequest {
@@ -34,109 +33,17 @@ pub fn enqueue_icmp_echo_in(runtime: NetRuntimeHandle, target: [u8; 4], seq: u16
     true
 }
 
-/// ICMP Echo 応答の結果
-#[derive(Debug, Clone, Copy)]
-pub struct IcmpEchoResult {
-    pub source: [u8; 4],
-    pub sequence: u16,
-    pub rtt_us: u64,
+pub(crate) fn notify_icmp_echo_reply_in(
+    runtime: NetRuntimeHandle,
+    source: [u8; 4],
+    sequence: u16,
+    rtt_us: u64,
+) {
+    crate::net::runtime::icmp::icmp_runtime_in(runtime).notify_echo_reply(source, sequence, rtt_us);
 }
 
-struct PingWaiter {
-    waker: AtomicWaker,
-    result: Option<IcmpEchoResult>,
-    start_tick: u64,
-    timeout_us: u64,
-}
-
-struct IcmpEchoRegistry {
-    waiters: BTreeMap<(u32, u16), PingWaiter>,
-}
-
-impl IcmpEchoRegistry {
-    const fn new() -> Self {
-        Self {
-            waiters: BTreeMap::new(),
-        }
-    }
-
-    fn register(&mut self, target: [u8; 4], sequence: u16, timeout_us: u64) {
-        let key = (u32::from_be_bytes(target), sequence);
-        let now = crate::task::current_tick();
-        self.waiters.insert(
-            key,
-            PingWaiter {
-                waker: AtomicWaker::new(),
-                result: None,
-                start_tick: now,
-                timeout_us,
-            },
-        );
-    }
-
-    fn set_waker(&mut self, target: [u8; 4], sequence: u16, waker: &core::task::Waker) {
-        let key = (u32::from_be_bytes(target), sequence);
-        if let Some(entry) = self.waiters.get_mut(&key) {
-            entry.waker.register(waker);
-        }
-    }
-
-    fn notify_reply(&mut self, source: [u8; 4], sequence: u16, rtt_us: u64) {
-        let key = (u32::from_be_bytes(source), sequence);
-        if let Some(entry) = self.waiters.get_mut(&key) {
-            entry.result = Some(IcmpEchoResult {
-                source,
-                sequence,
-                rtt_us,
-            });
-            entry.waker.wake();
-        }
-    }
-
-    fn poll_result(
-        &mut self,
-        target: [u8; 4],
-        sequence: u16,
-    ) -> Poll<Result<IcmpEchoResult, EndpointError>> {
-        let key = (u32::from_be_bytes(target), sequence);
-        if let Some(entry) = self.waiters.get(&key) {
-            if let Some(result) = entry.result {
-                self.waiters.remove(&key);
-                return Poll::Ready(Ok(result));
-            }
-            let now = crate::task::current_tick();
-            let elapsed = now.saturating_sub(entry.start_tick);
-            if elapsed > entry.timeout_us {
-                self.waiters.remove(&key);
-                return Poll::Ready(Err(EndpointError::Timeout));
-            }
-            Poll::Pending
-        } else {
-            Poll::Ready(Err(EndpointError::NotFound))
-        }
-    }
-
-    fn cleanup_expired(&mut self) {
-        let now = crate::task::current_tick();
-        self.waiters.retain(|_, entry| {
-            let elapsed = now.saturating_sub(entry.start_tick);
-            elapsed <= entry.timeout_us
-        });
-    }
-}
-
-static ICMP_ECHO_REGISTRY: PoisonLock<IcmpEchoRegistry> = PoisonLock::new(IcmpEchoRegistry::new());
-
-pub(crate) fn notify_icmp_echo_reply(source: [u8; 4], sequence: u16, rtt_us: u64) {
-    if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
-        registry.notify_reply(source, sequence, rtt_us);
-    }
-}
-
-pub(crate) fn cleanup_icmp_echo_waiters() {
-    if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
-        registry.cleanup_expired();
-    }
+pub(crate) fn cleanup_icmp_echo_waiters_in(runtime: NetRuntimeHandle) {
+    crate::net::runtime::icmp::icmp_runtime_in(runtime).cleanup_echo_waiters();
 }
 
 pub struct IcmpEchoFuture {
@@ -184,8 +91,10 @@ impl Future for IcmpEchoFuture {
         let this = self.get_mut();
 
         if !this.registered {
-            if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
-                registry.register(this.target, this.sequence, this.timeout_us);
+            if let Err(err) = crate::net::runtime::icmp::icmp_runtime_in(this.dispatch.runtime())
+                .register_echo_waiter(this.target, this.sequence, this.timeout_us)
+            {
+                return Poll::Ready(Err(err));
             }
             this.registered = true;
         }
@@ -205,12 +114,11 @@ impl Future for IcmpEchoFuture {
             }
         }
 
-        if let Ok(mut registry) = ICMP_ECHO_REGISTRY.lock() {
-            registry.set_waker(this.target, this.sequence, cx.waker());
-            registry.poll_result(this.target, this.sequence)
-        } else {
-            Poll::Ready(Err(EndpointError::Internal))
-        }
+        crate::net::runtime::icmp::icmp_runtime_in(this.dispatch.runtime()).poll_echo_result(
+            this.target,
+            this.sequence,
+            cx.waker(),
+        )
     }
 }
 

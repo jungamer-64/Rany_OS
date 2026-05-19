@@ -67,7 +67,8 @@ impl NetworkStack {
         }
 
         // Firewall egress gate for ICMP.
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1,
@@ -168,7 +169,8 @@ impl NetworkStack {
         if !self.check_icmp_rate_limit(dst_ip, current_time) {
             return;
         }
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1,
@@ -226,7 +228,8 @@ impl NetworkStack {
         }
 
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
@@ -426,7 +429,8 @@ impl NetworkStack {
         }
 
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             self.config().ipv4.address.octets(),
             dst_ip.octets(),
             1, // ICMP
@@ -910,7 +914,7 @@ impl NetworkStack {
         };
 
         // Build directly into a packet-backed frame.
-        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
+        if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet_in(self.runtime) {
             // 新規割り当てのPacketRefはlen=0なので、書き込み前にcapacityまで拡張する
             let cap = packet.capacity();
             if !packet.set_len(cap) {

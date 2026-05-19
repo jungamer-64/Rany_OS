@@ -178,37 +178,48 @@ impl RuntimeCommandHandler {
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallEnable { reply },
-            ) => finish_command(reply, crate::net::security::firewall::enable()),
+            ) => finish_command(reply, crate::net::security::firewall::enable_in(runtime)),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallDisable { reply },
-            ) => finish_command(reply, crate::net::security::firewall::disable()),
+            ) => finish_command(reply, crate::net::security::firewall::disable_in(runtime)),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStatus { reply },
-            ) => finish_command(reply, crate::net::api::firewall::firewall_status_text()),
+            ) => finish_command(
+                reply,
+                crate::net::api::firewall::firewall_status_text_in(runtime),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallListRules { reply },
-            ) => finish_command(reply, crate::net::api::firewall::firewall_list_rules_text()),
+            ) => finish_command(
+                reply,
+                crate::net::api::firewall::firewall_list_rules_text_in(runtime),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallStats { reply },
-            ) => finish_command(reply, crate::net::api::firewall::firewall_stats_text()),
+            ) => finish_command(
+                reply,
+                crate::net::api::firewall::firewall_stats_text_in(runtime),
+            ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallAddRule { rule, reply },
             ) => finish_command(
                 reply,
-                crate::net::security::firewall::add_rule(rule).map_err(alloc::string::String::from),
+                crate::net::security::firewall::add_rule_in(runtime, rule)
+                    .map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallRemoveRule { id, reply },
             ) => finish_command(
                 reply,
-                crate::net::security::firewall::remove_rule(id)
+                crate::net::security::firewall::remove_rule_in(runtime, id)
                     .map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallClearRules { reply },
             ) => finish_command(
                 reply,
-                crate::net::security::firewall::clear_rules().map_err(alloc::string::String::from),
+                crate::net::security::firewall::clear_rules_in(runtime)
+                    .map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::FirewallSetDefaultPolicy {
@@ -218,7 +229,7 @@ impl RuntimeCommandHandler {
                 },
             ) => finish_command(
                 reply,
-                crate::net::security::firewall::set_default_policy(direction, action)
+                crate::net::security::firewall::set_default_policy_in(runtime, direction, action)
                     .map_err(alloc::string::String::from),
             ),
             RuntimeCommand::Control(

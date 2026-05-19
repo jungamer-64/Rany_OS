@@ -326,7 +326,7 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     }
 
     compute_and_set_flow_hash(&mut packet);
-    crate::net::runtime::command::enqueue_command_ignore_in(
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Ingress(
             crate::net::runtime::command::IngressCommand::Packet {

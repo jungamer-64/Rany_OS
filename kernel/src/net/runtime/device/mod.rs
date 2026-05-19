@@ -11,9 +11,9 @@ extern crate alloc;
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
 use crate::net::l3::ipv4::Ipv4Config;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::context::NetRuntimeContext;
 #[cfg(test)]
 use crate::net::runtime::context::default_runtime_context;
+use crate::net::runtime::context::{self, NetRuntimeContext, NetRuntimeId};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::per_cpu::in_interrupt_context;
@@ -335,13 +335,13 @@ impl NetTxQueue {
         }
     }
 
-    fn push(&self, request: TxRequest) -> bool {
+    fn push(&self, request: TxRequest) -> Result<(), TxRequest> {
         match self.queue.push(request) {
             Ok(()) => {
                 self.waker.wake();
-                true
+                Ok(())
             }
-            Err(_) => false,
+            Err(request) => Err(request),
         }
     }
 
@@ -367,6 +367,57 @@ impl NetTxQueue {
 
     pub fn wait(&self) -> NetTxQueueWaitFuture<'_> {
         NetTxQueueWaitFuture { queue: self }
+    }
+}
+
+pub(crate) struct RegisteredTx {
+    runtime: NetRuntimeHandle,
+    request: Option<TxRequest>,
+    rollback_reason: TxCompletionResult,
+}
+
+impl RegisteredTx {
+    fn new(runtime: NetRuntimeHandle, request: TxRequest) -> Self {
+        Self {
+            runtime,
+            request: Some(request),
+            rollback_reason: Err("device TX request was not queued"),
+        }
+    }
+
+    fn commit_to_queue(mut self, queue: &NetTxQueue) -> Result<(), Self> {
+        let request = self
+            .request
+            .take()
+            .expect("registered TX request missing before commit");
+        match queue.push(request) {
+            Ok(()) => {
+                core::mem::forget(self);
+                Ok(())
+            }
+            Err(request) => {
+                self.rollback_reason = Err("device TX queue full");
+                self.request = Some(request);
+                Err(self)
+            }
+        }
+    }
+
+    fn into_request(mut self) -> TxRequest {
+        let request = self
+            .request
+            .take()
+            .expect("registered TX request missing before handoff");
+        core::mem::forget(self);
+        request
+    }
+}
+
+impl Drop for RegisteredTx {
+    fn drop(&mut self) {
+        if let Some(request) = self.request.take() {
+            let _ = complete_tx_lease_in(self.runtime, request.lease_id, self.rollback_reason);
+        }
     }
 }
 
@@ -522,7 +573,7 @@ pub(crate) fn register_tx_lease_in(
     keepalive: Vec<PacketRef>,
     descriptors: Vec<NetTxSegment>,
     completion_id: Option<u64>,
-) -> Option<TxRequest> {
+) -> Option<RegisteredTx> {
     if descriptors.is_empty() {
         return None;
     }
@@ -536,22 +587,29 @@ pub(crate) fn register_tx_lease_in(
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .insert(lease_id, state);
-    Some(TxRequest {
-        lease_id,
-        descriptors,
-        meta: NetTxMeta::default(),
-    })
+    Some(RegisteredTx::new(
+        runtime,
+        TxRequest {
+            lease_id,
+            descriptors,
+            meta: NetTxMeta::default(),
+        },
+    ))
 }
 
 fn register_payload_tx_request_in(
     runtime: NetRuntimeHandle,
     payload: PacketPayload,
     meta: NetTxMeta,
-) -> Option<TxRequest> {
+) -> Option<RegisteredTx> {
     let (keepalive, descriptors) = payload_to_keepalive_and_descriptors(payload)?;
-    let mut request = register_tx_lease_in(runtime, keepalive, descriptors, meta.completion_id)?;
+    let mut registered = register_tx_lease_in(runtime, keepalive, descriptors, meta.completion_id)?;
+    let request = registered
+        .request
+        .as_mut()
+        .expect("registered TX request missing before metadata assignment");
     request.meta = meta;
-    Some(request)
+    Some(registered)
 }
 
 pub fn complete_tx_lease_in(
@@ -584,9 +642,41 @@ pub fn complete_tx_lease_in(
     }
 }
 
-fn runtime_context_from_cookie(cookie: NetPortRuntimeCookie) -> &'static NetRuntimeContext {
-    let _ = cookie;
-    unreachable!("runtime cookies must be resolved through RuntimeRegistry")
+#[derive(Clone, Copy)]
+struct RuntimeHandleId {
+    runtime_id: NetRuntimeId,
+}
+
+impl RuntimeHandleId {
+    fn from_context(context: &'static NetRuntimeContext) -> Option<Self> {
+        Some(Self {
+            runtime_id: context.id(),
+        })
+    }
+
+    fn from_cookie(cookie: NetPortRuntimeCookie) -> Option<Self> {
+        let raw = cookie.as_raw();
+        let id = raw.checked_sub(1)?;
+        Some(Self {
+            runtime_id: NetRuntimeId(id as u64),
+        })
+    }
+
+    fn into_cookie(self) -> Option<NetPortRuntimeCookie> {
+        NetPortRuntimeCookie::from_raw(self.runtime_id.0.checked_add(1)? as usize)
+    }
+
+    fn context(self) -> Option<&'static NetRuntimeContext> {
+        context::runtime(self.runtime_id).map(NetRuntimeHandle::context)
+    }
+}
+
+fn runtime_context_from_cookie(
+    cookie: NetPortRuntimeCookie,
+) -> Result<&'static NetRuntimeContext, &'static str> {
+    RuntimeHandleId::from_cookie(cookie)
+        .and_then(RuntimeHandleId::context)
+        .ok_or("network runtime cookie is not registered")
 }
 
 fn runtime_handle_for_port(
@@ -594,7 +684,8 @@ fn runtime_handle_for_port(
     port_id: NetPortId,
 ) -> NetPortRuntimeHandle {
     NetPortRuntimeHandle::new(
-        NetPortRuntimeCookie::from_raw(context.id().0 as usize + 1)
+        RuntimeHandleId::from_context(context)
+            .and_then(RuntimeHandleId::into_cookie)
             .expect("runtime ids are stored as non-zero driver cookies"),
         port_id,
         &NET_PORT_RUNTIME_OPS,
@@ -615,8 +706,9 @@ fn current_if_for_port(
         .ok_or("device port not registered")
 }
 
-fn runtime_alloc_packet(_: NetPortRuntimeCookie, _: NetPortId) -> Option<PacketRef> {
-    crate::net::datapath::mempool::alloc_packet()
+fn runtime_alloc_packet(cookie: NetPortRuntimeCookie, _: NetPortId) -> Option<PacketRef> {
+    let context = runtime_context_from_cookie(cookie).ok()?;
+    crate::net::datapath::mempool::alloc_packet_in(context.handle())
 }
 
 fn runtime_submit_rx(
@@ -625,7 +717,7 @@ fn runtime_submit_rx(
     packet: PacketRef,
     meta: NetRxMeta,
 ) -> Result<(), &'static str> {
-    let context = runtime_context_from_cookie(cookie);
+    let context = runtime_context_from_cookie(cookie)?;
     let if_id = current_if_for_port(context, port_id)?;
     crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
         context.handle(),
@@ -643,7 +735,7 @@ fn runtime_complete_tx_lease(
     lease_id: TxLeaseId,
     result: TxCompletionResult,
 ) -> Result<(), &'static str> {
-    let runtime = runtime_context_from_cookie(cookie).handle();
+    let runtime = runtime_context_from_cookie(cookie)?.handle();
     if complete_tx_lease_in(runtime, lease_id, result) {
         Ok(())
     } else {
@@ -656,7 +748,7 @@ fn runtime_schedule_event(
     port_id: NetPortId,
     event: NetDriverEvent,
 ) -> Result<(), &'static str> {
-    let runtime = runtime_context_from_cookie(cookie).handle();
+    let runtime = runtime_context_from_cookie(cookie)?.handle();
     let queued = if in_interrupt_context() {
         enqueue_event_from_isr_in(runtime, port_id, event)
     } else {
@@ -674,7 +766,7 @@ fn runtime_update_link(
     port_id: NetPortId,
     up: bool,
 ) -> Result<(), &'static str> {
-    let runtime = runtime_context_from_cookie(cookie).handle();
+    let runtime = runtime_context_from_cookie(cookie)?.handle();
     let if_id = current_if_for_port(runtime_context_for(runtime), port_id)?;
     let result = if up {
         manager::set_interface_up_in(runtime, if_id)
@@ -821,10 +913,10 @@ impl NetDeviceHandle {
         meta: NetTxMeta,
     ) -> bool {
         register_payload_tx_request_in(runtime, payload, meta)
-            .is_some_and(|request| self.tx_queue.push(request))
+            .is_some_and(|registered| registered.commit_to_queue(&self.tx_queue).is_ok())
     }
 
-    pub(crate) fn enqueue_tx_request(&self, request: TxRequest) -> bool {
+    pub(crate) fn enqueue_tx_request(&self, request: TxRequest) -> Result<(), TxRequest> {
         self.tx_queue.push(request)
     }
 
@@ -1310,7 +1402,7 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
         return Ok(());
     }
 
-    if let Err(err) = crate::net::datapath::mempool::init_net_mempool(1024) {
+    if let Err(err) = crate::net::datapath::mempool::init_net_mempool_in(runtime, 1024) {
         log::warn!(target: "net::device", "mempool init failed: {}", err);
     }
 
@@ -1719,17 +1811,19 @@ pub fn transmit_packet_in(
         }
         return false;
     };
-    if with_port_handle_in(runtime, resolved_if, |handle| {
+    let queued = with_port_handle_in(runtime, resolved_if, |handle| {
         handle.enqueue_tx_in(runtime, payload, meta)
-    })
-    .unwrap_or(false)
-    {
-        true
-    } else {
-        if let Some(completion_id) = meta.completion_id {
-            let _ = complete_tx_request_in(runtime, completion_id, Err("device TX queue full"));
+    });
+    match queued {
+        Some(true) => true,
+        Some(false) => false,
+        None => {
+            if let Some(completion_id) = meta.completion_id {
+                let _ =
+                    complete_tx_request_in(runtime, completion_id, Err("device handle missing"));
+            }
+            false
         }
-        false
     }
 }
 
@@ -1744,15 +1838,19 @@ pub(crate) fn transmit_registered_tx_request_in(
         let _ = complete_tx_lease_in(runtime, lease_id, Err("network interface unavailable"));
         return false;
     };
-    if with_port_handle_in(runtime, resolved_if, |handle| {
+    let queued = with_port_handle_in(runtime, resolved_if, |handle| {
         handle.enqueue_tx_request(request)
-    })
-    .unwrap_or(false)
-    {
-        true
-    } else {
-        let _ = complete_tx_lease_in(runtime, lease_id, Err("device TX queue full"));
-        false
+    });
+    match queued {
+        Some(Ok(())) => true,
+        Some(Err(request)) => {
+            let _ = complete_tx_lease_in(runtime, request.lease_id, Err("device TX queue full"));
+            false
+        }
+        None => {
+            let _ = complete_tx_lease_in(runtime, lease_id, Err("device handle missing"));
+            false
+        }
     }
 }
 
@@ -2060,6 +2158,14 @@ mod tests {
 
     unsafe fn test_packet_drop(_: &mut kernel_api::resource::net::PacketRefStorage) {}
 
+    unsafe fn test_packet_clone_storage(
+        storage: &kernel_api::resource::net::PacketRefStorage,
+    ) -> Option<kernel_api::resource::net::PacketRefStorage> {
+        Some(unsafe {
+            kernel_api::resource::net::PacketRefStorage::from_state(*test_packet_state(storage))
+        })
+    }
+
     static TEST_PACKET_REF_VTABLE: kernel_api::resource::net::PacketRefVTable =
         kernel_api::resource::net::PacketRefVTable {
             data_ptr: test_packet_data_ptr,
@@ -2072,6 +2178,7 @@ mod tests {
             headroom: test_packet_headroom,
             advance: test_packet_advance,
             retreat: test_packet_retreat,
+            clone_storage: test_packet_clone_storage,
             drop_storage: test_packet_drop,
         };
 
@@ -2103,7 +2210,7 @@ mod tests {
         };
         assert_eq!(queue.capacity(), NetTxQueue::CAPACITY);
         assert_eq!(queue.len(), 0);
-        assert!(queue.push(request));
+        assert!(queue.push(request).is_ok());
         assert_eq!(queue.len(), 1);
         assert!(queue.pop().is_some());
         assert!(queue.pop().is_none());

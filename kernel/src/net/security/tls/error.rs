@@ -35,6 +35,10 @@ pub enum TlsError {
     BadRecordMac,
     /// セキュア乱数を取得できない
     SecureRandomUnavailable,
+    /// TLS record sequence number space is exhausted.
+    SequenceExhausted,
+    /// TLS record length is outside the TLS 1.3 record limits.
+    RecordTooLarge,
 }
 
 pub type TlsResult<T> = Result<T, TlsError>;

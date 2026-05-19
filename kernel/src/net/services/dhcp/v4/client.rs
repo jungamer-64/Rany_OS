@@ -69,7 +69,7 @@ impl DhcpClient {
                                 result;
                             log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
                             // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            crate::net::runtime::command::enqueue_command_ignore_in(
+                            let _ = crate::net::runtime::command::try_enqueue_command_in(
                                 self.runtime,
                                 crate::net::runtime::command::RuntimeCommand::Control(
                                     crate::net::runtime::command::ControlCommand::DhcpApplyLease {

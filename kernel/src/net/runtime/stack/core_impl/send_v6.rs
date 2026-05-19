@@ -598,7 +598,8 @@ impl NetworkStack {
                 error
             })?;
 
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
             crate::net::security::firewall::IpAddress::V6(dst.octets()),
             17,
@@ -718,7 +719,8 @@ impl NetworkStack {
         let src_port = u16::from_be_bytes([header[0], header[1]]);
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let tcp_flags = header[13];
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
             crate::net::security::firewall::IpAddress::V6(dst.octets()),
             6,
@@ -921,7 +923,8 @@ impl NetworkStack {
             return;
         };
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             config.ipv4.address.octets(),
             group_addr.octets(),
             2, // IGMP
@@ -998,7 +1001,8 @@ impl NetworkStack {
             return;
         };
 
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             config.ipv4.address.octets(),
             dst_group.octets(),
             2,

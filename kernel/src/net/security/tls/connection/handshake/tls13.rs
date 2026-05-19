@@ -60,8 +60,8 @@ impl ExperimentalTlsConnection {
                 .ok_or(TlsError::DecodeError)?;
             Self::set_tls_bytes(&mut self.tls13.hs_read_iv, &server_iv)?;
             Self::set_tls_bytes(&mut self.tls13.hs_write_iv, &client_iv)?;
-            self.tls13.hs_read_seq = 0;
-            self.tls13.hs_write_seq = 0;
+            self.tls13.hs_read_seq.reset();
+            self.tls13.hs_write_seq.reset();
             let ms = tls13_master_secret_sha384(&handshake_secret);
             self.handshake_secrets.master_secret.copy_from_slice(&ms);
         } else {
@@ -98,8 +98,8 @@ impl ExperimentalTlsConnection {
                 .ok_or(TlsError::DecodeError)?;
             Self::set_tls_bytes(&mut self.tls13.hs_read_iv, &server_iv)?;
             Self::set_tls_bytes(&mut self.tls13.hs_write_iv, &client_iv)?;
-            self.tls13.hs_read_seq = 0;
-            self.tls13.hs_write_seq = 0;
+            self.tls13.hs_read_seq.reset();
+            self.tls13.hs_write_seq.reset();
             let ms = tls13_master_secret(&handshake_secret);
             self.handshake_secrets.master_secret[..32].copy_from_slice(&ms);
         }
@@ -221,7 +221,8 @@ impl ExperimentalTlsConnection {
             allow_subject_cn_fallback: false,
         };
         let validated_spki =
-            crate::net::security::x509::validate_certificate_chain(&certs, verification_context)
+            crate::net::security::x509::CertificatePolicy::Tls13ServerAuth(verification_context)
+                .verify_chain(&certs)
                 .ok_or(TlsError::CertificateError)?;
         drop(ca_certs);
         self.extract_server_public_key_from_spki(validated_spki)?;
@@ -516,8 +517,8 @@ impl ExperimentalTlsConnection {
             Self::set_tls_bytes(&mut self.record.write_iv, &client_iv)?;
         }
 
-        self.record.read_seq = 0;
-        self.record.write_seq = 0;
+        self.record.read_seq.reset();
+        self.record.write_seq.reset();
         self.negotiation.state = TlsState::Established;
         Ok(())
     }

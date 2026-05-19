@@ -27,7 +27,8 @@ impl NetworkStack {
             return;
         };
         // ── ファイアウォール Egress チェック ──
-        if !crate::net::security::firewall::check_egress(
+        if !crate::net::security::firewall::check_egress_in(
+            self.runtime,
             config.ipv4.address.octets(),
             Ipv4Address::new([224, 0, 0, 2]).octets(), // all-routers
             2,                                         // IGMP
