@@ -4,6 +4,7 @@
 
 use super::super::protocol::ContentType;
 use super::super::{ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState};
+use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -77,7 +78,10 @@ pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
     let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
         return false;
     };
-    matches!(conn.encrypt(b"hello"), Err(TlsError::NotConnected))
+    matches!(
+        conn.encrypt_payload(handshake_payload(b"hello")),
+        Err(TlsError::NotConnected)
+    )
 }
 
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
@@ -87,7 +91,10 @@ pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
     };
     let data = [2u8, 0, 0];
     matches!(
-        conn.process_handshake(handshake_payload(&data)),
+        {
+            let payload = handshake_payload(&data);
+            conn.process_handshake(PayloadSpanRef::from_payload(&payload))
+        },
         Err(TlsError::DecodeError)
     )
 }

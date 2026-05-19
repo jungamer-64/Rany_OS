@@ -118,6 +118,76 @@ impl AesGcmKey {
         );
         Ok(())
     }
+
+    pub(crate) fn xor_chunks_in_place(
+        &self,
+        nonce: &[u8],
+        mut for_each_chunk: impl FnMut(&mut dyn FnMut(&mut [u8])),
+    ) -> Result<(), ()> {
+        if nonce.len() != 12 {
+            return Err(());
+        }
+
+        let mut counter = 2u32;
+        let mut key_index = 16usize;
+        let mut keystream = [0u8; 16];
+        let mut counter_block = [0u8; 16];
+        counter_block[0..12].copy_from_slice(nonce);
+
+        for_each_chunk(&mut |chunk: &mut [u8]| {
+            for byte in chunk {
+                if key_index == 16 {
+                    counter_block[12..16].copy_from_slice(&counter.to_be_bytes());
+                    keystream = aes_encrypt_block_with_schedule(&counter_block, &self.schedule);
+                    counter = counter.wrapping_add(1);
+                    key_index = 0;
+                }
+                *byte ^= keystream[key_index];
+                key_index += 1;
+            }
+        });
+
+        Ok(())
+    }
+
+    pub(crate) fn tag_for_ciphertext_chunks(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext_len: usize,
+        mut for_each_chunk: impl FnMut(&mut dyn FnMut(&[u8])),
+    ) -> Result<[u8; 16], ()> {
+        if nonce.len() != 12 {
+            return Err(());
+        }
+
+        let s = ghash_chunks(&self.h, aad, ciphertext_len, |visitor| {
+            for_each_chunk(visitor);
+        })
+        .ok_or(())?;
+        let mut y0 = [0u8; 16];
+        y0[0..12].copy_from_slice(nonce);
+        y0[15] = 1;
+        let enc_y0 = aes_encrypt_block_with_schedule(&y0, &self.schedule);
+        let mut tag = [0u8; 16];
+        for i in 0..16 {
+            tag[i] = s[i] ^ enc_y0[i];
+        }
+        Ok(tag)
+    }
+
+    pub(crate) fn verify_ciphertext_chunks(
+        &self,
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext_len: usize,
+        for_each_chunk: impl FnMut(&mut dyn FnMut(&[u8])),
+        tag: &[u8; 16],
+    ) -> Result<(), ()> {
+        let expected =
+            self.tag_for_ciphertext_chunks(nonce, aad, ciphertext_len, for_each_chunk)?;
+        ct_eq_16(tag, &expected).then_some(()).ok_or(())
+    }
 }
 
 /// GCM GHASH演算
@@ -159,6 +229,77 @@ fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
     y = gf128_mul(&y, h);
 
     y
+}
+
+fn ghash_feed(
+    y: &mut [u8; 16],
+    h: &[u8; 16],
+    block: &mut [u8; 16],
+    block_len: &mut usize,
+    mut bytes: &[u8],
+) {
+    while !bytes.is_empty() {
+        let take = (16 - *block_len).min(bytes.len());
+        block[*block_len..*block_len + take].copy_from_slice(&bytes[..take]);
+        *block_len += take;
+        bytes = &bytes[take..];
+
+        if *block_len == 16 {
+            for i in 0..16 {
+                y[i] ^= block[i];
+            }
+            *y = gf128_mul(y, h);
+            block.fill(0);
+            *block_len = 0;
+        }
+    }
+}
+
+fn ghash_flush(y: &mut [u8; 16], h: &[u8; 16], block: &mut [u8; 16], block_len: &mut usize) {
+    if *block_len == 0 {
+        return;
+    }
+
+    for i in 0..16 {
+        y[i] ^= block[i];
+    }
+    *y = gf128_mul(y, h);
+    block.fill(0);
+    *block_len = 0;
+}
+
+fn ghash_chunks(
+    h: &[u8; 16],
+    aad: &[u8],
+    ciphertext_len: usize,
+    mut for_each_ciphertext_chunk: impl FnMut(&mut dyn FnMut(&[u8])),
+) -> Option<[u8; 16]> {
+    let mut y = [0u8; 16];
+    let mut block = [0u8; 16];
+    let mut block_len = 0usize;
+
+    ghash_feed(&mut y, h, &mut block, &mut block_len, aad);
+    ghash_flush(&mut y, h, &mut block, &mut block_len);
+
+    let mut seen = 0usize;
+    for_each_ciphertext_chunk(&mut |chunk: &[u8]| {
+        seen = seen.saturating_add(chunk.len());
+        ghash_feed(&mut y, h, &mut block, &mut block_len, chunk);
+    });
+    if seen != ciphertext_len {
+        return None;
+    }
+    ghash_flush(&mut y, h, &mut block, &mut block_len);
+
+    let aad_bits = (aad.len() as u64).saturating_mul(8);
+    let ct_bits = (ciphertext_len as u64).saturating_mul(8);
+    let mut len_block = [0u8; 16];
+    len_block[0..8].copy_from_slice(&aad_bits.to_be_bytes());
+    len_block[8..16].copy_from_slice(&ct_bits.to_be_bytes());
+    for i in 0..16 {
+        y[i] ^= len_block[i];
+    }
+    Some(gf128_mul(&y, h))
 }
 
 /// GF(2^128) 乗算 (GHASH用)
@@ -214,6 +355,32 @@ pub(crate) fn aes_gcm_encrypt_into(
 mod tests {
     use super::{AesGcmKey, aes_gcm_decrypt_into, aes_gcm_encrypt_into, gf128_mul};
 
+    fn aes_gcm_encrypt_array<const N: usize>(
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        plaintext: &[u8; N],
+    ) -> ([u8; N], [u8; 16]) {
+        let mut ciphertext = [0u8; N];
+        let mut tag = [0u8; 16];
+        aes_gcm_encrypt_into(key, nonce, aad, plaintext, &mut ciphertext, &mut tag)
+            .expect("AES-GCM test encryption succeeds");
+        (ciphertext, tag)
+    }
+
+    fn aes_gcm_decrypt_array<const N: usize>(
+        key: &[u8],
+        nonce: &[u8],
+        aad: &[u8],
+        ciphertext: &[u8; N],
+        tag: &[u8; 16],
+    ) -> Option<[u8; N]> {
+        let mut plaintext = [0u8; N];
+        aes_gcm_decrypt_into(key, nonce, aad, ciphertext, &mut plaintext, tag)
+            .ok()
+            .map(|()| plaintext)
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_aes_gcm_nist_vector() {
@@ -230,7 +397,7 @@ mod tests {
         let aad = [];
         let plaintext = [];
 
-        let (ct, tag) = aes_gcm_encrypt(&key, &nonce, &aad, &plaintext);
+        let (ct, tag) = aes_gcm_encrypt_array(&key, &nonce, &aad, &plaintext);
 
         assert_eq!(ct.len(), 0);
         let expected_tag = [
@@ -240,7 +407,7 @@ mod tests {
         assert_eq!(tag, expected_tag);
 
         // Test decryption
-        let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
+        let decrypted = aes_gcm_decrypt_array(&key, &nonce, &aad, &ct, &tag);
         assert!(decrypted.is_some());
         assert_eq!(decrypted.unwrap().len(), 0);
     }
@@ -261,7 +428,7 @@ mod tests {
         let aad = [];
         let plaintext = [0u8; 16];
 
-        let (ct, tag) = aes_gcm_encrypt(&key, &nonce, &aad, &plaintext);
+        let (ct, tag) = aes_gcm_encrypt_array(&key, &nonce, &aad, &plaintext);
 
         let expected_ct = [
             0x03, 0x88, 0xda, 0xce, 0x60, 0xb6, 0xa3, 0x92, 0xf3, 0x28, 0xc2, 0xb9, 0x71, 0xb2,
@@ -276,7 +443,7 @@ mod tests {
         assert_eq!(tag, expected_tag);
 
         // Test decryption
-        let decrypted = aes_gcm_decrypt(&key, &nonce, &aad, &ct, &tag);
+        let decrypted = aes_gcm_decrypt_array(&key, &nonce, &aad, &ct, &tag);
         assert!(decrypted.is_some());
         assert_eq!(
             decrypted
@@ -284,6 +451,79 @@ mod tests {
                 .as_slice(),
             plaintext.as_slice()
         );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_aes_gcm_chunk_in_place_matches_contiguous_encrypt_decrypt() {
+        let key = [0x41u8; 16];
+        let nonce = [0x23u8; 12];
+        let aad = b"tls-record-aad";
+        let mut plaintext = [0u8; 48];
+        for (index, byte) in plaintext.iter_mut().enumerate() {
+            *byte = (index as u8).wrapping_mul(7).wrapping_add(3);
+        }
+
+        let ctx = AesGcmKey::new(&key).expect("test AES key is valid");
+        let mut expected_ciphertext = [0u8; 48];
+        let mut expected_tag = [0u8; 16];
+        ctx.encrypt_in_place(
+            &nonce,
+            aad,
+            &plaintext,
+            &mut expected_ciphertext,
+            &mut expected_tag,
+        )
+        .expect("contiguous AES-GCM encryption succeeds");
+
+        let mut left = [0u8; 13];
+        let mut middle = [0u8; 17];
+        let mut right = [0u8; 18];
+        left.copy_from_slice(&plaintext[..13]);
+        middle.copy_from_slice(&plaintext[13..30]);
+        right.copy_from_slice(&plaintext[30..]);
+
+        ctx.xor_chunks_in_place(&nonce, |visitor| {
+            visitor(&mut left);
+            visitor(&mut middle);
+            visitor(&mut right);
+        })
+        .expect("chunk AES-GCM XOR succeeds");
+        let tag = ctx
+            .tag_for_ciphertext_chunks(&nonce, aad, plaintext.len(), |visitor| {
+                visitor(&left);
+                visitor(&middle);
+                visitor(&right);
+            })
+            .expect("chunk AES-GCM tag succeeds");
+
+        assert_eq!(&left, &expected_ciphertext[..13]);
+        assert_eq!(&middle, &expected_ciphertext[13..30]);
+        assert_eq!(&right, &expected_ciphertext[30..]);
+        assert_eq!(tag, expected_tag);
+
+        ctx.verify_ciphertext_chunks(
+            &nonce,
+            aad,
+            plaintext.len(),
+            |visitor| {
+                visitor(&left);
+                visitor(&middle);
+                visitor(&right);
+            },
+            &tag,
+        )
+        .expect("chunk AES-GCM tag verification succeeds");
+        ctx.xor_chunks_in_place(&nonce, |visitor| {
+            visitor(&mut left);
+            visitor(&mut middle);
+            visitor(&mut right);
+        })
+        .expect("chunk AES-GCM decrypt XOR succeeds");
+
+        assert_eq!(&left, &plaintext[..13]);
+        assert_eq!(&middle, &plaintext[13..30]);
+        assert_eq!(&right, &plaintext[30..]);
     }
 }
 

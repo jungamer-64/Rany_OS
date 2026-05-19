@@ -5,7 +5,6 @@
 use super::super::{ExperimentalTlsConnection, HandshakeType, TlsState};
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
-use kernel_api::resource::net::PacketPayload;
 
 mod certificate;
 mod server_hello;
@@ -86,8 +85,7 @@ impl ExperimentalTlsConnection {
         Ok(())
     }
 
-    pub(crate) fn process_handshake(&mut self, data: PacketPayload) -> TlsResult<()> {
-        let handshake = PayloadSpanRef::from_payload(&data);
+    pub(crate) fn process_handshake(&mut self, handshake: PayloadSpanRef<'_>) -> TlsResult<()> {
         if handshake.is_empty() {
             return Err(TlsError::DecodeError);
         }

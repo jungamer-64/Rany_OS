@@ -24,10 +24,13 @@ pub use hkdf::{
 // ── AES Core ─────────────────────────────────────────────────────────────────
 
 // ── AES-GCM ──────────────────────────────────────────────────────────────────
+pub(crate) use aes_gcm::AesGcmKey;
+#[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
 // ── ChaCha20-Poly1305 ────────────────────────────────────────────────────────
 pub use chacha20::{chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place};
+pub(crate) use chacha20::{chacha20_poly1305_tag_chunks, chacha20_xor_chunks_in_place};
 
 // ── Random ───────────────────────────────────────────────────────────────────
 pub(crate) use random::{RandomError, generate_random};

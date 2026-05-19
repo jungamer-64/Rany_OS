@@ -6,6 +6,7 @@ use super::super::protocol::ContentType;
 use super::super::{
     CipherSuite, ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState,
 };
+use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -54,6 +55,14 @@ fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     writer.finish().expect("test payload is exact")
 }
 
+fn test_chained_payload(parts: &[&[u8]]) -> kernel_api::resource::net::PacketPayload {
+    let mut segments = alloc::vec::Vec::new();
+    for part in parts {
+        segments.extend(test_payload(part).into_segments());
+    }
+    crate::net::payload::packet_payload_from_segments(segments)
+}
+
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
     let payload = &hello[5..];
     for i in 0..payload.len().saturating_sub(1) {
@@ -72,7 +81,8 @@ pub(crate) fn test_process_handshake_truncated_header() {
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
 
     let data = [2u8, 0, 0];
-    let result = conn.process_handshake(handshake_payload(&data));
+    let payload = handshake_payload(&data);
+    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
     assert!(matches!(result, Err(TlsError::DecodeError)));
 }
 
@@ -116,7 +126,8 @@ pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
     let _ = conn.build_client_hello_payload();
 
     let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
-    let result = conn.process_handshake(handshake_payload(&message));
+    let payload = handshake_payload(&message);
+    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
 
     assert!(matches!(result, Err(TlsError::UnsolicitedCipherSuite)));
 }
@@ -127,7 +138,7 @@ pub(crate) fn test_tls_connection_encrypt_not_established() {
     let config = TlsConfig::new();
     let mut conn =
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
-    let result = conn.encrypt(b"hello");
+    let result = conn.encrypt_payload(test_payload(b"hello"));
     assert!(matches!(result, Err(TlsError::NotConnected)));
 }
 
@@ -186,13 +197,31 @@ pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_process_incoming_payload_accepts_record_across_packet_segments() {
+    let config = TlsConfig::new();
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+    let payload =
+        test_chained_payload(&[&[ContentType::Alert as u8, 0x03], &[0x03, 0, 2], &[1, 0]]);
+
+    let plaintext = conn
+        .process_incoming_payload(payload)
+        .expect("TLS record spanning packet segments should be processed in place");
+
+    assert!(plaintext.is_empty());
+    assert_eq!(conn.state(), TlsState::Closed);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
     let config = TlsConfig::new();
     let mut conn =
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
 
     let data = [20u8, 0, 0, 0];
-    let result = conn.process_handshake(handshake_payload(&data));
+    let payload = handshake_payload(&data);
+    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 
@@ -204,7 +233,8 @@ pub(crate) fn test_process_handshake_unknown_message_rejected() {
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
 
     let data = [99u8, 0, 0, 0];
-    let result = conn.process_handshake(handshake_payload(&data));
+    let payload = handshake_payload(&data);
+    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 
@@ -216,7 +246,8 @@ pub(crate) fn test_process_handshake_certificate_before_server_hello_rejected() 
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
 
     let data = [11u8, 0, 0, 0];
-    let result = conn.process_handshake(handshake_payload(&data));
+    let payload = handshake_payload(&data);
+    let result = conn.process_handshake(PayloadSpanRef::from_payload(&payload));
     assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 

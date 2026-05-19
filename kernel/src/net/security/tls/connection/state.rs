@@ -5,8 +5,10 @@
 use super::super::{
     CipherSuite, ServerPublicKey, TLS_SERVER_NAME_CAPACITY, TlsBytes, TlsState, TlsVersion,
 };
+use crate::net::payload::{append_payload, move_payload_window_owned};
 use crate::net::security::ecdh;
 use arrayvec::ArrayString;
+use kernel_api::resource::net::PacketPayload;
 
 pub(super) struct NegotiationState {
     pub(super) server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
@@ -40,7 +42,7 @@ pub(super) struct RecordProtectionState {
     pub(super) write_iv: TlsBytes<16>,
     pub(super) read_seq: u64,
     pub(super) write_seq: u64,
-    pub(super) recv_buffer: kernel_api::resource::net::PacketPayload,
+    pub(super) ingress: TlsRecordIngressQueue,
 }
 
 impl Default for RecordProtectionState {
@@ -52,8 +54,68 @@ impl Default for RecordProtectionState {
             write_iv: TlsBytes::new(),
             read_seq: 0,
             write_seq: 0,
-            recv_buffer: kernel_api::resource::net::PacketPayload::default(),
+            ingress: TlsRecordIngressQueue::default(),
         }
+    }
+}
+
+pub(super) struct TlsRecordIngressQueue {
+    payload: PacketPayload,
+    cursor: usize,
+}
+
+impl Default for TlsRecordIngressQueue {
+    fn default() -> Self {
+        Self {
+            payload: PacketPayload::default(),
+            cursor: 0,
+        }
+    }
+}
+
+impl TlsRecordIngressQueue {
+    pub(super) fn push(&mut self, payload: PacketPayload) {
+        append_payload(&mut self.payload, payload);
+    }
+
+    pub(super) fn payload(&self) -> &PacketPayload {
+        &self.payload
+    }
+
+    pub(super) fn payload_mut(&mut self) -> &mut PacketPayload {
+        &mut self.payload
+    }
+
+    pub(super) fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    pub(super) fn advance(&mut self, len: usize) -> Option<()> {
+        let next = self.cursor.checked_add(len)?;
+        (next <= self.payload.total_len()).then(|| {
+            self.cursor = next;
+        })
+    }
+
+    pub(super) fn compact_consumed(&mut self) -> Option<()> {
+        if self.cursor == 0 {
+            return Some(());
+        }
+
+        let remaining_len = self.payload.total_len().checked_sub(self.cursor)?;
+        let remaining = move_payload_window_owned(
+            core::mem::take(&mut self.payload),
+            self.cursor,
+            remaining_len,
+        )?;
+        self.payload = remaining;
+        self.cursor = 0;
+        Some(())
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.payload = PacketPayload::default();
+        self.cursor = 0;
     }
 }
 

@@ -154,7 +154,7 @@ async fn send_over_tls_transport(
     complete_tls_handshake(&mut tls, connection).await?;
 
     let encrypted_request = tls
-        .tls13_encrypt_application_payload(&request_payload)
+        .tls13_encrypt_application_payload(request_payload)
         .map_err(|_| HttpClientError::WriteError)?;
     send_payload(connection, encrypted_request).await?;
 

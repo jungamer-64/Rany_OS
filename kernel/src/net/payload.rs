@@ -633,6 +633,40 @@ impl<'a> PacketPayloadView<'a> {
     }
 }
 
+pub fn for_each_payload_window_chunk_mut(
+    payload: &mut PacketPayload,
+    offset: usize,
+    len: usize,
+    mut f: impl FnMut(&mut [u8]),
+) -> Option<()> {
+    if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
+        return None;
+    }
+
+    let span_start = offset;
+    let span_end = offset.checked_add(len)?;
+    let mut cursor = 0usize;
+
+    for segment in payload.segments_mut() {
+        let segment_len = segment.len();
+        let segment_start = cursor;
+        let segment_end = cursor.checked_add(segment_len)?;
+        cursor = segment_end;
+
+        if segment_end <= span_start || segment_start >= span_end {
+            continue;
+        }
+
+        let local_start = span_start.saturating_sub(segment_start);
+        let local_end = segment_len.min(span_end.saturating_sub(segment_start));
+        if local_start < local_end {
+            f(&mut segment.data_mut()[local_start..local_end]);
+        }
+    }
+
+    Some(())
+}
+
 pub struct PacketPayloadCursor<'a> {
     view: PacketPayloadView<'a>,
     offset: usize,
@@ -834,5 +868,4 @@ mod tests {
     fn alloc_packet_with_headroom_rejects_length_overflow() {
         assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
     }
-
 }

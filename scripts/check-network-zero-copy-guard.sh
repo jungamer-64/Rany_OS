@@ -189,6 +189,28 @@ if rg -n "payload_preview_bytes\\(" "${network_tree[@]}" >/dev/null; then
   fail "found removed mlx5 payload preview linearization"
 fi
 
+if rg -n "\\bsplit_payload_owned\\b|\\bcopy_segment_range\\b|\\bcopy_span_to_packet\\b" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found removed packet payload split/copy root"
+fi
+
+if rg -n "\\btls13_encrypt_application_payload\\(&|\\.encrypt\\(" \
+  kernel/src/net/security/tls kernel/src/net/services/http \
+  >/dev/null; then
+  fail "found removed borrowed or byte-slice TLS encrypt API"
+fi
+
+if rg -n "\\baes_gcm_(encrypt|decrypt)_into\\b" \
+  kernel/src/net/security/tls/connection \
+  >/dev/null; then
+  fail "found contiguous AES-GCM helper in TLS record path"
+fi
+
+if rg -n "\\brecv_buffer\\b" kernel/src/net/security/tls >/dev/null; then
+  fail "found TLS byte-buffer receive state instead of record ingress queue"
+fi
+
 if rg -n "build_stack_payload\\(|enqueue_v6_send_bytes\\(" \
   "${network_tree[@]}" \
   >/dev/null; then
