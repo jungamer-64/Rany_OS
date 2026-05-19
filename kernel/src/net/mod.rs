@@ -21,18 +21,18 @@
 
 pub mod api;
 pub mod obs;
-pub mod payload;
 pub mod types;
 
-pub mod datapath;
-pub mod drivers;
-pub mod l2;
-pub mod l3;
-pub mod l4;
-pub mod runtime;
-pub mod security;
-pub mod services;
-pub mod tests;
+pub(crate) mod datapath;
+pub(crate) mod drivers;
+pub(crate) mod l2;
+pub(crate) mod l3;
+pub(crate) mod l4;
+pub(crate) mod payload;
+pub(crate) mod runtime;
+pub(crate) mod security;
+pub(crate) mod services;
+pub(crate) mod tests;
 
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests {
