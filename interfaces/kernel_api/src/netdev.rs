@@ -8,6 +8,7 @@ use crate::resource::net::PacketRef;
 use crate::service::kernel;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MacAddress(pub [u8; 6]);
@@ -191,20 +192,51 @@ impl Default for NetDeviceInfo {
     }
 }
 
+#[derive(Clone, Copy)]
+pub struct NetPortRuntimeCookie(NonZeroUsize);
+
+impl NetPortRuntimeCookie {
+    pub const unsafe fn from_raw_unchecked(raw: usize) -> Self {
+        Self(unsafe { NonZeroUsize::new_unchecked(raw) })
+    }
+
+    pub const fn from_raw(raw: usize) -> Option<Self> {
+        match NonZeroUsize::new(raw) {
+            Some(raw) => Some(Self(raw)),
+            None => None,
+        }
+    }
+
+    pub const fn as_raw(self) -> usize {
+        self.0.get()
+    }
+}
+
 pub struct NetPortRuntimeOps {
-    pub alloc_packet: fn(usize, NetPortId) -> Option<PacketRef>,
-    pub submit_rx: fn(usize, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
-    pub schedule_event: fn(usize, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
-    pub update_link: fn(usize, NetPortId, bool) -> Result<(), &'static str>,
+    pub alloc_packet: fn(NetPortRuntimeCookie, NetPortId) -> Option<PacketRef>,
+    pub submit_rx:
+        fn(NetPortRuntimeCookie, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
+    pub schedule_event:
+        fn(NetPortRuntimeCookie, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
+    pub update_link: fn(NetPortRuntimeCookie, NetPortId, bool) -> Result<(), &'static str>,
     pub log: fn(NetLogLevel, &str),
 }
 
 impl NetPortRuntimeOps {
     pub const fn new(
-        alloc_packet: fn(usize, NetPortId) -> Option<PacketRef>,
-        submit_rx: fn(usize, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
-        schedule_event: fn(usize, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
-        update_link: fn(usize, NetPortId, bool) -> Result<(), &'static str>,
+        alloc_packet: fn(NetPortRuntimeCookie, NetPortId) -> Option<PacketRef>,
+        submit_rx: fn(
+            NetPortRuntimeCookie,
+            NetPortId,
+            PacketRef,
+            NetRxMeta,
+        ) -> Result<(), &'static str>,
+        schedule_event: fn(
+            NetPortRuntimeCookie,
+            NetPortId,
+            NetDriverEvent,
+        ) -> Result<(), &'static str>,
+        update_link: fn(NetPortRuntimeCookie, NetPortId, bool) -> Result<(), &'static str>,
         log: fn(NetLogLevel, &str),
     ) -> Self {
         Self {
@@ -219,13 +251,17 @@ impl NetPortRuntimeOps {
 
 #[derive(Clone, Copy)]
 pub struct NetPortRuntimeHandle {
-    context: usize,
+    context: NetPortRuntimeCookie,
     port_id: NetPortId,
     ops: &'static NetPortRuntimeOps,
 }
 
 impl NetPortRuntimeHandle {
-    pub const fn new(context: usize, port_id: NetPortId, ops: &'static NetPortRuntimeOps) -> Self {
+    pub const fn new(
+        context: NetPortRuntimeCookie,
+        port_id: NetPortId,
+        ops: &'static NetPortRuntimeOps,
+    ) -> Self {
         Self {
             context,
             port_id,

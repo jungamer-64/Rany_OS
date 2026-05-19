@@ -31,9 +31,9 @@ use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
-    NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeHandle, NetPortRuntimeOps,
-    NetPortStats, NetRxMeta, NetTxCompletionPolicy, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
-    TxLeaseId, TxSubmission,
+    NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeCookie, NetPortRuntimeHandle,
+    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxCompletionPolicy, NetTxMeta, NetTxSegment,
+    PrimaryPortPolicy, TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -587,8 +587,39 @@ pub fn complete_tx_lease_in(
     }
 }
 
-fn runtime_context_from_cookie(cookie: usize) -> &'static NetRuntimeContext {
-    unsafe { &*(cookie as *const NetRuntimeContext) }
+#[repr(transparent)]
+#[derive(Clone, Copy)]
+struct RuntimeContextCookie(NetPortRuntimeCookie);
+
+impl RuntimeContextCookie {
+    fn from_context(context: &'static NetRuntimeContext) -> Self {
+        let raw = context as *const NetRuntimeContext as usize;
+        let Some(cookie) = NetPortRuntimeCookie::from_raw(raw) else {
+            unreachable!("leaked runtime context addresses are non-null");
+        };
+        Self(cookie)
+    }
+
+    fn from_port_cookie(cookie: NetPortRuntimeCookie) -> Self {
+        Self(cookie)
+    }
+
+    fn into_port_cookie(self) -> NetPortRuntimeCookie {
+        self.0
+    }
+
+    fn context(self) -> &'static NetRuntimeContext {
+        let ptr = self.0.as_raw() as *const NetRuntimeContext;
+        // SAFETY: RuntimeContextCookie values installed in NetPortRuntimeHandle
+        // are created only from leaked NetRuntimeContext allocations owned by
+        // RuntimeRegistry. Driver code can copy the opaque cookie but cannot
+        // construct one through the safe NetPortRuntimeHandle API.
+        unsafe { &*ptr }
+    }
+}
+
+fn runtime_context_from_cookie(cookie: NetPortRuntimeCookie) -> &'static NetRuntimeContext {
+    RuntimeContextCookie::from_port_cookie(cookie).context()
 }
 
 fn runtime_handle_for_port(
@@ -596,7 +627,7 @@ fn runtime_handle_for_port(
     port_id: NetPortId,
 ) -> NetPortRuntimeHandle {
     NetPortRuntimeHandle::new(
-        context as *const NetRuntimeContext as usize,
+        RuntimeContextCookie::from_context(context).into_port_cookie(),
         port_id,
         &NET_PORT_RUNTIME_OPS,
     )
@@ -616,12 +647,12 @@ fn current_if_for_port(
         .ok_or("device port not registered")
 }
 
-fn runtime_alloc_packet(_: usize, _: NetPortId) -> Option<PacketRef> {
+fn runtime_alloc_packet(_: NetPortRuntimeCookie, _: NetPortId) -> Option<PacketRef> {
     crate::net::datapath::mempool::alloc_packet()
 }
 
 fn runtime_submit_rx(
-    cookie: usize,
+    cookie: NetPortRuntimeCookie,
     port_id: NetPortId,
     packet: PacketRef,
     meta: NetRxMeta,
@@ -639,7 +670,7 @@ fn runtime_submit_rx(
 }
 
 fn runtime_schedule_event(
-    cookie: usize,
+    cookie: NetPortRuntimeCookie,
     port_id: NetPortId,
     event: NetDriverEvent,
 ) -> Result<(), &'static str> {
@@ -656,7 +687,11 @@ fn runtime_schedule_event(
     }
 }
 
-fn runtime_update_link(cookie: usize, port_id: NetPortId, up: bool) -> Result<(), &'static str> {
+fn runtime_update_link(
+    cookie: NetPortRuntimeCookie,
+    port_id: NetPortId,
+    up: bool,
+) -> Result<(), &'static str> {
     let runtime = runtime_context_from_cookie(cookie).handle();
     let if_id = current_if_for_port(runtime_context_for(runtime), port_id)?;
     let result = if up {
