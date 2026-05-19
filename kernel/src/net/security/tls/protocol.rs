@@ -117,8 +117,31 @@ impl ContentType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandshakeType {
     ClientHello = 1,
+    ServerHello = 2,
+    EncryptedExtensions = 8,
+    Certificate = 11,
+    CertificateRequest = 13,
+    CertificateVerify = 15,
+    Finished = 20,
     KeyUpdate = 24,
     MessageHash = 254,
+}
+
+impl HandshakeType {
+    pub(crate) fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            1 => Some(Self::ClientHello),
+            2 => Some(Self::ServerHello),
+            8 => Some(Self::EncryptedExtensions),
+            11 => Some(Self::Certificate),
+            13 => Some(Self::CertificateRequest),
+            15 => Some(Self::CertificateVerify),
+            20 => Some(Self::Finished),
+            24 => Some(Self::KeyUpdate),
+            254 => Some(Self::MessageHash),
+            _ => None,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

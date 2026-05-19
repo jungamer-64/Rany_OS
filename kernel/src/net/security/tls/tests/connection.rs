@@ -160,7 +160,31 @@ pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
 
     let data = [20u8, 0, 0, 0];
     let result = conn.process_handshake(handshake_payload(&data));
-    assert!(matches!(result, Err(TlsError::DecodeError)));
+    assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_process_handshake_unknown_message_rejected() {
+    let config = TlsConfig::new();
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+
+    let data = [99u8, 0, 0, 0];
+    let result = conn.process_handshake(handshake_payload(&data));
+    assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_process_handshake_certificate_before_server_hello_rejected() {
+    let config = TlsConfig::new();
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+
+    let data = [11u8, 0, 0, 0];
+    let result = conn.process_handshake(handshake_payload(&data));
+    assert!(matches!(result, Err(TlsError::UnexpectedMessage)));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

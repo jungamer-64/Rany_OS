@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
-use super::super::ExperimentalTlsConnection;
+use super::super::{ExperimentalTlsConnection, HandshakeType, TlsState};
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
 use kernel_api::resource::net::PacketPayload;
@@ -11,20 +11,61 @@ mod certificate;
 mod server_hello;
 mod tls13;
 
+enum Tls13ServerHandshakeMessage<'a> {
+    ServerHello(PayloadSpanRef<'a>),
+    EncryptedExtensions(PayloadSpanRef<'a>),
+    Certificate(PayloadSpanRef<'a>),
+    CertificateRequest(PayloadSpanRef<'a>),
+    CertificateVerify(PayloadSpanRef<'a>),
+    Finished(PayloadSpanRef<'a>),
+}
+
+impl<'a> Tls13ServerHandshakeMessage<'a> {
+    fn from_wire(msg_type: u8, payload: PayloadSpanRef<'a>) -> TlsResult<Self> {
+        match HandshakeType::from_u8(msg_type) {
+            Some(HandshakeType::ServerHello) => Ok(Self::ServerHello(payload)),
+            Some(HandshakeType::EncryptedExtensions) => Ok(Self::EncryptedExtensions(payload)),
+            Some(HandshakeType::Certificate) => Ok(Self::Certificate(payload)),
+            Some(HandshakeType::CertificateRequest) => Ok(Self::CertificateRequest(payload)),
+            Some(HandshakeType::CertificateVerify) => Ok(Self::CertificateVerify(payload)),
+            Some(HandshakeType::Finished) => Ok(Self::Finished(payload)),
+            _ => Err(TlsError::UnexpectedMessage),
+        }
+    }
+}
+
 impl ExperimentalTlsConnection {
     pub(super) fn dispatch_handshake_message(
         &mut self,
         msg_type: u8,
         payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
-        match msg_type {
-            2 => self.process_server_hello(payload),
-            8 => self.tls13_process_encrypted_extensions(payload),
-            11 => self.tls13_process_certificate(payload),
-            13 => self.tls13_process_certificate_request(payload),
-            15 => self.tls13_process_certificate_verify(payload),
-            20 => self.tls13_process_server_finished(payload),
-            _ => Ok(()),
+        match (
+            self.negotiation.state,
+            Tls13ServerHandshakeMessage::from_wire(msg_type, payload)?,
+        ) {
+            (TlsState::ClientHelloSent, Tls13ServerHandshakeMessage::ServerHello(payload)) => {
+                self.process_server_hello(payload)
+            }
+            (
+                TlsState::Tls13WaitEncryptedExtensions,
+                Tls13ServerHandshakeMessage::EncryptedExtensions(payload),
+            ) => self.tls13_process_encrypted_extensions(payload),
+            (TlsState::Tls13WaitCertificate, Tls13ServerHandshakeMessage::Certificate(payload)) => {
+                self.tls13_process_certificate(payload)
+            }
+            (
+                TlsState::Tls13WaitCertificate,
+                Tls13ServerHandshakeMessage::CertificateRequest(payload),
+            ) => self.tls13_process_certificate_request(payload),
+            (
+                TlsState::Tls13WaitCertificateVerify,
+                Tls13ServerHandshakeMessage::CertificateVerify(payload),
+            ) => self.tls13_process_certificate_verify(payload),
+            (TlsState::Tls13WaitFinished, Tls13ServerHandshakeMessage::Finished(payload)) => {
+                self.tls13_process_server_finished(payload)
+            }
+            _ => Err(TlsError::UnexpectedMessage),
         }
     }
 
