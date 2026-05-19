@@ -584,39 +584,9 @@ pub fn complete_tx_lease_in(
     }
 }
 
-#[repr(transparent)]
-#[derive(Clone, Copy)]
-struct RuntimeContextCookie(NetPortRuntimeCookie);
-
-impl RuntimeContextCookie {
-    fn from_context(context: &'static NetRuntimeContext) -> Self {
-        let raw = context as *const NetRuntimeContext as usize;
-        let Some(cookie) = NetPortRuntimeCookie::from_raw(raw) else {
-            unreachable!("leaked runtime context addresses are non-null");
-        };
-        Self(cookie)
-    }
-
-    fn from_port_cookie(cookie: NetPortRuntimeCookie) -> Self {
-        Self(cookie)
-    }
-
-    fn into_port_cookie(self) -> NetPortRuntimeCookie {
-        self.0
-    }
-
-    fn context(self) -> &'static NetRuntimeContext {
-        let ptr = self.0.as_raw() as *const NetRuntimeContext;
-        // SAFETY: RuntimeContextCookie values installed in NetPortRuntimeHandle
-        // are created only from leaked NetRuntimeContext allocations owned by
-        // RuntimeRegistry. Driver code can copy the opaque cookie but cannot
-        // construct one through the safe NetPortRuntimeHandle API.
-        unsafe { &*ptr }
-    }
-}
-
 fn runtime_context_from_cookie(cookie: NetPortRuntimeCookie) -> &'static NetRuntimeContext {
-    RuntimeContextCookie::from_port_cookie(cookie).context()
+    let _ = cookie;
+    unreachable!("runtime cookies must be resolved through RuntimeRegistry")
 }
 
 fn runtime_handle_for_port(
@@ -624,7 +594,8 @@ fn runtime_handle_for_port(
     port_id: NetPortId,
 ) -> NetPortRuntimeHandle {
     NetPortRuntimeHandle::new(
-        RuntimeContextCookie::from_context(context).into_port_cookie(),
+        NetPortRuntimeCookie::from_raw(context.id().0 as usize + 1)
+            .expect("runtime ids are stored as non-zero driver cookies"),
         port_id,
         &NET_PORT_RUNTIME_OPS,
     )

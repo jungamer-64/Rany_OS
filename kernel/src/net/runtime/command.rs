@@ -738,11 +738,6 @@ pub(crate) fn reset_command_system_for_tests_in(runtime: NetRuntimeHandle) {
     command_queue_in(runtime).reset_for_tests();
 }
 
-#[inline]
-pub(crate) fn enqueue_command_ignore_in(runtime: NetRuntimeHandle, command: RuntimeCommand) {
-    let _ = command_queue_in(runtime).send(command);
-}
-
 /// タスクコンテキスト向け非同期イベント送信Future
 pub(crate) struct SendCommandFuture {
     runtime: NetRuntimeHandle,

@@ -542,7 +542,7 @@ fn parse_tbs_fields<'a>(
     ))
 }
 
-pub fn parse_x509_certificate<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certificate<'a>> {
+fn parse_x509_certificate_lenient_deleted<'a>(der: PayloadSpanRef<'a>) -> Option<X509Certificate<'a>> {
     let outer = DerCursor::new(der).read_sequence()?;
     let mut cert = DerCursor::new(outer.value);
     let tbs = cert.read_sequence()?;
@@ -613,7 +613,7 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
     Some(())
 }
 
-pub fn validate_certificate_chain<'a, 'ctx>(
+fn validate_certificate_chain_lenient_deleted<'a, 'ctx>(
     chain: &[PayloadSpanRef<'a>],
     context: X509VerificationContext<'ctx>,
 ) -> Option<SubjectPublicKeyInfo> {

@@ -451,15 +451,6 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn take_send_payload_prefix(&mut self, len: usize) -> Option<PacketPayload> {
-        let tcp = self.tcp_mut()?;
-        let taken = Self::drain_send_prefix(&mut tcp.send_payload_queue, len)?;
-        tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_sub(taken.total_len());
-        Self::trim_empty_payloads(&mut tcp.send_payload_queue);
-        Some(taken)
-    }
-
-    #[inline]
     pub fn push_recv_payload(&mut self, payload: PacketPayload) -> usize {
         let available = self
             .recv_buffer_limit
