@@ -210,15 +210,19 @@ impl ExperimentalTlsConnection {
                 .map_err(|_| TlsError::CertificateError)?;
         }
 
-        let validated_spki = crate::net::security::x509::validate_certificate_chain(
-            &certs,
-            self.negotiation
+        let verification_context = crate::net::security::x509::X509VerificationContext {
+            now_unix: crate::drivers::time::unix_timestamp(),
+            server_name: self
+                .negotiation
                 .server_name
                 .as_ref()
                 .map(|name| name.as_str()),
-            &ca_certs,
-        )
-        .ok_or(TlsError::CertificateError)?;
+            trusted_roots: &ca_certs,
+            allow_subject_cn_fallback: false,
+        };
+        let validated_spki =
+            crate::net::security::x509::validate_certificate_chain(&certs, verification_context)
+                .ok_or(TlsError::CertificateError)?;
         drop(ca_certs);
         self.extract_server_public_key_from_spki(validated_spki)?;
         self.negotiation.state = TlsState::Tls13WaitCertificateVerify;

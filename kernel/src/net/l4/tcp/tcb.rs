@@ -1616,27 +1616,41 @@ impl TcbTable {
         })
     }
 
-    pub(crate) fn begin_fin(
+    pub(crate) fn begin_active_close(
         &self,
         local: EndpointAddr,
         remote: EndpointAddr,
-        next_state: TcpConnectionState,
     ) -> Option<u32> {
         let mut seq = None;
         self.mutate_entry(local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
-            entry.state = match (old, next_state) {
-                (TcpTcbState::Established(mut data), TcpConnectionState::FinWait1) => {
+            entry.state = match old {
+                TcpTcbState::Established(mut data) => {
                     seq = Some(data.seq.snd_nxt);
                     data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
                     TcpTcbState::FinWait1(data)
                 }
-                (TcpTcbState::CloseWait(mut data), TcpConnectionState::LastAck) => {
+                other => other,
+            };
+        });
+        seq
+    }
+
+    pub(crate) fn begin_passive_close_ack(
+        &self,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Option<u32> {
+        let mut seq = None;
+        self.mutate_entry(local, remote, |entry| {
+            let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
+            entry.state = match old {
+                TcpTcbState::CloseWait(mut data) => {
                     seq = Some(data.seq.snd_nxt);
                     data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
                     TcpTcbState::LastAck(data)
                 }
-                (other, _) => other,
+                other => other,
             };
         });
         seq
@@ -1843,11 +1857,8 @@ pub mod tests {
         table.insert(tcb).expect("insert closed tcb");
 
         assert!(!table.establish_syn_received(local, remote, 1));
-        assert!(
-            table
-                .begin_fin(local, remote, TcpConnectionState::FinWait1)
-                .is_none()
-        );
+        assert!(table.begin_active_close(local, remote).is_none());
+        assert!(table.begin_passive_close_ack(local, remote).is_none());
 
         let state = table
             .read(local, remote, |entry| {
@@ -1882,10 +1893,7 @@ pub mod tests {
             TcpHandshakeOptions::default(),
         ));
 
-        assert_eq!(
-            table.begin_fin(local, remote, TcpConnectionState::FinWait1),
-            Some(9001)
-        );
+        assert_eq!(table.begin_active_close(local, remote), Some(9001));
         let snapshot = table
             .read(local, remote, TcpControlBlockSnapshot::from)
             .expect("fin-wait tcb snapshot");

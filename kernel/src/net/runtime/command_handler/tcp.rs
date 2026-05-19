@@ -444,9 +444,7 @@ impl RuntimeCommandHandler {
         match state {
             TcpConnectionState::Established => {
                 // FINパケットを送信
-                let seq = tcb_table
-                    .begin_fin(local, remote, TcpConnectionState::FinWait1)
-                    .unwrap_or(0);
+                let seq = tcb_table.begin_active_close(local, remote).unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
                     .seq(seq)
@@ -473,7 +471,7 @@ impl RuntimeCommandHandler {
             TcpConnectionState::CloseWait => {
                 // 相手からFINを受信済み、自分からFINを送信
                 let seq = tcb_table
-                    .begin_fin(local, remote, TcpConnectionState::LastAck)
+                    .begin_passive_close_ack(local, remote)
                     .unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())

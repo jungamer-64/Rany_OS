@@ -332,8 +332,15 @@ fn test_chain_link_rejects_ca_path_len_violation() {
 fn test_validate_certificate_chain_requires_trust_anchor() {
     let payload = test_cert_payload();
     let chain = [PayloadSpanRef::from_payload(&payload)];
+    let cert = parse_x509_certificate(chain[0]).expect("test certificate parses");
+    let context = X509VerificationContext {
+        now_unix: cert.not_before,
+        server_name: None,
+        trusted_roots: &[],
+        allow_subject_cn_fallback: false,
+    };
 
-    assert!(validate_certificate_chain(&chain, None, &[]).is_none());
+    assert!(validate_certificate_chain(&chain, context).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -343,15 +350,61 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     let span = PayloadSpanRef::from_payload(&payload);
     let chain = [span];
     let trusted = [span];
+    let cert = parse_x509_certificate(span).expect("test certificate parses");
 
-    assert!(validate_certificate_chain(&chain, Some("Test"), &trusted).is_some());
-    assert!(validate_certificate_chain(&chain, Some("example.com"), &trusted).is_none());
+    assert!(
+        validate_certificate_chain(
+            &chain,
+            X509VerificationContext {
+                now_unix: cert.not_before,
+                server_name: Some("Test"),
+                trusted_roots: &trusted,
+                allow_subject_cn_fallback: true,
+            },
+        )
+        .is_some()
+    );
+    assert!(
+        validate_certificate_chain(
+            &chain,
+            X509VerificationContext {
+                now_unix: cert.not_before,
+                server_name: Some("example.com"),
+                trusted_roots: &trusted,
+                allow_subject_cn_fallback: true,
+            },
+        )
+        .is_none()
+    );
+    assert!(
+        validate_certificate_chain(
+            &chain,
+            X509VerificationContext {
+                now_unix: cert.not_before,
+                server_name: Some("Test"),
+                trusted_roots: &trusted,
+                allow_subject_cn_fallback: false,
+            },
+        )
+        .is_none()
+    );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_rejects_empty_chain() {
-    assert!(validate_certificate_chain(&[], None, &[]).is_none());
+    assert!(
+        validate_certificate_chain(
+            &[],
+            X509VerificationContext {
+                now_unix: 0,
+                server_name: None,
+                trusted_roots: &[],
+                allow_subject_cn_fallback: false,
+            },
+        )
+        .is_none()
+    );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

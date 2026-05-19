@@ -21,7 +21,6 @@ const OID_KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x0F];
 const OID_EXTENDED_KEY_USAGE: &[u8] = &[0x55, 0x1D, 0x25];
 const OID_NAME_CONSTRAINTS: &[u8] = &[0x55, 0x1D, 0x1E];
 const OID_EKU_SERVER_AUTH: &[u8] = &[0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01];
-const OID_RSA_PSS: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A];
 const OID_COMMON_NAME: &[u8] = &[0x55, 0x04, 0x03];
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -31,7 +30,6 @@ pub enum SignatureAlgorithmId {
     Sha512WithRsa,
     EcdsaWithSha256,
     EcdsaWithSha384,
-    RsaPss,
     Unknown,
 }
 
@@ -77,6 +75,13 @@ pub struct X509Certificate<'a> {
     pub san_raw: Option<PayloadSpanRef<'a>>,
     pub key_usage: Option<KeyUsage>,
     pub extended_key_usage: Option<ExtendedKeyUsage>,
+}
+
+pub struct X509VerificationContext<'a> {
+    pub now_unix: u64,
+    pub server_name: Option<&'a str>,
+    pub trusted_roots: &'a [PayloadSpanRef<'a>],
+    pub allow_subject_cn_fallback: bool,
 }
 
 impl X509Certificate<'_> {
@@ -213,8 +218,6 @@ fn parse_signature_algorithm_id(oid: PayloadSpanRef<'_>) -> SignatureAlgorithmId
         SignatureAlgorithmId::EcdsaWithSha256
     } else if oid.eq_bytes(OID_ECDSA_WITH_SHA384) {
         SignatureAlgorithmId::EcdsaWithSha384
-    } else if oid.eq_bytes(OID_RSA_PSS) {
-        SignatureAlgorithmId::RsaPss
     } else {
         SignatureAlgorithmId::Unknown
     }
@@ -252,7 +255,6 @@ fn parse_signature_algorithm(value: PayloadSpanRef<'_>) -> Option<SignatureAlgor
         SignatureAlgorithmId::EcdsaWithSha256 | SignatureAlgorithmId::EcdsaWithSha384 => {
             params.is_none().then_some(algorithm)
         }
-        SignatureAlgorithmId::RsaPss => None,
         SignatureAlgorithmId::Unknown => None,
     }
 }
@@ -611,10 +613,9 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
     Some(())
 }
 
-pub fn validate_certificate_chain<'a, 'b>(
+pub fn validate_certificate_chain<'a, 'ctx>(
     chain: &[PayloadSpanRef<'a>],
-    server_name: Option<&str>,
-    trusted_roots: &[PayloadSpanRef<'b>],
+    context: X509VerificationContext<'ctx>,
 ) -> Option<SubjectPublicKeyInfo> {
     if chain.is_empty() || chain.len() > 8 {
         return None;
@@ -625,9 +626,8 @@ pub fn validate_certificate_chain<'a, 'b>(
         certs.try_push(parse_x509_certificate(*cert)?).ok()?;
     }
 
-    let now = crate::drivers::time::unix_timestamp();
     for cert in &certs {
-        if !cert.is_valid_at(now) {
+        if !cert.is_valid_at(context.now_unix) {
             return None;
         }
     }
@@ -643,8 +643,8 @@ pub fn validate_certificate_chain<'a, 'b>(
             return None;
         }
     }
-    if let Some(name) = server_name {
-        if !match_hostname(leaf, name) {
+    if let Some(name) = context.server_name {
+        if !match_hostname(leaf, name, context.allow_subject_cn_fallback) {
             return None;
         }
     }
@@ -655,7 +655,7 @@ pub fn validate_certificate_chain<'a, 'b>(
 
     let chain_tip = certs.last()?;
     let mut trusted = false;
-    for trust in trusted_roots {
+    for trust in context.trusted_roots {
         let trust_cert = parse_x509_certificate(*trust)?;
         let issued_by_trust = span_eq(chain_tip.issuer_raw, trust_cert.subject_raw)
             && verify_signature(chain_tip, &trust_cert.subject_public_key_info);
@@ -673,11 +673,15 @@ pub fn validate_certificate_chain<'a, 'b>(
     }
 }
 
-fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {
+fn match_hostname(
+    cert: &X509Certificate<'_>,
+    hostname: &str,
+    allow_subject_cn_fallback: bool,
+) -> bool {
     if let Some(san) = cert.san_raw {
         return match_hostname_in_san(san, hostname);
     }
-    match_hostname_in_subject(cert.subject_raw, hostname)
+    allow_subject_cn_fallback && match_hostname_in_subject(cert.subject_raw, hostname)
 }
 
 fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
@@ -813,9 +817,7 @@ fn sha512_span(span: PayloadSpanRef<'_>) -> [u8; 64] {
 }
 
 fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKeyInfo) -> bool {
-    use crate::net::security::rsa::{
-        HashAlgorithm, RsaPublicKey, rsa_pkcs1_verify, rsa_pss_verify,
-    };
+    use crate::net::security::rsa::{HashAlgorithm, RsaPublicKey, rsa_pkcs1_verify};
     let Some(signature) = span_to_arrayvec::<1024>(cert.signature_value) else {
         return false;
     };
@@ -844,14 +846,6 @@ fn verify_signature(cert: &X509Certificate<'_>, issuer_pubkey: &SubjectPublicKey
                 exponent: exponent.as_slice(),
             };
             rsa_pkcs1_verify(&key, HashAlgorithm::Sha512, &digest, signature.as_slice()).is_ok()
-        }
-        (SignatureAlgorithmId::RsaPss, SubjectPublicKeyInfo::Rsa { modulus, exponent }) => {
-            let digest = sha256_span(cert.raw_tbs);
-            let key = RsaPublicKey {
-                modulus: modulus.as_slice(),
-                exponent: exponent.as_slice(),
-            };
-            rsa_pss_verify(&key, HashAlgorithm::Sha256, &digest, signature.as_slice()).is_ok()
         }
         (SignatureAlgorithmId::EcdsaWithSha256, SubjectPublicKeyInfo::EcdsaP256 { public_key }) => {
             let digest = sha256_span(cert.raw_tbs);
