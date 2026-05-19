@@ -137,6 +137,15 @@ impl NetworkManager {
         self.interfaces.get(&if_id)
     }
 
+    fn unregister_interface(&mut self, if_id: NetIfId) -> bool {
+        let removed = self.interfaces.remove(&if_id).is_some();
+        if removed {
+            self.routes_v4.retain(|route| route.if_id != if_id);
+            self.routes_v6.retain(|route| route.if_id != if_id);
+        }
+        removed
+    }
+
     fn set_interface_config(
         &mut self,
         if_id: NetIfId,
@@ -520,6 +529,13 @@ pub fn get_interface_in(
     if_id: NetIfId,
 ) -> Result<Option<NetworkInterfaceInfo>, NetworkError> {
     with_manager_in(runtime, |m| m.get_interface(if_id).copied())
+}
+
+pub fn unregister_interface_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Result<bool, NetworkError> {
+    with_manager_mut_in(runtime, |m| m.unregister_interface(if_id))
 }
 
 pub fn set_interface_config_in(

@@ -291,6 +291,11 @@ impl ExperimentalTlsConnection {
         content: &[u8],
         signature: &[u8],
     ) -> TlsResult<()> {
+        let selected_scheme = crate::net::security::tls::protocol::SignatureScheme(sig_algorithm);
+        if !self.config.signature_schemes.contains(&selected_scheme) {
+            return Err(TlsError::UnsolicitedSignatureScheme);
+        }
+
         match sig_algorithm {
             0x0804 => self.verify_rsa_pss_signature(
                 content,
@@ -527,4 +532,29 @@ fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
         diff |= a[i] ^ b[i];
     }
     diff == 0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn certificate_verify_rejects_unoffered_signature_scheme() {
+        let mut config = crate::net::security::tls::TlsConfig::new();
+        config.signature_schemes.clear();
+        config
+            .signature_schemes
+            .push(crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256);
+        let conn = ExperimentalTlsConnection::new(config)
+            .expect("test TLS connection entropy is available");
+
+        let result = conn.dispatch_tls13_signature_verification(
+            crate::net::security::tls::protocol::SignatureScheme::RSA_PSS_RSAE_SHA256.0,
+            b"content",
+            b"signature",
+        );
+
+        assert!(matches!(result, Err(TlsError::UnsolicitedSignatureScheme)));
+    }
 }

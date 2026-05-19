@@ -25,6 +25,10 @@ pub enum TlsError {
     CipherSuiteMismatch,
     /// サポートされていない暗号スイート
     UnsupportedCipherSuite,
+    /// ServerHello selected a cipher suite that was not offered by this client.
+    UnsolicitedCipherSuite,
+    /// CertificateVerify selected a signature scheme that was not offered by this client.
+    UnsolicitedSignatureScheme,
     /// 復号エラー
     DecryptError,
     /// MACまたはパディング不正 (bad_record_mac alert)

@@ -3,7 +3,9 @@
 // ============================================================================
 
 use super::super::protocol::ContentType;
-use super::super::{ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState};
+use super::super::{
+    CipherSuite, ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState,
+};
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -25,6 +27,19 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     test_payload(data)
+}
+
+fn server_hello_message(cipher: CipherSuite) -> [u8; 42] {
+    const BODY_LEN: usize = 38;
+    let mut message = [0u8; 42];
+    message[0] = 2;
+    message[3] = BODY_LEN as u8;
+    message[4..6].copy_from_slice(&0x0303u16.to_be_bytes());
+    message[6..38].copy_from_slice(&[0x11; 32]);
+    message[38] = 0;
+    message[39..41].copy_from_slice(&cipher.0.to_be_bytes());
+    message[41] = 0;
+    message
 }
 
 fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
@@ -86,6 +101,24 @@ pub(crate) fn test_tls_connection_client_hello() {
     assert_eq!(hello[1], 0x03);
     assert_eq!(hello[2], 0x01);
     assert_eq!(conn.state(), TlsState::ClientHelloSent);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
+    let mut config = TlsConfig::new();
+    config.cipher_suites.clear();
+    config
+        .cipher_suites
+        .push(CipherSuite::TLS_AES_128_GCM_SHA256);
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+    let _ = conn.build_client_hello_payload();
+
+    let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
+    let result = conn.process_handshake(handshake_payload(&message));
+
+    assert!(matches!(result, Err(TlsError::UnsolicitedCipherSuite)));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

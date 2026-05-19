@@ -34,6 +34,9 @@ impl ExperimentalTlsConnection {
         if data.read_u8(cipher_offset + 2) != Some(0) {
             return Err(TlsError::DecodeError);
         }
+        if !self.config.cipher_suites.contains(&cipher) {
+            return Err(TlsError::UnsolicitedCipherSuite);
+        }
 
         let ext_offset = cipher_offset + 3;
         let server_key_share = Self::parse_server_hello_extensions(data, ext_offset)?;

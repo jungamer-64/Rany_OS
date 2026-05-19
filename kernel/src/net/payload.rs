@@ -884,10 +884,10 @@ mod tests {
         packet_payload_from_segments(segments)
     }
 
-    fn payload_to_vec(payload: &PacketPayload) -> Vec<u8> {
-        let mut bytes = Vec::new();
-        PacketPayloadView::new(payload).for_each_chunk(|chunk| bytes.extend_from_slice(chunk));
-        bytes
+    fn payload_to_bytes<const N: usize>(payload: &PacketPayload) -> FixedPayloadBytes<N> {
+        PacketPayloadView::new(payload)
+            .read_fixed_bytes(0, payload.total_len())
+            .expect("test payload fits fixed byte buffer")
     }
 
     #[test]
@@ -930,8 +930,8 @@ mod tests {
 
         let (left, right) = split_payload_owned(payload, 2).unwrap();
 
-        assert_eq!(payload_to_vec(&left), b"ab");
-        assert_eq!(payload_to_vec(&right), b"cde");
+        assert_eq!(payload_to_bytes::<2>(&left).as_slice(), b"ab");
+        assert_eq!(payload_to_bytes::<3>(&right).as_slice(), b"cde");
     }
 
     #[test]
@@ -940,8 +940,8 @@ mod tests {
 
         let (left, right) = split_payload_owned(payload, 3).unwrap();
 
-        assert_eq!(payload_to_vec(&left), b"abc");
-        assert_eq!(payload_to_vec(&right), b"def");
+        assert_eq!(payload_to_bytes::<3>(&left).as_slice(), b"abc");
+        assert_eq!(payload_to_bytes::<3>(&right).as_slice(), b"def");
     }
 
     #[test]

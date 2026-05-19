@@ -208,11 +208,8 @@ pub(crate) fn packet_window_to_tx_segments(
         }
         let descriptor_len = local_end - local_start;
         let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
-        descriptors.push(NetTxSegment::new(
-            cpu_ptr,
-            packet.device_address().saturating_add(local_start as u64),
-            descriptor_len,
-        ));
+        let device_addr = packet.device_address().checked_add(local_start as u64)?;
+        descriptors.push(NetTxSegment::new(cpu_ptr, device_addr, descriptor_len));
     }
 
     (!descriptors.is_empty()).then_some(descriptors)
@@ -1408,6 +1405,40 @@ fn interface_for_port(
     Ok(if_id)
 }
 
+fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
+    if let Ok(mut guard) = stack::stack_in(runtime).lock()
+        && let Some(stack) = guard.as_mut()
+    {
+        stack.unregister_interface_state(if_id);
+    }
+    let _ = manager::unregister_interface_in(runtime, if_id);
+}
+
+fn rollback_port_registration_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    port_id: NetPortId,
+    previous_primary: Option<NetIfId>,
+) {
+    let removed = {
+        let mut guard = device_manager_in(runtime)
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
+        if guard.port_map.get(&port_id) == Some(&if_id) {
+            guard.port_map.remove(&port_id);
+        }
+        if guard.primary == Some(if_id) {
+            guard.primary = previous_primary;
+        }
+        guard.handles.remove(&if_id)
+    };
+    if let Some(handle) = removed {
+        handle.stop();
+    }
+    rollback_interface_registration_in(runtime, if_id);
+}
+
 fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
     let mac_bytes = if info.mac == MacAddress::ZERO {
         MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01)
@@ -1463,13 +1494,17 @@ pub fn register_port_in(
         if_id,
     };
     let handle = NetDeviceHandle::new(driver, binding, runtime_context_for(runtime));
-    handle.driver.bind(if_id.0)?;
+    if let Err(err) = handle.driver.bind(if_id.0) {
+        rollback_interface_registration_in(runtime, if_id);
+        return Err(err);
+    }
     let runtime_handle = handle.runtime;
 
-    let selected_as_primary = {
+    let (selected_as_primary, previous_primary) = {
         let mut guard = device_manager_in(runtime)
             .write()
             .unwrap_or_else(|e| e.into_inner());
+        let previous_primary = guard.primary;
         let selected_as_primary =
             should_select_as_primary(guard.primary, registration.primary_policy, info);
         guard.port_map.insert(info.port_id, if_id);
@@ -1477,14 +1512,18 @@ pub fn register_port_in(
         if selected_as_primary {
             guard.primary = Some(if_id);
         }
-        selected_as_primary
+        (selected_as_primary, previous_primary)
     };
 
     if let Some(start_result) =
         with_port_handle_in(runtime, if_id, |handle| handle.driver.start(runtime_handle))
     {
-        start_result?;
+        if let Err(err) = start_result {
+            rollback_port_registration_in(runtime, if_id, info.port_id, previous_primary);
+            return Err(err);
+        }
     } else {
+        rollback_port_registration_in(runtime, if_id, info.port_id, previous_primary);
         return Err("device handle missing after registration");
     }
     start_workers_for_port_in(runtime, if_id);
@@ -1517,26 +1556,33 @@ pub fn bind_port_interface_in(
     port_id: NetPortId,
     if_id: NetIfId,
 ) -> Result<(), &'static str> {
-    let bound_if_id = {
-        let guard = device_manager_in(runtime)
-            .read()
+    let (bound_if_id, handle) = {
+        let mut guard = device_manager_in(runtime)
+            .write()
             .unwrap_or_else(|e| e.into_inner());
         let Some(bound_if_id) = guard.port_map.get(&port_id).copied() else {
             return Err("device port not registered");
         };
-        bound_if_id
+        if if_id != bound_if_id
+            && (guard.handles.contains_key(&if_id)
+                || guard
+                    .port_map
+                    .iter()
+                    .any(|(mapped_port, mapped_if)| *mapped_port != port_id && *mapped_if == if_id))
+        {
+            return Err("interface already bound to device port");
+        }
+
+        (
+            bound_if_id,
+            guard
+                .handles
+                .remove(&bound_if_id)
+                .ok_or("device handle missing")?,
+        )
     };
 
     let binding = NetDeviceBinding { port_id, if_id };
-    let handle = {
-        let mut guard = device_manager_in(runtime)
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        guard
-            .handles
-            .remove(&bound_if_id)
-            .ok_or("device handle missing")?
-    };
     if let Err(err) = handle.rebind(binding) {
         device_manager_in(runtime)
             .write()
@@ -1578,6 +1624,7 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
                 stack.unregister_interface_state(if_id);
             }
         }
+        let _ = manager::unregister_interface_in(runtime, if_id);
         handle.stop();
         true
     } else {
@@ -1804,11 +1851,29 @@ mod tests {
 
     struct FakeDriver {
         state: &'static FakeDriverState,
+        driver_name: &'static str,
+        start_error: Option<&'static str>,
     }
 
     impl FakeDriver {
         const fn new(state: &'static FakeDriverState) -> Self {
-            Self { state }
+            Self {
+                state,
+                driver_name: "fake",
+                start_error: None,
+            }
+        }
+
+        const fn with_start_error(
+            state: &'static FakeDriverState,
+            driver_name: &'static str,
+            start_error: &'static str,
+        ) -> Self {
+            Self {
+                state,
+                driver_name,
+                start_error: Some(start_error),
+            }
         }
     }
 
@@ -1817,12 +1882,27 @@ mod tests {
         (state, Box::new(FakeDriver::new(state)))
     }
 
+    fn fake_driver_with_start_error(
+        driver_name: &'static str,
+        start_error: &'static str,
+    ) -> (&'static FakeDriverState, Box<dyn NetDevicePort>) {
+        let state = Box::leak(Box::new(FakeDriverState::new()));
+        (
+            state,
+            Box::new(FakeDriver::with_start_error(
+                state,
+                driver_name,
+                start_error,
+            )),
+        )
+    }
+
     impl NetDevicePort for FakeDriver {
         fn info(&self) -> NetDeviceInfo {
             NetDeviceInfo {
                 port_id: NetPortId::new(0x9009),
                 if_id: None,
-                driver_name: "fake",
+                driver_name: self.driver_name,
                 queue_pairs: 1,
                 mtu: stack::MTU as u32,
                 mac: MacAddress::from_octets(0, 1, 2, 3, 4, 5),
@@ -1831,7 +1911,11 @@ mod tests {
         }
 
         fn start(&self, _runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
-            Ok(())
+            if let Some(error) = self.start_error {
+                Err(error)
+            } else {
+                Ok(())
+            }
         }
 
         fn bind(&self, if_id: u16) -> Result<(), &'static str> {
@@ -1914,6 +1998,126 @@ mod tests {
             default_runtime(),
             NetPortRegistration::new(info, driver, primary_policy),
         )
+    }
+
+    #[derive(Clone, Copy)]
+    struct TestPacketRefState {
+        ptr: *mut u8,
+        len: usize,
+        capacity: usize,
+        device_addr: u64,
+    }
+
+    unsafe fn test_packet_state(
+        storage: &kernel_api::resource::net::PacketRefStorage,
+    ) -> &TestPacketRefState {
+        unsafe { storage.as_state_ref::<TestPacketRefState>() }
+    }
+
+    unsafe fn test_packet_state_mut(
+        storage: &mut kernel_api::resource::net::PacketRefStorage,
+    ) -> &mut TestPacketRefState {
+        unsafe { storage.as_state_mut::<TestPacketRefState>() }
+    }
+
+    unsafe fn test_packet_data_ptr(
+        storage: &kernel_api::resource::net::PacketRefStorage,
+    ) -> *const u8 {
+        unsafe { test_packet_state(storage).ptr.cast_const() }
+    }
+
+    unsafe fn test_packet_data_mut_ptr(
+        storage: &mut kernel_api::resource::net::PacketRefStorage,
+    ) -> *mut u8 {
+        unsafe { test_packet_state_mut(storage).ptr }
+    }
+
+    unsafe fn test_packet_len(storage: &kernel_api::resource::net::PacketRefStorage) -> usize {
+        unsafe { test_packet_state(storage).len }
+    }
+
+    unsafe fn test_packet_set_len(
+        storage: &mut kernel_api::resource::net::PacketRefStorage,
+        len: usize,
+    ) -> bool {
+        let state = unsafe { test_packet_state_mut(storage) };
+        if len > state.capacity {
+            return false;
+        }
+        state.len = len;
+        true
+    }
+
+    unsafe fn test_packet_capacity(storage: &kernel_api::resource::net::PacketRefStorage) -> usize {
+        unsafe { test_packet_state(storage).capacity }
+    }
+
+    unsafe fn test_packet_phys_addr(storage: &kernel_api::resource::net::PacketRefStorage) -> u64 {
+        unsafe { test_packet_state(storage).device_addr }
+    }
+
+    unsafe fn test_packet_device_address(
+        storage: &kernel_api::resource::net::PacketRefStorage,
+    ) -> u64 {
+        unsafe { test_packet_state(storage).device_addr }
+    }
+
+    unsafe fn test_packet_headroom(_: &kernel_api::resource::net::PacketRefStorage) -> usize {
+        0
+    }
+
+    unsafe fn test_packet_advance(
+        storage: &mut kernel_api::resource::net::PacketRefStorage,
+        size: usize,
+    ) -> bool {
+        let state = unsafe { test_packet_state_mut(storage) };
+        if size > state.len {
+            return false;
+        }
+        state.ptr = unsafe { state.ptr.add(size) };
+        state.len -= size;
+        state.device_addr = state.device_addr.wrapping_add(size as u64);
+        true
+    }
+
+    unsafe fn test_packet_retreat(
+        _storage: &mut kernel_api::resource::net::PacketRefStorage,
+        _size: usize,
+    ) -> bool {
+        false
+    }
+
+    unsafe fn test_packet_drop(_: &mut kernel_api::resource::net::PacketRefStorage) {}
+
+    static TEST_PACKET_REF_VTABLE: kernel_api::resource::net::PacketRefVTable =
+        kernel_api::resource::net::PacketRefVTable {
+            data_ptr: test_packet_data_ptr,
+            data_mut_ptr: test_packet_data_mut_ptr,
+            len: test_packet_len,
+            set_len: test_packet_set_len,
+            capacity: test_packet_capacity,
+            phys_addr: test_packet_phys_addr,
+            device_address: test_packet_device_address,
+            headroom: test_packet_headroom,
+            advance: test_packet_advance,
+            retreat: test_packet_retreat,
+            drop_storage: test_packet_drop,
+        };
+
+    fn test_packet_ref_with_device_addr(len: usize, device_addr: u64) -> PacketRef {
+        let backing = Box::leak(Box::new([0u8; 64]));
+        let state = TestPacketRefState {
+            ptr: backing.as_mut_ptr(),
+            len,
+            capacity: backing.len(),
+            device_addr,
+        };
+        unsafe {
+            PacketRef::from_opaque_parts(
+                kernel_api::resource::net::PacketRefStorage::from_state(state),
+                &TEST_PACKET_REF_VTABLE,
+            )
+        }
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2030,6 +2234,56 @@ mod tests {
 
         assert!(unregister_port_in(default_runtime(), if_id));
         assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn register_port_rolls_back_device_state_when_driver_start_fails() {
+        let (_state, driver) = fake_driver_with_start_error("start-fail", "start failed");
+
+        assert_eq!(
+            register_test_port(88, driver, PrimaryPortPolicy::Never),
+            Err("start failed")
+        );
+        assert_eq!(
+            lookup_if_by_port_id_in(default_runtime(), test_port_id(88)),
+            None
+        );
+        assert!(!list_port_ids_in(default_runtime()).contains(&test_port_id(88)));
+        assert!(
+            manager::list_interfaces_in(default_runtime())
+                .expect("manager query")
+                .iter()
+                .all(|iface| iface.name != "start-fail")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn bind_port_interface_rejects_if_id_already_bound_to_another_port() {
+        let (_, driver_a) = fake_driver();
+        let (_, driver_b) = fake_driver();
+
+        let if_a = register_test_port(86, driver_a, PrimaryPortPolicy::Never)
+            .expect("register first port");
+        let if_b = register_test_port(87, driver_b, PrimaryPortPolicy::Never)
+            .expect("register second port");
+
+        assert_eq!(
+            bind_port_interface_in(default_runtime(), test_port_id(86), if_b),
+            Err("interface already bound to device port")
+        );
+        assert_eq!(
+            lookup_if_by_port_id_in(default_runtime(), test_port_id(86)),
+            Some(if_a)
+        );
+        assert_eq!(
+            lookup_if_by_port_id_in(default_runtime(), test_port_id(87)),
+            Some(if_b)
+        );
+
+        assert!(unregister_port_in(default_runtime(), if_b));
+        assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2250,6 +2504,15 @@ mod tests {
         assert_eq!(descriptors[0].cpu_ptr, base_ptr + 8);
         assert_eq!(descriptors[0].device_addr, base_device_addr + 8);
         assert_eq!(descriptors[0].len, 16);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn packet_window_descriptor_rejects_device_address_overflow() {
+        let packet = test_packet_ref_with_device_addr(16, u64::MAX - 4);
+        let packets = alloc::vec![packet];
+
+        assert!(packet_window_to_tx_segments(&packets, 8, 4).is_none());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
