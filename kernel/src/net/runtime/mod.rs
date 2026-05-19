@@ -18,8 +18,7 @@ pub mod stack;
 pub mod timeouts;
 pub(crate) mod transport;
 
-pub use context::{
-    NetRuntimeContext, NetRuntimeHandle, NetRuntimeId, RuntimeAllocationError, create_runtime,
-    default_runtime, default_runtime_context, list_runtimes, reset_runtime_registry_for_tests,
-    runtime, set_default_runtime,
-};
+pub use context::{NetRuntimeContext, NetRuntimeHandle, create_runtime, default_runtime};
+
+#[cfg(test)]
+pub use context::reset_runtime_registry_for_tests;

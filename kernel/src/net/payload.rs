@@ -402,6 +402,78 @@ pub fn move_payload_window_owned(
     PacketPayloadWindow::new(payload, offset, len)?.into_payload()
 }
 
+fn copy_segment_range(segment: &PacketRef, offset: usize, len: usize) -> Option<PacketRef> {
+    let end = offset.checked_add(len)?;
+    let data = segment.data();
+    if end > data.len() {
+        return None;
+    }
+
+    let mut packet = alloc_packet_with_headroom(len, 0)?;
+    packet.data_mut()[..len].copy_from_slice(&data[offset..end]);
+    packet.set_meta(*segment.meta());
+    Some(packet)
+}
+
+pub fn split_payload_owned(
+    payload: PacketPayload,
+    at: usize,
+) -> Option<(PacketPayload, PacketPayload)> {
+    let total_len = payload.total_len();
+    if at > total_len {
+        return None;
+    }
+    if at == 0 {
+        return Some((PacketPayload::default(), payload));
+    }
+    if at == total_len {
+        return Some((payload, PacketPayload::default()));
+    }
+
+    let mut left_segments = Vec::new();
+    let mut right_segments = Vec::new();
+    let mut left_remaining = at;
+
+    for mut segment in payload.into_segments() {
+        let segment_len = segment.len();
+        if left_remaining == 0 {
+            right_segments.push(segment);
+            continue;
+        }
+        if segment_len <= left_remaining {
+            left_remaining -= segment_len;
+            left_segments.push(segment);
+            continue;
+        }
+
+        let split_at = left_remaining;
+        let right_len = segment_len.checked_sub(split_at)?;
+        if split_at <= right_len {
+            let left_copy = copy_segment_range(&segment, 0, split_at)?;
+            if !segment.advance(split_at) {
+                return None;
+            }
+            left_segments.push(left_copy);
+            right_segments.push(segment);
+        } else {
+            let right_copy = copy_segment_range(&segment, split_at, right_len)?;
+            if !segment.set_len(split_at) {
+                return None;
+            }
+            left_segments.push(segment);
+            right_segments.push(right_copy);
+        }
+        left_remaining = 0;
+    }
+
+    (left_remaining == 0).then(|| {
+        (
+            packet_payload_from_segments(left_segments),
+            packet_payload_from_segments(right_segments),
+        )
+    })
+}
+
 impl GeneratedPacketWriter {
     pub fn new(len: usize, headroom: usize) -> Option<Self> {
         Some(Self {
@@ -801,6 +873,23 @@ mod tests {
     use super::*;
     use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
+    fn payload_from_chunks(chunks: &[&[u8]]) -> PacketPayload {
+        let mut segments = Vec::new();
+        for chunk in chunks {
+            let mut writer =
+                GeneratedPacketWriter::new(chunk.len(), DEFAULT_PACKET_HEADROOM).unwrap();
+            writer.write_bytes(chunk).unwrap();
+            segments.push(writer.finish().unwrap().into_segments().remove(0));
+        }
+        packet_payload_from_segments(segments)
+    }
+
+    fn payload_to_vec(payload: &PacketPayload) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        PacketPayloadView::new(payload).for_each_chunk(|chunk| bytes.extend_from_slice(chunk));
+        bytes
+    }
+
     #[test]
     fn payload_range_checked_end_rejects_overflow() {
         let range = PayloadRange::new(usize::MAX, 1);
@@ -833,5 +922,32 @@ mod tests {
     #[test]
     fn alloc_packet_with_headroom_rejects_length_overflow() {
         assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
+    }
+
+    #[test]
+    fn split_payload_owned_at_segment_boundary_preserves_ranges() {
+        let payload = payload_from_chunks(&[b"ab", b"cde"]);
+
+        let (left, right) = split_payload_owned(payload, 2).unwrap();
+
+        assert_eq!(payload_to_vec(&left), b"ab");
+        assert_eq!(payload_to_vec(&right), b"cde");
+    }
+
+    #[test]
+    fn split_payload_owned_inside_segment_preserves_ranges() {
+        let payload = payload_from_chunks(&[b"abcdef"]);
+
+        let (left, right) = split_payload_owned(payload, 3).unwrap();
+
+        assert_eq!(payload_to_vec(&left), b"abc");
+        assert_eq!(payload_to_vec(&right), b"def");
+    }
+
+    #[test]
+    fn split_payload_owned_rejects_out_of_bounds_split() {
+        let payload = payload_from_chunks(&[b"abc"]);
+
+        assert!(split_payload_owned(payload, 4).is_none());
     }
 }

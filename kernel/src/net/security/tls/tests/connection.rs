@@ -24,15 +24,19 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
 }
 
 fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    test_payload(data)
+}
+
+fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     let mut writer = crate::net::payload::GeneratedPacketWriter::new(
         data.len(),
         kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
     )
-    .expect("test handshake payload allocation succeeds");
+    .expect("test payload allocation succeeds");
     writer
         .write_bytes(data)
-        .expect("test handshake payload write succeeds");
-    writer.finish().expect("test handshake payload is exact")
+        .expect("test payload write succeeds");
+    writer.finish().expect("test payload is exact")
 }
 
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
@@ -92,6 +96,59 @@ pub(crate) fn test_tls_connection_encrypt_not_established() {
         ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
     let result = conn.encrypt(b"hello");
     assert!(matches!(result, Err(TlsError::NotConnected)));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_process_incoming_payload_accepts_multiple_plain_records() {
+    let config = TlsConfig::new();
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+    let records = [
+        ContentType::Alert as u8,
+        0x03,
+        0x03,
+        0,
+        2,
+        1,
+        0,
+        ContentType::Alert as u8,
+        0x03,
+        0x03,
+        0,
+        2,
+        1,
+        0,
+    ];
+
+    let plaintext = conn
+        .process_incoming_payload(test_payload(&records))
+        .expect("concatenated TLS records should be processed one by one");
+
+    assert!(plaintext.is_empty());
+    assert_eq!(conn.state(), TlsState::Closed);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
+    let config = TlsConfig::new();
+    let mut conn =
+        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+    let first_fragment = [ContentType::Alert as u8, 0x03, 0x03, 0, 2, 1];
+    let second_fragment = [0];
+
+    let pending_plaintext = conn
+        .process_incoming_payload(test_payload(&first_fragment))
+        .expect("partial TLS record should stay buffered");
+    assert!(pending_plaintext.is_empty());
+    assert_ne!(conn.state(), TlsState::Closed);
+
+    let plaintext = conn
+        .process_incoming_payload(test_payload(&second_fragment))
+        .expect("second fragment should complete the buffered TLS record");
+    assert!(plaintext.is_empty());
+    assert_eq!(conn.state(), TlsState::Closed);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

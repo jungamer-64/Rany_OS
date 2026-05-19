@@ -225,6 +225,7 @@ pub fn set_default_runtime(handle: NetRuntimeHandle) {
     }
 }
 
+#[cfg(test)]
 pub fn reset_runtime_registry_for_tests() {
     if let Ok(mut registry) = RUNTIME_REGISTRY.lock() {
         registry.default = None;

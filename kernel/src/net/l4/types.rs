@@ -110,7 +110,7 @@ impl EndpointError {
             TcpError::BufferFull => EndpointError::BufferFull,
             TcpError::PermissionDenied => EndpointError::PermissionDenied,
             TcpError::InvalidState => EndpointError::InvalidStateTransition,
-            TcpError::NetworkUnreachable => EndpointError::ResourceExhausted,
+            TcpError::NetworkUnreachable => EndpointError::NetworkUnreachable,
         }
     }
 }
@@ -469,6 +469,13 @@ pub mod tests {
         assert_eq!(localhost.port(), 3000);
     }
 
+    fn tcp_network_unreachable_keeps_endpoint_cause_impl() {
+        assert_eq!(
+            EndpointError::from_tcp_error(crate::net::l4::tcp::TcpError::NetworkUnreachable),
+            EndpointError::NetworkUnreachable,
+        );
+    }
+
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_fd() {
         endpoint_fd_impl();
@@ -477,5 +484,10 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_endpoint_addr() {
         endpoint_addr_impl();
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_network_unreachable_keeps_endpoint_cause() {
+        tcp_network_unreachable_keeps_endpoint_cause_impl();
     }
 }

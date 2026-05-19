@@ -255,15 +255,17 @@ impl ExperimentalTlsConnection {
             }
             let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
             let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-            let total_len = 5usize.saturating_add(record_len);
+            let total_len = 5usize
+                .checked_add(record_len)
+                .ok_or(TlsError::DecodeError)?;
             if view.total_len() < total_len {
                 break;
             }
-            if view.total_len() != total_len {
-                return Err(TlsError::DecodeError);
-            }
 
-            let record = core::mem::take(&mut self.record.recv_buffer);
+            let buffer = core::mem::take(&mut self.record.recv_buffer);
+            let (record, rest) = crate::net::payload::split_payload_owned(buffer, total_len)
+                .ok_or(TlsError::DecodeError)?;
+            self.record.recv_buffer = rest;
             self.consume_tls_record_payload(record, &mut plaintext)?;
         }
         Ok(plaintext)
