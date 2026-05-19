@@ -40,10 +40,6 @@ const HOST_HTTP_IDLE_WAIT_MAX_MS: u32 = 50;
 pub(super) const HOST_HTTP_CONNECTION_TIMEOUT_MS: u64 = 10_000;
 pub(super) const HOST_HTTP_READ_TRIES: usize = 20;
 pub(super) const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
-const HOST_HTTP_MAX_READ_WAIT_MS: u64 = HOST_HTTP_READ_TRIES as u64 * HOST_HTTP_READ_TIMEOUT_MS;
-// Invariant: リクエスト読み取りの最大待機時間は接続寿命を超えないこと。
-const _HOST_HTTP_READ_BUDGET_GUARD: [(); 1] =
-    [(); (HOST_HTTP_MAX_READ_WAIT_MS <= HOST_HTTP_CONNECTION_TIMEOUT_MS) as usize];
 // deadline 判定コストを抑えるため、読み取り試行ごとではなく N 回ごとにチェックする。
 // READ_TIMEOUT_MS(100ms) * STRIDE(2) = 最長 200ms の判定遅延を許容する代わりに、
 // 高頻度 current_tick() 呼び出しを抑制する。

@@ -4,7 +4,6 @@
 
 use crate::io::iommu::common::tables::virt_ptr_to_phys;
 use alloc::alloc::Layout;
-use alloc::vec::Vec;
 
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]
@@ -28,14 +27,10 @@ pub mod qi_desc_type {
     pub const IEC_INV: u64 = 0x4;
     /// Invalidation Wait Descriptor
     pub const WAIT: u64 = 0x5;
-    /// Extended IOTLB Invalidate Descriptor
-    pub const EXT_IOTLB_INV: u64 = 0x6;
     /// PASID-based IOTLB Invalidate
     pub const PASID_IOTLB_INV: u64 = 0x7;
     /// PASID-cache Invalidate
     pub const PASID_CACHE_INV: u64 = 0x8;
-    /// Page Group Response Descriptor (VT-d Spec §6.5.2.9)
-    pub const PAGE_GROUP_RESP: u64 = 0x9;
 }
 
 impl InvalidationQueueEntry {
@@ -172,11 +167,6 @@ impl InvalidationQueueEntry {
         Self { lo, hi }
     }
 
-    /// Create a Global PASID Cache Invalidation descriptor
-    pub fn pasid_cache_invalidate_global() -> Self {
-        Self::pasid_cache_invalidate(1, 0, 0)
-    }
-
     /// Create a Domain PASID Cache Invalidation descriptor
     pub fn pasid_cache_invalidate_domain(domain_id: u16) -> Self {
         Self::pasid_cache_invalidate(2, domain_id, 0)
@@ -186,37 +176,6 @@ impl InvalidationQueueEntry {
     pub fn pasid_iotlb_invalidate(domain_id: u16, pasid: u32) -> Self {
         let lo = qi_desc_type::PASID_IOTLB_INV | ((domain_id as u64) << 16);
         let hi = (pasid as u64) & 0xFFFFF; // PASID is 20 bits
-        Self { lo, hi }
-    }
-
-    /// Create a Page Group Response descriptor (VT-d Spec §6.5.2.9)
-    ///
-    /// Used to respond to page requests from devices via PRI.
-    /// Hardware processes this descriptor to send a page response back to the
-    /// requesting device.
-    ///
-    /// # Arguments
-    /// * `source_id` - PCIe Requester ID of the requesting device
-    /// * `pasid` - PASID if the original request was PASID-tagged
-    /// * `prg_index` - Page Request Group Index from the original request
-    /// * `response_code` - Response code (0=Success, 1=Invalid Request, 2=Failure)
-    pub fn page_group_response(
-        source_id: u16,
-        pasid: Option<u32>,
-        prg_index: u16,
-        response_code: u8,
-    ) -> Self {
-        // lo: bits[3:0]=type(0x9), bits[7:4]=response_code, bits[31:16]=source_id,
-        //     bits[47:32]=prg_index
-        let lo = qi_desc_type::PAGE_GROUP_RESP
-            | ((response_code as u64 & 0xF) << 4)
-            | ((source_id as u64) << 16)
-            | ((prg_index as u64) << 32);
-        // hi: bits[19:0]=PASID, bit[63]=PASID present
-        let hi = match pasid {
-            Some(p) => ((p as u64) & 0xFFFFF) | (1u64 << 63),
-            None => 0,
-        };
         Self { lo, hi }
     }
 
@@ -273,10 +232,6 @@ pub struct InvalidationQueue {
 }
 
 impl InvalidationQueue {
-    /// Queue size must be power of 2 between 256 and 65536
-    pub const MIN_SIZE: usize = 256;
-    pub const MAX_SIZE: usize = 65536;
-
     /// Create a new Invalidation Queue
     pub fn new(size_log2: u8) -> Option<Self> {
         #[cfg(test)]
@@ -373,7 +328,7 @@ impl InvalidationQueue {
         self.queue_phys
     }
 
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     pub(crate) fn queue_virtual_address(&self) -> usize {
         self.queue_virt
     }
@@ -453,6 +408,7 @@ impl InvalidationQueue {
     }
 
     /// Submit a wait descriptor and return the status address and expected sequence.
+    #[cfg(test)]
     pub fn submit_wait(&mut self) -> (usize, u32) {
         let seq = self.next_wait_seq;
         self.next_wait_seq = self.next_wait_seq.wrapping_add(1);
@@ -477,53 +433,10 @@ impl InvalidationQueue {
     /// Check if a wait has completed (status address updated).
     ///
     /// Uses monotonic comparison to handle concurrent requests and wrap-around.
+    #[cfg(test)]
     pub fn check_wait_complete(&self, expected: u32) -> bool {
         let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
         // Use wrap-around safe comparison (distance in u32 space)
         status.wrapping_sub(expected) < (1u32 << 31)
-    }
-}
-
-/// Batched Invalidation for efficient QI usage
-///
-/// Collects multiple invalidation requests and submits them in a batch.
-pub struct InvalidationBatch {
-    /// Pending invalidation descriptors
-    pending: Vec<InvalidationQueueEntry>,
-    /// Maximum batch size before auto-flush
-    max_batch: usize,
-}
-
-impl InvalidationBatch {
-    /// Default batch size
-    pub const DEFAULT_MAX: usize = 32;
-
-    /// Create a new invalidation batch
-    pub fn new(max_batch: usize) -> Self {
-        Self {
-            pending: Vec::with_capacity(max_batch),
-            max_batch,
-        }
-    }
-
-    /// Add an invalidation descriptor
-    pub fn add(&mut self, entry: InvalidationQueueEntry) -> bool {
-        self.pending.push(entry);
-        self.pending.len() >= self.max_batch
-    }
-
-    /// Get pending descriptors and clear
-    pub fn drain(&mut self) -> Vec<InvalidationQueueEntry> {
-        core::mem::take(&mut self.pending)
-    }
-
-    /// Check if batch is empty
-    pub fn is_empty(&self) -> bool {
-        self.pending.is_empty()
-    }
-
-    /// Get pending count
-    pub fn len(&self) -> usize {
-        self.pending.len()
     }
 }

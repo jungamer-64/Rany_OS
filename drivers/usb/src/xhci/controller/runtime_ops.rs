@@ -25,7 +25,6 @@ impl XhciController {
     pub(crate) fn register_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8, waker: Waker) {
         let mut completions = self.transfer_completions.lock();
         completions.push(TransferCompletion {
-            trb_addr: 0, // TRBアドレスは後で設定可能
             slot_id,
             endpoint_id,
             completion_code: CompletionCode::Invalid,
@@ -96,7 +95,6 @@ impl XhciController {
         // DMA-backedデバイスコンテキストを保存
         let dma_ctx = DmaDeviceContext {
             ptr: ctx_ptr,
-            device_addr: ctx_device_addr,
             _dma_buf: dma_buf,
         };
         let mut device_contexts = self.device_contexts.lock();

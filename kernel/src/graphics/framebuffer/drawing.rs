@@ -689,15 +689,6 @@ impl Framebuffer {
         mmio::sfence();
     }
 
-    /// Per-pixel fallback fill for other pixel formats.
-    fn fill_rect_pixel_fallback(&mut self, r: Rect, color: Color) {
-        for y in r.y..r.bottom() {
-            for x in r.x..r.right() {
-                self.set_pixel_raw(x, y, color);
-            }
-        }
-    }
-
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
         let r = match self.clip_intersection(rect) {
             Some(r) => r,

@@ -699,7 +699,11 @@ fn case_loader_rejects_too_new_kernel_api(ctx: &RuntimeContext) -> Result<(), Ru
     let health_before = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
 
-    match crate::loader::load_driver_pack("driver_cell_probe_too_new", &ctx.too_new_pack, true) {
+    match crate::loader::load_driver_artifact_cell(
+        "driver_cell_probe_too_new",
+        &ctx.too_new_pack,
+        true,
+    ) {
         Err(crate::loader::LoadError::AbiIncompatible(msg))
             if crate::loader::str_eq(msg.as_str(), "Kernel API ABI version too old") => {}
         Err(e) => {
@@ -708,10 +712,10 @@ fn case_loader_rejects_too_new_kernel_api(ctx: &RuntimeContext) -> Result<(), Ru
                 e
             )));
         }
-        Ok(handle) => {
+        Ok(cell_id) => {
             return Err(RuntimeCaseError::failed(format!(
-                "load_driver_pack unexpectedly succeeded: {:?}",
-                handle
+                "load_driver_artifact_cell unexpectedly succeeded: {:?}",
+                cell_id
             )));
         }
     }

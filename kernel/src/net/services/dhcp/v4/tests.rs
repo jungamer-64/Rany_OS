@@ -4,7 +4,9 @@
 
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
+#[cfg(test)]
 use crate::sync::set_panicking;
+#[cfg(test)]
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
@@ -36,6 +38,7 @@ fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
     false
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_check_timeout_poisoned_state_reset_skips() {
     let client = DhcpClient::new(
@@ -57,6 +60,7 @@ pub fn test_check_timeout_poisoned_state_reset_skips() {
     set_panicking(false);
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
     let header = DhcpHeader {
@@ -198,6 +202,7 @@ pub fn test_build_discover_reuse_xid_on_retransmit() {
     assert_eq!(xid2, 0x1234_5678);
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_build_discover_state_lock_poison_returns_err() {
     let client = DhcpClient::new(
@@ -601,6 +606,7 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
     }
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_build_lease_defaults_large_timers_without_overflow() {
     let header = DhcpHeader {
@@ -642,6 +648,7 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
     assert_eq!(lease.server_ip, Ipv4Address::new([10, 0, 0, 1]));
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_offer_probe_and_decline_flow() {
     use crate::net::l2::ethernet::MacAddress;
@@ -710,6 +717,7 @@ pub fn test_offer_probe_and_decline_flow() {
     );
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_drive_init_sends_discover_and_enters_selecting() {
     let client = DhcpClient::new(
@@ -721,6 +729,7 @@ pub fn test_drive_init_sends_discover_and_enters_selecting() {
     assert_eq!(client.state(), DhcpState::Selecting);
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_force_renew_or_restart_paths() {
     let client = DhcpClient::new(
@@ -773,6 +782,7 @@ pub fn test_force_renew_or_restart_paths() {
     assert!(client.offered_lease.lock().unwrap().is_none());
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_build_inform_sets_ciaddr_and_message_type() {
     use crate::net::l2::ethernet::MacAddress;
@@ -814,6 +824,7 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
     assert!(!dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
     use crate::net::l2::ethernet::MacAddress;
@@ -899,6 +910,7 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
     assert_eq!(client.state(), DhcpState::Bound);
 }
 
+#[cfg(test)]
 #[cfg_attr(test, test_case)]
 pub fn test_inform_requires_active_lease() {
     use crate::net::l2::ethernet::MacAddress;

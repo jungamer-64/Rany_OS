@@ -108,6 +108,7 @@ pub(crate) unsafe fn map_for_device_with_perms(
 ///
 /// Same requirements as any raw DMA mapping helper. The caller must guarantee the physical
 /// address is owned, valid for DMA, and not a critical system structure.
+#[cfg(test)]
 pub(crate) async unsafe fn map_for_device_async(
     device: &DeviceId,
     phys_addr: PhysAddr,

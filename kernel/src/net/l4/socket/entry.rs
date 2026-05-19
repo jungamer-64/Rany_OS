@@ -3,12 +3,9 @@
 // ============================================================================
 //! Socket value handle backed by registry-owned socket state.
 
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{
-    RuntimeCommand, TransportCommand, enqueue_command_ignore_in, enqueue_command_in,
-};
+use crate::net::runtime::command::{RuntimeCommand, TransportCommand, enqueue_command_ignore_in};
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
@@ -113,10 +110,6 @@ impl Socket {
         socket
     }
 
-    pub(crate) fn new_registered_udp_in(runtime: NetRuntimeHandle) -> Self {
-        Self::new_udp_in(runtime)
-    }
-
     pub fn new_raw_in(runtime: NetRuntimeHandle) -> Self {
         let socket = Self::from_registered(Self::next_socket_id_in(runtime), runtime);
         register_socket(socket, SocketState::new_raw());
@@ -161,11 +154,6 @@ impl Socket {
     #[inline]
     pub fn is_udp(&self) -> bool {
         self.with_inner(SocketState::is_udp).unwrap_or(false)
-    }
-
-    #[inline]
-    pub fn is_raw(&self) -> bool {
-        self.with_inner(SocketState::is_raw).unwrap_or(false)
     }
 
     #[inline]
@@ -266,16 +254,6 @@ impl Socket {
         (pushed, remainder)
     }
 
-    pub fn deliver_udp_packet(
-        &self,
-        if_id: NetIfId,
-        addr: EndpointAddr,
-        ttl: u8,
-        packet: PacketRef,
-    ) -> SocketResult<()> {
-        self.deliver_udp_payload(if_id, addr, ttl, PacketPayload::single(packet))
-    }
-
     pub fn deliver_udp_payload(
         &self,
         if_id: NetIfId,
@@ -372,40 +350,6 @@ impl Socket {
             }),
         );
         Ok(())
-    }
-
-    pub fn set_nodelay(&self, nodelay: bool) -> SocketResult<()> {
-        self.with_inner_mut(|inner| {
-            let Some(tcp) = inner.tcp_mut() else {
-                return Err(EndpointError::InvalidArgument);
-            };
-            tcp.nodelay = nodelay;
-            Ok(())
-        })
-        .unwrap_or(Err(EndpointError::NotFound))?;
-
-        enqueue_command_in(
-            self.runtime,
-            RuntimeCommand::Transport(TransportCommand::SetTcpNoDelay {
-                socket_id: self.socket_id,
-                nodelay,
-            }),
-        )
-    }
-
-    pub fn set_priority(&self, priority: u8) -> SocketResult<()> {
-        self.with_inner_mut(|inner| {
-            inner.priority = priority & 0x3F;
-        })
-        .ok_or(EndpointError::NotFound)?;
-
-        enqueue_command_in(
-            self.runtime,
-            RuntimeCommand::Transport(TransportCommand::SetSocketPriority {
-                socket_id: self.socket_id,
-                priority: priority & 0x3F,
-            }),
-        )
     }
 }
 

@@ -8,10 +8,6 @@ use super::*;
 pub struct HigherHalfManager {
     /// 物理メモリマッパー
     mapper: PhysicalMemoryMapper,
-    /// カーネルの開始仮想アドレス
-    kernel_start: VirtAddr,
-    /// カーネルの終了仮想アドレス
-    kernel_end: VirtAddr,
     /// 次に割り当て可能なカーネル仮想アドレス
     next_kernel_addr: AtomicU64,
 }
@@ -21,8 +17,6 @@ impl HigherHalfManager {
     pub const fn new(physical_memory_offset: u64) -> Self {
         Self {
             mapper: PhysicalMemoryMapper::new(physical_memory_offset),
-            kernel_start: VirtAddr::new(VirtAddr::KERNEL_BASE),
-            kernel_end: VirtAddr::new(VirtAddr::KERNEL_BASE),
             next_kernel_addr: AtomicU64::new(VirtAddr::KERNEL_HEAP_BASE),
         }
     }

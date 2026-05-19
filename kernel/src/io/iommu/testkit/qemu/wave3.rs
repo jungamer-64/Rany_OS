@@ -8,15 +8,9 @@ use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::common::tables::*;
 use crate::io::iommu::runtime::groups::*;
 use crate::io::iommu::types::*;
-use crate::io::iommu::vendors::intel::controller::*;
 use crate::io::iommu::vendors::intel::tables::*;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-
-use crate::io::iommu::common::dma::mapping_slab;
-use crate::io::iommu::runtime::command::queue as cmdqueue;
-use crate::io::iommu::runtime::zombie as zombie_queue;
-use crate::io::iommu::vendors::shared;
 
 /// PASID table alloc/free lifecycle: allocate 3 PASIDs, setup SL entries, verify domain IDs, free all.
 pub fn wave3_pasid_table_alloc_free_smoke() -> bool {

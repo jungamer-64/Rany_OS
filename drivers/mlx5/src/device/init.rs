@@ -762,51 +762,6 @@ impl Mlx5Device {
         )
     }
 
-    /// デバイスの完全パイプライン初期化
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn init_full(
-        &mut self,
-        cmdq_virt: u64,
-        cmdq_device: u64,
-        cmd_in_mbox_virt: u64,
-        cmd_in_mbox_device: u64,
-        cmd_out_mbox_virt: u64,
-        cmd_out_mbox_device: u64,
-        fw_page_addrs: &mut Vec<u64>,
-        mkey_params: &crate::resources::MkeyParams,
-        eq_buf: (u64, u64),
-        tx_cq_buf: (u64, u64, u64, u64),
-        rx_cq_buf: (u64, u64, u64, u64),
-        sq_buf: (u64, u64, u64, u64),
-        rq_buf: (u64, u64, u64, u64),
-        rmp_buf: (u64, u64, u64, u64),
-        log_eq_size: u8,
-        log_cq_size: u8,
-        log_sq_size: u8,
-        log_rq_size: u8,
-    ) -> Mlx5Result<()> {
-        self.init_multi_queue(
-            cmdq_virt,
-            cmdq_device,
-            cmd_in_mbox_virt,
-            cmd_in_mbox_device,
-            cmd_out_mbox_virt,
-            cmd_out_mbox_device,
-            fw_page_addrs,
-            mkey_params,
-            &[eq_buf],
-            &[tx_cq_buf],
-            &[rx_cq_buf],
-            &[sq_buf],
-            &[rq_buf],
-            &[rmp_buf],
-            log_eq_size,
-            log_cq_size,
-            log_sq_size,
-            log_rq_size,
-        )
-    }
-
     /// マルチキュー対応の完全初期化パイプライン
     #[allow(clippy::too_many_arguments)]
     pub(crate) unsafe fn init_multi_queue(

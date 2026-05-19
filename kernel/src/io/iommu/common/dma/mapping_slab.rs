@@ -320,24 +320,6 @@ impl MappingSlab {
         None
     }
 
-    /// Look up a mapping by IOVA (mutable).
-    pub fn lookup_mut(&mut self, iova: u64) -> Option<&mut DmaMapping> {
-        let bucket = Self::hash_iova(iova);
-        let mut idx = self.hash_buckets[bucket];
-
-        // LOOP_PROOF: mode=condition; reason=Mutable lookup advances through hash_next links and exits on hit or INVALID_INDEX sentinel.;
-        while idx != INVALID_INDEX {
-            let slot = &self.slots[idx as usize];
-            if slot.mapping.iova == iova && slot.is_used() {
-                // Safe because we have &mut self
-                return Some(&mut self.slots[idx as usize].mapping);
-            }
-            idx = slot.hash_next;
-        }
-
-        None
-    }
-
     /// Remove a mapping by IOVA. Returns the mapping if found.
     pub fn remove(&mut self, iova: u64) -> Option<DmaMapping> {
         let bucket = Self::hash_iova(iova);
@@ -429,78 +411,9 @@ impl MappingSlab {
 
     /// Number of active mappings.
     #[inline]
+    #[cfg(test)]
     pub fn len(&self) -> usize {
         self.stats.active.load(Ordering::Relaxed) as usize
-    }
-
-    /// Check if slab is empty.
-    #[inline]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    /// Check if slab is full.
-    #[inline]
-    pub fn is_full(&self) -> bool {
-        self.free_head == INVALID_INDEX
-    }
-
-    /// Available slots remaining.
-    #[inline]
-    pub fn available(&self) -> usize {
-        SLAB_CAPACITY - self.len()
-    }
-
-    /// Drain all mappings, returning them as a Vec.
-    /// Used for domain cleanup.
-    pub fn drain(&mut self) -> alloc::vec::Vec<DmaMapping> {
-        let mut result = alloc::vec::Vec::with_capacity(self.len());
-
-        while self.active_head != INVALID_INDEX {
-            let idx = self.active_head;
-
-            // Extract values before modifying
-            let mapping = self.slots[idx as usize].mapping.clone();
-            let iova = mapping.iova;
-            let next_active = self.slots[idx as usize].next;
-
-            result.push(mapping);
-
-            // Remove from hash table
-            let bucket = Self::hash_iova(iova);
-            self.remove_from_hash_chain(bucket, idx);
-
-            // Move to free list
-            self.active_head = next_active;
-            let slot = &mut self.slots[idx as usize];
-            slot.flags = SlotFlags::empty();
-            slot.next = self.free_head;
-            slot.prev = INVALID_INDEX;
-            self.free_head = idx;
-        }
-
-        self.stats.active.store(0, Ordering::Relaxed);
-        result
-    }
-
-    /// Helper to remove a slot from its hash chain.
-    fn remove_from_hash_chain(&mut self, bucket: usize, target_idx: u16) {
-        let mut prev_idx = INVALID_INDEX;
-        let mut idx = self.hash_buckets[bucket];
-
-        while idx != INVALID_INDEX && idx != target_idx {
-            prev_idx = idx;
-            idx = self.slots[idx as usize].hash_next;
-        }
-
-        if idx == target_idx {
-            let next = self.slots[idx as usize].hash_next;
-            if prev_idx == INVALID_INDEX {
-                self.hash_buckets[bucket] = next;
-            } else {
-                self.slots[prev_idx as usize].hash_next = next;
-            }
-        }
     }
 }
 
@@ -511,6 +424,7 @@ impl Default for MappingSlab {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 pub fn qemu_smoke_insert_lookup_remove() -> bool {
     let mut slab = MappingSlab::new();
 
@@ -540,6 +454,7 @@ pub fn qemu_smoke_insert_lookup_remove() -> bool {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 pub fn qemu_smoke_overlap_detection() -> bool {
     let mut slab = MappingSlab::new();
 

@@ -98,7 +98,6 @@ impl NvmeDriverOps for GlobalDriverAdapter {
 /// NVMe 操作実装
 pub struct NvmeOps {
     driver: Box<dyn NvmeDriverOps>,
-    controller_id: u8,
     namespace_id: u32,
     handlers: Arc<Vec<Arc<NvmePollHandler>>>,
 }
@@ -106,13 +105,11 @@ pub struct NvmeOps {
 impl NvmeOps {
     pub fn new(
         driver: Box<dyn NvmeDriverOps>,
-        controller_id: u8,
         namespace_id: u32,
         handlers: Arc<Vec<Arc<NvmePollHandler>>>,
     ) -> Self {
         Self {
             driver,
-            controller_id,
             namespace_id,
             handlers,
         }
@@ -287,8 +284,6 @@ static NVME_POLL_HANDLERS: PoisonRwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePol
 pub struct NvmePollHandler {
     /// コアID
     core_id: u32,
-    /// 名前空間ID
-    nsid: u32,
     /// 保留中のNVMeコマンドID → I/Oリクエスト
     /// Vec を使用して O(1) アクセス（CID は通常 0-1023 の範囲）
     pending: PoisonLock<Vec<Option<PendingNvmeRequest>>>,
@@ -299,12 +294,11 @@ const NVME_MAX_CID: usize = 1024;
 
 impl NvmePollHandler {
     /// 新しいPollHandlerを作成
-    pub fn new(core_id: u32, nsid: u32) -> Self {
+    pub fn new(core_id: u32) -> Self {
         let mut pending = Vec::with_capacity(NVME_MAX_CID);
         pending.resize_with(NVME_MAX_CID, || None);
         Self {
             core_id,
-            nsid,
             pending: PoisonLock::new(pending),
         }
     }
@@ -426,7 +420,7 @@ pub fn register_with_io_scheduler(
     // 3. DeviceOps生成 & 登録 (DI: driver adapter, handlers)
     // ハンドラ生成
     for core_id in 0..handler_count {
-        let handler = Arc::new(NvmePollHandler::new(core_id, namespace_id));
+        let handler = Arc::new(NvmePollHandler::new(core_id));
         handlers.push(handler);
     }
     let handlers_arc = Arc::new(handlers.clone());
@@ -435,12 +429,7 @@ pub fn register_with_io_scheduler(
     scheduler.register_device(device_id, ModeThresholds::default());
 
     let driver = Box::new(GlobalDriverAdapter);
-    let ops = Arc::new(NvmeOps::new(
-        driver,
-        controller_id,
-        namespace_id,
-        handlers_arc,
-    ));
+    let ops = Arc::new(NvmeOps::new(driver, namespace_id, handlers_arc));
     scheduler.register_device_ops(device_id, ops);
 
     // 4. PollHandler登録
@@ -466,24 +455,4 @@ pub fn register_with_io_scheduler(
     );
 
     Ok(handlers)
-}
-
-fn handler_for_device(
-    controller_id: u8,
-    namespace_id: u32,
-    core_id: u32,
-) -> Option<Arc<NvmePollHandler>> {
-    let handlers = NVME_POLL_HANDLERS.read().unwrap_or_else(|e| e.into_inner());
-    handlers
-        .get(&(controller_id, namespace_id))
-        .and_then(|list| list.get(core_id as usize))
-        .cloned()
-}
-
-fn map_nvme_error(err: &'static str) -> IoError {
-    match err {
-        "Queue full" => IoError::Busy,
-        "Queue not found" | "Queue not initialized" => IoError::NoResources,
-        _ => IoError::DeviceError,
-    }
 }

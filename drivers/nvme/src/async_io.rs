@@ -42,7 +42,6 @@ pub struct ReadFuture<'a> {
     driver: &'a NvmePollingDriver,
     core_id: u32,
     cid: u16,
-    submitted: bool,
 }
 
 impl<'a> ReadFuture<'a> {
@@ -51,7 +50,6 @@ impl<'a> ReadFuture<'a> {
             driver,
             core_id,
             cid,
-            submitted: true,
         }
     }
 }
@@ -212,21 +210,4 @@ pub async unsafe fn async_write(
         unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }.map_err(|_| NvmeError::QueueFull)?;
 
     WriteFuture::new(driver, core_id, cid).await
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// TSCを読む（タイムスタンプカウンタ）
-#[inline(always)]
-fn read_tsc() -> u64 {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::x86_64::_rdtsc()
-    }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
-    }
 }

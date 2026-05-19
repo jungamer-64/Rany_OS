@@ -26,7 +26,6 @@ impl Ipv6Processor {
             config,
             stats: Ipv6Stats::default(),
             reassembler: Ipv6FragmentReassembler::new(Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS),
-            pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
         }
     }
 

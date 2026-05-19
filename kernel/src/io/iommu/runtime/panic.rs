@@ -270,8 +270,3 @@ pub unsafe fn read_panic_record_message(info: &PanicDmaRecordInfo) -> Option<&'s
         core::str::from_utf8(payload).ok()
     }
 }
-
-/// Check whether the panic DMA pool is initialized.
-pub fn panic_dma_pool_ready() -> bool {
-    PANIC_DMA_POOL.get().is_some()
-}

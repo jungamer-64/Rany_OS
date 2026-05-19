@@ -47,11 +47,6 @@ pub use atomic_waker::WakerQueue;
 pub use atomic_waker::process_deferred_waker_queue_wakes;
 pub use atomic_waker::process_deferred_wakes;
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};
-pub use poison_lock::{
-    IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
-    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard, get_current_core_id_for_debug,
-    is_panicking_for_debug, set_panicking,
-};
 pub use lockfree::{
     // Backoff strategy
     Backoff,
@@ -80,4 +75,9 @@ pub use lockfree::{
     // SPSC Ring Buffer
     SpscRingBuffer,
     create_inter_core_channel,
+};
+pub use poison_lock::{
+    IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
+    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard, get_current_core_id_for_debug,
+    is_panicking_for_debug, set_panicking,
 };

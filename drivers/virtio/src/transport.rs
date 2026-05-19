@@ -208,7 +208,6 @@ mod mmio_regs {
     pub const MAGIC_VALUE: usize = 0x000;
     pub const VERSION: usize = 0x004;
     pub const DEVICE_ID: usize = 0x008;
-    pub const VENDOR_ID: usize = 0x00C;
     pub const DEVICE_FEATURES: usize = 0x010;
     pub const DEVICE_FEATURES_SEL: usize = 0x014;
     pub const DRIVER_FEATURES: usize = 0x020;
@@ -439,10 +438,8 @@ mod pci_common_cfg {
     pub const DEVICE_FEATURE: usize = 0x04;
     pub const DRIVER_FEATURE_SELECT: usize = 0x08;
     pub const DRIVER_FEATURE: usize = 0x0C;
-    pub const MSIX_CONFIG: usize = 0x10;
     pub const NUM_QUEUES: usize = 0x12;
     pub const DEVICE_STATUS: usize = 0x14;
-    pub const CONFIG_GENERATION: usize = 0x15;
     pub const QUEUE_SELECT: usize = 0x16;
     pub const QUEUE_SIZE: usize = 0x18;
     pub const QUEUE_MSIX_VECTOR: usize = 0x1A;
@@ -456,8 +453,6 @@ mod pci_common_cfg {
 /// VirtIO PCI トランスポート (Modern)
 #[derive(Debug)]
 pub struct VirtioPciTransport {
-    /// BDF (Bus/Device/Function) アドレス
-    bdf: u32,
     /// Common Configuration BAR アドレス
     common_cfg_addr: usize,
     /// Notify BAR アドレス
@@ -480,7 +475,6 @@ impl VirtioPciTransport {
     /// # Safety
     /// - 各BARアドレスは有効なMMIOアドレスを指す必要がある。
     pub unsafe fn new(
-        bdf: u32,
         common_cfg_addr: usize,
         notify_addr: usize,
         notify_off_multiplier: u32,
@@ -489,7 +483,6 @@ impl VirtioPciTransport {
         device_type: VirtioDeviceType,
     ) -> TransportResult<Self> {
         Ok(Self {
-            bdf,
             common_cfg_addr,
             notify_addr,
             notify_off_multiplier,
@@ -516,12 +509,6 @@ impl VirtioPciTransport {
     #[inline]
     fn read_common_u32(&self, offset: usize) -> u32 {
         hal::mmio::mmio_read_u32((self.common_cfg_addr + offset) as usize)
-    }
-
-    /// Common Configuration レジスタ読み取り（64ビット）
-    #[inline]
-    fn read_common_u64(&self, offset: usize) -> u64 {
-        hal::mmio::mmio_read_u64((self.common_cfg_addr + offset) as usize)
     }
 
     /// Common Configuration レジスタに書き込み（8ビット）

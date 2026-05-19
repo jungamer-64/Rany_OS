@@ -90,14 +90,6 @@ fn test_gpu_alloc_resource_id() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_gpu_alloc_fence_id() {
-    let gpu = VirtioGpu::new(Box::new(NoopTransport), test_device());
-    assert_eq!(gpu.alloc_fence_id(), 1);
-    assert_eq!(gpu.alloc_fence_id(), 2);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_gpu_ctrl_hdr_new() {
     let hdr = GpuCtrlHdr::new(GpuCmd::GetDisplayInfo);
     assert_eq!(hdr.cmd_type, GpuCmd::GetDisplayInfo as u32);

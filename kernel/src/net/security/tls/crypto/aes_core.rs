@@ -27,45 +27,6 @@ pub(crate) const AES_SBOX: [u8; 256] = [
 /// AES Rcon (round constants)
 const RCON: [u8; 10] = [0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80, 0x1b, 0x36];
 
-/// AES-128キー展開 (Legacy — テスト用途)
-///
-/// 新規コードでは `aes_expand_key_schedule()` を使用してください。
-/// この関数はAES-128のみ対応しています。AES-128/256の両方に対応する
-/// 統合実装は `aes_expand_key_schedule()` です。
-pub(crate) fn aes_key_expansion(key: &[u8; 16]) -> [[u8; 16]; 11] {
-    let mut round_keys = [[0u8; 16]; 11];
-    round_keys[0].copy_from_slice(key);
-
-    for i in 1..11 {
-        // 前のラウンドキーをコピーして借用問題を回避
-        let prev = round_keys[i - 1];
-        let mut temp = [prev[12], prev[13], prev[14], prev[15]];
-
-        // RotWord
-        temp.rotate_left(1);
-
-        // SubWord
-        for b in &mut temp {
-            *b = AES_SBOX[*b as usize];
-        }
-
-        // XOR with Rcon
-        temp[0] ^= RCON[i - 1];
-
-        for j in 0..4 {
-            for k in 0..4 {
-                round_keys[i][j * 4 + k] = if j == 0 {
-                    prev[k] ^ temp[k]
-                } else {
-                    prev[j * 4 + k] ^ round_keys[i][(j - 1) * 4 + k]
-                };
-            }
-        }
-    }
-
-    round_keys
-}
-
 /// GF(2^8) での乗算 (AES 用)
 ///
 /// 以前の実装は分岐を伴っておりタイミング攻撃に対して脆弱でした。
@@ -135,29 +96,6 @@ pub(crate) fn aes_add_round_key(state: &mut [u8; 16], round_key: &[u8; 16]) {
     for (s, k) in state.iter_mut().zip(round_key.iter()) {
         *s ^= *k;
     }
-}
-
-/// AES-128 ブロック暗号化
-pub(crate) fn aes_encrypt_block(block: &[u8; 16], round_keys: &[[u8; 16]; 11]) -> [u8; 16] {
-    let mut state = *block;
-
-    // Initial round
-    aes_add_round_key(&mut state, &round_keys[0]);
-
-    // Main rounds
-    for i in 1..10 {
-        aes_sub_bytes(&mut state);
-        aes_shift_rows(&mut state);
-        aes_mix_columns(&mut state);
-        aes_add_round_key(&mut state, &round_keys[i]);
-    }
-
-    // Final round (no MixColumns)
-    aes_sub_bytes(&mut state);
-    aes_shift_rows(&mut state);
-    aes_add_round_key(&mut state, &round_keys[10]);
-
-    state
 }
 
 /// Expanded AES key schedule supporting AES-128/AES-256.
@@ -261,39 +199,6 @@ pub(crate) fn aes_encrypt_block_with_schedule(
     state
 }
 
-/// AES-CTR with pre-expanded schedule.
-pub(crate) fn aes_ctr_with_schedule_into(
-    schedule: &AesRoundKeySchedule,
-    nonce: &[u8],
-    data: &[u8],
-    initial_counter: u32,
-) -> Option<crate::net::security::tls::TlsBytes<20480>> {
-    if nonce.len() != 12 || data.len() > 20480 {
-        return None;
-    }
-
-    let mut result = crate::net::security::tls::TlsBytes::<20480>::new();
-    result.append_zeroes(data.len())?;
-    let dst = &mut result.as_mut_storage()[..data.len()];
-    let mut counter_block = [0u8; 16];
-    counter_block[0..12].copy_from_slice(nonce);
-
-    for (chunk_idx, chunk) in data.chunks(16).enumerate() {
-        let counter = (chunk_idx as u32)
-            .wrapping_add(initial_counter)
-            .to_be_bytes();
-        counter_block[12..16].copy_from_slice(&counter);
-
-        let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);
-
-        for (i, &byte) in chunk.iter().enumerate() {
-            dst[chunk_idx * 16 + i] = byte ^ keystream[i];
-        }
-    }
-
-    Some(result)
-}
-
 /// AES-CTR with pre-expanded schedule (In-place, no allocation).
 pub(crate) fn aes_ctr_with_schedule_in_place(
     schedule: &AesRoundKeySchedule,
@@ -320,14 +225,4 @@ pub(crate) fn aes_ctr_with_schedule_in_place(
             *byte ^= keystream[i];
         }
     }
-}
-
-/// AES-CTR モードでの暗号化/復号
-pub(crate) fn aes_ctr_into(
-    key: &[u8],
-    nonce: &[u8],
-    data: &[u8],
-) -> Option<crate::net::security::tls::TlsBytes<20480>> {
-    let schedule = aes_expand_key_schedule(key)?;
-    aes_ctr_with_schedule_into(&schedule, nonce, data, 1)
 }

@@ -217,60 +217,6 @@ impl ConnectionOooQueue {
         (rcv_nxt, fin_encountered)
     }
 
-    /// SACKブロックを生成（最大4ブロック、RFC 2018）
-    fn sack_blocks(&self) -> SackBlocks {
-        use crate::net::l4::types::seq_max;
-        let mut sack = SackBlocks::new();
-        let mut block_start: Option<u32> = None;
-        let mut block_end = 0u32;
-
-        for (seq, packet) in &self.segments {
-            let seq = *seq;
-            let seg_end = seq.wrapping_add(packet.total_len() as u32);
-
-            match block_start {
-                None => {
-                    block_start = Some(seq);
-                    block_end = seg_end;
-                }
-                Some(start) => {
-                    if !seq_before(block_end, seq) {
-                        // 連続または重複
-                        block_end = seq_max(block_end, seg_end);
-                    } else {
-                        sack.push((start, block_end));
-                        if sack.is_full() {
-                            return sack;
-                        }
-                        block_start = Some(seq);
-                        block_end = seg_end;
-                    }
-                }
-            }
-        }
-
-        // FINも含めてブロック終了を計算
-        if let Some(fs) = self.fin_seq {
-            if let Some(start) = block_start {
-                if !seq_before(fs, start) {
-                    block_end = block_end.max(fs.wrapping_add(1));
-                }
-            } else {
-                // FINのみがOOOの場合もSACKブロックに含めるべきか？
-                // RFC 2018はデータセグメントを対象としているが、
-                // FINは1シーケンス番号を消費するので含めても良い。
-                block_start = Some(fs);
-                block_end = fs.wrapping_add(1);
-            }
-        }
-
-        if let Some(start) = block_start {
-            sack.push((start, block_end));
-        }
-
-        sack
-    }
-
     fn is_empty(&self) -> bool {
         self.segments.is_empty() && self.fin_seq.is_none()
     }
@@ -280,41 +226,6 @@ impl ConnectionOooQueue {
         self.segments.clear();
         self.fin_seq = None;
         GLOBAL_OOO_COUNT.fetch_sub(count, Ordering::Relaxed);
-    }
-}
-
-/// 固定サイズのSACKブロック構造体
-#[derive(Clone, Copy)]
-pub struct SackBlocks {
-    pub blocks: [(u32, u32); 4],
-    pub count: usize,
-}
-
-impl SackBlocks {
-    pub fn new() -> Self {
-        Self {
-            blocks: [(0, 0); 4],
-            count: 0,
-        }
-    }
-
-    pub fn push(&mut self, block: (u32, u32)) {
-        if self.count < 4 {
-            self.blocks[self.count] = block;
-            self.count += 1;
-        }
-    }
-
-    pub fn as_slice(&self) -> &[(u32, u32)] {
-        &self.blocks[..self.count]
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
-    pub fn is_full(&self) -> bool {
-        self.count == 4
     }
 }
 
@@ -415,23 +326,6 @@ where
         (rcv_nxt, fin)
     } else {
         (rcv_nxt, false)
-    }
-}
-
-/// SACKブロックを取得
-pub fn get_sack_blocks(local: EndpointAddr, remote: EndpointAddr) -> SackBlocks {
-    let idx = ooo_shard_index(&local, &remote);
-    let Ok(guard) = OOO_SHARDS[idx].lock() else {
-        return SackBlocks::new();
-    };
-    let Some(queues) = guard.as_ref() else {
-        return SackBlocks::new();
-    };
-
-    if let Some(conn_queue) = queues.get(&(local, remote)) {
-        conn_queue.sack_blocks()
-    } else {
-        SackBlocks::new()
     }
 }
 

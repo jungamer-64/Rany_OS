@@ -168,9 +168,6 @@ mod pit {
     pub const SPEAKER_PORT: u16 = 0x61;
     pub const BASE_FREQUENCY: u64 = 1193182;
     pub const MODE_SQUARE_WAVE: u8 = 0x36;
-    pub const MODE_ONE_SHOT: u8 = 0x30;
-    pub const MODE_RATE_GEN: u8 = 0x34;
-    pub const READBACK: u8 = 0xE2;
     pub const CH2_MODE_ONE_SHOT: u8 = 0xB0;
 }
 
@@ -181,14 +178,12 @@ mod rtc {
     pub const SECONDS: u8 = 0x00;
     pub const MINUTES: u8 = 0x02;
     pub const HOURS: u8 = 0x04;
-    pub const DAY_OF_WEEK: u8 = 0x06;
     pub const DAY_OF_MONTH: u8 = 0x07;
     pub const MONTH: u8 = 0x08;
     pub const YEAR: u8 = 0x09;
     pub const CENTURY: u8 = 0x32;
     pub const STATUS_A: u8 = 0x0A;
     pub const STATUS_B: u8 = 0x0B;
-    pub const STATUS_C: u8 = 0x0C;
 }
 
 /// RTC日時構造体
@@ -263,14 +258,6 @@ impl Rtc {
         let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
         addr_port.write(reg);
         data_port.read()
-    }
-
-    fn write_cmos(&self, reg: u8, value: u8) {
-        let _guard = CMOS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
-        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
-        addr_port.write(reg);
-        data_port.write(value);
     }
 
     fn update_in_progress(&self) -> bool {

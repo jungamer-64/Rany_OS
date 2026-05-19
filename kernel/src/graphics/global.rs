@@ -10,8 +10,7 @@ use crate::sync::PoisonLock;
 use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
 use super::{Color, FramebufferInfo, PixelFormat};
-use crate::mm::virt::higher_half::{PageFlags, PageTableManager, VirtAddr};
-use crate::mm::virt::mapping::physical_memory_offset;
+use crate::mm::virt::higher_half::{PageFlags, VirtAddr};
 use core::fmt::{self, Write};
 
 // Simple buffer for formatting - safe enough for single threaded boot
@@ -161,110 +160,6 @@ fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
                 0
             }
         }
-    }
-}
-
-fn remap_framebuffer_wc(virt_addr: u64, size: u64) {
-    let offset = physical_memory_offset();
-    let manager = unsafe { PageTableManager::from_current_cr3(offset) };
-
-    let virt_start = VirtAddr::new(virt_addr);
-
-    let phys_start = if let Some(phys) = manager.translate(virt_start) {
-        phys
-    } else {
-        log::error!(
-            "[GRAPHICS] Failed to translate framebuffer virtual address {:#x}\n",
-            virt_addr
-        );
-        return;
-    };
-
-    let offset = physical_memory_offset();
-    let phys_addr = if virt_addr >= offset {
-        virt_addr - offset
-    } else {
-        virt_addr
-    };
-
-    use crate::io::log::early_print;
-    use core::fmt::Write;
-    struct EarlyBuf;
-    impl Write for EarlyBuf {
-        fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            early_print(s);
-            Ok(())
-        }
-    }
-
-    let _ = write!(EarlyBuf, "[GFX] Limine Virt: {:#x}\n", virt_addr);
-    let _ = write!(EarlyBuf, "[GFX] Offset: {:#x}\n", offset);
-    let _ = write!(EarlyBuf, "[GFX] Calc Phys: {:#x}\n", phys_addr);
-
-    log::info!(
-        "[GRAPHICS] Remapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
-        virt_start.as_u64(),
-        phys_start.as_u64(),
-        size
-    );
-
-    unsafe {
-        match crate::mm::virt::higher_half::global_replace_range(
-            virt_start,
-            phys_start,
-            size,
-            PageFlags::write_combining(),
-        ) {
-            Ok(_) => {
-                log::info!("[GRAPHICS] Framebuffer remapped successfully with WC attributes\n");
-            }
-            Err(e) => {
-                log::error!("[GRAPHICS] Failed to remap framebuffer: {:?}\n", e);
-            }
-        }
-    }
-}
-
-fn detect_32bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
-    if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
-        PixelFormat::Bgra8888
-    } else if red_shift == 0 && green_shift == 8 && blue_shift == 16 {
-        PixelFormat::Rgba8888
-    } else {
-        PixelFormat::Bgra8888
-    }
-}
-
-fn detect_24bpp_format(red_shift: u8, green_shift: u8, blue_shift: u8) -> PixelFormat {
-    if red_shift == 16 && green_shift == 8 && blue_shift == 0 {
-        PixelFormat::Bgr888
-    } else {
-        PixelFormat::Rgb888
-    }
-}
-
-fn detect_16bpp_format(red_size: u8, green_size: u8, blue_size: u8) -> PixelFormat {
-    if red_size == 5 && green_size == 6 && blue_size == 5 {
-        PixelFormat::Rgb565
-    } else {
-        PixelFormat::Rgb565
-    }
-}
-
-fn detect_pixel_format(
-    red_size: u8,
-    red_shift: u8,
-    green_size: u8,
-    green_shift: u8,
-    blue_size: u8,
-    blue_shift: u8,
-    bpp: u16,
-) -> PixelFormat {
-    match bpp {
-        32 => detect_32bpp_format(red_shift, green_shift, blue_shift),
-        24 => detect_24bpp_format(red_shift, green_shift, blue_shift),
-        16 => detect_16bpp_format(red_size, green_size, blue_size),
-        _ => PixelFormat::Bgra8888,
     }
 }
 

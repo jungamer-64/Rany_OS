@@ -208,8 +208,6 @@ pub trait CommandTransport {
 pub struct CmdQueueTransport {
     cmdq_phys: u64,
     cmdq_virt: u64,
-    log_cmdq_size: u8,
-    log_cmd_stride: u8,
     bar0_base: u64,
     in_mbox_virt: u64,
     out_mbox_virt: u64,
@@ -325,8 +323,6 @@ impl CmdQueueTransport {
         Ok(Self {
             cmdq_phys,
             cmdq_virt,
-            log_cmdq_size,
-            log_cmd_stride,
             bar0_base,
             in_mbox_virt,
             out_mbox_virt,
@@ -772,8 +768,6 @@ mod tests {
         let transport = CmdQueueTransport {
             cmdq_phys: 0,
             cmdq_virt: 0,
-            log_cmdq_size: 5,
-            log_cmd_stride: 6,
             bar0_base: 0,
             in_mbox_virt: 0,
             out_mbox_virt: 0,
@@ -839,8 +833,6 @@ mod tests {
         let transport = CmdQueueTransport {
             cmdq_phys: 0,
             cmdq_virt: 0,
-            log_cmdq_size: 5,
-            log_cmd_stride: 6,
             bar0_base: 0,
             in_mbox_virt: in_backing.as_mut_ptr() as u64,
             out_mbox_virt: 0,
@@ -876,8 +868,6 @@ mod tests {
         let mut transport = CmdQueueTransport {
             cmdq_phys: 0,
             cmdq_virt: 0,
-            log_cmdq_size: 5,
-            log_cmd_stride: 6,
             bar0_base: 0,
             in_mbox_virt: in_backing.as_mut_ptr() as u64,
             out_mbox_virt: 0,
@@ -920,8 +910,6 @@ mod tests {
         let mut transport = CmdQueueTransport {
             cmdq_phys: 0,
             cmdq_virt: 0,
-            log_cmdq_size: 5,
-            log_cmd_stride: 6,
             bar0_base: 0,
             in_mbox_virt: 0,
             out_mbox_virt: out_backing.as_mut_ptr() as u64,

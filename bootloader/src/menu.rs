@@ -3,7 +3,7 @@
 //! Displays a boot menu using UEFI Simple Text Output Protocol.
 //! Supports arrow key navigation and timer-based default selection.
 
-use crate::config::{BootConfig, BootEntry};
+use crate::config::BootConfig;
 use core::time::Duration;
 use log::info;
 use uefi::boot;
@@ -227,16 +227,4 @@ fn print_number(stdout: &mut uefi::proto::console::text::Output, n: u32) {
 /// Non-blocking key read
 fn read_key_nonblocking() -> Option<Key> {
     uefi::system::with_stdin(|stdin| stdin.read_key().ok().flatten())
-}
-
-/// Get the selected boot entry
-pub fn get_selected_entry<'a>(
-    config: &'a BootConfig,
-    result: &MenuResult,
-) -> Option<&'a BootEntry> {
-    match result {
-        MenuResult::Selected(idx) => config.entries.get(*idx),
-        MenuResult::Timeout => config.entries.get(config.default_entry),
-        MenuResult::Cancelled => None,
-    }
 }

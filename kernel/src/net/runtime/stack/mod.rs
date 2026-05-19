@@ -21,8 +21,8 @@ use crate::net::l3::ipv4::{
     Ipv4Processor,
 };
 use crate::net::l3::ipv6::{
-    IPV6_HEADER_SIZE, Ipv6Address, Ipv6Config, Ipv6FragmentReassembler, Ipv6PacketMut,
-    Ipv6PmtuCache, Ipv6ProcessResult, Ipv6Processor,
+    IPV6_HEADER_SIZE, Ipv6Address, Ipv6Config, Ipv6PacketMut, Ipv6PmtuCache, Ipv6ProcessResult,
+    Ipv6Processor,
 };
 use crate::net::l3::ndp::{NdpProcessor, NdpResult};
 use crate::net::l4::udp::{UdpProcessor, UdpResult};
@@ -33,8 +33,6 @@ use crate::net::runtime::timeouts::TimeoutWheel; // required for new transmit ca
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::collections::VecDeque;
-#[cfg(any(test, feature = "full_mm_tests", feature = "qemu-test-export"))]
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::resource::net::PacketPayload;
@@ -306,7 +304,6 @@ pub struct InterfaceStackState {
     redirect_cache: RedirectCache,
     arp_pending_queue: ArpPendingQueue,
     ndp_pending_queue: NdpPendingQueue,
-    ipv6_fragment_reassembler: Ipv6FragmentReassembler,
     ipv6_pmtu_cache: Ipv6PmtuCache,
 }
 
@@ -340,9 +337,6 @@ impl InterfaceStackState {
             redirect_cache: RedirectCache::new(),
             arp_pending_queue: ArpPendingQueue::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
-            ipv6_fragment_reassembler: Ipv6FragmentReassembler::new(
-                Ipv6FragmentReassembler::DEFAULT_MAX_BUFFERS,
-            ),
             ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
         }
     }
@@ -551,7 +545,6 @@ const ARP_PENDING_TIMEOUT_MS: u64 = 3000; // 3秒タイムアウト
 
 /// ARP解決待ちペイロード
 pub(crate) enum PendingIpv4Payload {
-    Icmpv4(PacketPayload),
     Udp {
         src_port: u16,
         dst_port: u16,
@@ -591,25 +584,6 @@ impl ArpPendingQueue {
         Self {
             packets: VecDeque::new(),
         }
-    }
-
-    /// パケットをキューに追加 (ICMP)
-    pub(crate) fn enqueue_icmp(
-        &mut self,
-        src: Ipv4Address,
-        dst: Ipv4Address,
-        data: PacketPayload,
-        current_time: u64,
-    ) {
-        if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {
-            self.packets.pop_front();
-        }
-        self.packets.push_back(PendingIpv4Packet {
-            dst,
-            src,
-            payload: PendingIpv4Payload::Icmpv4(data),
-            queued_at: current_time,
-        });
     }
 
     /// パケットをキューに追加 (UDP)

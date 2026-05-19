@@ -18,18 +18,12 @@ pub(super) mod invalidation;
 pub(super) mod irt;
 pub(super) mod registers;
 
-// shared helpers pulled out of the previous `qemu_tests` module
-pub(super) mod ivrs_utils;
-
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests;
 #[cfg(test)]
 mod tests;
 
 // Re-exports for external callers (driver.rs, backend.rs, etc.)
 #[cfg(all(test, feature = "qemu-test-export"))]
 pub(crate) use self::domain::map_ivmd_ranges;
-pub use self::fault::{drain_deferred_faults, fault_handler_task, spawn_fault_handler_task};
 pub use self::init::init_iommu_from_ivrs;
 
 use alloc::sync::Arc;
@@ -57,7 +51,7 @@ use self::domain::align_down;
 use self::domain::align_up;
 use self::event_log::AmdEventLog;
 use self::invalidation::AmdCommandState;
-use self::irt::AmdUnitIrt;
+use self::irt::{AmdUnitIrt, IRT_DEFAULT_SIZE_LOG2};
 use self::registers::*;
 
 // ---------------------------------------------------------------------------
@@ -289,10 +283,19 @@ impl AmdIommuDriver {
             },
         );
 
-        let irt_count = units.len();
-        let mut interrupt_remap_tables = Vec::with_capacity(irt_count);
-        for _ in 0..irt_count {
-            interrupt_remap_tables.push(None);
+        let mut interrupt_remap_tables = Vec::with_capacity(units.len());
+        for unit in &units {
+            match AmdUnitIrt::new(IRT_DEFAULT_SIZE_LOG2) {
+                Ok(irt) => interrupt_remap_tables.push(Some(PoisonLock::new(irt))),
+                Err(err) => {
+                    log::warn!(
+                        "AMD-Vi interrupt remap table allocation failed for unit @ {:#x}: {:?}",
+                        unit.base_addr,
+                        err
+                    );
+                    interrupt_remap_tables.push(None);
+                }
+            }
         }
 
         Self {
@@ -327,6 +330,7 @@ impl AmdIommuDriver {
         let driver = AmdIommuDriver::new(units, ivmd_ranges, cmd_states, event_logs, device_tables);
         driver.populate_default_entries()?;
         init_driver(Arc::new(IommuBackend::Amd(driver)));
+        fault::spawn_fault_handler_task();
         Ok(())
     }
 

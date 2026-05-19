@@ -368,21 +368,6 @@ impl DeferredWakerQueue {
     fn pop(&self) -> Option<usize> {
         self.buffer.pop()
     }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.buffer.len()
-    }
-
-    #[inline]
-    fn capacity(&self) -> usize {
-        DEFERRED_WAKE_QUEUE_SIZE
-    }
-
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.buffer.is_empty()
-    }
 }
 
 // ============================================================================
@@ -458,20 +443,16 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_waker_queue_preserves_full_capacity() {
         let queue = DeferredWakerQueue::new();
-        assert!(queue.is_empty());
+        assert_eq!(queue.pop(), None);
 
         for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
             assert!(queue.push_once(i + 1), "failed at {}", i);
         }
         assert!(!queue.push_once(usize::MAX));
-        assert_eq!(queue.len(), DEFERRED_WAKE_QUEUE_SIZE);
-        assert_eq!(queue.capacity(), DEFERRED_WAKE_QUEUE_SIZE);
-        assert!(!queue.is_empty());
 
         for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
             assert_eq!(queue.pop(), Some(i + 1));
         }
         assert_eq!(queue.pop(), None);
-        assert!(queue.is_empty());
     }
 }

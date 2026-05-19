@@ -18,9 +18,7 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use crate::mm::cache::slab_registry::{SlabCacheRegistry, SlabFlags};
 use alloc::boxed::Box;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 // リモートフリー用の型定義
@@ -50,10 +48,6 @@ const MAX_REFILL_PAGES: usize = 32;
 /// リフィル数を増加させるアロケーション閾値
 /// この回数のアロケーションごとにリフィル数を倍増
 const REFILL_SCALE_UP_THRESHOLD: usize = 256;
-
-/// リフィル数を減少させる空き比率閾値
-/// 空きオブジェクト数がページ容量の75%を超えたらリフィル数を半減
-const REFILL_SCALE_DOWN_RATIO: usize = 75;
 
 /// Slab Coloringの最大カラー数
 /// キャッシュラインサイズ単位でローテーション

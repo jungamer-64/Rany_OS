@@ -281,22 +281,6 @@ impl BuddyFrameAllocator {
     // ゼロクリア済みページ管理
     // ========================================================================
 
-    /// ゼロクリア済みブロックかどうかをチェック
-    #[inline]
-    pub(super) fn is_block_zeroed(&self, order: usize, block_idx: usize) -> bool {
-        if order > MAX_ORDER {
-            return false;
-        }
-        let detail_start = self.order_detail_word_start[order];
-        let word_idx = detail_start + (block_idx / 64);
-        let bit_idx = block_idx % 64;
-        if word_idx < TOTAL_DETAIL_WORDS {
-            (self.zeroed_bits[word_idx] >> bit_idx) & 1 != 0
-        } else {
-            false
-        }
-    }
-
     /// ブロックをゼロクリア済みとしてマーク
     #[inline]
     pub(super) fn set_block_zeroed(&mut self, order: usize, block_idx: usize) {

@@ -212,15 +212,6 @@ impl PerCoreNvmeQueue {
         unsafe { (*self.inner.get()).as_ref() }
     }
 
-    /// ロックフリーでキューペアに可変アクセス（所有コアのみ）
-    ///
-    /// # Safety
-    /// 現在のコアがこのPerCoreNvmeQueueの所有者であることを呼び出し側が保証。
-    #[inline]
-    pub(crate) unsafe fn get_queue_pair_mut(&self) -> Option<&mut QueuePair> {
-        unsafe { (*self.inner.get()).as_mut() }
-    }
-
     /// 読み取り操作を発行（ドアベルバッチ対応）
     ///
     /// # Safety

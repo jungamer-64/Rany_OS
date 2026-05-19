@@ -7,7 +7,6 @@ extern crate alloc;
 // use alloc::boxed::Box;
 use core::ptr;
 use core::slice;
-use core::sync::atomic::AtomicU32;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::service::kernel::instance as kernel;
@@ -27,8 +26,6 @@ use super::types::{
 
 /// AHCI Port
 pub struct AhciPort {
-    port: PortNumber,
-    base: u64,
     port_base: u64,
     device_type: DeviceType,
     /// Command List (1KB aligned 1KB)
@@ -37,7 +34,6 @@ pub struct AhciPort {
     received_fis: DmaBuffer,
     /// Command Tables
     command_tables: [Option<DmaBuffer>; 32],
-    active_commands: AtomicU32,
     device_id: PackedPciLocation,
 }
 
@@ -53,14 +49,11 @@ impl AhciPort {
         let received_fis = kernel().alloc_dma_for_device(256, device_id).ok()?;
 
         Some(Self {
-            port,
-            base,
             port_base,
             device_type: DeviceType::None,
             command_list,
             received_fis,
             command_tables: Default::default(),
-            active_commands: AtomicU32::new(0),
             device_id,
         })
     }

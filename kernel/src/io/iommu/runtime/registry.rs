@@ -10,9 +10,7 @@
 use alloc::sync::Arc;
 
 use crate::io::iommu::runtime::backend::IommuBackend;
-pub use crate::io::iommu::vendors::intel::registry::{
-    IommuRegistry, get_iommu_registry, init_registry,
-};
+pub use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 
 // Global IOMMU driver stored in a lock-free spin::Once.
 // Written exactly once during boot via init_driver(), then read-only.
@@ -109,35 +107,6 @@ pub fn get_device_dma_mask(device: &DeviceId) -> Option<u64> {
         .unwrap_or_else(|e| e.into_inner())
         .get(device)
         .copied()
-}
-
-fn dma_mask_allows_range(mask: u64, addr: u64, size: u64) -> bool {
-    if size == 0 {
-        return true;
-    }
-
-    let end = match addr.checked_add(size) {
-        Some(end) => end,
-        None => return false,
-    };
-
-    let limit = (mask as u128) + 1;
-    (addr as u128) <= (mask as u128) && (end as u128) <= limit
-}
-pub(crate) fn validate_device_dma_mask(
-    device: &DeviceId,
-    addr: u64,
-    size: u64,
-) -> Result<(), IommuError> {
-    let Some(mask) = get_device_dma_mask(device) else {
-        return Ok(());
-    };
-
-    if dma_mask_allows_range(mask, addr, size) {
-        Ok(())
-    } else {
-        Err(IommuError::InvalidAddress)
-    }
 }
 
 // ============================================================================

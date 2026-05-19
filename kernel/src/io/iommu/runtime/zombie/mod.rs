@@ -291,8 +291,6 @@ pub struct ZombieData {
     pub size: u64,
     /// IOMMU domain ID (u16)
     pub domain_id: u16,
-    /// Optional Device ID
-    pub device_id: Option<crate::io::iommu::types::DeviceId>,
     /// Encoded mapping kind (0=Identity, 2=Device, 3=Domain)
     pub mapping_kind: u32,
 }
@@ -426,13 +424,6 @@ impl ZombieQueue {
             iova: payload.iova,
             size: payload.size,
             domain_id: payload.domain_id,
-            device_id: if payload.device_bdf != 0xFFFF {
-                Some(crate::io::iommu::types::DeviceId::from_bdf(
-                    payload.device_bdf,
-                ))
-            } else {
-                None
-            },
             mapping_kind: payload.mapping_kind,
         };
 
@@ -498,9 +489,12 @@ impl ZombieQueue {
         ZombieQueueStats {
             total_enqueued: self.total_enqueued.load(Ordering::Relaxed),
             total_processed: self.total_processed.load(Ordering::Relaxed),
+            #[cfg(test)]
             total_drained: self.total_drained.load(Ordering::Relaxed),
             total_dropped: self.total_dropped.load(Ordering::Relaxed),
+            #[cfg(test)]
             total_unmap_failed: self.total_unmap_failed.load(Ordering::Relaxed),
+            #[cfg(test)]
             capacity: ZOMBIE_QUEUE_CAPACITY,
         }
     }
@@ -526,12 +520,15 @@ pub struct ZombieQueueStats {
     /// Total entries where unmap succeeded
     pub total_processed: u64,
     /// Total entries drained (processed + failed cleanups)
+    #[cfg(test)]
     pub total_drained: u64,
     /// Total entries dropped due to queue full (leaked at enqueue)
     pub total_dropped: u64,
     /// Total unmap failures (driver returned error)
+    #[cfg(test)]
     pub total_unmap_failed: u64,
     /// Queue capacity
+    #[cfg(test)]
     pub capacity: usize,
 }
 
@@ -720,6 +717,7 @@ pub fn run_zombie_gc(max_count: usize) -> usize {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 pub fn qemu_smoke_queue_basic() -> bool {
     let Some(queue) = qemu_alloc_queue_for_smoke() else {
         return false;
@@ -758,6 +756,7 @@ pub fn qemu_smoke_queue_basic() -> bool {
 }
 
 #[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 pub fn qemu_smoke_failed_cleanup() -> bool {
     let Some(queue) = qemu_alloc_queue_for_smoke() else {
         return false;
@@ -782,7 +781,7 @@ pub fn qemu_smoke_failed_cleanup() -> bool {
         && queue.pending_estimate() == 0
 }
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(all(test, feature = "qemu-test-export"))]
 fn qemu_alloc_queue_for_smoke() -> Option<alloc::boxed::Box<ZombieQueue>> {
     let layout = core::alloc::Layout::new::<ZombieQueue>();
     let ptr = unsafe { alloc::alloc::alloc_zeroed(layout) } as *mut ZombieQueue;

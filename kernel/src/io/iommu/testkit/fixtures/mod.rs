@@ -6,11 +6,10 @@
 use alloc::sync::Arc;
 
 #[cfg(feature = "qemu-test-export")]
-pub use crate::io::iommu::testkit::qemu::wave2::{MockPciTopology, MockSecurityNotifier};
+pub use crate::io::iommu::testkit::qemu::wave2::MockSecurityNotifier;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub fn ensure_test_intel_iommu_device(device: crate::io::iommu::types::DeviceId) {
-    use crate::io::iommu::runtime::config::IommuConfig;
     use crate::io::iommu::types::IommuDomainType;
     use crate::io::iommu::vendors::intel::IntelIommuDriver;
     use crate::io::iommu::vendors::intel::controller::IommuController;
@@ -28,11 +27,11 @@ pub fn ensure_test_intel_iommu_device(device: crate::io::iommu::types::DeviceId)
             .expect("test IOMMU registry missing controller")
     } else {
         let controller = Arc::new(IommuController::new(0, device.segment));
-        init_registry(IommuRegistry::new(
-            alloc::vec![controller.clone()],
-            alloc::vec![],
-            IommuConfig::default(),
-        ));
+        init_registry(IommuRegistry {
+            controllers: alloc::vec![controller.clone()],
+            default_iommu_idx: Some(0),
+            reserved_regions: alloc::vec![],
+        });
         controller
     };
 

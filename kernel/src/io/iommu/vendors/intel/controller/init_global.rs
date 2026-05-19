@@ -151,7 +151,6 @@ pub unsafe fn init_iommu_from_acpi(
         controllers,
         default_iommu_idx,
         reserved_regions,
-        config,
     };
 
     // Apply Reserved Regions (RMRR) before publishing registry
@@ -217,10 +216,6 @@ unsafe fn init_controllers_from_drhd(
 
     if controllers.is_empty() {
         return Err(IommuError::NotPresent);
-    }
-
-    for (idx, controller) in controllers.iter().enumerate() {
-        controller.set_controller_idx(idx);
     }
 
     Ok((controllers, default_idx))
@@ -395,8 +390,6 @@ mod tests {
 
         assert!(controller.command_queue_ref().is_none());
         assert!(!controller.runtime_services_started());
-        assert!(!controller.fault_interrupts_enabled());
-        assert!(!controller.qi_completion_interrupts_enabled());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -413,8 +406,6 @@ mod tests {
             .map(|cq| cq as *const _)
             .expect("command queue should be installed");
         assert!(controller.runtime_services_started());
-        assert!(controller.fault_interrupts_enabled());
-        assert!(controller.qi_completion_interrupts_enabled());
 
         assert!(!activate_runtime_services_for_controller(&controller).unwrap());
         let second_queue = controller

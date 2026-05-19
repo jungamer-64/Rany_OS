@@ -34,21 +34,6 @@ pub const MAX_PENDING_COMMANDS: usize = 32;
 // Ring Types
 // ============================================================================
 
-/// リングタイプ
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RingType {
-    /// コマンドリング（ホスト→コントローラ）
-    Command,
-    /// イベントリング（コントローラ→ホスト）
-    Event,
-    /// 転送リング（エンドポイントごと）
-    Transfer,
-}
-
-// ============================================================================
-// Ring Manager
-// ============================================================================
-
 /// xHCI リングマネージャ
 ///
 /// コマンド/イベント/転送リングの統一的な管理を提供
@@ -73,8 +58,6 @@ pub struct XhciRingManager {
 pub struct ManagedRing {
     /// 基本のTRBリング
     ring: TrbRing,
-    /// リングタイプ
-    ring_type: RingType,
     /// エンキューインデックス
     enqueue_index: u16,
     /// デキューインデックス
@@ -87,10 +70,9 @@ pub struct ManagedRing {
 
 impl ManagedRing {
     /// 新しい管理対象リングを作成
-    pub fn new(size: usize, ring_type: RingType, pci_locator: PackedPciLocation) -> Self {
+    pub fn new(size: usize, pci_locator: PackedPciLocation) -> Self {
         Self {
             ring: TrbRing::new(size, pci_locator),
-            ring_type,
             enqueue_index: 0,
             dequeue_index: 0,
             cycle_bit: true,
@@ -200,10 +182,10 @@ impl XhciRingManager {
     /// 新しいリングマネージャを作成
     pub fn new(max_slots: u8, max_endpoints: u8, pci_locator: PackedPciLocation) -> Self {
         // コマンドリングを作成
-        let command_ring = ManagedRing::new(COMMAND_RING_SIZE, RingType::Command, pci_locator);
+        let command_ring = ManagedRing::new(COMMAND_RING_SIZE, pci_locator);
 
         // イベントリングを作成
-        let event_ring = ManagedRing::new(EVENT_RING_SIZE, RingType::Event, pci_locator);
+        let event_ring = ManagedRing::new(EVENT_RING_SIZE, pci_locator);
 
         // ERSTを作成
         let mut erst = vec![ErstEntry::default(); 1].into_boxed_slice();
@@ -297,11 +279,7 @@ impl XhciRingManager {
         }
 
         // 新しい転送リングを作成
-        let ring = Box::new(ManagedRing::new(
-            TRANSFER_RING_SIZE,
-            RingType::Transfer,
-            self.pci_locator,
-        ));
+        let ring = Box::new(ManagedRing::new(TRANSFER_RING_SIZE, self.pci_locator));
         let addr = ring.device_address();
         rings[slot_index][ep_index] = Some(ring);
 

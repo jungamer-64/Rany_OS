@@ -13,7 +13,6 @@ use crate::mm::types::{FrameIndex, NumaNodeId};
 // NUMA Hint Fault 定数
 // ============================================================================
 
-const NUMA_HINT_FAULT_INTERVAL_MS: u64 = 1000;
 const NUMA_MIGRATION_THRESHOLD: u32 = 4;
 const NUMA_MIGRATION_COOLDOWN_MS: u64 = 10000;
 const NUMA_SCAN_BATCH_SIZE: usize = 256;

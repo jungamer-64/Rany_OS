@@ -117,18 +117,6 @@ impl PerCpuExchangeCache {
         true
     }
 
-    /// Flush cache back to global heap
-    fn flush_to_global(&mut self, heap: &mut SegregatedFreeListHeap) {
-        for class in 0..CACHED_SIZE_CLASSES {
-            for i in 0..self.counts[class] {
-                if let Some(block) = self.caches[class][i].take() {
-                    heap.add_free_block(block.addr, block.size);
-                }
-            }
-            self.counts[class] = 0;
-        }
-    }
-
     /// Try to steal one block from this cache (called by victim)
     ///
     /// Returns Some((addr, size)) if a block was available to steal.
@@ -333,8 +321,6 @@ pub struct RRefPoolStats {
 ///
 /// v0.6.1: ABA問題を回避するため、AtomicUsizeからIrqMutexによる保護へ移行。
 pub struct RRefPool {
-    /// 設定
-    config: RRefPoolConfig,
     /// 内部状態
     inner: IrqMutex<RRefPoolInner>,
 }
@@ -357,9 +343,8 @@ struct RRefPoolInner {
 
 impl RRefPool {
     /// 新しいプールを作成
-    pub const fn new(config: RRefPoolConfig) -> Self {
+    pub const fn new(_config: RRefPoolConfig) -> Self {
         Self {
-            config,
             inner: IrqMutex::new(RRefPoolInner {
                 free_head: 0,
                 free_count: 0,

@@ -16,7 +16,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
 pub(crate) static PACKER_MODE: AtomicU8 = AtomicU8::new(0);
 
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+#[cfg(all(feature = "std", any(target_arch = "x86", target_arch = "x86_64")))]
 pub(crate) static AVX2_AVAILABLE: AtomicU8 = AtomicU8::new(0);
 
 #[cfg(target_arch = "aarch64")]
@@ -42,6 +42,7 @@ pub fn current_packer_mode() -> u8 {
 }
 
 #[inline]
+#[cfg(any(feature = "std", feature = "qemu-test-export"))]
 fn clamp_forced_mode(mode: u8, forced: u8) -> u8 {
     mode.min(forced).max(1)
 }
@@ -71,6 +72,7 @@ pub(crate) fn qemu_test_get_packer_mode_override() -> u8 {
 // ============================================================================
 
 /// パッカーモード名を数値に変換する
+#[cfg(feature = "std")]
 fn parse_packer_mode_name(name: &str) -> Option<u8> {
     let low = name.to_ascii_lowercase();
     match low.as_str() {

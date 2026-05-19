@@ -25,12 +25,6 @@ impl<const N: usize> TlsBytes<N> {
         }
     }
 
-    pub fn from_slice(data: &[u8]) -> Option<Self> {
-        let mut output = Self::new();
-        output.set(data)?;
-        Some(output)
-    }
-
     pub fn set(&mut self, data: &[u8]) -> Option<()> {
         if data.len() > N {
             return None;
@@ -39,15 +33,6 @@ impl<const N: usize> TlsBytes<N> {
         self.bytes[..data.len()].copy_from_slice(data);
         self.len = data.len();
         Some(())
-    }
-
-    pub fn clear(&mut self) {
-        self.bytes.fill(0);
-        self.len = 0;
-    }
-
-    pub const fn capacity(&self) -> usize {
-        N
     }
 
     pub fn len(&self) -> usize {
@@ -60,10 +45,6 @@ impl<const N: usize> TlsBytes<N> {
 
     pub fn as_slice(&self) -> &[u8] {
         &self.bytes[..self.len]
-    }
-
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        &mut self.bytes[..self.len]
     }
 
     pub fn as_mut_storage(&mut self) -> &mut [u8; N] {
@@ -104,40 +85,12 @@ impl<const N: usize> TlsBytes<N> {
         ])
     }
 
-    pub fn append_zeroes(&mut self, count: usize) -> Option<()> {
-        let new_len = self.len.checked_add(count)?;
-        if new_len > N {
-            return None;
-        }
-        self.bytes[self.len..new_len].fill(0);
-        self.len = new_len;
-        Some(())
-    }
-
-    pub fn write_slice(&mut self, offset: usize, data: &[u8]) -> Option<()> {
-        let end = offset.checked_add(data.len())?;
-        if end > self.len {
-            return None;
-        }
-        self.bytes[offset..end].copy_from_slice(data);
-        Some(())
-    }
-
     pub fn set_filled_len(&mut self, len: usize) -> Option<()> {
         if len > N {
             return None;
         }
         self.len = len;
         Some(())
-    }
-
-    pub fn copy_into_array<const M: usize>(&self) -> Option<[u8; M]> {
-        if self.len != M {
-            return None;
-        }
-        let mut out = [0u8; M];
-        out.copy_from_slice(self.as_slice());
-        Some(out)
     }
 }
 

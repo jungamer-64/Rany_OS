@@ -31,9 +31,6 @@ use spin::{Mutex, RwLock};
 /// デフォルトのウォッチドッグタイムアウト（秒）
 const DEFAULT_TIMEOUT_SECS: u64 = 60;
 
-/// ハートビート間隔（ミリ秒）
-const HEARTBEAT_INTERVAL_MS: u64 = 1000;
-
 // =============================================================================
 // ウォッチドッグエラー
 // =============================================================================
@@ -292,7 +289,6 @@ pub struct SoftwareWatchdog {
     targets: RwLock<Vec<WatchTarget>>,
     next_id: AtomicU64,
     enabled: AtomicBool,
-    check_interval_ms: u64,
 
     // 統計
     stats: WatchdogStats,
@@ -312,7 +308,6 @@ impl SoftwareWatchdog {
             targets: RwLock::new(Vec::new()),
             next_id: AtomicU64::new(1),
             enabled: AtomicBool::new(false),
-            check_interval_ms: HEARTBEAT_INTERVAL_MS,
             stats: WatchdogStats {
                 total_heartbeats: AtomicU64::new(0),
                 total_timeouts: AtomicU64::new(0),
@@ -569,7 +564,6 @@ pub struct WatchdogManager {
 
     // 設定
     use_hardware: AtomicBool,
-    timeout_action: Mutex<TimeoutAction>,
 }
 
 impl WatchdogManager {
@@ -579,7 +573,6 @@ impl WatchdogManager {
             software: SoftwareWatchdog::new(),
             deadlock_detector: DeadlockDetector::new(),
             use_hardware: AtomicBool::new(false),
-            timeout_action: Mutex::new(TimeoutAction::Panic),
         }
     }
 

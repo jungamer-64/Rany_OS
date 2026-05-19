@@ -25,7 +25,7 @@ use super::tcb::{
 };
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
-    Socket, TcpSocketState, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
+    Socket, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
 };
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketId};
 use crate::net::payload::PacketPayloadView;
@@ -42,14 +42,6 @@ use kernel_api::resource::net::PacketPayload;
 static FAST_PATH_HITS: AtomicU64 = AtomicU64::new(0);
 /// スローパスにフォールバックしたパケット数
 static SLOW_PATH_HITS: AtomicU64 = AtomicU64::new(0);
-
-/// ファストパス統計を取得
-pub fn fast_path_stats() -> (u64, u64) {
-    (
-        FAST_PATH_HITS.load(Ordering::Relaxed),
-        SLOW_PATH_HITS.load(Ordering::Relaxed),
-    )
-}
 
 // ============================================================================
 // Delayed ACK
@@ -159,11 +151,6 @@ fn check_closed_port_rst_rate(runtime: NetRuntimeHandle) -> bool {
         CLOSED_PORT_RST_DROPPED.fetch_add(1, Ordering::Relaxed);
         false
     }
-}
-
-/// 閉ポートRSTのドロップ統計を取得
-pub fn closed_port_rst_dropped_count() -> u64 {
-    CLOSED_PORT_RST_DROPPED.load(Ordering::Relaxed)
 }
 
 //======================================================================
@@ -1334,16 +1321,6 @@ fn get_socket_by_socket_id(runtime: NetRuntimeHandle, socket_id: SocketId) -> Op
     lookup_socket_in(runtime, socket_id)
 }
 
-/// Helper to notify a socket that it is connected.
-fn notify_socket_connected(runtime: NetRuntimeHandle, socket_id: SocketId) {
-    if let Some(socket) = get_socket_by_socket_id(runtime, socket_id) {
-        let _ = socket.with_inner_mut(|inner| {
-            let _ = inner.set_tcp_state(TcpSocketState::Connected);
-            inner.connect_waker.wake();
-        });
-    }
-}
-
 /// 新規接続処理（SYN受信 - サーバー側、またはCLOSED状態へのセグメント受信）
 fn process_tcp_new_connection(
     runtime: NetRuntimeHandle,
@@ -1421,12 +1398,12 @@ fn process_tcp_new_connection(
     let Some(socket) = socket else {
         return;
     };
-    let Some((nodelay, priority)) = socket
+    let Some(nodelay) = socket
         .with_inner(|inner| {
             if !inner.is_tcp_listening() {
                 return None;
             }
-            Some((inner.tcp().map_or(false, |t| t.nodelay), inner.priority))
+            Some(inner.tcp().map_or(false, |t| t.nodelay))
         })
         .flatten()
     else {
@@ -1470,7 +1447,6 @@ fn process_tcp_new_connection(
         isn,
         seq_num,
         nodelay,
-        priority,
         TcpHandshakeOptions {
             peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
             local_ts_val: None,
@@ -1599,43 +1575,6 @@ fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
 
     // 再送キューからACK済みセグメントを削除（RTT測定も実行）
     retransmit_queue_ack(runtime, tcb.local, tcb.remote, ack_num);
-}
-
-/// SYN確認応答処理（サーバー側）
-/// ハンドシェイク完了時にAcceptキューに追加
-fn handle_ack_for_syn(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, ack_num: u32) {
-    if ack_num != tcb.snd_nxt {
-        return;
-    }
-    let Some(ingress_if_id) = tcb.ingress_if_id else {
-        return;
-    };
-
-    // TCBを更新してEstablished状態に
-    tcp_table_in(runtime).establish_syn_received(tcb.local, tcb.remote, ack_num);
-
-    log::info!(
-        "TCP: Server connection established {} <- {}",
-        tcb.local,
-        tcb.remote
-    );
-
-    // 新しい接続用ソケットを作成
-    let new_socket = match create_accepted_socket(runtime, tcb.local, tcb.remote, ingress_if_id) {
-        Some(s) => s,
-        None => {
-            log::info!("TCP: Failed to create accepted socket");
-            return;
-        }
-    };
-
-    // Listeningソケットを探してAcceptキューに追加
-    if !push_to_accept_queue(runtime, tcb.local.port(), Some(ingress_if_id), new_socket) {
-        log::info!(
-            "TCP: No listening socket found for port {}",
-            tcb.local.port()
-        );
-    }
 }
 
 /// Accept用の新規ソケットを作成

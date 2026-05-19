@@ -108,6 +108,7 @@ const WAIT_WARN_INTERVAL: usize = DEFAULT_QUEUE_SIZE * 16;
 const SLOT_STATE_POISONING: u8 = 3;
 
 #[inline]
+#[cfg(test)]
 const fn bounded_channel_capacity() -> usize {
     DEFAULT_QUEUE_SIZE - 1
 }
@@ -187,6 +188,7 @@ impl CompletionSlot {
     }
 
     #[inline]
+    #[cfg(any(test, feature = "qemu-test-export"))]
     pub fn wait_result_spin(&self) -> i32 {
         let mut backoff = Backoff::new();
         for _ in 0..MAX_COMPLETION_SPINS {

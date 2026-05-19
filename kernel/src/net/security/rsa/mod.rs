@@ -254,19 +254,6 @@ impl BigUint {
         result
     }
 
-    /// 1ビット右シフト
-    fn shr1(&self) -> Self {
-        let mut result = Self::zero();
-        result.len = self.len;
-        let mut carry: u64 = 0;
-        for i in (0..self.len).rev() {
-            result.limbs[i] = (self.limbs[i] >> 1) | (carry << 63);
-            carry = self.limbs[i] & 1;
-        }
-        result.normalize();
-        result
-    }
-
     /// 除算と剰余
     pub fn div_rem(&self, divisor: &Self) -> (Self, Self) {
         if divisor.is_zero() {

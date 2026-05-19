@@ -47,18 +47,6 @@ pub(crate) fn allocate_udp_ephemeral_port_in(runtime: NetRuntimeHandle) -> Optio
     with_socket_registry_in(runtime, SocketRegistry::allocate_udp_ephemeral_port)
 }
 
-pub(crate) fn bind_tcp_port_in(
-    runtime: NetRuntimeHandle,
-    family: SocketFamily,
-    port: u16,
-    scope: InterfaceScope,
-    socket_id: SocketId,
-) -> Result<(), EndpointError> {
-    with_socket_registry_in(runtime, |registry| {
-        registry.bind_tcp_port(family, port, scope, socket_id)
-    })
-}
-
 pub(crate) fn bind_udp_dual_stack_in(
     runtime: NetRuntimeHandle,
     port: u16,
@@ -77,17 +65,6 @@ pub(crate) fn register_raw_scope_in(
 ) -> Result<(), EndpointError> {
     with_socket_registry_in(runtime, |registry| {
         registry.register_raw_scope(scope, socket_id)
-    })
-}
-
-pub(crate) fn find_tcp_by_port_in(
-    runtime: NetRuntimeHandle,
-    family: SocketFamily,
-    port: u16,
-    ingress_if_id: Option<NetIfId>,
-) -> Option<Socket> {
-    with_socket_registry_in(runtime, |registry| {
-        registry.find_tcp_by_port(family, port, ingress_if_id)
     })
 }
 

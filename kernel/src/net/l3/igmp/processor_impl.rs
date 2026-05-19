@@ -339,11 +339,6 @@ impl IgmpProcessor {
         (offset == data.total_len()).then_some(records)
     }
 
-    /// Validate IGMPv3 Membership Report (RFC 3376) layout.
-    fn validate_v3_membership_report(data: PayloadSpanRef<'_>) -> bool {
-        Self::parse_v3_membership_report(data).is_some()
-    }
-
     /// Handle a Membership Query
     fn handle_query(&mut self, data: PayloadSpanRef<'_>, _src_ip: Ipv4Address) -> IgmpResult {
         let Some(query) = Self::parse_membership_query(data) else {

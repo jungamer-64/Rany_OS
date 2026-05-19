@@ -3,7 +3,6 @@
 // 設計書 8.2: RedLeafの知見：交換可能な型とプロキシ
 // ============================================================================
 use super::rref::DomainId;
-use alloc::boxed::Box;
 use alloc::string::String;
 use core::future::Future;
 use core::pin::Pin;
@@ -230,13 +229,7 @@ where
 /// 非同期プロキシ呼び出しのFuture
 pub struct ProxyCallFuture<'a, T> {
     proxy: &'a BasicProxy,
-    state: ProxyCallState<T>,
-}
-
-enum ProxyCallState<T> {
-    Initial,
-    Calling(Pin<Box<dyn Future<Output = T> + Send>>),
-    Done,
+    _marker: core::marker::PhantomData<T>,
 }
 
 impl<'a, T> ProxyCallFuture<'a, T> {
@@ -247,7 +240,7 @@ impl<'a, T> ProxyCallFuture<'a, T> {
     {
         Self {
             proxy,
-            state: ProxyCallState::Initial,
+            _marker: core::marker::PhantomData,
         }
     }
 }
@@ -307,6 +300,7 @@ impl<S: Service> ServiceProxyImpl<S> {
 
 impl<S: Service> ServiceProxy<S> for ServiceProxyImpl<S> {
     fn invoke(&self, _request: S::Request) -> ProxyResult<S::Response> {
+        self.proxy.check_domain_available()?;
         // サービス呼び出しの実装
         Err(ProxyError::Other("Not implemented".into()))
     }

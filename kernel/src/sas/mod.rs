@@ -235,26 +235,6 @@ impl AtomicSasStats {
             region_count: AtomicU64::new(0),
         }
     }
-
-    #[inline]
-    fn increment_domains(&self) {
-        self.domain_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    fn decrement_domains(&self) {
-        self.domain_count.fetch_sub(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    fn increment_regions(&self) {
-        self.region_count.fetch_add(1, Ordering::Relaxed);
-    }
-
-    #[inline]
-    fn decrement_regions(&self) {
-        self.region_count.fetch_sub(1, Ordering::Relaxed);
-    }
 }
 
 /// Global atomic stats (lock-free access)

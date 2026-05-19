@@ -17,13 +17,17 @@ impl AmdPte {
     /// Write (W) - Bit 62 (Only for PTEs)
     pub const WRITE: u64 = 1 << 62;
     /// Force Coherency (FC) - Bit 63
+    #[cfg(test)]
     pub const FC: u64 = 1 << 63;
     /// Accessed (A) - Bit 5
+    #[cfg(test)]
     pub const ACCESSED: u64 = 1 << 5;
     /// Dirty (D) - Bit 6
+    #[cfg(test)]
     pub const DIRTY: u64 = 1 << 6;
 
     /// Create a new empty entry
+    #[cfg(test)]
     pub fn new() -> Self {
         Self(0)
     }
@@ -59,16 +63,19 @@ impl AmdPte {
     }
 
     /// Check if present
+    #[cfg(test)]
     pub fn is_present(&self) -> bool {
         (self.0 & Self::PRESENT) != 0
     }
 
     /// Get Next Level field (9-11)
+    #[cfg(test)]
     pub fn next_level(&self) -> u8 {
         ((self.0 >> 9) & 0x7) as u8
     }
 
     /// Get physical address
+    #[cfg(test)]
     pub fn phys_addr(&self) -> u64 {
         self.0 & 0x000F_FFFF_FFFF_F000
     }

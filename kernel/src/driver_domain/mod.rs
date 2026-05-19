@@ -77,7 +77,6 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::DomainId;
 use crate::domain::quota::DomainPriority;
-use crate::domain::quota::DomainQuota;
 use crate::driver_registry::DriverHandle;
 use crate::loader::CellId;
 use crate::security::CapabilitySet;

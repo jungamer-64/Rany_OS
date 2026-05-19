@@ -35,12 +35,6 @@ impl SegregatedFreeListHeap {
         class.min(SIZE_CLASS_COUNT - 1)
     }
 
-    /// サイズクラスからブロックサイズを計算
-    #[inline]
-    pub(super) fn class_to_size(class: usize) -> usize {
-        MIN_BLOCK_SIZE << class
-    }
-
     /// ヒープを初期化
     ///
     /// # Safety

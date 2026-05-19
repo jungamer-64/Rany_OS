@@ -639,6 +639,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(test)]
     #[cfg_attr(test, test_case)]
     pub fn test_v3_query_malformed_source_length_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
@@ -663,6 +664,7 @@ pub(crate) mod tests {
         );
     }
 
+    #[cfg(test)]
     #[cfg_attr(test, test_case)]
     pub fn test_v3_query_with_source_list_sets_delaying_member() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
@@ -702,6 +704,7 @@ pub(crate) mod tests {
         assert!(processor.groups[0].timer > 0);
     }
 
+    #[cfg(test)]
     #[cfg_attr(test, test_case)]
     pub fn test_build_v3_single_record_report_checksum() {
         let mut report = [0u8; 64];
@@ -726,6 +729,7 @@ pub(crate) mod tests {
         assert_eq!(compute_igmp_checksum(&report[..len]), 0);
     }
 
+    #[cfg(test)]
     #[cfg_attr(test, test_case)]
     pub fn test_v3_report_suppression_cancels_query_response() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
@@ -759,6 +763,7 @@ pub(crate) mod tests {
         assert!(processor.pending_reports.is_empty());
     }
 
+    #[cfg(test)]
     #[cfg_attr(test, test_case)]
     pub fn test_v3_report_unknown_record_type_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));

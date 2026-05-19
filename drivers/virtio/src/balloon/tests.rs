@@ -286,7 +286,7 @@ fn test_balloon_write_actual() {
     let dev = VirtioBalloonDevice::new(Box::new(transport), test_device());
     dev.write_actual(512);
     // Read back from config space offset 4
-    let actual = dev.transport.read_config_u32(config_offsets::ACTUAL);
+    let actual = dev.transport.read_config_u32(4);
     assert_eq!(actual, 512);
 }
 

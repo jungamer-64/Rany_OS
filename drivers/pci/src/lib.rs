@@ -22,7 +22,6 @@
 #![allow(clippy::semicolon_if_nothing_returned)] // Chained method calls
 #![allow(clippy::match_same_arms)] // Intentional for extensibility
 #![allow(clippy::type_complexity)] // Complex return types for capability scanning
-#![allow(clippy::unused_self)] // Trait consistency
 #![allow(clippy::trivially_copy_pass_by_ref)] // API consistency for accessors
 #![allow(clippy::map_unwrap_or)] // Kept for readability
 #![allow(clippy::collapsible_if)] // Kept for readability

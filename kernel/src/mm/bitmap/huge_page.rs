@@ -809,7 +809,7 @@ impl HugePageBitmap {
 // QEMU smoke tests
 // ============================================================================
 
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 #[path = "qemu_tests.rs"]
 pub mod qemu_tests;
 

@@ -70,11 +70,6 @@ impl NetworkStack {
             .map(|(_, state)| state.config())
     }
 
-    pub(crate) fn primary_ipv6_link_local(&self) -> Option<Ipv6Address> {
-        self.primary_interface_state()
-            .and_then(|(_, state)| state.ipv6_link_local())
-    }
-
     pub(crate) fn primary_interface_state_mut(
         &mut self,
     ) -> Option<(NetIfId, &mut InterfaceStackState)> {
@@ -1144,15 +1139,6 @@ impl NetworkStack {
         self.primary_interface_state()
             .map(|(_, state)| &state.stats)
             .expect("network stack stats requested without registered interface state")
-    }
-
-    /// Check if an IPv4 multicast group is allowed (joined or mandatory)
-    fn is_multicast_allowed(&self, group: Ipv4Address) -> bool {
-        use crate::net::l3::igmp::ALL_HOSTS_GROUP;
-        group == ALL_HOSTS_GROUP
-            || self
-                .primary_interface_state()
-                .is_some_and(|(_, state)| state.igmp.is_member(group))
     }
 
     /// Apply a DHCPv6-obtained global IPv6 address to the stack

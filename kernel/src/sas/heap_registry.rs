@@ -24,8 +24,6 @@ use alloc::{
 };
 use core::sync::atomic::{AtomicU64, Ordering};
 
-/// デフォルト・シャード数 (調整可能)
-const DEFAULT_SHARD_COUNT: usize = 32;
 const MIN_SHARD_COUNT: usize = 4;
 const MAX_SHARD_COUNT: usize = 256;
 

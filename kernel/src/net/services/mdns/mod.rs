@@ -831,19 +831,6 @@ pub fn multicast_mac() -> [u8; 6] {
     [0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB]
 }
 
-/// 大文字小文字を無視した名前比較
-///
-/// DNS名はケースインセンシティブであるため、比較時には
-/// ASCII小文字に正規化して比較する。
-fn names_equal(a: &str, b: &str) -> bool {
-    if a.len() != b.len() {
-        return false;
-    }
-    a.bytes()
-        .zip(b.bytes())
-        .all(|(ca, cb)| ca.to_ascii_lowercase() == cb.to_ascii_lowercase())
-}
-
 fn mdns_name_view_eq(
     lhs_payload: &PacketPayload,
     lhs: &DnsNameView,
@@ -876,22 +863,6 @@ fn mdns_name_view_eq(
                 lhs_byte.eq_ignore_ascii_case(&rhs_byte)
             })
         })
-}
-
-fn skip_dns_questions_view(
-    view: &PacketPayloadView<'_>,
-    mut offset: usize,
-    qdcount: u16,
-) -> Option<usize> {
-    for _ in 0..qdcount {
-        let (_, new_offset) = decode_dns_name_range_view(view, offset)?;
-        offset = new_offset;
-        if offset + 4 > view.total_len() {
-            return None;
-        }
-        offset += 4;
-    }
-    Some(offset)
 }
 
 /// DNS応答レコードをパースする

@@ -20,11 +20,9 @@ const CAPLENGTH: usize = 0x00;
 const HCIVERSION: usize = 0x02;
 const HCSPARAMS1: usize = 0x04;
 const HCSPARAMS2: usize = 0x08;
-const HCSPARAMS3: usize = 0x0C;
 const HCCPARAMS1: usize = 0x10;
 const DBOFF: usize = 0x14;
 const RTSOFF: usize = 0x18;
-const HCCPARAMS2: usize = 0x1C;
 
 /// xHCI ケーパビリティ情報
 #[derive(Debug, Clone)]
@@ -103,15 +101,13 @@ impl XhciCapabilities {
 
 /// xHCI 初期化コンテキスト
 pub struct XhciInitContext {
-    base_addr: u64,
     op_offset: u64,
     rt_offset: u64,
 }
 
 impl XhciInitContext {
-    pub fn new(base_addr: u64, caps: &XhciCapabilities) -> Self {
+    pub fn new(caps: &XhciCapabilities) -> Self {
         Self {
-            base_addr,
             op_offset: caps.op_offset,
             rt_offset: caps.rt_offset,
         }
@@ -249,10 +245,6 @@ impl XhciInitContext {
 
     fn write_op_64(&self, offset: usize, value: u64) {
         hal::mmio::mmio_write_u64((self.op_offset + offset as u64) as usize, value)
-    }
-
-    fn read_runtime(&self, offset: usize) -> u32 {
-        hal::mmio::mmio_read_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize)
     }
 
     fn write_runtime(&self, offset: usize, value: u32) {

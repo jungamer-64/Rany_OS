@@ -24,8 +24,6 @@ pub const PCR_BOOT_CONFIG: u32 = 14;
 /// Event types for TCG event log
 #[repr(u32)]
 pub enum TcgEventType {
-    /// Base event type for bootloader events
-    EfiAction = 0x80000007,
     /// Kernel image measurement
     KernelLoad = 0x80000010,
     /// Boot artifact aggregate measurement

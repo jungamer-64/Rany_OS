@@ -11,7 +11,6 @@ pub(crate) const NVME_PAGE_SIZE: usize = 4096;
 pub(crate) enum NvmeDmaError {
     InvalidLen,
     OutOfMemory,
-    IommuDeviceMissing,
     IommuMappingFailed,
 }
 
@@ -37,7 +36,7 @@ fn direct_prp2(base_addr: u64, alloc_len: usize) -> Option<u64> {
 #[derive(Debug)]
 struct PrpListPage {
     map: Option<DeviceDmaMapping>,
-    region: DmaRegion,
+    _region: DmaRegion,
     iova: u64,
 }
 
@@ -160,7 +159,7 @@ fn build_prp_list(
         list.prepare_for_device();
         prp_pages.push(PrpListPage {
             map,
-            region: list,
+            _region: list,
             iova,
         });
     }
@@ -178,7 +177,9 @@ pub(crate) struct NvmeDmaRegion {
     prp1: u64,
     prp2: u64,
     logical_len: usize,
+    #[cfg(test)]
     alloc_len: usize,
+    #[cfg(test)]
     phys_addr: PhysAddr,
 }
 
@@ -234,7 +235,9 @@ impl NvmeDmaRegion {
             prp1,
             prp2,
             logical_len,
+            #[cfg(test)]
             alloc_len,
+            #[cfg(test)]
             phys_addr,
         })
     }
@@ -247,14 +250,17 @@ impl NvmeDmaRegion {
         self.prp2
     }
 
+    #[cfg(test)]
     pub(crate) fn logical_len(&self) -> usize {
         self.logical_len
     }
 
+    #[cfg(test)]
     pub(crate) fn alloc_len(&self) -> usize {
         self.alloc_len
     }
 
+    #[cfg(test)]
     pub(crate) fn phys_addr(&self) -> PhysAddr {
         self.phys_addr
     }

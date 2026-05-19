@@ -414,13 +414,6 @@ impl CellNamespace {
         }
     }
 
-    fn make_success_message_map(msg: String) -> ExoValue<'static> {
-        let mut map = BTreeMap::new();
-        Self::map_insert(&mut map, "success", ExoValue::Bool(true));
-        Self::map_insert(&mut map, "message", Self::vstr(msg));
-        ExoValue::Map(map)
-    }
-
     fn health_status_map(id: DriverDomainId) -> ExoValue<'static> {
         match hot_swap::health_status(id) {
             Ok(h) => {

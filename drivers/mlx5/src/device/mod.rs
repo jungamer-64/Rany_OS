@@ -3,7 +3,7 @@
 // ============================================================================
 
 extern crate alloc;
-use crate::cmd::{CmdQueue, CommandTransport};
+use crate::cmd::CmdQueue;
 use crate::cq::CompletionQueue;
 use crate::defs::{CmdOpcode, ConnectXVariant, HcaCaps};
 use crate::eq::EventQueue;
@@ -46,7 +46,6 @@ pub enum DeviceState {
 pub struct Mlx5Device {
     // Hardware info
     pub(crate) bar0_base: u64,
-    pub(crate) bar0_size: usize,
     pub(crate) device_id: u16,
     pub(crate) variant: ConnectXVariant,
 
@@ -152,11 +151,10 @@ impl Mlx5Device {
         words
     }
 
-    pub fn new(bar0_base: u64, bar0_size: usize, device_id: u16) -> Self {
+    pub fn new(bar0_base: u64, device_id: u16) -> Self {
         let variant = ConnectXVariant::from_device_id(device_id);
         Self {
             bar0_base,
-            bar0_size,
             device_id,
             variant,
             state: DeviceState::Uninitialized,
@@ -523,31 +521,6 @@ impl Mlx5Device {
         (uids, len)
     }
 
-    pub(crate) unsafe fn execute_with_uid_candidates<T, F, R>(
-        cmd: &mut T,
-        uid_candidates: &[u16],
-        mut f: F,
-    ) -> Mlx5Result<R>
-    where
-        T: CommandTransport,
-        F: FnMut(&mut T) -> Mlx5Result<R>,
-    {
-        let prev_uid = cmd.uid();
-        let mut last_err = Err(Mlx5Error::NotSupported);
-        for &uid in uid_candidates {
-            cmd.set_uid(uid);
-            match f(cmd) {
-                Ok(value) => {
-                    cmd.set_uid(prev_uid);
-                    return Ok(value);
-                }
-                Err(err) => last_err = Err(err),
-            }
-        }
-        cmd.set_uid(prev_uid);
-        last_err
-    }
-
     /// Execute a command, automatically cycling through reasonable UID values
     /// when running as a VF.  The transport UID is restored to its previous
     /// value on return.  This helper is heavily used during initialization where
@@ -683,7 +656,7 @@ mod command_transport_tests {
 
     #[test]
     fn tx_runtime_probe_requires_completion_before_healthy() {
-        let mut device = Mlx5Device::new(0, 0, crate::defs::CONNECTX4_VF_DEVICE_ID);
+        let mut device = Mlx5Device::new(0, crate::defs::CONNECTX4_VF_DEVICE_ID);
         device.set_tx_runtime_state(true, true);
 
         assert!(device.tx_path_enabled());
@@ -696,7 +669,7 @@ mod command_transport_tests {
 
     #[test]
     fn tx_runtime_probe_failure_marks_path_unavailable() {
-        let mut device = Mlx5Device::new(0, 0, crate::defs::CONNECTX4_VF_DEVICE_ID);
+        let mut device = Mlx5Device::new(0, crate::defs::CONNECTX4_VF_DEVICE_ID);
         device.set_tx_runtime_state(true, true);
 
         assert!(device.mark_tx_runtime_broken());

@@ -485,25 +485,6 @@ fn find_node_for_address(phys_addr: u64) -> Option<NumaNodeId> {
     super::frame_allocator::numa_node_for_addr(PhysAddr::new(phys_addr))
 }
 
-impl TypeIdHash for NumaBuddyAllocator {
-    fn type_id_hash() -> TypeHash {
-        const_hash(b"NumaBuddyAllocator:v1:allocators,initialized")
-    }
-
-    fn type_name() -> &'static str {
-        "NumaBuddyAllocator"
-    }
-
-    fn type_version() -> SemVer {
-        SemVer::new(1, 0, 0)
-    }
-}
-
-struct NumaBuddyAllocator; // Placeholder for Trait if needed, but here we just need to satisfy the requirement if it scales.
-// Actually, the user asked for TypeIdHash for NumaBuddyAllocator, but it seems there is no such struct here.
-// I'll add it if it makes sense or skip if not found.
-// Wait, PER_NODE_ALLOCATORS is an array.
-
 /// 全ノードの統計情報を取得
 pub fn get_all_node_stats() -> [(BuddyAllocatorStats, u64, u64); MAX_NUMA_NODES] {
     // 空の統計を作成するヘルパー

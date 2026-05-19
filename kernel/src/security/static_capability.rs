@@ -111,69 +111,6 @@ unsafe impl Send for TaskCapability {}
 unsafe impl Sync for TaskCapability {}
 
 // ============================================================================
-// Capability Constructor - カーネルのみが権限を生成可能
-// ============================================================================
-
-/// カーネル権限ファクトリ
-///
-/// このモジュールの関数はunsafeであり、カーネル初期化コードからのみ呼び出される。
-/// 各ドメインには、許可された権限のトークンのみが渡される。
-pub(crate) mod kernel_only {
-    use super::*;
-
-    /// メモリ権限を生成
-    ///
-    /// # Safety
-    /// カーネル初期化時にのみ呼び出すこと
-    #[inline(always)]
-    pub(crate) unsafe fn grant_memory_capability() -> MemoryCapability {
-        MemoryCapability { _private: () }
-    }
-
-    /// ネットワーク権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_net_capability() -> NetCapability {
-        NetCapability { _private: () }
-    }
-
-    /// I/O権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_io_capability() -> IoCapability {
-        IoCapability { _private: () }
-    }
-
-    /// 割り込み権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_interrupt_capability() -> InterruptCapability {
-        InterruptCapability { _private: () }
-    }
-
-    /// DMA権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_dma_capability() -> DmaCapability {
-        DmaCapability { _private: () }
-    }
-
-    /// ファイルシステム権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_fs_capability() -> FsCapability {
-        FsCapability { _private: () }
-    }
-
-    /// IPC権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_ipc_capability() -> IpcCapability {
-        IpcCapability { _private: () }
-    }
-
-    /// タスク生成権限を生成
-    #[inline(always)]
-    pub(crate) unsafe fn grant_task_capability() -> TaskCapability {
-        TaskCapability { _private: () }
-    }
-}
-
-// ============================================================================
 // Capability Bundle - ドメインごとの権限セット
 // ============================================================================
 
@@ -282,16 +219,12 @@ impl<'cap> NetworkSocket<'cap> {
 
 /// 権限付きファイルハンドル
 pub struct FileHandle<'cap> {
-    path_hash: u64,
     _cap: PhantomData<&'cap FsCapability>,
 }
 
 impl<'cap> FileHandle<'cap> {
-    pub fn new(_cap: &'cap FsCapability, path_hash: u64) -> Self {
-        Self {
-            path_hash,
-            _cap: PhantomData,
-        }
+    pub fn new(_cap: &'cap FsCapability) -> Self {
+        Self { _cap: PhantomData }
     }
 }
 

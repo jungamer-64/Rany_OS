@@ -564,75 +564,6 @@ fn load_cell_with_flags(
     Ok(id)
 }
 
-/// Load a driver artifact and register it as an ABI driver with the DriverRegistry.
-///
-/// This is an internal primitive; normal standalone driver-cell activation
-/// should flow through `driver_domain::lifecycle`.
-pub(crate) fn load_driver(
-    name: &str,
-    elf_data: &[u8],
-    allow_unsafe: bool,
-) -> Result<DriverHandle, LoadError> {
-    load_driver_with_context(name, elf_data, allow_unsafe, AbiDriverContext::new())
-}
-
-/// Load a driver artifact and register it as an ABI driver with a pre-populated
-/// driver context.
-pub(crate) fn load_driver_with_context(
-    name: &str,
-    elf_data: &[u8],
-    allow_unsafe: bool,
-    ctx: AbiDriverContext,
-) -> Result<DriverHandle, LoadError> {
-    let cell_id = load_cell(name, elf_data, allow_unsafe)?;
-    register_driver_from_cell_with_context(cell_id, ctx)
-}
-
-/// Load a driver pack (manifest + ELF + signature).
-pub(crate) fn load_driver_pack(
-    name: &str,
-    pack_data: &[u8],
-    allow_unsafe: bool,
-) -> Result<DriverHandle, LoadError> {
-    load_driver_pack_with_context(name, pack_data, allow_unsafe, AbiDriverContext::new())
-}
-
-/// Load a driver pack (manifest + ELF + signature) with a pre-populated driver
-/// context.
-pub(crate) fn load_driver_pack_with_context(
-    name: &str,
-    pack_data: &[u8],
-    allow_unsafe: bool,
-    ctx: AbiDriverContext,
-) -> Result<DriverHandle, LoadError> {
-    let cell_id = load_driver_pack_cell(name, pack_data, allow_unsafe)?;
-    register_driver_from_cell_with_context(cell_id, ctx)
-}
-
-/// Load a driver artifact: raw ELF or driver pack.
-pub(crate) fn load_driver_artifact(
-    name: &str,
-    data: &[u8],
-    allow_unsafe: bool,
-) -> Result<DriverHandle, LoadError> {
-    load_driver_artifact_with_context(name, data, allow_unsafe, AbiDriverContext::new())
-}
-
-/// Load a driver artifact: raw ELF or driver pack, preserving the supplied
-/// driver context for probe/start callbacks.
-pub(crate) fn load_driver_artifact_with_context(
-    name: &str,
-    data: &[u8],
-    allow_unsafe: bool,
-    ctx: AbiDriverContext,
-) -> Result<DriverHandle, LoadError> {
-    if driver_pack::is_driver_pack(data) {
-        load_driver_pack_with_context(name, data, allow_unsafe, ctx)
-    } else {
-        load_driver_with_context(name, data, allow_unsafe, ctx)
-    }
-}
-
 /// Record a driver handle in the cell's registry entry.
 fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
     with_registry_mut(|r| {
@@ -645,10 +576,6 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
             );
         }
     });
-}
-
-pub(crate) fn register_driver_from_cell(cell_id: CellId) -> Result<DriverHandle, LoadError> {
-    register_driver_from_cell_with_context(cell_id, AbiDriverContext::new())
 }
 
 pub(crate) fn register_driver_from_cell_with_context(
@@ -939,27 +866,7 @@ mod tests {
         );
         let before = registry_snapshot();
 
-        match load_driver_pack("test_driver", &pack, true) {
-            Err(LoadError::AbiIncompatible(message)) => {
-                assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
-            }
-            other => panic!("expected Kernel API ABI version rejection, got {:?}", other),
-        }
-
-        assert_eq!(registry_snapshot(), before);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn artifact_path_rejects_too_new_kernel_api_version() {
-        let pack = driver_pack::build_unsigned_driver_pack(
-            "test_driver",
-            TEST_ELF_BYTES,
-            kernel_api::abi::driver::KERNEL_API_ABI_VERSION + 1,
-        );
-        let before = registry_snapshot();
-
-        match load_driver_artifact("test_driver", &pack, true) {
+        match load_driver_pack_cell("test_driver", &pack, true) {
             Err(LoadError::AbiIncompatible(message)) => {
                 assert!(str_eq(message.as_str(), "Kernel API ABI version too old"));
             }

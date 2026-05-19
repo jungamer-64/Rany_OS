@@ -27,16 +27,8 @@ impl<'a> HcaCapLayout<'a> {
         get_bits_u32(self.data, 48, 16)
     }
 
-    pub fn cmdif_checksum(&self) -> u32 {
-        get_bits_u32(self.data, 528, 2)
-    }
-
     pub fn vhca_state(&self) -> bool {
         get_bits_u32(self.data, 1002, 1) != 0
-    }
-
-    pub fn log_uar_page_sz(&self) -> u32 {
-        get_bits_u32(self.data, 1168, 16)
     }
 
     pub fn log_max_qp_sz(&self) -> u32 {
@@ -115,10 +107,6 @@ impl<'a> HcaCapLayout<'a> {
         get_bits_u32(self.data, 234, 6)
     }
 
-    pub fn pkey_table_size(&self) -> u32 {
-        get_bits_u32(self.data, 400, 16)
-    }
-
     pub fn num_ports(&self) -> u32 {
         get_bits_u32(self.data, 440, 8)
     }
@@ -185,16 +173,8 @@ impl<'a> HcaCapLayoutMut<'a> {
         Self { data }
     }
 
-    pub fn pkey_table_size(&self) -> u32 {
-        get_bits_u32(self.data, 400, 16)
-    }
-
     pub fn cmdif_checksum(&self) -> u32 {
         get_bits_u32(self.data, 528, 2)
-    }
-
-    pub fn set_pkey_table_size(&mut self, val: u32) {
-        set_bits_u32(self.data, 400, 16, val);
     }
 
     pub fn set_log_uar_page_sz(&mut self, val: u32) {
@@ -253,10 +233,6 @@ impl<'a> HcaCap2Layout<'a> {
 
     pub fn sw_vhca_id_valid(&self) -> bool {
         get_bits_u32(self.data, 545, 1) != 0
-    }
-
-    pub fn sw_vhca_id(&self) -> u32 {
-        get_bits_u32(self.data, 546, 14)
     }
 }
 

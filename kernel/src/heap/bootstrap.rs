@@ -1,7 +1,6 @@
 use super::*;
 use boot_proto::{ExoBootInfo, ExoBootInfoView, NumaInfo, UsableMemoryRegion};
 use core::sync::atomic::{AtomicU64, Ordering};
-use x86_64::VirtAddr;
 
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF_8000_0000_0000);
 
@@ -339,37 +338,6 @@ pub(crate) fn checked_store_usize(addr: usize, val: usize, context: &str) {
     }
 }
 
-/// ACPI Reclaimable メモリをPMMへ返却
-pub(crate) fn reclaim_acpi_reclaimable(boot_info: &ExoBootInfoView<'_>) {
-    let descriptors = boot_info.memory_map();
-    if descriptors.is_empty() {
-        return;
-    }
-
-    let mut total_pages = 0u64;
-    for desc in descriptors {
-        if desc.r#type != EFI_MEMORY_TYPE_ACPI_RECLAIM {
-            continue;
-        }
-        if let Some((start, end)) = validate_usable_descriptor(desc, MIN_USABLE_PHYS_ADDR) {
-            let size = end - start;
-
-            // SECURITY: Unregister the range from DMA protection before reclaiming it as RAM.
-            // This is necessary because reclaimed RAM can be used for DMA targets, and
-            // IOMMU validation will reject any mapping into a protected region.
-            crate::security::dma::unregister_protected_range(start, size);
-
-            let released =
-                crate::mm::phys::frame_allocator::pmm_release_range(PhysAddr::new(start), size);
-            total_pages += released;
-        }
-    }
-
-    if total_pages > 0 {
-        log::info!("[MEM] Reclaimed ACPI memory: {} pages", total_pages);
-    }
-}
-
 /// グローバルヒープの初期化（Buddy Allocatorベース）
 pub(crate) fn init_global_heap() {
     #[cfg(any(
@@ -452,49 +420,6 @@ pub(crate) fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
     alloc::vec![
         (PhysAddr::new(0x100_0000), 480 * 1024 * 1024), // 16MiB - 496MiB
     ]
-}
-
-/// メモリ統計を表示
-pub(crate) fn print_memory_stats() {
-    let buddy_stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-
-    log::info!("[MEM] === Memory Statistics ===\n");
-    log::info!("[MEM] Total Frames: {}\n", buddy_stats.total_frames);
-    log::info!(
-        "[MEM] Free Frames: {} ({} KB)\n",
-        buddy_stats.free_frames,
-        buddy_stats.free_frames * 4
-    );
-    log::info!("[MEM] Split Operations: {}\n", buddy_stats.split_count);
-    log::info!(
-        "[MEM] Coalesce Operations: {}\n",
-        buddy_stats.coalesce_count
-    );
-
-    // Order別の統計を表示
-    for (order, (blocks, _frames)) in buddy_stats.order_stats.iter().enumerate() {
-        if *blocks > 0 {
-            let block_size_kb = (1usize << order) * 4;
-            log::info!(
-                "[MEM]   Order {}: {} blocks ({}KB each)\n",
-                order,
-                blocks,
-                block_size_kb
-            );
-        }
-    }
-}
-
-/// 物理アドレス -> 仮想アドレスへの変換 (O(1))
-#[inline(always)]
-pub(crate) fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    VirtAddr::new(phys.as_u64() + physical_memory_offset())
-}
-
-/// 仮想アドレス -> 物理アドレスへの変換 (O(1))
-#[inline(always)]
-pub(crate) fn virt_to_phys(virt: VirtAddr) -> PhysAddr {
-    PhysAddr::new(virt.as_u64() - physical_memory_offset())
 }
 
 /// メモリサブシステムが初期化済みかどうか

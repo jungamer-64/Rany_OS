@@ -36,16 +36,6 @@ impl Wqebb {
             data: [0u8; WQEBB_SIZE],
         }
     }
-
-    fn write_be32(&mut self, offset: usize, value: u32) {
-        let bytes = value.to_be_bytes();
-        self.data[offset..offset + 4].copy_from_slice(&bytes);
-    }
-
-    fn write_be16(&mut self, offset: usize, value: u16) {
-        let bytes = value.to_be_bytes();
-        self.data[offset..offset + 2].copy_from_slice(&bytes);
-    }
 }
 
 // ============================================================================
@@ -71,14 +61,10 @@ pub struct SendQueue {
     pub sqn: u32,
     /// WQバッファの仮想アドレス
     buf_virt: u64,
-    /// WQバッファのデバイスアドレス
-    buf_device: u64,
     /// ドアベルレコードの仮想アドレス
     doorbell_virt: u64,
     /// UAR（BlueFlame用）ベースアドレス
     uar_base: u64,
-    /// ログ2 SQサイズ
-    log_sq_size: u8,
     /// SQエントリ数
     sq_depth: u32,
     /// プロデューサインデックス
@@ -115,7 +101,6 @@ impl SendQueue {
     pub fn new(
         sqn: u32,
         buf_virt: u64,
-        buf_device: u64,
         doorbell_virt: u64,
         uar_base: u64,
         log_sq_size: u8,
@@ -134,10 +119,8 @@ impl SendQueue {
         Self {
             sqn,
             buf_virt,
-            buf_device,
             doorbell_virt,
             uar_base,
-            log_sq_size,
             sq_depth: depth,
             producer_counter: 0,
             tisn,
@@ -690,8 +673,6 @@ pub struct ReceiveQueue {
     buf_device: u64,
     /// ドアベルレコードの仮想アドレス
     doorbell_virt: u64,
-    /// ログ2 RQサイズ
-    log_rq_size: u8,
     /// RQエントリ数
     rq_depth: u32,
     /// 実際に採用された RQ レイアウト
@@ -742,7 +723,6 @@ impl ReceiveQueue {
             buf_virt,
             buf_device,
             doorbell_virt,
-            log_rq_size,
             rq_depth: depth,
             layout,
             producer_counter: 0,

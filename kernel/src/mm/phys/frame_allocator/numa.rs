@@ -150,18 +150,6 @@ impl NumaPmmAllocator {
         None
     }
 
-    pub(super) fn alloc_contiguous_on_node(
-        &self,
-        node: NumaNodeId,
-        frames: usize,
-    ) -> Option<PhysAddr> {
-        let idx = node.as_usize();
-        self.node_allocators
-            .get(idx)?
-            .as_ref()?
-            .alloc_contiguous(frames)
-    }
-
     pub(super) fn alloc_contiguous_on_node_aligned(
         &self,
         node: NumaNodeId,
@@ -173,24 +161,6 @@ impl NumaPmmAllocator {
             .get(idx)?
             .as_ref()?
             .alloc_contiguous_aligned(frames, align_bytes)
-    }
-
-    pub(super) fn alloc_contiguous_local(
-        &self,
-        current_cpu: u8,
-        frames: usize,
-    ) -> Option<PhysAddr> {
-        let preferred_node = self.topology.cpu_to_node(current_cpu);
-        let fallback_order = self.topology.nodes_by_distance(preferred_node);
-
-        for i in 0..self.topology.node_count() {
-            let node = fallback_order[i];
-            if let Some(addr) = self.alloc_contiguous_on_node(node, frames) {
-                return Some(addr);
-            }
-        }
-
-        None
     }
 
     pub(super) fn alloc_contiguous_local_aligned(

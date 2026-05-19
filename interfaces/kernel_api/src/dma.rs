@@ -126,6 +126,7 @@ impl DmaSlice<CpuOwned> {
     /// The caller must ensure that `virt_addr` points to a live allocation
     /// valid for `size` bytes, that `dma_handle_id` identifies the same buffer,
     /// and that `releaser` will eventually release that handle exactly once.
+    #[cfg(any(feature = "cell_runtime", test))]
     pub(crate) unsafe fn from_abi_parts_unchecked(
         dma_handle_id: u64,
         device_addr: u64,

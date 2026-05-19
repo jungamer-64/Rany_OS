@@ -22,9 +22,6 @@ pub const MIN_ADVERTISE_WINDOW: u32 = 536; // 1 MSS minimum
 /// ゼロウィンドウプローブ間隔 (ミリ秒)
 pub const ZERO_WINDOW_PROBE_INTERVAL_MS: u64 = 500;
 
-/// ゼロウィンドウプローブ最大再試行
-pub const ZERO_WINDOW_PROBE_MAX_RETRIES: u8 = 10;
-
 /// フロー制御状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FlowControlState {
@@ -90,34 +87,10 @@ impl FlowController {
         self.advertised_window
     }
 
-    /// 相手の広告ウィンドウ取得
-    #[inline]
-    pub fn peer_window(&self) -> u32 {
-        self.peer_window
-    }
-
-    /// 現在の状態
-    #[inline]
-    pub fn state(&self) -> FlowControlState {
-        self.state
-    }
-
     /// 使用可能なバッファ量
     #[inline]
     pub fn available_buffer(&self) -> u32 {
         self.buffer_size.saturating_sub(self.buffer_used)
-    }
-
-    /// ウィンドウ更新が必要か
-    #[inline]
-    pub fn needs_window_update(&self) -> bool {
-        self.window_update_needed
-    }
-
-    /// ウィンドウ更新フラグクリア
-    #[inline]
-    pub fn clear_window_update(&mut self) {
-        self.window_update_needed = false;
     }
 
     /// データ受信時の処理
@@ -163,25 +136,6 @@ impl FlowController {
         }
 
         self.advertised_window
-    }
-
-    /// 広告ウィンドウの更新
-    fn update_advertised_window(&mut self) {
-        let available = self.available_buffer();
-
-        // SWS回避: 小さすぎるウィンドウは0として広告
-        if available < MIN_ADVERTISE_WINDOW && available < self.buffer_size / 2 {
-            self.advertised_window = 0;
-            self.state = FlowControlState::ZeroWindow;
-        } else {
-            // RightEdge の詳細制御は on_consume 側へ集約し、
-            // ここでは十分な受信余裕が戻った場合だけ広告値を更新する。
-            if available >= self.advertised_window + max(MIN_ADVERTISE_WINDOW, self.buffer_size / 2)
-            {
-                self.advertised_window = available;
-                self.state = FlowControlState::Normal;
-            }
-        }
     }
 
     /// 相手の広告ウィンドウ更新
@@ -232,154 +186,10 @@ impl FlowController {
         self.last_probe_tick = current_tick;
         self.probe_count = self.probe_count.saturating_add(1);
     }
-
-    /// 送信可能なバイト数を計算
-    /// cwnd と peer_window の小さい方を使用
-    pub fn send_window(&self, cwnd: u32) -> u32 {
-        min(cwnd, self.peer_window)
-    }
-
-    /// 送信可能かどうか（ゼロウィンドウでない）
-    pub fn can_send(&self) -> bool {
-        self.peer_window > 0 || self.state == FlowControlState::ZeroWindowProbe
-    }
-
-    /// バッファ使用率 (0-100)
-    pub fn buffer_utilization(&self) -> u8 {
-        if self.buffer_size == 0 {
-            return 100;
-        }
-        ((self.buffer_used as u64 * 100) / self.buffer_size as u64) as u8
-    }
-
-    /// リセット
-    pub fn reset(&mut self) {
-        self.buffer_used = 0;
-        self.advertised_window = self.buffer_size;
-        self.peer_window = 65535;
-        self.state = FlowControlState::Normal;
-        self.probe_count = 0;
-        self.last_probe_tick = 0;
-        self.window_update_needed = false;
-    }
-
-    /// デバッグ情報
-    pub fn debug_info(&self) -> FlowControlDebugInfo {
-        FlowControlDebugInfo {
-            buffer_size: self.buffer_size,
-            buffer_used: self.buffer_used,
-            advertised_window: self.advertised_window,
-            peer_window: self.peer_window,
-            state: self.state,
-            probe_count: self.probe_count,
-        }
-    }
 }
 
 impl Default for FlowController {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// デバッグ情報
-#[derive(Debug)]
-pub struct FlowControlDebugInfo {
-    pub buffer_size: u32,
-    pub buffer_used: u32,
-    pub advertised_window: u32,
-    pub peer_window: u32,
-    pub state: FlowControlState,
-    pub probe_count: u8,
-}
-
-// =====================================================
-// テスト
-// =====================================================
-
-#[cfg(test)]
-pub mod tests {
-    use super::*;
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_initial_state() {
-        let fc = FlowController::new();
-        assert_eq!(fc.state(), FlowControlState::Normal);
-        assert_eq!(fc.advertised_window(), DEFAULT_RECV_BUFFER_SIZE);
-        assert_eq!(fc.buffer_utilization(), 0);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_receive_data() {
-        let mut fc = FlowController::with_buffer_size(10000);
-
-        fc.on_receive(3000);
-        assert_eq!(fc.available_buffer(), 7000);
-        assert_eq!(fc.advertised_window(), 7000);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_consume_data() {
-        let mut fc = FlowController::with_buffer_size(10000);
-
-        fc.on_receive(5000);
-        fc.on_consume(3000);
-
-        assert_eq!(fc.available_buffer(), 8000);
-        assert_eq!(fc.advertised_window(), 8000);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_zero_window() {
-        let mut fc = FlowController::with_buffer_size(1000);
-
-        // バッファを満タンに
-        fc.on_receive(1000);
-        assert_eq!(fc.state(), FlowControlState::ZeroWindow);
-        assert_eq!(fc.advertised_window(), 0);
-
-        // データ消費で回復
-        fc.on_consume(500);
-        assert_eq!(fc.state(), FlowControlState::Normal);
-        assert!(fc.advertised_window() > 0);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_sws_avoidance() {
-        let mut fc = FlowController::with_buffer_size(10000);
-
-        // ほぼ満タン - 小さすぎるウィンドウは0にする
-        fc.on_receive(9800);
-
-        // 200バイトの空きは MIN_ADVERTISE_WINDOW より小さいので0
-        assert_eq!(fc.advertised_window(), 0);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_peer_zero_window() {
-        let mut fc = FlowController::new();
-
-        fc.update_peer_window(0);
-        assert_eq!(fc.state(), FlowControlState::ZeroWindowProbe);
-        assert!(!fc.can_send() || fc.state == FlowControlState::ZeroWindowProbe);
-
-        // 回復
-        fc.update_peer_window(5000);
-        assert_eq!(fc.state(), FlowControlState::Normal);
-    }
-
-    #[cfg_attr(test, test_case)]
-    pub fn test_probe_timing() {
-        let mut fc = FlowController::new();
-        fc.update_peer_window(0);
-
-        // Initial probe requires waiting the base interval.
-        assert!(!fc.should_send_probe(0));
-        assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS));
-        fc.on_probe_sent(ZERO_WINDOW_PROBE_INTERVAL_MS);
-
-        // Next probe uses exponential backoff (x2 after first probe).
-        assert!(!fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 2));
-        assert!(fc.should_send_probe(ZERO_WINDOW_PROBE_INTERVAL_MS * 3));
     }
 }

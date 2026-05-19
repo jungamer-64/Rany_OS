@@ -10,8 +10,6 @@ pub(super) struct TranscriptState {
     sha384: crate::crypto::sha384::Sha384,
     len: usize,
     initialized: bool,
-    server_finished_sha256: Option<[u8; SHA256_OUTPUT_SIZE]>,
-    server_finished_sha384: Option<[u8; SHA384_OUTPUT_SIZE]>,
 }
 
 impl Default for TranscriptState {
@@ -21,8 +19,6 @@ impl Default for TranscriptState {
             sha384: crate::crypto::sha384::Sha384::new(),
             len: 0,
             initialized: false,
-            server_finished_sha256: None,
-            server_finished_sha384: None,
         }
     }
 }
@@ -33,8 +29,6 @@ impl TranscriptState {
         self.sha384.reset();
         self.len = 0;
         self.initialized = true;
-        self.server_finished_sha256 = None;
-        self.server_finished_sha384 = None;
     }
 
     pub(super) fn set_bytes(&mut self, data: &[u8]) {
@@ -51,10 +45,6 @@ impl TranscriptState {
 
     pub(super) fn len(&self) -> usize {
         self.len
-    }
-
-    pub(super) fn is_initialized(&self) -> bool {
-        self.initialized
     }
 
     pub(super) fn current_sha256(&self) -> [u8; SHA256_OUTPUT_SIZE] {
@@ -80,18 +70,5 @@ impl TranscriptState {
             synthetic[4..4 + SHA256_OUTPUT_SIZE].copy_from_slice(&self.current_sha256());
         }
         self.set_bytes(&synthetic[..4 + digest_len]);
-    }
-
-    pub(super) fn snapshot_server_finished(&mut self) {
-        self.server_finished_sha256 = Some(self.current_sha256());
-        self.server_finished_sha384 = Some(self.current_sha384());
-    }
-
-    pub(super) fn server_finished_sha256(&self) -> Option<[u8; SHA256_OUTPUT_SIZE]> {
-        self.server_finished_sha256
-    }
-
-    pub(super) fn server_finished_sha384(&self) -> Option<[u8; SHA384_OUTPUT_SIZE]> {
-        self.server_finished_sha384
     }
 }

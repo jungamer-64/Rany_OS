@@ -32,6 +32,44 @@ check_path_absent() {
   fi
 }
 
+workspace_member_paths=(
+  qemu-tests
+  tools/qemu_runner
+  kernel
+  hal
+  interfaces/kernel_api
+  libs/app_sdk
+  libs/ap_trampoline
+  libs/security
+  libs/boot_config
+  libs/graphic_types
+  libs/sync
+  libs/boot_proto
+  drivers/pci
+  drivers/ahci
+  drivers/usb
+  drivers/nvme
+  drivers/serial
+  drivers/hid
+  drivers/virtio
+  drivers/acpi
+  drivers/rtc
+  drivers/ide
+  drivers/time
+  drivers/example_abi
+  drivers/mlx5
+  bootloader
+  tools/driver_cell_probe
+  tools/driver_pack_builder
+  tools/standalone_driver_wrapper
+  tools/cap_harness
+)
+
+check_no_match \
+  "dead/unused warning suppression in workspace members" \
+  '#!?\[(allow\([^]]*\b(dead_code|warnings|unused(_[[:alnum:]_]+)?)\b|cfg_attr\([^]]*allow\([^]]*\b(dead_code|warnings|unused(_[[:alnum:]_]+)?)\b)' \
+  --glob '*.rs' "${workspace_member_paths[@]}"
+
 check_no_match \
   "kernel_content include! usage" \
   'include!\s*\(\s*"kernel_content\.rs"\s*\)' \

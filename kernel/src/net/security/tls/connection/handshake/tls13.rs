@@ -470,10 +470,7 @@ impl ExperimentalTlsConnection {
             .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
         let key_len = cipher.key_len();
         if cipher.uses_sha384() {
-            let transcript = self
-                .transcript
-                .server_finished_sha384()
-                .unwrap_or_else(|| self.transcript_hash_sha384());
+            let transcript = self.transcript_hash_sha384();
             let mut master_secret = [0u8; 48];
             master_secret.copy_from_slice(&self.handshake_secrets.master_secret);
             let cas = tls13_derive_secret_sha384(&master_secret, b"c ap traffic", &transcript);
@@ -491,10 +488,7 @@ impl ExperimentalTlsConnection {
             Self::set_tls_bytes(&mut self.record.write_key, &client_key[..key_len])?;
             Self::set_tls_bytes(&mut self.record.write_iv, &client_iv)?;
         } else {
-            let transcript = self
-                .transcript
-                .server_finished_sha256()
-                .unwrap_or_else(|| self.transcript_hash_sha256());
+            let transcript = self.transcript_hash_sha256();
             let mut master_secret = [0u8; 32];
             master_secret.copy_from_slice(&self.handshake_secrets.master_secret[..32]);
             let cas = tls13_derive_secret(&master_secret, b"c ap traffic", &transcript);

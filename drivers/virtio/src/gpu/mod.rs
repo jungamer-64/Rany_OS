@@ -193,7 +193,6 @@ pub struct VirtioGpu {
     cursor_queue: Option<Arc<Mutex<VirtQueue>>>,
     features: u64,
     next_resource_id: AtomicU32,
-    next_fence_id: AtomicU32,
     display_info: RwLock<Option<defs::DisplayInfo>>,
     active_scanouts: RwLock<Vec<u32>>,
     framebuffers: RwLock<Vec<Framebuffer>>,
@@ -220,7 +219,6 @@ impl VirtioGpu {
             cursor_queue: None,
             features: 0,
             next_resource_id: AtomicU32::new(1),
-            next_fence_id: AtomicU32::new(1),
             display_info: RwLock::new(None),
             active_scanouts: RwLock::new(Vec::new()),
             framebuffers: RwLock::new(Vec::new()),
@@ -483,10 +481,6 @@ impl VirtioGpu {
 
     pub(super) fn alloc_resource_id(&self) -> u32 {
         self.next_resource_id.fetch_add(1, Ordering::SeqCst)
-    }
-
-    pub(super) fn alloc_fence_id(&self) -> u32 {
-        self.next_fence_id.fetch_add(1, Ordering::SeqCst)
     }
 
     pub(super) fn refresh_display_info(&self) -> GpuResult<()> {

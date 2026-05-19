@@ -8,8 +8,8 @@ use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use ap_trampoline::{
-    ApBootFlags, ApTrampolineLaunchInfo, LAYOUT_VERSION, MAILBOX_OFFSET, PageTable32Addr,
-    TRAMPOLINE_SIZE, TrampolineMailboxHandle, TrampolineMailboxReadHandle, TrampolineVirtAddr,
+    ApTrampolineLaunchInfo, PageTable32Addr, TrampolineMailboxHandle, TrampolineMailboxReadHandle,
+    TrampolineVirtAddr,
 };
 use boot_proto::{ApBootLayout, ExoBootInfo};
 use core::num::{NonZeroU32, NonZeroU64};
@@ -58,8 +58,6 @@ pub enum ApState {
     InitSent = 1,
     /// SIPI sent, starting
     SipiSent = 2,
-    /// AP is running trampoline
-    Trampoline = 3,
     /// AP is initializing kernel structures
     Initializing = 4,
     /// AP is online and ready
@@ -108,19 +106,6 @@ impl ApBootInfo {
     pub fn set_state(&self, state: ApState) {
         self.state.store(state as u32, Ordering::Release);
     }
-
-    /// Get state
-    pub fn get_state(&self) -> ApState {
-        match self.state.load(Ordering::Acquire) {
-            0 => ApState::Offline,
-            1 => ApState::InitSent,
-            2 => ApState::SipiSent,
-            3 => ApState::Trampoline,
-            4 => ApState::Initializing,
-            5 => ApState::Online,
-            _ => ApState::Failed,
-        }
-    }
 }
 
 /// AP Bootstrap manager
@@ -139,8 +124,6 @@ pub struct ApBootstrap {
     launch_lock: PoisonLock<()>,
     /// Number of APs started
     aps_started: AtomicU32,
-    /// Expected number of APs
-    expected_aps: u32,
 }
 
 impl ApBootstrap {
@@ -194,7 +177,6 @@ impl ApBootstrap {
             mailbox: PoisonLock::new(mailbox),
             launch_lock: PoisonLock::new(()),
             aps_started: AtomicU32::new(0),
-            expected_aps: num_aps,
         })
     }
 
@@ -284,11 +266,6 @@ impl ApBootstrap {
         started
     }
 
-    /// Get number of started APs
-    pub fn aps_online(&self) -> u32 {
-        self.aps_started.load(Ordering::Relaxed)
-    }
-
     fn delay_ms(&self, ms: u64) {
         self.delay_us(ms * 1000);
     }
@@ -332,11 +309,6 @@ pub fn start_aps(apic_ids: &[u32]) -> u32 {
     bootstrap_ref()
         .map(|bootstrap| bootstrap.start_all_aps(apic_ids))
         .unwrap_or(0)
-}
-
-/// Get number of online APs
-pub fn online_aps() -> u32 {
-    crate::cpu::count().saturating_sub(1) as u32
 }
 
 fn map_ap_stack_window(ap_boot: &ApBootLayout, ap_index: usize) -> Result<u64, &'static str> {
@@ -615,7 +587,6 @@ mod tests {
             mailbox: PoisonLock::new(test_mailbox_handle()),
             launch_lock: PoisonLock::new(()),
             aps_started: AtomicU32::new(0),
-            expected_aps: 1,
         }
     }
 

@@ -424,13 +424,12 @@ impl FastBitmapAllocator {
     /// Drain remote free ring for a specific CPU
     pub(super) fn drain_remote_frees_for_cpu(&self, cpu_id: usize) -> usize {
         let magazine = &self.magazines[cpu_id];
-        let mut drained = 0;
 
         // Drain entries from remote free ring using closure
         let base = self.base;
         let bitmap = &self.bitmap;
 
-        drained = magazine.remote_free_ring.drain_with(64, |entry| {
+        let drained = magazine.remote_free_ring.drain_with(64, |entry| {
             let page_idx = ((entry.addr - base) / PAGE_SIZE_4K) as usize;
             let _ = bitmap.free_4k(page_idx);
         });

@@ -8,7 +8,7 @@
 pub mod raw;
 pub(crate) mod socket;
 pub mod tcp;
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub(crate) mod test_support;
 pub(crate) mod types;
 pub mod udp;

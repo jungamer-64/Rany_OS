@@ -16,24 +16,6 @@ impl<'a> HealthLayout<'a> {
         Self { data }
     }
 
-    /// アサート変数 (5 dwords)
-    pub fn assert_var(&self, i: usize) -> u32 {
-        if i >= 5 {
-            return 0;
-        }
-        get_bits_u32(self.data, i * 32, 32)
-    }
-
-    /// FW バージョン
-    pub fn fw_ver(&self) -> u32 {
-        get_bits_u32(self.data, 10 * 32, 32)
-    }
-
-    /// HW ID
-    pub fn hw_id(&self) -> u32 {
-        get_bits_u32(self.data, 11 * 32, 32)
-    }
-
     /// 症候群 (Syndrome)
     /// 0x00: OK
     /// 0x01: HW 致命的エラー

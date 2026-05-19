@@ -34,14 +34,6 @@ impl EcdhGroup {
             EcdhGroup::Secp256r1 => 0x0017,
         }
     }
-
-    /// 公開鍵のバイト長
-    pub fn public_key_len(self) -> usize {
-        match self {
-            EcdhGroup::X25519 => 32,
-            EcdhGroup::Secp256r1 => 65,
-        }
-    }
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -60,10 +52,6 @@ impl EcdhPublicKeyBytes {
 
     pub fn len(&self) -> usize {
         self.as_slice().len()
-    }
-
-    pub fn is_empty(&self) -> bool {
-        false
     }
 }
 
@@ -224,8 +212,6 @@ pub enum EcdhError {
     InvalidPeerKey,
     /// 共有秘密の計算に失敗（弱い鍵など）
     SharedSecretFailed,
-    /// 未サポートのグループ
-    UnsupportedGroup,
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -239,13 +225,15 @@ pub mod qemu_tests {
     }
 
     pub fn ecdh_x25519_public_key_length_smoke() -> bool {
-        EcdhGroup::X25519.public_key_len() == 32
+        let public_key = EcdhKeyPair::generate(EcdhGroup::X25519)
+            .ok()
+            .map(|pair| pair.public_key_bytes());
+        matches!(public_key, Some(EcdhPublicKeyBytes::X25519(bytes)) if bytes.len() == 32)
     }
 
     pub fn ecdh_x25519_group_smoke() -> bool {
         EcdhGroup::from_named_group(0x001D) == Some(EcdhGroup::X25519)
             && EcdhGroup::X25519.to_named_group() == 0x001D
-            && EcdhGroup::X25519.public_key_len() == 32
     }
 
     pub fn ecdh_group_from_named_group_smoke() -> bool {
@@ -300,7 +288,9 @@ pub mod qemu_tests {
     ///
     /// P-256公開鍵は65バイト（04 || x || y）であることを確認する。
     pub fn ecdh_p256_public_key_length_smoke() -> bool {
-        EcdhGroup::Secp256r1.public_key_len() == 65
+        crate::net::security::ecdh::encode_uncompressed_point(&p256::P256Point::generator())
+            .map(|bytes| bytes.len() == 65)
+            .unwrap_or(false)
     }
 
     /// P-256 不正なピア鍵拒否テスト（QEMU）
@@ -308,9 +298,8 @@ pub mod qemu_tests {
     /// QEMU full-boot の deterministic smoke では、重い楕円曲線演算に入る前の
     /// 形式チェックを確認する。詳細な曲線外点の拒否は host 側の unit test が担う。
     pub fn ecdh_p256_reject_invalid_peer_key_smoke() -> bool {
-        let key_len = EcdhGroup::Secp256r1.public_key_len();
-        let short_key_rejected = [0u8; 16].len() != key_len;
-        let long_key_rejected = [0u8; 128].len() != key_len;
+        let short_key_rejected = [0u8; 16].len() != 65;
+        let long_key_rejected = [0u8; 128].len() != 65;
 
         let mut bad_prefix = [0u8; 65];
         bad_prefix[0] = 0x05;
@@ -323,7 +312,6 @@ pub mod qemu_tests {
     pub fn ecdh_group_from_named_group_p256_smoke() -> bool {
         EcdhGroup::from_named_group(0x0017) == Some(EcdhGroup::Secp256r1)
             && EcdhGroup::Secp256r1.to_named_group() == 0x0017
-            && EcdhGroup::Secp256r1.public_key_len() == 65
     }
 
     pub fn ecdh_p256_point_on_curve_smoke() -> bool {

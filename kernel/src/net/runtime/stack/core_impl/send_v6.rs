@@ -221,33 +221,6 @@ impl NetworkStack {
         self.transmit_fragment_packets_on(if_id, owners, fragments)
     }
 
-    /// Send ICMPv6 Echo Reply with explicit source
-    pub(crate) fn send_icmpv6_echo_reply_with_src(
-        &mut self,
-        src: Ipv6Address,
-        dst: Ipv6Address,
-        identifier: u16,
-        sequence: u16,
-        echo_data: kernel_api::resource::net::PacketPayload,
-    ) {
-        let Some(icmpv6_msg) =
-            Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)
-        else {
-            self.stats().record_dropped();
-            return;
-        };
-
-        self.send_ipv6_icmpv6_payload(&src, &dst, icmpv6_msg);
-
-        log::info!(
-            "ICMPv6: Echo Reply sent from {} to {} id={} seq={}",
-            src,
-            dst,
-            identifier,
-            sequence
-        );
-    }
-
     pub(crate) fn send_icmpv6_echo_reply_with_src_on(
         &mut self,
         if_id: super::NetIfId,
@@ -897,19 +870,6 @@ impl NetworkStack {
         }
     }
 
-    pub(crate) fn drain_ndp_pending(&mut self, resolved_ip: &Ipv6Address) {
-        let mut drained = Vec::new();
-        for (if_id, state) in self.interfaces.iter_mut() {
-            let pending = state.ndp_pending_queue.drain_for(resolved_ip);
-            if !pending.is_empty() {
-                drained.push((*if_id, pending));
-            }
-        }
-        for (if_id, pending) in drained {
-            self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
-        }
-    }
-
     pub(crate) fn drain_ndp_pending_on(
         &mut self,
         if_id: super::NetIfId,
@@ -949,14 +909,6 @@ impl NetworkStack {
                 }
             }
         }
-    }
-
-    /// Send an IGMP Membership Report
-    pub(crate) fn send_igmp_report(&mut self, group_addr: Ipv4Address, _current_time: u64) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_igmp_report_on(if_id, group_addr, _current_time);
     }
 
     pub(crate) fn send_igmp_report_on(
@@ -1032,19 +984,6 @@ impl NetworkStack {
                 }
             }
         }
-    }
-
-    /// Send an IGMPv3 Membership Report (single record)
-    pub(crate) fn send_igmp_v3_report(
-        &mut self,
-        group_addr: Ipv4Address,
-        kind: crate::net::l3::igmp::PendingIgmpReportKind,
-        _current_time: u64,
-    ) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_igmp_v3_report_on(if_id, group_addr, kind, _current_time);
     }
 
     pub(crate) fn send_igmp_v3_report_on(

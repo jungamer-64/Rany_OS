@@ -1,11 +1,15 @@
+#[cfg(test)]
 use qemu_runner::{RunConfig, run_fullboot};
+#[cfg(test)]
 use std::sync::{Mutex, OnceLock};
 
+#[cfg(test)]
 fn qemu_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
 
+#[cfg(test)]
 fn env_u64(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -13,6 +17,7 @@ fn env_u64(key: &str, default: u64) -> u64 {
         .unwrap_or(default)
 }
 
+#[cfg(test)]
 fn env_u8(key: &str, default: u8) -> u8 {
     std::env::var(key)
         .ok()
@@ -20,6 +25,7 @@ fn env_u8(key: &str, default: u8) -> u8 {
         .unwrap_or(default)
 }
 
+#[cfg(test)]
 fn base_config(profile: &str) -> RunConfig {
     let mut cfg = RunConfig::for_profile(profile);
     let default_timeout = if profile == "step9-heavy" {
@@ -41,6 +47,7 @@ fn base_config(profile: &str) -> RunConfig {
     cfg
 }
 
+#[cfg(test)]
 fn run_required_profile(profile: &str) {
     let guard = qemu_lock().lock().expect("qemu lock poisoned");
     let cfg = base_config(profile);

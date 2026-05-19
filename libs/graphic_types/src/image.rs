@@ -647,8 +647,6 @@ struct BmpInfoHeader {
 
 /// BMP圧縮タイプ
 const BI_RGB: u32 = 0;
-const BI_RLE8: u32 = 1;
-const BI_RLE4: u32 = 2;
 const BI_BITFIELDS: u32 = 3;
 
 /// 画像読み込みエラー

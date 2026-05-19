@@ -58,10 +58,6 @@ pub use async_ops::{
     // ダイレクトブロックアクセス
     DirectBlockHandle,
     IoSchedulerStats,
-    // Scatter-Gather I/O
-    SgEntry,
-    SgIoFuture,
-    SgIoRequest,
     async_io_scheduler,
 };
 pub use block::*;

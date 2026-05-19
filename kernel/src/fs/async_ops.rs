@@ -16,7 +16,6 @@
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
@@ -34,12 +33,10 @@ use super::fs_model::{
 
 // NVme per-core API
 use crate::io::dma::{
-    CpuOwned, DeviceDmaContext, DeviceDmaMapping, DeviceOwned, DmaDirection, DmaMemoryAttributes,
-    DmaRegion, SgDmaGuard, TypedSgList,
+    DeviceDmaContext, DeviceDmaMapping, DmaDirection, DmaMemoryAttributes, DmaRegion,
 };
 use crate::io::io_scheduler::{
     CompletionHook, DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority, IoResult,
-    NvmeSglDescriptor,
 };
 use crate::io::nvme::dma::{NvmeDmaError, NvmeDmaRegion};
 mod cleanup_helpers;
@@ -52,9 +49,6 @@ pub use cleanup_helpers::{
     AsyncIoType,
     DirectBlockHandle,
     IoSchedulerStats,
-    SgEntry,
-    SgIoFuture,
-    SgIoRequest,
     async_io_scheduler,
     // helper APIs that are internal but still referenced by other parts of the crate
 };
@@ -63,9 +57,6 @@ type DmaBuffer = DmaSlice<KapiCpuOwned>;
 
 const NVME_PAGE_SIZE: usize = 4096;
 const NVME_BLOCK_SIZE: u64 = 512;
-const NVME_MAX_SGL_ENTRIES: usize = 32;
-/// Size of NVMe SGL descriptor (16 bytes)
-const NVME_SGL_DESCRIPTOR_SIZE: usize = 16;
 
 /// Local DSM Range definition to avoid io::nvme import
 #[repr(C)]
@@ -86,27 +77,6 @@ impl LocalDsmRange {
     }
 }
 
-/// Local SGL Descriptor definition to avoid io::nvme import
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-struct LocalSglDescriptor {
-    addr: u64,
-    length: u32,
-    _reserved: [u8; 3],
-    type_specific: u8,
-}
-
-impl LocalSglDescriptor {
-    fn data_block(addr: u64, length: u32) -> Self {
-        Self {
-            addr,
-            length,
-            _reserved: [0; 3],
-            type_specific: 0x00 << 4, // Data Block
-        }
-    }
-}
-
 pub(crate) type NvmeIommuMapping = DeviceDmaMapping;
 
 struct NvmePrpListPage {
@@ -115,13 +85,26 @@ struct NvmePrpListPage {
     iova: u64,
 }
 
+impl NvmePrpListPage {
+    fn device_iova(&self) -> u64 {
+        debug_assert!(self.region.size() >= NVME_PAGE_SIZE);
+        if let Some(map) = &self.map {
+            debug_assert_eq!(map.device_addr(), self.iova);
+        }
+        self.iova
+    }
+}
+
 struct NvmePrpListChain {
     pages: Vec<NvmePrpListPage>,
 }
 
 impl NvmePrpListChain {
     fn first_iova(&self) -> u64 {
-        self.pages.first().map(|page| page.iova).unwrap_or(0)
+        self.pages
+            .first()
+            .map(NvmePrpListPage::device_iova)
+            .unwrap_or(0)
     }
 
     fn complete(self) {
@@ -170,73 +153,6 @@ impl NvmeExternalDmaContext {
         }
         if let Some(map) = self.data_map.take() {
             let _ = map.unmap();
-        }
-    }
-}
-
-pub(crate) struct NvmeSglContext {
-    data_list: Option<TypedSgList<DeviceOwned>>,
-    data_guard: Option<SgDmaGuard>,
-    data_maps: Vec<NvmeIommuMapping>,
-    list_region: Option<DmaRegion>,
-    list_map: Option<NvmeIommuMapping>,
-    completed: bool,
-    inflight: bool,
-}
-
-impl NvmeSglContext {
-    fn mark_inflight(&mut self) {
-        self.inflight = true;
-    }
-
-    fn complete(mut self) -> TypedSgList<CpuOwned> {
-        self.completed = true;
-        self.inflight = false;
-
-        if let Some(map) = self.list_map.take() {
-            let _ = map.unmap();
-        }
-        for map in self.data_maps.drain(..) {
-            let _ = map.unmap();
-        }
-
-        let _ = self.list_region.take();
-
-        let data_list = self
-            .data_list
-            .take()
-            .expect("NvmeSglContext missing data_list");
-        let data_guard = self
-            .data_guard
-            .take()
-            .expect("NvmeSglContext missing data_guard");
-        data_guard.complete_all(data_list)
-    }
-}
-
-impl Drop for NvmeSglContext {
-    fn drop(&mut self) {
-        if self.completed {
-            return;
-        }
-        if self.inflight {
-            log::warn!("[NVME] NvmeSglContext dropped while in-flight; leaking DMA resources");
-            return;
-        }
-
-        if let Some(map) = self.list_map.take() {
-            let _ = map.unmap();
-        }
-
-        for map in self.data_maps.drain(..) {
-            let _ = map.unmap();
-        }
-
-        let _ = self.list_region.take();
-
-        if let (Some(data_list), Some(data_guard)) = (self.data_list.take(), self.data_guard.take())
-        {
-            let _ = data_guard.complete_all(data_list);
         }
     }
 }
@@ -308,7 +224,7 @@ fn map_nvme_dma_error(err: NvmeDmaError) -> FsError {
     match err {
         NvmeDmaError::InvalidLen => FsError::InvalidArgument,
         NvmeDmaError::OutOfMemory => FsError::NoSpace,
-        NvmeDmaError::IommuDeviceMissing | NvmeDmaError::IommuMappingFailed => FsError::IoError,
+        NvmeDmaError::IommuMappingFailed => FsError::IoError,
     }
 }
 
@@ -488,23 +404,6 @@ fn prepare_dma_from_kapi_buffer(
         data_addr,
         prp2,
     ))
-}
-
-/// SGLエントリの検証と合計バイト数の計算
-fn validate_sgl_total_bytes(list: &TypedSgList<CpuOwned>, max_entries: usize) -> FsResult<usize> {
-    if list.is_empty() || list.len() > max_entries {
-        return Err(FsError::InvalidArgument);
-    }
-    let mut total: usize = 0;
-    for entry in list.entries() {
-        if entry.size == 0 {
-            return Err(FsError::InvalidArgument);
-        }
-        total = total
-            .checked_add(entry.size as usize)
-            .ok_or(FsError::InvalidArgument)?;
-    }
-    Ok(total)
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]

@@ -8,32 +8,6 @@ use crate::net::runtime::command_handler::common::{extract_ports, subslice_offse
 use kernel_api::resource::net::PacketPayload;
 
 impl RuntimeCommandHandler {
-    /// IngressPacketイベント処理
-    ///
-    /// 【完全非同期化】このメソッドはイベントキュー経由でのみ呼び出されるべき。
-    /// `handle_event()` → `handle_event_with_stack_in()` のパスで呼ばれる場合は
-    /// 既にスタックロックが保持されている。
-    /// `handle_event()` → stackless パスで呼ばれた場合は
-    /// イベントを再エンキューして非同期パスに委譲する。
-    pub(super) fn handle_ingress_packet(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
-        packet: PacketRef,
-    ) -> EventHandleResult {
-        // スタックロックなしのコンテキストから呼ばれた場合:
-        // イベントキュー経由で再エンキューし、runtime_command_taskが
-        // スタックロック保持下で処理する（二重ロック取得を回避）
-        crate::net::runtime::command::enqueue_command_ignore_in(
-            runtime,
-            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
-                if_id,
-                packet,
-            }),
-        );
-        EventHandleResult::Success
-    }
-
     /// IngressPacketイベント処理（スタック保持）
     pub(super) fn handle_ingress_packet_with_stack(
         &self,
@@ -220,28 +194,6 @@ impl RuntimeCommandHandler {
             }
             _ => EventHandleResult::Success,
         }
-    }
-
-    /// IngressBatchイベント処理（スタック保持）
-    pub(super) fn handle_ingress_batch_with_stack(
-        &self,
-        runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
-        packets: alloc::vec::Vec<PacketRef>,
-        stack: &mut crate::net::runtime::stack::NetworkStack,
-    ) -> EventHandleResult {
-        // バッチ着信: スタックロック保持中に全パケットを連続処理
-        for packet in packets {
-            self.handle_event_with_stack_in(
-                runtime,
-                RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Packet {
-                    if_id,
-                    packet,
-                }),
-                stack,
-            );
-        }
-        EventHandleResult::Success
     }
 
     pub(super) fn handle_reassembled_packet_with_stack(

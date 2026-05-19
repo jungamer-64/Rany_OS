@@ -238,15 +238,6 @@ impl ScheduledTask {
         self.state.store(state as u8, Ordering::Release);
     }
 
-    fn state(&self) -> ScheduledTaskState {
-        match self.state.load(Ordering::Acquire) {
-            x if x == ScheduledTaskState::Ready as u8 => ScheduledTaskState::Ready,
-            x if x == ScheduledTaskState::Running as u8 => ScheduledTaskState::Running,
-            x if x == ScheduledTaskState::Blocked as u8 => ScheduledTaskState::Blocked,
-            _ => ScheduledTaskState::Completed,
-        }
-    }
-
     fn suspended_until_ns(&self) -> u64 {
         self.suspended_until_ns.load(Ordering::Acquire)
     }

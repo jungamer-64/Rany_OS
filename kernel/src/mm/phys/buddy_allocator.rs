@@ -53,7 +53,7 @@ fn fast_tzcnt_u64(word: u64) -> u32 {
 }
 
 // ============================================================================
-// Phase 1 最適化: SIMD Bitmap Scan (AVX2/SSE4.2)
+// Phase 1 最適化: SIMD Bitmap Scan (AVX2)
 // ============================================================================
 
 /// SIMD機能の利用可能フラグ
@@ -62,8 +62,6 @@ mod simd_support {
 
     /// AVX2が利用可能か
     pub static AVX2_AVAILABLE: AtomicBool = AtomicBool::new(false);
-    /// SSE4.2が利用可能か
-    pub static SSE42_AVAILABLE: AtomicBool = AtomicBool::new(false);
     /// SIMD初期化済みフラグ
     pub static SIMD_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -75,11 +73,6 @@ mod simd_support {
 
         #[cfg(target_arch = "x86_64")]
         {
-            // CPUID.01H:ECX.SSE4_2[bit 20]
-            let cpuid1 = core::arch::x86_64::__cpuid(1);
-            let sse42 = (cpuid1.ecx >> 20) & 1 != 0;
-            SSE42_AVAILABLE.store(sse42, Ordering::Release);
-
             // CPUID.07H:EBX.AVX2[bit 5]
             let cpuid7 = core::arch::x86_64::__cpuid_count(7, 0);
             let avx2 = (cpuid7.ebx >> 5) & 1 != 0;
@@ -92,11 +85,6 @@ mod simd_support {
     #[inline]
     pub fn has_avx2() -> bool {
         AVX2_AVAILABLE.load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn has_sse42() -> bool {
-        SSE42_AVAILABLE.load(Ordering::Relaxed)
     }
 }
 
@@ -340,9 +328,6 @@ const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024;
 /// 4KiBページ数の最大値
 const MAX_4K_FRAMES: usize = MAX_PHYSICAL_MEMORY / PAGE_SIZE_4K;
 
-/// 全オーダーの空きビット数の合計（完全二分木）
-const TOTAL_BLOCKS: usize = MAX_4K_FRAMES * 2 - 1;
-
 /// 空きビットの総ワード数（u64）
 /// 空きビットの総ワード数（u64）
 const TOTAL_DETAIL_WORDS: usize = total_detail_words();
@@ -397,108 +382,6 @@ const fn total_summary_words() -> usize {
 //
 // これにより、安定した動作と不要なCPUサイクル消費を防ぐ。
 // ============================================================================
-
-/// Coalesceポリシーの状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum CoalesceState {
-    /// 結合を積極的に実行する状態
-    Coalescing = 0,
-    /// 結合をスキップする状態（十分な空きあり）
-    Deferring = 1,
-}
-
-/// Hysteresisベースの結合ポリシー
-#[derive(Debug, Clone, Copy)]
-pub struct CoalescePolicy {
-    /// Low watermark: この空きブロック数以下で結合開始
-    pub low_watermark: usize,
-    /// High watermark: この空きブロック数以上で結合抑制
-    pub high_watermark: usize,
-    /// 現在の状態
-    state: CoalesceState,
-    /// 統計: 結合遅延回数
-    deferrals: u64,
-    /// 統計: 強制結合回数
-    forced_coalesces: u64,
-}
-
-impl CoalescePolicy {
-    /// 新しいポリシーを作成
-    ///
-    /// デフォルト: low=32, high=128 のブロック数
-    pub const fn new() -> Self {
-        Self {
-            low_watermark: 32,
-            high_watermark: 128,
-            state: CoalesceState::Deferring,
-            deferrals: 0,
-            forced_coalesces: 0,
-        }
-    }
-
-    /// watermarkを設定
-    pub fn set_watermarks(&mut self, low: usize, high: usize) {
-        self.low_watermark = low;
-        self.high_watermark = high.max(low + 1);
-    }
-
-    /// 現在の空きブロック数に基づいて結合すべきか判定
-    ///
-    /// Hysteresisロジック:
-    /// - free <= low → Coalescing状態へ遷移、trueを返す
-    /// - free >= high → Deferring状態へ遷移、falseを返す
-    /// - 間 → 前回の状態を維持
-    #[inline]
-    pub fn should_coalesce(&mut self, free_blocks: usize) -> bool {
-        if free_blocks <= self.low_watermark {
-            if self.state == CoalesceState::Deferring {
-                self.forced_coalesces += 1;
-            }
-            self.state = CoalesceState::Coalescing;
-            true
-        } else if free_blocks >= self.high_watermark {
-            if self.state == CoalesceState::Coalescing {
-                self.deferrals += 1;
-            }
-            self.state = CoalesceState::Deferring;
-            false
-        } else {
-            // Hysteresis: 前回の状態を維持
-            self.state == CoalesceState::Coalescing
-        }
-    }
-
-    /// 強制的に結合状態にする（メモリ圧迫時）
-    #[inline]
-    pub fn force_coalesce(&mut self) {
-        self.state = CoalesceState::Coalescing;
-        self.forced_coalesces += 1;
-    }
-
-    /// 統計情報を取得
-    pub fn stats(&self) -> CoalescePolicyStats {
-        CoalescePolicyStats {
-            state: self.state,
-            deferrals: self.deferrals,
-            forced_coalesces: self.forced_coalesces,
-        }
-    }
-}
-
-impl Default for CoalescePolicy {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-/// CoalescePolicy統計
-#[derive(Debug, Clone, Copy)]
-pub struct CoalescePolicyStats {
-    pub state: CoalesceState,
-    pub deferrals: u64,
-    pub forced_coalesces: u64,
-}
 
 // ============================================================================
 // Memory Compaction - Proactive Defragmentation (v0.6.0)
@@ -753,10 +636,6 @@ pub struct CompactionController {
     pub max_compact_order: usize,
     /// 統計
     pub stats: CompactionStats,
-    /// 最後の圧縮時刻（TSC）
-    last_compaction_time: u64,
-    /// 圧縮間隔（TSCサイクル）
-    compaction_interval: u64,
 }
 
 impl CompactionController {
@@ -774,8 +653,6 @@ impl CompactionController {
                 blocks_created: 0,
                 freed_blocks: 0,
             },
-            last_compaction_time: 0,
-            compaction_interval: 10_000_000_000, // 約3秒@3GHz
         }
     }
 

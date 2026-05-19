@@ -18,7 +18,6 @@ impl IoScheduler {
             device_ops: PoisonRwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
             completion_hooks: PoisonLock::new(BTreeMap::new()),
-            polling_enabled: AtomicBool::new(true),
             shutdown: AtomicBool::new(false),
         }
     }

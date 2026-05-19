@@ -8,7 +8,7 @@ mod bootstrap;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub(crate) use bootstrap::{
     checked_store_usize, checked_volatile_write_usize, physical_memory_offset,
-    reclaim_acpi_reclaimable, set_physical_memory_offset,
+    set_physical_memory_offset,
 };
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use bootstrap::{
@@ -160,9 +160,6 @@ struct BuddyHeapAllocator {
     /// オーダー0 = 最小ブロック (MIN_BLOCK_SIZE)
     /// オーダーN = 2^N * MIN_BLOCK_SIZE
     free_lists: [Option<usize>; Self::MAX_ORDER + 1],
-    /// 各ブロックの状態を追跡（split/freeビット）
-    /// ビット = 1: 分割済み or 使用中
-    block_states: [u64; 1024],
 }
 
 impl BuddyHeapAllocator {
@@ -177,7 +174,6 @@ impl BuddyHeapAllocator {
             heap_size: 0,
             initialized: false,
             free_lists: [None; Self::MAX_ORDER + 1],
-            block_states: [0u64; 1024],
         }
     }
 
@@ -727,8 +723,6 @@ pub const EXCHANGE_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 const EFI_PAGE_SIZE: u64 = 4096;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;
-const EFI_MEMORY_TYPE_ACPI_RECLAIM: u32 = 8;
-const EFI_MEMORY_TYPE_ACPI_NVS: u32 = 9;
 const EFI_MEMORY_TYPE_CONVENTIONAL: u32 = 7;
 const MIN_USABLE_PHYS_ADDR: u64 = 0x100_0000; // 16 MiB
 

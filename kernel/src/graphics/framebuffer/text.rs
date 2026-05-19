@@ -123,19 +123,6 @@ impl Framebuffer {
         }
     }
 
-    fn write_clipped_rgb565_run(
-        &mut self,
-        dst_x: i32,
-        run_len: usize,
-        dst_y: i32,
-        stride: usize,
-        color: Color,
-    ) {
-        if self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color) {
-            self.counted_sfence();
-        }
-    }
-
     /// Process one byte of glyph data at 24bpp, writing clipped runs.
     fn glyph_byte_runs_24bpp(
         &mut self,
@@ -187,25 +174,6 @@ impl Framebuffer {
                 self.write_clipped_rgb565_run_nofence(dst_x, run_len, dst_y, stride, color);
         }
         wrote_mmio
-    }
-
-    /// Flush a horizontal run during Bresenham line drawing.
-    fn flush_hrun(&mut self, run_start: i32, run_len: usize, run_y: i32, sx: i32, color: Color) {
-        if run_y < self.clip.y || run_y >= self.clip.bottom() {
-            return;
-        }
-        let (s, e) = if run_len <= 1 {
-            (run_start, run_start)
-        } else if sx > 0 {
-            (run_start, run_start + (run_len as i32 - 1))
-        } else {
-            (run_start - (run_len as i32 - 1), run_start)
-        };
-        let s_clamped = s.max(self.clip.x).min(self.clip.right() - 1);
-        let e_clamped = e.max(self.clip.x).min(self.clip.right() - 1);
-        if s_clamped <= e_clamped {
-            self.draw_hline_raw(s_clamped, e_clamped, run_y, color);
-        }
     }
 
     // ─── End shared helpers ────────────────────────────────────────────────

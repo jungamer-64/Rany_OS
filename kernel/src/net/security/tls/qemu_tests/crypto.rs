@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::super::crypto::aes_core::{
-    aes_ctr_with_schedule_in_place, aes_expand_key_schedule, aes_key_expansion, gf_mul,
+    aes_ctr_with_schedule_in_place, aes_expand_key_schedule, gf_mul,
 };
 use super::super::crypto::aes_gcm::{AesGcmKey, gf128_mul};
 use super::super::crypto::chacha20::{
@@ -739,11 +739,14 @@ pub fn wave8_tls_aes_key_expansion_smoke() -> bool {
         0x2b, 0x7e, 0x15, 0x16, 0x28, 0xae, 0xd2, 0xa6, 0xab, 0xf7, 0x15, 0x88, 0x09, 0xcf, 0x4f,
         0x3c,
     ];
-    let round_keys = aes_key_expansion(&key);
+    let Some(schedule) = aes_expand_key_schedule(&key) else {
+        return false;
+    };
+    let round_keys = &schedule.round_keys;
     if bytes_ne(&round_keys[0], &key) {
         return false;
     }
-    for i in 0..10 {
+    for i in 0..schedule.rounds {
         if bytes_eq(&round_keys[i], &round_keys[i + 1]) {
             return false;
         }

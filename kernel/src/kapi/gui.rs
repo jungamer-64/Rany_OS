@@ -23,7 +23,6 @@ use kernel_api::service::serial::{SerialPortInfo, SerialServices};
 use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTransport};
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
-const STORAGE_FLAG_READ_ONLY: u32 = 1 << 1;
 
 const STORAGE_KIND_NVME: u8 = 1;
 const STORAGE_KIND_AHCI: u8 = 3;

@@ -25,7 +25,6 @@ pub trait IovaManager {
         granularity: PageGranularity,
     ) -> Result<u64, IommuError>;
     fn free_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
-    fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError>;
 }
 
 impl IovaManager for IommuController {
@@ -122,15 +121,5 @@ impl IovaManager for IommuController {
             .map_err(|_| IommuError::HardwareError)?;
         let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
         alloc.free(addr, size)
-    }
-
-    /// Reserve an IOVA range (identity or fixed mapping).
-    fn reserve_iova(&self, addr: u64, size: u64) -> Result<(), IommuError> {
-        let guard = self
-            .iova_allocator
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        let alloc = guard.as_ref().ok_or(IommuError::NotPresent)?;
-        alloc.reserve(addr, size)
     }
 }

@@ -258,17 +258,6 @@ pub mod p384 {
             result
         }
 
-        /// フィールド否定 (mod p)
-        ///
-        /// 非ゼロならp - selfを返す。ゼロの場合はゼロを返す。
-        pub fn negate(&self) -> Self {
-            if self.is_zero() {
-                return Self::ZERO;
-            }
-            let p_fe = Self::from_limbs(P);
-            p_fe.sub(self)
-        }
-
         /// ビッグエンディアン48バイトからフィールド要素を生成。
         /// 範囲チェックを行い、p 以上の場合は None を返す。
         pub fn from_be_bytes(bytes: &[u8; 48]) -> Option<Self> {

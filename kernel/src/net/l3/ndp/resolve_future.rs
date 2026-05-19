@@ -58,7 +58,7 @@ fn current_time_ms() -> u64 {
     crate::time::get_uptime_ms()
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 fn reset_ndp_waiters_for_tests(runtime: NetRuntimeHandle) {
     let registry = ndp_waiters_in(runtime);
     if let Ok(mut waiters) = registry.waiters.lock() {
@@ -161,7 +161,7 @@ fn remove_ndp_waiter(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
     waiters.len() != before
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 fn waiter_exists(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
     let Ok(waiters) = ndp_waiters_in(runtime).waiters.lock() else {
         return false;
@@ -315,7 +315,7 @@ pub fn cleanup_ndp_waiters_in(runtime: NetRuntimeHandle) {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use core::task::{Context, RawWaker, RawWakerVTable, Waker};

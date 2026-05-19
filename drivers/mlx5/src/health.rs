@@ -46,8 +46,6 @@ pub struct HealthMonitor {
     checks_since_recovery: u64,
     /// リカバリ実行回数
     recovery_count: u32,
-    /// 最大リカバリ試行回数（上限超過時はデバイス無効化）
-    max_recoveries: u32,
     /// 前回の健全性カウンタ値
     last_health_counter: u32,
     /// カウンタが停止している連続回数
@@ -63,7 +61,6 @@ impl HealthMonitor {
             total_errors: 0,
             checks_since_recovery: 0,
             recovery_count: 0,
-            max_recoveries: 5,
             last_health_counter: 0,
             counter_stuck_count: 0,
         }

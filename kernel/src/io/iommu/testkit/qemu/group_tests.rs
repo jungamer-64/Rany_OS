@@ -5,13 +5,8 @@
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 
-use crate::io::iommu::runtime::groups::*;
 use crate::io::iommu::types::*;
-use crate::io::iommu::vendors::intel::controller::*;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-
-use super::*;
 
 /// Shared domain: multiple devices in same group map DMA independently.
 pub fn wave2_group_shared_domain_multi_device_smoke() -> bool {
@@ -595,72 +590,4 @@ pub fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
 /// Wave5 canonical required export: cmdqueue map/unmap with domain parity.
 pub fn wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
     wave5_cmdqueue_map_unmap_with_domain_canonical_impl()
-}
-
-pub fn amd_wave0_alias_devids_for_device_dedup_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_alias_devids_for_device_dedup_smoke()
-}
-
-pub fn amd_wave0_alias_devids_for_device_no_match_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_alias_devids_for_device_no_match_smoke()
-}
-
-pub fn amd_wave0_ivhd_flags_for_device_combined_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_ivhd_flags_for_device_combined_smoke()
-}
-
-pub fn amd_wave0_ivhd_flags_for_device_acpi_hid_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_ivhd_flags_for_device_acpi_hid_smoke()
-}
-
-pub fn amd_wave0_map_ivmd_ranges_exclusion_splits_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_map_ivmd_ranges_exclusion_splits_smoke()
-}
-
-pub fn amd_wave0_map_for_device_rejects_exclusion_range_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave0_map_for_device_rejects_exclusion_range_smoke()
-}
-
-pub fn amd_wave1_cmdqueue_map_unmap_with_domain_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave1_cmdqueue_map_unmap_with_domain_smoke()
-}
-
-pub fn amd_wave1_map_device_nonblocking_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave1_map_device_nonblocking_smoke()
-}
-
-pub fn amd_wave1_dma_mask_respects_32bit_limit_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave1_dma_mask_respects_32bit_limit_smoke()
-}
-
-pub fn amd_wave1_security_notifier_dispatch_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave1_security_notifier_dispatch_smoke()
-}
-
-pub fn amd_wave1_cmdqueue_pressure_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave1_cmdqueue_pressure_smoke()
-}
-
-pub fn amd_wave5_irt_entry_construction_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_irt_entry_construction_smoke()
-}
-
-pub fn amd_wave5_irt_alloc_free_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_irt_alloc_free_smoke()
-}
-
-pub fn amd_wave5_irt_exhaustion_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_irt_exhaustion_smoke()
-}
-
-pub fn amd_wave5_irt_invalidation_cmd_format_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_irt_invalidation_cmd_format_smoke()
-}
-
-pub fn amd_wave5_map_interrupt_returns_handle_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_map_interrupt_returns_handle_smoke()
-}
-
-pub fn amd_wave5_get_remap_msi_message_format_smoke() -> bool {
-    crate::io::iommu::vendors::amd::qemu_tests::wave5_get_remap_msi_message_format_smoke()
 }

@@ -140,7 +140,6 @@ pub(crate) fn cleanup_icmp_echo_waiters() {
 }
 
 pub struct IcmpEchoFuture {
-    runtime: NetRuntimeHandle,
     target: [u8; 4],
     sequence: u16,
     registered: bool,
@@ -152,7 +151,6 @@ pub struct IcmpEchoFuture {
 impl IcmpEchoFuture {
     pub fn new_in(runtime: NetRuntimeHandle, target: [u8; 4], sequence: u16) -> Self {
         Self {
-            runtime,
             target,
             sequence,
             registered: false,
@@ -169,7 +167,6 @@ impl IcmpEchoFuture {
         timeout_us: u64,
     ) -> Self {
         Self {
-            runtime,
             target,
             sequence,
             registered: false,

@@ -223,10 +223,6 @@ pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<&'static
     primary_interface_runtime_in(runtime).map(|runtime| &runtime.v4)
 }
 
-pub(crate) fn primary_interface_if_id_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
-    primary_interface_runtime_in(runtime).map(|runtime| runtime.if_id)
-}
-
 fn find_runtime_for_v4_payload_in(
     runtime: NetRuntimeHandle,
     packet: &kernel_api::resource::net::PacketPayload,

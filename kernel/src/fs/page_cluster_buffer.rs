@@ -60,10 +60,6 @@ impl PageClusterBuffer {
         }
     }
 
-    fn len(&self) -> usize {
-        self.len
-    }
-
     pub fn as_slice(&self) -> &[u8] {
         unsafe { slice::from_raw_parts(self.virt_ptr.as_ptr(), self.len) }
     }
@@ -102,9 +98,7 @@ impl Drop for PageClusterBuffer {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
-    use super::{
-        PAGE_SIZE_4K, PageClusterBuffer, alloc_contiguous_frames, dealloc_contiguous_frames,
-    };
+    use super::{PAGE_SIZE_4K, PageClusterBuffer, alloc_contiguous_frames};
     use crate::mm::virt::mapping::phys_to_virt;
     use alloc::{boxed::Box, vec, vec::Vec};
     use kernel_api::block_io::{
@@ -116,7 +110,7 @@ pub mod tests {
     #[cfg_attr(test, test_case)]
     pub fn test_page_cluster_buffer_alloc_or_contig() {
         let buf = PageClusterBuffer::allocate(4096).expect("allocation failed");
-        assert!(buf.len() >= 4096);
+        assert!(buf.as_slice().len() >= 4096);
     }
 
     #[cfg_attr(test, test_case)]

@@ -225,17 +225,13 @@ impl RuntimeCommandHandler {
         };
         let unresolved_local = local.with_port(local_port);
 
-        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) =
-            socket.with_inner(|inner| {
-                (
-                    inner.scope,
-                    inner.last_ingress_if_id,
-                    inner.tcp().and_then(|t| t.congestion_algorithm),
-                    inner.tcp().map_or(false, |t| t.nodelay),
-                    inner.priority,
-                )
-            })
-        else {
+        let Some((scope, preferred_if, nodelay)) = socket.with_inner(|inner| {
+            (
+                inner.scope,
+                inner.last_ingress_if_id,
+                inner.tcp().map_or(false, |t| t.nodelay),
+            )
+        }) else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -298,9 +294,7 @@ impl RuntimeCommandHandler {
             local_addr,
             remote,
             isn,
-            congestion_algo,
             nodelay,
-            priority,
             scope,
             Some(resolved_if),
         );
@@ -337,101 +331,6 @@ impl RuntimeCommandHandler {
         let _ = tcb_table.mark_syn_sent(local_addr, remote);
 
         log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
-        EventHandleResult::Success
-    }
-
-    pub(super) fn handle_connect_in(
-        &self,
-        runtime: NetRuntimeHandle,
-        fd: SocketId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-    ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-        let tcb_table = tcp_table_in(runtime);
-
-        // ローカルポートが未割り当ての場合はエフェメラルポートを割り当て
-        let local_port = if local.port() == 0 {
-            crate::net::l4::socket::allocate_tcp_ephemeral_port_in(runtime).unwrap_or(49152)
-        } else {
-            local.port()
-        };
-        let local_addr = local.with_port(local_port);
-
-        // ソケットのローカルアドレスを更新し、設定を取得
-        let Some((scope, preferred_if, congestion_algo, nodelay, priority)) = socket
-            .with_inner_mut(|inner| {
-                inner.local_addr = Some(local_addr);
-                inner.remote_addr = Some(remote);
-                let _ = inner.set_tcp_state(TcpSocketState::Connecting);
-                (
-                    inner.scope,
-                    inner.last_ingress_if_id,
-                    inner.tcp().and_then(|t| t.congestion_algorithm),
-                    inner.tcp().map_or(false, |t| t.nodelay),
-                    inner.priority,
-                )
-            })
-        else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-
-        // TCB（TCP Control Block）を作成
-        let isn = tcb_table.generate_isn(local_addr, remote);
-        let tcb = TcpControlBlock::start_connect(
-            fd,
-            local_addr,
-            remote,
-            isn,
-            congestion_algo,
-            nodelay,
-            priority,
-            scope,
-            preferred_if,
-        );
-        let _ = tcb_table.insert(tcb);
-
-        // SYNパケット構築 (TCPオプション付き)
-        // MSS=1460 (標準的なイーサネットMTU)
-        // Window Scale=7 (最大8MBウィンドウ)
-        let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
-            .seq(isn)
-            .syn()
-            .window(65535)
-            .syn_options(
-                1460,
-                Some(7),
-                true,
-                Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(
-                    runtime,
-                )),
-            ) // MSS + Window Scale + SACK Permitted + TS
-            .build_checked_packet(local_addr, remote);
-
-        let syn_segment = match syn_segment {
-            Ok(segment) => segment,
-            Err(e) => return EventHandleResult::ProtocolError(e),
-        };
-
-        // パケット送信（IPスタック経由）
-        if let Err(e) = self.send_tcp_segment(runtime, local_addr, remote, syn_segment) {
-            log::info!("TCP: Failed to send SYN packet: {:?}", e);
-            return EventHandleResult::ProtocolError(match e {
-                EndpointError::InvalidArgument => EndpointError::InvalidArgument,
-                _ => EndpointError::Internal,
-            });
-        }
-
-        // TCB更新: SYNは1シーケンス番号を消費する
-        let _ = tcb_table.mark_syn_sent(local_addr, remote);
-
-        log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
-
-        // 注: SYN-ACK受信後にWakerを起こす（受信処理側で行う）
-        // ここではまだ接続は完了していない
-
         EventHandleResult::Success
     }
 

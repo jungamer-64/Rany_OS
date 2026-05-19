@@ -244,14 +244,6 @@ impl TcpConnection {
         }
     }
 
-    pub(crate) fn socket(&self) -> &Socket {
-        &self.socket
-    }
-
-    pub(crate) fn socket_id(&self) -> SocketId {
-        self.socket.socket_id()
-    }
-
     pub(crate) fn into_retained_handle(mut self) -> SocketId {
         self.close_on_drop = false;
         self.socket.socket_id()
@@ -464,10 +456,6 @@ impl TcpAcceptor {
             socket,
             close_on_drop: false,
         }
-    }
-
-    pub(crate) fn socket(&self) -> &Socket {
-        &self.socket
     }
 
     pub(crate) fn into_retained_handle(mut self) -> SocketId {

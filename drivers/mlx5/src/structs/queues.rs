@@ -14,10 +14,6 @@ impl<'a> EqContextLayout<'a> {
         Self { data }
     }
 
-    // st: bit 20-23 (dword 0)
-    pub fn set_state(&mut self, val: u8) {
-        set_bits_u32(self.data, 20, 4, val as u32);
-    }
     // log_eq_size: bit 99-103 (dword 3)
     pub fn set_log_eq_size(&mut self, val: u8) {
         set_bits_u32(self.data, 99, 5, val as u32);
@@ -38,10 +34,6 @@ impl<'a> EqContextLayout<'a> {
     pub fn set_log_page_size(&mut self, val: u8) {
         set_bits_u32(self.data, 195, 5, val as u32);
     }
-    // event_bitmask: bit 576-639 (byte 0x48 in context, absolute 0x58)
-    pub fn set_event_bitmask(&mut self, val: u64) {
-        set_bits_u64(self.data, 576, val);
-    }
 }
 
 /// CQ Context Layout
@@ -54,10 +46,6 @@ impl<'a> CqContextLayout<'a> {
         Self { data }
     }
 
-    // st: bit 20-23 (dword 0)
-    pub fn set_state(&mut self, val: u8) {
-        set_bits_u32(self.data, 20, 4, val as u32);
-    }
     // cqe_comp_en: bit 17 (dword 0)
     pub fn set_cqe_comp_en(&mut self, val: bool) {
         set_bits_u32(self.data, 17, 1, if val { 1 } else { 0 });
@@ -139,9 +127,6 @@ impl<'a> SqContextLayout<'a> {
     }
     pub fn set_flush_in_error_en(&mut self, val: bool) {
         set_bits_u32(self.data, 3, 1, if val { 1 } else { 0 });
-    }
-    pub fn set_allow_multi_pkt_send_wqe(&mut self, val: bool) {
-        set_bits_u32(self.data, 4, 1, if val { 1 } else { 0 });
     }
     pub fn set_min_wqe_inline_mode(&mut self, val: u8) {
         set_bits_u32(self.data, 5, 3, val as u32);

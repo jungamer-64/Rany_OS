@@ -40,7 +40,6 @@ const PCI_CAP_VENDOR_SPECIFIC: u8 = 0x09;
 const PCI_BAR0: u8 = 0x10;
 const PCI_BAR_MAP_SIZE: usize = 0x20_000;
 const PORT_INDEX: u8 = 0;
-const NET_PORT_ID: u64 = 0x0001_0000;
 const BLOCK_DEVICE_ID: u64 = 0x0001_0000_0000_0000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -52,7 +51,6 @@ enum VirtioStandaloneKind {
 
 struct MappedBar {
     bar: u8,
-    phys_base: u64,
     handle: AbiMmioHandle,
 }
 
@@ -80,8 +78,6 @@ impl StandaloneNetRuntime {
 
 struct VirtioStandaloneState {
     kind: VirtioStandaloneKind,
-    pci_locator: PackedPciLocation,
-    device_id: u16,
     mapped_bars: Vec<MappedBar>,
     net_runtime: Option<Arc<StandaloneNetRuntime>>,
     netdev_handle: Option<u64>,
@@ -217,11 +213,7 @@ fn map_bar(
     if status != 0 {
         return None;
     }
-    mapped_bars.push(MappedBar {
-        bar,
-        phys_base,
-        handle,
-    });
+    mapped_bars.push(MappedBar { bar, handle });
     Some(handle)
 }
 
@@ -247,9 +239,6 @@ fn pci_transport(
     let device = cap_addr(mapped_bars, locator, caps.device)?;
     let transport = unsafe {
         VirtioPciTransport::new(
-            ((locator.bus() as u32) << 8)
-                | ((locator.device() as u32) << 3)
-                | locator.function() as u32,
             common,
             notify,
             caps.notify_multiplier,
@@ -683,8 +672,6 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
 
     *VIRTIO_STANDALONE_STATE.lock() = Some(VirtioStandaloneState {
         kind,
-        pci_locator,
-        device_id: ctx.device_id,
         mapped_bars,
         net_runtime,
         netdev_handle: None,

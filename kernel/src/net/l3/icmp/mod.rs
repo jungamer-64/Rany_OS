@@ -11,7 +11,6 @@ use super::ipv4::{Ipv4Address, data_checksum};
 mod builder_impl;
 mod packet_impl;
 mod processor_build_impl;
-mod processor_control_impl;
 pub(crate) mod processor_impl;
 mod processor_payload_impl;
 mod processor_rate_limit_impl;

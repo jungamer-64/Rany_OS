@@ -240,10 +240,6 @@ impl HubPortStatus {
 pub struct HubDevice {
     /// スロットID
     slot_id: AtomicU8,
-    /// インターフェース番号
-    interface: u8,
-    /// プロトコル (FS/HS Single TT/HS Multi TT)
-    protocol: u8,
     /// ステータス変更通知用エンドポイント (Interrupt IN)
     status_endpoint: u8,
     /// 制御対象のUSBデバイス
@@ -255,11 +251,9 @@ pub struct HubDevice {
 }
 
 impl HubDevice {
-    pub fn new(interface: u8, protocol: u8, status_endpoint: u8) -> Self {
+    pub fn new(status_endpoint: u8) -> Self {
         Self {
             slot_id: AtomicU8::new(0),
-            interface,
-            protocol,
             status_endpoint,
             device: Mutex::new(None),
             descriptor: Mutex::new(None),

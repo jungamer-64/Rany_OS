@@ -74,7 +74,6 @@ mod ioapic_reg {
     pub const IOWIN: u32 = 0x10;
     pub const IOAPICID: u8 = 0x00;
     pub const IOAPICVER: u8 = 0x01;
-    pub const IOAPICARB: u8 = 0x02;
     pub const IOREDTBL_BASE: u8 = 0x10;
 }
 

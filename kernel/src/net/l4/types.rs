@@ -29,12 +29,6 @@ impl SocketId {
     pub const fn from_raw(fd: u32) -> Self {
         Self(fd)
     }
-
-    /// 有効かどうか
-    #[inline(always)]
-    pub const fn is_valid(self) -> bool {
-        self.0 != u32::MAX
-    }
 }
 
 /// エンドポイントエラー
@@ -442,28 +436,10 @@ pub(crate) fn seq_leq(a: u32, b: u32) -> bool {
     a == b || seq_before(a, b)
 }
 
-/// a と b のうち前（earlier）の方を返す
-#[inline(always)]
-pub(crate) fn seq_min(a: u32, b: u32) -> u32 {
-    if seq_before(a, b) { a } else { b }
-}
-
-/// a と b のうち後（later）の方を返す
-#[inline(always)]
-pub(crate) fn seq_max(a: u32, b: u32) -> u32 {
-    if seq_after(a, b) { a } else { b }
-}
-
 /// a が b より後（strictly after）か判定する
 #[inline(always)]
 pub(crate) fn seq_after(a: u32, b: u32) -> bool {
     seq_before(b, a)
-}
-
-/// a が b 以後（after or equal）か判定する
-#[inline(always)]
-pub(crate) fn seq_geq(a: u32, b: u32) -> bool {
-    a == b || seq_after(a, b)
 }
 
 // =====================================================

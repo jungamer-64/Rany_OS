@@ -69,22 +69,6 @@ pub fn cache_core_sync_page_smoke() -> bool {
     run_case!(cache::tests::test_sync_page)
 }
 
-pub fn cache_block_block_cache_basic_smoke() -> bool {
-    run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_basic)
-}
-
-pub fn cache_block_block_cache_lru_eviction_smoke() -> bool {
-    run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_lru_eviction)
-}
-
-pub fn cache_block_block_cache_dirty_tracking_smoke() -> bool {
-    run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_dirty_tracking)
-}
-
-pub fn cache_block_block_cache_flush_smoke() -> bool {
-    run_case!(cache::cached_block_impl::block_cache_tests::test_block_cache_flush)
-}
-
 pub fn fs_model_file_mode_smoke() -> bool {
     run_case!(fs_model::tests::test_file_mode)
 }

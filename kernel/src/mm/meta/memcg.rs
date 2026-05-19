@@ -28,7 +28,7 @@ use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
+use spin::RwLock;
 
 use crate::mm::types::FrameIndex;
 use crate::mm::types::PAGE_SIZE_4K;
@@ -189,12 +189,8 @@ pub struct MemCgroup {
     kmem_counter: MemcgCounter,
     /// 制限設定
     limits: RwLock<MemcgLimit>,
-    /// OOM制御
-    oom_control: Mutex<OomControl>,
     /// 有効フラグ
     enabled: AtomicU8,
-    /// 作成タイムスタンプ
-    created_tsc: u64,
 }
 
 impl MemCgroup {
@@ -210,9 +206,7 @@ impl MemCgroup {
             swap_counter: MemcgCounter::new(),
             kmem_counter: MemcgCounter::new(),
             limits: RwLock::new(MemcgLimit::default()),
-            oom_control: Mutex::new(OomControl::default()),
             enabled: AtomicU8::new(1),
-            created_tsc: read_tsc(),
         }
     }
 
@@ -626,12 +620,6 @@ impl MemcgManager {
         result.reverse();
         result
     }
-}
-
-/// TSC読み取り
-#[inline]
-fn read_tsc() -> u64 {
-    crate::time::rdtsc_unserialized()
 }
 
 // グローバルマネージャ

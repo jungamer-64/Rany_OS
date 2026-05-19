@@ -17,7 +17,7 @@ use core::task::{Context, Poll};
 
 use super::controller::XhciController;
 use super::trb::{CompletionCode, Trb};
-use crate::descriptor::{DeviceDescriptor, ParsedConfiguration};
+use crate::descriptor::DeviceDescriptor;
 use crate::{
     DeviceAddress, EndpointAddress, SetupPacket, SlotId, UsbDevice, UsbError, UsbResult, UsbSpeed,
 };
@@ -36,8 +36,6 @@ pub struct XhciDevice {
     address: DeviceAddress,
     /// デバイスディスクリプタ
     device_descriptor: DeviceDescriptor,
-    /// 現在のコンフィグレーション
-    configuration: Option<ParsedConfiguration>,
     /// USB速度
     speed: UsbSpeed,
 }
@@ -56,7 +54,6 @@ impl XhciDevice {
             slot_id,
             address,
             device_descriptor,
-            configuration: None,
             speed,
         }
     }

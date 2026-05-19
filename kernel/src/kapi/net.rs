@@ -11,15 +11,6 @@ pub(crate) fn stack_scope(
     }
 }
 
-pub(crate) fn apply_endpoint_scope(
-    endpoint: &crate::net::l4::socket::Socket,
-    scope: kernel_api::resource::net::InterfaceScope,
-) {
-    let _ = endpoint.with_inner_mut(|inner| {
-        inner.scope = stack_scope(scope);
-    });
-}
-
 pub(crate) fn endpoint_addr_from_kapi(
     addr: kernel_api::resource::net::NetSocketAddr,
 ) -> crate::net::l4::EndpointAddr {
@@ -53,20 +44,6 @@ pub(crate) fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiErr
         }
         crate::net::l4::tcp::TcpError::PermissionDenied => KapiError::PermissionDenied,
         crate::net::l4::tcp::TcpError::NetworkUnreachable => KapiError::NotFound,
-        _ => KapiError::IoError,
-    }
-}
-
-pub(crate) fn network_error_to_kapi(error: crate::net::types::NetworkError) -> KapiError {
-    match error {
-        crate::net::types::NetworkError::PermissionDenied => KapiError::PermissionDenied,
-        crate::net::types::NetworkError::PortInUse => KapiError::ResourceExhausted,
-        crate::net::types::NetworkError::Timeout => KapiError::Timeout,
-        crate::net::types::NetworkError::NetworkUnreachable => KapiError::NotFound,
-        crate::net::types::NetworkError::BufferTooSmall
-        | crate::net::types::NetworkError::ResourceExhausted
-        | crate::net::types::NetworkError::ArpResolutionPending
-        | crate::net::types::NetworkError::TransmitFailed => KapiError::ResourceExhausted,
         _ => KapiError::IoError,
     }
 }

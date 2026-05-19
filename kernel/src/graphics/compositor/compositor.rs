@@ -12,7 +12,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::graphics::image::Image;
-use crate::graphics::{Color, Framebuffer, Point, Rect};
+use crate::graphics::{Color, Framebuffer, Rect};
 
 use super::constants::{BLUR_RADIUS, BORDER_WIDTH, SHADOW_SIZE, TITLE_BAR_HEIGHT};
 
@@ -677,30 +677,5 @@ impl Compositor {
                     .set_pixel(x as u32, y as u32, self.blur_scratch_col[y as usize]);
             }
         }
-    }
-}
-
-// ============================================================================
-// SIMD Gaussian Blur (x86_64 SSE2/AVX2) - 将来の最適化用
-// ============================================================================
-
-#[cfg(target_arch = "x86_64")]
-mod simd_blur {
-    //! SIMD最適化されたブラー処理（将来の最適化用）
-    //!
-    //! 現在は標準のスカラー実装を使用。
-    //! SSE2/AVX2が利用可能な環境では、この実装に切り替えることで
-    //! 大幅なパフォーマンス向上が期待できる。
-
-    /// SSE2を使用した高速ボックスブラー（将来実装予定）
-    pub fn box_blur_optimized(
-        _src: &[u8],
-        _dst: &mut [u8],
-        _width: usize,
-        _height: usize,
-        _radius: usize,
-    ) {
-        // TODO: SSE2/AVX2最適化版を実装
-        // 現在はスカラー版を使用
     }
 }

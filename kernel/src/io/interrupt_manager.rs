@@ -28,15 +28,9 @@ use x86_64::structures::idt::InterruptStackFrame;
 /// システム予約ベクタ（例外ハンドラ用）
 mod mask_ops;
 pub use mask_ops::*;
-const RESERVED_VECTORS_START: u8 = 0;
-const RESERVED_VECTORS_END: u8 = 31;
 
 /// ユーザー割り込みベクタ範囲
-const USER_VECTORS_START: u8 = 32;
 const USER_VECTORS_END: u8 = 254;
-
-/// Spurious interrupt vector
-const SPURIOUS_VECTOR: u8 = 255;
 
 /// MSI/MSI-X用ベクタ範囲
 pub const NVME_VECTOR: u8 = 48; // NVMe専用ベクタ (0x30)
@@ -45,7 +39,6 @@ pub const MSI_VECTORS_END: u8 = 0x6F;
 
 /// レガシー割り込み用ベクタ範囲
 const LEGACY_VECTORS_START: u8 = 32;
-const LEGACY_VECTORS_END: u8 = 47;
 
 /// APIC Timer vector
 ///

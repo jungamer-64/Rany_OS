@@ -2,8 +2,8 @@
 use super::*;
 use crate::sync::PoisonLock;
 
-mod sg_io_future;
-pub use self::sg_io_future::*;
+mod async_io_scheduler;
+pub use self::async_io_scheduler::*;
 impl<'a> Future for AsyncFlushFuture<'a> {
     type Output = FsResult<()>;
 
@@ -298,31 +298,6 @@ impl DirectBlockHandle {
         }
     }
 
-    /// Scatter-Gather DMAバッファへのブロック読み取り
-    pub async fn read_blocks_sg_dma(
-        &self,
-        block_offset: u64,
-        mut list: TypedSgList<CpuOwned>,
-    ) -> FsResult<TypedSgList<CpuOwned>> {
-        if block_offset >= self.block_count {
-            return Err(FsError::InvalidArgument);
-        }
-        if list.is_empty() {
-            return Ok(list);
-        }
-
-        let total_bytes = sg_total_bytes(&list)?;
-        if total_bytes == 0 {
-            return Ok(list);
-        }
-        validate_sg_block_params(total_bytes, self.block_size, block_offset, self.block_count)?;
-
-        let mut bounce = vec![0u8; total_bytes];
-        let read_len = self.read_blocks(block_offset, &mut bounce).await?;
-        sg_copy_from_vec(&mut list, &bounce[..read_len])?;
-        Ok(list)
-    }
-
     /// ブロック書き込み
     pub async fn write_blocks(&self, block_offset: u64, buf: &[u8]) -> FsResult<usize> {
         if block_offset >= self.block_count {
@@ -379,74 +354,6 @@ impl DirectBlockHandle {
             Ok(bytes) => Ok(bytes),
             Err(_) => Err(FsError::IoError),
         }
-    }
-
-    /// Scatter-Gather DMAバッファからのブロック書き込み
-    pub async fn write_blocks_sg_dma(
-        &self,
-        block_offset: u64,
-        list: TypedSgList<CpuOwned>,
-    ) -> FsResult<TypedSgList<CpuOwned>> {
-        if block_offset >= self.block_count {
-            return Err(FsError::InvalidArgument);
-        }
-        if list.is_empty() {
-            return Ok(list);
-        }
-
-        let total_bytes = sg_total_bytes(&list)?;
-        if total_bytes == 0 {
-            return Ok(list);
-        }
-        validate_sg_block_params(total_bytes, self.block_size, block_offset, self.block_count)?;
-
-        let bounce = sg_copy_to_vec(&list)?;
-        let _ = self.write_blocks(block_offset, &bounce).await?;
-        Ok(list)
-    }
-
-    /// Scatter-Gatherリクエストを非同期スケジューラに送信
-    pub fn submit_sg_request(&self, request: Arc<SgIoRequest>) -> SgIoFuture {
-        async_io_scheduler().submit_sg_request(*self, request)
-    }
-
-    /// SG I/Oリクエストのパラメータを検証する
-    pub(super) fn validate_sg_request(
-        &self,
-        request: &SgIoRequest,
-    ) -> Result<(usize, u64), FsError> {
-        if request.entries.is_empty() {
-            return Ok((0, 0));
-        }
-        if request.offset % (self.block_size as u64) != 0 {
-            return Err(FsError::InvalidArgument);
-        }
-        let total_bytes = request.total_bytes();
-        if total_bytes == 0 {
-            return Ok((0, 0));
-        }
-        if total_bytes % self.block_size as usize != 0 {
-            return Err(FsError::InvalidArgument);
-        }
-        Ok((total_bytes, request.offset / (self.block_size as u64)))
-    }
-
-    pub(super) async fn execute_sg_request(&self, request: &SgIoRequest) -> FsResult<usize> {
-        let (total_bytes, block_offset) = self.validate_sg_request(request)?;
-        if total_bytes == 0 {
-            return Ok(0);
-        }
-
-        let list = sg_request_to_dma_list(request)?;
-
-        if request.is_read {
-            let list = self.read_blocks_sg_dma(block_offset, list).await?;
-            sg_request_copy_back(request, &list, total_bytes)?;
-        } else {
-            let _ = self.write_blocks_sg_dma(block_offset, list).await?;
-        }
-
-        Ok(total_bytes)
     }
 
     /// Validate write_blocks_dma parameters and return block count
@@ -606,76 +513,5 @@ impl DirectBlockHandle {
             Ok(_) => Ok(()),
             Err(_) => Err(FsError::IoError),
         }
-    }
-}
-
-// ============================================================================
-// Scatter-Gather I/O
-// ============================================================================
-
-/// Scatter-Gatherエントリ
-#[derive(Debug, Clone)]
-pub struct SgEntry {
-    /// バッファアドレス
-    pub addr: usize,
-    /// 長さ
-    pub len: usize,
-}
-
-/// Scatter-Gather I/O リクエスト
-pub struct SgIoRequest {
-    /// リクエストID
-    pub id: u64,
-    /// 読み取り/書き込み
-    pub is_read: bool,
-    /// オフセット
-    pub offset: u64,
-    /// SGエントリリスト
-    pub entries: Vec<SgEntry>,
-    /// 完了フラグ
-    completed: AtomicBool,
-    /// 結果
-    result: Mutex<Option<FsResult<usize>>>,
-    /// Waker
-    waker: Mutex<Option<Waker>>,
-}
-
-impl SgIoRequest {
-    /// 新しいSG I/Oリクエストを作成
-    pub fn new(id: u64, is_read: bool, offset: u64, entries: Vec<SgEntry>) -> Self {
-        Self {
-            id,
-            is_read,
-            offset,
-            entries,
-            completed: AtomicBool::new(false),
-            result: Mutex::new(None),
-            waker: Mutex::new(None),
-        }
-    }
-
-    /// 総バイト数を計算
-    pub fn total_bytes(&self) -> usize {
-        self.entries.iter().map(|e| e.len).sum()
-    }
-
-    /// 完了をマーク
-    pub fn complete(&self, result: FsResult<usize>) {
-        *self.result.lock() = Some(result);
-        self.completed.store(true, Ordering::Release);
-
-        if let Some(waker) = self.waker.lock().take() {
-            waker.wake();
-        }
-    }
-
-    /// 完了したか
-    pub fn is_completed(&self) -> bool {
-        self.completed.load(Ordering::Acquire)
-    }
-
-    /// Futureを取得
-    pub fn into_future(self: Arc<Self>) -> SgIoFuture {
-        SgIoFuture::new(self)
     }
 }

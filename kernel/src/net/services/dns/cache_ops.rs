@@ -377,15 +377,6 @@ impl DnsClient {
         }
     }
 
-    pub(super) fn cache_dns_response_for_name(
-        &self,
-        name: &DnsNameOwned,
-        response: &DnsResponseView,
-        current_tick: u64,
-    ) {
-        let _ = (name, response, current_tick);
-    }
-
     pub(super) fn cache_negative_response_for_name(
         &self,
         name: &DnsNameOwned,

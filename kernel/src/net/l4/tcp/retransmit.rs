@@ -13,9 +13,7 @@ use kernel_api::resource::net::{PacketChain, PacketPayload, PacketRef};
 
 use super::segment::send_tcp_segment_payload_with_completion_in;
 use super::timer_wheel::TimingWheel;
-use crate::net::l4::types::{
-    EndpointAddr, conn_key_hash, seq_before as seq_before_fn, seq_leq as seq_leq_fn,
-};
+use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_leq as seq_leq_fn};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::transport::tcp_table_in;
 
@@ -110,13 +108,6 @@ impl RtoCalculator {
     /// 現在のRTO取得
     pub fn get_rto(&self) -> u64 {
         self.rto
-    }
-
-    /// リセット
-    pub fn reset(&mut self) {
-        self.srtt = None;
-        self.rttvar = None;
-        self.rto = 1000;
     }
 }
 
@@ -327,11 +318,6 @@ impl RetransmitQueue {
     /// 現在のRTO取得
     pub fn get_rto(&self) -> u64 {
         self.rto_calc.get_rto()
-    }
-
-    /// シーケンス番号比較（wrapping考慮）
-    pub fn seq_before(a: u32, b: u32) -> bool {
-        seq_before_fn(a, b)
     }
 
     /// シーケンス番号比較（以下）

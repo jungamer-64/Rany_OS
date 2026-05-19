@@ -159,10 +159,6 @@ mod tests {
 // Drain / async worker functions
 // ---------------------------------------------------------------------------
 
-pub fn drain_deferred_faults() -> usize {
-    drain_deferred_faults_with_driver(None)
-}
-
 pub(crate) fn drain_deferred_faults_with_driver(driver: Option<&AmdIommuDriver>) -> usize {
     let mut count = 0usize;
     // LOOP_PROOF: mode=condition; reason=AMD deferred-fault drain processes one queued event at a time and exits when queue is empty.;

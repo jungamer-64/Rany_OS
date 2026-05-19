@@ -4,7 +4,7 @@ use alloc::vec;
 
 #[cfg_attr(test, test_case)]
 pub fn test_paged_content_in_inode() {
-    let inode = MemoryInode::new_file(1, "test.txt", FileMode::DEFAULT_FILE);
+    let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
     // 書き込み
     inode.write(0, b"Hello, World!").unwrap();
@@ -20,7 +20,7 @@ pub fn test_paged_content_in_inode() {
 pub fn test_large_file_paging() {
     use crate::fs::PAGE_SIZE;
 
-    let inode = MemoryInode::new_file(1, "large.bin", FileMode::DEFAULT_FILE);
+    let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
     // 複数ページにまたがるデータ
     let data = vec![0xABu8; PAGE_SIZE * 3 + 100];
@@ -38,10 +38,10 @@ pub fn test_large_file_paging() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_cow_copy() {
-    let src = MemoryInode::new_file(1, "src.txt", FileMode::DEFAULT_FILE);
+    let src = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
     src.write(0, b"Original content").unwrap();
 
-    let dst = MemoryInode::new_file(2, "dst.txt", FileMode::DEFAULT_FILE);
+    let dst = MemoryInode::new_file(2, FileMode::DEFAULT_FILE);
 
     // CoWコピー
     copy_file_cow(&src, &dst);
@@ -61,7 +61,7 @@ pub fn test_cow_copy() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_sparse_file() {
-    let inode = MemoryInode::new_file(1, "sparse.bin", FileMode::DEFAULT_FILE);
+    let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
     // オフセット1MBに書き込み（中間領域はスパース）
     let offset = 1024 * 1024;
@@ -82,7 +82,7 @@ pub fn test_sparse_file() {
 pub fn test_truncate_releases_pages() {
     use crate::fs::PAGE_SIZE;
 
-    let inode = MemoryInode::new_file(1, "truncate.bin", FileMode::DEFAULT_FILE);
+    let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
     // 3ページ分書き込み
     let data = vec![0xCDu8; PAGE_SIZE * 3];
@@ -97,7 +97,7 @@ pub fn test_truncate_releases_pages() {
 
 #[cfg_attr(test, test_case)]
 pub fn test_get_page_zero_copy() {
-    let inode = MemoryInode::new_file(1, "zero_copy.bin", FileMode::DEFAULT_FILE);
+    let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
     inode.write(0, b"Page data for test").unwrap();
 
     // ページ直接取得

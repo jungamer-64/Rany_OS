@@ -22,7 +22,6 @@ const FG_MATCH_CRITERIA_BASE: usize = 0x40;
 const FTE_TABLE_TYPE_BIT: usize = 128;
 const FTE_TABLE_ID_BIT: usize = 168;
 const FTE_FLOW_INDEX_BIT: usize = 256;
-const FTE_FLOW_CONTEXT_BASE: usize = 0x40;
 const FTE_FLOW_CONTEXT_GROUP_ID_BIT: usize = 544;
 const FTE_FLOW_CONTEXT_ACTION_BIT: usize = 624;
 const FTE_FLOW_CONTEXT_DEST_LIST_SIZE_BIT: usize = 648;

@@ -181,13 +181,6 @@ enum TrbTypeCmd {
     StopEndpoint = 15,
     SetTrDequeuePointer = 16,
     ResetDevice = 17,
-    ForceEvent = 18,
-    NegotiateBandwidth = 19,
-    SetLatencyTolerance = 20,
-    GetPortBandwidth = 21,
-    ForceHeader = 22,
-    GetExtendedProperty = 24,
-    SetExtendedProperty = 25,
 }
 
 // ============================================================================

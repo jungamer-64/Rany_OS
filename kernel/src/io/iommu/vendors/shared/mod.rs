@@ -3,10 +3,6 @@
 // ============================================================================
 
 pub mod pasid;
-pub use self::pasid::*;
 
+#[cfg(test)]
 pub mod ats;
-pub use self::ats::*;
-
-pub mod posted_interrupt;
-pub use self::posted_interrupt::*;

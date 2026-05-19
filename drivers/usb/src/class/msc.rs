@@ -478,16 +478,8 @@ impl ScsiCommandBuilder {
 pub struct MscDevice {
     /// スロットID
     slot_id: AtomicU8,
-    /// インターフェース番号
-    interface: u8,
-    /// サブクラス
-    subclass: MscSubclass,
-    /// プロトコル
-    protocol: MscProtocol,
     /// Bulk IN エンドポイント
     bulk_in: u8,
-    /// Bulk OUT エンドポイント
-    bulk_out: u8,
     /// 最大LUN
     max_lun: AtomicU8,
     /// 現在のコマンドタグ
@@ -519,20 +511,10 @@ pub struct MscDeviceInfo {
 
 impl MscDevice {
     /// 新しい MSC デバイスを作成
-    pub fn new(
-        interface: u8,
-        subclass: MscSubclass,
-        protocol: MscProtocol,
-        bulk_in: u8,
-        bulk_out: u8,
-    ) -> Self {
+    pub fn new(bulk_in: u8) -> Self {
         Self {
             slot_id: AtomicU8::new(0),
-            interface,
-            subclass,
-            protocol,
             bulk_in,
-            bulk_out,
             max_lun: AtomicU8::new(0),
             current_tag: AtomicU32::new(1),
             initialized: AtomicBool::new(false),

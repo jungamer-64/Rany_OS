@@ -162,9 +162,6 @@ impl Ipv6FragmentBuffer {
             && Self::write_payload_byte(payload, offset + 1, low)
     }
 
-    /// Maximum reassembled payload (just under 64 KB, accounting for headers)
-    const MAX_PAYLOAD: usize = 65535;
-
     /// Maximum number of holes allowed in the reassembly buffer
     const MAX_HOLES: usize = 64;
 

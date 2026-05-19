@@ -15,7 +15,6 @@
 
 use log::info;
 use uefi::prelude::*;
-use uefi::proto::unsafe_protocol;
 use uefi::runtime::{self, VariableVendor};
 use uefi::{Guid, boot};
 
@@ -26,10 +25,6 @@ const SHIM_LOCK_GUID: Guid = uefi::guid!("605dab50-e046-4300-abb6-3dd810dd8b23")
 /// Shim Variable GUID (for MOK variables)
 /// {605DAB50-E046-4300-ABB6-3DD810DD8B23}
 const SHIM_VARIABLE_GUID: Guid = uefi::guid!("605dab50-e046-4300-abb6-3dd810dd8b23");
-
-/// MOK List RT Variable GUID (MOK variables in RuntimeServices)
-/// {605DAB50-E046-4300-ABB6-3DD810DD8B23}
-const MOK_LIST_RT_GUID: Guid = SHIM_VARIABLE_GUID;
 
 /// Shim/MOK detection information
 #[derive(Debug, Clone, Copy, Default)]
@@ -55,33 +50,6 @@ pub struct ShimMokInfo {
     pub mok_count: u16,
     /// Shim validation was successful for this binary
     pub shim_validated: bool,
-}
-
-/// Shim Lock Protocol interface
-/// This protocol is provided by Shim to allow second-stage loaders
-/// to verify signatures using MOK.
-#[repr(C)]
-#[unsafe_protocol(SHIM_LOCK_GUID)]
-pub struct ShimLock {
-    /// Verify a buffer against enrolled keys
-    pub verify:
-        unsafe extern "efiapi" fn(this: *const ShimLock, buffer: *const u8, size: u32) -> Status,
-
-    /// Hash a buffer
-    pub hash: unsafe extern "efiapi" fn(
-        this: *const ShimLock,
-        buffer: *const u8,
-        size: u32,
-        context: *mut u8,
-        context_size: *mut u32,
-    ) -> Status,
-
-    /// Get context (extended interface, may not be present in older Shim)
-    pub context: unsafe extern "efiapi" fn(
-        this: *const ShimLock,
-        context: *mut *mut u8,
-        context_size: *mut u32,
-    ) -> Status,
 }
 
 /// Read MOK-related UEFI variables and populate info fields.
@@ -261,43 +229,6 @@ fn count_mok_certificates() -> u16 {
     }
 }
 
-/// Verify a binary using Shim Lock Protocol
-///
-/// # Arguments
-/// * `data` - Binary data to verify
-///
-/// # Returns
-/// true if verification succeeded, false otherwise
-pub fn verify_with_shim(data: &[u8]) -> bool {
-    // Try to open Shim Lock Protocol
-    let handles = match boot::locate_handle_buffer(boot::SearchType::ByProtocol(&SHIM_LOCK_GUID)) {
-        Ok(h) => h,
-        Err(_) => return false,
-    };
-
-    let handle = match handles.first() {
-        Some(h) => *h,
-        None => return false,
-    };
-
-    // Open the protocol
-    let shim_lock = match boot::open_protocol_exclusive::<ShimLock>(handle) {
-        Ok(p) => p,
-        Err(_) => return false,
-    };
-
-    // Call verify function
-    let status = unsafe {
-        (shim_lock.verify)(
-            &*shim_lock as *const ShimLock,
-            data.as_ptr(),
-            data.len() as u32,
-        )
-    };
-
-    status == Status::SUCCESS
-}
-
 /// Get Shim/MOK status string for logging
 pub fn get_shim_mok_status_string(info: &ShimMokInfo) -> &'static str {
     if !info.shim_detected {
@@ -307,9 +238,4 @@ pub fn get_shim_mok_status_string(info: &ShimMokInfo) -> &'static str {
     } else {
         "Shim present, MOK validation disabled"
     }
-}
-
-/// Check if we're running in a Shim-validated boot chain
-pub fn is_shim_validated_boot(info: &ShimMokInfo) -> bool {
-    info.shim_detected && info.shim_validated && info.mok_sb_state == 1
 }

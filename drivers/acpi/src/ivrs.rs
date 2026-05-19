@@ -156,11 +156,6 @@ const IVMD_TYPE_ALL: u8 = 0x20;
 const IVMD_TYPE: u8 = 0x21;
 pub(crate) const IVMD_TYPE_RANGE: u8 = 0x22;
 
-pub(crate) const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
-pub(crate) const IVMD_FLAG_IR: u8 = 0x02;
-pub(crate) const IVMD_FLAG_IW: u8 = 0x04;
-const IVMD_FLAG_EXCL_RANGE: u8 = 0x08;
-
 const fn is_ivmd(block_type: u8) -> bool {
     matches!(block_type, IVMD_TYPE_ALL | IVMD_TYPE | IVMD_TYPE_RANGE)
 }

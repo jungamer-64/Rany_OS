@@ -1,5 +1,4 @@
 use super::{AsyncFile, DirectBlockHandle, FileAttr, FsError, SeekFrom};
-use crate::io::dma::TypedSgList;
 use crate::io::io_scheduler::{
     self, DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoMode, IoRequest, IoResult,
     ModeThresholds,
@@ -75,8 +74,6 @@ struct MockSubmitCounters {
     write: AtomicUsize,
     flush: AtomicUsize,
     discard: AtomicUsize,
-    sg_read: AtomicUsize,
-    sg_write: AtomicUsize,
 }
 
 struct MockNvmeOps {
@@ -87,19 +84,11 @@ impl DeviceOps for MockNvmeOps {
     fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
         let bytes = match req.command.as_ref() {
             Some(IoCommand::BlockRead { bytes, .. }) => {
-                if *bytes > 512 {
-                    self.counters.sg_read.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.counters.read.fetch_add(1, Ordering::Relaxed);
-                }
+                self.counters.read.fetch_add(1, Ordering::Relaxed);
                 *bytes
             }
             Some(IoCommand::BlockWrite { bytes, .. }) => {
-                if *bytes > 512 {
-                    self.counters.sg_write.fetch_add(1, Ordering::Relaxed);
-                } else {
-                    self.counters.write.fetch_add(1, Ordering::Relaxed);
-                }
+                self.counters.write.fetch_add(1, Ordering::Relaxed);
                 *bytes
             }
             Some(IoCommand::Flush) => {
@@ -176,32 +165,6 @@ pub fn test_direct_block_handle_discard_fast_paths() {
 }
 
 #[cfg_attr(test, test_case)]
-pub fn test_direct_block_handle_sg_dma_fast_paths_and_validation() {
-    let handle = DirectBlockHandle::new(0, 0, 16, 512);
-    let empty = TypedSgList::new();
-    let out = crate::task::block_on(handle.read_blocks_sg_dma(0, empty))
-        .expect("empty sg read should short-circuit");
-    assert!(out.is_empty());
-
-    let mut invalid = TypedSgList::new();
-    let idx = invalid
-        .add_buffer(100)
-        .expect("failed to allocate invalid test sg buffer");
-    invalid
-        .buffer_mut(idx)
-        .expect("missing sg buffer")
-        .as_mut_slice()
-        .fill(0xAA);
-    let invalid_res = crate::task::block_on(handle.read_blocks_sg_dma(0, invalid));
-    assert!(matches!(invalid_res, Err(FsError::InvalidArgument)));
-
-    let empty_write = TypedSgList::new();
-    let out_write = crate::task::block_on(handle.write_blocks_sg_dma(0, empty_write))
-        .expect("empty sg write should short-circuit");
-    assert!(out_write.is_empty());
-}
-
-#[cfg_attr(test, test_case)]
 pub fn test_direct_block_handle_flush_nonblocking_poll_shape() {
     let handle = DirectBlockHandle::new(0, 0, 16, 512);
     let mut fut = core::pin::pin!(handle.flush());
@@ -235,27 +198,6 @@ pub fn test_direct_block_handle_success_paths_with_mock_scheduler() {
     drive_with_io_scheduler(handle.discard(0, 1))
         .expect("discard should succeed with mock scheduler");
 
-    let mut read_sg = TypedSgList::new();
-    read_sg
-        .add_buffer(1024)
-        .expect("failed to allocate read SG buffer");
-    let read_sg = drive_with_io_scheduler(handle.read_blocks_sg_dma(2, read_sg))
-        .expect("read_blocks_sg_dma should succeed with mock scheduler");
-    assert_eq!(read_sg.len(), 1);
-
-    let mut write_sg = TypedSgList::new();
-    let write_idx = write_sg
-        .add_buffer(1024)
-        .expect("failed to allocate write SG buffer");
-    write_sg
-        .buffer_mut(write_idx)
-        .expect("missing SG write buffer")
-        .as_mut_slice()
-        .fill(0xA5);
-    let write_sg = drive_with_io_scheduler(handle.write_blocks_sg_dma(4, write_sg))
-        .expect("write_blocks_sg_dma should succeed with mock scheduler");
-    assert_eq!(write_sg.len(), 1);
-
     assert_eq!(
         counters.read.load(Ordering::Relaxed),
         1,
@@ -275,15 +217,5 @@ pub fn test_direct_block_handle_success_paths_with_mock_scheduler() {
         counters.discard.load(Ordering::Relaxed),
         1,
         "expected one discard submission"
-    );
-    assert_eq!(
-        counters.sg_read.load(Ordering::Relaxed),
-        1,
-        "expected one SG read submission"
-    );
-    assert_eq!(
-        counters.sg_write.load(Ordering::Relaxed),
-        1,
-        "expected one SG write submission"
     );
 }

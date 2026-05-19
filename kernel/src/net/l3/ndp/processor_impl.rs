@@ -914,14 +914,6 @@ impl NdpProcessor {
 // Helper: Multicast MAC conversion
 // =====================================================
 
-/// Convert IPv6 multicast address to Ethernet multicast MAC
-///
-/// 33:33:xx:xx:xx:xx (last 4 bytes of IPv6 multicast address)
-#[inline]
-pub fn ipv6_multicast_to_mac(addr: &Ipv6Address) -> [u8; 6] {
-    addr.multicast_mac()
-}
-
 // =====================================================
 // Tests
 // =====================================================

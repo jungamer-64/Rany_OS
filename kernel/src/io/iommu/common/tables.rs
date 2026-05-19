@@ -33,9 +33,6 @@ use crate::io::iommu::vendors::amd::tables::AmdPte;
 /// ```
 pub unsafe trait Zeroable: Copy {}
 
-/// Page table levels
-pub const PT_LEVELS: usize = 4;
-
 /// Page table entries per level (512 for 4KB pages)
 pub const PT_ENTRIES: usize = 512;
 
@@ -216,9 +213,7 @@ pub struct PageTableScope {
 }
 
 impl PageTableScope {
-    /// Allocate a zeroed page table on the given NUMA node (direct allocation, no pool)
-    ///
-    /// Use `new_with_pool()` for pool-managed allocation.
+    #[cfg(test)]
     pub fn new(numa_hint: Option<usize>) -> Result<Self, IommuError> {
         let layout =
             alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
@@ -321,16 +316,19 @@ impl PageTableScope {
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn ptr(&self) -> *mut SlPte {
         self.ptr
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn phys(&self) -> u64 {
         self.phys
     }
 
     #[inline]
+    #[cfg(test)]
     pub fn node(&self) -> usize {
         self.node
     }
@@ -614,27 +612,6 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
         }
     }
 
-    /// Get the virtual pointer (for kernel access)
-    #[inline]
-    pub fn as_ptr(&self) -> *const T {
-        self.ptr.as_ptr()
-    }
-
-    /// Get a mutable virtual pointer (for kernel access)
-    ///
-    /// # Safety
-    ///
-    /// The caller must ensure:
-    /// - Access is serialized via external locks (e.g., `IommuController::hardware`)
-    /// - No other mutable references exist to this data
-    /// - The returned pointer is not used after this table is dropped
-    ///
-    /// Prefer using `get_mut()` or `as_mut_slice()` for bounds-checked safe access.
-    #[inline]
-    pub unsafe fn as_mut_ptr_unchecked(&mut self) -> *mut T {
-        self.ptr.as_ptr()
-    }
-
     /// Get the physical address (for VT-d hardware register programming)
     ///
     /// This is the value that should be written to RTADDR, context table
@@ -673,30 +650,6 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             Some(unsafe { &mut *self.ptr.as_ptr().add(index) })
         } else {
             None
-        }
-    }
-
-    /// Get a slice of all valid entries
-    #[inline]
-    pub fn as_slice(&self) -> &[T] {
-        // SAFETY: ptr is valid for `count` elements
-        unsafe { core::slice::from_raw_parts(self.ptr.as_ptr(), self.count) }
-    }
-
-    /// Get a mutable slice of all valid entries
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [T] {
-        // SAFETY: ptr is valid for `count` elements
-        unsafe { core::slice::from_raw_parts_mut(self.ptr.as_ptr(), self.count) }
-    }
-
-    /// Zero all entries in the table
-    ///
-    /// Useful for reinitializing a table without reallocating.
-    pub fn clear(&mut self) {
-        // SAFETY: ptr is valid for alloc_bytes bytes (backing allocation)
-        unsafe {
-            core::ptr::write_bytes(self.ptr.as_ptr() as *mut u8, 0, self.alloc_bytes);
         }
     }
 }

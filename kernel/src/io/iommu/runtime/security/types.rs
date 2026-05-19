@@ -244,10 +244,6 @@ impl EventAggregator {
         self.active = 0;
         self.next_evict = 0;
     }
-
-    pub fn active_count(&self) -> usize {
-        self.active
-    }
 }
 
 impl Default for EventAggregator {

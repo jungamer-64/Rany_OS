@@ -169,15 +169,6 @@ fn variable_exists(name: &CStr16) -> bool {
     }
 }
 
-/// Check if the current boot was verified by Secure Boot
-///
-/// This is useful for determining if we're running as a trusted boot component.
-/// Note: This only indicates the Secure Boot state, not whether this specific
-/// bootloader binary was verified (that depends on whether we're signed and in db).
-pub fn is_verified_boot(info: &SecureBootInfo) -> bool {
-    info.secure_boot_enabled && !info.setup_mode && info.pk_present
-}
-
 /// Get a human-readable description of the Secure Boot state
 pub fn get_secure_boot_status_string(info: &SecureBootInfo) -> &'static str {
     if info.secure_boot_enabled {
@@ -192,40 +183,6 @@ pub fn get_secure_boot_status_string(info: &SecureBootInfo) -> &'static str {
         "Secure Boot: Audit Mode"
     } else {
         "Secure Boot: Disabled"
-    }
-}
-
-/// Secure Boot mode enumeration
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SecureBootMode {
-    /// Secure Boot is not supported by the firmware
-    NotSupported,
-    /// Setup Mode - keys can be freely modified
-    SetupMode,
-    /// User Mode with Secure Boot disabled
-    UserModeDisabled,
-    /// User Mode with Secure Boot enabled
-    UserModeEnabled,
-    /// Audit Mode - violations are logged but not enforced
-    AuditMode,
-    /// Deployed Mode - strongest enforcement
-    DeployedMode,
-}
-
-/// Get the current Secure Boot mode
-pub fn get_secure_boot_mode(info: &SecureBootInfo) -> SecureBootMode {
-    if !info.pk_present && !info.setup_mode && !info.secure_boot_enabled {
-        SecureBootMode::NotSupported
-    } else if info.setup_mode {
-        SecureBootMode::SetupMode
-    } else if info.audit_mode {
-        SecureBootMode::AuditMode
-    } else if info.deployed_mode {
-        SecureBootMode::DeployedMode
-    } else if info.secure_boot_enabled {
-        SecureBootMode::UserModeEnabled
-    } else {
-        SecureBootMode::UserModeDisabled
     }
 }
 
@@ -353,19 +310,6 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
 const EFI_CERT_SHA256_GUID: [u8; 16] = [
     0x26, 0x16, 0xc4, 0xc1, 0x4c, 0x50, 0x92, 0x40, 0xac, 0xa9, 0x41, 0xf9, 0x36, 0x93, 0x43, 0x28,
 ];
-
-/// EFI_SIGNATURE_LIST header (28 bytes)
-#[repr(C)]
-struct EfiSignatureListHeader {
-    /// GUID identifying the type of signature
-    signature_type: [u8; 16],
-    /// Total size of the entire list including header and signatures (little-endian)
-    signature_list_size: u32,
-    /// Size of the optional signature header following this header (little-endian)
-    signature_header_size: u32,
-    /// Size of each EFI_SIGNATURE_DATA entry (little-endian)
-    signature_size: u32,
-}
 
 const SIGNATURE_LIST_HEADER_SIZE: usize = 28;
 const SIGNATURE_OWNER_GUID_SIZE: usize = 16;

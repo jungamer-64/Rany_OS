@@ -22,7 +22,6 @@ mod common;
 mod control;
 mod ingress;
 mod lifecycle;
-mod nat;
 mod query;
 mod raw;
 mod tcp;
@@ -79,26 +78,11 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
             ) => self.handle_data_ready_in(runtime, socket_id),
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::TxAvailable,
-            ) => self.handle_tx_available_in(runtime),
-            RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
             ) => self.handle_close_in(runtime, socket_id),
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::UdpSendTo { .. },
             ) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::SetTcpNoDelay {
-                    socket_id,
-                    nodelay,
-                },
-            ) => self.handle_set_nodelay_in(runtime, socket_id, nodelay),
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::SetSocketPriority {
-                    socket_id,
-                    priority,
-                },
-            ) => self.handle_set_priority_in(runtime, socket_id, priority),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::IcmpEchoReply {
                     source,
@@ -109,13 +93,6 @@ impl RuntimeCommandHandler {
                 crate::net::api::icmp::notify_icmp_echo_reply(source, sequence, rtt_us);
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
-            ) => {
-                crate::net::l2::arp::notify_arp_resolved_in(runtime, ip, mac);
-                EventHandleResult::Success
-            }
-
             // ============================================================
             // 非同期Futureイベント: スタック不可時はエラーで完了（デッドロック防止）
             // ============================================================
@@ -131,16 +108,6 @@ impl RuntimeCommandHandler {
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::MulticastLeave { reply, .. },
             ) => finish_command(reply, false),
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEcho {
-                reply,
-                ..
-            }) => finish_command(reply, Err(())),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolveCheck { reply, .. },
-            ) => finish_command(reply, None),
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetLinkLocal { reply },
-            ) => finish_command(reply, None),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },
             ) => finish_command(
@@ -371,10 +338,6 @@ impl RuntimeCommandHandler {
                 if_id,
                 packet,
             }) => self.handle_ingress_packet_with_stack(runtime, if_id, packet, stack),
-            RuntimeCommand::Ingress(crate::net::runtime::command::IngressCommand::Batch {
-                if_id,
-                packets,
-            }) => self.handle_ingress_batch_with_stack(runtime, if_id, packets, stack),
             RuntimeCommand::Ingress(
                 crate::net::runtime::command::IngressCommand::Reassembled { if_id, payload },
             ) => self.handle_reassembled_packet_with_stack(runtime, if_id, payload, stack),
@@ -426,9 +389,6 @@ impl RuntimeCommandHandler {
             | lifecycle_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::NdpResolveRequest { .. },
             )
-            | lifecycle_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolved { .. },
-            )
             | lifecycle_event @ RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDial { .. },
             )
@@ -458,35 +418,16 @@ impl RuntimeCommandHandler {
             ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
 
             // ================================================================
-            // NAT forwarding events (with stack)
-            // ================================================================
-            nat_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NatForwardUdp { .. },
-            ) => self.handle_nat_event_with_stack(nat_event, stack),
-            nat_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NatForwardTcp { .. },
-            ) => self.handle_nat_event_with_stack(nat_event, stack),
-
-            // ================================================================
             // Async utility events (with stack)
             // ================================================================
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::IcmpEcho { .. },
-            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
-            utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe { .. },
-            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
-            utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolveCheck { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpApplyLease { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpV6ApplyLease { .. },
-            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
-            utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetLinkLocal { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { .. },

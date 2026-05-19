@@ -441,8 +441,6 @@ impl NumaTopology {
 pub struct NumaMempool {
     /// ノードごとのメモリプール（usizeとして保持）
     pools: Vec<PoisonLock<Vec<usize>>>,
-    /// バッファサイズ
-    buffer_size: usize,
     /// トポロジー参照
     topology: &'static NumaTopology,
 }
@@ -476,11 +474,7 @@ impl NumaMempool {
             pools.push(PoisonLock::new(node_pool));
         }
 
-        Self {
-            pools,
-            buffer_size,
-            topology,
-        }
+        Self { pools, topology }
     }
 
     /// 現在のCPUのNUMAノードからバッファを割り当て
@@ -582,8 +576,6 @@ impl CpuAffinity {
 pub struct FlowAffinity {
     /// フローハッシュ -> CPU マッピング
     flow_table: [u8; 256],
-    /// 使用可能なCPU
-    available_cpus: CpuAffinity,
     /// Receive Side Scaling (RSS) 有効
     rss_enabled: bool,
 }
@@ -595,7 +587,7 @@ impl FlowAffinity {
 
         if cpu_count > 0 {
             let mut cpu_idx = 0;
-            for (i, entry) in table.iter_mut().enumerate() {
+            for entry in table.iter_mut() {
                 // Round-robinでCPUを割り当て
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
                 while !available_cpus.allows(cpu_idx) {
@@ -603,13 +595,11 @@ impl FlowAffinity {
                 }
                 *entry = cpu_idx as u8;
                 cpu_idx = (cpu_idx + 1) % 64;
-                let _ = i; // suppress unused warning
             }
         }
 
         Self {
             flow_table: table,
-            available_cpus,
             rss_enabled: true,
         }
     }

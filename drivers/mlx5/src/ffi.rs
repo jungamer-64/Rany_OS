@@ -31,7 +31,7 @@ use crate::bootstrap::{
     Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
     Mlx5QueueDmaRegion, Mlx5QueueProfile,
 };
-use crate::defs::{CqeOpcode, MLX5_CMD_MBOX_BACKING_SIZE, MLX5_WQ_DEPTH};
+use crate::defs::{CqeOpcode, MLX5_WQ_DEPTH};
 use crate::device::Mlx5Device;
 use crate::error::Mlx5Error;
 use crate::wq::TxOptions;
@@ -343,14 +343,6 @@ struct Mlx5DmaResources {
 }
 
 impl Mlx5DmaResources {
-    const fn command_mailbox_allocation_size() -> usize {
-        MLX5_CMD_MBOX_BACKING_SIZE
-    }
-
-    fn device_addresses(slots: &[DmaSlot]) -> Vec<u64> {
-        slots.iter().map(DmaSlot::device_address).collect()
-    }
-
     fn allocate(plan: &Mlx5BootstrapPlan, pci_locator: PackedPciLocation) -> Result<Self, i32> {
         let profile = plan.queue_profile();
 
@@ -418,10 +410,6 @@ impl Mlx5DmaResources {
             rmps,
             rmp_dbs,
         })
-    }
-
-    fn fw_page_device_addrs(&self) -> Vec<u64> {
-        Self::device_addresses(&self.fw_pages)
     }
 
     fn to_allocated_resources(&self) -> Mlx5AllocatedResources {
@@ -504,7 +492,6 @@ impl Drop for Mlx5DmaResources {
 // Driver State
 // ============================================================================
 
-const MLX5_RX_BUFFER_SIZE: usize = 2048;
 const MLX5_POLL_BATCH: u32 = 64;
 const MLX5_POLL_INTERVAL_MS: u64 = 1;
 const MLX5_DMA_MIN_IOVA: u64 = 0x100000;
@@ -514,7 +501,6 @@ struct Mlx5StandaloneState {
     device: Mlx5Device,
     dma: Mlx5DmaResources,
     mmio: AbiMmioHandle,
-    pci_locator: PackedPciLocation,
     registration_handle: Option<u64>,
     runtime: Option<AbiNetPortRuntimeV3>,
     poll_generation: u64,
@@ -1121,7 +1107,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 }
             };
 
-            let mut device = Mlx5Device::new(mmio.base, mmio.size as usize, device_id);
+            let mut device = Mlx5Device::new(mmio.base, device_id);
             let allocated = dma.to_allocated_resources();
 
             log::info!(
@@ -1153,7 +1139,6 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 device,
                 dma,
                 mmio,
-                pci_locator,
                 registration_handle: None,
                 runtime: None,
                 poll_generation: 0,
@@ -1250,14 +1235,6 @@ mod tests {
     }
 
     #[test]
-    fn command_mailbox_allocation_size_matches_driver_mailbox_size() {
-        assert_eq!(
-            Mlx5DmaResources::command_mailbox_allocation_size(),
-            MLX5_CMD_MBOX_BACKING_SIZE
-        );
-    }
-
-    #[test]
     fn to_allocated_resources_preserves_iova_addresses() {
         let dma = Mlx5DmaResources {
             cmdq: slot(0x1000, 0x2000, 0x3000, 0x100),
@@ -1303,7 +1280,10 @@ mod tests {
         ];
 
         assert_eq!(
-            Mlx5DmaResources::device_addresses(&fw_pages),
+            fw_pages
+                .iter()
+                .map(DmaSlot::device_address)
+                .collect::<Vec<_>>(),
             vec![0x2000, 0x4000]
         );
     }

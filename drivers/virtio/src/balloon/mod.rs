@@ -60,14 +60,6 @@ pub enum BalloonError {
 // VirtIO Balloon Device
 // ============================================================================
 
-/// Balloon device configuration space offsets
-mod config_offsets {
-    /// num_pages: target number of balloon pages (u32, offset 0)
-    pub const NUM_PAGES: usize = 0;
-    /// actual: current number of balloon pages reported by driver (u32, offset 4)
-    pub const ACTUAL: usize = 4;
-}
-
 /// VirtIO balloon device driver
 pub struct VirtioBalloonDevice {
     /// Transport layer (MMIO or PCI)
@@ -191,10 +183,6 @@ impl VirtioBalloonDevice {
     }
 
     /// Calculate PFN for a physical address based on guest_page_size.
-    fn phys_to_pfn(&self, phys_addr: u64) -> u32 {
-        (phys_addr / self.guest_page_size as u64) as u32
-    }
-
     /// Submit a PFN array to the specified queue.
     fn submit_pfns(
         &self,

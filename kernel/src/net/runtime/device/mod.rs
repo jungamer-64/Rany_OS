@@ -11,7 +11,9 @@ extern crate alloc;
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
 use crate::net::l3::ipv4::Ipv4Config;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::context::{NetRuntimeContext, default_runtime_context};
+use crate::net::runtime::context::NetRuntimeContext;
+#[cfg(test)]
+use crate::net::runtime::context::default_runtime_context;
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::per_cpu::in_interrupt_context;
@@ -300,16 +302,8 @@ impl Drop for TxCompletionFuture {
     }
 }
 
-fn runtime_context() -> &'static NetRuntimeContext {
-    default_runtime_context()
-}
-
 fn runtime_context_for(runtime: NetRuntimeHandle) -> &'static NetRuntimeContext {
     runtime.context()
-}
-
-fn device_manager() -> &'static PoisonRwLock<NetDeviceManager> {
-    &runtime_context().device_manager
 }
 
 fn device_manager_in(runtime: NetRuntimeHandle) -> &'static PoisonRwLock<NetDeviceManager> {
@@ -1947,7 +1941,7 @@ mod tests {
                 port_id: test_port_id(9),
                 if_id: NetIfId(1),
             },
-            runtime_context(),
+            default_runtime_context(),
         );
 
         handle
@@ -2043,10 +2037,6 @@ mod tests {
         handle_interface_departure_in(default_runtime(), if_a, FailoverReason::LinkDown);
 
         assert_eq!(primary_if_in(default_runtime()), Some(if_b));
-        assert_eq!(
-            crate::net::services::dhcp::primary_interface_if_id_in(default_runtime()),
-            Some(if_b)
-        );
 
         let cfg = stack::stack_in(default_runtime())
             .lock()
@@ -2142,7 +2132,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn claim_bound_primary_interface_with_stack_state_updates_primary_without_global_lock() {
-        runtime_context()
+        default_runtime_context()
             .dhcp_bound_primary_selected
             .store(false, Ordering::Release);
 
@@ -2248,7 +2238,7 @@ mod tests {
         .expect("request b");
 
         assert!(
-            runtime_context()
+            default_runtime_context()
                 .tx_owner_groups
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -2260,7 +2250,7 @@ mod tests {
             Ok(())
         ));
         assert!(
-            runtime_context()
+            default_runtime_context()
                 .tx_owner_groups
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
@@ -2272,7 +2262,7 @@ mod tests {
             Err("fragment failed")
         ));
         assert!(
-            !runtime_context()
+            !default_runtime_context()
                 .tx_owner_groups
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())

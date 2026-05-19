@@ -51,14 +51,6 @@ impl NetworkStack {
         }
     }
 
-    /// Send a gratuitous ARP to defend our address (RFC 5227)
-    pub(crate) fn send_gratuitous_arp(&mut self) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_gratuitous_arp_on(if_id);
-    }
-
     pub(crate) fn send_gratuitous_arp_on(&mut self, if_id: super::NetIfId) {
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
@@ -89,14 +81,6 @@ impl NetworkStack {
                 }
             }
         }
-    }
-
-    /// Send an ARP reply
-    pub(crate) fn send_arp_reply(&mut self, target_mac: MacAddress, target_ip: Ipv4Address) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_arp_reply_on(if_id, target_mac, target_ip);
     }
 
     pub(crate) fn send_arp_reply_on(
@@ -318,11 +302,6 @@ impl NetworkStack {
 
         for pkt in pending {
             match pkt.payload {
-                crate::net::runtime::stack::PendingIpv4Payload::Icmpv4(data) => {
-                    // For now we don't have a generic ICMP sender that takes PacketPayload
-                    // and doesn't re-resolve. We might add this if needed.
-                    let _ = data;
-                }
                 crate::net::runtime::stack::PendingIpv4Payload::Udp {
                     src_port,
                     dst_port,

@@ -98,8 +98,6 @@ pub struct PtQuicklist {
     ready_count: usize,
     /// pendingリストの有効エントリ数
     pending_count: usize,
-    /// 所属NUMAノード
-    numa_node: NumaNodeId,
     /// 統計: 割り当て回数
     alloc_count: u64,
     /// 統計: 解放回数
@@ -110,13 +108,12 @@ pub struct PtQuicklist {
 
 impl PtQuicklist {
     /// 新しいQuicklistを作成
-    pub const fn new(numa_node: NumaNodeId) -> Self {
+    pub const fn new(_numa_node: NumaNodeId) -> Self {
         Self {
             ready: [QuicklistEntry::empty(); QUICKLIST_CAPACITY],
             pending: [QuicklistEntry::empty(); QUICKLIST_CAPACITY],
             ready_count: 0,
             pending_count: 0,
-            numa_node,
             alloc_count: 0,
             free_count: 0,
             buddy_returns: 0,

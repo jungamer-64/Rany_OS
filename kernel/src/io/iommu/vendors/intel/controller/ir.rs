@@ -6,16 +6,12 @@
 //!
 //! This module contains interrupt remapping methods for `IommuController` via `InterruptRemapper` trait.
 
-use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use super::IommuController;
-use super::init::CapabilityManager;
-use super::utils::IommuUtils;
 use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
-use crate::io::iommu::vendors::intel::registers::{ecap_bits, gcmd_bits, gsts_bits, regs};
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]
@@ -63,29 +59,6 @@ impl InterruptRemapEntry {
 
         Self { lo, hi }
     }
-
-    pub fn posted(pid_addr: u64, vector: u8, sid: Option<u16>) -> Self {
-        // P=1 (bit 0), IM=1 (bit 15)
-        // PID address (PDA) must be 4KB aligned, bits 63:12 are used.
-        let mut lo = (pid_addr & !0xFFF) | 1;
-        // SECURITY: IM (Interrupt Mode) = 1 (bit 15) for posted interrupts.
-        lo |= 1 << 15;
-
-        let mut hi = 0;
-
-        // Notification Vector (bits 111:104 of IRTE, bits 47:40 of hi)
-        hi |= (vector as u64) << 40;
-
-        if let Some(rid) = sid {
-            // SVT=1 (Source Validation Type: Verify SID) - bits 81:80 of IRTE (bits 17:16 of hi)
-            hi |= 1 << 16;
-            // SQ=0 (Source-id Qualifier: Exact match) - bits 83:82 of IRTE (bits 19:18 of hi)
-            hi |= 0 << 18; // explicit for clarity
-            // SID (Source ID) - bits 79:64 of IRTE (bits 15:0 of hi)
-            hi |= rid as u64;
-        }
-        Self { lo, hi }
-    }
 }
 
 // SAFETY: All-zeros is valid (not present)
@@ -98,22 +71,6 @@ pub struct InterruptRemapTable {
 }
 
 impl InterruptRemapTable {
-    pub fn new(size_log2: u8) -> Option<Self> {
-        let count = 1usize << size_log2;
-        // HardwareTable handles allocation and checks 4KB limit implies max 256 entries
-        let table = HardwareTable::new(count, None).ok()?;
-        // Allocation bitmap: 1 bit per entry
-        let bitmap_len = (count + 63) / 64;
-        Some(Self {
-            table,
-            bitmap: vec![0; bitmap_len],
-        })
-    }
-
-    pub fn base_address(&self) -> u64 {
-        self.table.phys_addr()
-    }
-
     pub fn allocate(&mut self) -> Option<u16> {
         // Find first free bit
         for (i, &word) in self.bitmap.iter().enumerate() {
@@ -178,24 +135,7 @@ impl InterruptRemapTable {
     }
 }
 
-/// Delivery Mode for Interrupts (VT-d spec)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DeliveryMode {
-    Fixed = 0,
-    LowestPriority = 1,
-    SMI = 2,
-    NMI = 4,
-    INIT = 5,
-    ExtINT = 7,
-}
-
 pub trait InterruptRemapper {
-    /// Initialize the Interrupt Remapping Table
-    fn init_interrupt_remapping(&mut self, size_log2: u8) -> Result<(), IommuError>;
-    /// Enable interrupt remapping
-    unsafe fn enable_interrupt_remapping(&self) -> Result<(), IommuError>;
-    /// Disable interrupt remapping
-    unsafe fn disable_interrupt_remapping(&self) -> Result<(), IommuError>;
     /// Check if interrupt remapping is enabled
     fn is_interrupt_remapping_enabled(&self) -> bool;
     /// Allocate an IRTE for a device interrupt
@@ -209,159 +149,9 @@ pub trait InterruptRemapper {
         dest_id: u32,
         logical: bool,
     ) -> Result<u16, IommuError>;
-    /// Free an IRTE
-    fn free_irte(&self, index: u16) -> Result<(), IommuError>;
-    /// Update an existing IRTE
-    fn update_irte(&mut self, index: u16, entry: InterruptRemapEntry) -> Result<(), IommuError>;
 }
 
 impl InterruptRemapper for IommuController {
-    /// Initialize the Interrupt Remapping Table
-    fn init_interrupt_remapping(&mut self, size_log2: u8) -> Result<(), IommuError> {
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] init_interrupt_remapping enter: size_log2={}",
-            size_log2
-        );
-
-        if !self.supports_interrupt_remapping() {
-            return Err(IommuError::NotSupported);
-        }
-
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] interrupt_remap_table.is_locked() before lock = {}",
-            self.interrupt_remap_table.is_locked()
-        );
-
-        let guard = match self.interrupt_remap_table.lock() {
-            Ok(g) => {
-                #[cfg(test)]
-                log::info!("[test][IOMMU] interrupt_remap_table.lock() succeeded (not poisoned)");
-                g
-            }
-            Err(poisoned) => {
-                log::warn!(
-                    "[IOMMU] interrupt_remap_table lock poisoned during init_interrupt_remapping"
-                );
-                // Recovery: Drop inner guard to release lock
-                drop(poisoned.into_inner());
-                self.interrupt_remap_table
-                    .lock_for_init("[IOMMU] interrupt_remap_table init")
-            }
-        };
-        if guard.is_some() {
-            return Err(IommuError::AlreadyInitialized);
-        }
-
-        // Drop the initial guard here to avoid deadlocking when re-acquiring the lock later
-        drop(guard);
-
-        // Create the IRT
-        let irt = InterruptRemapTable::new(size_log2).ok_or(IommuError::HardwareError)?;
-
-        // Get IRTA register offset from ECAP
-        let iro = ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) as u64;
-        let irta_reg = self.mmio_base + (iro << 4);
-
-        // Set Interrupt Remap Table Address
-        // Bits 11:0 = size (log2 - 1), Bit 11 = Extended Interrupt Mode
-        let eime = if (self.ecap & ecap_bits::ECAP_EIM) != 0 {
-            1 << 11
-        } else {
-            0
-        };
-        let irta_value = (irt.base_address() as u64) | ((size_log2 as u64 - 1) & 0xF) | eime;
-
-        crate::io::mmio::mmio_write_u64(irta_reg as usize, irta_value);
-
-        // Set IRT pointer (GCMD.SIRTP) while preserving other enabled bits.
-        self.write_gcmd_with_state(gcmd_bits::GCMD_SIRTP);
-
-        // Wait for completion
-        match self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS) != 0,
-            10_000,
-            false,
-        ) {
-            Ok(_) => {
-                #[cfg(test)]
-                log::info!("[test][IOMMU] GSTS.IRTPS set - continue");
-            }
-            Err(IommuError::Timeout) => {
-                log::warn!(
-                    "[IOMMU] interrupt_remap_table init: wait for SIRTP timed out - proceeding with best-effort"
-                );
-            }
-            Err(e) => return Err(e),
-        }
-
-        let mut guard = self
-            .interrupt_remap_table
-            .lock_for_init("[IOMMU] interrupt_remap_table init");
-        *guard = Some(irt);
-        log::info!(
-            "[IOMMU] Interrupt Remapping Table initialized ({} entries)",
-            1 << size_log2
-        );
-
-        Ok(())
-    }
-
-    /// Enable interrupt remapping
-    unsafe fn enable_interrupt_remapping(&self) -> Result<(), IommuError> {
-        if !self.supports_interrupt_remapping() {
-            return Err(IommuError::NotSupported);
-        }
-
-        let guard = match self.interrupt_remap_table.lock() {
-            Ok(g) => g,
-            Err(_) => {
-                log::error!("[IOMMU] interrupt_remap_table lock poisoned while enabling IR");
-                return Err(IommuError::HardwareError);
-            }
-        };
-
-        if guard.is_none() {
-            return Err(IommuError::NotPresent);
-        }
-
-        // Enable Interrupt Remapping (GCMD.IRE) while preserving other enabled bits.
-        self.write_gcmd_with_state(gcmd_bits::GCMD_IRE);
-
-        // Wait for completion
-        match self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRES) != 0,
-            10_000,
-            false,
-        ) {
-            Ok(_) => {
-                self.ir_enabled.store(true, Ordering::Release);
-                log::info!("[IOMMU] Interrupt Remapping enabled");
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
-    /// Disable interrupt remapping
-    unsafe fn disable_interrupt_remapping(&self) -> Result<(), IommuError> {
-        let gcmd = self.read32(regs::GCMD);
-        self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_IRE);
-
-        match self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_IRES) == 0,
-            10_000,
-            false,
-        ) {
-            Ok(_) => {
-                self.ir_enabled.store(false, Ordering::Release);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     /// Check if interrupt remapping is enabled
     fn is_interrupt_remapping_enabled(&self) -> bool {
         self.ir_enabled.load(Ordering::Acquire)
@@ -399,48 +189,5 @@ impl InterruptRemapper for IommuController {
         }
 
         Ok(index)
-    }
-
-    /// Free an IRTE
-    fn free_irte(&self, index: u16) -> Result<(), IommuError> {
-        let mut guard = self
-            .interrupt_remap_table
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        let irt = guard.as_mut().ok_or(IommuError::NotPresent)?;
-
-        irt.set(index, InterruptRemapEntry::new());
-
-        // Security: Invalidate IEC after freeing IRTE to prevent stale interrupts.
-        // Propagation of invalidation errors is critical for security and consistency.
-        if let Err(e) = self.invalidate_iec(false, index) {
-            // SECURITY: If invalidation fails, we must leak the IRTE index.
-            // Returning the index to the allocator while the hardware might still
-            // hold a stale cached entry could lead to cross-device interrupt spoofing.
-            return Err(e);
-        }
-
-        irt.free(index);
-
-        Ok(())
-    }
-
-    /// Update an existing IRTE
-    fn update_irte(&mut self, index: u16, entry: InterruptRemapEntry) -> Result<(), IommuError> {
-        let mut guard = self
-            .interrupt_remap_table
-            .lock()
-            .map_err(|_| IommuError::HardwareError)?;
-        let irt = guard.as_mut().ok_or(IommuError::NotPresent)?;
-
-        if !irt.set(index, entry) {
-            return Err(IommuError::InvalidAddress);
-        }
-
-        // Security: Invalidate IEC after updating IRTE.
-        // Propagation of invalidation errors is critical for security and consistency.
-        self.invalidate_iec(false, index)?;
-
-        Ok(())
     }
 }

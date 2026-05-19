@@ -363,20 +363,6 @@ fn allocate_ephemeral_port_from(
     None
 }
 
-fn bind_port(
-    ports: &PoisonRwLock<PortBindingTable>,
-    family: SocketFamily,
-    port: u16,
-    scope: InterfaceScope,
-    socket_id: SocketId,
-) -> SocketResult<()> {
-    let mut guard = ports.write().unwrap_or_else(|e| e.into_inner());
-    if guard.has_conflict(family, port, scope) {
-        return Err(EndpointError::PortInUse);
-    }
-    guard.insert(PortBindingKey::new(family, port, scope), socket_id)
-}
-
 fn find_socket_by_port(
     ports: &PoisonRwLock<PortBindingTable>,
     sockets: &PoisonRwLock<SocketRecordTable>,
@@ -519,16 +505,6 @@ impl SocketRegistry {
         let record = sockets.get(socket_id)?;
         let mut state = record.state.lock().unwrap_or_else(|e| e.into_inner());
         Some(f(&mut state))
-    }
-
-    pub fn bind_tcp_port(
-        &self,
-        family: SocketFamily,
-        port: u16,
-        scope: InterfaceScope,
-        socket_id: SocketId,
-    ) -> SocketResult<()> {
-        bind_port(&self.tcp_ports, family, port, scope, socket_id)
     }
 
     pub fn bind_udp_dual_stack(

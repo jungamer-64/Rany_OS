@@ -15,14 +15,6 @@ use crate::io::iommu::common::domain::{
 use crate::io::iommu::types::IommuError;
 
 impl IommuController {
-    pub(crate) fn process_single_invalidation(
-        &self,
-        req: &InvalidateRequest,
-        any_ats: bool,
-    ) -> Result<(), IommuError> {
-        self.process_single_invalidation_nosync(req, any_ats)
-    }
-
     pub(crate) fn process_single_invalidation_nosync(
         &self,
         req: &InvalidateRequest,
@@ -49,20 +41,6 @@ impl IommuController {
                 Ok(())
             }
         }
-    }
-
-    pub(crate) fn invalidate_pages(
-        &self,
-        domain_id: u16,
-        start_iova: u64,
-        size: u64,
-        any_ats: bool,
-    ) -> Result<(), IommuError> {
-        self.invalidate_pages_nosync(domain_id, start_iova, size, any_ats)?;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_sync()?;
-        }
-        Ok(())
     }
 
     pub(crate) fn invalidate_pages_nosync(
@@ -184,14 +162,6 @@ impl IommuController {
         Ok(())
     }
 
-    pub(crate) fn invalidate_global(&self) -> Result<(), IommuError> {
-        self.invalidate_global_nosync()?;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_sync()?;
-        }
-        Ok(())
-    }
-
     pub(crate) fn invalidate_global_nosync(&self) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_global()?;
@@ -207,14 +177,6 @@ impl IommuController {
             }
         } else {
             unsafe { self.invalidate_iotlb_global() };
-        }
-        Ok(())
-    }
-
-    pub(crate) fn invalidate_context(&self, source_id: u16) -> Result<(), IommuError> {
-        self.invalidate_context_nosync(source_id)?;
-        if self.is_queued_invalidation_enabled() {
-            self.qi_wait_sync()?;
         }
         Ok(())
     }

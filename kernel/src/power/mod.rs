@@ -63,21 +63,15 @@ pub enum DevicePowerState {
 
 mod pm1_control {
     pub const SCI_EN: u16 = 1 << 0;
-    pub const BM_RLD: u16 = 1 << 1;
-    pub const GBL_RLS: u16 = 1 << 2;
     pub const SLP_TYP_SHIFT: u16 = 10;
-    pub const SLP_TYP_MASK: u16 = 0x07 << 10;
     pub const SLP_EN: u16 = 1 << 13;
 }
 
 mod pm1_status {
     pub const TMR_STS: u16 = 1 << 0;
-    pub const BM_STS: u16 = 1 << 4;
-    pub const GBL_STS: u16 = 1 << 5;
     pub const PWRBTN_STS: u16 = 1 << 8;
     pub const SLPBTN_STS: u16 = 1 << 9;
     pub const RTC_STS: u16 = 1 << 10;
-    pub const WAK_STS: u16 = 1 << 15;
 }
 
 /// ACPI電源管理設定

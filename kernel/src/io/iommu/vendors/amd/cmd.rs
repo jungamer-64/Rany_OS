@@ -207,7 +207,6 @@ const CMD_INV_DEV_ENTRY: u8 = 0x02;
 const CMD_INV_IOMMU_PAGES: u8 = 0x03;
 const CMD_INV_IOTLB_PAGES: u8 = 0x04;
 const CMD_INV_IRT: u8 = 0x05;
-const CMD_COMPLETE_PPR: u8 = 0x07;
 const CMD_INV_ALL: u8 = 0x08;
 
 const CMD_COMPL_WAIT_STORE_MASK: u32 = 0x01;
@@ -360,10 +359,6 @@ impl AmdCommandBuffer {
         })
     }
 
-    pub fn entry_count(&self) -> usize {
-        self.entry_count
-    }
-
     pub unsafe fn program(&self) -> Result<(), IommuError> {
         if self.entry_count != CMD_BUFFER_ENTRIES {
             return Err(IommuError::NotSupported);
@@ -381,12 +376,6 @@ impl AmdCommandBuffer {
     pub unsafe fn enable(&self) {
         let mut control = mmio_read_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize);
         control |= CONTROL_CMDBUF_EN;
-        mmio_write_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize, control);
-    }
-
-    pub unsafe fn disable(&self) {
-        let mut control = mmio_read_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize);
-        control &= !CONTROL_CMDBUF_EN;
         mmio_write_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize, control);
     }
 

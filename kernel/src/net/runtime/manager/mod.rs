@@ -460,15 +460,6 @@ fn manager_slot_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<Netw
     &runtime.context().manager
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn swap_network_manager_for_tests_in(
-    runtime: NetRuntimeHandle,
-    replacement: Option<NetworkManager>,
-) -> Option<NetworkManager> {
-    let mut guard = manager_slot_in(runtime).lock_for_init("[TEST][NET] manager swap");
-    core::mem::replace(&mut *guard, replacement)
-}
-
 fn with_manager_mut_in<F, R>(runtime: NetRuntimeHandle, f: F) -> Result<R, NetworkError>
 where
     F: FnOnce(&mut NetworkManager) -> R,

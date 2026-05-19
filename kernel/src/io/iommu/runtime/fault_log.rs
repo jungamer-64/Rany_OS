@@ -6,8 +6,6 @@
 //!
 //! Fixed-size buffer to ensure ISR safety (no allocations).
 
-use alloc::vec::Vec;
-
 /// Fault Record (16 bytes)
 ///
 /// Hardware fault record format from the Fault Recording Registers.
@@ -114,38 +112,6 @@ impl FaultLog {
         if self.count < FAULT_LOG_SIZE {
             self.count += 1;
         }
-    }
-
-    /// Get the most recent fault records (up to count entries)
-    pub fn recent(&self, max_count: usize) -> Vec<FaultRecord> {
-        let n = max_count.min(self.count);
-        let mut result = Vec::with_capacity(n);
-
-        for i in 0..n {
-            let idx = if self.write_idx >= i + 1 {
-                self.write_idx - i - 1
-            } else {
-                FAULT_LOG_SIZE - (i + 1 - self.write_idx)
-            };
-            result.push(self.records[idx]);
-        }
-
-        result
-    }
-
-    /// Get total number of faults recorded
-    pub fn total_count(&self) -> u64 {
-        self.total_faults
-    }
-
-    /// Get current number of records in buffer
-    pub fn len(&self) -> usize {
-        self.count
-    }
-
-    /// Check if buffer is empty
-    pub fn is_empty(&self) -> bool {
-        self.count == 0
     }
 }
 

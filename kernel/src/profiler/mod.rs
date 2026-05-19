@@ -679,21 +679,3 @@ fn rdtsc() -> u64 {
         ((hi as u64) << 32) | (lo as u64)
     }
 }
-
-/// TSCPを読み取り（シリアライズ）
-#[inline]
-fn rdtscp() -> (u64, u32) {
-    unsafe {
-        let lo: u32;
-        let hi: u32;
-        let aux: u32;
-        core::arch::asm!(
-            "rdtscp",
-            out("eax") lo,
-            out("edx") hi,
-            out("ecx") aux,
-            options(nostack, nomem)
-        );
-        (((hi as u64) << 32) | (lo as u64), aux)
-    }
-}

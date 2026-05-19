@@ -22,8 +22,6 @@ impl IommuDomain {
         read: bool,
         write: bool,
     ) -> Result<usize, IommuError> {
-        const SIZE_4KB: u64 = 4096;
-
         if pages == 0 {
             return Ok(0);
         }
@@ -60,21 +58,6 @@ impl IommuDomain {
 
             Ok(pages_in_pt)
         }
-    }
-
-    /// Map a single 4KB page.
-    pub(super) fn map_page(
-        &self,
-        iova: u64,
-        phys: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError> {
-        let mapped = self.map_range_4k(iova, phys, 1, read, write)?;
-        if mapped != 1 {
-            return Err(IommuError::HardwareError);
-        }
-        Ok(())
     }
 
     /// Map a 2MB super-page.

@@ -615,7 +615,6 @@ impl Mlx5Device {
         let sq = SendQueue::new(
             sqn,
             sq_buf_virt,
-            sq_buf_pa,
             db_virt,
             self.uar_base,
             log_sq_size,

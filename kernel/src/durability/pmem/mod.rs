@@ -1,4 +1,3 @@
-
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::{Mutex, RwLock};
 use x86_64::PhysAddr;

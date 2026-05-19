@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator,
 };
-use crate::io::iommu::types::{DeviceId, DmaMapping, IommuDomainType, IommuError, PteFormat};
+use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
@@ -75,27 +75,11 @@ pub trait DomainManager {
         domain_type: IommuDomainType,
     ) -> Result<u16, IommuError>;
     fn set_domain_numa(&self, domain_id: u16, numa_node: Option<usize>) -> Result<(), IommuError>;
-    fn get_domain_numa(&self, domain_id: u16) -> Option<usize>;
     fn domain(&self, id: u16) -> Option<Arc<IommuDomain>>;
     fn destroy_domain(&self, id: u16) -> Result<(), IommuError>;
     fn attach_device(&self, device: DeviceId, domain_id: u16) -> Result<(), IommuError>;
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError>;
     fn get_domain_for_device(&self, device: DeviceId) -> Result<Option<u16>, IommuError>;
-    fn map_dma(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError>;
-    fn release_dma_mapping(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError>;
-    fn release_dma_mapping_async(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-    ) -> impl core::future::Future<Output = Result<DmaMapping, IommuError>> + Send;
     fn handle_command_queue_entry(
         &self,
         kind: &crate::io::iommu::runtime::command::queue::IommuCommandKind,

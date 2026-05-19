@@ -391,12 +391,6 @@ pub mod mm;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-mod benchmark;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod console;
 #[cfg(any(
     not(any(test, feature = "bench")),

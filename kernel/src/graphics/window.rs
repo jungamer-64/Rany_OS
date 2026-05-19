@@ -170,13 +170,11 @@ pub enum WindowEvent {
 
 pub struct Window {
     id: WindowId,
-    parent: Option<WindowId>,
     title: String,
     rect: Rect,
     client_rect: Rect,
     style: WindowStyle,
     state: WindowState,
-    z_order: ZOrder,
     background: Color,
     content: Image,
     dirty: bool,
@@ -193,17 +191,11 @@ impl Window {
         let content = Image::filled(client_rect.width, client_rect.height, Color::WHITE);
         Self {
             id,
-            parent: None,
             title,
             rect,
             client_rect,
             style,
             state: WindowState::Normal,
-            z_order: if style.topmost {
-                ZOrder::TOPMOST
-            } else {
-                ZOrder::NORMAL
-            },
             background: Color::WHITE,
             content,
             dirty: true,

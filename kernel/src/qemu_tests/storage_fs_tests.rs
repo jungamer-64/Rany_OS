@@ -50,22 +50,6 @@ pub fn storage_fs_cache_core_sync_page_smoke() -> bool {
     crate::fs::qemu_tests::cache_core_sync_page_smoke()
 }
 
-pub fn storage_fs_cache_block_block_cache_basic_smoke() -> bool {
-    crate::fs::qemu_tests::cache_block_block_cache_basic_smoke()
-}
-
-pub fn storage_fs_cache_block_block_cache_lru_eviction_smoke() -> bool {
-    crate::fs::qemu_tests::cache_block_block_cache_lru_eviction_smoke()
-}
-
-pub fn storage_fs_cache_block_block_cache_dirty_tracking_smoke() -> bool {
-    crate::fs::qemu_tests::cache_block_block_cache_dirty_tracking_smoke()
-}
-
-pub fn storage_fs_cache_block_block_cache_flush_smoke() -> bool {
-    crate::fs::qemu_tests::cache_block_block_cache_flush_smoke()
-}
-
 pub fn storage_fs_fs_model_file_mode_smoke() -> bool {
     crate::fs::qemu_tests::fs_model_file_mode_smoke()
 }

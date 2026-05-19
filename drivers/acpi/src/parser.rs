@@ -9,7 +9,6 @@
 // Allow common patterns in ACPI parsing code
 #![allow(clippy::cast_possible_truncation)] // u64->usize: intentional for 64-bit kernel
 #![allow(clippy::cast_lossless)] // u32->u64 for address calculations
-#![allow(clippy::unused_self)] // ACPI table methods need &self for API consistency
 #![allow(clippy::ptr_as_ptr)] // Raw pointer casts in ACPI table parsing
 #![allow(clippy::unnecessary_cast)] // Sometimes needed for clarity in ACPI code
 #![allow(clippy::missing_panics_doc)] // Internal implementation

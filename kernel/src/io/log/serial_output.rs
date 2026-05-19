@@ -160,17 +160,6 @@ impl KernelLogger {
         }
     }
 
-    /// ログレベルに応じた色コード（ANSIエスケープシーケンス）
-    pub(super) fn level_color(level: Level) -> &'static str {
-        match level {
-            Level::Error => "\x1b[31m", // 赤
-            Level::Warn => "\x1b[33m",  // 黄
-            Level::Info => "\x1b[32m",  // 緑
-            Level::Debug => "\x1b[36m", // シアン
-            Level::Trace => "\x1b[37m", // 白
-        }
-    }
-
     /// Write a record into an async RingBuffer (generic over its capacity)
     pub(super) fn write_into_async_buffer<const N: usize>(
         &self,

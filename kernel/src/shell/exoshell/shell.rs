@@ -31,11 +31,9 @@ use alloc::sync::Arc;
 ///
 /// レジストリは Arc で名前空間を保持するが、既存のシェル API は Box を期待する。
 /// このラッパーにより両方の API を統一できる。
-mod fs_methods; // Contains filesystem-related namespace helpers
-// NOTE: we don't re-export `fs_methods` because no external
-// consumers currently rely on it. Keeping the module here allows
-// internal use while avoiding unused-import warnings.
 struct ArcNamespaceWrapper(Arc<dyn ShellNamespace>);
+
+mod fs_methods;
 
 impl ShellNamespace for ArcNamespaceWrapper {
     fn name(&self) -> &str {
@@ -891,19 +889,6 @@ impl ExoShell {
 
         match self.namespaces.get(namespace) {
             Some(ns) => ns.call(method, &final_args, &self.capabilities).await,
-            None => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
-        }
-    }
-
-    /// 名前空間メソッドを直接呼び出し（引数は評価済み）
-    async fn call_namespace(
-        &self,
-        namespace: &str,
-        method: &str,
-        args: &[ExoValue<'static>],
-    ) -> ExoValue<'static> {
-        match self.namespaces.get(namespace) {
-            Some(ns) => ns.call(method, args, &self.capabilities).await,
             None => ExoValue::Error(format!("Unknown namespace: {}", namespace)),
         }
     }

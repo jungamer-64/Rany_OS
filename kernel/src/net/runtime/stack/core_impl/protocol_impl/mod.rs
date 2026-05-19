@@ -17,14 +17,6 @@ mod icmp;
 mod udp_tx;
 
 impl NetworkStack {
-    /// Send an IGMP Leave Group message
-    pub(super) fn send_igmp_leave(&mut self, group_addr: Ipv4Address, _current_time: u64) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_igmp_leave_on(if_id, group_addr, _current_time);
-    }
-
     pub(super) fn send_igmp_leave_on(
         &mut self,
         if_id: NetIfId,
@@ -290,22 +282,5 @@ impl NetworkStack {
             }
             Err((UdpResult::Delivered, _)) => unreachable!(),
         }
-    }
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-mod family_guard_tests {
-    use super::*;
-    use crate::net::l4::tcp::EndpointAddr as TcpEndpointAddr;
-
-    #[cfg_attr(test, test_case)]
-    fn tcp_ipv4_pair_rejects_mixed_family() {
-        let local = TcpEndpointAddr::new([127, 0, 0, 1], 1234);
-        let remote =
-            TcpEndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
-        assert!(local.is_ipv4());
-        assert!(remote.is_ipv6());
-        assert!(local.as_ipv4().is_some());
-        assert!(remote.as_ipv4().is_none());
     }
 }

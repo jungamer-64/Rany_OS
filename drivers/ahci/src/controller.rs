@@ -22,7 +22,6 @@ pub struct AhciController {
     ports: Vec<Arc<PoisonLock<AhciPort>>>,
     version: u32,
     command_slots: u8,
-    device_id: PackedPciLocation,
 }
 
 impl AhciController {
@@ -65,7 +64,6 @@ impl AhciController {
             ports,
             version: vs,
             command_slots,
-            device_id,
         })
     }
 

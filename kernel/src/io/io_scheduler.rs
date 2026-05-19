@@ -314,8 +314,6 @@ impl Default for ModeThresholds {
 
 /// デバイスごとのI/Oモードコントローラ
 pub struct DeviceIoModeController {
-    /// デバイスID
-    device: DeviceId,
     /// 現在のモード
     mode: AtomicU32,
     /// 設定
@@ -329,9 +327,8 @@ pub struct DeviceIoModeController {
 }
 
 impl DeviceIoModeController {
-    pub fn new(device: DeviceId, thresholds: ModeThresholds) -> Self {
+    pub fn new(_device: DeviceId, thresholds: ModeThresholds) -> Self {
         Self {
-            device,
             mode: AtomicU32::new(IoMode::Interrupt as u32),
             thresholds,
             stats: IoModeStats::new(),
@@ -438,8 +435,6 @@ pub struct IoModeStats {
     max_latency: AtomicU64,
     /// 直近の時間窓でのI/O数
     recent_count: AtomicU64,
-    /// 時間窓開始時刻
-    window_start: AtomicU64,
 }
 
 impl IoModeStats {
@@ -450,7 +445,6 @@ impl IoModeStats {
             min_latency: AtomicU64::new(u64::MAX),
             max_latency: AtomicU64::new(0),
             recent_count: AtomicU64::new(0),
-            window_start: AtomicU64::new(0),
         }
     }
 
@@ -541,8 +535,6 @@ pub struct IoScheduler {
     stats: IoSchedulerStats,
     /// 完了フック
     completion_hooks: PoisonLock<BTreeMap<IoRequestId, CompletionHook>>,
-    /// ポーリング有効フラグ
-    polling_enabled: AtomicBool,
     /// シャットダウンフラグ
     shutdown: AtomicBool,
 }
@@ -593,8 +585,6 @@ pub struct PollingExecutor {
     poll_handlers: PoisonRwLock<BTreeMap<DeviceId, Vec<Box<dyn PollHandler + Send + Sync>>>>,
     /// 最大ポーリング反復回数
     max_poll_iterations: u32,
-    /// ポーリング間隔（μs）
-    poll_interval_us: u64,
     /// アクティブフラグ
     active: AtomicBool,
 }
@@ -621,7 +611,6 @@ impl PollingExecutor {
             scheduler,
             poll_handlers: PoisonRwLock::new(BTreeMap::new()),
             max_poll_iterations: 64,
-            poll_interval_us: 10,
             active: AtomicBool::new(false),
         }
     }

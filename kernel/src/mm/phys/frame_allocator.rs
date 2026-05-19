@@ -397,10 +397,6 @@ impl PmmAllocatorFast {
         PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
     }
 
-    fn alloc_contiguous(&self, frames: usize) -> Option<PhysAddr> {
-        self.alloc_contiguous_aligned(frames, PAGE_SIZE_4K as u64)
-    }
-
     fn alloc_contiguous_aligned(&self, frames: usize, align_bytes: u64) -> Option<PhysAddr> {
         if frames == 0 {
             return None;

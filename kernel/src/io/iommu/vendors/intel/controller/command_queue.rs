@@ -12,21 +12,6 @@
 use super::IommuController;
 
 impl IommuController {
-    /// Submit a command to the controller's command queue and wait for
-    /// completion.
-    pub(crate) fn execute_sync_command(
-        &self,
-        kind: crate::io::iommu::runtime::command::queue::IommuCommandKind,
-    ) -> Result<(), ()> {
-        if let Some(cq) = self.command_queue_ref() {
-            return cq.submit_sync_with_worker(kind, |k| {
-                use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
-                self.handle_command_queue_entry(k)
-            });
-        }
-        Err(())
-    }
-
     /// Process one entry from the command queue (used during initialization)
     pub(crate) fn process_command_queue_once(&self) {
         if let Some(cq) = self.command_queue_ref() {

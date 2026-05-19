@@ -648,6 +648,7 @@ impl CoherentDmaBuffer {
 
     /// Export this coherent DMA allocation into the public `kernel_api` DMA
     /// typestate wrapper without losing the original RAII cleanup path.
+    #[cfg(test)]
     pub(crate) fn into_kernel_api_dma_slice(
         self,
     ) -> kernel_api::dma::DmaSlice<kernel_api::dma::CpuOwned> {
@@ -673,6 +674,7 @@ impl CoherentDmaBuffer {
     }
 }
 
+#[cfg(test)]
 fn release_boxed_coherent_dma_buffer(token: usize) {
     #[cfg(test)]
     BOXED_COHERENT_DMA_RELEASES.fetch_add(1, core::sync::atomic::Ordering::SeqCst);

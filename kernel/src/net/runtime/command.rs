@@ -35,10 +35,6 @@ pub(crate) enum IngressCommand {
         if_id: Option<NetIfId>,
         packet: PacketRef,
     },
-    Batch {
-        if_id: Option<NetIfId>,
-        packets: Vec<PacketRef>,
-    },
     Reassembled {
         if_id: Option<NetIfId>,
         payload: PacketPayload,
@@ -50,7 +46,6 @@ pub(crate) enum TransportCommand {
     TcpDataReady {
         socket_id: SocketId,
     },
-    TxAvailable,
     CloseSocket {
         socket_id: SocketId,
     },
@@ -58,14 +53,6 @@ pub(crate) enum TransportCommand {
         socket_id: SocketId,
         payload: PacketPayload,
         remote: EndpointAddr,
-    },
-    SetTcpNoDelay {
-        socket_id: SocketId,
-        nodelay: bool,
-    },
-    SetSocketPriority {
-        socket_id: SocketId,
-        priority: u8,
     },
     RawUdpSend {
         src_port: u16,
@@ -175,10 +162,6 @@ pub(crate) enum ControlCommand {
         if_id: Option<u16>,
         target_ip: [u8; 16],
     },
-    ArpResolved {
-        ip: [u8; 4],
-        mac: [u8; 6],
-    },
     MulticastJoin {
         group: [u8; 4],
         reply: CommandReplyTicket<bool>,
@@ -188,33 +171,8 @@ pub(crate) enum ControlCommand {
         reply: CommandReplyTicket<bool>,
     },
     ProcessTimeouts,
-    NatForwardUdp {
-        if_id: u16,
-        src_ip: [u8; 4],
-        src_port: u16,
-        dst_ip: [u8; 4],
-        dst_port: u16,
-        payload: PacketPayload,
-        ttl: u8,
-    },
-    NatForwardTcp {
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
-        payload: PacketPayload,
-        ttl: u8,
-    },
-    IcmpEcho {
-        target: [u8; 4],
-        sequence: u16,
-        reply: CommandReplyTicket<Result<u64, ()>>,
-    },
     ArpProbe {
         target_ip: [u8; 4],
-    },
-    ArpResolveCheck {
-        target_ip: [u8; 4],
-        requester_mac: [u8; 6],
-        reply: CommandReplyTicket<Option<bool>>,
     },
     DhcpApplyLease {
         if_id: Option<u16>,
@@ -223,9 +181,6 @@ pub(crate) enum ControlCommand {
     DhcpV6ApplyLease {
         if_id: Option<u16>,
         config: crate::net::services::dhcp::DhcpV6AppliedConfig,
-    },
-    GetLinkLocal {
-        reply: CommandReplyTicket<Option<[u8; 16]>>,
     },
     GetPrimaryInterfaceConfig {
         reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,
@@ -759,9 +714,6 @@ pub(crate) struct RuntimeCommandQueue {
 }
 
 impl RuntimeCommandQueue {
-    /// キュー容量（2のべき乗で高速なインデックス計算）
-    const CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY;
-
     /// 新規作成
     pub const fn new() -> Self {
         Self {
@@ -799,47 +751,12 @@ impl RuntimeCommandQueue {
         Some(command)
     }
 
-    /// 全イベント取得（バッチ処理用）
-    pub(crate) fn drain_all(&self) -> Vec<RuntimeCommand> {
-        let mut commands = Vec::new();
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(command) = self.recv() {
-            commands.push(command);
-        }
-        commands
-    }
-
     /// イベント待ち（非同期）
     pub(crate) fn wait_for_events(&self) -> CommandWaitFuture<'_> {
         CommandWaitFuture { queue: self }
     }
 
-    /// キューに空きができるまで待機する。
-    pub(crate) fn wait_for_space(&self) -> QueueSpaceFuture<'_> {
-        QueueSpaceFuture { queue: self }
-    }
-
-    /// イベントがあるか（高速チェック）
-    #[inline]
-    pub(crate) fn has_events(&self) -> bool {
-        !self.queue.is_empty()
-    }
-
-    /// キュー内イベント数（概算 — 並行操作中は正確でない場合がある）
-    pub(crate) fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    pub(crate) const fn capacity(&self) -> usize {
-        Self::CAPACITY
-    }
-
-    /// キューが空か
-    pub(crate) fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     pub fn reset_for_tests(&self) {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.recv().is_some() {}
@@ -874,28 +791,6 @@ impl<'a> Future for CommandWaitFuture<'a> {
     }
 }
 
-/// キュー空き待ちFuture
-pub(crate) struct QueueSpaceFuture<'a> {
-    queue: &'a RuntimeCommandQueue,
-}
-
-impl<'a> Future for QueueSpaceFuture<'a> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if self.queue.len() < self.queue.capacity() {
-            return Poll::Ready(());
-        }
-
-        self.queue.space_waiters.register(cx.waker());
-        if self.queue.len() < self.queue.capacity() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
 fn runtime_context_for(
     runtime: NetRuntimeHandle,
 ) -> &'static crate::net::runtime::NetRuntimeContext {
@@ -914,19 +809,13 @@ pub(crate) fn mark_command_task_running_in(runtime: NetRuntimeHandle) {
     }
 }
 
-pub(crate) fn mark_command_task_stopped_in(runtime: NetRuntimeHandle) {
-    runtime_context_for(runtime)
-        .command_task_running
-        .store(false, Ordering::Release);
-}
-
 pub(crate) fn command_task_running_in(runtime: NetRuntimeHandle) -> bool {
     runtime_context_for(runtime)
         .command_task_running
         .load(Ordering::Acquire)
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub(crate) fn reset_command_system_for_tests_in(runtime: NetRuntimeHandle) {
     runtime_context_for(runtime)
         .command_task_running
@@ -937,50 +826,9 @@ pub(crate) fn reset_command_system_for_tests_in(runtime: NetRuntimeHandle) {
     command_queue_in(runtime).reset_for_tests();
 }
 
-/// イベントタスク起動待ちFuture
-pub(crate) struct CommandTaskReadyFuture {
-    runtime: NetRuntimeHandle,
-}
-
-impl Future for CommandTaskReadyFuture {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let runtime = self.runtime;
-        if command_task_running_in(runtime) {
-            return Poll::Ready(());
-        }
-
-        runtime_context_for(runtime)
-            .command_task_ready_waiters
-            .register(cx.waker());
-        if command_task_running_in(runtime) {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
-#[inline]
-pub(crate) fn enqueue_command_in(
-    runtime: NetRuntimeHandle,
-    command: RuntimeCommand,
-) -> Result<(), EndpointError> {
-    if command_queue_in(runtime).send(command) {
-        Ok(())
-    } else {
-        Err(EndpointError::ResourceExhausted)
-    }
-}
-
 #[inline]
 pub(crate) fn enqueue_command_ignore_in(runtime: NetRuntimeHandle, command: RuntimeCommand) {
     let _ = command_queue_in(runtime).send(command);
-}
-
-pub(crate) fn wait_for_command_task_in(runtime: NetRuntimeHandle) -> CommandTaskReadyFuture {
-    CommandTaskReadyFuture { runtime }
 }
 
 /// タスクコンテキスト向け非同期イベント送信Future
@@ -1087,37 +935,6 @@ impl CommandDispatch {
     }
 }
 
-/// バッチイベント送信（複数パケットを1回のロック取得で送信）
-///
-/// ロック取得を1回に削減し、高スループット受信パス向けの最適化。
-/// 各パケットを個別に `enqueue_command_ignore` するより効率的。
-#[inline]
-pub(crate) fn enqueue_ingress_batch_on_in(
-    runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
-    packets: Vec<PacketRef>,
-) {
-    if packets.is_empty() {
-        return;
-    }
-    if packets.len() == 1 {
-        // 1パケットなら通常パスを使用（Vec のオーバーヘッド回避）
-        let mut packets = packets;
-        if let Some(p) = packets.pop() {
-            let _ =
-                command_queue_in(runtime).send(RuntimeCommand::Ingress(IngressCommand::Packet {
-                    if_id,
-                    packet: p,
-                }));
-        }
-        return;
-    }
-    let _ = command_queue_in(runtime).send(RuntimeCommand::Ingress(IngressCommand::Batch {
-        if_id,
-        packets,
-    }));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1134,7 +951,7 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let mut future = send_command_in(
             runtime,
-            RuntimeCommand::Transport(TransportCommand::TxAvailable),
+            RuntimeCommand::Control(ControlCommand::ProcessTimeouts),
         );
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
@@ -1146,7 +963,7 @@ mod tests {
         ));
         assert!(matches!(
             command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Transport(TransportCommand::TxAvailable))
+            Some(RuntimeCommand::Control(ControlCommand::ProcessTimeouts))
         ));
 
         reset_command_system_for_tests_in(runtime);
@@ -1163,7 +980,7 @@ mod tests {
             assert!(
                 enqueue_command_in(
                     runtime,
-                    RuntimeCommand::Transport(TransportCommand::TxAvailable)
+                    RuntimeCommand::Control(ControlCommand::ProcessTimeouts)
                 )
                 .is_ok()
             );
@@ -1173,13 +990,13 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let mut future = send_command_in(
             runtime,
-            RuntimeCommand::Transport(TransportCommand::TxAvailable),
+            RuntimeCommand::Control(ControlCommand::ProcessTimeouts),
         );
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
         assert!(matches!(
             command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Transport(TransportCommand::TxAvailable))
+            Some(RuntimeCommand::Control(ControlCommand::ProcessTimeouts))
         ));
         assert!(matches!(
             Pin::new(&mut future).poll(&mut cx),

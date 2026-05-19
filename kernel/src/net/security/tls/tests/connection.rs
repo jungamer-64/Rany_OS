@@ -14,7 +14,7 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
     let mut copied = 0usize;
     view.for_each_chunk(|chunk| {
         let take = chunk.len().min(view.total_len() - copied);
-        bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
+        bytes.as_mut_storage()[copied..copied + take].copy_from_slice(&chunk[..take]);
         copied += take;
     });
     bytes
@@ -155,22 +155,30 @@ pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_strip_content_type() {
-    let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17];
-    let result = ExperimentalTlsConnection::tls13_strip_content_type(&data);
-    assert!(result.is_some());
-    assert_eq!(result.unwrap(), &[0x48, 0x65, 0x6c, 0x6c, 0x6f]);
+    fn payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+        let mut writer = crate::net::payload::GeneratedPacketWriter::new(data.len(), 0).unwrap();
+        writer.write_bytes(data).unwrap();
+        writer.finish().unwrap()
+    }
 
-    let data2 = [0x48, 0x65, 0x17, 0x00, 0x00];
-    let result2 = ExperimentalTlsConnection::tls13_strip_content_type(&data2);
-    assert!(result2.is_some());
-    assert_eq!(result2.unwrap(), &[0x48, 0x65]);
-
-    let data3 = [0x16];
-    let result3 = ExperimentalTlsConnection::tls13_strip_content_type(&data3);
-    assert!(result3.is_some());
-    assert!(result3.unwrap().is_empty());
-
-    let data4 = [0x00, 0x00, 0x00];
-    let result4 = ExperimentalTlsConnection::tls13_strip_content_type(&data4);
-    assert!(result4.is_none());
+    assert_eq!(
+        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[
+            0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17,
+        ])),
+        Some((0x17, 5))
+    );
+    assert_eq!(
+        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[
+            0x48, 0x65, 0x17, 0x00, 0x00,
+        ])),
+        Some((0x17, 2))
+    );
+    assert_eq!(
+        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[0x16])),
+        Some((0x16, 0))
+    );
+    assert_eq!(
+        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00])),
+        None
+    );
 }

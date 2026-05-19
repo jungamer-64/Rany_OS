@@ -83,7 +83,7 @@ pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
 /// イベント処理結果の共通対応
 fn process_handle_result(runtime: NetRuntimeHandle, result: EventHandleResult) {
     match result {
-        EventHandleResult::Success | EventHandleResult::IngressPacket { .. } => {}
+        EventHandleResult::Success => {}
         EventHandleResult::SocketNotFound(fd) => {
             log::debug!("Network: Socket {} not found (already closed)", fd.raw());
         }
@@ -106,11 +106,6 @@ fn process_handle_result(runtime: NetRuntimeHandle, result: EventHandleResult) {
                 }
             } else {
                 PROTO_ERR_COUNT.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-        EventHandleResult::Retry(event) => {
-            if super::command::enqueue_command_in(runtime, event).is_err() {
-                log::warn!("Network: Event requeue failed due to full queue");
             }
         }
     }

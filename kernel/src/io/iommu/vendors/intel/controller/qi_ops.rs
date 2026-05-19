@@ -110,9 +110,6 @@ pub trait InvalidationOps {
     /// Submit a page-selective Device-TLB invalidation
     fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError>;
 
-    /// Submit a global PASID cache invalidation
-    fn qi_invalidate_pasid_cache_global(&self) -> Result<(), IommuError>;
-
     /// Submit a domain PASID cache invalidation
     fn qi_invalidate_pasid_cache_domain(&self, domain_id: u16) -> Result<(), IommuError>;
 
@@ -221,12 +218,6 @@ impl InvalidationOps for IommuController {
     #[inline]
     fn qi_invalidate_device_tlb_page(&self, source_id: u16, iova: u64) -> Result<(), IommuError> {
         let entry = InvalidationQueueEntry::device_tlb_invalidate_page(source_id, iova);
-        self.submit_invalidation(entry)
-    }
-
-    #[inline]
-    fn qi_invalidate_pasid_cache_global(&self) -> Result<(), IommuError> {
-        let entry = InvalidationQueueEntry::pasid_cache_invalidate_global();
         self.submit_invalidation(entry)
     }
 

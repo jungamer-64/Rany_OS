@@ -49,38 +49,6 @@ impl core::fmt::Display for DomainError {
     }
 }
 
-/// ドメインコンテキスト
-/// タスク内で現在のドメインIDを追跡するために使用
-#[derive(Debug, Clone, Copy)]
-pub struct DomainContext {
-    pub domain_id: DomainId,
-}
-
-impl DomainContext {
-    pub fn new(domain_id: DomainId) -> Self {
-        Self { domain_id }
-    }
-}
-
-/// ドメイン境界でラップされたタスク
-/// 設計書 8.1: パニックはドメイン境界で停止する
-pub struct DomainTask<F>
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    domain_id: DomainId,
-    future: F,
-}
-
-impl<F> DomainTask<F>
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    pub fn new(domain_id: DomainId, future: F) -> Self {
-        Self { domain_id, future }
-    }
-}
-
 /// ドメイン内でタスクをスポーン
 /// パニック発生時はドメイン境界で捕捉される
 pub fn spawn_domain_task<F>(domain_name: &str, future: F) -> Result<(DomainId, Task), DomainError>

@@ -156,37 +156,6 @@ impl FaultRateLimiter {
         );
         None
     }
-
-    pub fn is_isolated(&self, source_id: u16) -> bool {
-        self.entries
-            .iter()
-            .any(|e| e.matches(source_id) && e.is_isolated())
-    }
-
-    pub fn clear_isolation(&self, source_id: u16) {
-        for entry in &self.entries {
-            if entry.matches(source_id) {
-                entry.isolated.store(0, Ordering::Relaxed);
-                entry.fault_count.store(0, Ordering::Relaxed);
-                entry
-                    .window_start
-                    .store(current_time_ms_approx(), Ordering::Relaxed);
-                return;
-            }
-        }
-    }
-
-    pub fn get_device_stats(&self, source_id: u16) -> Option<(u32, bool)> {
-        for entry in &self.entries {
-            if entry.matches(source_id) {
-                return Some((
-                    entry.fault_count.load(Ordering::Relaxed),
-                    entry.is_isolated(),
-                ));
-            }
-        }
-        None
-    }
 }
 
 static FAULT_RATE_LIMITER: FaultRateLimiter = FaultRateLimiter::new();

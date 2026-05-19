@@ -20,8 +20,6 @@ const PSF1_MAGIC1: u8 = 0x04;
 
 const PSF1_MODE512: u8 = 0x01;
 const PSF1_MODEHASTAB: u8 = 0x02;
-const PSF1_MODEHASSEQ: u8 = 0x04;
-const PSF1_MAXMODE: u8 = 0x05;
 
 const PSF1_SEPARATOR: u16 = 0xFFFF;
 const PSF1_STARTSEQ: u16 = 0xFFFE;

@@ -207,8 +207,6 @@ pub struct ZeroCopyTransfer<T: Sized + Send> {
     ptr: *mut T,
     /// サイズ
     size: usize,
-    /// 元の所有者
-    original_owner: DomainId,
     /// 現在の所有者
     current_owner: DomainId,
     /// 有効フラグ
@@ -225,7 +223,6 @@ impl<T: Sized + Send> ZeroCopyTransfer<T> {
         Self {
             ptr,
             size: core::mem::size_of::<T>(),
-            original_owner: owner,
             current_owner: owner,
             valid: true,
         }

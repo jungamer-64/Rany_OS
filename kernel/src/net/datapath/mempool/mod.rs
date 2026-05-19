@@ -33,12 +33,6 @@ mod tests;
 
 const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
-/// デフォルトのプール容量
-const DEFAULT_POOL_CAPACITY: usize = 4096;
-
-/// キャッシュラインサイズ
-const CACHE_LINE_SIZE: usize = 64;
-
 /// パケットバッファのメタデータ
 #[repr(C)]
 #[derive(Debug)]
@@ -159,8 +153,12 @@ impl PacketWindow {
 }
 
 enum DmaBufferOwner {
-    Kernel(PoisonLock<TypedDmaSlice<KernelCpuOwned>>),
-    Kapi(PoisonLock<KapiDmaSlice<KapiCpuOwned>>),
+    Kernel {
+        _slice: PoisonLock<TypedDmaSlice<KernelCpuOwned>>,
+    },
+    Kapi {
+        _slice: PoisonLock<KapiDmaSlice<KapiCpuOwned>>,
+    },
 }
 
 struct DmaBuffer {
@@ -168,7 +166,7 @@ struct DmaBuffer {
     pub(super) phys_addr: PhysAddr,
     pub(super) device_addr: u64,
     pub(super) size: usize,
-    owner: DmaBufferOwner,
+    _owner: DmaBufferOwner,
 }
 
 impl fmt::Debug for DmaBuffer {
@@ -193,7 +191,9 @@ impl DmaBuffer {
             phys_addr: phys,
             device_addr,
             size,
-            owner: DmaBufferOwner::Kernel(PoisonLock::new(slice)),
+            _owner: DmaBufferOwner::Kernel {
+                _slice: PoisonLock::new(slice),
+            },
         }
     }
 
@@ -208,7 +208,9 @@ impl DmaBuffer {
             phys_addr: PhysAddr::new(device_addr),
             device_addr,
             size,
-            owner: DmaBufferOwner::Kapi(PoisonLock::new(slice)),
+            _owner: DmaBufferOwner::Kapi {
+                _slice: PoisonLock::new(slice),
+            },
         }
     }
 }
@@ -579,10 +581,6 @@ fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRe
         window,
     };
     unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
-}
-
-pub(crate) fn set_packet_dma_device(device_id: Option<u64>) {
-    PACKET_DMA_DEVICE_ID.store(device_id.unwrap_or(NO_PACKET_DMA_DEVICE), Ordering::Release);
 }
 
 pub(crate) fn alloc_packet_for_dma_device(device_id: u64) -> Option<PacketRef> {

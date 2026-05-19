@@ -3,6 +3,7 @@
 // ============================================================================
 
 use crate::net::payload::PayloadSpanRef;
+use alloc::string::String;
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use kernel_api::resource::net::PacketPayload;
@@ -24,11 +25,7 @@ impl Certificate {
 
     pub fn from_pem(pem: &str) -> Option<Self> {
         let mut in_cert = false;
-        let mut decoded = Vec::new();
-        let mut chunk = [0u8; 3];
-        let mut chunk_len = 0usize;
-        let mut buf = 0u32;
-        let mut bits = 0u32;
+        let mut encoded = String::new();
 
         for line in pem.lines() {
             if line.contains("BEGIN CERTIFICATE") {
@@ -40,28 +37,12 @@ impl Certificate {
                     if c == '=' {
                         break;
                     }
-                    let value = base64_value(c)?;
-                    buf = (buf << 6) | value as u32;
-                    bits += 6;
-
-                    if bits >= 8 {
-                        bits -= 8;
-                        chunk[chunk_len] = (buf >> bits) as u8;
-                        chunk_len += 1;
-                        buf &= (1 << bits) - 1;
-                        if chunk_len == chunk.len() {
-                            decoded.extend_from_slice(&chunk);
-                            chunk_len = 0;
-                        }
-                    }
+                    encoded.push(c);
                 }
             }
         }
 
-        if chunk_len > 0 {
-            decoded.extend_from_slice(&chunk[..chunk_len]);
-        }
-        Some(Self::from_der_payload(store_tls_bytes(&decoded)?))
+        Some(Self::from_der_payload(base64_decode_payload(&encoded)?))
     }
 
     pub(crate) fn der_span(&self) -> PayloadSpanRef<'_> {

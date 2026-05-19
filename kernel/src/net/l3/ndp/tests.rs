@@ -2,7 +2,6 @@
 // kernel/src/net/l3/ndp/tests.rs - L3 / NDP / テスト
 // ============================================================================
 
-use super::processor_impl::ipv6_multicast_to_mac;
 use super::*;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
@@ -205,7 +204,7 @@ pub fn test_build_rs() {
 #[cfg_attr(test, test_case)]
 pub fn test_multicast_mac() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
-    let mac = ipv6_multicast_to_mac(&addr);
+    let mac = addr.multicast_mac();
     assert_eq!(mac, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 

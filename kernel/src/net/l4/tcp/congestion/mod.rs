@@ -11,16 +11,6 @@
 //! - Fast Retransmit / Fast Recovery (NewReno)
 
 use core::cmp::{max, min};
-
-/// Maximum Segment Size (デフォルト)
-mod default_and_tests;
-pub use default_and_tests::*;
-mod variant_impl;
-
-#[cfg(test)]
-pub mod variant_tests {
-    pub use super::default_and_tests::variant_tests::variant_tests::*;
-}
 pub const DEFAULT_MSS: u32 = 536;
 
 /// 初期ウィンドウサイズ (RFC 6928: 10 MSS)
@@ -28,26 +18,6 @@ pub const INITIAL_WINDOW: u32 = 10;
 
 /// 最小輻輳ウィンドウ
 pub const MIN_CWND: u32 = 2;
-
-/// 輻輳制御アルゴリズムの種類
-///
-/// 現在 `NewReno`, `Cubic`, `Bbr` の3種類が実装済み。
-/// デフォルトは `NewReno`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CongestionAlgorithm {
-    /// RFC 5681 NewReno
-    NewReno,
-    /// RFC 8312 CUBIC
-    Cubic,
-    /// BBR (Bottleneck Bandwidth and RTT)
-    Bbr,
-}
-
-impl Default for CongestionAlgorithm {
-    fn default() -> Self {
-        CongestionAlgorithm::NewReno
-    }
-}
 
 /// 輻輳制御状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -69,8 +39,6 @@ impl Default for CongestionState {
 /// 輻輳制御コントローラ (NewReno)
 #[derive(Debug)]
 pub struct CongestionController {
-    /// アルゴリズム
-    algorithm: CongestionAlgorithm,
     /// 現在の状態
     state: CongestionState,
     /// 輻輳ウィンドウ (cwnd) - バイト単位
@@ -94,7 +62,6 @@ impl CongestionController {
     pub fn new() -> Self {
         let mss = DEFAULT_MSS;
         Self {
-            algorithm: CongestionAlgorithm::NewReno,
             state: CongestionState::SlowStart,
             cwnd: INITIAL_WINDOW * mss,
             ssthresh: u32::MAX, // 初期値は無限大（最初のロスまで）
@@ -117,55 +84,11 @@ impl CongestionController {
         }
     }
 
-    /// MSSを指定して作成
-    pub fn with_mss(mss: u32) -> Self {
-        Self {
-            algorithm: CongestionAlgorithm::NewReno,
-            state: CongestionState::SlowStart,
-            cwnd: INITIAL_WINDOW * mss,
-            ssthresh: u32::MAX,
-            mss,
-            dup_ack_count: 0,
-            recover: 0,
-            bytes_acked: 0,
-            bytes_in_flight: 0,
-        }
-    }
-
-    /// 現在の輻輳ウィンドウ取得
-    #[inline]
-    pub fn cwnd(&self) -> u32 {
-        self.cwnd
-    }
-
-    /// ssthresh取得
-    #[inline]
-    pub fn ssthresh(&self) -> u32 {
-        self.ssthresh
-    }
-
-    /// 現在の状態取得
-    #[inline]
-    pub fn state(&self) -> CongestionState {
-        self.state
-    }
-
-    /// MSS取得
-    #[inline]
-    pub fn mss(&self) -> u32 {
-        self.mss
-    }
-
     /// 送信可能なバイト数を計算
     /// effective_window = min(cwnd, rwnd) - bytes_in_flight
     pub fn available_window(&self, rwnd: u32) -> u32 {
         let effective = min(self.cwnd, rwnd);
         effective.saturating_sub(self.bytes_in_flight)
-    }
-
-    /// 送信可能かどうか
-    pub fn can_send(&self, rwnd: u32, bytes: u32) -> bool {
-        self.available_window(rwnd) >= bytes
     }
 
     /// データ送信を記録
@@ -276,35 +199,6 @@ impl CongestionController {
         self.dup_ack_count = 0;
         self.bytes_acked = 0;
     }
-
-    /// パケットロス検出時（一般）
-    pub fn on_packet_loss(&mut self) {
-        self.on_timeout();
-    }
-
-    /// 接続リセット
-    pub fn reset(&mut self) {
-        self.state = CongestionState::SlowStart;
-        self.cwnd = INITIAL_WINDOW * self.mss;
-        self.ssthresh = u32::MAX;
-        self.dup_ack_count = 0;
-        self.recover = 0;
-        self.bytes_acked = 0;
-        self.bytes_in_flight = 0;
-    }
-
-    /// デバッグ情報
-    pub fn debug_info(&self) -> CongestionDebugInfo {
-        CongestionDebugInfo {
-            algorithm: self.algorithm,
-            state: self.state,
-            cwnd: self.cwnd,
-            ssthresh: self.ssthresh,
-            mss: self.mss,
-            bytes_in_flight: self.bytes_in_flight,
-            dup_ack_count: self.dup_ack_count,
-        }
-    }
 }
 
 impl Default for CongestionController {
@@ -313,379 +207,48 @@ impl Default for CongestionController {
     }
 }
 
-/// デバッグ情報構造体
 #[derive(Debug)]
-pub struct CongestionDebugInfo {
-    pub algorithm: CongestionAlgorithm,
-    pub state: CongestionState,
-    pub cwnd: u32,
-    pub ssthresh: u32,
-    pub mss: u32,
-    pub bytes_in_flight: u32,
-    pub dup_ack_count: u8,
+pub struct TcpCongestionController {
+    controller: CongestionController,
 }
 
-// =====================================================
-// テスト
-// =====================================================
-
-#[cfg(test)]
-pub mod tests;
-
-// =====================================================
-// CUBIC 輻輳制御 (RFC 8312)
-// =====================================================
-
-/// CUBIC constants (RFC 8312 Section 5)
-mod cubic_constants {
-    /// CUBIC scaling factor β (beta) = 0.7
-    pub const BETA: u32 = 70; // Represented as percentage (70%)
-    /// CUBIC scaling constant C = 0.4
-    /// We use fixed-point: C = 410 / 1024 ≈ 0.4
-    pub const C_NUMERATOR: u64 = 410;
-    pub const C_DENOMINATOR: u64 = 1024;
-    /// Fast convergence factor (1 + β) / 2 ≈ 0.85
-    pub const FAST_CONVERGENCE: u32 = 85;
-}
-
-/// CUBIC congestion controller state
-#[derive(Debug)]
-pub struct CubicController {
-    /// Base congestion controller (inherits from NewReno for slow start)
-    base: CongestionController,
-    /// W_max: window size before last reduction (in bytes)
-    w_max: u32,
-    /// Epoch start time (milliseconds since connection start)
-    epoch_start: u64,
-    /// K: time period to reach W_max (in ms)
-    k: u64,
-    /// Origin point of cubic function
-    origin_point: u32,
-    /// TCP-friendly window for fairness
-    w_tcp: u32,
-    /// ACK count for TCP-friendly mode
-    ack_cnt: u32,
-    /// Last congestion event time
-    last_congestion: u64,
-}
-
-impl CubicController {
-    /// Create a new CUBIC controller
+impl TcpCongestionController {
     pub fn new() -> Self {
         Self {
-            base: CongestionController::new(),
-            w_max: 0,
-            epoch_start: 0,
-            k: 0,
-            origin_point: 0,
-            w_tcp: 0,
-            ack_cnt: 0,
-            last_congestion: 0,
+            controller: CongestionController::new(),
         }
     }
 
-    /// Create with custom MSS
-    pub fn with_mss(mss: u32) -> Self {
-        Self {
-            base: CongestionController::with_mss(mss),
-            w_max: 0,
-            epoch_start: 0,
-            k: 0,
-            origin_point: 0,
-            w_tcp: 0,
-            ack_cnt: 0,
-            last_congestion: 0,
-        }
+    pub fn update_mss(&mut self, mss: u32) {
+        self.controller.update_mss(mss);
     }
 
-    /// MSS更新時の処理
-    pub fn update_mss(&mut self, new_mss: u32) {
-        self.base.update_mss(new_mss);
-    }
-
-    /// Get current cwnd
-    #[inline]
-    pub fn cwnd(&self) -> u32 {
-        self.base.cwnd()
-    }
-
-    /// Get current state
-    #[inline]
-    pub fn state(&self) -> CongestionState {
-        self.base.state()
-    }
-
-    /// Get MSS
-    #[inline]
-    pub fn mss(&self) -> u32 {
-        self.base.mss()
-    }
-
-    /// Available send window
     pub fn available_window(&self, rwnd: u32) -> u32 {
-        self.base.available_window(rwnd)
+        self.controller.available_window(rwnd)
     }
 
-    /// Record data send
-    pub fn on_send(&mut self, bytes: u32) {
-        self.base.on_send(bytes);
+    pub fn on_send(&mut self, bytes: u32, _current_time_ms: u64) {
+        self.controller.on_send(bytes);
     }
 
-    /// Calculate cubic root using Newton-Raphson method
-    /// Returns cube root of x (integer approximation)
-    fn cubic_root(x: u64) -> u64 {
-        if x == 0 {
-            return 0;
-        }
-
-        // Initial guess: x^(1/3) ≈ 2^(log2(x)/3)
-        let mut y = 1u64 << ((64 - x.leading_zeros() + 2) / 3);
-
-        // Newton-Raphson iterations: y = (2*y + x/y²) / 3
-        for _ in 0..6 {
-            let y_squared = y.saturating_mul(y);
-            if y_squared == 0 {
-                break;
-            }
-            let new_y = (2 * y + x / y_squared) / 3;
-            if new_y >= y {
-                break;
-            }
-            y = new_y;
-        }
-        y
-    }
-
-    /// Calculate CUBIC window target W_cubic(t)
-    /// W_cubic(t) = C * (t - K)^3 + W_max
-    ///
-    /// Uses u128 intermediate calculations to avoid overflow when computing
-    /// (t - K)^3 for large time differences (milliseconds cubed can exceed u64).
-    fn cubic_update(&mut self, current_time_ms: u64) -> u32 {
-        let mss = self.base.mss as u64;
-        if mss == 0 {
-            return self.origin_point;
-        }
-
-        // Calculate time since epoch start
-        let t = current_time_ms.saturating_sub(self.epoch_start);
-
-        // Calculate |t - K| in milliseconds
-        let t_k_diff = if t > self.k { t - self.k } else { self.k - t };
-
-        // Use u128 for cube calculation to prevent overflow
-        // (t_k_diff in ms)^3 can easily exceed u64 for diffs > ~2642ms
-        let t_k_cubed: u128 = (t_k_diff as u128)
-            .saturating_mul(t_k_diff as u128)
-            .saturating_mul(t_k_diff as u128);
-
-        // W_cubic = C * (t - K)^3 + W_max (in segments)
-        // Using fixed-point: C * x = (C_NUMERATOR * x) / C_DENOMINATOR
-        // Division by 10^9 converts ms^3 to s^3
-        let delta: u64 = ((cubic_constants::C_NUMERATOR as u128 * t_k_cubed)
-            / (cubic_constants::C_DENOMINATOR as u128 * 1_000_000_000))
-            .min(u64::MAX as u128) as u64;
-
-        let origin_segments = self.origin_point as u64 / mss;
-
-        let target_segments = if t > self.k {
-            origin_segments.saturating_add(delta)
-        } else {
-            origin_segments.saturating_sub(delta)
-        };
-
-        // Convert back to bytes, clamped to u32
-        let result = target_segments.saturating_mul(mss);
-        result.min(u32::MAX as u64) as u32
-    }
-
-    /// ACK received - CUBIC window update
     pub fn on_ack(
         &mut self,
         bytes_acked: u32,
         is_dup_ack: bool,
         snd_una: u32,
-        current_time_ms: u64,
+        _current_time_ms: u64,
+        _rtt_sample_ms: u64,
     ) {
-        self.base.bytes_in_flight = self.base.bytes_in_flight.saturating_sub(bytes_acked);
-
-        if is_dup_ack {
-            self.on_dup_ack(snd_una, current_time_ms);
-            return;
-        }
-
-        self.base.dup_ack_count = 0;
-
-        match self.base.state {
-            CongestionState::SlowStart => {
-                // Use standard slow start from base
-                self.base.cwnd = self
-                    .base
-                    .cwnd
-                    .saturating_add(min(bytes_acked, self.base.mss));
-
-                if self.base.cwnd >= self.base.ssthresh {
-                    self.base.state = CongestionState::CongestionAvoidance;
-                    self.epoch_start = current_time_ms;
-                    self.reset_epoch();
-                }
-            }
-            CongestionState::CongestionAvoidance => {
-                // CUBIC congestion avoidance
-                if self.epoch_start == 0 {
-                    self.epoch_start = current_time_ms;
-                    self.reset_epoch();
-                }
-
-                let w_cubic = self.cubic_update(current_time_ms);
-
-                // TCP-friendly region: linear increase
-                let mss = self.base.mss;
-                self.ack_cnt = self.ack_cnt.saturating_add(bytes_acked);
-                if self.ack_cnt >= self.base.cwnd {
-                    self.w_tcp = self.w_tcp.saturating_add(mss);
-                    self.ack_cnt = 0;
-                }
-
-                // Use max of CUBIC and TCP-friendly window
-                let target = max(w_cubic, self.w_tcp);
-
-                if target > self.base.cwnd {
-                    // Increase by at most 1 MSS per RTT
-                    let increase = min(target - self.base.cwnd, mss);
-                    self.base.cwnd = self.base.cwnd.saturating_add(increase);
-                }
-            }
-            CongestionState::FastRecovery => {
-                // Fast recovery from base
-                if snd_una > self.base.recover {
-                    self.base.cwnd = self.base.ssthresh;
-                    self.base.state = CongestionState::CongestionAvoidance;
-                    self.epoch_start = current_time_ms;
-                    self.reset_epoch();
-                } else {
-                    self.base.cwnd = self.base.cwnd.saturating_sub(bytes_acked);
-                    self.base.cwnd = self.base.cwnd.saturating_add(self.base.mss);
-                }
-            }
-        }
+        self.controller.on_ack(bytes_acked, is_dup_ack, snd_una);
     }
 
-    /// Reset epoch parameters
-    fn reset_epoch(&mut self) {
-        let mss = self.base.mss as u64;
-
-        // Set origin point
-        if self.w_max > self.base.cwnd {
-            // Fast convergence: use reduced W_max
-            self.origin_point =
-                (self.w_max as u64 * cubic_constants::FAST_CONVERGENCE as u64 / 100) as u32;
-        } else {
-            self.origin_point = self.base.cwnd;
-        }
-
-        // Calculate K = cubic_root(W_max * (1 - β) / C)
-        // K in milliseconds
-        let w_max_segments = self.origin_point as u64 / mss;
-        let beta_factor = 100 - cubic_constants::BETA as u64; // 30%
-        let numerator = w_max_segments * beta_factor * cubic_constants::C_DENOMINATOR;
-        let denominator = cubic_constants::C_NUMERATOR * 100;
-
-        if denominator > 0 {
-            self.k = Self::cubic_root(numerator * 1000 * 1000 * 1000 / denominator);
-        } else {
-            self.k = 0;
-        }
-
-        // Initialize TCP-friendly window
-        self.w_tcp = self.base.cwnd;
-        self.ack_cnt = 0;
-    }
-
-    /// Duplicate ACK handling
-    fn on_dup_ack(&mut self, snd_una: u32, current_time_ms: u64) {
-        self.base.dup_ack_count = self.base.dup_ack_count.saturating_add(1);
-
-        match self.base.state {
-            CongestionState::SlowStart | CongestionState::CongestionAvoidance => {
-                if self.base.dup_ack_count >= 3 {
-                    self.enter_fast_recovery(snd_una, current_time_ms);
-                }
-            }
-            CongestionState::FastRecovery => {
-                self.base.cwnd = self.base.cwnd.saturating_add(self.base.mss);
-            }
-        }
-    }
-
-    /// Enter fast recovery with CUBIC-specific ssthresh calculation
-    fn enter_fast_recovery(&mut self, snd_una: u32, current_time_ms: u64) {
-        // Save W_max before reduction
-        self.w_max = self.base.cwnd;
-
-        // ssthresh = cwnd * β
-        self.base.ssthresh = (self.base.cwnd as u64 * cubic_constants::BETA as u64 / 100) as u32;
-        self.base.ssthresh = max(self.base.ssthresh, MIN_CWND * self.base.mss);
-
-        // cwnd = ssthresh + 3*MSS
-        self.base.cwnd = self.base.ssthresh + 3 * self.base.mss;
-        self.base.recover = snd_una;
-        self.base.state = CongestionState::FastRecovery;
-
-        // Reset epoch
-        self.epoch_start = current_time_ms;
-        self.last_congestion = current_time_ms;
-    }
-
-    /// Timeout handling
-    pub fn on_timeout(&mut self, current_time_ms: u64) {
-        // Save W_max
-        self.w_max = self.base.cwnd;
-
-        // Reset to slow start
-        self.base.on_timeout();
-
-        // Reset epoch
-        self.epoch_start = 0;
-        self.last_congestion = current_time_ms;
-    }
-
-    /// Reset controller
-    pub fn reset(&mut self) {
-        self.base.reset();
-        self.w_max = 0;
-        self.epoch_start = 0;
-        self.k = 0;
-        self.origin_point = 0;
-        self.w_tcp = 0;
-        self.ack_cnt = 0;
-        self.last_congestion = 0;
+    pub fn on_timeout(&mut self, _current_time_ms: u64) {
+        self.controller.on_timeout();
     }
 }
 
-impl Default for CubicController {
+impl Default for TcpCongestionController {
     fn default() -> Self {
         Self::new()
     }
-}
-
-// =====================================================
-// 統合輻輳制御バリアント (Unified Congestion Control)
-// =====================================================
-//
-// NewReno / CUBIC / BBR をenumで統合。
-// trait objectを避け、ゼロオーバーヘッドで委譲する。
-
-/// 統合輻輳制御コントローラ
-///
-/// TCP接続ごとに選択可能な輻輳制御アルゴリズムをenumで管理。
-/// vtableオーバーヘッドを避け、インライン展開可能な設計。
-#[derive(Debug)]
-pub enum CongestionControllerVariant {
-    /// RFC 5681 NewReno (デフォルト)
-    NewReno(CongestionController),
-    /// RFC 8312 CUBIC
-    Cubic(CubicController),
-    /// BBRv1
-    Bbr(BbrController),
 }

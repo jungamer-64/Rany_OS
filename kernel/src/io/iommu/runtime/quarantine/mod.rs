@@ -24,7 +24,6 @@
 // ============================================================================
 
 use alloc::sync::Arc;
-use core::marker::PhantomData;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
 

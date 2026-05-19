@@ -117,70 +117,11 @@ impl ContentType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HandshakeType {
     ClientHello = 1,
-    ServerHello = 2,
-    EncryptedExtensions = 8,
-    Certificate = 11,
-    CertificateRequest = 13,
-    CertificateVerify = 15,
-    Finished = 20,
     KeyUpdate = 24,
     MessageHash = 254,
-}
-
-#[derive(Clone, Copy, Debug)]
-#[repr(C, packed)]
-pub(crate) struct RecordHeader {
-    pub content_type: u8,
-    pub version: [u8; 2],
-    pub length: [u8; 2],
-}
-
-impl RecordHeader {
-    pub fn length(&self) -> u16 {
-        ((self.length[0] as u16) << 8) | self.length[1] as u16
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AlertDescription {
     CloseNotify = 0,
-    UnexpectedMessage = 10,
-    BadRecordMac = 20,
-    RecordOverflow = 22,
-    HandshakeFailure = 40,
-    BadCertificate = 42,
-    UnsupportedCertificate = 43,
-    CertificateRevoked = 44,
-    CertificateExpired = 45,
-    CertificateUnknown = 46,
-    IllegalParameter = 47,
-    UnknownCa = 48,
-    AccessDenied = 49,
-    DecodeError = 50,
-    DecryptError = 51,
-    ProtocolVersion = 70,
-    InsufficientSecurity = 71,
-    InternalError = 80,
-    InappropriateFallback = 86,
-    UserCanceled = 90,
-    MissingExtension = 109,
-    UnsupportedExtension = 110,
-    UnrecognizedName = 112,
-    BadCertificateStatusResponse = 113,
-    UnknownPskIdentity = 115,
-    CertificateRequired = 116,
-    NoApplicationProtocol = 120,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct ExtensionType(pub u16);
-
-impl ExtensionType {
-    pub const SERVER_NAME: Self = Self(0);
-    pub const SUPPORTED_GROUPS: Self = Self(10);
-    pub const SIGNATURE_ALGORITHMS: Self = Self(13);
-    pub const APPLICATION_LAYER_PROTOCOL_NEGOTIATION: Self = Self(16);
-    pub const SUPPORTED_VERSIONS: Self = Self(43);
-    pub const PSK_KEY_EXCHANGE_MODES: Self = Self(45);
-    pub const KEY_SHARE: Self = Self(51);
 }

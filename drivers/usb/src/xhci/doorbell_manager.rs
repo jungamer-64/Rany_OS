@@ -313,8 +313,6 @@ pub struct DoorbellCoordinator {
     manager: XhciDoorbellManager,
     /// 最後にドアベルを鳴らした時刻（ticks）
     last_ring_time: AtomicU32,
-    /// 最小ドアベル間隔（ticks）
-    min_interval: u32,
 }
 
 impl DoorbellCoordinator {
@@ -323,7 +321,6 @@ impl DoorbellCoordinator {
         Self {
             manager: XhciDoorbellManager::new(doorbell_base, max_slots),
             last_ring_time: AtomicU32::new(0),
-            min_interval: 1, // 最小1tick間隔
         }
     }
 

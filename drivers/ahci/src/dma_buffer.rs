@@ -17,7 +17,6 @@ type DmaBuffer = DmaSlice<CpuOwned>;
 pub struct AhciDmaReadBuffer {
     buffer: DmaBuffer,
     sector_count: usize,
-    device_id: PackedPciLocation,
 }
 
 impl AhciDmaReadBuffer {
@@ -29,7 +28,6 @@ impl AhciDmaReadBuffer {
         Some(Self {
             buffer,
             sector_count,
-            device_id,
         })
     }
 
@@ -62,8 +60,6 @@ impl AhciDmaReadBuffer {
 /// DMA-safe buffer for sector writing
 pub struct AhciDmaWriteBuffer {
     buffer: DmaBuffer,
-    sector_count: usize,
-    device_id: PackedPciLocation,
 }
 
 impl AhciDmaWriteBuffer {
@@ -76,11 +72,7 @@ impl AhciDmaWriteBuffer {
 
         buffer.as_slice_mut()[..data.len()].copy_from_slice(data);
 
-        Some(Self {
-            buffer,
-            sector_count,
-            device_id,
-        })
+        Some(Self { buffer })
     }
 
     /// Get device-visible address (IOVA)
@@ -98,14 +90,13 @@ impl AhciDmaWriteBuffer {
 /// Helper for IDENTIFY command buffer
 pub struct AhciIdentifyBuffer {
     buffer: DmaBuffer,
-    device_id: PackedPciLocation,
 }
 
 impl AhciIdentifyBuffer {
     /// Create 512-byte buffer
     pub fn new(device_id: PackedPciLocation) -> Option<Self> {
         let buffer = kernel().alloc_dma_for_device(512, device_id).ok()?;
-        Some(Self { buffer, device_id })
+        Some(Self { buffer })
     }
 
     pub fn device_addr(&self) -> PhysAddr {

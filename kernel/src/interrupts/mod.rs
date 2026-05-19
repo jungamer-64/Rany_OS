@@ -70,14 +70,6 @@ fn smp_idt_mark(marker: u8) {
 }
 
 #[inline]
-fn record_interrupt_vector(vector: u8) {
-    let cpu_id = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
-    if cpu_id < crate::per_cpu::MAX_CPUS {
-        LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
-    }
-}
-
-#[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
     let cpu_id = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
     if cpu_id < crate::per_cpu::MAX_CPUS {

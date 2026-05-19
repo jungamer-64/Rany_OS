@@ -36,10 +36,14 @@ mod tests {
     use crate::ivrs::{
         IVHD_DEV_ALIAS, IVHD_DEV_ALIAS_RANGE, IVHD_DEV_EXT_SELECT, IVHD_DEV_EXT_SELECT_RANGE,
         IVHD_DEV_RANGE_END, IVHD_DEV_SELECT, IVHD_DEV_SELECT_RANGE_START, IVHD_TYPE_10,
-        IVMD_FLAG_IR, IVMD_FLAG_IW, IVMD_FLAG_UNITY_MAP, IVMD_TYPE_RANGE, IvhdDeviceEntry,
-        IvhdHeader, IvmdHeader, IvrsBlockHeader, IvrsHeader, parse_ivrs,
+        IVMD_TYPE_RANGE, IvhdDeviceEntry, IvhdHeader, IvmdHeader, IvrsBlockHeader, IvrsHeader,
+        parse_ivrs,
     };
     use crate::tables::{AcpiSdtHeader, MadtEntryType};
+
+    const IVMD_FLAG_UNITY_MAP: u8 = 0x01;
+    const IVMD_FLAG_IR: u8 = 0x02;
+    const IVMD_FLAG_IW: u8 = 0x04;
 
     pub const fn madt_entry_type_smoke() -> bool {
         MadtEntryType::LocalApic as u8 == 0 && MadtEntryType::IoApic as u8 == 1

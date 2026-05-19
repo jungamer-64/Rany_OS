@@ -72,8 +72,3 @@ fn nvme_driver_vtable() -> *const kernel_api::abi::driver::DriverVTable {
 pub extern "C" fn _exorust_driver_entry() -> *const kernel_api::abi::driver::DriverVTable {
     nvme_driver_vtable()
 }
-
-#[cfg(not(feature = "export_driver_entry"))]
-pub(crate) fn exorust_driver_entry_unique() -> *const kernel_api::abi::driver::DriverVTable {
-    nvme_driver_vtable()
-}

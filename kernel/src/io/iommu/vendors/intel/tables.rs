@@ -4,7 +4,6 @@
 
 use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
-use alloc::vec::Vec;
 
 // ============================================================================
 // Root Table
@@ -27,11 +26,13 @@ impl RootEntry {
     }
 
     /// Check if lower context table pointer is present
+    #[cfg(test)]
     pub fn is_present_low(&self) -> bool {
         (self.lo & 1) != 0
     }
 
     /// Check if upper context table pointer is present
+    #[cfg(test)]
     pub fn is_present_high(&self) -> bool {
         (self.hi & 1) != 0
     }
@@ -49,16 +50,6 @@ impl RootEntry {
         self.hi = (high_addr & !0xFFF) | 1; // Present bit
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.lo = (low_addr & !0xFFF) | 1; // Present bit
-    }
-
-    /// Get context table address
-    pub fn context_table_addr(&self) -> u64 {
-        self.lo & !0xFFF
-    }
-
-    /// Get physical address of the entry
-    pub fn phys_addr(&self) -> u64 {
-        self.lo & !0xFFF
     }
 }
 
@@ -85,11 +76,6 @@ impl ContextEntry {
         (self.lo & 1) != 0
     }
 
-    /// Check if entry is fault disabled
-    pub fn is_fault_disabled(&self) -> bool {
-        (self.lo & 2) != 0
-    }
-
     /// Set second level page table pointer (Translation Type = 00b)
     pub fn set_sl_pt(&mut self, addr: u64, domain_id: u16, agaw: u8) {
         // SECURITY: Set fields in an order that avoids race conditions.
@@ -106,11 +92,6 @@ impl ContextEntry {
         self.hi = ((domain_id as u64) << 8) | ((agaw as u64) & 0x7);
         core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
         self.lo = (2 << 2) | 1;
-    }
-
-    /// Get second level page table address
-    pub fn sl_pt_addr(&self) -> u64 {
-        self.lo & !0xFFF
     }
 
     /// Get domain ID
@@ -153,8 +134,6 @@ impl ScalableContextEntry {
     pub const DTE: u64 = 1 << 2;
     /// PASID Enable (QWORD 0, bit 3)
     pub const PASID_ENABLE: u64 = 1 << 3;
-    /// Page Request Enable (QWORD 0, bit 4)
-    pub const PRE: u64 = 1 << 4;
     /// PASID Directory Pointer (QWORD 0, bits 12-63)
     pub const PASID_DIR_MASK: u64 = !0xFFF;
     /// PASID Directory Size (QWORD 0, bits 9-11)
@@ -174,7 +153,7 @@ impl ScalableContextEntry {
 
     /// Set the PASID directory pointer and size
     pub fn set_pasid_dir(&mut self, pasid_dir_addr: u64, pds: u8) {
-        // Preserve control bits in bits [8:0] (Present, FPD, DTE, PASID_EN, PRE)
+        // Preserve control bits in bits [8:0] (Present, FPD, DTE, PASID_EN)
         // to avoid fragile dependency on call ordering.
         let control_mask: u64 = 0x1FF; // bits [8:0]
         let preserved = self.qwords[0] & control_mask;
@@ -204,11 +183,6 @@ impl ScalableContextEntry {
         self.qwords[0] |= Self::PASID_ENABLE;
     }
 
-    /// Enable Page Request
-    pub fn set_pre(&mut self) {
-        self.qwords[0] |= Self::PRE;
-    }
-
     /// Enable Device-TLB (ATS)
     pub fn set_dte(&mut self) {
         self.qwords[0] |= Self::DTE;
@@ -230,19 +204,12 @@ pub struct PasidDirEntry(pub u64);
 impl PasidDirEntry {
     /// Present bit
     pub const PRESENT: u64 = 1 << 0;
-    /// Fault Processing Disable
-    pub const FAULT_DISABLE: u64 = 1 << 1;
     /// PASID Table Pointer (bits 12-63)
     pub const TABLE_MASK: u64 = !0xFFF;
 
     /// Create a new empty entry
     pub const fn new() -> Self {
         Self(0)
-    }
-
-    /// Check if present
-    pub fn is_present(&self) -> bool {
-        (self.0 & Self::PRESENT) != 0
     }
 
     /// Set PASID table pointer
@@ -274,8 +241,6 @@ impl Default for PasidTableEntry {
 impl PasidTableEntry {
     /// Present bit (QWORD 0, bit 0)
     pub const PRESENT: u64 = 1 << 0;
-    /// Fault Processing Disable (QWORD 0, bit 1)
-    pub const FAULT_DISABLE: u64 = 1 << 1;
     /// Address Width (QWORD 0, bits 2-4)
     pub const AW_SHIFT: u64 = 2;
     /// Translation Type (QWORD 0, bits 6-8)
@@ -286,15 +251,8 @@ impl PasidTableEntry {
     pub const DID_MASK: u64 = 0xFFFF;
 
     /// PGTT encodings
-    pub const PGTT_FL_ONLY: u64 = 1;
     pub const PGTT_SL_ONLY: u64 = 2;
-    pub const PGTT_NESTED: u64 = 3;
     pub const PGTT_PT: u64 = 4;
-
-    /// Create a new empty entry
-    pub const fn new() -> Self {
-        Self { qwords: [0; 8] }
-    }
 
     /// Check if present
     pub fn is_present(&self) -> bool {
@@ -330,11 +288,6 @@ impl PasidTableEntry {
         self.qwords[0] = qw0;
     }
 
-    /// Get second level page table address
-    pub fn sl_pt_addr(&self) -> u64 {
-        self.qwords[0] & Self::SLPT_MASK
-    }
-
     /// Get domain ID
     pub fn domain_id(&self) -> u16 {
         (self.qwords[1] & Self::DID_MASK) as u16
@@ -355,8 +308,6 @@ pub struct PasidTable {
     pub table: HardwareTable<PasidTableEntry>,
     /// Size (number of entries, power of 2)
     pub size: usize,
-    /// Allocation bitmap
-    allocated: Vec<u64>,
     /// PASID directory size field (PDS)
     pds: u8,
 }
@@ -383,21 +334,10 @@ impl PasidTable {
             *entry = dir_entry;
         }
 
-        // Allocate bitmap
-        let bitmap_len = (count + 63) / 64;
-        let mut allocated = Vec::with_capacity(bitmap_len);
-        allocated.resize(bitmap_len, 0);
-
-        // Security: Reserve PASID 0 once up-front (for RID->PASID mapping)
-        if !allocated.is_empty() {
-            allocated[0] |= 1u64;
-        }
-
         Ok(Self {
             directory,
             table,
             size: count,
-            allocated,
             pds: 0,
         })
     }
@@ -424,11 +364,6 @@ impl PasidTable {
             return Err(IommuError::InvalidAddress);
         }
 
-        // Mark as allocated
-        let word_idx = (pasid as usize) / 64;
-        let bit_idx = (pasid as usize) % 64;
-        self.allocated[word_idx] |= 1 << bit_idx;
-
         // Update entry
         if let Some(entry) = self.table.get_mut(pasid as usize) {
             entry.set_sl_pt(sl_pt_addr, address_width, domain_id);
@@ -450,10 +385,6 @@ impl PasidTable {
             return Err(IommuError::InvalidAddress);
         }
 
-        let word_idx = (pasid as usize) / 64;
-        let bit_idx = (pasid as usize) % 64;
-        self.allocated[word_idx] |= 1 << bit_idx;
-
         if let Some(entry) = self.table.get_mut(pasid as usize) {
             entry.set_passthrough(domain_id);
             core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
@@ -474,59 +405,5 @@ impl PasidTable {
         } else {
             None
         }
-    }
-
-    /// Allocate the next free PASID (PASID 0 is reserved for RID→PASID mapping)
-    pub fn allocate_pasid(&mut self) -> Result<u32, IommuError> {
-        for word_idx in 0..self.allocated.len() {
-            let word = self.allocated[word_idx];
-            if word == u64::MAX {
-                continue;
-            }
-            let bit = (!word).trailing_zeros() as usize;
-            let pasid = word_idx * 64 + bit;
-            if pasid >= self.size {
-                return Err(IommuError::OutOfMemory);
-            }
-            self.allocated[word_idx] |= 1u64 << bit;
-            return Ok(pasid as u32);
-        }
-        Err(IommuError::OutOfMemory)
-    }
-
-    /// Free a previously allocated PASID (PASID 0 cannot be freed)
-    pub fn free_pasid(&mut self, pasid: u32) -> Result<(), IommuError> {
-        if pasid == 0 {
-            return Err(IommuError::InvalidAddress);
-        }
-        if (pasid as usize) >= self.size {
-            return Err(IommuError::InvalidAddress);
-        }
-        let word_idx = (pasid as usize) / 64;
-        let bit_idx = (pasid as usize) % 64;
-        if self.allocated[word_idx] & (1u64 << bit_idx) == 0 {
-            return Err(IommuError::NotMapped);
-        }
-        if let Some(entry) = self.table.get_mut(pasid as usize) {
-            entry.clear();
-            core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
-        }
-        self.allocated[word_idx] &= !(1u64 << bit_idx);
-        Ok(())
-    }
-
-    /// Check if a PASID is currently allocated
-    pub fn is_allocated(&self, pasid: u32) -> bool {
-        if (pasid as usize) >= self.size {
-            return false;
-        }
-        let word_idx = (pasid as usize) / 64;
-        let bit_idx = (pasid as usize) % 64;
-        self.allocated[word_idx] & (1u64 << bit_idx) != 0
-    }
-
-    /// Return the number of currently allocated PASIDs
-    pub fn allocated_count(&self) -> usize {
-        self.allocated.iter().map(|w| w.count_ones() as usize).sum()
     }
 }

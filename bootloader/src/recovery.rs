@@ -6,10 +6,9 @@
 //! - フォールバックカーネルへの自動切り替え
 //! - リカバリモード
 
-use alloc::string::String;
+use crate::serial_println;
 use uefi::runtime::{self, VariableAttributes, VariableVendor};
 use uefi::{CStr16, Guid, cstr16};
-use crate::serial_println;
 
 /// ExoLoader専用UEFI変数GUID
 /// {A5E8F3D2-1234-5678-9ABC-DEF012345678}
@@ -29,8 +28,6 @@ pub struct BootState {
     pub recovery_requested: bool,
     /// 前回選択されたエントリインデックス
     pub last_entry_index: u8,
-    /// フォールバックエントリインデックス
-    pub fallback_entry_index: u8,
     /// ブート試行ID（インクリメンタル）
     pub boot_attempt_id: u32,
 }
@@ -42,7 +39,6 @@ impl Default for BootState {
             last_boot_success: true,
             recovery_requested: false,
             last_entry_index: 0,
-            fallback_entry_index: 0,
             boot_attempt_id: 0,
         }
     }
@@ -210,44 +206,6 @@ pub fn should_use_fallback(state: &BootState) -> bool {
 /// リカバリモードに入るべきか判定
 pub fn should_enter_recovery(state: &BootState) -> bool {
     state.failure_count >= MAX_BOOT_FAILURES || state.recovery_requested
-}
-
-/// ブート状態をリセット（手動リカバリ後）
-pub fn reset_boot_state() {
-    let vendor = get_vendor();
-
-    let _ = runtime::set_variable(VAR_FAILURE_COUNT, vendor, VAR_ATTRS, &[0u8]);
-    let _ = runtime::set_variable(VAR_LAST_SUCCESS, vendor, VAR_ATTRS, &[1u8]);
-    let _ = runtime::set_variable(VAR_RECOVERY_REQUEST, vendor, VAR_ATTRS, &[0u8]);
-
-    serial_println!("[Recovery] Boot state reset to defaults");
-}
-
-/// リカバリモードを要求（次回起動時にリカバリ）
-pub fn request_recovery_mode() {
-    let vendor = get_vendor();
-
-    let _ = runtime::set_variable(VAR_RECOVERY_REQUEST, vendor, VAR_ATTRS, &[1u8]);
-
-    serial_println!("[Recovery] Recovery mode requested for next boot");
-}
-
-/// ブート状態の概要を取得
-pub fn get_boot_state_summary(state: &BootState) -> String {
-    use alloc::format;
-
-    if state.recovery_requested {
-        format!("Recovery mode requested")
-    } else if state.failure_count >= MAX_BOOT_FAILURES {
-        format!(
-            "CRITICAL: {} consecutive failures (recovery mode)",
-            state.failure_count
-        )
-    } else if state.failure_count > 0 {
-        format!("Warning: {} boot failure(s) detected", state.failure_count)
-    } else {
-        format!("Normal boot (attempt #{})", state.boot_attempt_id + 1)
-    }
 }
 
 /// ブート状態をシリアルに出力

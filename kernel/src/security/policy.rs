@@ -323,8 +323,6 @@ impl PolicyDecision {
 
 /// Security policy
 pub struct SecurityPolicy {
-    /// Policy name
-    name: String,
     /// Policy version
     version: u32,
     /// Rules (sorted by priority)
@@ -339,9 +337,8 @@ pub struct SecurityPolicy {
 
 impl SecurityPolicy {
     /// Create a new policy
-    pub fn new(name: impl Into<String>) -> Self {
+    pub fn new() -> Self {
         SecurityPolicy {
-            name: name.into(),
             version: 1,
             rules: Vec::new(),
             default_action: PolicyAction::Deny,
@@ -473,7 +470,7 @@ impl SecurityPolicy {
 
 impl Default for SecurityPolicy {
     fn default() -> Self {
-        Self::new("default")
+        Self::new()
     }
 }
 
@@ -490,7 +487,6 @@ pub struct PolicyStats {
 
 /// Global policy engine
 static POLICY: PoisonRwLock<SecurityPolicy> = PoisonRwLock::new(SecurityPolicy {
-    name: String::new(),
     version: 0,
     rules: Vec::new(),
     default_action: PolicyAction::Deny,
@@ -555,7 +551,7 @@ pub fn remove_rule(rule_id: u64) -> bool {
 
 /// Initialize policy engine with default rules
 pub fn init() {
-    let mut policy = SecurityPolicy::new("kernel_policy");
+    let mut policy = SecurityPolicy::new();
 
     // Default rules
 
@@ -626,7 +622,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_policy() {
-        let mut policy = SecurityPolicy::new("test");
+        let mut policy = SecurityPolicy::new();
 
         policy.add_rule(PolicyRule::new(
             PolicySubject::Domain(1),

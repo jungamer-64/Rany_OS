@@ -27,20 +27,6 @@ pub fn register_exports_driver_with_context(
     res
 }
 
-pub(crate) fn register_abi_driver_with_fini(
-    entry: AbiEntryFn,
-    exports_fini: Option<extern "C" fn() -> i32>,
-    provider_descriptors: Vec<ProviderDescriptorV1>,
-) -> Result<DriverHandle, DriverError> {
-    register_abi_driver_with_fini_and_context(
-        entry,
-        exports_fini,
-        provider_descriptors,
-        AbiDriverStateHooks::default(),
-        AbiDriverContext::new(),
-    )
-}
-
 pub(crate) fn register_abi_driver_with_fini_and_context(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,

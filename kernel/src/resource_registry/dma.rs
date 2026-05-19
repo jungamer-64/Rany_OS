@@ -3,15 +3,11 @@ use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use kernel_api::error::KapiError;
-use x86_64::PhysAddr;
-
 use crate::domain::DomainId;
-use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::sync::PoisonLock;
 
 struct DmaEntry {
-    buffer: Box<dyn core::any::Any + Send>,
+    _buffer: Box<dyn core::any::Any + Send>,
     phys: u64,
     size: usize,
     owner: u64,
@@ -56,7 +52,7 @@ impl DmaRegistry {
             .insert(
                 id,
                 DmaEntry {
-                    buffer,
+                    _buffer: buffer,
                     phys,
                     size,
                     owner,
@@ -136,19 +132,6 @@ impl PhysOwnershipRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&phys);
     }
-
-    fn is_owned_by(&self, phys: u64, size: usize, domain_id: u64) -> bool {
-        let ranges = self.ranges.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some((&start, &(r_size, r_owner))) = ranges.range(..=phys).next_back() {
-            if r_owner == domain_id
-                && phys >= start
-                && (phys + size as u64) <= (start + r_size as u64)
-            {
-                return true;
-            }
-        }
-        false
-    }
 }
 
 static DMA_REGISTRY: DmaRegistry = DmaRegistry::new();
@@ -182,125 +165,6 @@ pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
     }
 
     stats
-}
-
-pub(crate) struct IommuMapping {
-    pub(crate) device: IommuDeviceId,
-    pub(crate) iova: u64,
-    pub(crate) size: u64,
-}
-
-impl IommuMapping {
-    pub(crate) fn unmap(self) {
-        let _ = crate::io::iommu::api::unmap_for_device(&self.device, self.iova, self.size);
-    }
-}
-
-pub(crate) struct NvmeDmaContextEntry {
-    pub(crate) dma: crate::drivers::nvme::dma::NvmeDmaRegion,
-    pub(crate) owner: u64,
-}
-
-struct NvmeDmaContextRegistry {
-    contexts: PoisonLock<BTreeMap<u64, NvmeDmaContextEntry>>,
-    next_id: AtomicU64,
-}
-
-impl NvmeDmaContextRegistry {
-    const fn new() -> Self {
-        Self {
-            contexts: PoisonLock::new(BTreeMap::new()),
-            next_id: AtomicU64::new(1),
-        }
-    }
-
-    fn register(&self, entry: NvmeDmaContextEntry) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.contexts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, entry);
-        id
-    }
-
-    fn unregister(&self, id: u64) -> Option<NvmeDmaContextEntry> {
-        self.contexts
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-    }
-}
-
-struct IommuMappingRegistry {
-    mappings: PoisonLock<BTreeMap<u64, IommuMapping>>,
-    next_id: AtomicU64,
-}
-
-impl IommuMappingRegistry {
-    const fn new() -> Self {
-        Self {
-            mappings: PoisonLock::new(BTreeMap::new()),
-            next_id: AtomicU64::new(1),
-        }
-    }
-
-    fn register(&self, mapping: IommuMapping) -> u64 {
-        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.mappings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, mapping);
-        id
-    }
-
-    fn unregister(&self, id: u64) -> Option<IommuMapping> {
-        self.mappings
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-    }
-}
-
-static NVME_DMA_CONTEXT_REGISTRY: NvmeDmaContextRegistry = NvmeDmaContextRegistry::new();
-static IOMMU_MAPPING_REGISTRY: IommuMappingRegistry = IommuMappingRegistry::new();
-
-pub(crate) fn register_nvme_dma_context(entry: NvmeDmaContextEntry) -> u64 {
-    NVME_DMA_CONTEXT_REGISTRY.register(entry)
-}
-
-pub(crate) fn unregister_nvme_dma_context(id: u64) -> Option<NvmeDmaContextEntry> {
-    NVME_DMA_CONTEXT_REGISTRY.unregister(id)
-}
-
-pub(crate) fn register_iommu_mapping(mapping: IommuMapping) -> u64 {
-    IOMMU_MAPPING_REGISTRY.register(mapping)
-}
-
-pub(crate) fn unregister_iommu_mapping(id: u64) -> Option<IommuMapping> {
-    IOMMU_MAPPING_REGISTRY.unregister(id)
-}
-
-pub(crate) fn map_for_iommu(
-    device: IommuDeviceId,
-    phys_addr: u64,
-    size: usize,
-) -> Result<(u64, Option<IommuMapping>), KapiError> {
-    if !crate::io::iommu::api::is_iommu_enabled() {
-        return Err(KapiError::IoError);
-    }
-    let map_len = crate::drivers::nvme::dma::align_up_page(size);
-    let iova = unsafe {
-        crate::io::iommu::api::map_for_device(&device, PhysAddr::new(phys_addr), map_len as u64)
-    }
-    .map_err(|_| KapiError::IoError)?;
-    Ok((
-        iova,
-        Some(IommuMapping {
-            device,
-            iova,
-            size: map_len as u64,
-        }),
-    ))
 }
 
 #[cfg(test)]

@@ -3,29 +3,18 @@
 // ============================================================================
 //! RuntimeCommandHandler 共通型/ヘルパー
 
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
-use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{CommandReplyPayload, CommandReplyTicket, RuntimeCommand};
-use crate::net::runtime::manager::NetIfId;
-use kernel_api::resource::net::PacketPayload;
+use crate::net::runtime::command::{CommandReplyPayload, CommandReplyTicket};
 
 /// イベント処理の結果
 #[derive(Debug)]
 pub enum EventHandleResult {
     /// 処理成功
     Success,
-    /// 着信パケット - プロトコルスタックへのオフロード
-    IngressPacket {
-        if_id: Option<NetIfId>,
-        packet: PacketRef,
-    },
     /// ソケットが見つからない
     SocketNotFound(SocketId),
     /// プロトコルエラー
     ProtocolError(EndpointError),
-    /// 再試行が必要
-    Retry(RuntimeCommand),
 }
 
 #[inline]
@@ -48,18 +37,6 @@ pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize
     let end = base.checked_add(container.len())?;
     let sub_end = sub.checked_add(subslice.len())?;
     (sub >= base && sub_end <= end).then_some(sub - base)
-}
-
-#[inline]
-pub(super) fn deliver_raw_payload_if_registered(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    payload: PacketPayload,
-) -> bool {
-    let Some(endpoint) = crate::net::l4::socket::find_raw_by_scope_in(runtime, if_id) else {
-        return false;
-    };
-    endpoint.deliver_raw_payload(if_id, payload).is_ok()
 }
 
 #[inline]

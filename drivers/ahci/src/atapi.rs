@@ -28,7 +28,6 @@ const PX_CI: u32 = 0x38;
 
 /// ATAPI commands
 const ATA_CMD_PACKET: u8 = 0xA0;
-const ATA_CMD_IDENTIFY_PACKET: u8 = 0xA1;
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -405,8 +404,6 @@ impl TableOfContents {
 }
 
 pub struct AtapiPort {
-    port: PortNumber,
-    base: u64,
     port_base: u64,
     command_list: Box<[CommandHeader; 32]>,
     command_tables: [Option<Box<CommandTable>>; 32],
@@ -418,8 +415,6 @@ impl AtapiPort {
         let port_base = base + 0x100 + (port.as_u8() as u64 * 0x80);
 
         Self {
-            port,
-            base,
             port_base,
             command_list: Box::new([CommandHeader::default(); 32]),
             command_tables: Default::default(),

@@ -142,12 +142,3 @@ pub fn standalone_driver_vtable() -> *const DriverVTable {
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     standalone_driver_vtable()
 }
-
-// When not exporting the canonical symbol, emit a crate-unique name so
-// multiple drivers can coexist in a single static link without symbol
-// collisions. `unsafe(concat!(...))` is required for compile-time
-// concatenation in the attribute expression.
-#[cfg(not(feature = "export_driver_entry"))]
-pub(crate) fn exorust_driver_entry_unique() -> *const DriverVTable {
-    standalone_driver_vtable()
-}

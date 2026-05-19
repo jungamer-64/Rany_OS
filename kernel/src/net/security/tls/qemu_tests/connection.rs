@@ -14,7 +14,7 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes
     let mut copied = 0usize;
     view.for_each_chunk(|chunk| {
         let take = chunk.len().min(view.total_len() - copied);
-        bytes.as_mut_slice()[copied..copied + take].copy_from_slice(&chunk[..take]);
+        bytes.as_mut_storage()[copied..copied + take].copy_from_slice(&chunk[..take]);
         copied += take;
     });
     bytes
@@ -135,15 +135,24 @@ pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {
-    let data = [0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17];
-    let data2 = [0x48, 0x65, 0x17, 0x00, 0x00];
-    let data3 = [0x16];
-    let data4 = [0x00, 0x00, 0x00];
+    fn payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
+        let mut writer = crate::net::payload::GeneratedPacketWriter::new(data.len(), 0)?;
+        writer.write_bytes(data)?;
+        writer.finish()
+    }
 
-    let case1 = matches!(ExperimentalTlsConnection::tls13_strip_content_type(&data), Some(v) if v == &[0x48, 0x65, 0x6c, 0x6c, 0x6f]);
-    let case2 = matches!(ExperimentalTlsConnection::tls13_strip_content_type(&data2), Some(v) if v == &[0x48, 0x65]);
-    let case3 = matches!(ExperimentalTlsConnection::tls13_strip_content_type(&data3), Some(v) if v.is_empty());
-    let case4 = ExperimentalTlsConnection::tls13_strip_content_type(&data4).is_none();
+    let case1 = payload(&[0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17])
+        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        == Some((0x17, 5));
+    let case2 = payload(&[0x48, 0x65, 0x17, 0x00, 0x00])
+        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        == Some((0x17, 2));
+    let case3 = payload(&[0x16])
+        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        == Some((0x16, 0));
+    let case4 = payload(&[0x00, 0x00, 0x00])
+        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        .is_none();
 
     case1 && case2 && case3 && case4
 }

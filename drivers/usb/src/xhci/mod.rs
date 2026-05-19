@@ -59,7 +59,7 @@ pub use port_manager::{
     PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState,
     XhciPortManager,
 };
-pub use ring_manager::{CommandBuilder, ManagedRing, RingType, TransferBuilder, XhciRingManager};
+pub use ring_manager::{CommandBuilder, ManagedRing, TransferBuilder, XhciRingManager};
 pub use trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 
 // ============================================================================

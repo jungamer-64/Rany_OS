@@ -62,8 +62,6 @@ pub struct HierarchicalBitmap {
     total_units: usize,
     /// Number of detail words
     detail_words: usize,
-    /// Number of summary words
-    summary_words: usize,
     /// Free count (may be slightly stale due to concurrent access)
     free_count: AtomicUsize,
     /// Valid bit mask for the last detail word
@@ -140,7 +138,6 @@ impl HierarchicalBitmap {
             summary_l2: summary_l2.into_boxed_slice(),
             total_units,
             detail_words,
-            summary_words,
             free_count: AtomicUsize::new(total_units),
             last_word_mask,
             hint: AtomicUsize::new(0),

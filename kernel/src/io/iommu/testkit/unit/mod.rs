@@ -9,11 +9,8 @@
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
-use crate::io::iommu::runtime::config::IommuConfig;
 use crate::io::iommu::runtime::fault_log::FaultRecord;
-use crate::io::iommu::runtime::registry::{
-    IommuRegistry, get_iommu_driver, get_iommu_registry, init_registry,
-};
+use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
@@ -23,13 +20,12 @@ use crate::io::iommu::vendors::intel::controller::fault::{
     RawFaultEvent, drain_deferred_faults_with_controller, push_deferred_fault_for_test,
 };
 use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
-use crate::io::iommu::vendors::intel::controller::ir::InterruptRemapper;
-use crate::io::iommu::vendors::intel::controller::pri::PageRequestManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
+use crate::io::iommu::vendors::intel::registry::{IommuRegistry, init_registry};
 use crate::io::iommu::vendors::intel::tables::{
     ContextEntry, PasidTableEntry, RootEntry, ScalableContextEntry,
 };
@@ -43,6 +39,14 @@ use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
 use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
 #[cfg(feature = "std")]
 use alloc::boxed::Box;
+
+fn test_iommu_registry(controllers: Vec<Arc<IommuController>>) -> IommuRegistry {
+    IommuRegistry {
+        controllers,
+        default_iommu_idx: Some(0),
+        reserved_regions: Vec::new(),
+    }
+}
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -431,21 +435,8 @@ fn test_create_domain_with_numa_hint() {
     // Test controller set/get API
     ctrl.set_domain_numa(id, Some(5))
         .expect("set_domain_numa failed");
-    assert_eq!(ctrl.get_domain_numa(id), Some(5usize));
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_process_page_requests_poisoned_returns_empty() {
-    use crate::sync::set_panicking;
-    let mut ctrl = IommuController::new(0x0, 0);
-    set_panicking(true);
-    if let Ok(_g) = ctrl.page_request_queue.lock() {
-        // drop to poison
-    }
-    set_panicking(false);
-    let requests = ctrl.process_page_requests();
-    assert!(requests.is_empty());
+    let updated = ctrl.domain(id).expect("domain not found after update");
+    assert_eq!(updated.numa_node(), Some(5usize));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -787,35 +778,6 @@ fn test_init_iova_poisoned_proceeds_with_best_effort() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_init_interrupt_remapping_poisoned_proceeds_with_best_effort() {
-    use crate::sync::set_panicking;
-    let mut ctrl = IommuController::new(0x0, 0);
-
-    // Enable Interrupt Remapping capability
-    ctrl.ecap |= ecap_bits::ECAP_IR;
-
-    // Poison the interrupt_remap_table lock during init
-    set_panicking(true);
-    if let Ok(_g) = ctrl.interrupt_remap_table.lock() {
-        // drop to poison
-    }
-    set_panicking(false);
-
-    // Init should proceed with best-effort
-    ctrl.init_interrupt_remapping(4)
-        .expect("init_interrupt_remapping failed");
-
-    match ctrl.interrupt_remap_table.lock() {
-        Ok(g) => assert!(g.is_some()),
-        Err(poisoned) => {
-            let guard = poisoned.into_inner();
-            assert!(guard.is_some());
-        }
-    }
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = IommuController::new(0x0, 0);
@@ -1015,11 +977,7 @@ fn test_map_for_device_async_and_unmap() {
     let arc_ctrl = AllocArc::new(ctrl_local);
 
     // Build a registry containing our test controller and install it (Once)
-    let registry = IommuRegistry::new(
-        alloc::vec![arc_ctrl.clone()],
-        Vec::new(),
-        IommuConfig::default(),
-    );
+    let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
     init_registry(registry);
     arc_ctrl
         .init_iova(0x1000, 0x1_0000_0000 - 0x1000)
@@ -1149,11 +1107,7 @@ fn test_map_for_device_respects_dma_mask() {
     } else {
         let ctrl = IommuController::new(0x0, 0);
         let arc_ctrl = AllocArc::new(ctrl);
-        let registry = IommuRegistry::new(
-            alloc::vec![arc_ctrl.clone()],
-            Vec::new(),
-            IommuConfig::default(),
-        );
+        let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
         init_registry(registry);
         arc_ctrl
     };
@@ -1216,11 +1170,7 @@ fn test_map_unmap_for_device_does_not_leak_iova() {
     } else {
         let ctrl = IommuController::new(0x0, 0);
         let arc_ctrl = AllocArc::new(ctrl);
-        let registry = IommuRegistry::new(
-            alloc::vec![arc_ctrl.clone()],
-            Vec::new(),
-            IommuConfig::default(),
-        );
+        let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
         init_registry(registry);
         arc_ctrl
     };
@@ -1667,20 +1617,13 @@ fn test_security_notifier_registration() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_api_security_notifier_registration() {
-    use crate::io::iommu::runtime::config::IommuConfig;
     use crate::io::iommu::runtime::registry::get_iommu_driver;
     use crate::io::iommu::vendors::intel::controller::IommuController;
-    use crate::io::iommu::vendors::intel::registry::{
-        IommuRegistry, get_iommu_registry, init_registry,
-    };
+    use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry};
 
     if get_iommu_registry().is_none() {
         let ctrl = IommuController::new(0x0, 0);
-        let registry = IommuRegistry::new(
-            alloc::vec![Arc::new(ctrl)],
-            Vec::new(),
-            IommuConfig::default(),
-        );
+        let registry = test_iommu_registry(alloc::vec![Arc::new(ctrl)]);
         init_registry(registry);
     }
 

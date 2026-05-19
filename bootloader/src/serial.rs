@@ -141,11 +141,6 @@ pub fn _serial_print(args: fmt::Arguments) {
     let _ = writer.write_fmt(args);
 }
 
-/// Write a single character to serial (used in inline asm debugging)
-pub fn write_char(c: char) {
-    SerialWriter::new().write_byte(c as u8);
-}
-
 // I/O port access functions (x86_64 specific)
 #[inline]
 unsafe fn outb(port: u16, value: u8) {

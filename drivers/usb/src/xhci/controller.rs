@@ -53,8 +53,6 @@ const RTSOFF: usize = 0x18;
 struct DmaDeviceContext {
     /// CPUアクセス用ポインタ
     ptr: *mut DeviceContext,
-    /// デバイス可視アドレス (IOVA or physical)
-    device_addr: u64,
     /// DMAバッファ (所有権保持)
     _dma_buf: DmaBuffer,
 }
@@ -75,12 +73,8 @@ impl DmaDeviceContext {
 
 /// xHCIコントローラ
 pub struct XhciController {
-    /// ベースアドレス
-    base_addr: u64,
     /// DMA 割り当てに使う PCI locator
     pub(crate) pci_locator: PackedPciLocation,
-    /// Capability Registers オフセット
-    cap_offset: u64,
     /// Operational Registers オフセット
     op_offset: u64,
     /// Runtime Registers オフセット
@@ -91,14 +85,10 @@ pub struct XhciController {
     max_slots: u8,
     /// 最大ポート数
     max_ports: u8,
-    /// ページサイズ
-    page_size: u32,
     /// コマンドリング
     command_ring: Mutex<TrbRing>,
     /// イベントリング
     event_ring: Mutex<TrbRing>,
-    /// ERST (CPU access pointer)
-    erst_ptr: *mut ErstEntry,
     /// ERST device-visible address
     erst_device_addr: u64,
     /// ERST DMAバッファ (所有権保持)
@@ -123,7 +113,7 @@ pub struct XhciController {
     running: AtomicBool,
 }
 
-// Safety: XhciControllerの生ポインタ(erst_ptr, dcbaa_ptr)はDMAバッファの寿命内で有効。
+// Safety: XhciControllerの生ポインタ(dcbaa_ptr)はDMAバッファの寿命内で有効。
 //         全ての可変状態はMutexで保護されている。
 unsafe impl Send for XhciController {}
 unsafe impl Sync for XhciController {}
@@ -145,8 +135,6 @@ pub(crate) struct CommandCompletionResult {
 
 /// 転送完了情報
 pub(crate) struct TransferCompletion {
-    /// TRBアドレス
-    pub trb_addr: u64,
     /// スロットID
     pub slot_id: SlotId,
     /// エンドポイントID
@@ -196,7 +184,7 @@ impl XhciController {
 
         // ERSTをDMAバッファで作成
         let erst_byte_size = core::mem::size_of::<ErstEntry>();
-        let (erst_ptr, erst_device_addr, erst_buf) = match kernel_api::service::kernel::instance()
+        let (erst_device_addr, erst_buf) = match kernel_api::service::kernel::instance()
             .alloc_dma_for_device(erst_byte_size, pci_locator)
         {
             Ok(dma_buf) => {
@@ -208,7 +196,7 @@ impl XhciController {
                     entry.ring_segment_size = EVENT_RING_SIZE as u16;
                     entry.reserved = [0u8; 6];
                 }
-                (ptr, dev_addr, Some(dma_buf))
+                (dev_addr, Some(dma_buf))
             }
             Err(_) => {
                 log::error!("[XHCI] Failed to allocate DMA for ERST");
@@ -245,18 +233,14 @@ impl XhciController {
             .collect();
 
         let controller = Self {
-            base_addr,
             pci_locator,
-            cap_offset: base_addr,
             op_offset,
             rt_offset,
             db_offset,
             max_slots,
             max_ports,
-            page_size: 4096,
             command_ring: Mutex::new(command_ring),
             event_ring: Mutex::new(event_ring),
-            erst_ptr,
             erst_device_addr,
             _erst_buf: erst_buf,
             dcbaa_ptr,
@@ -659,7 +643,6 @@ impl XhciController {
 
         // 未登録の転送完了は新規追加
         completions.push(TransferCompletion {
-            trb_addr: event.trb_pointer,
             slot_id: event.slot_id,
             endpoint_id: event.endpoint_id,
             completion_code: event.completion_code,
@@ -697,9 +680,5 @@ impl XhciController {
     fn read_portsc(&self, port: PortNumber) -> u32 {
         let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
         self.read_op(offset)
-    }
-
-    fn read_runtime(&self, offset: usize) -> u32 {
-        hal::mmio::mmio_read_u32((self.rt_offset + IR0 as u64 + offset as u64) as usize)
     }
 }

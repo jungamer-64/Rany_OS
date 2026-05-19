@@ -19,38 +19,12 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         match event {
-            RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::IcmpEcho {
-                target,
-                sequence,
-                reply,
-            }) => {
-                let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
-                let result = stack
-                    .send_icmp_echo_request(target_ip, sequence)
-                    .map_err(|_| ());
-                finish_command(reply, result)
-            }
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
                 target_ip,
             }) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 stack.send_arp_probe(ip);
                 EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolveCheck {
-                    target_ip,
-                    requester_mac,
-                    reply,
-                },
-            ) => {
-                let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                let now = stack.current_time();
-                let result = stack.arp_resolve(ip, now).map(|mac| {
-                    let req_mac = MacAddress::new(requester_mac);
-                    mac != req_mac && !mac.is_broadcast()
-                });
-                finish_command(reply, result)
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::DhcpApplyLease { if_id, config },
@@ -143,14 +117,6 @@ impl RuntimeCommandHandler {
                     ipv6_addr
                 );
                 EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::GetLinkLocal { reply },
-            ) => {
-                let result = stack
-                    .primary_ipv6_link_local()
-                    .map(|address| address.octets());
-                finish_command(reply, result)
             }
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetPrimaryInterfaceConfig { reply },

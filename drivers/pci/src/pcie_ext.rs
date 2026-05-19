@@ -139,6 +139,10 @@ impl PcieConfig {
         }
     }
 
+    pub const fn segment(&self) -> u16 {
+        self.segment
+    }
+
     fn get_config_addr(&self, bdf: PcieBdf, offset: u16) -> Option<*mut u32> {
         if bdf.bus < self.start_bus || bdf.bus > self.end_bus {
             return None;

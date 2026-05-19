@@ -7,8 +7,6 @@
 //! Contains `IommuController` and its implementation modules.
 
 pub mod command_queue;
-pub mod context_cache;
-pub mod cpu_cache;
 pub mod dma;
 pub mod fault;
 pub mod init;
@@ -16,9 +14,6 @@ pub mod init_global;
 pub mod invalidation;
 pub mod iova;
 pub mod ir;
-pub mod perfmon;
-pub mod pi;
-pub mod pri;
 pub mod qi_init;
 pub mod qi_ops;
 pub mod utils;
@@ -28,7 +23,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
@@ -51,7 +46,6 @@ use crate::io::iommu::vendors::intel::registers::{
 use crate::io::iommu::vendors::intel::tables::{
     ContextEntry, PasidTable, RootEntry, ScalableContextEntry,
 };
-use crate::io::iommu::vendors::shared::{PageRequestQueue, PostedInterruptPool};
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 
@@ -91,12 +85,6 @@ impl HardwareContext {
             scalable_context_tables: Vec::new(),
         }
     }
-
-    /// Check if hardware tables are initialized
-    pub fn is_initialized(&self) -> bool {
-        self.root_table.is_some()
-            && (!self.legacy_context_tables.is_empty() || !self.scalable_context_tables.is_empty())
-    }
 }
 
 unsafe impl Send for HardwareContext {}
@@ -121,9 +109,6 @@ pub struct IommuController {
     selected_levels: u8,
     /// Hardware/Table Lock (protects root_table and context tables)
     pub(crate) hardware: PoisonLock<HardwareContext>,
-    /// Register Lock (protects MMIO command sequences)
-    pub(crate) register_lock: PoisonLock<()>,
-
     /// Domains
     pub domains: PoisonLock<HashMap<u16, Arc<IommuDomain>>>,
     /// Device to domain mapping
@@ -146,16 +131,10 @@ pub struct IommuController {
     pub(crate) scalable_mode_enabled: AtomicBool,
     /// IOMMU Segment number
     pub segment: u16,
-    /// Controller index within the registry (for per-core caches)
-    pub(crate) controller_idx: AtomicUsize,
     /// IOVA allocator (lock-free bitmap-based)
     pub(crate) iova_allocator: PoisonLock<Option<IovaAllocator>>,
     /// Set of devices with ATS enabled
     pub(crate) ats_enabled_devices: PoisonLock<BTreeSet<DeviceId>>,
-    /// Posted Interrupt Descriptor pool
-    pub(crate) pid_pool: PoisonLock<Option<PostedInterruptPool>>,
-    /// Page Request Queue
-    pub(crate) page_request_queue: PoisonLock<Option<PageRequestQueue>>,
     /// Fault log ring buffer
     pub(crate) fault_log: IrqMutex<Option<FaultLog>>,
     /// Device scopes
@@ -168,16 +147,10 @@ pub struct IommuController {
     pub(crate) command_queue: spin::Once<CommandQueue>,
     /// Runtime services activated for this controller
     runtime_services_started: AtomicBool,
-    /// Fault interrupts enabled
-    fault_interrupts_enabled: AtomicBool,
-    /// Queued invalidation completion interrupts enabled
-    qi_completion_interrupts_enabled: AtomicBool,
     /// Phase 6: Page Table Recycling Pool
     pub page_table_pool: Arc<PageTablePool>,
     /// Phase 7: Security event notifier
     security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
-    /// Phase 7: Dropped security events counter
-    dropped_security_events: AtomicU64,
 }
 
 unsafe impl Send for IommuController {}
@@ -195,7 +168,6 @@ impl IommuController {
             selected_addr_bits: 48,
             selected_levels: 4,
             hardware: PoisonLock::new(HardwareContext::default()),
-            register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
             device_pasid_tables: PoisonLock::new(HashMap::new()),
@@ -206,22 +178,16 @@ impl IommuController {
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),
-            controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
-            pid_pool: PoisonLock::new(None),
-            page_request_queue: PoisonLock::new(None),
             fault_log: IrqMutex::new(None),
             device_scopes: Vec::new(),
             include_all: false,
             pending_waiters: WakerQueue::new(),
             command_queue: spin::Once::new(),
             runtime_services_started: AtomicBool::new(false),
-            fault_interrupts_enabled: AtomicBool::new(false),
-            qi_completion_interrupts_enabled: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
-            dropped_security_events: AtomicU64::new(0),
         }
     }
 
@@ -241,7 +207,6 @@ impl IommuController {
             selected_addr_bits: 48,
             selected_levels: 4,
             hardware: PoisonLock::new(HardwareContext::default()),
-            register_lock: PoisonLock::new(()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
             device_pasid_tables: PoisonLock::new(HashMap::new()),
@@ -252,40 +217,21 @@ impl IommuController {
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),
-            controller_idx: AtomicUsize::new(usize::MAX),
             iova_allocator: PoisonLock::new(None),
             ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
-            pid_pool: PoisonLock::new(None),
-            page_request_queue: PoisonLock::new(None),
             fault_log: IrqMutex::new(None),
             device_scopes: scopes,
             include_all,
             pending_waiters: WakerQueue::new(),
             command_queue: spin::Once::new(),
             runtime_services_started: AtomicBool::new(false),
-            fault_interrupts_enabled: AtomicBool::new(false),
-            qi_completion_interrupts_enabled: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: spin::Once::new(),
-            dropped_security_events: AtomicU64::new(0),
         }
-    }
-
-    pub(crate) fn set_controller_idx(&self, idx: usize) {
-        self.controller_idx.store(idx, Ordering::Relaxed);
-    }
-
-    pub(crate) fn controller_idx(&self) -> Option<usize> {
-        let idx = self.controller_idx.load(Ordering::Relaxed);
-        if idx == usize::MAX { None } else { Some(idx) }
     }
 
     pub(crate) fn command_queue_ref(&self) -> Option<&CommandQueue> {
         self.command_queue.get()
-    }
-
-    pub(crate) fn install_command_queue(&self, queue: CommandQueue) {
-        self.command_queue.call_once(|| queue);
     }
 
     pub(crate) fn ensure_command_queue(&self) -> &CommandQueue {
@@ -299,24 +245,6 @@ impl IommuController {
 
     pub(crate) fn mark_runtime_services_started(&self) {
         self.runtime_services_started.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn fault_interrupts_enabled(&self) -> bool {
-        self.fault_interrupts_enabled.load(Ordering::Acquire)
-    }
-
-    pub(crate) fn mark_fault_interrupts_enabled(&self) {
-        self.fault_interrupts_enabled.store(true, Ordering::Release);
-    }
-
-    pub(crate) fn qi_completion_interrupts_enabled(&self) -> bool {
-        self.qi_completion_interrupts_enabled
-            .load(Ordering::Acquire)
-    }
-
-    pub(crate) fn mark_qi_completion_interrupts_enabled(&self) {
-        self.qi_completion_interrupts_enabled
-            .store(true, Ordering::Release);
     }
 
     pub(crate) fn is_scalable_mode_enabled(&self) -> bool {
@@ -806,14 +734,6 @@ impl IommuController {
         if let Some(notifier) = self.security_notifier.get() {
             notifier.notify(event);
         }
-    }
-
-    pub(crate) fn record_dropped_security_event(&self) {
-        self.dropped_security_events.fetch_add(1, Ordering::Relaxed);
-    }
-
-    pub(crate) fn flush_dropped_security_events(&self) -> u64 {
-        self.dropped_security_events.swap(0, Ordering::Relaxed)
     }
 }
 

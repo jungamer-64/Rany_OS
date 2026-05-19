@@ -9,7 +9,7 @@ use crate::sync::PoisonRwLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use super::congestion::{CongestionAlgorithm, CongestionControllerVariant};
+use super::congestion::TcpCongestionController;
 use super::flow_control::FlowController;
 use super::window_scale::WindowScaleOption;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, conn_key_hash, seq_after};
@@ -53,7 +53,6 @@ struct TcpSequenceSpace {
 #[derive(Debug)]
 struct TcpHandshakeData {
     seq: TcpSequenceSpace,
-    algorithm: CongestionAlgorithm,
     snd_wnd: u16,
     max_snd_wnd: u32,
     rcv_wnd: u16,
@@ -65,7 +64,6 @@ struct TcpHandshakeData {
     ts_val: u32,
     ts_ecr: u32,
     nagle_enabled: bool,
-    priority: u8,
 }
 
 #[derive(Debug)]
@@ -76,12 +74,10 @@ struct TcpConnectionData {
     rcv_wnd: u16,
     retransmit_count: u8,
     last_send_tick: u64,
-    congestion: CongestionControllerVariant,
+    congestion: TcpCongestionController,
     window_scale: WindowScaleOption,
     flow_control: FlowController,
     mss: u32,
-    snd_up: u32,
-    snd_urg: bool,
     rcv_up: u32,
     rcv_urg: bool,
     sack_enabled: bool,
@@ -89,7 +85,6 @@ struct TcpConnectionData {
     ts_val: u32,
     ts_ecr: u32,
     nagle_enabled: bool,
-    priority: u8,
     delayed_ack_pending: u8,
     delayed_ack_timer: u64,
 }
@@ -200,32 +195,20 @@ pub struct TcpControlBlockSnapshot {
     pub socket_id: SocketId,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
-    pub scope: InterfaceScope,
-    pub ingress_if_id: Option<NetIfId>,
     pub state: TcpConnectionState,
     pub snd_nxt: u32,
     pub snd_una: u32,
     pub rcv_nxt: u32,
-    pub snd_wnd: u16,
     pub max_snd_wnd: u32,
-    pub rcv_wnd: u16,
     pub scaled_snd_wnd: u32,
     pub effective_send_window: u32,
     pub advertised_recv_window: u16,
     pub effective_recv_window: u32,
     pub mss: u32,
-    pub snd_up: u32,
-    pub snd_urg: bool,
-    pub rcv_up: u32,
-    pub rcv_urg: bool,
     pub sack_enabled: bool,
     pub ts_enabled: bool,
-    pub ts_val: u32,
     pub ts_ecr: u32,
     pub nagle_enabled: bool,
-    pub priority: u8,
-    pub delayed_ack_pending: u8,
-    pub delayed_ack_timer: u64,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -257,14 +240,13 @@ pub(in crate::net::l4::tcp) struct DelayedAckDue {
 }
 
 impl TcpHandshakeData {
-    fn new(isn: u32, algorithm: CongestionAlgorithm, nodelay: bool, priority: u8) -> Self {
-        let mut data = Self {
+    fn new(isn: u32, nodelay: bool) -> Self {
+        Self {
             seq: TcpSequenceSpace {
                 snd_nxt: isn,
                 snd_una: isn,
                 rcv_nxt: 0,
             },
-            algorithm,
             snd_wnd: 65535,
             max_snd_wnd: 65535,
             rcv_wnd: 65535,
@@ -276,15 +258,7 @@ impl TcpHandshakeData {
             ts_val: 0,
             ts_ecr: 0,
             nagle_enabled: !nodelay,
-            priority: priority & 0x3F,
-        };
-        if matches!(
-            algorithm,
-            CongestionAlgorithm::Cubic | CongestionAlgorithm::Bbr
-        ) {
-            data.mss = 536;
         }
-        data
     }
 
     fn apply_options(&mut self, options: TcpHandshakeOptions) {
@@ -310,7 +284,7 @@ impl TcpHandshakeData {
     }
 
     fn into_connection(self) -> TcpConnectionData {
-        let mut congestion = CongestionControllerVariant::from_algorithm(self.algorithm);
+        let mut congestion = TcpCongestionController::new();
         congestion.update_mss(self.mss);
         TcpConnectionData {
             seq: self.seq,
@@ -323,8 +297,6 @@ impl TcpHandshakeData {
             window_scale: self.window_scale,
             flow_control: FlowController::new(),
             mss: self.mss,
-            snd_up: 0,
-            snd_urg: false,
             rcv_up: 0,
             rcv_urg: false,
             sack_enabled: self.sack_enabled,
@@ -332,7 +304,6 @@ impl TcpHandshakeData {
             ts_val: self.ts_val,
             ts_ecr: self.ts_ecr,
             nagle_enabled: self.nagle_enabled,
-            priority: self.priority,
             delayed_ack_pending: 0,
             delayed_ack_timer: 0,
         }
@@ -340,7 +311,7 @@ impl TcpHandshakeData {
 }
 
 impl TcpConnectionData {
-    fn new(isn: u32, algorithm: CongestionAlgorithm, nodelay: bool, priority: u8) -> Self {
+    fn new(isn: u32, nodelay: bool) -> Self {
         Self {
             seq: TcpSequenceSpace {
                 snd_nxt: isn,
@@ -352,12 +323,10 @@ impl TcpConnectionData {
             rcv_wnd: 65535,
             retransmit_count: 0,
             last_send_tick: 0,
-            congestion: CongestionControllerVariant::from_algorithm(algorithm),
+            congestion: TcpCongestionController::new(),
             window_scale: WindowScaleOption::default_enabled(),
             flow_control: FlowController::new(),
             mss: 536,
-            snd_up: 0,
-            snd_urg: false,
             rcv_up: 0,
             rcv_urg: false,
             sack_enabled: false,
@@ -365,7 +334,6 @@ impl TcpConnectionData {
             ts_val: 0,
             ts_ecr: 0,
             nagle_enabled: !nodelay,
-            priority: priority & 0x3F,
             delayed_ack_pending: 0,
             delayed_ack_timer: 0,
         }
@@ -400,108 +368,64 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
             rcv_nxt: 0,
         });
         let (
-            snd_wnd,
             max_snd_wnd,
-            rcv_wnd,
             scaled_snd_wnd,
             effective_send_window,
             advertised_recv_window,
             effective_recv_window,
             mss,
-            snd_up,
-            snd_urg,
-            rcv_up,
-            rcv_urg,
             sack_enabled,
             ts_enabled,
-            ts_val,
             ts_ecr,
             nagle_enabled,
-            priority,
-            delayed_ack_pending,
-            delayed_ack_timer,
         ) = match (value.state.handshake_data(), value.state.connection_data()) {
             (Some(data), _) => {
                 let scaled = data.window_scale.scale_snd_window(data.snd_wnd);
                 (
-                    data.snd_wnd,
                     data.max_snd_wnd,
-                    data.rcv_wnd,
                     scaled,
                     scaled,
                     data.rcv_wnd,
                     data.rcv_wnd as u32,
                     data.mss,
-                    0,
-                    false,
-                    0,
-                    false,
                     data.sack_enabled,
                     data.ts_enabled,
-                    data.ts_val,
                     data.ts_ecr,
                     data.nagle_enabled,
-                    data.priority,
-                    0,
-                    0,
                 )
             }
             (_, Some(data)) => (
-                data.snd_wnd,
                 data.max_snd_wnd,
-                data.rcv_wnd,
                 data.window_scale.scale_snd_window(data.snd_wnd),
                 data.effective_send_window(),
                 data.advertised_recv_window(),
                 data.effective_recv_window(),
                 data.mss,
-                data.snd_up,
-                data.snd_urg,
-                data.rcv_up,
-                data.rcv_urg,
                 data.sack_enabled,
                 data.ts_enabled,
-                data.ts_val,
                 data.ts_ecr,
                 data.nagle_enabled,
-                data.priority,
-                data.delayed_ack_pending,
-                data.delayed_ack_timer,
             ),
-            _ => (
-                0, 0, 0, 0, 0, 0, 0, 536, 0, false, 0, false, false, false, 0, 0, true, 0, 0, 0,
-            ),
+            _ => (0, 0, 0, 0, 0, 536, false, false, 0, true),
         };
         Self {
             socket_id: value.socket_id,
             local: value.local,
             remote: value.remote,
-            scope: value.scope,
-            ingress_if_id: value.ingress_if_id,
             state,
             snd_nxt: seq.snd_nxt,
             snd_una: seq.snd_una,
             rcv_nxt: seq.rcv_nxt,
-            snd_wnd,
             max_snd_wnd,
-            rcv_wnd,
             scaled_snd_wnd,
             effective_send_window,
             advertised_recv_window,
             effective_recv_window,
             mss,
-            snd_up,
-            snd_urg,
-            rcv_up,
-            rcv_urg,
             sack_enabled,
             ts_enabled,
-            ts_val,
             ts_ecr,
             nagle_enabled,
-            priority,
-            delayed_ack_pending,
-            delayed_ack_timer,
         }
     }
 }
@@ -521,10 +445,6 @@ impl TcpControlBlockSnapshot {
 
     pub fn is_outstanding(self) -> bool {
         self.snd_nxt != self.snd_una
-    }
-
-    pub fn is_nodelay_enabled(self) -> bool {
-        !self.nagle_enabled
     }
 
     pub fn should_delay_send(self, data_len: usize) -> bool {
@@ -565,17 +485,14 @@ impl TcpControlBlock {
         local: EndpointAddr,
         remote: EndpointAddr,
         isn: u32,
-        algorithm: Option<CongestionAlgorithm>,
         nodelay: bool,
-        priority: u8,
         scope: InterfaceScope,
         ingress_if_id: Option<NetIfId>,
     ) -> Self {
-        let algorithm = algorithm.unwrap_or(CongestionAlgorithm::NewReno);
         let mut tcb = Self::closed(socket_id, local, remote);
         tcb.scope = scope;
         tcb.ingress_if_id = ingress_if_id;
-        tcb.state = TcpTcbState::SynSent(TcpHandshakeData::new(isn, algorithm, nodelay, priority));
+        tcb.state = TcpTcbState::SynSent(TcpHandshakeData::new(isn, nodelay));
         tcb
     }
 
@@ -619,7 +536,7 @@ impl TcpControlBlock {
         seq_num: u32,
         mss: u32,
     ) -> Self {
-        let mut data = TcpConnectionData::new(ack_num, CongestionAlgorithm::NewReno, false, 0);
+        let mut data = TcpConnectionData::new(ack_num, false);
         data.seq.snd_una = ack_num.wrapping_sub(1);
         data.seq.snd_nxt = ack_num;
         data.seq.rcv_nxt = seq_num;
@@ -636,11 +553,9 @@ impl TcpControlBlock {
         isn: u32,
         seq_num: u32,
         nodelay: bool,
-        priority: u8,
         options: TcpHandshakeOptions,
     ) -> Self {
-        let mut handshake =
-            TcpHandshakeData::new(isn, CongestionAlgorithm::NewReno, nodelay, priority);
+        let mut handshake = TcpHandshakeData::new(isn, nodelay);
         handshake.seq.rcv_nxt = seq_num.wrapping_add(1);
         handshake.apply_options(options);
         handshake.seq.snd_nxt = handshake.seq.snd_nxt.wrapping_add(1);
@@ -689,54 +604,10 @@ impl TcpControlBlock {
         })
     }
 
-    pub fn is_nodelay_enabled(&self) -> bool {
-        if let Some(data) = self.state.connection_data() {
-            !data.nagle_enabled
-        } else if let Some(data) = self.state.handshake_data() {
-            !data.nagle_enabled
-        } else {
-            false
-        }
-    }
-
-    pub fn should_delay_send(&self, data_len: usize) -> bool {
-        let Some(data) = self.state.connection_data() else {
-            return true;
-        };
-        if data_len >= data.mss as usize {
-            return false;
-        }
-        let sws_threshold = data.max_snd_wnd / 2;
-        let scaled_rwnd = data.window_scale.scale_snd_window(data.snd_wnd);
-        if scaled_rwnd >= sws_threshold && scaled_rwnd > 0 && data_len > 0 {
-        } else if self.is_outstanding() {
-            return true;
-        }
-        if !data.nagle_enabled {
-            return false;
-        }
-        if self.is_outstanding() {
-            return true;
-        }
-        false
-    }
-
-    pub fn is_outstanding(&self) -> bool {
-        self.state
-            .sequence()
-            .map_or(false, |seq| seq.snd_nxt != seq.snd_una)
-    }
-
     pub fn effective_send_window(&self) -> u32 {
         self.state
             .connection_data()
             .map_or(0, TcpConnectionData::effective_send_window)
-    }
-
-    pub fn effective_recv_window(&self) -> u32 {
-        self.state
-            .connection_data()
-            .map_or(0, TcpConnectionData::effective_recv_window)
     }
 
     pub fn advertised_recv_window(&self) -> u16 {
@@ -799,14 +670,6 @@ impl TcpControlBlock {
         }
     }
 
-    pub fn on_timeout(&mut self) {
-        if let Some(data) = self.state.connection_data_mut() {
-            let tick = data.last_send_tick;
-            data.congestion.on_timeout(tick);
-            data.retransmit_count = data.retransmit_count.saturating_add(1);
-        }
-    }
-
     pub fn update_peer_window(&mut self, window: u16) {
         if let Some(data) = self.state.connection_data_mut() {
             data.snd_wnd = window;
@@ -824,46 +687,6 @@ impl TcpControlBlock {
         }
     }
 
-    pub fn can_send(&self, bytes: u32) -> bool {
-        self.state.connection_data().map_or(false, |data| {
-            data.effective_send_window() >= bytes && data.flow_control.can_send()
-        })
-    }
-
-    pub fn set_urgent(&mut self, urgent_offset: u32) {
-        if let Some(data) = self.state.connection_data_mut() {
-            data.snd_up = data.seq.snd_nxt.wrapping_add(urgent_offset);
-            data.snd_urg = true;
-        }
-    }
-
-    pub fn clear_send_urgent(&mut self) {
-        if let Some(data) = self.state.connection_data_mut() {
-            data.snd_urg = false;
-        }
-    }
-
-    pub fn should_send_urg(&self) -> bool {
-        self.state
-            .connection_data()
-            .map_or(false, |data| data.snd_urg && data.snd_up > data.seq.snd_una)
-    }
-
-    pub fn urgent_pointer_for_segment(&self, seg_seq: u32) -> u16 {
-        let Some(data) = self.state.connection_data() else {
-            return 0;
-        };
-        if !data.snd_urg {
-            return 0;
-        }
-        let offset = data.snd_up.wrapping_sub(seg_seq);
-        if offset > 0xFFFF {
-            0xFFFF
-        } else {
-            offset as u16
-        }
-    }
-
     pub fn on_urgent_received(&mut self, seg_seq: u32, urgent_ptr: u16) -> bool {
         let Some(data) = self.state.connection_data_mut() else {
             return false;
@@ -876,27 +699,6 @@ impl TcpControlBlock {
             return true;
         }
         false
-    }
-
-    pub fn has_urgent_data(&self) -> bool {
-        self.state.connection_data().map_or(false, |data| {
-            data.rcv_urg && seq_after(data.rcv_up, data.seq.rcv_nxt)
-        })
-    }
-
-    pub fn urgent_data_offset(&self) -> Option<u32> {
-        if !self.has_urgent_data() {
-            return None;
-        }
-        let data = self.state.connection_data()?;
-        let offset = data.rcv_up.wrapping_sub(data.seq.rcv_nxt);
-        if offset > 0 { Some(offset - 1) } else { None }
-    }
-
-    pub fn clear_recv_urgent(&mut self) {
-        if let Some(data) = self.state.connection_data_mut() {
-            data.rcv_urg = false;
-        }
     }
 
     pub fn on_source_quench(&mut self) {
@@ -1792,36 +1594,6 @@ impl TcbTable {
         self.mutate_entry(local, remote, |entry| entry.on_data_consumed(bytes))
     }
 
-    pub(crate) fn set_priority(
-        &self,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        priority: u8,
-    ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
-            if let Some(data) = entry.state.connection_data_mut() {
-                data.priority = priority & 0x3F;
-            } else if let Some(data) = entry.state.handshake_data_mut() {
-                data.priority = priority & 0x3F;
-            }
-        })
-    }
-
-    pub(crate) fn set_nodelay(
-        &self,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        nodelay: bool,
-    ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
-            if let Some(data) = entry.state.connection_data_mut() {
-                data.nagle_enabled = !nodelay;
-            } else if let Some(data) = entry.state.handshake_data_mut() {
-                data.nagle_enabled = !nodelay;
-            }
-        })
-    }
-
     pub(crate) fn mark_payload_sent(
         &self,
         local: EndpointAddr,
@@ -1885,25 +1657,6 @@ impl TcbTable {
         }
     }
 
-    pub fn read_by_socket_id<R, F>(&self, socket_id: SocketId, f: F) -> Option<R>
-    where
-        F: FnOnce(&TcpControlBlock) -> R,
-    {
-        for shard in &self.shards {
-            let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(storage) = guard.as_ref() {
-                if let Some(bucket_entry) = storage
-                    .entries
-                    .iter()
-                    .find(|bucket_entry| bucket_entry.entry.socket_id == socket_id)
-                {
-                    return Some(f(&bucket_entry.entry));
-                }
-            }
-        }
-        None
-    }
-
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {
         for shard in &self.shards {
             let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
@@ -1927,25 +1680,15 @@ impl TcbTable {
             if let Some(storage) = guard.as_ref() {
                 result.extend(storage.entries.iter().map(|bucket_entry| {
                     let entry = &bucket_entry.entry;
-                    let snapshot = TcpControlBlockSnapshot::from(entry);
                     TcpConnectionSnapshot {
                         local: entry.local,
                         remote: entry.remote,
-                        state: snapshot.state,
-                        snd_nxt: snapshot.snd_nxt,
-                        snd_una: snapshot.snd_una,
-                        rcv_nxt: snapshot.rcv_nxt,
-                        snd_wnd: snapshot.snd_wnd,
-                        rcv_wnd: snapshot.rcv_wnd,
+                        state: entry.state.kind(),
                     }
                 }));
             }
         }
         result
-    }
-
-    pub fn connection_count(&self) -> usize {
-        self.total_count.load(Ordering::Relaxed)
     }
 
     pub fn validate_icmp_sequence(
@@ -1996,11 +1739,6 @@ pub struct TcpConnectionSnapshot {
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub state: TcpConnectionState,
-    pub snd_nxt: u32,
-    pub snd_una: u32,
-    pub rcv_nxt: u32,
-    pub snd_wnd: u16,
-    pub rcv_wnd: u16,
 }
 
 #[cfg(test)]

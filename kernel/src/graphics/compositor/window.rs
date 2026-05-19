@@ -36,8 +36,6 @@ pub struct CompositorWindow {
     z_order: ZOrder,
     /// コンテンツバッファ
     pub(crate) content: Image,
-    /// 合成済みバッファ（装飾含む）
-    composed: Image,
     /// ダーティフラグ
     pub(crate) dirty: bool,
     /// 装飾ダーティフラグ
@@ -64,8 +62,6 @@ impl CompositorWindow {
     ) -> Self {
         let client_rect = Self::calculate_client_rect(&rect, &style);
         let content = Image::filled(client_rect.width, client_rect.height, Color::WHITE);
-        let composed = Image::new(rect.width, rect.height);
-
         Self {
             id,
             title: String::from(title),
@@ -79,7 +75,6 @@ impl CompositorWindow {
                 ZOrder::NORMAL
             },
             content,
-            composed,
             dirty: true,
             decoration_dirty: true,
             visible: true,

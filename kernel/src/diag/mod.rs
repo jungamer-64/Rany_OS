@@ -32,12 +32,6 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 // Time Measurement
 // ============================================================================
 
-mod accessors;
-// The accessors module provides helpers that may be consumed by
-// other crates/tests. We don't re-export its contents here to
-// avoid unused-import warnings, though the module is kept for
-// organization and future use.
-
 /// 高精度タイムスタンプ（RDTSCP）
 #[inline(always)]
 pub fn rdtscp() -> (u64, u32) {
@@ -498,16 +492,6 @@ impl TraceBuffer {
     pub fn dropped_count(&self) -> u64 {
         self.dropped.load(Ordering::Relaxed)
     }
-}
-
-/// トレースマクロ
-#[macro_export]
-macro_rules! trace_point {
-    ($id:expr, $cpu:expr, $data:expr) => {
-        $crate::diag::with_trace_buffer(|buf| {
-            buf.record($crate::diag::TracePointId($id), $cpu, $data);
-        });
-    };
 }
 
 // ============================================================================

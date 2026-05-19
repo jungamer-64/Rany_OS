@@ -46,11 +46,6 @@ fn check_arp_flap_log_rate(current_time: u64) -> bool {
     }
 }
 
-/// 抑制されたARPフラップイベント数を取得
-pub fn arp_flap_suppressed_count() -> u64 {
-    ARP_FLAP_SUPPRESSED.load(AtomicOrdering::Relaxed)
-}
-
 impl ArpProcessor {
     /// Create a new ARP processor
     pub fn new(local_mac: MacAddress, local_ip: Ipv4Address) -> Self {

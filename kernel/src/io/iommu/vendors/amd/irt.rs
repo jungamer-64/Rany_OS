@@ -22,14 +22,9 @@ use crate::io::iommu::types::IommuError;
 // ---------------------------------------------------------------------------
 
 const IRTE_REMAP_EN: u64 = 1 << 0; // bit 0: RemapEn
-const IRTE_SUPPRESS: u64 = 1 << 1; // bit 1: Suppress I/O APIC writes
 const IRTE_DM_LOGICAL: u64 = 1 << 2; // bit 2: DM (0=physical, 1=logical)
-const IRTE_INT_TYPE_SHIFT: u32 = 3; // bits [5:3]: IntType (delivery mode)
-const IRTE_INT_TYPE_MASK: u64 = 0x07 << IRTE_INT_TYPE_SHIFT;
 const IRTE_VECTOR_SHIFT: u32 = 8; // bits [15:8]: Vector
-const IRTE_VECTOR_MASK: u64 = 0xFF << IRTE_VECTOR_SHIFT;
 const IRTE_SVT_SHIFT: u32 = 11; // bits [13:11] of HI: Source Validation Type (SVT) (IRTE bits 77:75)
-const IRTE_SQ_SHIFT: u32 = 14; // bits [15:14] of HI: Source Quantifier (SQ) (IRTE bits 79:78)
 const IRTE_DESTINATION_SHIFT: u32 = 32; // bits [63:32]: Destination (APIC ID)
 
 const IRTE_SID_SHIFT: u32 = 16; // bits [31:16] of HI: Source Device ID (SID) (IRTE bits 95:80)
@@ -87,36 +82,6 @@ impl AmdIrte {
 
         Self { lo, hi }
     }
-
-    /// Build an IRTE with specified delivery mode.
-    pub fn with_delivery_mode(
-        vector: u8,
-        dest_id: u32,
-        logical: bool,
-        delivery_mode: u8,
-        sid: Option<u16>,
-    ) -> Self {
-        let mut entry = Self::fixed(vector, dest_id, logical, sid);
-        entry.lo &= !IRTE_INT_TYPE_MASK;
-        entry.lo |= ((delivery_mode as u64) & 0x07) << IRTE_INT_TYPE_SHIFT;
-        entry
-    }
-
-    pub fn is_present(&self) -> bool {
-        (self.lo & IRTE_REMAP_EN) != 0
-    }
-
-    pub fn vector(&self) -> u8 {
-        ((self.lo >> IRTE_VECTOR_SHIFT) & 0xFF) as u8
-    }
-
-    pub fn destination(&self) -> u32 {
-        (self.lo >> IRTE_DESTINATION_SHIFT) as u32
-    }
-
-    pub fn is_logical(&self) -> bool {
-        (self.lo & IRTE_DM_LOGICAL) != 0
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -161,11 +126,6 @@ impl AmdInterruptRemapTable {
     pub fn base_register_value(&self, size_log2: u8) -> u64 {
         let size_field = (size_log2 as u64).saturating_sub(IRT_SIZE_ENCODE_SHIFT as u64) & 0x0F;
         (self.phys_base() & !0x3F) | size_field
-    }
-
-    /// Total entry count.
-    pub fn capacity(&self) -> u32 {
-        self.capacity
     }
 
     /// Allocate a free IRTE index.
@@ -238,11 +198,6 @@ impl AmdInterruptRemapTable {
             }
         }
         Ok(())
-    }
-
-    /// Read the IRTE at the given index.
-    pub fn get_entry(&self, index: u16) -> Option<AmdIrte> {
-        self.table.get(index as usize).copied()
     }
 }
 

@@ -20,6 +20,7 @@ use core::task::Waker;
 const WAKE_QUEUE_CAPACITY: usize = 1024;
 const WAKE_QUEUE_BACKING_CAPACITY: usize = WAKE_QUEUE_CAPACITY + 1;
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WakeQueueStats {
     pub len: usize,
@@ -42,8 +43,6 @@ struct LockFreeWakeQueue {
 }
 
 impl LockFreeWakeQueue {
-    const CAPACITY: usize = WAKE_QUEUE_CAPACITY;
-
     const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
@@ -66,28 +65,33 @@ impl LockFreeWakeQueue {
         }
     }
 
+    #[cfg(test)]
     /// Dequeue a task ID (single consumer)
     fn pop(&self) -> Option<TaskId> {
         self.queue.pop()
     }
 
+    #[cfg(test)]
     /// Get queue length (approximate)
     #[inline]
     fn len(&self) -> usize {
         self.queue.len()
     }
 
+    #[cfg(test)]
     #[inline]
     fn capacity(&self) -> usize {
-        Self::CAPACITY
+        WAKE_QUEUE_CAPACITY
     }
 
+    #[cfg(test)]
     /// Check if queue is empty
     #[inline]
     fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
+    #[cfg(test)]
     fn stats(&self) -> WakeQueueStats {
         WakeQueueStats {
             len: self.len(),
@@ -126,26 +130,31 @@ pub fn create_waker(task_id: TaskId) -> Waker {
     Waker::from(Arc::new(TaskWaker { task_id }))
 }
 
+#[cfg(test)]
 /// Wake queueからタスクIDを取り出す（ロックフリー）
 pub fn pop_woken_task() -> Option<TaskId> {
     WAKE_QUEUE.pop()
 }
 
+#[cfg(test)]
 /// Wake queueの長さを取得
 pub fn wake_queue_len() -> usize {
     WAKE_QUEUE.len()
 }
 
+#[cfg(test)]
 /// Wake queueの論理容量を取得
 pub fn wake_queue_capacity() -> usize {
     WAKE_QUEUE.capacity()
 }
 
+#[cfg(test)]
 /// Wake queueが空かどうか
 pub fn wake_queue_is_empty() -> bool {
     WAKE_QUEUE.is_empty()
 }
 
+#[cfg(test)]
 /// Wake queueの統計を取得
 pub fn wake_queue_stats() -> WakeQueueStats {
     WAKE_QUEUE.stats()

@@ -27,13 +27,4 @@ impl ExperimentalTlsConnection {
         });
         Ok(())
     }
-
-    pub(crate) fn set_server_public_key_from_cert_span(
-        &mut self,
-        cert: crate::net::payload::PayloadSpanRef<'_>,
-    ) -> TlsResult<()> {
-        let cert = crate::net::security::x509::parse_x509_certificate(cert)
-            .ok_or(TlsError::CertificateError)?;
-        self.extract_server_public_key_from_spki(cert.subject_public_key_info)
-    }
 }

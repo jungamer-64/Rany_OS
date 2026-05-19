@@ -199,10 +199,6 @@ impl<const N: usize> RingBuffer<N> {
         self.len() == 0
     }
 
-    pub fn is_full(&self) -> bool {
-        self.len() == N
-    }
-
     pub fn push_byte(&mut self, b: u8) -> bool {
         if N == 0 {
             return false;
@@ -267,22 +263,6 @@ impl<const N: usize> RingBuffer<N> {
         to_write
     }
 
-    pub fn push_front(&mut self, b: u8) -> bool {
-        if N == 0 {
-            return false;
-        }
-        self.sanitize_state();
-        if self.full {
-            return false;
-        }
-        self.head = if self.head == 0 { N - 1 } else { self.head - 1 };
-        self.buf[self.head] = b;
-        if self.head == self.tail {
-            self.full = true;
-        }
-        true
-    }
-
     pub fn pop_one(&mut self) -> Option<u8> {
         if N == 0 {
             return None;
@@ -297,6 +277,7 @@ impl<const N: usize> RingBuffer<N> {
         Some(b)
     }
 
+    #[cfg(feature = "bench")]
     pub fn pop_bulk(&mut self, dst: &mut [u8]) -> usize {
         if N == 0 {
             return 0;
@@ -440,6 +421,7 @@ impl<const N: usize> RingBuffer<N> {
         }
     }
 
+    #[cfg(feature = "bench")]
     pub fn clear(&mut self) {
         self.head = 0;
         self.tail = 0;

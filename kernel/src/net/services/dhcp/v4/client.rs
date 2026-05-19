@@ -20,9 +20,6 @@ impl DhcpClient {
     /// ARP probe waiting time (seconds)
     pub(super) const PROBE_WAIT_SECS: u64 = 1;
 
-    /// Default retry interval used for retransmits (seconds)
-    pub(super) const RETRY_INTERVAL_SECS: u64 = 4;
-
     /// 指定runtimeに属するDHCPクライアントを作成
     pub fn new(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) -> Self {
         Self {

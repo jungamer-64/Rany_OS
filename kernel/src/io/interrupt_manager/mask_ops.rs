@@ -299,10 +299,10 @@ pub fn try_dispatch_direct(vector: u8) -> bool {
     false
 }
 
-/// NVMe ISR Entry Point (Static)
-///
-/// IDTに登録される関数。ダイレクトディスパッチを試み、
-/// 失敗した場合はイベントキューにフォールバックする。
+// NVMe ISR Entry Point (Static)
+//
+// IDTに登録される関数。ダイレクトディスパッチを試み、
+// 失敗した場合はイベントキューにフォールバックする。
 define_interrupt!(
     pub fn nvme_entry_point(_stack_frame: InterruptStackFrame) {
         // 1. ダイレクトディスパッチ（高速パス）

@@ -12,9 +12,6 @@ use super::backoff::Backoff;
 
 /// スロットの状態
 const SLOT_EMPTY: u32 = 0;
-const SLOT_WRITING: u32 = 1;
-const SLOT_READY: u32 = 2;
-const SLOT_READING: u32 = 3;
 
 /// MPMCスロット
 ///

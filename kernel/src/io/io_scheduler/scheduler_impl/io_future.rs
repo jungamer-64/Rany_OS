@@ -36,6 +36,7 @@ pub(crate) struct DeferredIoCompletionQueue {
 }
 
 impl DeferredIoCompletionQueue {
+    #[cfg(test)]
     pub(super) const CAPACITY: usize = IO_COMPLETION_QUEUE_SIZE;
 
     pub(super) const fn new() -> Self {
@@ -59,14 +60,17 @@ impl DeferredIoCompletionQueue {
         })
     }
 
+    #[cfg(test)]
     pub(super) fn len(&self) -> usize {
         self.queue.len()
     }
 
+    #[cfg(test)]
     pub(super) const fn capacity(&self) -> usize {
         Self::CAPACITY
     }
 
+    #[cfg(test)]
     pub(super) fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
@@ -240,16 +244,14 @@ pub(crate) fn io_error_from_u8(code: u8) -> IoError {
 // ============================================================================
 
 pub struct IoInterruptBridge {
-    scheduler: Arc<IoScheduler>,
     pending_requests: PoisonRwLock<BTreeMap<DeviceId, VecDeque<IoRequestId>>>,
     dropped_completions: AtomicU64,
     overflow_flag: AtomicBool,
 }
 
 impl IoInterruptBridge {
-    pub fn new(scheduler: Arc<IoScheduler>) -> Self {
+    pub fn new(_scheduler: Arc<IoScheduler>) -> Self {
         Self {
-            scheduler,
             pending_requests: PoisonRwLock::new(BTreeMap::new()),
             dropped_completions: AtomicU64::new(0),
             overflow_flag: AtomicBool::new(false),

@@ -43,30 +43,6 @@ impl IommuDomain {
         Ok(pages_in_pt)
     }
 
-    /// Unmap a single entry at `iova` and return the unmapped size.
-    pub(super) fn unmap_entry(&self, iova: u64) -> Result<u64, IommuError> {
-        const SIZE_4KB: u64 = 4096;
-
-        if let Some(unmapped) = self.try_unmap_superpage(iova)? {
-            return Ok(unmapped);
-        }
-
-        self.unmap_page(iova)?;
-        Ok(SIZE_4KB)
-    }
-
-    /// Unmap a single page using 4-level page table walking
-    ///
-    /// Also reclaims empty page tables (PT, PD, PDP) to prevent memory accumulation
-    /// from sparse mappings.
-    pub(super) fn unmap_page(&self, iova: u64) -> Result<(), IommuError> {
-        let pages = self.unmap_range_4k(iova, 1)?;
-        if pages != 1 {
-            return Err(IommuError::HardwareError);
-        }
-        Ok(())
-    }
-
     /// Get total mapped size
     pub fn mapped_size(&self) -> u64 {
         self.mapped_size.load(Ordering::Relaxed)
@@ -117,7 +93,7 @@ impl IommuDomain {
     // DMA unmap helpers
     // =========================================================================
 
-    #[cfg(any(test, feature = "qemu-test-export"))]
+    #[cfg(test)]
     pub(crate) fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
         let mapping = self.mapping(iova)?;
         let (start_shard, end_shard) = self.shard_range(iova, mapping.size).ok()?;
@@ -423,14 +399,6 @@ impl IommuDomain {
                     }
                 }
             }
-        }
-    }
-
-    /// Legacy recursive deallocation - kept for reference but not used.
-    unsafe fn deallocate_page_tables_recursive(&mut self) {
-        unsafe {
-            // Delegate to the iterative version
-            self.deallocate_page_tables_iterative();
         }
     }
 }

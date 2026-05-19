@@ -6,12 +6,6 @@
     all(not(any(test, feature = "std", feature = "bench")), target_os = "none"),
     no_main
 )]
-#![feature(abi_x86_interrupt)]
-#![feature(custom_test_frameworks)]
-#![feature(thread_local)]
-#![feature(ptr_metadata)]
-#![feature(alloc_error_handler)]
-
 // Provide fallback TLS symbols for binary builds on Windows hosts
 // when the kernel linker script is not applied (test runner builds).
 #[cfg(all(target_os = "windows", not(feature = "bench")))]

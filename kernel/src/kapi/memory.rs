@@ -37,18 +37,3 @@ pub(crate) fn release_dma_buffer_checked(dma_handle_id: u64) -> Result<(), KapiE
         }
     }
 }
-
-pub(crate) fn cleanup_dma_for_owner(
-    owner: crate::domain::DomainId,
-) -> crate::resource_registry::DmaCleanupStats {
-    let stats = crate::resource_registry::dma::cleanup_owner(owner);
-    if stats.handles > 0 {
-        log::warn!(
-            "[KAPI][DMA] Reclaimed {} leaked DMA handles ({} bytes) for owner {} during teardown",
-            stats.handles,
-            stats.bytes,
-            owner
-        );
-    }
-    stats
-}

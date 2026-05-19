@@ -3,8 +3,6 @@
 //! UEFI Configuration Tableから SMBIOS 3.x/2.x テーブルを検出し、
 //! システムハードウェア情報を取得する。
 
-#[cfg(feature = "serial_log")]
-use crate::serial_println;
 use core::ptr;
 use uefi::guid;
 
@@ -79,10 +77,6 @@ pub mod smbios_flags {
     pub const BIOS_INFO_VALID: u16 = 1 << 2;
     /// システム情報が取得済み
     pub const SYSTEM_INFO_VALID: u16 = 1 << 3;
-    /// プロセッサ情報が取得済み
-    pub const PROCESSOR_INFO_VALID: u16 = 1 << 4;
-    /// メモリ情報が取得済み
-    pub const MEMORY_INFO_VALID: u16 = 1 << 5;
 }
 
 /// SMBIOS 3.x Entry Point 構造体

@@ -321,7 +321,7 @@ pub(crate) fn build_unsigned_driver_pack(
     )
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub(crate) fn build_unsigned_driver_pack_with_versions(
     name: &str,
     elf: &[u8],

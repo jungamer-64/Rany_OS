@@ -36,23 +36,13 @@ fn wall_clock_now_ns() -> u64 {
 pub struct MemoryFs {
     /// ルートinode
     root: Arc<MemoryInode>,
-    /// 次のinode番号
-    next_ino: AtomicU64,
 }
 
 impl MemoryFs {
     /// 新しいMemoryFsを作成
     pub fn new() -> Arc<Self> {
-        let root = Arc::new(MemoryInode::new_dir(1, "/", FileMode::DEFAULT_DIR));
-        Arc::new(Self {
-            root,
-            next_ino: AtomicU64::new(2),
-        })
-    }
-
-    /// 次のinode番号を取得
-    fn alloc_ino(&self) -> u64 {
-        self.next_ino.fetch_add(1, Ordering::SeqCst)
+        let root = Arc::new(MemoryInode::new_dir(1, FileMode::DEFAULT_DIR));
+        Arc::new(Self { root })
     }
 
     /// ルートから検索してディレクトリを作成（パス全体）
@@ -80,11 +70,8 @@ impl MemoryFs {
 
 impl Default for MemoryFs {
     fn default() -> Self {
-        let root = Arc::new(MemoryInode::new_dir(1, "/", FileMode::DEFAULT_DIR));
-        Self {
-            root,
-            next_ino: AtomicU64::new(2),
-        }
+        let root = Arc::new(MemoryInode::new_dir(1, FileMode::DEFAULT_DIR));
+        Self { root }
     }
 }
 
@@ -140,8 +127,6 @@ enum InodeKind {
 pub struct MemoryInode {
     /// inode番号
     pub(crate) ino: u64,
-    /// ファイル名（デバッグ用）
-    name: String,
     /// パーミッション
     mode: RwLock<FileMode>,
     /// タイムスタンプ（ナノ秒）
@@ -160,7 +145,7 @@ pub struct MemoryInode {
 
 impl MemoryInode {
     /// 新しいディレクトリを作成
-    pub fn new_dir(ino: u64, name: &str, mode: FileMode) -> Self {
+    pub fn new_dir(ino: u64, mode: FileMode) -> Self {
         let now = wall_clock_now_ns(); // nanoseconds
         Self {
             ino,
@@ -171,13 +156,12 @@ impl MemoryInode {
             atime: AtomicU64::new(now),
             mtime: AtomicU64::new(now),
             ctime: AtomicU64::new(now),
-            name: name.to_string(),
             next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
 
     /// 新しいファイルを作成
-    pub fn new_file(ino: u64, name: &str, mode: FileMode) -> Self {
+    pub fn new_file(ino: u64, mode: FileMode) -> Self {
         let now = wall_clock_now_ns();
         Self {
             ino,
@@ -188,13 +172,12 @@ impl MemoryInode {
             atime: AtomicU64::new(now),
             mtime: AtomicU64::new(now),
             ctime: AtomicU64::new(now),
-            name: name.to_string(),
             next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
 
     /// 新しいシンボリックリンクを作成
-    pub fn new_symlink(ino: u64, name: &str, target: &str) -> Self {
+    pub fn new_symlink(ino: u64, target: &str) -> Self {
         let now = wall_clock_now_ns();
         Self {
             ino,
@@ -205,7 +188,6 @@ impl MemoryInode {
             atime: AtomicU64::new(now),
             mtime: AtomicU64::new(now),
             ctime: AtomicU64::new(now),
-            name: name.to_string(),
             next_child_ino: AtomicU64::new(ino.wrapping_shl(20)),
         }
     }
@@ -355,7 +337,7 @@ impl Inode for MemoryInode {
                     return Err(FsError::AlreadyExists);
                 }
                 let ino = self.alloc_child_ino();
-                let inode = Arc::new(MemoryInode::new_file(ino, name, mode));
+                let inode = Arc::new(MemoryInode::new_file(ino, mode));
                 children.insert(name.to_string(), inode.clone());
 
                 // Update timestamps
@@ -377,7 +359,7 @@ impl Inode for MemoryInode {
                     return Err(FsError::AlreadyExists);
                 }
                 let ino = self.alloc_child_ino();
-                let inode = Arc::new(MemoryInode::new_dir(ino, name, mode));
+                let inode = Arc::new(MemoryInode::new_dir(ino, mode));
                 children.insert(name.to_string(), inode.clone());
 
                 // 親ディレクトリのnlinkを増加（子ディレクトリからの'..'リンク）
@@ -554,7 +536,7 @@ impl Inode for MemoryInode {
                     return Err(FsError::AlreadyExists);
                 }
                 let ino = self.alloc_child_ino();
-                let inode = Arc::new(MemoryInode::new_symlink(ino, name, target));
+                let inode = Arc::new(MemoryInode::new_symlink(ino, target));
                 children.insert(name.to_string(), inode.clone());
                 Ok(inode)
             }

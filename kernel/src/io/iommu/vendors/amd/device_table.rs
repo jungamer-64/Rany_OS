@@ -65,7 +65,6 @@ impl Default for AmdDeviceTableEntry {
 
 #[derive(Debug)]
 pub(crate) struct AmdDeviceTable {
-    pub(super) segment: u16,
     phys_base: u64,
     virt_base: NonNull<AmdDeviceTableEntry>,
     size_bytes: u64,
@@ -80,7 +79,7 @@ unsafe impl Send for AmdDeviceTable {}
 unsafe impl Sync for AmdDeviceTable {}
 
 impl AmdDeviceTable {
-    pub(super) fn new(segment: u16, entry_count: usize) -> Result<Self, IommuError> {
+    pub(super) fn new(_segment: u16, entry_count: usize) -> Result<Self, IommuError> {
         if entry_count == 0 {
             return Err(IommuError::InvalidAddress);
         }
@@ -115,7 +114,6 @@ impl AmdDeviceTable {
         );
 
         Ok(Self {
-            segment,
             phys_base: phys_base.as_u64(),
             virt_base: entry_ptr,
             size_bytes,

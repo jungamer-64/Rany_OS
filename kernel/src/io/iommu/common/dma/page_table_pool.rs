@@ -209,12 +209,6 @@ pub fn get_ref_count(phys: u64) -> u16 {
     registry.get(&phys).map(|e| e.ref_count).unwrap_or(0)
 }
 
-/// Check if a physical address is a registered IOMMU page table.
-pub fn is_page_table(phys: u64) -> bool {
-    let registry = page_table_registry().lock();
-    registry.contains_key(&phys)
-}
-
 /// Reconstruct a PooledPt from its physical address using the registry.
 pub fn reconstruct_pooled_pt(phys: u64) -> Option<PooledPt> {
     let registry = page_table_registry().lock();

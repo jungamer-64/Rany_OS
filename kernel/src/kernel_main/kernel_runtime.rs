@@ -110,7 +110,7 @@ fn async_boot_stage_target_cpu_with_candidates(
         .unwrap_or(0)
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub(crate) fn async_boot_stage_runtime_snapshot()
 -> crate::async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
     crate::async_boot_runtime_snapshot::async_boot_stage_runtime_snapshot()
@@ -459,10 +459,6 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     info!(target: "init", "Initializing symbol table");
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
-
-    info!(target: "init", "Initializing test framework");
-    test::init();
-    info!(target: "init", "Test framework initialized");
 
     coordinator.set_integration_ready(retry_system_integration_if_needed(
         coordinator.integration_ready(),

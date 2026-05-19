@@ -33,6 +33,7 @@ impl ConsoleInputHub {
         }
     }
 
+    #[cfg(any(test, feature = "qemu-test-export"))]
     fn reset(&mut self) {
         self.tty_head = 0;
         self.tty_len = 0;

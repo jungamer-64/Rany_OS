@@ -22,17 +22,15 @@ static AHCI_PENDING: PoisonLock<BTreeMap<u64, (u8, SlotNumber, usize)>> =
 
 pub struct AhciDriverWrapper {
     base_addr: u64,
-    irq: u8,
     pci_locator: PackedPciLocation,
     controller: Option<Arc<PoisonLock<AhciController>>>,
     block_handles: alloc::vec::Vec<u64>,
 }
 
 impl AhciDriverWrapper {
-    pub fn new(base_addr: u64, irq: u8, pci_locator: PackedPciLocation) -> Self {
+    pub fn new(base_addr: u64, _irq: u8, pci_locator: PackedPciLocation) -> Self {
         Self {
             base_addr,
-            irq,
             pci_locator,
             controller: None,
             block_handles: alloc::vec::Vec::new(),

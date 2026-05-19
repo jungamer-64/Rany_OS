@@ -83,13 +83,6 @@ impl DomainManager for IommuController {
         Ok(())
     }
 
-    fn get_domain_numa(&self, domain_id: u16) -> Option<usize> {
-        match self.domains.lock() {
-            Ok(domains) => domains.get(&domain_id).and_then(|d| d.numa_node()),
-            Err(_) => None,
-        }
-    }
-
     fn domain(&self, id: u16) -> Option<Arc<IommuDomain>> {
         match self.domains.lock() {
             Ok(domains) => domains.get(&id).cloned(),
@@ -226,80 +219,6 @@ impl DomainManager for IommuController {
             .map_err(|_| IommuError::HardwareError)?
             .get(&device)
             .copied())
-    }
-
-    fn map_dma(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError> {
-        crate::io::iommu::runtime::security::validate_dma_region(phys, size)?;
-        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
-        domain_arc.map(iova, phys, size, read, write)?;
-        self.invalidate_iotlb(domain_id, false)
-    }
-
-    fn release_dma_mapping(&self, device: &DeviceId, iova: u64) -> Result<DmaMapping, IommuError> {
-        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
-        let pts_before = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let mapping = domain_arc.unmap(iova)?;
-        let pts_after = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        if pt_removed {
-            // SECURITY: If a page table was removed, we MUST perform a domain-wide
-            // invalidation to clear cached paging-structure entries.
-            self.invalidate_iotlb(domain_id, true)?;
-            let _ = domain_arc.flush(self, self);
-        } else {
-            self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-        }
-        Ok(mapping)
-    }
-
-    async fn release_dma_mapping_async(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-    ) -> Result<DmaMapping, IommuError> {
-        let (domain_id, domain_arc) = self.resolve_device_domain(device)?;
-        let pts_before = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let mapping = domain_arc.unmap(iova)?;
-        let pts_after = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        if pt_removed {
-            self.invalidate_iotlb(domain_id, true)?;
-            let _ = domain_arc.flush(self, self);
-        } else {
-            if self.is_queued_invalidation_enabled() {
-                self.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-                self.qi_wait_async().await?;
-            } else {
-                unsafe { self.invalidate_iotlb_direct(domain_id) };
-            }
-        }
-        Ok(mapping)
     }
 
     fn handle_command_queue_entry(

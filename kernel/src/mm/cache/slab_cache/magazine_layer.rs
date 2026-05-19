@@ -1,7 +1,6 @@
 use super::*;
 
 /// Slab統計情報
-mod per_core;
 #[derive(Debug, Clone)]
 pub struct SlabStats {
     pub object_size: usize,
@@ -69,17 +68,14 @@ pub struct Magazine<const SIZE: usize = MAGAZINE_SIZE> {
     objects: [Option<NonNull<u8>>; SIZE],
     /// 現在のオブジェクト数（スタックトップ）
     count: usize,
-    /// オブジェクトサイズ（検証用）
-    object_size: usize,
 }
 
 impl<const SIZE: usize> Magazine<SIZE> {
     /// 空のマガジンを作成
-    pub const fn new(object_size: usize) -> Self {
+    pub const fn new() -> Self {
         Self {
             objects: [None; SIZE],
             count: 0,
-            object_size,
         }
     }
 
@@ -143,8 +139,6 @@ pub struct MagazineDepot<const SIZE: usize = MAGAZINE_SIZE> {
     empty_magazines: [Option<Magazine<SIZE>>; MAX_DEPOT_MAGAZINES],
     /// 空マガジン数
     empty_count: usize,
-    /// オブジェクトサイズ
-    object_size: usize,
     /// 統計: Depot交換回数
     exchange_count: usize,
 }
@@ -155,13 +149,12 @@ impl<const SIZE: usize> MagazineDepot<SIZE> {
     /// # Note
     /// ジェネリクス制約により、const fnでの配列初期化が難しいため、
     /// デフォルトサイズ（MAGAZINE_SIZE）のみサポート
-    pub fn new(object_size: usize) -> Self {
+    pub fn new() -> Self {
         Self {
             full_magazines: core::array::from_fn(|_| None),
             full_count: 0,
             empty_magazines: core::array::from_fn(|_| None),
             empty_count: 0,
-            object_size,
             exchange_count: 0,
         }
     }
@@ -202,7 +195,7 @@ impl<const SIZE: usize> MagazineDepot<SIZE> {
 
     /// 新しい空マガジンを作成
     pub fn create_empty_magazine(&self) -> Magazine<SIZE> {
-        Magazine::new(self.object_size)
+        Magazine::new()
     }
 
     /// デポの統計情報
@@ -228,8 +221,6 @@ pub struct PerCpuMagazineCache<const SIZE: usize = MAGAZINE_SIZE> {
     previous: Magazine<SIZE>,
     /// CPU ID
     cpu_id: usize,
-    /// オブジェクトサイズ
-    object_size: usize,
     /// 統計: マガジンからの割り当て回数
     magazine_allocs: usize,
     /// 統計: マガジンへの解放回数
@@ -242,12 +233,11 @@ pub struct PerCpuMagazineCache<const SIZE: usize = MAGAZINE_SIZE> {
 
 impl<const SIZE: usize> PerCpuMagazineCache<SIZE> {
     /// 新しいPer-CPUマガジンキャッシュを作成
-    pub const fn new(cpu_id: usize, object_size: usize) -> Self {
+    pub const fn new(cpu_id: usize) -> Self {
         Self {
-            loaded: Magazine::new(object_size),
-            previous: Magazine::new(object_size),
+            loaded: Magazine::new(),
+            previous: Magazine::new(),
             cpu_id,
-            object_size,
             magazine_allocs: 0,
             magazine_deallocs: 0,
             swaps: 0,
@@ -305,7 +295,7 @@ impl<const SIZE: usize> PerCpuMagazineCache<SIZE> {
     pub fn refill_from_depot(&mut self, depot: &mut MagazineDepot<SIZE>) -> bool {
         // loadedが空の場合、Depotから満杯マガジンを取得
         if self.loaded.is_empty() {
-            let empty_mag = core::mem::replace(&mut self.loaded, Magazine::new(self.object_size));
+            let empty_mag = core::mem::replace(&mut self.loaded, Magazine::new());
             if let Some(full_mag) = depot.exchange_for_full(empty_mag) {
                 self.loaded = full_mag;
                 return true;
@@ -318,7 +308,7 @@ impl<const SIZE: usize> PerCpuMagazineCache<SIZE> {
     pub fn flush_to_depot(&mut self, depot: &mut MagazineDepot<SIZE>) -> bool {
         // loadedが満杯の場合、Depotに返却して空マガジンを取得
         if self.loaded.is_full() {
-            let full_mag = core::mem::replace(&mut self.loaded, Magazine::new(self.object_size));
+            let full_mag = core::mem::replace(&mut self.loaded, Magazine::new());
             if let Some(empty_mag) = depot.exchange_for_empty(full_mag) {
                 self.loaded = empty_mag;
                 return true;
@@ -391,8 +381,6 @@ pub struct MagazineSlabCache<const MAG_SIZE: usize = MAGAZINE_SIZE> {
     per_cpu_mags: [Option<PerCpuMagazineCache<MAG_SIZE>>; MAX_CPUS],
     /// グローバルマガジンデポ（要Mutex保護）
     depot: MagazineDepot<MAG_SIZE>,
-    /// オブジェクトサイズ
-    object_size: usize,
     /// 統計: Slabフォールバック割り当て回数
     slab_alloc_fallbacks: usize,
     /// 統計: Slabフォールバック解放回数
@@ -405,8 +393,7 @@ impl<const MAG_SIZE: usize> MagazineSlabCache<MAG_SIZE> {
         Self {
             slab: SlabCache::new(object_size),
             per_cpu_mags: core::array::from_fn(|_| None),
-            depot: MagazineDepot::new(object_size),
-            object_size,
+            depot: MagazineDepot::new(),
             slab_alloc_fallbacks: 0,
             slab_dealloc_fallbacks: 0,
         }
@@ -415,7 +402,7 @@ impl<const MAG_SIZE: usize> MagazineSlabCache<MAG_SIZE> {
     /// 指定CPUのマガジンキャッシュを初期化
     pub fn init_cpu(&mut self, cpu_id: usize) {
         if cpu_id < MAX_CPUS && self.per_cpu_mags[cpu_id].is_none() {
-            self.per_cpu_mags[cpu_id] = Some(PerCpuMagazineCache::new(cpu_id, self.object_size));
+            self.per_cpu_mags[cpu_id] = Some(PerCpuMagazineCache::new(cpu_id));
         }
     }
 
@@ -734,48 +721,6 @@ pub fn slab_remote_free_push(owner_cpu: usize, ptr: u64, size_class: u8) -> bool
         .remote_pushes
         .fetch_add(1, Ordering::Relaxed);
     true
-}
-
-/// 自分のリモートフリーリングをドレイン（オーナー CPU のみ）
-///
-/// allocate 時の最初に呼び出し、他 CPU から送られた解放要求を一括処理。
-/// これによりバッチ効率が向上し、ロック競合が完全に排除される。
-///
-/// # Arguments
-/// * `cpu_id` - 現在の CPU ID
-/// * `cache` - このCPUの PerCoreCache
-pub(crate) fn drain_remote_frees(cpu_id: usize, cache: &mut PerCoreCache) {
-    if cpu_id >= MAX_CPUS {
-        return;
-    }
-
-    let ring = &SLAB_REMOTE_FREE_RINGS[cpu_id];
-    let mut drained = 0u64;
-
-    // リングから全エントリをドレイン（最大256エントリ）
-    ring.drain_with(SLAB_REMOTE_FREE_CAPACITY, |entry| {
-        let ptr_addr = entry.addr;
-        let size_class = entry.size_class as usize;
-
-        if size_class < SLAB_SIZES.len() {
-            if let Some(ptr) = NonNull::new(ptr_addr as *mut u8) {
-                // SAFETY: ポインタはこのCPUのSlabから割り当てられたもの
-                unsafe {
-                    cache.caches[size_class].deallocate(ptr);
-                }
-                drained += 1;
-            }
-        }
-    });
-
-    if drained > 0 {
-        REMOTE_FREE_STATS
-            .drain_count
-            .fetch_add(1, Ordering::Relaxed);
-        REMOTE_FREE_STATS
-            .drained_entries
-            .fetch_add(drained, Ordering::Relaxed);
-    }
 }
 
 /// Per-Coreキャッシュシステムを初期化

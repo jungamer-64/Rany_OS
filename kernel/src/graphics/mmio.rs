@@ -56,12 +56,6 @@ pub(crate) fn bench_debug_print_allowed() -> bool {
     }
 }
 
-#[cfg(not(all(feature = "std", feature = "bench")))]
-/// Stub for non-bench builds: never allow per-write bench debug prints.
-pub(crate) fn bench_debug_print_allowed() -> bool {
-    false
-}
-
 impl<'a> MmioWriter<'a> {
     /// Create a new MmioWriter from a raw pointer and length.
     ///

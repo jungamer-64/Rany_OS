@@ -17,18 +17,7 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType};
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 #[cfg(not(test))]
-use crate::sync::PoisonLock;
-
-#[cfg(not(test))]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
-
-#[cfg(not(test))]
-static AHCI_PASSTHROUGH_DOMAIN: PoisonLock<Option<u16>> = PoisonLock::new(None);
-
-#[cfg(not(test))]
-fn is_ahci_legacy(device: &crate::io::pci::PciDeviceInfo) -> bool {
-    device.class_code.class == 0x01 && device.class_code.subclass == 0x06
-}
 
 // ============================================================================
 // 【設計書 7.2】PCIデバイスへのIOMMU自動設定

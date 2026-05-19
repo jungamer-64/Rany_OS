@@ -6,22 +6,19 @@
 //! deferred RX、batch/NAT、PacketRef の stack 受け渡しを担当します。
 
 use crate::net::datapath::optimization::{BatchConfig, BatchProcessor};
-use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::obs::{
     observability_in,
     trace::{NetEventKind, NetLayer},
 };
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::device;
-use crate::net::runtime::manager::{self, NetIfId};
+use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::stack;
 
-mod nat;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use nat::*;
 
 extern crate alloc;
 
@@ -54,8 +51,6 @@ pub(crate) struct NetBridgeRuntimeState {
     primary_if: PoisonRwLock<Option<NetIfId>>,
     rx_deferred_mode: AtomicBool,
     deferred_rx_packets: PoisonLock<Vec<DeferredRxPacket>>,
-    forward_events: PoisonRwLock<Vec<(NetIfId, Ipv4Address)>>,
-    nat: NatRuntimeState,
 }
 
 impl NetBridgeRuntimeState {
@@ -75,8 +70,6 @@ impl NetBridgeRuntimeState {
             primary_if: PoisonRwLock::new(None),
             rx_deferred_mode: AtomicBool::new(false),
             deferred_rx_packets: PoisonLock::new(Vec::new()),
-            forward_events: PoisonRwLock::new(Vec::new()),
-            nat: NatRuntimeState::new(),
         }
     }
 }
@@ -132,19 +125,6 @@ pub fn drain_deferred_rx_packets_in(runtime: NetRuntimeHandle) {
         }
     }
 }
-fn is_local_ipv4_in(runtime: NetRuntimeHandle, addr: Ipv4Address) -> bool {
-    if let Ok(ifaces) = manager::list_interfaces_in(runtime) {
-        for iface in ifaces {
-            if let Some(cfg) = iface.config {
-                if cfg.ipv4.address == addr {
-                    return true;
-                }
-            }
-        }
-    }
-    false
-}
-
 fn ensure_stack_glue_if_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     let mut stats = runtime_state_for(runtime)
         .if_stats
@@ -317,17 +297,13 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     }
 
     ensure_stack_glue_if_state_in(runtime, if_id);
-    let rx_count = state
-        .rx_packets
-        .fetch_add(1, Ordering::Relaxed)
-        .saturating_add(1);
+    state.rx_packets.fetch_add(1, Ordering::Relaxed);
     let observability = observability_in(runtime);
     observability.counters().record_rx(payload_len);
     observability
         .trace()
         .push(NetLayer::Driver, NetEventKind::Rx, "rx packet");
     record_stack_glue_if_rx_in(runtime, if_id);
-    nat_maybe_gc_in(runtime, rx_count);
 
     let Some(frame_len) = header_size.checked_add(payload_len) else {
         return;

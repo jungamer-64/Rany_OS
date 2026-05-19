@@ -237,16 +237,6 @@ pub trait IommuInvalidator: Send + Sync {
     }
 }
 
-/// No-op invalidator for contexts where IOTLB invalidation is unnecessary.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct NoopInvalidator;
-
-impl IommuInvalidator for NoopInvalidator {
-    fn process_invalidations(&self, _requests: &[InvalidateRequest]) -> Result<(), IommuError> {
-        Ok(())
-    }
-}
-
 /// IOMMU Domain (address space for devices)
 ///
 /// Each domain owns sharded locks for mapping metadata/page tables, allowing
@@ -572,25 +562,6 @@ impl DmaResourceRegistry {
         }
 
         Ok(None)
-    }
-
-    /// Mark an entry as unmapped (lazy tombstone for batch cleanup)
-    pub fn mark_unmapped(&self, iova: u64) -> Result<bool, IommuError> {
-        let bucket = Self::hash_iova(iova);
-        let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
-
-        let mut curr_idx = state.hash_buckets[bucket];
-        // LOOP_PROOF: mode=condition; reason=Mark loop follows hash next links and exits when target is found or sentinel end is reached.;
-        while curr_idx != REGISTRY_INVALID_INDEX {
-            let slot = state.get_slot_mut(curr_idx);
-            if slot.in_use && slot.entry.iova == iova {
-                slot.entry.unmapped = true;
-                return Ok(true);
-            }
-            curr_idx = slot.next;
-        }
-
-        Ok(false)
     }
 
     /// Get count of active (non-unmapped) entries

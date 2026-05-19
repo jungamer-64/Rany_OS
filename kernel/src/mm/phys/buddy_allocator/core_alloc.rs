@@ -91,8 +91,6 @@ pub struct BuddyFrameAllocator {
     zeroed_allocs: u64,
     /// 統計: スクラブ（バックグラウンドゼロクリア）回数
     scrub_count: u64,
-    /// Coalesceポリシー（Hysteresisベース）
-    coalesce_policy: CoalescePolicy,
 }
 
 impl BuddyFrameAllocator {
@@ -120,7 +118,6 @@ impl BuddyFrameAllocator {
             zeroed_counts: [0usize; MAX_ORDER + 1],
             zeroed_allocs: 0,
             scrub_count: 0,
-            coalesce_policy: CoalescePolicy::new(),
         }
     }
 

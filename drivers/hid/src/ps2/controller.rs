@@ -189,47 +189,6 @@ impl Ps2Controller {
         }
     }
 
-    /// デバイス識別
-    fn identify_device(&self, port2: bool) -> Option<DeviceType> {
-        let send = if port2 {
-            Self::send_port2
-        } else {
-            Self::send_port1
-        };
-
-        // IDENTIFYコマンド送信
-        if send(self, kbd_commands::IDENTIFY) != Some(0xFA) {
-            return None;
-        }
-
-        // 最初のバイトを読み取り
-        if !self.wait_output() {
-            return None;
-        }
-        let byte1 = self.read_data();
-
-        // デバイスタイプを判定
-        match byte1 {
-            0x00 => Some(DeviceType::StandardMouse),
-            0x03 => Some(DeviceType::ScrollMouse),
-            0x04 => Some(DeviceType::FiveButtonMouse),
-            0xAB => {
-                // キーボード - 2バイト目を読み取り
-                if self.wait_output() {
-                    let byte2 = self.read_data();
-                    match byte2 {
-                        0x41 | 0xC1 => Some(DeviceType::MfKeyboard),
-                        0x83 => Some(DeviceType::MfKeyboard),
-                        _ => Some(DeviceType::AtKeyboard),
-                    }
-                } else {
-                    Some(DeviceType::AtKeyboard)
-                }
-            }
-            _ => Some(DeviceType::Unknown),
-        }
-    }
-
     /// キーボードを初期化
     fn init_keyboard(&self) -> bool {
         // リセット

@@ -67,7 +67,6 @@ pub use gimli_unwinder::{
 // pub use catch_panic::{...} は後方で定義されているため、ここでは宣言のみ
 
 use core::fmt;
-use core::ptr;
 
 /// アンワインドエラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

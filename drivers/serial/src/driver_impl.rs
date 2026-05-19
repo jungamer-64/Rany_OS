@@ -86,9 +86,6 @@ pub async fn read_line() -> String {
 
 pub(crate) static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
 
-/// COM1 IRQ number
-pub(crate) const COM1_IRQ: u8 = 4;
-
 // Removed: deprecated convenience `init()` function. Prefer registering the driver:
 // driver_registry::register_driver(Box::new(SerialDriver::new()));
 // DriverRegistry will perform initialization at the appropriate time and context.

@@ -715,8 +715,6 @@ mod packet_ref_tests {
 
     struct SharedDmaBuffer {
         dma: Box<crate::dma::DmaSlice<crate::dma::CpuOwned>>,
-        ptr: *mut u8,
-        len: usize,
         phys_addr: u64,
         device_addr: u64,
     }
@@ -737,12 +735,12 @@ mod packet_ref_tests {
 
     unsafe fn dma_data_ptr(storage: &PacketRefStorage) -> *const u8 {
         let state = unsafe { dma_state_ref(storage) };
-        state.backing.ptr.wrapping_add(state.offset)
+        state.backing.dma.as_ptr().wrapping_add(state.offset)
     }
 
     unsafe fn dma_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
         let state = unsafe { dma_state_mut(storage) };
-        state.backing.ptr.wrapping_add(state.offset)
+        state.backing.dma.as_ptr().wrapping_add(state.offset)
     }
 
     unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
@@ -751,7 +749,7 @@ mod packet_ref_tests {
 
     unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
         let state = unsafe { dma_state_mut(storage) };
-        if len > state.backing.len.saturating_sub(state.offset) {
+        if len > state.backing.dma.size().saturating_sub(state.offset) {
             return false;
         }
         state.len = len;
@@ -759,7 +757,7 @@ mod packet_ref_tests {
     }
 
     unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-        unsafe { dma_state_ref(storage) }.backing.len
+        unsafe { dma_state_ref(storage) }.backing.dma.size()
     }
 
     unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
@@ -795,7 +793,7 @@ mod packet_ref_tests {
             return false;
         };
         let new_offset = state.offset - size;
-        if new_len > state.backing.len.saturating_sub(new_offset) {
+        if new_len > state.backing.dma.size().saturating_sub(new_offset) {
             return false;
         }
         state.offset = new_offset;
@@ -845,8 +843,6 @@ mod packet_ref_tests {
         };
         let state = DmaPacketState {
             backing: Rc::new(SharedDmaBuffer {
-                ptr,
-                len: 64,
                 phys_addr: 0x3000,
                 device_addr: 0x4000,
                 dma: Box::new(dma),

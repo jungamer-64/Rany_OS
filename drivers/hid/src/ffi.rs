@@ -68,8 +68,3 @@ fn hid_driver_vtable() -> *const DriverVTable {
 pub extern "C" fn _exorust_driver_entry() -> *const DriverVTable {
     hid_driver_vtable()
 }
-
-#[cfg(not(feature = "export_driver_entry"))]
-pub(crate) fn exorust_driver_entry_unique() -> *const DriverVTable {
-    hid_driver_vtable()
-}

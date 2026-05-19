@@ -658,7 +658,7 @@ fn case_time_service_wall_clock_consumers() -> Result<(), BootCaseError> {
         }
 
         let before_ms = crate::drivers::time::unix_timestamp_ms();
-        let inode = MemoryInode::new_file(1, "time-service-check", FileMode::DEFAULT_FILE);
+        let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
         let attrs = inode
             .getattr()
             .map_err(|_| BootCaseError::failed("memfs getattr failed after wall-clock update"))?;

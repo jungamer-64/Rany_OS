@@ -7,9 +7,8 @@ use alloc::collections::VecDeque;
 use core::ops::{Deref, DerefMut};
 
 use crate::net::l4::tcp::TcpStats;
-use crate::net::l4::tcp::congestion::CongestionAlgorithm;
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
-use crate::net::payload::{PayloadSpanRef, append_payload};
+use crate::net::payload::append_payload;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -52,7 +51,6 @@ pub(crate) struct SocketCommon {
 }
 
 impl SocketCommon {
-    pub const DEFAULT_BUFFER_SIZE: usize = 8192;
     pub const MAX_BUFFER_SIZE: usize = 65536;
 
     fn new() -> Self {
@@ -83,7 +81,6 @@ pub(crate) struct TcpSocketEntry {
     pub send_payload_bytes: usize,
     pub nodelay: bool,
     pub urgent_pending: bool,
-    pub congestion_algorithm: Option<CongestionAlgorithm>,
     pub stats: TcpStats,
 }
 
@@ -108,10 +105,6 @@ impl QueuedPayload {
         self.remaining_len() == 0
     }
 
-    fn first_byte(&self) -> Option<u8> {
-        PayloadSpanRef::from_range(&self.payload, self.consumed, self.remaining_len())?.byte_at(0)
-    }
-
     fn into_remaining_payload(self) -> Option<PacketPayload> {
         let len = self.remaining_len();
         crate::net::payload::move_payload_window_owned(self.payload, self.consumed, len)
@@ -132,7 +125,6 @@ impl TcpSocketEntry {
             send_payload_bytes: 0,
             nodelay: false,
             urgent_pending: false,
-            congestion_algorithm: None,
             stats: TcpStats::default(),
         }
     }
@@ -196,8 +188,6 @@ impl DerefMut for SocketState {
 }
 
 impl SocketState {
-    pub const DEFAULT_BUFFER_SIZE: usize = SocketCommon::DEFAULT_BUFFER_SIZE;
-    pub const MAX_BUFFER_SIZE: usize = SocketCommon::MAX_BUFFER_SIZE;
     pub const DEFAULT_BACKLOG: usize = TcpSocketEntry::DEFAULT_BACKLOG;
 
     pub fn new_tcp(state: TcpSocketState) -> Self {
@@ -309,36 +299,8 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn set_udp_state(&mut self, state: UdpSocketState) -> SocketResult<()> {
-        let Some(udp) = self.udp_mut() else {
-            return Err(EndpointError::InvalidArgument);
-        };
-        udp.state = state;
-        Ok(())
-    }
-
-    #[inline]
-    pub fn set_raw_state(&mut self, state: RawSocketState) -> SocketResult<()> {
-        let Some(raw) = self.raw_mut() else {
-            return Err(EndpointError::InvalidArgument);
-        };
-        raw.state = state;
-        Ok(())
-    }
-
-    #[inline]
     pub fn is_tcp_listening(&self) -> bool {
         matches!(self.tcp_state(), Some(TcpSocketState::Listening))
-    }
-
-    #[inline]
-    pub fn is_tcp_connecting(&self) -> bool {
-        matches!(self.tcp_state(), Some(TcpSocketState::Connecting))
-    }
-
-    #[inline]
-    pub fn is_tcp_connected(&self) -> bool {
-        matches!(self.tcp_state(), Some(TcpSocketState::Connected))
     }
 
     #[inline]
@@ -416,11 +378,6 @@ impl SocketState {
         if let Some(tcp) = self.tcp_mut() {
             tcp.urgent_pending = pending;
         }
-    }
-
-    #[inline]
-    pub fn has_urgent_pending(&self) -> bool {
-        self.tcp().is_some_and(|tcp| tcp.urgent_pending)
     }
 
     #[inline]
@@ -503,33 +460,6 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn push_send_payload_front(&mut self, payload: PacketPayload) {
-        let len = payload.total_len();
-        if let Some(tcp) = self.tcp_mut() {
-            tcp.send_payload_bytes = tcp.send_payload_bytes.saturating_add(len);
-            tcp.send_payload_queue
-                .push_front(QueuedPayload::new(payload));
-        }
-    }
-
-    #[inline]
-    pub fn peek_send_byte(&self) -> Option<u8> {
-        let tcp = self.tcp()?;
-        let payload = tcp.send_payload_queue.front()?;
-        payload.first_byte()
-    }
-
-    #[inline]
-    pub fn clear_tcp_payload_queues(&mut self) {
-        if let Some(tcp) = self.tcp_mut() {
-            tcp.recv_payload_queue.clear();
-            tcp.recv_payload_bytes = 0;
-            tcp.send_payload_queue.clear();
-            tcp.send_payload_bytes = 0;
-        }
-    }
-
-    #[inline]
     pub fn push_recv_payload(&mut self, payload: PacketPayload) -> usize {
         let available = self
             .recv_buffer_limit
@@ -555,11 +485,6 @@ impl SocketState {
             self.recv_waker.wake();
         }
         len
-    }
-
-    #[inline]
-    pub fn notify_connected(&mut self) {
-        self.connect_waker.wake();
     }
 }
 

@@ -94,13 +94,6 @@ pub struct IovaAllocator {
 pub struct IovaAllocatorStats {
     pub quarantine_pushes: AtomicU64,
     pub quarantine_drains: AtomicU64,
-    pub quarantine_forced_drains: AtomicU64,
-}
-
-/// Check if system memory pressure is critical
-fn is_memory_pressure_critical() -> bool {
-    // Current threshold: > 90% physical memory usage
-    crate::mm::phys::unified_alloc::memory_pressure_level() >= 90
 }
 
 impl IovaAllocator {
@@ -135,16 +128,6 @@ impl IovaAllocator {
             completed_epoch: AtomicU32::new(0),
             stats: IovaAllocatorStats::default(),
         }
-    }
-
-    /// Configure arenas for specific CPU IDs (NUMA awareness)
-    pub fn configure_arenas_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
-        self.inner.reconfigure_for_cpu_ids(cpu_ids);
-    }
-
-    /// Enable single-writer arena optimizations
-    pub fn enable_single_writer_arenas(&self) {
-        self.inner.enable_single_writer_arenas();
     }
 
     // ========================================================================
@@ -531,22 +514,5 @@ impl IovaAllocator {
                 break;
             }
         }
-    }
-
-    /// Per-CPU maintenance (call periodically, e.g. from timer or idle loop)
-    pub fn poll(&self) {
-        // Drain remote frees (cross-CPU frees)
-        self.inner.drain_remote_frees();
-
-        // Drain quarantine if needed
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
-            if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
-                self.drain_quarantine_for_cpu(cpu_id, false);
-            }
-        }
-
-        // Also attempt to drain global fallback quarantine
-        let completed = self.completed_epoch.load(Ordering::Acquire);
-        self.drain_fallback_for_epoch(completed, false);
     }
 }

@@ -7,7 +7,6 @@ impl IdeChannel {
     /// 新しいIDEチャネルを作成
     pub fn new(controller: IdeController) -> Self {
         Self {
-            controller,
             io_base: controller.io_base(),
             control_base: controller.control_base(),
             devices: [None, None],
@@ -75,9 +74,7 @@ impl IdeChannel {
 
     /// ドライブを選択
     unsafe fn select_drive(&self, drive: DriveSel) {
-        unsafe {
-            self.write_reg(regs::DRIVE, drive.value());
-        }
+        self.write_reg(regs::DRIVE, drive.value());
         // 400ns待機（4回のステータス読み取り）
         for _ in 0..4 {
             let _ = self.read_alt_status();
@@ -120,9 +117,7 @@ impl IdeChannel {
         let lba_mid = self.read_reg(regs::LBA_MID);
         let lba_high = self.read_reg(regs::LBA_HIGH);
         if lba_mid == 0x14 && lba_high == 0xEB {
-            unsafe {
-                self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET);
-            }
+            self.write_reg(regs::COMMAND, commands::IDENTIFY_PACKET);
             if unsafe { self.wait_drq() }.is_err() {
                 return None;
             }
@@ -152,26 +147,16 @@ impl IdeChannel {
         unsafe {
             self.select_drive(drive);
         }
-        unsafe {
-            self.write_reg(regs::SECTOR_COUNT, 0);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_LOW, 0);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_MID, 0);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_HIGH, 0);
-        }
+        self.write_reg(regs::SECTOR_COUNT, 0);
+        self.write_reg(regs::LBA_LOW, 0);
+        self.write_reg(regs::LBA_MID, 0);
+        self.write_reg(regs::LBA_HIGH, 0);
 
         // IDENTIFYコマンドを発行
-        unsafe {
-            self.write_reg(regs::COMMAND, commands::IDENTIFY);
-        }
+        self.write_reg(regs::COMMAND, commands::IDENTIFY);
 
         // ステータスが0ならデバイスなし
-        let status = unsafe { self.read_status() };
+        let status = self.read_status();
         if status == 0 {
             return None;
         }
@@ -237,30 +222,18 @@ impl IdeChannel {
     ) -> Result<(), IdeError> {
         // ドライブとLBA上位4ビットを選択
         let drive_head = drive.value() | 0x40 | ((lba >> 24) & 0x0F) as u8;
-        unsafe {
-            self.write_reg(regs::DRIVE, drive_head);
-        }
+        self.write_reg(regs::DRIVE, drive_head);
 
         // 400ns待機
         for _ in 0..4 {
             let _ = self.read_alt_status();
         }
 
-        unsafe {
-            self.write_reg(regs::SECTOR_COUNT, count);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_LOW, lba as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::COMMAND, commands::READ_SECTORS);
-        }
+        self.write_reg(regs::SECTOR_COUNT, count);
+        self.write_reg(regs::LBA_LOW, lba as u8);
+        self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+        self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
+        self.write_reg(regs::COMMAND, commands::READ_SECTORS);
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_read = if count == 0 { 256 } else { count as usize };
@@ -292,46 +265,26 @@ impl IdeChannel {
     ) -> Result<(), IdeError> {
         // ドライブを選択（LBAモード）
         let drive_head = drive.value() | 0x40;
-        unsafe {
-            self.write_reg(regs::DRIVE, drive_head);
-        }
+        self.write_reg(regs::DRIVE, drive_head);
 
         // 400ns待機
         for _ in 0..4 {
-            let _ = unsafe { self.read_alt_status() };
+            let _ = self.read_alt_status();
         }
 
         // 高位バイトを先に書き込み
-        unsafe {
-            self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
-        }
+        self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
+        self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
+        self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
+        self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
 
         // 低位バイトを書き込み
-        unsafe {
-            self.write_reg(regs::SECTOR_COUNT, count as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_LOW, lba as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
-        }
-        unsafe {
-            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
-        }
+        self.write_reg(regs::SECTOR_COUNT, count as u8);
+        self.write_reg(regs::LBA_LOW, lba as u8);
+        self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+        self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
 
-        unsafe {
-            self.write_reg(regs::COMMAND, commands::READ_SECTORS_EXT);
-        }
+        self.write_reg(regs::COMMAND, commands::READ_SECTORS_EXT);
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_read = if count == 0 { 65536 } else { count as usize };
@@ -438,27 +391,23 @@ impl IdeChannel {
         buffer: &[u8],
     ) -> Result<(), IdeError> {
         let drive_head = drive.value() | 0x40;
-        unsafe {
-            self.write_reg(regs::DRIVE, drive_head);
-        }
+        self.write_reg(regs::DRIVE, drive_head);
 
         for _ in 0..4 {
-            let _ = unsafe { self.read_alt_status() };
+            let _ = self.read_alt_status();
         }
 
-        unsafe {
-            self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
-            self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
-            self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
-            self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
+        self.write_reg(regs::SECTOR_COUNT, (count >> 8) as u8);
+        self.write_reg(regs::LBA_LOW, (lba >> 24) as u8);
+        self.write_reg(regs::LBA_MID, (lba >> 32) as u8);
+        self.write_reg(regs::LBA_HIGH, (lba >> 40) as u8);
 
-            self.write_reg(regs::SECTOR_COUNT, count as u8);
-            self.write_reg(regs::LBA_LOW, lba as u8);
-            self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
-            self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
+        self.write_reg(regs::SECTOR_COUNT, count as u8);
+        self.write_reg(regs::LBA_LOW, lba as u8);
+        self.write_reg(regs::LBA_MID, (lba >> 8) as u8);
+        self.write_reg(regs::LBA_HIGH, (lba >> 16) as u8);
 
-            self.write_reg(regs::COMMAND, commands::WRITE_SECTORS_EXT);
-        }
+        self.write_reg(regs::COMMAND, commands::WRITE_SECTORS_EXT);
 
         let mut data_port = PortU16::new(self.io_base + regs::DATA);
         let sectors_to_write = if count == 0 { 65536 } else { count as usize };
@@ -468,15 +417,14 @@ impl IdeChannel {
                 self.wait_drq()?;
                 let offset = i * 512;
                 let sector_buffer = &buffer[offset..offset + 512];
-                let word_buffer: &[u16] = unsafe {
-                    core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256)
-                };
+                let word_buffer: &[u16] =
+                    core::slice::from_raw_parts(sector_buffer.as_ptr() as *const u16, 256);
                 data_port.write_words(word_buffer);
             }
         }
 
+        self.write_reg(regs::COMMAND, commands::CACHE_FLUSH_EXT);
         unsafe {
-            self.write_reg(regs::COMMAND, commands::CACHE_FLUSH_EXT);
             self.wait_not_busy()?;
         }
 

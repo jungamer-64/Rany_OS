@@ -20,8 +20,6 @@ pub trait QIManager {
     fn init_queued_invalidation(&mut self, size_log2: u8) -> Result<(), IommuError>;
     /// Enable Queued Invalidation
     unsafe fn enable_queued_invalidation(&self) -> Result<(), IommuError>;
-    /// Disable Queued Invalidation
-    unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError>;
     /// Enable Invalidation Completion Interrupts
     fn enable_queued_invalidation_interrupt(&self, vector: u8);
 }
@@ -163,23 +161,6 @@ impl QIManager for IommuController {
         }
     }
 
-    unsafe fn disable_queued_invalidation(&self) -> Result<(), IommuError> {
-        let gcmd = self.read32(regs::GCMD);
-        self.write32(regs::GCMD, gcmd & !gcmd_bits::GCMD_QIE);
-
-        match self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_QIES) == 0,
-            10_000,
-            false,
-        ) {
-            Ok(_) => {
-                self.qi_enabled.store(false, Ordering::Release);
-                Ok(())
-            }
-            Err(e) => Err(e),
-        }
-    }
-
     /// Enable Invalidation Completion Interrupts
     ///
     /// # Arguments
@@ -201,8 +182,6 @@ impl QIManager for IommuController {
         // Clear IM bit (31) to unmask
         let iectl = self.read32(regs::IECTL);
         self.write32(regs::IECTL, iectl & !0x8000_0000);
-        self.mark_qi_completion_interrupts_enabled();
-
         log::info!(
             "[IOMMU] Invalidation Completion Interrupts enabled (Vector: {:#x})",
             vector

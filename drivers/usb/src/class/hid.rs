@@ -223,20 +223,14 @@ pub struct HidDescriptor {
 pub struct HidDevice {
     /// スロットID
     slot_id: AtomicU8,
-    /// インターフェース番号
-    interface: u8,
     /// サブクラス
     subclass: HidSubclass,
     /// プロトコル
     protocol: HidProtocol,
     /// INエンドポイント
     in_endpoint: u8,
-    /// OUTエンドポイント（オプション）
-    out_endpoint: Option<u8>,
     /// 現在のプロトコルモード（true = Report, false = Boot）
     report_protocol: AtomicBool,
-    /// レポートディスクリプタ
-    report_descriptor: Mutex<Vec<u8>>,
     /// 最新の入力レポート
     last_report: Mutex<Vec<u8>>,
     /// 初期化済みフラグ
@@ -245,22 +239,13 @@ pub struct HidDevice {
 
 impl HidDevice {
     /// 新しい HID デバイスを作成
-    pub fn new(
-        interface: u8,
-        subclass: HidSubclass,
-        protocol: HidProtocol,
-        in_endpoint: u8,
-        out_endpoint: Option<u8>,
-    ) -> Self {
+    pub fn new(subclass: HidSubclass, protocol: HidProtocol, in_endpoint: u8) -> Self {
         Self {
             slot_id: AtomicU8::new(0),
-            interface,
             subclass,
             protocol,
             in_endpoint,
-            out_endpoint,
             report_protocol: AtomicBool::new(true),
-            report_descriptor: Mutex::new(Vec::new()),
             last_report: Mutex::new(Vec::new()),
             initialized: AtomicBool::new(false),
         }
@@ -492,15 +477,9 @@ pub struct UsbKeyboard {
 
 impl UsbKeyboard {
     /// 新しいキーボードを作成
-    pub fn new(interface: u8, in_endpoint: u8, out_endpoint: Option<u8>) -> Self {
+    pub fn new(in_endpoint: u8) -> Self {
         Self {
-            hid: HidDevice::new(
-                interface,
-                HidSubclass::Boot,
-                HidProtocol::Keyboard,
-                in_endpoint,
-                out_endpoint,
-            ),
+            hid: HidDevice::new(HidSubclass::Boot, HidProtocol::Keyboard, in_endpoint),
             prev_report: Mutex::new(BootKeyboardReport::default()),
             led_status: AtomicU8::new(0),
             key_callback: Mutex::new(None),
@@ -814,8 +793,6 @@ pub enum MouseButton {
 
 /// USB マウスドライバ
 pub struct UsbMouse {
-    /// 基本HIDデバイス
-    hid: HidDevice,
     /// 前回のボタン状態
     prev_buttons: AtomicU8,
     /// 累積X移動量
@@ -843,15 +820,8 @@ pub enum MouseEvent {
 
 impl UsbMouse {
     /// 新しいマウスを作成
-    pub fn new(interface: u8, in_endpoint: u8) -> Self {
+    pub fn new() -> Self {
         Self {
-            hid: HidDevice::new(
-                interface,
-                HidSubclass::Boot,
-                HidProtocol::Mouse,
-                in_endpoint,
-                None,
-            ),
             prev_buttons: AtomicU8::new(0),
             accumulated_x: Mutex::new(0),
             accumulated_y: Mutex::new(0),
@@ -963,7 +933,7 @@ mod tests {
 
     #[test]
     fn usb_keyboard_process_report_emits_modifier_and_key_events() {
-        let keyboard = UsbKeyboard::new(0, 1, None);
+        let keyboard = UsbKeyboard::new(1);
         let events = Arc::new(Mutex::new(Vec::<KeyEvent>::new()));
         let sink = Arc::clone(&events);
 

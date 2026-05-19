@@ -442,24 +442,6 @@ impl ExperimentalTlsConnection {
         self.tls13_encrypt_record(inner_plaintext.as_slice(), false)
     }
 
-    pub(crate) fn tls13_strip_content_type(decrypted: &[u8]) -> Option<&[u8]> {
-        for i in (0..decrypted.len()).rev() {
-            if decrypted[i] != 0 {
-                return Some(&decrypted[..i]);
-            }
-        }
-        None
-    }
-
-    pub(crate) fn tls13_split_content_type(decrypted: &[u8]) -> Option<(u8, &[u8])> {
-        for i in (0..decrypted.len()).rev() {
-            if decrypted[i] != 0 {
-                return Some((decrypted[i], &decrypted[..i]));
-            }
-        }
-        None
-    }
-
     pub(crate) fn tls13_split_content_type_payload(
         decrypted: &PacketPayload,
     ) -> Option<(u8, usize)> {

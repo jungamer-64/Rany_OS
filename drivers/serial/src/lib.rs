@@ -31,8 +31,6 @@ pub enum ComPort {
 
 mod reg {
     pub const DATA: u16 = 0;
-    pub const DLL: u16 = 0;
-    pub const DLH: u16 = 1;
     pub const IER: u16 = 1;
     pub const FCR: u16 = 2;
     pub const LCR: u16 = 3;
@@ -90,7 +88,7 @@ impl LineStatus {
     }
 }
 
-pub struct InterruptEnable(u8);
+pub struct InterruptEnable;
 impl InterruptEnable {
     pub const RX_AVAILABLE: u8 = 1 << 0;
     pub const TX_EMPTY: u8 = 1 << 1;

@@ -124,7 +124,7 @@ impl<T> PoisonRwLock<T> {
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-        let p_guard = PoisonRwLockReadGuard { lock: self, guard };
+        let p_guard = PoisonRwLockReadGuard { guard };
 
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
@@ -162,7 +162,7 @@ impl<T> PoisonRwLock<T> {
     /// 読み取りロックを試行
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
         self.inner.try_read().map(|guard| {
-            let p_guard = PoisonRwLockReadGuard { lock: self, guard };
+            let p_guard = PoisonRwLockReadGuard { guard };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -196,7 +196,6 @@ impl<T> PoisonRwLock<T> {
 
 /// PoisonRwLockの読み取りガード
 pub struct PoisonRwLockReadGuard<'a, T> {
-    lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockReadGuard<'a, T>,
 }
 
@@ -334,10 +333,7 @@ impl<T> PoisonLock<T> {
             LOCK_CONTENTION_EVENTS.fetch_add(1, Ordering::Relaxed);
         }
 
-        let guard = PoisonLockGuard {
-            lock: self,
-            panicking: false,
-        };
+        let guard = PoisonLockGuard { lock: self };
 
         // 2. 毒入れ状態をチェック
         if self.poisoned.load(Ordering::Acquire) {
@@ -368,10 +364,7 @@ impl<T> PoisonLock<T> {
             LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
             LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-            let guard = PoisonLockGuard {
-                lock: self,
-                panicking: false,
-            };
+            let guard = PoisonLockGuard { lock: self };
 
             if self.poisoned.load(Ordering::Acquire) {
                 Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -470,8 +463,6 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
 /// パニック中にドロップされると、ロックが毒入れされる。
 pub struct PoisonLockGuard<'a, T: ?Sized> {
     lock: &'a PoisonLock<T>,
-    /// パニック中かどうかのフラグ（最適化用）
-    panicking: bool,
 }
 
 impl<T: ?Sized> Deref for PoisonLockGuard<'_, T> {

@@ -6,19 +6,13 @@
 use super::*;
 use crate::{
     debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io,
-    kapi, loader, sas, security, task, test, util,
+    kapi, loader, sas, security, task, util,
 };
 use log::{debug, error, info, warn};
 
 #[path = "kernel_main/kernel_runtime.rs"]
 mod kernel_runtime;
 use self::kernel_runtime::{print_logo, register_kernel_symbols, start_async_boot_runtime};
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn async_boot_stage_runtime_snapshot()
--> crate::async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
-    self::kernel_runtime::async_boot_stage_runtime_snapshot()
-}
 
 pub(crate) fn ahci_ensure_mapping(
     virt_start: crate::mm::virt::higher_half::VirtAddr,

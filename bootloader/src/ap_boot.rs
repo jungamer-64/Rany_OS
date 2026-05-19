@@ -254,18 +254,6 @@ fn allocate_ap_stacks(ap_count: usize) -> (u64, usize) {
     }
 }
 
-/// Get the stack pointer for a specific AP
-///
-/// # Arguments
-/// * `ap_boot_info` - AP boot information structure
-/// * `ap_index` - Zero-based AP index (0 = first AP, not BSP)
-///
-/// # Returns
-/// Stack pointer (top of stack) for the AP, or 0 if invalid
-pub fn get_ap_stack_pointer(ap_boot_info: &ApBootInfo, ap_index: usize) -> u64 {
-    ap_boot_info.stack_top_for(ap_index).unwrap_or(0)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

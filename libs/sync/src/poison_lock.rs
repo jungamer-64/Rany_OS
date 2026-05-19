@@ -70,7 +70,7 @@ impl<T> PoisonRwLock<T> {
 
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
         let guard = self.inner.read();
-        let p_guard = PoisonRwLockReadGuard { lock: self, guard };
+        let p_guard = PoisonRwLockReadGuard { guard };
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
         } else {
@@ -90,7 +90,7 @@ impl<T> PoisonRwLock<T> {
 
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
         self.inner.try_read().map(|guard| {
-            let p_guard = PoisonRwLockReadGuard { lock: self, guard };
+            let p_guard = PoisonRwLockReadGuard { guard };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -119,7 +119,6 @@ impl<T> PoisonRwLock<T> {
 }
 
 pub struct PoisonRwLockReadGuard<'a, T> {
-    lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockReadGuard<'a, T>,
 }
 

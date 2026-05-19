@@ -229,23 +229,6 @@ pub fn bootable_apic_ids() -> Vec<u32> {
         .unwrap_or_default()
 }
 
-pub fn resolve_current_cpu_id() -> Option<usize> {
-    if let Some(cpu_id) = crate::cpu::try_current_id() {
-        return Some(cpu_id);
-    }
-
-    #[cfg(not(test))]
-    {
-        let apic_id = crate::drivers::apic::local_apic().id() as u32;
-        return cpu_for_apic_id(apic_id);
-    }
-
-    #[cfg(test)]
-    {
-        None
-    }
-}
-
 fn numa_node_for_apic(numa_info: &NumaInfo, apic_id: u32) -> Option<usize> {
     let node_count = usize::from(numa_info.node_count);
     for node_idx in 0..node_count.min(numa_info.nodes.len()) {

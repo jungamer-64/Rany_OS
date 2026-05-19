@@ -33,18 +33,10 @@ use super::fs_model::InodeNum;
 // Constants
 // ============================================================================
 
-/// Default page size (4KB)
-pub(crate) mod cached_block_impl;
 pub const PAGE_SIZE: usize = 4096;
 
 /// Default cache size limit (64MB)
 pub const DEFAULT_CACHE_LIMIT: usize = 64 * 1024 * 1024;
-
-/// Default block cache size (32MB)
-pub const DEFAULT_BLOCK_CACHE_LIMIT: usize = 32 * 1024 * 1024;
-
-/// Default block size (512 bytes)
-pub const DEFAULT_BLOCK_SIZE: usize = 512;
 
 // ============================================================================
 // Cached Page
@@ -239,21 +231,15 @@ impl CachedPage {
 
 /// Cache for a single file
 struct FileCache {
-    /// Inode number
-    ino: InodeNum,
     /// Cached pages by page number
     pages: BTreeMap<u64, Arc<CachedPage>>,
-    /// File size
-    file_size: u64,
 }
 
 impl FileCache {
     /// Create a new file cache
-    fn new(ino: InodeNum, file_size: u64) -> Self {
+    fn new() -> Self {
         Self {
-            ino,
             pages: BTreeMap::new(),
-            file_size,
         }
     }
 
@@ -351,10 +337,10 @@ impl PageCache {
     }
 
     /// Get or allocate file cache
-    fn get_or_create_file_cache(&self, ino: InodeNum, file_size: u64) -> Option<()> {
+    fn get_or_create_file_cache(&self, ino: InodeNum, _file_size: u64) -> Option<()> {
         let mut files = self.files.write();
         if !files.contains_key(&ino) {
-            files.insert(ino, FileCache::new(ino, file_size));
+            files.insert(ino, FileCache::new());
         }
         Some(())
     }
@@ -669,46 +655,3 @@ pub fn page_cache() -> &'static PageCache {
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
-
-// ============================================================================
-// LRU Block Cache
-// ============================================================================
-
-/// Block cache key (device_id, block_number)
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct BlockCacheKey {
-    /// Device ID
-    pub device_id: u64,
-    /// Block number
-    pub block_num: u64,
-}
-
-impl BlockCacheKey {
-    /// Create a new block cache key
-    pub fn new(device_id: u64, block_num: u64) -> Self {
-        Self {
-            device_id,
-            block_num,
-        }
-    }
-}
-
-/// A cached block of data
-///
-/// ## 安全性
-/// データは `Arc<RwLock<Box<[u8]>>>` で保護されており、
-/// 読み取り/書き込みは適切にロックされる。
-pub struct CachedBlock {
-    /// Block key (device_id, block_num)
-    key: BlockCacheKey,
-    /// Block data (RwLock で保護された固定長バッファ)
-    data: Arc<RwLock<Box<[u8]>>>,
-    /// Block size
-    block_size: usize,
-    /// State
-    state: Mutex<PageState>,
-    /// Last access time (for LRU)
-    last_access: AtomicU64,
-    /// Dirty flag
-    dirty: AtomicBool,
-}

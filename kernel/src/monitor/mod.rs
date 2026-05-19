@@ -440,8 +440,6 @@ impl MonitorHistory {
 // ヘルスモニタリング（設計書 §10.4）
 // ============================================================================
 
-use core::sync::atomic::AtomicU32;
-
 /// ヘルス状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HealthStatus {

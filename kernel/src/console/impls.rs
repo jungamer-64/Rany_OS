@@ -157,10 +157,6 @@ pub struct ConsoleManager {
     consoles: Vec<PoisonLock<VirtualConsole>>,
     /// 現在アクティブなコンソール
     active: AtomicU32,
-    /// 列数
-    cols: usize,
-    /// 行数
-    rows: usize,
 }
 
 impl ConsoleManager {
@@ -180,8 +176,6 @@ impl ConsoleManager {
         Self {
             consoles,
             active: AtomicU32::new(0),
-            cols,
-            rows,
         }
     }
 

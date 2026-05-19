@@ -4,11 +4,6 @@
 
 use crate::io::iommu::types::IommuError;
 
-/// Check if two memory ranges overlap.
-pub fn ranges_overlap(a_start: u64, a_end: u64, b_start: u64, b_end: u64) -> bool {
-    a_start < b_end && b_start < a_end
-}
-
 /// Validate privileged DMA region safety.
 pub fn validate_critical_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     if size == 0 {

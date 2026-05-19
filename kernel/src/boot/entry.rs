@@ -2,28 +2,9 @@
 // kernel/src/boot/entry.rs
 // ============================================================================
 use super::ahci_ensure_mapping;
-use crate::{drivers, heap, io};
+use crate::{drivers, io};
 use boot_proto::ExoBootInfo;
 use log::{info, warn};
-fn debug_heap_check(tag: &str) {
-    io::log::early_print("[HEAP] Check: ");
-    io::log::early_print(tag);
-    io::log::early_print("\n");
-
-    // Simple allocation test
-    let mut v = alloc::vec::Vec::new();
-    for i in 0..100 {
-        v.push(i as u64);
-    }
-    drop(v);
-
-    // Large allocation test
-    let b = alloc::boxed::Box::new([0u8; 1024]);
-    core::hint::black_box(&b);
-    drop(b);
-
-    io::log::early_print("[HEAP] Check OK\n");
-}
 
 // Ensure a device BAR physical range is mapped into kernel virtual space and return
 // the virtual base address on success, or None on failure.
@@ -139,7 +120,9 @@ pub(super) const KERNEL_STACK_PAGES: usize = 256;
 
 #[cfg(not(test))]
 #[repr(align(4096))]
-pub(super) struct KernelStack([u8; 4096 * KERNEL_STACK_PAGES]);
+pub(super) struct KernelStack {
+    _bytes: [u8; 4096 * KERNEL_STACK_PAGES],
+}
 
 /// Boot stack for the BSP (Bootstrap Processor).
 ///
@@ -150,7 +133,9 @@ pub(super) struct KernelStack([u8; 4096 * KERNEL_STACK_PAGES]);
 /// during early boot; the larger size restores a generous margin without
 /// significant memory cost.
 #[unsafe(link_section = ".bss")]
-pub(super) static mut KERNEL_STACK: KernelStack = KernelStack([0; 4096 * KERNEL_STACK_PAGES]);
+pub(super) static mut KERNEL_STACK: KernelStack = KernelStack {
+    _bytes: [0; 4096 * KERNEL_STACK_PAGES],
+};
 
 #[unsafe(no_mangle)]
 #[unsafe(naked)]
@@ -322,10 +307,6 @@ pub(super) fn init_acpi_and_iommu(boot_info: &boot_proto::ExoBootInfoView<'_>) {
         // full-boot test profiles prioritize deterministic runtime execution.
         // ACPI reclaim can be deferred without affecting the DriverDomain suite.
         info!(target: "init", "Skipping ACPI reclaim in qemu-test-export profile");
-    }
-    #[cfg(not(feature = "qemu-test-export"))]
-    {
-        heap::reclaim_acpi_reclaimable(boot_info);
     }
 }
 

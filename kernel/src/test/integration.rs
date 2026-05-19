@@ -9,8 +9,6 @@
 //! - IPC mechanisms
 extern crate alloc;
 
-use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
@@ -447,10 +445,4 @@ pub fn run_all_integration_tests() -> (usize, usize) {
     log::info!("========================================\n\n");
 
     (total_passed, total_failed)
-}
-
-/// Run tests and assert all pass
-pub fn run_integration_and_assert() -> bool {
-    let (_passed, failed) = run_all_integration_tests();
-    failed == 0
 }

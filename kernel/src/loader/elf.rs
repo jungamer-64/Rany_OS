@@ -171,17 +171,11 @@ const ELFCLASS64: u8 = 2;
 /// ELF Data Encoding
 const ELFDATA2LSB: u8 = 1; // Little Endian
 
-/// ELF Type
-const ET_DYN: u16 = 3; // Shared object file (Position Independent)
-const ET_EXEC: u16 = 2; // Executable file
-
 /// Program Header Type
 const PT_LOAD: u32 = 1;
-const PT_DYNAMIC: u32 = 2;
 
 /// Section Header Type
 const SHT_SYMTAB: u32 = 2;
-const SHT_STRTAB: u32 = 3;
 const SHT_RELA: u32 = 4;
 const SHT_DYNSYM: u32 = 11;
 

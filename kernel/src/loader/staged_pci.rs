@@ -198,14 +198,6 @@ pub fn stage_boot_artifact(
     stage_driver_artifact_inner(artifact_name, Cow::Owned(artifact.to_vec()), allow_unsafe)
 }
 
-pub(crate) fn stage_boot_artifact_static(
-    artifact_name: &str,
-    artifact: &'static [u8],
-    allow_unsafe: bool,
-) -> StageArtifactResult {
-    stage_driver_artifact_inner(artifact_name, Cow::Borrowed(artifact), allow_unsafe)
-}
-
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub fn try_start_for_device(
     dev: &PciDeviceInfo,

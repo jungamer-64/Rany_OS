@@ -9,6 +9,5 @@ pub use allocator::{
 };
 
 pub(crate) use allocator::{
-    checked_store_usize, exchange_heap_start, physical_memory_offset, reclaim_acpi_reclaimable,
-    set_physical_memory_offset,
+    checked_store_usize, exchange_heap_start, physical_memory_offset, set_physical_memory_offset,
 };

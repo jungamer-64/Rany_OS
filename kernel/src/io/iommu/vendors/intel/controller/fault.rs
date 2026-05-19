@@ -17,7 +17,7 @@
 use super::dma::DomainManager;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
 use super::{HardwareContext, IommuController};
-use crate::io::iommu::runtime::fault_log::{FaultLog, FaultRecord};
+use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
@@ -285,6 +285,7 @@ impl DeferredFaultQueue {
         Self::CAPACITY
     }
 
+    #[cfg(test)]
     fn is_empty(&self) -> bool {
         self.queue.is_empty() && self.critical_slot.state.load(Ordering::Acquire) != SLOT_READY
     }
@@ -359,7 +360,7 @@ mod tests {
 /// Global deferred fault queue (ISR writes, async task reads)
 static DEFERRED_FAULT_QUEUE: DeferredFaultQueue = DeferredFaultQueue::new();
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(test)]
 pub(crate) fn push_deferred_fault_for_test(event: RawFaultEvent) {
     DEFERRED_FAULT_QUEUE.push(event);
 }
@@ -544,17 +545,8 @@ pub fn spawn_fault_handler_task() {
 const FAULT_LOG_RATE_LIMIT: usize = 128; // Max faults to log per batch
 
 pub trait FaultHandler {
-    /// Initialize fault handling
-    fn init_fault_handling(&mut self);
-
     /// Process pending faults
     fn process_faults(&self) -> usize;
-
-    /// Get recent faults
-    fn recent_faults(&self, count: usize) -> alloc::vec::Vec<FaultRecord>;
-
-    /// Get total fault count
-    fn total_fault_count(&self) -> u64;
 
     /// Enable fault interrupts with a specific vector
     fn enable_fault_interrupt(&self, vector: u8);
@@ -564,12 +556,6 @@ pub trait FaultHandler {
 }
 
 impl FaultHandler for IommuController {
-    /// Initialize fault handling with a fault log ring buffer
-    fn init_fault_handling(&mut self) {
-        *self.fault_log.lock() = Some(FaultLog::new());
-        log::info!("[IOMMU] Fault handling initialized");
-    }
-
     /// Process pending faults from the Fault Recording Registers
     /// Returns the number of faults processed
     fn process_faults(&self) -> usize {
@@ -640,24 +626,6 @@ impl FaultHandler for IommuController {
         processed
     }
 
-    /// Get recent faults from the log
-    fn recent_faults(&self, count: usize) -> alloc::vec::Vec<FaultRecord> {
-        if let Some(log) = self.fault_log.lock().as_ref() {
-            log.recent(count)
-        } else {
-            alloc::vec::Vec::new()
-        }
-    }
-
-    /// Get total number of faults recorded
-    fn total_fault_count(&self) -> u64 {
-        self.fault_log
-            .lock()
-            .as_ref()
-            .map(|l| l.total_count())
-            .unwrap_or(0)
-    }
-
     /// Enable Fault Interrupts
     ///
     /// # Arguments
@@ -680,8 +648,6 @@ impl FaultHandler for IommuController {
         // 5. Unmask Fault Interrupts in FECTL
         let fectl = self.read32(regs::FECTL);
         self.write32(regs::FECTL, fectl & !0x8000_0000); // Clear IM bit (31)
-        self.mark_fault_interrupts_enabled();
-
         log::info!("[IOMMU] Fault Interrupts enabled (Vector: {:#x})", vector);
     }
 

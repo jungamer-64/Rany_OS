@@ -340,18 +340,6 @@ impl<T> RcuPointer<T> {
         self.ptr.load(Ordering::Acquire)
     }
 
-    /// 書き込み側: 生ポインタをロード
-    #[inline]
-    pub(crate) fn load_raw_mut(&self) -> *mut T {
-        self.ptr.load(Ordering::Acquire)
-    }
-
-    /// 書き込み側: 生ポインタをストア
-    #[inline]
-    pub(crate) fn store_raw_mut(&self, ptr: *mut T) {
-        self.ptr.store(ptr, Ordering::Release);
-    }
-
     /// RCU読み取りセクション内でポインタをロード（unsafe版、RcuPtr互換）
     ///
     /// # Safety

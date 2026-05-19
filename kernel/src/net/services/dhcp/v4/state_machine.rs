@@ -424,13 +424,6 @@ impl DhcpClient {
         released
     }
 
-    /// Send a DHCPDISCOVER packet for the current state machine cycle.
-    ///
-    /// RFC 2131: DHCPDISCOVER は src_ip = 0.0.0.0 で送信する。
-    async fn send_discover_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
-        self.send_discover_packet_on(None, current_tick).await
-    }
-
     async fn send_discover_packet_on(
         &self,
         if_id: Option<NetIfId>,
@@ -464,14 +457,6 @@ impl DhcpClient {
             DhcpState::Requesting | DhcpState::Rebinding => Ipv4Address::new([255, 255, 255, 255]),
             _ => Ipv4Address::new([255, 255, 255, 255]),
         }
-    }
-
-    /// Send a DHCPREQUEST packet for Requesting/Renewing/Rebinding.
-    ///
-    /// RFC 2131: Renewing 時は取得済みIPをソースIPとして使用し、
-    /// それ以外 (Requesting/Rebinding) は src_ip = 0.0.0.0 で送信する。
-    async fn send_request_packet(&self, current_tick: u64) -> Result<bool, &'static str> {
-        self.send_request_packet_on(None, current_tick).await
     }
 
     async fn send_request_packet_on(

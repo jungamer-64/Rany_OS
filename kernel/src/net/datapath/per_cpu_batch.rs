@@ -116,12 +116,6 @@ impl CpuBatchQueue {
         self.count
     }
 
-    /// キューが空か
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.count == 0
-    }
-
     /// キューが満杯か
     #[inline]
     fn is_full(&self) -> bool {

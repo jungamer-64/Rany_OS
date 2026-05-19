@@ -239,8 +239,6 @@ impl IdentifyData {
 
 /// IDEチャネル
 pub struct IdeChannel {
-    /// コントローラタイプ
-    controller: IdeController,
     /// ベースI/Oポート
     io_base: u16,
     /// コントロールポート

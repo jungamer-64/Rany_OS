@@ -256,7 +256,7 @@ fn dump_saved_rsp_words(stack_frame: &InterruptStackFrame) {
 // Exception Handlers
 // ============================================================================
 
-/// Divide Error (#DE)
+// Divide Error (#DE)
 define_interrupt!(
     pub fn divide_error_handler(stack_frame: InterruptStackFrame) {
         EXCEPTION_STATS
@@ -270,7 +270,7 @@ define_interrupt!(
     }
 );
 
-/// Debug Exception (#DB)
+// Debug Exception (#DB)
 define_interrupt!(
     pub fn debug_handler(stack_frame: InterruptStackFrame) {
         crate::debug::gdb_stub::on_trap(5, &stack_frame);
@@ -280,7 +280,7 @@ define_interrupt!(
     }
 );
 
-/// Breakpoint (#BP)
+// Breakpoint (#BP)
 define_interrupt!(
     pub fn breakpoint_handler(stack_frame: InterruptStackFrame) {
         EXCEPTION_STATS.breakpoints.fetch_add(1, Ordering::Relaxed);
@@ -292,7 +292,7 @@ define_interrupt!(
     }
 );
 
-/// Invalid Opcode (#UD)
+// Invalid Opcode (#UD)
 define_interrupt!(
     pub fn invalid_opcode_handler(stack_frame: InterruptStackFrame) {
         EXCEPTION_STATS
@@ -378,7 +378,7 @@ define_interrupt!(
     }
 );
 
-/// Device Not Available (#NM)
+// Device Not Available (#NM)
 define_interrupt!(
     pub fn device_not_available_handler(stack_frame: InterruptStackFrame) {
         early_print("\n[EXCEPTION] DEVICE NOT AVAILABLE (#NM)\n");
@@ -389,9 +389,9 @@ define_interrupt!(
     }
 );
 
-/// Double Fault (#DF)
-///
-/// これは専用のISTスタックで動作する（スタック破損時でも動く）
+// Double Fault (#DF)
+//
+// これは専用のISTスタックで動作する（スタック破損時でも動く）
 define_interrupt!(
     pub fn double_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) -> ! {
         EXCEPTION_STATS
@@ -425,7 +425,7 @@ define_interrupt!(
     }
 );
 
-/// General Protection Fault (#GP)
+// General Protection Fault (#GP)
 define_interrupt!(
     pub fn general_protection_fault_handler(stack_frame: InterruptStackFrame, error_code: u64) {
         EXCEPTION_STATS
@@ -462,7 +462,7 @@ define_interrupt!(
     }
 );
 
-/// Page Fault (#PF)
+// Page Fault (#PF)
 define_interrupt!(
     pub fn page_fault_handler(stack_frame: InterruptStackFrame, error_code: PageFaultErrorCode) {
         EXCEPTION_STATS.page_faults.fetch_add(1, Ordering::Relaxed);
@@ -531,7 +531,7 @@ define_interrupt!(
     }
 );
 
-/// Alignment Check (#AC)
+// Alignment Check (#AC)
 define_interrupt!(
     pub fn alignment_check_handler(stack_frame: InterruptStackFrame, error_code: u64) {
         early_print("\n[EXCEPTION] ALIGNMENT CHECK (#AC)\n");
@@ -544,7 +544,7 @@ define_interrupt!(
     }
 );
 
-/// Machine Check (#MC)
+// Machine Check (#MC)
 define_interrupt!(
     pub fn machine_check_handler(stack_frame: InterruptStackFrame) -> ! {
         early_print("\n[EXCEPTION] MACHINE CHECK (#MC) - HARDWARE ERROR\n");
@@ -558,7 +558,7 @@ define_interrupt!(
     }
 );
 
-/// SIMD Floating Point Exception (#XM/#XF)
+// SIMD Floating Point Exception (#XM/#XF)
 define_interrupt!(
     pub fn simd_floating_point_handler(stack_frame: InterruptStackFrame) {
         early_print("\n[EXCEPTION] SIMD FLOATING POINT (#XM)\n");

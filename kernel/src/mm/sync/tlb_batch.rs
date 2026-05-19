@@ -377,8 +377,6 @@ pub struct CpuTlbState {
     state: AtomicU64,
     /// 現在のASID/PCID
     current_asid: AtomicU64,
-    /// 最後のフラッシュ時刻
-    last_flush_time: AtomicU64,
     /// 保留中のフラッシュ要求があるか
     pending_flush: AtomicBool,
 }
@@ -388,7 +386,6 @@ impl CpuTlbState {
         Self {
             state: AtomicU64::new(TlbState::Active as u64),
             current_asid: AtomicU64::new(0),
-            last_flush_time: AtomicU64::new(0),
             pending_flush: AtomicBool::new(false),
         }
     }

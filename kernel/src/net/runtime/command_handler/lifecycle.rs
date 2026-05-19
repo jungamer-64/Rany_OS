@@ -71,12 +71,6 @@ impl RuntimeCommandHandler {
                 }
                 EventHandleResult::Success
             }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolved { ip, mac },
-            ) => {
-                crate::net::l2::arp::notify_arp_resolved_in(runtime, ip, mac);
-                EventHandleResult::Success
-            }
             RuntimeCommand::Transport(
                 crate::net::runtime::command::TransportCommand::TcpDial {
                     local,

@@ -3,6 +3,7 @@
 // ============================================================================
 
 use alloc::boxed::Box;
+use core::marker::PhantomData;
 use core::sync::atomic::Ordering;
 
 use super::mpsc::MpscRingBuffer;
@@ -56,7 +57,7 @@ pub const fn create_inter_core_channel() -> InterCoreChannel {
 /// `from_static`. This avoids `Arc`'s atomic reference counting overhead which
 /// is detrimental to NUMA and cross-domain scalability.
 pub struct BoundedChannel<T: 'static, const N: usize> {
-    inner: &'static MpscRingBuffer<T, N>,
+    _marker: PhantomData<fn() -> T>,
 }
 
 impl<T: 'static, const N: usize> BoundedChannel<T, N> {

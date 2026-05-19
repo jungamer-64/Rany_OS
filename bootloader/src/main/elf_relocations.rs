@@ -16,19 +16,24 @@ use super::*;
 
 #[path = "elf_relocations/file_io.rs"]
 mod file_io;
-pub use file_io::*;
+pub(crate) use file_io::{BootArtifactFile, load_boot_artifacts, load_kernel, verify_kernel};
 
 #[path = "elf_relocations/boot_info_setup.rs"]
 mod boot_info_setup;
-pub use boot_info_setup::*;
+pub(crate) use boot_info_setup::{
+    MAX_USABLE_MEMORY_REGIONS, build_memory_map_from_uefi, build_usable_memory_from_uefi,
+    copy_boot_artifacts_to_boot_info, copy_cmdline_to_boot_info, handle_boot_recovery,
+    populate_boot_info_detections, populate_boot_policy, run_boot_self_tests,
+    setup_gop_framebuffer,
+};
 
 #[path = "elf_relocations/hhdm.rs"]
 mod hhdm;
-pub use hhdm::*;
+pub(crate) use hhdm::{compute_max_physical_address, map_hhdm_and_identity};
 
 #[path = "elf_relocations/cr3_jump.rs"]
 mod cr3_jump;
-pub use cr3_jump::*;
+pub(crate) use cr3_jump::switch_cr3_and_jump;
 
 // ============================================================
 // ELF リロケーション処理

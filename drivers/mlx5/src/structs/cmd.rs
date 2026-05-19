@@ -14,14 +14,6 @@ impl<'a> MkeyContextLayout<'a> {
         Self { data }
     }
 
-    // Legacy access_flags helper using the resource flag definitions
-    // (bit0=LR, bit1=LW, bit2=RR, bit3=RW).
-    pub fn set_access_flags(&mut self, val: u8) {
-        self.set_lr((val & 0x01) != 0);
-        self.set_lw((val & 0x02) != 0);
-        self.set_rr((val & 0x04) != 0);
-        self.set_rw((val & 0x08) != 0);
-    }
     // rw: bit 18
     pub fn set_rw(&mut self, val: bool) {
         set_bits_u32(self.data, 18, 1, if val { 1 } else { 0 });
@@ -49,10 +41,6 @@ impl<'a> MkeyContextLayout<'a> {
     // qpn: bits 32-55
     pub fn set_qpn(&mut self, val: u32) {
         set_bits_u32(self.data, 32, 24, val);
-    }
-    // translations_octword_size: bits 416-447
-    pub fn set_translations_octword_size(&mut self, val: u32) {
-        set_bits_u32(self.data, 416, 32, val);
     }
     // PD: bits 104-127
     pub fn set_pd(&mut self, val: u32) {
@@ -236,9 +224,6 @@ impl<'a> QueryHcaCapInputLayout<'a> {
     }
     pub fn set_op_mod(&mut self, val: u16) {
         set_bits_u32(self.data, 48, 16, val as u32);
-    }
-    pub fn set_ec_vf_function(&mut self, val: bool) {
-        set_bits_u32(self.data, 65, 1, if val { 1 } else { 0 });
     }
 }
 
@@ -491,44 +476,6 @@ impl<'a> QueryVhcaStateOutputLayout<'a> {
 
     pub fn sw_function_id(&self) -> u32 {
         get_bits_u32(self.data, 160, 32)
-    }
-}
-
-/// MODIFY_VHCA_STATE Input Layout
-pub struct ModifyVhcaStateInputLayout<'a> {
-    pub(crate) data: &'a mut [u8],
-}
-
-impl<'a> ModifyVhcaStateInputLayout<'a> {
-    pub fn new(data: &'a mut [u8]) -> Self {
-        Self { data }
-    }
-    pub fn set_uid(&mut self, val: u16) {
-        set_bits_u32(self.data, 16, 16, val as u32);
-    }
-    pub fn set_op_mod(&mut self, val: u16) {
-        set_bits_u32(self.data, 48, 16, val as u32);
-    }
-    pub fn set_embedded_cpu_function(&mut self, val: bool) {
-        set_bits_u32(self.data, 64, 1, if val { 1 } else { 0 });
-    }
-    pub fn set_function_id(&mut self, val: u16) {
-        set_bits_u32(self.data, 80, 16, val as u32);
-    }
-    pub fn set_field_select_sw_function_id(&mut self, val: bool) {
-        set_bits_u32(self.data, 126, 1, if val { 1 } else { 0 });
-    }
-    pub fn set_field_select_arm_change_event(&mut self, val: bool) {
-        set_bits_u32(self.data, 127, 1, if val { 1 } else { 0 });
-    }
-    pub fn set_arm_change_event(&mut self, val: bool) {
-        set_bits_u32(self.data, 128, 1, if val { 1 } else { 0 });
-    }
-    pub fn set_vhca_state(&mut self, val: u8) {
-        set_bits_u32(self.data, 140, 4, val as u32);
-    }
-    pub fn set_sw_function_id(&mut self, val: u32) {
-        set_bits_u32(self.data, 160, 32, val);
     }
 }
 

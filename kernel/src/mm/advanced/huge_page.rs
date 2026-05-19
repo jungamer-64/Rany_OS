@@ -130,7 +130,6 @@ pub enum HugePageAllocError {
 pub struct HugePagePool {
     free_2mb: VecDeque<PhysFrame>,
     free_1gb: VecDeque<PhysFrame>,
-    numa_node: u8,
     alloc_success: u64,
     pool_hits: u64,
     compaction_success: u64,
@@ -138,11 +137,10 @@ pub struct HugePagePool {
 }
 
 impl HugePagePool {
-    pub const fn new(numa_node: u8) -> Self {
+    pub const fn new(_numa_node: u8) -> Self {
         Self {
             free_2mb: VecDeque::new(),
             free_1gb: VecDeque::new(),
-            numa_node,
             alloc_success: 0,
             pool_hits: 0,
             compaction_success: 0,
@@ -201,9 +199,6 @@ pub struct HugePageGlobalStats {
 
 impl HugePageAllocator {
     pub const fn new() -> Self {
-        const EMPTY_POOL: PoisonLock<HugePagePool> = PoisonLock::new(HugePagePool::new(0));
-        // Note: Individual initialization would be better but array initializers are limited for non-copy types
-        // In practice, we'll fix up the node IDs if necessary or just use the index.
         Self {
             pools: [
                 PoisonLock::new(HugePagePool::new(0)),
@@ -412,7 +407,6 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_pool_new() {
         let pool = HugePagePool::new(0);
-        assert_eq!(pool.numa_node, 0);
         assert_eq!(pool.pool_size(HugePageSize::Size2MB), 0);
         assert_eq!(pool.pool_size(HugePageSize::Size1GB), 0);
     }

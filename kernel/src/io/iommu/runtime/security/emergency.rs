@@ -54,12 +54,6 @@ impl EmergencyIsolationSlot {
     fn status(&self) -> u8 {
         self.status.load(Ordering::Acquire)
     }
-
-    fn clear(&self) {
-        self.status.store(0, Ordering::Release);
-        self.source_id.store(0, Ordering::Release);
-        self.isolation_tsc.store(0, Ordering::Release);
-    }
 }
 
 /// Global emergency isolation registry.
@@ -109,16 +103,6 @@ impl EmergencyIsolationRegistry {
         Err(())
     }
 
-    pub fn is_isolated(&self, source_id: u16) -> bool {
-        self.slots.iter().any(|slot| slot.matches(source_id))
-    }
-
-    pub fn is_pending(&self, source_id: u16) -> bool {
-        self.slots
-            .iter()
-            .any(|slot| slot.matches(source_id) && slot.status() == 1)
-    }
-
     /// Process pending isolations (called from non-ISR context).
     pub fn process_pending_isolations(&self) -> usize {
         let mut processed = 0;
@@ -160,23 +144,6 @@ impl EmergencyIsolationRegistry {
         processed
     }
 
-    /// Clear isolation for a device (for recovery).
-    pub fn clear_isolation(&self, source_id: u16) {
-        for slot in &self.slots {
-            if slot.matches(source_id) {
-                if slot.status() == 1 {
-                    self.pending_count.fetch_sub(1, Ordering::Relaxed);
-                }
-                slot.clear();
-                log::info!(
-                    "[IOMMU][Emergency] Isolation cleared for device 0x{:x}",
-                    source_id
-                );
-                return;
-            }
-        }
-    }
-
     pub fn stats(&self) -> EmergencyIsolationStats {
         EmergencyIsolationStats {
             total_isolations: self.total_isolations.load(Ordering::Relaxed),
@@ -208,11 +175,6 @@ pub fn emergency_isolate_device(source_id: u16) -> Result<bool, ()> {
         super::notifier::wake_security_monitor_from_isr();
     }
     res
-}
-
-/// Check if a device is in emergency isolation.
-pub fn is_device_emergency_isolated(source_id: u16) -> bool {
-    EMERGENCY_REGISTRY.is_isolated(source_id)
 }
 
 /// Invalidate IOTLB entries for a device.

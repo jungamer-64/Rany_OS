@@ -310,25 +310,6 @@ fn parse_port_match(s: &str) -> Result<PortMatch, String> {
     Ok(PortMatch::Exact(port))
 }
 
-/// 文字列をASCII小文字に変換（no_std互換）
-trait ToAsciiLowerStr {
-    fn to_ascii_lowercase(&self) -> String;
-}
-
-impl ToAsciiLowerStr for str {
-    fn to_ascii_lowercase(&self) -> String {
-        self.chars()
-            .map(|c| {
-                if c.is_ascii_uppercase() {
-                    (c as u8 + 32) as char
-                } else {
-                    c
-                }
-            })
-            .collect()
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use core::future::Future;

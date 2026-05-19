@@ -259,9 +259,6 @@ pub struct XhciPortManager {
     operational_base: u64,
     /// ポート数
     num_ports: u8,
-    /// USB 2.0 ポート範囲
-    usb2_port_start: u8,
-    usb2_port_count: u8,
     /// USB 3.0 ポート範囲
     usb3_port_start: u8,
     usb3_port_count: u8,
@@ -276,8 +273,6 @@ impl XhciPortManager {
     pub fn new(
         operational_base: u64,
         num_ports: u8,
-        usb2_port_start: u8,
-        usb2_port_count: u8,
         usb3_port_start: u8,
         usb3_port_count: u8,
     ) -> Self {
@@ -287,8 +282,6 @@ impl XhciPortManager {
         Self {
             operational_base,
             num_ports,
-            usb2_port_start,
-            usb2_port_count,
             usb3_port_start,
             usb3_port_count,
             port_slots: Mutex::new(port_slots),

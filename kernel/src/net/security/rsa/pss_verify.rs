@@ -112,25 +112,6 @@ pub(crate) fn hash_compute_into(hash_alg: HashAlgorithm, data: &[u8], out: &mut 
     }
 }
 
-/// カーネル環境用 擬似ランダムバイト生成
-///
-/// TSC (Time Stamp Counter) をベースに簡易ランダム値を生成。
-/// 暗号学的に安全ではないが、カーネル初期段階で使用可能。
-pub(crate) fn pseudo_random_byte(extra_entropy: u64) -> u8 {
-    // TSC (or fallback) で基本エントロピーを取得
-    let tsc = read_tsc();
-    let mixed = tsc
-        .wrapping_mul(6364136223846793005)
-        .wrapping_add(1442695040888963407)
-        .wrapping_add(extra_entropy.wrapping_mul(2862933555777941757));
-    (mixed >> 33) as u8
-}
-
-/// TSCを読み取る（x86_64 RDTSC命令）
-pub(crate) fn read_tsc() -> u64 {
-    crate::time::rdtsc_unserialized()
-}
-
 // ============================================================================
 // QEMU Test Module
 // ============================================================================

@@ -113,13 +113,3 @@ fn collect_runtime_memory_map(runtime_info: &mut UefiRuntimeInfo, hhdm_offset: u
 fn is_runtime_memory_type(mem_type: MemoryType) -> bool {
     RUNTIME_MEMORY_TYPES.contains(&mem_type)
 }
-
-/// After ExitBootServices, update the runtime info with actual runtime table
-///
-/// # Safety
-/// Must be called after ExitBootServices with the returned Runtime table
-pub fn finalize_runtime_info(runtime_info: &mut UefiRuntimeInfo, runtime_services_addr: u64) {
-    // Update with the actual runtime services pointer
-    // After ExitBootServices, the Runtime table pointer may have changed
-    runtime_info.runtime_services_addr = runtime_services_addr;
-}

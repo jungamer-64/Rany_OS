@@ -21,6 +21,7 @@ extern crate alloc;
 kernel_api::register_cell_runtime!();
 
 pub mod driver;
+#[cfg(feature = "export_driver_entry")]
 pub mod ffi;
 pub mod keyboard;
 pub mod keymap;

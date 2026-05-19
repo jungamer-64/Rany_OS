@@ -164,9 +164,7 @@ pub fn parse_query_pages_output(out_mbox: &CmdMailbox) -> (u16, i32) {
     (layout.function_id(), layout.num_pages() as i32)
 }
 
-const MAC_LAYOUT_SIZE: usize = 8;
 const MAC_BYTES_OFFSET: usize = 2;
-const CURRENT_UC_MAC_BASE: usize = 0x110;
 const TRAFFIC_COUNTER_SIZE: usize = 0x10;
 const QUERY_VPORT_COUNTER_BASE: usize = 0x10;
 
@@ -417,39 +415,6 @@ pub(crate) fn parse_query_vhca_state_output(out_mbox: &CmdMailbox) -> VhcaStateC
         sw_function_id: layout.sw_function_id(),
         arm_change_event: layout.arm_change_event(),
     }
-}
-
-/// MODIFY_VHCA_STATE コマンド入力の構築 (arm_change_event)
-pub(crate) fn build_modify_vhca_state_arm_input(
-    in_mbox: &mut CmdMailbox,
-    uid: u16,
-    function_id: u16,
-) {
-    *in_mbox = CmdMailbox::zeroed();
-    let mut layout = ModifyVhcaStateInputLayout::new(&mut in_mbox.data[..]);
-    layout.set_uid(uid);
-    layout.set_op_mod(0);
-    layout.set_embedded_cpu_function(false);
-    layout.set_function_id(function_id);
-    layout.set_field_select_arm_change_event(true);
-    layout.set_arm_change_event(true);
-}
-
-/// MODIFY_VHCA_STATE コマンド入力の構築 (sw_function_id)
-pub(crate) fn build_modify_vhca_state_sw_id_input(
-    in_mbox: &mut CmdMailbox,
-    uid: u16,
-    function_id: u16,
-    sw_function_id: u32,
-) {
-    *in_mbox = CmdMailbox::zeroed();
-    let mut layout = ModifyVhcaStateInputLayout::new(&mut in_mbox.data[..]);
-    layout.set_uid(uid);
-    layout.set_op_mod(0);
-    layout.set_embedded_cpu_function(false);
-    layout.set_function_id(function_id);
-    layout.set_field_select_sw_function_id(true);
-    layout.set_sw_function_id(sw_function_id);
 }
 
 /// NIC VPORT の MAC アドレスを変更するコマンド入力の構築

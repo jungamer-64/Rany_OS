@@ -58,7 +58,6 @@ fn cleanup_runtime_resources_for_driver_handle(_handle: DriverHandle) {}
 #[derive(Clone)]
 struct IrqBinding {
     owner: crate::domain::DomainId,
-    handle: DriverHandle,
     stop: Arc<AtomicBool>,
     cookie: u64,
 }
@@ -137,7 +136,6 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
             vector,
             IrqBinding {
                 owner,
-                handle,
                 stop: stop.clone(),
                 cookie,
             },

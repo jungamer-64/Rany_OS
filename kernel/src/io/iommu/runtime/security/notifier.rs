@@ -158,7 +158,7 @@ pub fn set_security_notifier(notifier: Arc<dyn SecurityNotifier>) -> Result<bool
 }
 
 /// QEMU test hook: clear global notifier state for deterministic canonical smoke tests.
-#[cfg(feature = "qemu-test-export")]
+#[cfg(test)]
 pub fn qemu_test_clear_security_notifier() {
     *SECURITY_NOTIFIER.write() = None;
 }

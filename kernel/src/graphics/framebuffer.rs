@@ -229,7 +229,6 @@ pub struct Framebuffer {
     back_buffer: Option<Vec<u32>>,
     clip: Rect,
     scratch_u8: Vec<u8>,
-    scratch_u32: Vec<u32>,
     /// Dirty rectangle tracking for optimized partial updates.
     /// Up to 4 disjoint rectangles are tracked; when full, two closest are merged.
     dirty_rects: [Option<Rect>; 4],
@@ -258,7 +257,6 @@ impl Framebuffer {
             back_buffer: None,
             clip,
             scratch_u8: Vec::with_capacity(width_usize * 4),
-            scratch_u32: Vec::with_capacity(width_usize),
             dirty_rects: [None, None, None, None],
             stats: PerfStats::default(),
         }
@@ -307,19 +305,6 @@ impl Framebuffer {
         };
 
         unsafe { Self::new(info) }
-    }
-
-    /// Ensure scratch_u32 has at least `capacity` elements
-    fn ensure_scratch_u32(&mut self, capacity: usize) {
-        if self.scratch_u32.capacity() < capacity {
-            // Correctly reserve from current length
-            self.scratch_u32.reserve(capacity - self.scratch_u32.len());
-        }
-        // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
-        // all elements up to `capacity` before reading.
-        unsafe {
-            self.scratch_u32.set_len(capacity);
-        }
     }
 
     /// Ensure scratch_u8 has at least `capacity` bytes
@@ -530,6 +515,7 @@ impl Framebuffer {
 
     /// Write a slice of u32 pixels to an MMIO destination, using u64 pair writes
     /// when possible for improved throughput.
+    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
     fn write_u32_slice_mmio(&self, addr: usize, data: &[u32]) {
         let mut ptr = addr;
         let mut i = 0usize;
@@ -642,7 +628,7 @@ impl Framebuffer {
     }
 
     /// Write a repeating u32 value to MMIO using non-temporal (streaming) stores.
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
+    #[cfg(all(feature = "bench", any(target_arch = "x86", target_arch = "x86_64")))]
     fn write_u32_run_streaming(&self, addr: usize, count: usize, value: u32) {
         let mut ptr = addr;
         let mut i = 0usize;
@@ -728,7 +714,10 @@ impl Framebuffer {
     }
 
     /// Fallback for non-x86
-    #[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
+    #[cfg(all(
+        feature = "bench",
+        not(any(target_arch = "x86", target_arch = "x86_64"))
+    ))]
     fn write_u32_run_streaming(&self, addr: usize, count: usize, value: u32) {
         self.write_u32_run(addr, count, value);
     }
@@ -780,60 +769,6 @@ impl Framebuffer {
     /// u16 run writer with fence.
     fn write_u16_run_streaming(&self, addr: usize, count: usize, value: u16) {
         self.write_u16_run_streaming_nofence(addr, count, value);
-        self.counted_sfence();
-    }
-
-    /// Stream-pack RGBA bytes into BGRA bytes and write them to MMIO in
-    /// moderate-size chunks. This avoids allocating a large `scratch_u32`
-    /// buffer for very long runs and allows SIMD packers to operate on
-    /// small temporaries which are then emitted via `write_bytes_mmio`.
-    fn write_rgba_packed_to_mmio_stream(&mut self, addr: usize, src: &[u8]) {
-        // Process in pixel-based chunks to allow direct u32 writes. Default
-        // chunk size is 512 pixels (2048 bytes); bench runs may override this
-        // via the `RANY_CHUNK_PIXELS` environment variable for tuning.
-        #[cfg(all(feature = "std", feature = "bench"))]
-        let chunk_pixels: usize = std::env::var("RANY_CHUNK_PIXELS")
-            .ok()
-            .and_then(|s| s.parse().ok())
-            .unwrap_or(512);
-        #[cfg(not(all(feature = "std", feature = "bench")))]
-        let chunk_pixels: usize = 512;
-
-        if src.is_empty() {
-            return;
-        }
-
-        let total_pixels = src.len() / 4;
-        let mut processed_pixels = 0usize;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while processed_pixels < total_pixels {
-            let remaining_pixels = total_pixels - processed_pixels;
-            let chunk_pixels = core::cmp::min(chunk_pixels, remaining_pixels);
-
-            // Ensure a u32-backed scratch buffer for this chunk
-            self.ensure_scratch_u32(chunk_pixels);
-            let src_offset = processed_pixels * 4;
-
-            {
-                // Mutable borrow scope for packer
-                let src_chunk = &src[src_offset..src_offset + chunk_pixels * 4];
-                let dst_bytes = unsafe {
-                    core::slice::from_raw_parts_mut(
-                        self.scratch_u32.as_mut_ptr() as *mut u8,
-                        chunk_pixels * 4,
-                    )
-                };
-                Self::pack_rgba_to_bgra(src_chunk, dst_bytes);
-            }
-
-            // Emit packed u32 words using streaming stores
-            let addr_chunk = addr + processed_pixels * 4;
-            self.write_u32_slice_mmio_streaming(addr_chunk, &self.scratch_u32[..chunk_pixels]);
-
-            processed_pixels += chunk_pixels;
-        }
-        // Ensure global visibility once after the full stream
         self.counted_sfence();
     }
 
@@ -1417,6 +1352,7 @@ impl Framebuffer {
     /// bitマスクを32bitカラーアレイに展開して書き込む（テキスト描画用）
     /// AVX2最適化のための構造を備えるが、現在はスカラ実装（unrolled loop & u64 writes）を使用。
     #[inline(always)]
+    #[cfg(feature = "bench")]
     fn write_glyph_row_32bit(
         &mut self,
         bits: u8,

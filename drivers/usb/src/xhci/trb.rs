@@ -469,7 +469,7 @@ pub struct TrbRing {
     /// リングのエントリ数
     ring_size: usize,
     /// DMAバッファ (所有権保持用; dropで自動解放)
-    dma_buf: DmaBuffer,
+    _dma_buf: DmaBuffer,
     /// 現在のエンキュー位置
     pub(crate) enqueue_index: usize,
     /// 現在のデキュー位置
@@ -511,7 +511,7 @@ impl TrbRing {
                 Self {
                     trb_ptr: virt_ptr,
                     ring_size: size,
-                    dma_buf,
+                    _dma_buf: dma_buf,
                     enqueue_index: 0,
                     dequeue_index: 0,
                     cycle_bit: true,

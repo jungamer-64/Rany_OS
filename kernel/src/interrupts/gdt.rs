@@ -39,17 +39,6 @@ struct PerCpuGdtState {
 unsafe impl Sync for PerCpuGdtState {}
 
 impl PerCpuGdtState {
-    const fn uninit() -> Self {
-        Self {
-            double_fault_stack: IstStack([0; IST_STACK_SIZE]),
-            page_fault_stack: IstStack([0; IST_STACK_SIZE]),
-            smp_ipi_stack: IstStack([0; IST_STACK_SIZE]),
-            tss: MaybeUninit::uninit(),
-            gdt: MaybeUninit::uninit(),
-            selectors: MaybeUninit::uninit(),
-        }
-    }
-
     unsafe fn initialize(&mut self) {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =

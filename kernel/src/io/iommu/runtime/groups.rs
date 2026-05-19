@@ -405,6 +405,7 @@ impl IommuGroupManager {
     }
 
     /// デバイスが属するグループIDを取得する (検索のみ)
+    #[cfg(test)]
     pub fn get_group_for_device(&self, device: &DeviceId) -> Option<IommuGroupId> {
         match self.device_to_group.lock() {
             Ok(guard) => guard.get(device).copied(),
@@ -413,7 +414,7 @@ impl IommuGroupManager {
     }
 
     /// テスト専用: groups ロックを取得して毒化テストに使用する。
-    #[cfg(feature = "qemu-test-export")]
+    #[cfg(test)]
     pub fn groups_lock_for_test(
         &self,
     ) -> crate::sync::LockResult<crate::sync::PoisonLockGuard<'_, HashMap<IommuGroupId, IommuGroup>>>

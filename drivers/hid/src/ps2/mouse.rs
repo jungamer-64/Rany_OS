@@ -20,10 +20,6 @@ pub struct MouseHandler {
     packet_size: usize,
     /// 現在のボタン状態
     buttons: u8,
-    /// 現在のX座標
-    x: i32,
-    /// 現在のY座標
-    y: i32,
 }
 
 impl MouseHandler {
@@ -35,8 +31,6 @@ impl MouseHandler {
             packet_index: 0,
             packet_size: if has_wheel { 4 } else { 3 },
             buttons: 0,
-            x: 0,
-            y: 0,
         }
     }
 

@@ -1,17 +1,5 @@
 use super::*;
 
-/// Find the CellId that owns the given driver handle
-pub(crate) fn find_cell_by_driver(handle: DriverHandle) -> Option<CellId> {
-    with_registry(|r| {
-        for entry in r.cells.values() {
-            if entry.registered_drivers.contains(&handle) {
-                return Some(entry.id);
-            }
-        }
-        None
-    })
-}
-
 /// カーネルセルを初期化（起動時に呼ばれる）
 pub(crate) fn init_kernel_cell() {
     super::type_id::init_kernel_interfaces();

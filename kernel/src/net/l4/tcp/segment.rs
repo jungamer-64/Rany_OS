@@ -40,15 +40,6 @@ enum TcpSegmentPayload {
     Packet(PacketPayload),
 }
 
-impl TcpSegmentPayload {
-    fn len(&self) -> usize {
-        match self {
-            Self::Empty => 0,
-            Self::Packet(payload) => payload.total_len(),
-        }
-    }
-}
-
 impl TcpSegmentBuilder {
     /// 新規作成
     pub fn new(src_port: u16, dst_port: u16) -> Self {
@@ -75,12 +66,6 @@ impl TcpSegmentBuilder {
     /// ACK番号設定
     pub fn ack(mut self, ack: u32) -> Self {
         self.ack_num = ack;
-        self
-    }
-
-    /// フラグ設定
-    pub fn flags(mut self, flags: u8) -> Self {
-        self.flags = flags;
         self
     }
 

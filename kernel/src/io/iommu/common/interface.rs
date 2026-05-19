@@ -4,7 +4,7 @@
 
 //! IOMMU backend interfaces (hardware context/domain).
 
-use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError};
+use crate::io::iommu::types::IommuError;
 
 /// Default IOVA allocation alignment (4KB).
 pub const DEFAULT_IOVA_ALIGNMENT: u64 = 4096;
@@ -63,20 +63,4 @@ pub trait IommuHardwareContext: Send + Sync {
         // Default implementation falls back to normal free (which may quarantine)
         self.free_iova(iova, size)
     }
-}
-
-/// IOMMU domain interface (optional higher-level abstraction).
-pub trait IommuDomain: Send + Sync {
-    fn id(&self) -> Result<u16, IommuError>;
-    fn domain_type(&self) -> Result<IommuDomainType, IommuError>;
-    fn map(
-        &self,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError>;
-    fn unmap(&self, iova: u64) -> Result<DmaMapping, IommuError>;
-    fn mapped_size(&self) -> Result<u64, IommuError>;
 }

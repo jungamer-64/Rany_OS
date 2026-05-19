@@ -102,10 +102,6 @@ impl<'a> DerCursor<'a> {
         Self { span, pos: 0 }
     }
 
-    const fn position(&self) -> usize {
-        self.pos
-    }
-
     fn is_empty(&self) -> bool {
         self.pos >= self.span.total_len()
     }

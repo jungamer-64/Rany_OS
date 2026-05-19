@@ -70,6 +70,7 @@ impl WindowScaleOption {
         }
     }
 
+    #[cfg(test)]
     /// 実際の受信ウィンドウサイズを計算
     #[inline]
     pub fn scale_rcv_window(&self, advertised_window: u16) -> u32 {
@@ -108,95 +109,6 @@ pub mod tcp_option_kind {
     pub const SACK_PERMITTED: u8 = 4;
     pub const SACK: u8 = 5;
     pub const TIMESTAMP: u8 = 8;
-}
-
-/// TCP Timestamps オプション (RFC 7323)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct TimestampsOption {
-    /// Timestamps が有効か
-    pub enabled: bool,
-    /// 自分のタイムスタンプ値
-    pub ts_val: u32,
-    /// 相手のタイムスタンプエコー
-    pub ts_ecr: u32,
-}
-
-impl TimestampsOption {
-    /// 新規作成（無効状態）
-    pub const fn new() -> Self {
-        Self {
-            enabled: false,
-            ts_val: 0,
-            ts_ecr: 0,
-        }
-    }
-
-    /// 有効状態で作成
-    pub fn enabled_with_value(ts_val: u32) -> Self {
-        Self {
-            enabled: true,
-            ts_val,
-            ts_ecr: 0,
-        }
-    }
-
-    /// タイムスタンプ値を更新
-    pub fn update(&mut self, current_time: u32) {
-        if self.enabled {
-            self.ts_val = current_time;
-        }
-    }
-
-    /// 受信したタイムスタンプを処理
-    pub fn process_received(&mut self, ts_val: u32, _ts_ecr: u32) {
-        if self.enabled {
-            self.ts_ecr = ts_val; // 次の送信時にエコーする
-        }
-    }
-}
-
-/// SACK オプション (RFC 2018)
-#[derive(Debug, Clone, Copy, Default)]
-pub struct SackOption {
-    /// SACK が有効か
-    pub enabled: bool,
-    /// SACK ブロック (最大4つ)
-    pub blocks: [(u32, u32); 4],
-    /// 有効なブロック数
-    pub block_count: u8,
-}
-
-impl SackOption {
-    /// 新規作成（無効状態）
-    pub const fn new() -> Self {
-        Self {
-            enabled: false,
-            blocks: [(0, 0); 4],
-            block_count: 0,
-        }
-    }
-
-    /// 有効状態で作成
-    pub const fn enabled() -> Self {
-        Self {
-            enabled: true,
-            blocks: [(0, 0); 4],
-            block_count: 0,
-        }
-    }
-
-    /// SACKブロックを追加
-    pub fn add_block(&mut self, left_edge: u32, right_edge: u32) {
-        if self.enabled && (self.block_count as usize) < 4 {
-            self.blocks[self.block_count as usize] = (left_edge, right_edge);
-            self.block_count += 1;
-        }
-    }
-
-    /// SACKブロックをクリア
-    pub fn clear(&mut self) {
-        self.block_count = 0;
-    }
 }
 
 /// TCPオプションパーサー
@@ -418,12 +330,14 @@ impl<'a> TcpOptionParser<'a> {
     }
 }
 
+#[cfg(test)]
 /// TCPオプションビルダー
 pub struct TcpOptionBuilder {
     buffer: [u8; 40], // 最大オプションサイズ
     len: usize,
 }
 
+#[cfg(test)]
 impl TcpOptionBuilder {
     pub fn new() -> Self {
         Self {
@@ -526,6 +440,7 @@ impl TcpOptionBuilder {
     }
 }
 
+#[cfg(test)]
 impl Default for TcpOptionBuilder {
     fn default() -> Self {
         Self::new()
