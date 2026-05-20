@@ -3,8 +3,8 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{PacketPayloadView, PayloadWindowRequest, append_payload};
-use kernel_api::resource::net::PacketPayload;
+use crate::net::payload::{PacketPayloadView, PayloadWindow, append_payload};
+use kernel_api::resource::net::{PacketByteCount, PacketPayload};
 
 fn packet_payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
     let mut sum = initial;
@@ -62,13 +62,13 @@ impl IcmpProcessor {
         data[2] = 0;
         data[3] = 0;
         data[4..8].copy_from_slice(&rest_of_header);
-        if !packet.set_len(IcmpHeader::SIZE + 4) {
+        if !packet.set_len(PacketByteCount::new(IcmpHeader::SIZE + 4)?) {
             return None;
         }
 
         let mut message = PacketPayload::single(packet);
         if quote_len != 0 {
-            let window = PayloadWindowRequest::bounded_by(&original_packet, 0, quote_len)?;
+            let window = PayloadWindow::within_payload(&original_packet, 0, quote_len)?;
             append_payload(
                 &mut message,
                 crate::net::payload::OwnedPayloadWindow::take_payload(original_packet, window)

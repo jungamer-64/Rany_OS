@@ -7,7 +7,7 @@ use super::{
     HttpStatusCode, HttpVersion,
 };
 use crate::net::payload::{
-    GeneratedPacketWriter, PayloadRange, PayloadSpanRef, PayloadWindowRequest, append_payload,
+    GeneratedPacketWriter, PayloadRange, PayloadSpanRef, PayloadWindow, append_payload,
 };
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
@@ -152,7 +152,7 @@ impl HttpBodyView {
             return None;
         }
         let range = self.ranges.into_iter().next()?;
-        let window = PayloadWindowRequest::bounded_by(&payload, range.offset(), range.total_len())?;
+        let window = PayloadWindow::within_payload(&payload, range.offset(), range.total_len())?;
         crate::net::payload::OwnedPayloadWindow::take_payload(payload, window).ok()
     }
 }

@@ -24,6 +24,7 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
+use kernel_api::resource::net::PacketByteCount;
 use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, TxLeaseId};
 use spin::Mutex;
 
@@ -573,6 +574,17 @@ fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
     );
 }
 
+fn set_abi_packet_len(packet: &mut AbiPacketRefRaw, len: usize) -> Result<(), AbiError> {
+    let Some(len) = PacketByteCount::new(len) else {
+        return Err(AbiError::InvalidParam);
+    };
+    if packet.set_len(len) {
+        Ok(())
+    } else {
+        Err(AbiError::InvalidParam)
+    }
+}
+
 fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
     let Some(runtime) = state.runtime else {
         return Err(AbiError::NotInitialized);
@@ -588,9 +600,7 @@ fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
             if buffer_size == 0 {
                 return Err(AbiError::OutOfMemory);
             }
-            if !packet.set_len(buffer_size) {
-                return Err(AbiError::InvalidParam);
-            }
+            set_abi_packet_len(&mut packet, buffer_size)?;
             let device_addr = packet.device_address();
             let virt_addr = packet.data_mut().as_ptr() as u64;
             let size = buffer_size as u32;
@@ -650,7 +660,7 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                     let len = replacement
                         .capacity()
                         .saturating_sub(replacement.headroom());
-                    if replacement.set_len(len) {
+                    if set_abi_packet_len(&mut replacement, len).is_ok() {
                         let _ = unsafe {
                             state.device.post_receive(
                                 rq_index,
@@ -671,7 +681,7 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                 cqe.byte_count as usize,
                 packet.capacity().saturating_sub(packet.headroom()),
             );
-            if !packet.set_len(byte_count) {
+            if set_abi_packet_len(&mut packet, byte_count).is_err() {
                 state.rx_errors = state.rx_errors.saturating_add(1);
                 continue;
             }
@@ -695,7 +705,7 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                     let len = replacement
                         .capacity()
                         .saturating_sub(replacement.headroom());
-                    if !replacement.set_len(len) {
+                    if set_abi_packet_len(&mut replacement, len).is_err() {
                         state.rx_errors = state.rx_errors.saturating_add(1);
                         continue;
                     }
@@ -886,9 +896,7 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
     {
         0 => 0,
         1 => {
-            let Some(first) = segments.first() else {
-                return AbiError::InvalidParam as i32;
-            };
+            let first = segments.first();
             let first_bytes = unsafe { tx_segment_bytes(first) };
             cmp::min(frame_len, cmp::min(first_bytes.len(), 18))
         }
@@ -896,7 +904,7 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
     };
     let mut inline_hdr = [0u8; 18];
     if inline_len > 0 {
-        let first_bytes = unsafe { tx_segment_bytes(&segments[0]) };
+        let first_bytes = unsafe { tx_segment_bytes(segments.first()) };
         inline_hdr[..inline_len].copy_from_slice(&first_bytes[..inline_len]);
     }
     let sq_count = state.tx_slots.len().max(1) as u32;
@@ -913,7 +921,7 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
 
     let mut dma_segments = Vec::with_capacity(segments.len());
     let mut remaining_inline = inline_len;
-    for segment in segments {
+    for segment in segments.iter() {
         let segment_len = segment.len();
         let skip = remaining_inline.min(segment_len);
         remaining_inline = remaining_inline.saturating_sub(skip);

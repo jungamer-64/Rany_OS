@@ -1042,8 +1042,8 @@ mod packet_ref_tests {
         assert_eq!(packet.phys_addr().as_u64(), 0x3000);
         assert_eq!(packet.device_address(), 0x4000);
 
-        assert!(packet.set_len(6));
-        assert!(packet.advance(1));
+        assert!(packet.set_len(PacketByteCount::new(6).expect("non-empty packet")));
+        assert!(packet.advance(PacketByteCount::new(1).expect("non-empty advance")));
         assert_eq!(packet.len(), 5);
         assert_eq!(packet.data(), b"acket");
         assert_eq!(packet.phys_addr().as_u64(), 0x3001);

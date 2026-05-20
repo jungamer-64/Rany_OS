@@ -13,6 +13,17 @@
 use super::*;
 use core::sync::atomic::AtomicU32;
 
+fn set_packet_visible_len(
+    packet: &mut PacketRef,
+    len: usize,
+) -> Result<(), crate::net::types::NetworkError> {
+    let len = PacketByteCount::new(len).ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+    packet
+        .set_len(len)
+        .then_some(())
+        .ok_or(crate::net::types::NetworkError::BufferTooSmall)
+}
+
 fn payload_checksum(view: &crate::net::payload::PacketPayloadView<'_>, initial: u32) -> u16 {
     let mut sum = initial;
     let mut trailing = None;
@@ -94,9 +105,7 @@ impl NetworkStack {
             let mut packet = self
                 .alloc_ethernet_frame_packet(header_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            if !packet.set_len(header_len) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
+            set_packet_visible_len(&mut packet, header_len)?;
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             };
@@ -118,9 +127,7 @@ impl NetworkStack {
             frame.set_payload_len(IPV6_HEADER_SIZE);
             let frame_len = frame.as_bytes().len();
             drop(frame);
-            if !packet.set_len(frame_len) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
+            set_packet_visible_len(&mut packet, frame_len)?;
 
             let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
             crate::net::payload::append_payload(&mut frame_payload, payload);
@@ -161,9 +168,7 @@ impl NetworkStack {
             let mut packet = self
                 .alloc_ethernet_frame_packet(header_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            if !packet.set_len(header_len) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
+            set_packet_visible_len(&mut packet, header_len)?;
             let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             };
@@ -199,9 +204,7 @@ impl NetworkStack {
             frame.set_payload_len(IPV6_HEADER_SIZE + 8);
             let frame_len = frame.as_bytes().len();
             drop(frame);
-            if !packet.set_len(frame_len) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
+            set_packet_visible_len(&mut packet, frame_len)?;
 
             let payload_window = TxFragmentWindow::new(&owners, offset, fragment_data_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
@@ -462,7 +465,7 @@ impl NetworkStack {
                 frame.set_payload_len(IPV6_HEADER_SIZE);
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if packet.set_len(frame_len) {
+                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     let payload = if payload_len == 0 {
                         kernel_api::resource::net::PacketPayload::single(packet)
                     } else {
@@ -547,7 +550,7 @@ impl NetworkStack {
                 frame.set_payload_len(IPV6_HEADER_SIZE);
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if packet.set_len(frame_len) {
+                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     let payload = if payload_len == 0 {
                         kernel_api::resource::net::PacketPayload::single(packet)
                     } else {
@@ -659,9 +662,7 @@ impl NetworkStack {
             kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
         )
         .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        if !header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE) {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        set_packet_visible_len(&mut header_packet, crate::net::l4::udp::UdpHeader::SIZE)?;
         let Some(header) =
             crate::util::get_mut_ref::<crate::net::l4::udp::UdpHeader>(header_packet.data_mut(), 0)
         else {
@@ -981,7 +982,7 @@ impl NetworkStack {
                         frame.set_payload_len(total_len as usize);
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
-                        if packet.set_len(frame_len) {
+                        if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                             let _ = self.transmit_packet_on(
                                 Some(if_id),
                                 kernel_api::resource::net::PacketPayload::single(packet),
@@ -1069,7 +1070,7 @@ impl NetworkStack {
                     frame.set_payload_len(total_len as usize);
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    if packet.set_len(frame_len) {
+                    if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                         let _ = self.transmit_packet_on(
                             Some(if_id),
                             kernel_api::resource::net::PacketPayload::single(packet),

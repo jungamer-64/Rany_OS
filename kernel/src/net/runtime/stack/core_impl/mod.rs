@@ -9,6 +9,17 @@ use crate::net::runtime::device::{OwnedTxPayloadWindow, TxFragmentWindow};
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::NetTxSegment;
 
+fn set_packet_visible_len(
+    packet: &mut PacketRef,
+    len: usize,
+) -> Result<(), crate::net::types::NetworkError> {
+    let len = PacketByteCount::new(len).ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+    packet
+        .set_len(len)
+        .then_some(())
+        .ok_or(crate::net::types::NetworkError::BufferTooSmall)
+}
+
 mod global_instance;
 pub(crate) use global_instance::*;
 /// Protocol-specific NetworkStack impl methods (IGMP, ARP, ICMP, TCP bind, UDP raw).
@@ -719,9 +730,7 @@ impl NetworkStack {
         frame.set_payload_len(0);
         let frame_len = frame.as_bytes().len();
         drop(frame);
-        if !packet.set_len(frame_len) {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        set_packet_visible_len(&mut packet, frame_len)?;
         Ok(packet)
     }
 
@@ -782,9 +791,7 @@ impl NetworkStack {
         frame.set_payload_len(IPV4_HEADER_LEN);
         let frame_len = frame.as_bytes().len();
         drop(frame);
-        if !packet.set_len(frame_len) {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
+        set_packet_visible_len(&mut packet, frame_len)?;
         Ok(packet)
     }
 

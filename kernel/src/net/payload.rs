@@ -401,7 +401,7 @@ impl OwnedPayloadWindow {
     }
 
     pub fn whole(payload: PacketPayload) -> Self {
-        let request = PayloadWindowRequest::whole(&payload);
+        let request = PayloadWindow::whole(&payload);
         Self { payload, request }
     }
 
@@ -678,10 +678,7 @@ impl<'a> PacketPayloadView<'a> {
 }
 
 impl<'a> PayloadSpanMut<'a> {
-    pub fn from_window(
-        payload: &'a mut PacketPayload,
-        request: PayloadWindow,
-    ) -> Option<Self> {
+    pub fn from_window(payload: &'a mut PacketPayload, request: PayloadWindow) -> Option<Self> {
         if request.offset > payload.total_len()
             || request.len > payload.total_len().saturating_sub(request.offset)
         {
@@ -691,7 +688,7 @@ impl<'a> PayloadSpanMut<'a> {
     }
 
     pub fn whole(payload: &'a mut PacketPayload) -> Self {
-        let request = PayloadWindowRequest::whole(payload);
+        let request = PayloadWindow::whole(payload);
         Self { payload, request }
     }
 
@@ -782,11 +779,12 @@ impl<'a> PacketPayloadCursor<'a> {
 }
 
 pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
+    let visible_len = PacketByteCount::new(len)?;
     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
         let available_headroom = packet.headroom();
         let capacity = packet.capacity().saturating_sub(available_headroom);
         if headroom <= available_headroom && len <= capacity {
-            if !packet.set_len(len) {
+            if !packet.set_len(visible_len) {
                 return None;
             }
             return Some(packet);
@@ -797,7 +795,7 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
     let dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(dma_len)?;
     let mut packet =
         crate::net::datapath::mempool::packet_ref_from_dma_slice_with_headroom(dma_buf, headroom)?;
-    if !packet.set_len(len) {
+    if !packet.set_len(visible_len) {
         return None;
     }
     Some(packet)
@@ -883,7 +881,10 @@ mod tests {
 
     #[test]
     fn payload_range_checked_end_rejects_overflow() {
-        let range = PayloadRange::new(usize::MAX, 1);
+        let range = PayloadRange {
+            offset: usize::MAX,
+            len: 1,
+        };
 
         assert_eq!(range.checked_end_offset(), None);
     }
@@ -913,6 +914,15 @@ mod tests {
     #[test]
     fn alloc_packet_with_headroom_rejects_length_overflow() {
         assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
+    }
+
+    #[test]
+    fn payload_window_rejects_out_of_bounds_request() {
+        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+
+        assert!(PayloadWindow::within_payload(&payload, 4, 0).is_some());
+        assert!(PayloadWindow::within_payload(&payload, 5, 0).is_none());
+        assert!(PayloadWindow::within_payload(&payload, 3, 2).is_none());
     }
 
     fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
@@ -977,7 +987,7 @@ mod tests {
     #[test]
     fn owned_payload_window_revalidates_request_against_consumed_payload() {
         let source = PacketPayload::single(test_packet_with_contents(b"abcdef"));
-        let request = PayloadWindowRequest::bounded_by(&source, 3, 3)
+        let request = PayloadWindow::within_payload(&source, 3, 3)
             .expect("request is valid for source payload");
         let shorter_payload = PacketPayload::single(test_packet_with_contents(b"xy"));
 

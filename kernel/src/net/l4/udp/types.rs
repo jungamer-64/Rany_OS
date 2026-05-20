@@ -204,11 +204,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(window) = PayloadWindowRequest::bounded_by(
-            &udp_segment,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
+        let Some(window) =
+            PayloadWindow::within_payload(&udp_segment, UdpHeader::SIZE, length - UdpHeader::SIZE)
+        else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -302,11 +300,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(window) = PayloadWindowRequest::bounded_by(
-            &udp_segment,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
+        let Some(window) =
+            PayloadWindow::within_payload(&udp_segment, UdpHeader::SIZE, length - UdpHeader::SIZE)
+        else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -375,7 +371,7 @@ impl UdpProcessor {
         }
 
         let Some(window) =
-            PayloadWindowRequest::bounded_by(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+            PayloadWindow::within_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
         else {
             return UdpResult::Invalid;
         };
@@ -445,7 +441,7 @@ impl UdpProcessor {
         }
 
         let Some(window) =
-            PayloadWindowRequest::bounded_by(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+            PayloadWindow::within_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
         else {
             return UdpResult::Invalid;
         };

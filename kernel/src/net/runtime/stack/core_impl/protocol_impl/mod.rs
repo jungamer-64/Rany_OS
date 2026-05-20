@@ -81,7 +81,7 @@ impl NetworkStack {
                         frame.set_payload_len(total_len as usize);
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
-                        if packet.set_len(frame_len) {
+                        if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                             let _ = self.transmit_packet_on(
                                 Some(if_id),
                                 kernel_api::resource::net::PacketPayload::single(packet),

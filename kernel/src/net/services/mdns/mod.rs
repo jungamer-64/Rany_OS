@@ -800,8 +800,7 @@ pub fn decode_dns_name_range_view(
             return None;
         }
 
-        let label_range = PayloadRange::new(current, label_len);
-        label_range.span(view.payload())?;
+        let label_range = PayloadRange::from_payload_bounds(view.payload(), current, label_len)?;
         if !labels.is_empty() {
             text_len = text_len.checked_add(1)?;
         }

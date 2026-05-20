@@ -148,7 +148,8 @@ impl NetworkStack {
             Some(packet) => packet,
             None => return false,
         };
-        if !header_packet.set_len(crate::net::l4::udp::UdpHeader::SIZE) {
+        if set_packet_visible_len(&mut header_packet, crate::net::l4::udp::UdpHeader::SIZE).is_err()
+        {
             return false;
         }
         let Some(header) =

@@ -9,6 +9,7 @@ use alloc::boxed::Box;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::{RawWaker, RawWakerVTable, Waker};
+use kernel_api::resource::net::PacketByteCount;
 
 unsafe fn noop_clone(data: *const ()) -> RawWaker {
     RawWaker::new(data, &NOOP_WAKER_VTABLE)
@@ -115,7 +116,7 @@ pub(crate) fn leaked_test_packet(cap: usize) -> PacketRef {
 pub(crate) fn leaked_test_packet_with_data(data: &[u8]) -> PacketRef {
     let cap = data.len().max(1);
     let mut packet = leaked_test_packet(cap);
-    assert!(packet.set_len(data.len()));
+    assert!(packet.set_len(PacketByteCount::new(data.len()).expect("non-empty test packet")));
     packet.data_mut()[..data.len()].copy_from_slice(data);
     packet
 }

@@ -258,7 +258,7 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         header_len,
                         transport_len,
@@ -278,7 +278,7 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         header_len,
                         transport_len,
@@ -300,7 +300,7 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         header_len,
                         transport_len,
@@ -321,7 +321,7 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         header_len,
                         transport_len,
@@ -409,7 +409,7 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         payload_offset,
                         transport_len,
@@ -429,7 +429,7 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         payload_offset,
                         transport_len,
@@ -444,7 +444,7 @@ impl RuntimeCommandHandler {
                     stack.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                    let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                         &payload,
                         payload_offset,
                         transport_len,

@@ -19,6 +19,7 @@ use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use kernel_api::resource::net::PacketByteCount;
 
 extern crate alloc;
 
@@ -260,11 +261,16 @@ pub fn process_received_packet_zero_copy_in(
     let Some(frame_len) = header_size.checked_add(payload_len) else {
         return;
     };
+    let Some(frame_len) = PacketByteCount::new(frame_len) else {
+        return;
+    };
     if !packet.set_len(frame_len) {
         return;
     }
 
-    if header_size > 0 && !packet.advance(header_size) {
+    if header_size > 0
+        && !packet.advance(PacketByteCount::new(header_size).expect("positive header size"))
+    {
         return;
     }
 
@@ -308,10 +314,15 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     let Some(frame_len) = header_size.checked_add(payload_len) else {
         return;
     };
+    let Some(frame_len) = PacketByteCount::new(frame_len) else {
+        return;
+    };
     if !packet.set_len(frame_len) {
         return;
     }
-    if header_size > 0 && !packet.advance(header_size) {
+    if header_size > 0
+        && !packet.advance(PacketByteCount::new(header_size).expect("positive header size"))
+    {
         return;
     }
 

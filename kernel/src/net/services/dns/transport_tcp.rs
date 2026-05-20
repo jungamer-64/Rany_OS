@@ -207,7 +207,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let window = crate::net::payload::PayloadWindowRequest::bounded_by(&payload, 2, msg_len)
+        let window = crate::net::payload::PayloadWindow::within_payload(&payload, 2, msg_len)
             .ok_or(DnsResponseCode::FormatError)?;
         let message = crate::net::payload::OwnedPayloadWindow::take_payload(payload, window)
             .map_err(|_| DnsResponseCode::FormatError)?;

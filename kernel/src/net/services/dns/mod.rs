@@ -324,22 +324,26 @@ impl DnsNameOwned {
 
         let mut writer = GeneratedPacketWriter::new(payload_len, DEFAULT_PACKET_HEADROOM)
             .ok_or(DnsNameError::AllocationFailed)?;
-        let mut labels = Vec::new();
+        let mut label_bounds = Vec::new();
         let mut payload_offset = 0usize;
         for label in trimmed.split('.') {
             let bytes = label.as_bytes();
             writer
                 .write_bytes(bytes)
                 .ok_or(DnsNameError::AllocationFailed)?;
-            labels.push(PayloadRange::new(payload_offset, bytes.len()));
+            label_bounds.push((payload_offset, bytes.len()));
             payload_offset = payload_offset.saturating_add(bytes.len());
         }
+        let payload = writer.finish().ok_or(DnsNameError::AllocationFailed)?;
+        let mut labels = Vec::new();
+        for (offset, len) in label_bounds {
+            labels.push(
+                PayloadRange::from_payload_bounds(&payload, offset, len)
+                    .ok_or(DnsNameError::AllocationFailed)?,
+            );
+        }
 
-        Ok(Self::from_payload_labels(
-            writer.finish().ok_or(DnsNameError::AllocationFailed)?,
-            labels,
-            text_len,
-        ))
+        Ok(Self::from_payload_labels(payload, labels, text_len))
     }
 
     pub fn labels(&self) -> &[PayloadRange] {

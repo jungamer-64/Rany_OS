@@ -7,8 +7,8 @@ use super::state::SelectedTls13Parameters;
 use super::state::{TlsHandshakeProgress, TlsRecordEpoch};
 use super::{
     AlertDescription, ContentType, GeneratedPacketWriter, HandshakeType, KeyUpdateRequest,
-    PacketPayload, PacketPayloadView, PayloadSpanMut, PayloadSpanRef, PayloadWindowRequest,
-    TlsBytes, TlsConnectionCore, TlsError, TlsResult, append_payload,
+    PacketPayload, PacketPayloadView, PayloadSpanMut, PayloadSpanRef, PayloadWindow, TlsBytes,
+    TlsConnectionCore, TlsError, TlsResult, append_payload,
 };
 use crate::net::security::tls::crypto::aes_gcm::AesGcmKey;
 use crate::net::security::tls::crypto::hkdf::{
@@ -127,13 +127,14 @@ impl TlsRecordPacket {
     }
 
     fn body(&self) -> TlsResult<TlsRecordBody<'_>> {
-        let request = self.body_request();
+        let request = self.body_request()?;
         let span = request.span(&self.payload).ok_or(TlsError::DecodeError)?;
         Ok(TlsRecordBody { span })
     }
 
-    fn body_request(&self) -> PayloadWindowRequest {
-        PayloadWindowRequest::new(Self::HEADER_LEN, self.header.body_len.get())
+    fn body_request(&self) -> TlsResult<PayloadWindow> {
+        PayloadWindow::within_payload(&self.payload, Self::HEADER_LEN, self.header.body_len.get())
+            .ok_or(TlsError::DecodeError)
     }
 
     fn into_payload(self) -> PacketPayload {
@@ -197,7 +198,7 @@ impl TlsConnectionCore {
 
     fn payload_window_mut(
         payload: &mut PacketPayload,
-        request: PayloadWindowRequest,
+        request: PayloadWindow,
     ) -> TlsResult<PayloadSpanMut<'_>> {
         PayloadSpanMut::from_window(payload, request).ok_or(TlsError::DecodeError)
     }
@@ -294,8 +295,11 @@ impl TlsConnectionCore {
         }
 
         let ciphertext_len = record_len - 16;
+        let tag_window = PayloadWindow::within_payload(payload, body_offset + ciphertext_len, 16)
+            .ok_or(TlsError::DecodeError)?;
         let tag = AeadTag::new(
-            PayloadSpanRef::from_range(payload, body_offset + ciphertext_len, 16)
+            tag_window
+                .span(payload)
                 .ok_or(TlsError::DecodeError)?
                 .read_array::<16>(0)
                 .ok_or(TlsError::DecodeError)?,
@@ -322,6 +326,8 @@ impl TlsConnectionCore {
 
         let aead_key = TlsAeadKey::from_cipher_suite(cipher, key.as_slice())?;
         let (nonce, aad) = Self::build_tls13_nonce_and_aad(iv.as_slice(), seq, record_len)?;
+        let ciphertext_window = PayloadWindow::within_payload(payload, body_offset, ciphertext_len)
+            .ok_or(TlsError::DecryptError)?;
         if let TlsAeadKey::ChaCha20Poly1305(key) = aead_key {
             let key_arr = *key.as_bytes();
             let poly_key_block = crate::net::security::tls::crypto::chacha20::chacha20_block(
@@ -333,7 +339,8 @@ impl TlsConnectionCore {
             poly_key.copy_from_slice(&poly_key_block[..32]);
             let expected =
                 chacha20_poly1305_tag_chunks(&poly_key, &aad, ciphertext_len, |visitor| {
-                    PayloadSpanRef::from_range(payload, body_offset, ciphertext_len)
+                    ciphertext_window
+                        .span(payload)
                         .expect("validated TLS ciphertext window")
                         .for_each_chunk(visitor)
                 })
@@ -341,11 +348,8 @@ impl TlsConnectionCore {
             if !constant_time_tag_eq(AeadTag::new(expected), tag) {
                 return Err(TlsError::DecryptError);
             }
-            let mut ciphertext = Self::payload_window_mut(
-                payload,
-                PayloadWindowRequest::new(body_offset, ciphertext_len),
-            )
-            .map_err(|_| TlsError::DecryptError)?;
+            let mut ciphertext = Self::payload_window_mut(payload, ciphertext_window)
+                .map_err(|_| TlsError::DecryptError)?;
             chacha20_xor_chunks_in_place(&key_arr, nonce.as_bytes(), 1, |visitor| {
                 let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
             });
@@ -361,18 +365,16 @@ impl TlsConnectionCore {
                 &aad,
                 ciphertext_len,
                 |visitor| {
-                    PayloadSpanRef::from_range(payload, body_offset, ciphertext_len)
+                    ciphertext_window
+                        .span(payload)
                         .expect("validated TLS ciphertext window")
                         .for_each_chunk(visitor)
                 },
                 tag.as_bytes(),
             )
             .map_err(|_| TlsError::DecryptError)?;
-            let mut ciphertext = Self::payload_window_mut(
-                payload,
-                PayloadWindowRequest::new(body_offset, ciphertext_len),
-            )
-            .map_err(|_| TlsError::DecryptError)?;
+            let mut ciphertext = Self::payload_window_mut(payload, ciphertext_window)
+                .map_err(|_| TlsError::DecryptError)?;
             key.xor_chunks_in_place(nonce.as_bytes(), |visitor| {
                 let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
             })
@@ -407,7 +409,7 @@ impl TlsConnectionCore {
                     self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
-                        let window = crate::net::payload::PayloadWindowRequest::bounded_by(
+                        let window = crate::net::payload::PayloadWindow::within_payload(
                             &record,
                             body_offset,
                             inner.content_len(),
@@ -478,7 +480,7 @@ impl TlsConnectionCore {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
                 ContentType::ApplicationData => {
-                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let window = crate::net::payload::PayloadWindow::within_payload(
                         &decrypted,
                         0,
                         inner.content_len(),
@@ -490,7 +492,7 @@ impl TlsConnectionCore {
                     append_payload(plaintext, inner_payload);
                 }
                 ContentType::Handshake => {
-                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let window = crate::net::payload::PayloadWindow::within_payload(
                         &decrypted,
                         0,
                         inner.content_len(),
@@ -507,7 +509,7 @@ impl TlsConnectionCore {
                     }
                 }
                 ContentType::Alert => {
-                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
+                    let window = crate::net::payload::PayloadWindow::within_payload(
                         &decrypted,
                         0,
                         inner.content_len(),
@@ -845,6 +847,8 @@ impl TlsConnectionCore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::vec::Vec;
+    use kernel_api::resource::net::PacketChain;
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
@@ -885,6 +889,26 @@ mod tests {
             });
         }
         writer.finish().expect("test coalesced packet is exact")
+    }
+
+    fn collect_payload_bytes(payload: &PacketPayload, bytes: &mut Vec<u8>) {
+        PacketPayloadView::new(payload).for_each_chunk(|chunk| {
+            bytes.extend_from_slice(chunk);
+        });
+    }
+
+    fn fragmented_payload_from_bytes(bytes: &[u8], cuts: &[usize]) -> PacketPayload {
+        let mut start = 0usize;
+        let mut segments = Vec::new();
+        for &cut in cuts {
+            assert!(start < cut && cut <= bytes.len());
+            segments.extend(test_payload(&bytes[start..cut]).into_segments());
+            start = cut;
+        }
+        if start < bytes.len() {
+            segments.extend(test_payload(&bytes[start..]).into_segments());
+        }
+        PacketPayload::chain(PacketChain::from_segments(segments))
     }
 
     fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
@@ -957,5 +981,32 @@ mod tests {
 
         assert!(payload_matches(&plaintext, b"alphabeta"));
         assert!(matches!(conn.record.read_seq.current(), Ok(2)));
+    }
+
+    #[test]
+    fn encrypted_record_body_and_tag_windows_cross_packet_segments() {
+        let config = super::super::TlsClientConfig::for_server_name(
+            "example.com",
+            super::super::TlsTrustAnchors::empty(),
+        )
+        .expect("test server name fits");
+        let mut conn =
+            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+        establish_loopback_record_keys(&mut conn);
+
+        let encrypted = conn
+            .tls13_encrypt_application_payload(test_payload(b"segmented-window"))
+            .expect("record encrypts");
+        let mut bytes = Vec::new();
+        collect_payload_bytes(&encrypted, &mut bytes);
+        assert!(bytes.len() > 24);
+        let fragmented = fragmented_payload_from_bytes(&bytes, &[6, bytes.len() - 8]);
+
+        let plaintext = conn
+            .process_incoming_payload(fragmented)
+            .expect("segmented body and tag decrypt");
+
+        assert!(payload_matches(&plaintext, b"segmented-window"));
+        assert!(matches!(conn.record.read_seq.current(), Ok(1)));
     }
 }

@@ -205,6 +205,18 @@ if rg -n "\\bmove_payload_window_owned\\b" "${network_tree[@]}" >/dev/null; then
   fail "found removed raw usize owned payload window helper"
 fi
 
+if rg -n "\\bPayloadWindowRequest\\b|\\bPayloadWindow::new\\s*\\(|\\bPayloadWindow::bounded_by\\s*\\(|\\bPayloadRange::new\\s*\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found unchecked payload window or range constructor"
+fi
+
+if rg -n "pub fn (set_len|advance|retreat)\\(&mut self, [a-z_]+: usize\\)" \
+  interfaces/kernel_api/src/types.rs interfaces/kernel_api/src/driver_abi.rs \
+  >/dev/null; then
+  fail "found raw usize PacketRef length API"
+fi
+
 if rg -n "\\bVerifiedPayloadWindow\\b" \
   kernel/src interfaces/kernel_api/src drivers/mlx5/src \
   >/dev/null; then
@@ -218,15 +230,21 @@ if rg -n "\\bfor_each_payload_window_chunk_mut\\b" \
 fi
 
 if rg -n "\\b(AbiNetTxSegmentV4|AbiNetTxSubmissionV4|AbiNetPortRuntimeV3|AbiNetPortRegistrationV5|AbiNetPortOpsV5)\\b" \
-  kernel/src interfaces/kernel_api/src drivers/mlx5/src interfaces/kernel_api/build.rs \
+  kernel/src interfaces/kernel_api/src drivers/mlx5/src drivers/virtio/src interfaces/kernel_api/build.rs \
   >/dev/null; then
   fail "found removed version-suffixed netdev ABI name"
 fi
 
 if rg -n "\\bNetTxSegment::new\\s*\\(" \
-  kernel/src interfaces/kernel_api/src drivers/mlx5/src \
+  kernel/src interfaces/kernel_api/src drivers/mlx5/src drivers/virtio/src \
   >/dev/null; then
   fail "found raw NetTxSegment constructor"
+fi
+
+if rg -n "\\bsegments_ptr\\b|\\bsegments_len\\b" \
+  drivers/mlx5/src drivers/virtio/src \
+  >/dev/null; then
+  fail "found driver-side raw AbiNetTxSubmission segment field access"
 fi
 
 if rg -n "\\bsubslice_offset\\b" \

@@ -7,7 +7,7 @@
 
 use super::tcb::tcp_flags;
 use crate::net::l4::types::{EndpointAddr, EndpointError};
-use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketByteCount, PacketPayload};
 
 #[inline]
 fn endpoint_ipv4_pair(local: EndpointAddr, remote: EndpointAddr) -> Option<([u8; 4], [u8; 4])> {
@@ -229,7 +229,9 @@ impl TcpSegmentBuilder {
             }
             TcpSegmentPayload::Packet(mut payload) => {
                 let can_retreat = if let PacketPayload::Single(ref mut packet) = payload {
-                    packet.retreat(header_len)
+                    packet.retreat(
+                        PacketByteCount::new(header_len).expect("TCP header length is non-zero"),
+                    )
                 } else {
                     false
                 };

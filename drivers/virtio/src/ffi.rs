@@ -5,12 +5,11 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::cmp;
-use core::slice;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError, AbiIoCompletion, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortOpsV5, AbiNetPortRegistrationV5, AbiNetPortRuntimeV3,
-    AbiNetPortStats, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmissionV4, AbiPacketRefRaw,
+    AbiNetPortInfo, AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats,
+    AbiNetRxFrameLayout, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiPacketRefRaw,
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
     PackedPciLocation, pack_version,
 };
@@ -18,9 +17,9 @@ use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::DriverType;
 use kernel_api::netdev::{
     NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDevicePort, NetTxMeta,
-    NetTxSegment, TxSubmission,
+    NetTxSegment, NonEmptyTxSegments, TxSubmission,
 };
-use kernel_api::resource::net::PacketRef;
+use kernel_api::resource::net::{PacketByteCount, PacketRef};
 use kernel_api::service::kernel;
 use spin::Mutex;
 
@@ -56,7 +55,7 @@ struct MappedBar {
 
 struct StandaloneNetRuntime {
     pci_locator: PackedPciLocation,
-    runtime: Mutex<Option<AbiNetPortRuntimeV3>>,
+    runtime: Mutex<Option<AbiNetPortRuntime>>,
 }
 
 impl StandaloneNetRuntime {
@@ -67,11 +66,11 @@ impl StandaloneNetRuntime {
         }
     }
 
-    fn install_runtime(&self, runtime: AbiNetPortRuntimeV3) {
+    fn install_runtime(&self, runtime: AbiNetPortRuntime) {
         *self.runtime.lock() = Some(runtime);
     }
 
-    fn runtime(&self) -> Option<AbiNetPortRuntimeV3> {
+    fn runtime(&self) -> Option<AbiNetPortRuntime> {
         *self.runtime.lock()
     }
 }
@@ -303,12 +302,12 @@ impl NetRuntime for StandaloneNetRuntime {
             return;
         };
         let mut raw = AbiPacketRefRaw::from_packet(packet);
-        let meta = AbiNetRxMeta {
-            queue_index,
-            header_len: header_len as u16,
-            payload_len: payload_len as u16,
-            flags: 0,
+        let Some(layout) =
+            AbiNetRxFrameLayout::new(header_len + payload_len, header_len, payload_len)
+        else {
+            return;
         };
+        let meta = AbiNetRxMeta::new(queue_index, layout, 0);
         let _ = (runtime.submit_rx_packet)(runtime.runtime_cookie, &mut raw, meta);
     }
 
@@ -342,7 +341,7 @@ impl NetRuntime for StandaloneNetRuntime {
     }
 }
 
-extern "C" fn netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntimeV3) -> i32 {
+extern "C" fn netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime) -> i32 {
     if runtime.is_null() {
         return AbiError::InvalidParam as i32;
     }
@@ -371,27 +370,31 @@ extern "C" fn netdev_bind(_opaque: u64, if_id: u16) -> i32 {
 
 extern "C" fn netdev_submit_tx_chain(
     _opaque: u64,
-    submission: *const AbiNetTxSubmissionV4,
+    submission: *const AbiNetTxSubmission,
     meta: AbiNetTxMeta,
 ) -> i32 {
     if submission.is_null() {
         return AbiError::InvalidParam as i32;
     }
     let submission = unsafe { &*submission };
-    let abi_segments = if submission.segments_ptr.is_null() {
-        &[]
-    } else {
-        unsafe { slice::from_raw_parts(submission.segments_ptr, submission.segments_len) }
+    let Some(abi_segments) = submission.segments() else {
+        return AbiError::InvalidParam as i32;
     };
     let mut segments = Vec::with_capacity(abi_segments.len());
-    for segment in abi_segments {
-        segments.push(NetTxSegment::new(
-            segment.cpu_ptr,
-            segment.device_addr,
-            segment.len,
-        ));
+    for segment in abi_segments.iter() {
+        let Some(len) = PacketByteCount::new(segment.len()) else {
+            return AbiError::InvalidParam as i32;
+        };
+        let Some(segment) = NetTxSegment::from_dma(segment.cpu_ptr(), segment.device_addr(), len)
+        else {
+            return AbiError::InvalidParam as i32;
+        };
+        segments.push(segment);
     }
-    let tx = TxSubmission::new(submission.lease_id, &segments);
+    let Some(non_empty_segments) = NonEmptyTxSegments::new(&segments) else {
+        return AbiError::InvalidParam as i32;
+    };
+    let tx = TxSubmission::new(submission.lease_id(), non_empty_segments);
     let tx_meta = NetTxMeta {
         queue_index: meta.has_queue_index.then_some(meta.queue_index),
         flags: meta.flags,
@@ -446,7 +449,7 @@ extern "C" fn netdev_stop(_opaque: u64) {
     if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_ref()
         && let Some(runtime) = state.net_runtime.as_ref()
     {
-        runtime.install_runtime(AbiNetPortRuntimeV3::new(
+        runtime.install_runtime(AbiNetPortRuntime::new(
             0,
             empty_alloc_packet,
             empty_submit_rx_packet,
@@ -493,10 +496,10 @@ extern "C" fn empty_update_link(_cookie: u64, _up: bool) -> i32 {
 
 extern "C" fn empty_log(_cookie: u64, _level: u32, _msg: *const u8, _len: usize) {}
 
-fn netdev_registration() -> AbiNetPortRegistrationV5 {
+fn netdev_registration() -> AbiNetPortRegistration {
     let adapter = VirtioNetDriverAdapter::new(PORT_INDEX);
     let info = adapter.info();
-    AbiNetPortRegistrationV5::new(
+    AbiNetPortRegistration::new(
         AbiNetPortInfo {
             port_id: info.port_id.as_u64(),
             queue_pairs: cmp::max(1, info.queue_pairs),
@@ -509,7 +512,7 @@ fn netdev_registration() -> AbiNetPortRegistrationV5 {
             name_len: virtio_net_name().len(),
         },
         0,
-        AbiNetPortOpsV5 {
+        AbiNetPortOps {
             start: netdev_start,
             bind: netdev_bind,
             submit_tx_chain: netdev_submit_tx_chain,

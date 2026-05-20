@@ -984,7 +984,7 @@ impl DhcpV6Client {
         }
 
         if let Some((server_duid_offset, server_duid_len)) = server_duid_range {
-            let retained_server_duid = crate::net::payload::PayloadWindowRequest::bounded_by(
+            let retained_server_duid = crate::net::payload::PayloadWindow::within_payload(
                 &payload,
                 server_duid_offset,
                 server_duid_len,

@@ -73,7 +73,7 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if packet.set_len(frame_len) {
+                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     self.transmit_packet_on(
                         Some(if_id),
                         kernel_api::resource::net::PacketPayload::single(packet),
@@ -111,7 +111,7 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if packet.set_len(frame_len) {
+                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     self.transmit_packet_on(
                         Some(if_id),
                         kernel_api::resource::net::PacketPayload::single(packet),
@@ -156,7 +156,7 @@ impl NetworkStack {
             return Some(());
         };
 
-        if packet.set_len(packet_len)
+        if set_packet_visible_len(&mut packet, packet_len).is_ok()
             && self.transmit_packet_on(
                 Some(if_id),
                 kernel_api::resource::net::PacketPayload::single(packet),
@@ -236,7 +236,7 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if packet.set_len(frame_len)
+                if set_packet_visible_len(&mut packet, frame_len).is_ok()
                     && self.transmit_packet_on(
                         Some(if_id),
                         kernel_api::resource::net::PacketPayload::single(packet),

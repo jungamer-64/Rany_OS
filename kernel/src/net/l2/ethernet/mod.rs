@@ -7,7 +7,7 @@
 //! as specified in Section 6.2 of the ExoRust specification.
 
 use core::fmt;
-use kernel_api::resource::net::PacketRef;
+use kernel_api::resource::net::{PacketByteCount, PacketRef};
 
 /// Ethernet frame type (EtherType)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -512,7 +512,17 @@ impl EthernetProcessor {
         len: usize,
         make_result: impl FnOnce(PacketRef) -> EthernetIngress,
     ) -> EthernetIngress {
-        if !packet.advance(offset) || !packet.set_len(len) {
+        let Some(len) = PacketByteCount::new(len) else {
+            self.stats.rx_errors += 1;
+            return EthernetIngress::Error;
+        };
+        if offset > 0
+            && !packet.advance(PacketByteCount::new(offset).expect("positive Ethernet offset"))
+        {
+            self.stats.rx_errors += 1;
+            return EthernetIngress::Error;
+        }
+        if !packet.set_len(len) {
             self.stats.rx_errors += 1;
             return EthernetIngress::Error;
         }

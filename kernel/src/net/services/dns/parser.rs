@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::PayloadRange;
+use crate::net::payload::{PayloadRange, PayloadSpanRef};
 
 struct DnsSectionCounts {
     qcount: usize,
@@ -312,10 +312,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let range = PayloadRange::new(offset + 1, len as usize);
-        range
-            .span(payload)
-            .map(|_| range)
+        PayloadRange::from_payload_bounds(payload, offset + 1, len as usize)
             .ok_or(DnsResponseCode::FormatError)
     }
 
@@ -381,15 +378,23 @@ impl DnsClient {
 
         while offset < end {
             let Some(len) = view.read_u8(offset).map(usize::from) else {
-                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
+                return DnsRecordData::Raw(
+                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
+                );
             };
             offset = offset.saturating_add(1);
             if offset.saturating_add(len) > end {
-                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
+                return DnsRecordData::Raw(
+                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
+                );
             }
-            let span = PayloadRange::new(offset, len);
-            if span.span(payload).is_none() {
-                return DnsRecordData::Raw(PayloadRange::new(rdata_offset, rdlength));
+            let Some(span) = PayloadRange::from_payload_bounds(payload, offset, len) else {
+                return DnsRecordData::Raw(
+                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
+                );
             };
             text_len = text_len.saturating_add(len);
             spans.push(span);

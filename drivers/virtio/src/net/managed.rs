@@ -14,6 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Waker;
 use exorust_sync::{IrqPoisonLock, PoisonLock};
 use kernel_api::netdev::{NetDeviceInfo, NetPortStats, NetTxMeta, TxSubmission};
+use kernel_api::resource::net::PacketByteCount;
 
 const DEFAULT_MTU: u32 = 1500;
 
@@ -501,7 +502,11 @@ impl VirtioNetDevice {
 
                 let header_len = VirtioNetHeader::SIZE;
                 let packet_len = core::cmp::min(len as usize, inflight.packet.capacity());
-                if !inflight.packet.set_len(packet_len) {
+                let Some(packet_byte_count) = PacketByteCount::new(packet_len) else {
+                    rx_queue.free_desc_chain(desc_idx);
+                    continue;
+                };
+                if !inflight.packet.set_len(packet_byte_count) {
                     rx_queue.free_desc_chain(desc_idx);
                     continue;
                 }
@@ -520,14 +525,17 @@ impl VirtioNetDevice {
                 let payload_len = packet_len.saturating_sub(header_len);
 
                 if let Some(runtime) = crate::net::virtio_net_runtime(self.virtio_index) {
+                    let Some(layout) = kernel_api::netdev::NetRxFrameLayout::new(
+                        packet_byte_count,
+                        header_len,
+                        payload_len,
+                    ) else {
+                        rx_queue.free_desc_chain(desc_idx);
+                        continue;
+                    };
                     let _ = runtime.submit_rx(
                         inflight.packet,
-                        kernel_api::netdev::NetRxMeta {
-                            queue_index,
-                            header_len: header_len as u16,
-                            payload_len: payload_len as u16,
-                            flags: 0,
-                        },
+                        kernel_api::netdev::NetRxMeta::new(queue_index, layout, 0),
                     );
                 } else {
                     self.runtime.receive_packet(

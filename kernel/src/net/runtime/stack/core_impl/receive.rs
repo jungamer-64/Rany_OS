@@ -52,7 +52,7 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
+                let Some(window) = crate::net::payload::PayloadWindow::within_payload(
                     &payload,
                     data_offset,
                     data_len,

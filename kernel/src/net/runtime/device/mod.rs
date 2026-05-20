@@ -2661,7 +2661,7 @@ mod tests {
     fn packet_window_descriptors_reference_original_packet_range() {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let mut packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
-        assert!(packet.set_len(32));
+        assert!(packet.set_len(PacketByteCount::new(32).expect("non-empty packet")));
         let base_ptr = packet.data().as_ptr() as usize;
         let base_device_addr = packet.device_address();
         let packets = alloc::vec![packet];
@@ -2696,11 +2696,11 @@ mod tests {
     fn tx_owner_group_completes_after_all_fragment_leases() {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let mut owner = crate::net::datapath::mempool::alloc_packet().expect("owner");
-        assert!(owner.set_len(32));
+        assert!(owner.set_len(PacketByteCount::new(32).expect("non-empty owner")));
         let mut header_a = crate::net::datapath::mempool::alloc_packet().expect("header a");
-        assert!(header_a.set_len(8));
+        assert!(header_a.set_len(PacketByteCount::new(8).expect("non-empty header")));
         let mut header_b = crate::net::datapath::mempool::alloc_packet().expect("header b");
-        assert!(header_b.set_len(8));
+        assert!(header_b.set_len(PacketByteCount::new(8).expect("non-empty header")));
         let (completion_id, future) = register_tx_completion_in(default_runtime());
         let group_id = register_tx_owner_group_in(
             default_runtime(),

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{OwnedPayloadWindow, PayloadWindowRequest};
+use crate::net::payload::{OwnedPayloadWindow, PayloadWindow};
 use kernel_api::resource::net::PacketPayload;
 
 struct Ipv4NonFragmentIngress {
@@ -79,11 +79,9 @@ impl Ipv4Processor {
         };
 
         let original = PacketPayload::single(packet_ref);
-        let Some(window) = PayloadWindowRequest::bounded_by(
-            &original,
-            ingress.payload_offset,
-            ingress.payload_len,
-        ) else {
+        let Some(window) =
+            PayloadWindow::within_payload(&original, ingress.payload_offset, ingress.payload_len)
+        else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };

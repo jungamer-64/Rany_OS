@@ -771,6 +771,40 @@ impl AbiNetTxSegment {
     pub const fn len(self) -> usize {
         self.len
     }
+
+    pub const fn is_valid(self) -> bool {
+        !self.cpu_ptr.is_null() && self.device_addr != 0 && self.len != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct AbiNetTxSegments<'a> {
+    segments: &'a [AbiNetTxSegment],
+}
+
+impl<'a> AbiNetTxSegments<'a> {
+    pub fn new(segments: &'a [AbiNetTxSegment]) -> Option<Self> {
+        if segments.is_empty() || segments.iter().any(|segment| !segment.is_valid()) {
+            return None;
+        }
+        Some(Self { segments })
+    }
+
+    pub const fn as_slice(self) -> &'a [AbiNetTxSegment] {
+        self.segments
+    }
+
+    pub fn iter(self) -> core::slice::Iter<'a, AbiNetTxSegment> {
+        self.segments.iter()
+    }
+
+    pub const fn first(self) -> &'a AbiNetTxSegment {
+        &self.segments[0]
+    }
+
+    pub const fn len(self) -> usize {
+        self.segments.len()
+    }
 }
 
 #[repr(C)]
@@ -783,9 +817,7 @@ pub struct AbiNetTxSubmission {
 
 impl AbiNetTxSubmission {
     pub fn new(lease_id: u64, segments: &[AbiNetTxSegment]) -> Option<Self> {
-        if segments.is_empty() {
-            return None;
-        }
+        AbiNetTxSegments::new(segments)?;
         Some(Self {
             lease_id,
             segments_ptr: segments.as_ptr(),
@@ -797,11 +829,83 @@ impl AbiNetTxSubmission {
         self.lease_id
     }
 
-    pub fn segments(&self) -> Option<&[AbiNetTxSegment]> {
+    pub fn segments(&self) -> Option<AbiNetTxSegments<'_>> {
         if self.segments_ptr.is_null() || self.segments_len == 0 {
             return None;
         }
-        Some(unsafe { core::slice::from_raw_parts(self.segments_ptr, self.segments_len) })
+        AbiNetTxSegments::new(unsafe {
+            core::slice::from_raw_parts(self.segments_ptr, self.segments_len)
+        })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn abi_tx_submission_rejects_empty_and_invalid_segments() {
+        static BYTES: [u8; 4] = [0; 4];
+        let valid = AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, BYTES.len())
+            .expect("valid ABI segment");
+
+        assert!(AbiNetTxSubmission::new(1, &[]).is_none());
+
+        let null_cpu = [AbiNetTxSegment {
+            cpu_ptr: core::ptr::null(),
+            device_addr: 0x1000,
+            len: 1,
+        }];
+        let zero_device = [AbiNetTxSegment {
+            cpu_ptr: BYTES.as_ptr(),
+            device_addr: 0,
+            len: 1,
+        }];
+        let zero_len = [AbiNetTxSegment {
+            cpu_ptr: BYTES.as_ptr(),
+            device_addr: 0x1000,
+            len: 0,
+        }];
+
+        assert!(AbiNetTxSegments::new(&null_cpu).is_none());
+        assert!(AbiNetTxSegments::new(&zero_device).is_none());
+        assert!(AbiNetTxSegments::new(&zero_len).is_none());
+
+        let raw_invalid = AbiNetTxSubmission {
+            lease_id: 7,
+            segments_ptr: zero_len.as_ptr(),
+            segments_len: zero_len.len(),
+        };
+        assert!(raw_invalid.segments().is_none());
+
+        let valid_segments = [valid];
+        let submission = AbiNetTxSubmission::new(9, &valid_segments).expect("valid ABI submission");
+        assert_eq!(submission.lease_id(), 9);
+        assert_eq!(submission.segments().expect("validated segments").len(), 1);
+    }
+
+    #[test]
+    fn abi_tx_segments_preserve_fragmented_descriptor_windows() {
+        static FIRST: [u8; 3] = [1, 2, 3];
+        static SECOND: [u8; 5] = [4, 5, 6, 7, 8];
+        let segments = [
+            AbiNetTxSegment::from_checked_parts(FIRST.as_ptr(), 0x1000, FIRST.len())
+                .expect("first segment"),
+            AbiNetTxSegment::from_checked_parts(SECOND.as_ptr(), 0x2000, SECOND.len())
+                .expect("second segment"),
+        ];
+
+        let validated = AbiNetTxSegments::new(&segments).expect("fragmented descriptors");
+        assert_eq!(validated.len(), 2);
+        assert_eq!(validated.first().device_addr(), 0x1000);
+        assert_eq!(validated.as_slice()[1].len(), SECOND.len());
+
+        let submission = AbiNetTxSubmission::new(11, &segments).expect("fragmented submission");
+        let submitted = submission
+            .segments()
+            .expect("validated submission segments");
+        assert_eq!(submitted.as_slice()[0].cpu_ptr(), FIRST.as_ptr());
+        assert_eq!(submitted.as_slice()[1].device_addr(), 0x2000);
     }
 }
 
@@ -1060,6 +1164,9 @@ extern "C" fn abi_packet_set_len(storage: *mut AbiPacketRefStorage, len: usize) 
     if storage.is_null() {
         return false;
     }
+    let Some(len) = crate::resource::net::PacketByteCount::new(len) else {
+        return false;
+    };
     unsafe { abi_packet_state_mut(&mut *storage).set_len(len) }
 }
 
@@ -1095,6 +1202,9 @@ extern "C" fn abi_packet_advance(storage: *mut AbiPacketRefStorage, size: usize)
     if storage.is_null() {
         return false;
     }
+    let Some(size) = crate::resource::net::PacketByteCount::new(size) else {
+        return false;
+    };
     unsafe { abi_packet_state_mut(&mut *storage).advance(size) }
 }
 
@@ -1102,6 +1212,9 @@ extern "C" fn abi_packet_retreat(storage: *mut AbiPacketRefStorage, size: usize)
     if storage.is_null() {
         return false;
     }
+    let Some(size) = crate::resource::net::PacketByteCount::new(size) else {
+        return false;
+    };
     unsafe { abi_packet_state_mut(&mut *storage).retreat(size) }
 }
 
