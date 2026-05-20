@@ -4,48 +4,69 @@
 
 use arrayvec::ArrayVec;
 
-use super::super::state::TlsConnectionPhase;
+use super::super::state::{TlsHandshakeProgress, TlsRecordEpoch};
 use super::super::{
     ContentType, PacketPayload, PayloadSpanRef, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY,
     TlsConnectionCore, TlsError, TlsResult, ecdh,
 };
-use crate::net::security::tls::crypto::{
-    SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, tls13_derive_secret, tls13_derive_secret_sha384,
-    tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384, tls13_early_secret,
-    tls13_early_secret_sha384, tls13_finished_key, tls13_finished_key_sha384,
-    tls13_handshake_secret, tls13_handshake_secret_sha384, tls13_master_secret,
-    tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
+use crate::net::security::tls::crypto::hkdf::{
+    tls13_derive_secret, tls13_derive_secret_sha384, tls13_derive_traffic_keys,
+    tls13_derive_traffic_keys_sha384, tls13_early_secret, tls13_early_secret_sha384,
+    tls13_finished_key, tls13_finished_key_sha384, tls13_handshake_secret,
+    tls13_handshake_secret_sha384, tls13_master_secret, tls13_master_secret_sha384,
+    tls13_verify_data, tls13_verify_data_sha384,
 };
+use crate::net::security::tls::crypto::material::{
+    FinishedKey, HandshakeSecret, MasterSecret, Sha256Hash, Sha384Hash, TrafficSecret,
+    TranscriptHash,
+};
+use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 use crate::net::security::tls::protocol::SignatureScheme;
 
 impl TlsConnectionCore {
     pub(crate) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
-        let cipher = self.negotiation.negotiated.cipher()?;
+        let cipher = self.negotiation.selected()?.cipher();
         let key_len = cipher.key_len();
 
         if cipher.uses_sha384() {
-            let transcript_ch_sh = self.transcript_hash_sha384();
+            let transcript_ch_sh = TranscriptHash::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha384(),
+            );
             let early_secret = tls13_early_secret_sha384(None);
-            let handshake_secret = tls13_handshake_secret_sha384(
-                &early_secret,
-                self.handshake_secrets.pre_master_secret.as_slice(),
+            let handshake_secret = HandshakeSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                tls13_handshake_secret_sha384(
+                    &early_secret,
+                    self.handshake_secrets.pre_master_secret()?.as_slice(),
+                ),
             );
             let chs =
-                tls13_derive_secret_sha384(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
+                TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(tls13_derive_secret_sha384(
+                    handshake_secret.as_bytes(),
+                    b"c hs traffic",
+                    transcript_ch_sh.as_bytes(),
+                ));
             let shs =
-                tls13_derive_secret_sha384(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
-            self.tls13.client_hs_traffic_secret = chs;
-            self.tls13.server_hs_traffic_secret = shs;
+                TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(tls13_derive_secret_sha384(
+                    handshake_secret.as_bytes(),
+                    b"s hs traffic",
+                    transcript_ch_sh.as_bytes(),
+                ));
+            self.tls13
+                .client_hs_traffic_secret
+                .copy_from_slice(chs.as_bytes());
+            self.tls13
+                .server_hs_traffic_secret
+                .copy_from_slice(shs.as_bytes());
 
             let mut server_iv = [0u8; 12];
             let mut client_iv = [0u8; 12];
             tls13_derive_traffic_keys_sha384(
-                &shs,
+                shs.as_bytes(),
                 &mut self.tls13.hs_read_key.as_mut_storage()[..key_len],
                 &mut server_iv,
             );
             tls13_derive_traffic_keys_sha384(
-                &chs,
+                chs.as_bytes(),
                 &mut self.tls13.hs_write_key.as_mut_storage()[..key_len],
                 &mut client_iv,
             );
@@ -61,29 +82,46 @@ impl TlsConnectionCore {
             Self::set_tls_bytes(&mut self.tls13.hs_write_iv, &client_iv)?;
             self.tls13.hs_read_seq.reset();
             self.tls13.hs_write_seq.reset();
-            let ms = tls13_master_secret_sha384(&handshake_secret);
-            self.handshake_secrets.master_secret.copy_from_slice(&ms);
+            let ms = MasterSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                tls13_master_secret_sha384(handshake_secret.as_bytes()),
+            );
+            self.handshake_secrets
+                .master_secret
+                .copy_from_slice(ms.as_bytes());
         } else {
-            let transcript_ch_sh = self.transcript_hash_sha256();
-            let early_secret = tls13_early_secret(None);
-            let handshake_secret = tls13_handshake_secret(
-                &early_secret,
-                self.handshake_secrets.pre_master_secret.as_slice(),
+            let transcript_ch_sh = TranscriptHash::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha256(),
             );
-            let chs = tls13_derive_secret(&handshake_secret, b"c hs traffic", &transcript_ch_sh);
-            let shs = tls13_derive_secret(&handshake_secret, b"s hs traffic", &transcript_ch_sh);
-            self.tls13.client_hs_traffic_secret[..32].copy_from_slice(&chs);
-            self.tls13.server_hs_traffic_secret[..32].copy_from_slice(&shs);
+            let early_secret = tls13_early_secret(None);
+            let handshake_secret =
+                HandshakeSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_handshake_secret(
+                    &early_secret,
+                    self.handshake_secrets.pre_master_secret()?.as_slice(),
+                ));
+            let chs = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_derive_secret(
+                handshake_secret.as_bytes(),
+                b"c hs traffic",
+                transcript_ch_sh.as_bytes(),
+            ));
+            let shs = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_derive_secret(
+                handshake_secret.as_bytes(),
+                b"s hs traffic",
+                transcript_ch_sh.as_bytes(),
+            ));
+            self.tls13.client_hs_traffic_secret[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(chs.as_bytes());
+            self.tls13.server_hs_traffic_secret[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(shs.as_bytes());
 
             let mut server_iv = [0u8; 12];
             let mut client_iv = [0u8; 12];
             tls13_derive_traffic_keys(
-                &shs,
+                shs.as_bytes(),
                 &mut self.tls13.hs_read_key.as_mut_storage()[..key_len],
                 &mut server_iv,
             );
             tls13_derive_traffic_keys(
-                &chs,
+                chs.as_bytes(),
                 &mut self.tls13.hs_write_key.as_mut_storage()[..key_len],
                 &mut client_iv,
             );
@@ -99,11 +137,15 @@ impl TlsConnectionCore {
             Self::set_tls_bytes(&mut self.tls13.hs_write_iv, &client_iv)?;
             self.tls13.hs_read_seq.reset();
             self.tls13.hs_write_seq.reset();
-            let ms = tls13_master_secret(&handshake_secret);
-            self.handshake_secrets.master_secret[..32].copy_from_slice(&ms);
+            let ms = MasterSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_master_secret(
+                handshake_secret.as_bytes(),
+            ));
+            self.handshake_secrets.master_secret[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(ms.as_bytes());
         }
 
-        self.negotiation.phase = TlsConnectionPhase::encrypted_extensions_pending();
+        self.negotiation.progress =
+            TlsHandshakeProgress::EncryptedExtensionsPending(self.negotiation.selected()?);
         Ok(())
     }
 
@@ -135,7 +177,8 @@ impl TlsConnectionCore {
                 return Err(TlsError::DecodeError);
             }
         }
-        self.negotiation.phase = TlsConnectionPhase::certificate_pending();
+        self.negotiation.progress =
+            TlsHandshakeProgress::CertificatePending(self.negotiation.selected()?);
         Ok(())
     }
 
@@ -211,11 +254,7 @@ impl TlsConnectionCore {
 
         let verification_context = crate::net::security::x509::TlsServerVerificationContext {
             now_unix: crate::drivers::time::unix_timestamp(),
-            server_name: self
-                .negotiation
-                .server_name
-                .as_ref()
-                .map(|name| name.as_str()),
+            server_name: self.config.server_name.as_str(),
             trusted_roots: &ca_certs,
         };
         let verified_certificate =
@@ -224,7 +263,8 @@ impl TlsConnectionCore {
                 .ok_or(TlsError::CertificateError)?;
         drop(ca_certs);
         self.install_verified_server_certificate(verified_certificate)?;
-        self.negotiation.phase = TlsConnectionPhase::certificate_verify_pending();
+        self.negotiation.progress =
+            TlsHandshakeProgress::CertificateVerifyPending(self.negotiation.selected()?);
         Ok(())
     }
 
@@ -247,7 +287,8 @@ impl TlsConnectionCore {
             .ok_or(TlsError::DecodeError)?;
 
         self.verify_tls13_certificate_verify(sig_algorithm, signature.as_slice())?;
-        self.negotiation.phase = TlsConnectionPhase::server_finished_pending();
+        self.negotiation.progress =
+            TlsHandshakeProgress::ServerFinishedPending(self.negotiation.selected()?);
         Ok(())
     }
 
@@ -257,7 +298,7 @@ impl TlsConnectionCore {
         signature: &[u8],
     ) -> TlsResult<()> {
         const LABEL: &[u8] = b"TLS 1.3, server CertificateVerify";
-        let use_384 = self.negotiation.negotiated.cipher()?.uses_sha384();
+        let use_384 = self.negotiation.selected()?.cipher().uses_sha384();
         let mut content = [0u8; 64 + LABEL.len() + 1 + SHA384_OUTPUT_SIZE];
         content[..64].fill(0x20);
         let mut offset = 64;
@@ -288,7 +329,7 @@ impl TlsConnectionCore {
         signature: &[u8],
     ) -> TlsResult<()> {
         let selected_scheme =
-            SignatureScheme::from_wire(sig_algorithm).ok_or(TlsError::UnsupportedCipherSuite)?;
+            SignatureScheme::parse_wire(sig_algorithm).ok_or(TlsError::UnsupportedCipherSuite)?;
         if !self.config.signature_schemes.contains(selected_scheme) {
             return Err(TlsError::UnsolicitedSignatureScheme);
         }
@@ -321,11 +362,7 @@ impl TlsConnectionCore {
         signature: &[u8],
         hash_alg: crate::net::security::rsa::HashAlgorithm,
     ) -> TlsResult<()> {
-        let server_public_key = self
-            .handshake_secrets
-            .server_public_key
-            .as_ref()
-            .ok_or(TlsError::CertificateError)?;
+        let server_public_key = self.handshake_secrets.server_public_key()?;
         let (modulus, exponent) = server_public_key
             .rsa_components()
             .ok_or(TlsError::CertificateError)?;
@@ -357,9 +394,8 @@ impl TlsConnectionCore {
     ) -> TlsResult<()> {
         let public_key = self
             .handshake_secrets
-            .server_public_key
-            .as_ref()
-            .and_then(|key| key.ecdsa_p256_point())
+            .server_public_key()?
+            .ecdsa_p256_point()
             .ok_or(TlsError::CertificateError)?;
         let digest = crate::crypto::sha256::compute(message);
         ecdh::p256::ecdsa_p256_verify(public_key, &digest, signature)
@@ -373,9 +409,8 @@ impl TlsConnectionCore {
     ) -> TlsResult<()> {
         let public_key = self
             .handshake_secrets
-            .server_public_key
-            .as_ref()
-            .and_then(|key| key.ecdsa_p384_point())
+            .server_public_key()?
+            .ecdsa_p384_point()
             .ok_or(TlsError::CertificateError)?;
         let digest = crate::crypto::sha384::compute(message);
         ecdh::p384::ecdsa_p384_verify(public_key, &digest, signature)
@@ -394,54 +429,77 @@ impl TlsConnectionCore {
             .read_fixed_bytes::<SHA384_OUTPUT_SIZE>(hash_len)
             .ok_or(TlsError::DecodeError)?;
 
-        if self.negotiation.negotiated.cipher()?.uses_sha384() {
-            let transcript = self.transcript_hash_sha384();
+        if self.negotiation.selected()?.cipher().uses_sha384() {
+            let transcript = TranscriptHash::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha384(),
+            );
             let mut shs = [0u8; 48];
             shs.copy_from_slice(&self.tls13.server_hs_traffic_secret);
-            let finished_key = tls13_finished_key_sha384(&shs);
-            let expected = tls13_verify_data_sha384(&finished_key, &transcript);
+            let shs = TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(shs);
+            let finished_key = FinishedKey::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                tls13_finished_key_sha384(shs.as_bytes()),
+            );
+            let expected = tls13_verify_data_sha384(finished_key.as_bytes(), transcript.as_bytes());
             if !constant_time_eq(received.as_slice(), &expected[..hash_len]) {
                 return Err(TlsError::HandshakeFailure);
             }
         } else {
-            let transcript = self.transcript_hash_sha256();
+            let transcript = TranscriptHash::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha256(),
+            );
             let mut shs = [0u8; 32];
             shs.copy_from_slice(&self.tls13.server_hs_traffic_secret[..32]);
-            let finished_key = tls13_finished_key(&shs);
-            let expected = tls13_verify_data(&finished_key, &transcript);
+            let shs = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(shs);
+            let finished_key = FinishedKey::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                tls13_finished_key(shs.as_bytes()),
+            );
+            let expected = tls13_verify_data(finished_key.as_bytes(), transcript.as_bytes());
             if !constant_time_eq(received.as_slice(), &expected[..hash_len]) {
                 return Err(TlsError::HandshakeFailure);
             }
         }
 
-        self.negotiation.phase = TlsConnectionPhase::server_finished_received();
+        self.negotiation.progress =
+            TlsHandshakeProgress::ServerFinishedReceived(self.negotiation.selected()?);
         Ok(())
     }
 
     pub(super) fn compute_tls13_client_verify_data(&self) -> TlsResult<([u8; 48], usize)> {
-        if self.negotiation.negotiated.cipher()?.uses_sha384() {
-            let transcript = self.transcript_hash_sha384();
+        if self.negotiation.selected()?.cipher().uses_sha384() {
+            let transcript = TranscriptHash::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha384(),
+            );
             let mut chs = [0u8; 48];
             chs.copy_from_slice(&self.tls13.client_hs_traffic_secret);
-            let finished_key = tls13_finished_key_sha384(&chs);
+            let chs = TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(chs);
+            let finished_key = FinishedKey::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                tls13_finished_key_sha384(chs.as_bytes()),
+            );
             Ok((
-                tls13_verify_data_sha384(&finished_key, &transcript),
+                tls13_verify_data_sha384(finished_key.as_bytes(), transcript.as_bytes()),
                 SHA384_OUTPUT_SIZE,
             ))
         } else {
-            let transcript = self.transcript_hash_sha256();
+            let transcript = TranscriptHash::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha256(),
+            );
             let mut chs = [0u8; 32];
             chs.copy_from_slice(&self.tls13.client_hs_traffic_secret[..32]);
-            let finished_key = tls13_finished_key(&chs);
+            let chs = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(chs);
+            let finished_key = FinishedKey::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                tls13_finished_key(chs.as_bytes()),
+            );
             let mut out = [0u8; 48];
-            out[..SHA256_OUTPUT_SIZE]
-                .copy_from_slice(&tls13_verify_data(&finished_key, &transcript));
+            out[..SHA256_OUTPUT_SIZE].copy_from_slice(&tls13_verify_data(
+                finished_key.as_bytes(),
+                transcript.as_bytes(),
+            ));
             Ok((out, SHA256_OUTPUT_SIZE))
         }
     }
 
     pub fn build_client_finished_tls13_payload(&mut self) -> TlsResult<PacketPayload> {
-        if !self.negotiation.phase.is_server_finished_received() {
+        if !self.negotiation.progress.is_server_finished_received() {
             return Err(TlsError::UnexpectedMessage);
         }
 
@@ -456,46 +514,85 @@ impl TlsConnectionCore {
         let mut inner = [0u8; 5 + SHA384_OUTPUT_SIZE];
         inner[..4 + verify_len].copy_from_slice(finished_msg);
         inner[4 + verify_len] = ContentType::Handshake as u8;
-        let encrypted = self.tls13_encrypt_record(&inner[..5 + verify_len], true)?;
+        let encrypted =
+            self.tls13_encrypt_record(&inner[..5 + verify_len], TlsRecordEpoch::Handshake)?;
         self.tls13_derive_application_keys()?;
         Ok(encrypted)
     }
 
     pub(super) fn tls13_derive_application_keys(&mut self) -> TlsResult<()> {
-        let cipher = self.negotiation.negotiated.cipher()?;
+        let cipher = self.negotiation.selected()?.cipher();
         let key_len = cipher.key_len();
         if cipher.uses_sha384() {
-            let transcript = self.transcript_hash_sha384();
+            let transcript = TranscriptHash::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha384(),
+            );
             let mut master_secret = [0u8; 48];
             master_secret.copy_from_slice(&self.handshake_secrets.master_secret);
-            let cas = tls13_derive_secret_sha384(&master_secret, b"c ap traffic", &transcript);
-            let sas = tls13_derive_secret_sha384(&master_secret, b"s ap traffic", &transcript);
-            self.tls13.client_app_traffic_secret = cas;
-            self.tls13.server_app_traffic_secret = sas;
+            let master_secret = MasterSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(master_secret);
+            let cas =
+                TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(tls13_derive_secret_sha384(
+                    master_secret.as_bytes(),
+                    b"c ap traffic",
+                    transcript.as_bytes(),
+                ));
+            let sas =
+                TrafficSecret::<Sha384Hash, SHA384_OUTPUT_SIZE>::new(tls13_derive_secret_sha384(
+                    master_secret.as_bytes(),
+                    b"s ap traffic",
+                    transcript.as_bytes(),
+                ));
+            self.tls13
+                .client_app_traffic_secret
+                .copy_from_slice(cas.as_bytes());
+            self.tls13
+                .server_app_traffic_secret
+                .copy_from_slice(sas.as_bytes());
             let mut server_key = [0u8; 32];
             let mut server_iv = [0u8; 12];
             let mut client_key = [0u8; 32];
             let mut client_iv = [0u8; 12];
-            tls13_derive_traffic_keys_sha384(&sas, &mut server_key[..key_len], &mut server_iv);
-            tls13_derive_traffic_keys_sha384(&cas, &mut client_key[..key_len], &mut client_iv);
+            tls13_derive_traffic_keys_sha384(
+                sas.as_bytes(),
+                &mut server_key[..key_len],
+                &mut server_iv,
+            );
+            tls13_derive_traffic_keys_sha384(
+                cas.as_bytes(),
+                &mut client_key[..key_len],
+                &mut client_iv,
+            );
             Self::set_tls_bytes(&mut self.record.read_key, &server_key[..key_len])?;
             Self::set_tls_bytes(&mut self.record.read_iv, &server_iv)?;
             Self::set_tls_bytes(&mut self.record.write_key, &client_key[..key_len])?;
             Self::set_tls_bytes(&mut self.record.write_iv, &client_iv)?;
         } else {
-            let transcript = self.transcript_hash_sha256();
+            let transcript = TranscriptHash::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(
+                self.transcript_hash_sha256(),
+            );
             let mut master_secret = [0u8; 32];
             master_secret.copy_from_slice(&self.handshake_secrets.master_secret[..32]);
-            let cas = tls13_derive_secret(&master_secret, b"c ap traffic", &transcript);
-            let sas = tls13_derive_secret(&master_secret, b"s ap traffic", &transcript);
-            self.tls13.client_app_traffic_secret[..32].copy_from_slice(&cas);
-            self.tls13.server_app_traffic_secret[..32].copy_from_slice(&sas);
+            let master_secret = MasterSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(master_secret);
+            let cas = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_derive_secret(
+                master_secret.as_bytes(),
+                b"c ap traffic",
+                transcript.as_bytes(),
+            ));
+            let sas = TrafficSecret::<Sha256Hash, SHA256_OUTPUT_SIZE>::new(tls13_derive_secret(
+                master_secret.as_bytes(),
+                b"s ap traffic",
+                transcript.as_bytes(),
+            ));
+            self.tls13.client_app_traffic_secret[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(cas.as_bytes());
+            self.tls13.server_app_traffic_secret[..SHA256_OUTPUT_SIZE]
+                .copy_from_slice(sas.as_bytes());
             let mut server_key = [0u8; 32];
             let mut server_iv = [0u8; 12];
             let mut client_key = [0u8; 32];
             let mut client_iv = [0u8; 12];
-            tls13_derive_traffic_keys(&sas, &mut server_key[..key_len], &mut server_iv);
-            tls13_derive_traffic_keys(&cas, &mut client_key[..key_len], &mut client_iv);
+            tls13_derive_traffic_keys(sas.as_bytes(), &mut server_key[..key_len], &mut server_iv);
+            tls13_derive_traffic_keys(cas.as_bytes(), &mut client_key[..key_len], &mut client_iv);
             Self::set_tls_bytes(&mut self.record.read_key, &server_key[..key_len])?;
             Self::set_tls_bytes(&mut self.record.read_iv, &server_iv)?;
             Self::set_tls_bytes(&mut self.record.write_key, &client_key[..key_len])?;
@@ -504,7 +601,7 @@ impl TlsConnectionCore {
 
         self.record.read_seq.reset();
         self.record.write_seq.reset();
-        self.negotiation.phase = TlsConnectionPhase::established();
+        self.negotiation.progress = TlsHandshakeProgress::Established(self.negotiation.selected()?);
         Ok(())
     }
 }
@@ -527,11 +624,15 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn certificate_verify_rejects_unoffered_signature_scheme() {
-        let config = crate::net::security::tls::TlsClientConfig::new()
-            .with_signature_schemes(&[
-                crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256,
-            ])
-            .expect("test signature scheme set is non-empty");
+        let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+            "example.com",
+            crate::net::security::tls::TlsTrustAnchors::empty(),
+        )
+        .expect("test server name fits")
+        .with_signature_schemes(&[
+            crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256,
+        ])
+        .expect("test signature scheme set is non-empty");
         let conn =
             TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 

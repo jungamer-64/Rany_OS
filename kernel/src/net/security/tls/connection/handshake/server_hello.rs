@@ -2,10 +2,10 @@
 // kernel/src/net/security/tls/connection/handshake/server_hello.rs
 // ============================================================================
 
-use super::super::state::{NegotiatedTlsParameters, TlsConnectionPhase};
+use super::super::state::{SelectedTls13Parameters, TlsHandshakeProgress, TlsServerRandom};
 use super::super::{PayloadSpanRef, TlsConnectionCore, ecdh};
+use crate::net::security::tls::TlsVersion;
 use crate::net::security::tls::error::{TlsError, TlsResult};
-use crate::net::security::tls::{NegotiatedCipherSuite, TlsVersion};
 
 impl TlsConnectionCore {
     pub(super) fn process_server_hello(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {
@@ -17,7 +17,8 @@ impl TlsConnectionCore {
         if legacy_version != 0x0303 {
             return Err(TlsError::VersionMismatch);
         }
-        self.negotiation.server_random = data.read_array::<32>(2).ok_or(TlsError::DecodeError)?;
+        self.negotiation.server_random =
+            TlsServerRandom::new(data.read_array::<32>(2).ok_or(TlsError::DecodeError)?);
 
         let session_id_len = data.read_u8(34).ok_or(TlsError::DecodeError)? as usize;
         let cipher_offset = 35usize
@@ -38,18 +39,13 @@ impl TlsConnectionCore {
         let ext_offset = cipher_offset + 3;
         let server_key_share = Self::parse_server_hello_extensions(data, ext_offset)?;
 
-        self.negotiation.negotiated = NegotiatedTlsParameters::tls13(cipher);
+        let selected = SelectedTls13Parameters::new(cipher);
 
-        const HRR_RANDOM: [u8; 32] = [
-            0xCF, 0x21, 0xAD, 0x74, 0xE5, 0x9A, 0x61, 0x11, 0xBE, 0x1D, 0x8C, 0x02, 0x1E, 0x65,
-            0xB8, 0x91, 0xC2, 0xA2, 0x11, 0x16, 0x7A, 0xBB, 0x8C, 0x5E, 0x07, 0x9E, 0x09, 0xE2,
-            0xC8, 0xA8, 0x33, 0x9C,
-        ];
-        if self.negotiation.server_random == HRR_RANDOM {
-            return self.process_hello_retry_request(cipher);
+        if self.negotiation.server_random.is_hello_retry_request() {
+            return self.process_hello_retry_request(selected);
         }
 
-        self.handle_tls13_hello(server_key_share)
+        self.handle_tls13_hello(selected, server_key_share)
     }
 
     fn parse_server_hello_extensions<'a>(
@@ -121,16 +117,13 @@ impl TlsConnectionCore {
 
     fn handle_tls13_hello(
         &mut self,
+        selected: SelectedTls13Parameters,
         server_key_share: Option<(u16, PayloadSpanRef<'_>)>,
     ) -> TlsResult<()> {
         let (group_id, server_pubkey) = server_key_share.ok_or(TlsError::HandshakeFailure)?;
         let group =
             ecdh::EcdhGroup::from_named_group(group_id).ok_or(TlsError::UnsupportedCipherSuite)?;
-        let local_keypair = self
-            .handshake_secrets
-            .local_ecdh_keypair
-            .as_ref()
-            .ok_or(TlsError::HandshakeFailure)?;
+        let local_keypair = &self.handshake_secrets.local_ecdh_keypair;
         if local_keypair.group() != group {
             return Err(TlsError::HandshakeFailure);
         }
@@ -142,37 +135,33 @@ impl TlsConnectionCore {
             .shared_secret(peer_key.as_slice())
             .map_err(|_| TlsError::CryptoError)?;
 
-        Self::set_tls_bytes(
-            &mut self.handshake_secrets.pre_master_secret,
-            shared_secret.as_slice(),
-        )?;
-        self.negotiation.phase = TlsConnectionPhase::server_hello_received();
+        self.handshake_secrets
+            .set_pre_master_secret(shared_secret.as_slice())?;
+        self.negotiation.progress = TlsHandshakeProgress::ServerHelloReceived(selected);
         Ok(())
     }
 
     pub(super) fn process_hello_retry_request(
         &mut self,
-        cipher: NegotiatedCipherSuite,
+        selected: SelectedTls13Parameters,
     ) -> TlsResult<()> {
         self.transcript
-            .replace_with_message_hash(cipher.uses_sha384());
-        self.negotiation.negotiated = NegotiatedTlsParameters::tls13(cipher);
-        self.negotiation.phase = TlsConnectionPhase::hello_retry_pending();
+            .replace_with_message_hash(selected.cipher().uses_sha384());
+        self.negotiation.progress = TlsHandshakeProgress::HelloRetryPending(selected);
         Ok(())
     }
 
     pub(crate) fn build_client_hello_retry(
         &mut self,
     ) -> TlsResult<kernel_api::resource::net::PacketPayload> {
-        if !self.negotiation.phase.is_hello_retry_pending() {
+        if !self.negotiation.progress.is_hello_retry_pending() {
             return Err(TlsError::UnexpectedMessage);
         }
-        if let Some(ref keypair) = self.handshake_secrets.local_ecdh_keypair {
-            if let Ok(new_keypair) = ecdh::EcdhKeyPair::generate(keypair.group()) {
-                self.handshake_secrets.local_ecdh_keypair = Some(new_keypair);
-            }
+        let group = self.handshake_secrets.local_ecdh_keypair.group();
+        if let Ok(new_keypair) = ecdh::EcdhKeyPair::generate(group) {
+            self.handshake_secrets.local_ecdh_keypair = new_keypair;
         }
-        self.negotiation.phase = TlsConnectionPhase::client_hello_sent();
+        self.negotiation.progress = TlsHandshakeProgress::ClientHelloSent;
         self.build_client_hello_payload()
     }
 }

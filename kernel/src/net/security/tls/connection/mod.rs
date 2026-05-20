@@ -4,7 +4,7 @@
 
 pub(crate) use super::error::{TlsError, TlsResult};
 pub(crate) use super::{
-    AlertDescription, CipherSuite, ContentType, HandshakeType, ServerPublicKey,
+    AlertDescription, ContentType, HandshakeType, KeyUpdateRequest, ServerPublicKey,
     TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TlsBytes, TlsClientConfig,
 };
 pub(crate) use crate::net::payload::{
@@ -82,7 +82,7 @@ impl TlsHandshake {
         let mut core = self.core;
         let _ignored_application_data = core.process_incoming_payload(payload)?;
 
-        if core.negotiation.phase.is_server_finished_received() {
+        if core.negotiation.progress.is_server_finished_received() {
             let payload = core.build_client_finished_tls13_payload()?;
             return Ok(TlsHandshakeStep::Established {
                 session: TlsEstablishedSession { core },
@@ -90,7 +90,7 @@ impl TlsHandshake {
             });
         }
 
-        if core.negotiation.phase.is_hello_retry_pending() {
+        if core.negotiation.progress.is_hello_retry_pending() {
             let payload = core.build_client_hello_retry()?;
             return Ok(TlsHandshakeStep::SendClientHello {
                 handshake: Self { core },
@@ -128,15 +128,16 @@ impl TlsEstablishedSession {
 }
 
 impl TlsConnectionCore {
-    pub(crate) fn new(mut config: TlsClientConfig) -> TlsResult<Self> {
+    pub(crate) fn new(config: TlsClientConfig) -> TlsResult<Self> {
         let client_random = generate_random().map_err(|_| TlsError::SecureRandomUnavailable)?;
-        let server_name = config.server_name.take();
+        let local_ecdh_keypair = ecdh::EcdhKeyPair::generate(ecdh::EcdhGroup::X25519)
+            .map_err(|_| TlsError::SecureRandomUnavailable)?;
 
         Ok(Self {
             config,
-            negotiation: NegotiationState::new(server_name, client_random),
+            negotiation: NegotiationState::new(client_random),
             record: RecordProtectionState::default(),
-            handshake_secrets: HandshakeSecrets::default(),
+            handshake_secrets: HandshakeSecrets::new(local_ecdh_keypair),
             tls13: Tls13State::default(),
             transcript: TranscriptState::default(),
         })

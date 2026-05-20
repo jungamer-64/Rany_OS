@@ -79,7 +79,7 @@ pub struct X509Certificate<'a> {
 
 pub struct TlsServerVerificationContext<'a> {
     pub now_unix: u64,
-    pub server_name: Option<&'a str>,
+    pub server_name: &'a str,
     pub trusted_roots: &'a [PayloadSpanRef<'a>],
 }
 
@@ -728,10 +728,8 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
 
     let leaf = certs.first()?;
     validate_tls13_leaf_usage(leaf)?;
-    if let Some(name) = context.server_name {
-        if !match_hostname(leaf, name) {
-            return None;
-        }
+    if !match_hostname(leaf, context.server_name) {
+        return None;
     }
 
     if certs.len() > 1 {
@@ -793,7 +791,7 @@ fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {
     if let Some(san) = cert.san_raw {
         return match_hostname_in_san(san, hostname);
     }
-    false
+    match_hostname_in_subject(cert.subject_raw, hostname)
 }
 
 fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {

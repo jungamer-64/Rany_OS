@@ -11,7 +11,7 @@ impl TlsConnectionCore {
         &mut self,
         certificate: VerifiedServerCertificate,
     ) -> TlsResult<()> {
-        self.handshake_secrets.server_public_key = Some(match certificate.public_key {
+        let public_key = match certificate.public_key {
             VerifiedServerPublicKey::Rsa { modulus, exponent } => {
                 ServerPublicKey::rsa(modulus.as_slice(), exponent.as_slice())
                     .ok_or(TlsError::DecodeError)?
@@ -22,7 +22,8 @@ impl TlsConnectionCore {
             VerifiedServerPublicKey::EcdsaP384 { public_key } => {
                 ServerPublicKey::ecdsa_p384(public_key.as_slice()).ok_or(TlsError::DecodeError)?
             }
-        });
+        };
+        self.handshake_secrets.install_server_public_key(public_key);
         Ok(())
     }
 }

@@ -155,7 +155,7 @@ impl OfferedCipherSuites {
     }
 
     pub(crate) fn negotiate_wire(&self, wire: u16) -> Result<NegotiatedCipherSuite, TlsError> {
-        let cipher = CipherSuite::from_wire(wire).ok_or(TlsError::UnsupportedCipherSuite)?;
+        let cipher = CipherSuite::parse_wire(wire).ok_or(TlsError::UnsupportedCipherSuite)?;
         if !self.contains(cipher) {
             return Err(TlsError::UnsolicitedCipherSuite);
         }
@@ -297,7 +297,7 @@ impl<'a> IntoIterator for &'a OfferedNamedGroups {
 pub struct TlsTrustAnchors(ArrayVec<Certificate, TLS_CA_CERTS_CAPACITY>);
 
 impl TlsTrustAnchors {
-    pub(crate) fn empty() -> Self {
+    pub fn empty() -> Self {
         Self(ArrayVec::new())
     }
 
@@ -323,31 +323,27 @@ pub struct TlsClientConfig {
     pub(crate) signature_schemes: OfferedSignatureSchemes,
     pub(crate) named_groups: OfferedNamedGroups,
     pub(crate) alpn_protocols: AlpnProtocols,
-    pub(crate) server_name: Option<TlsServerName>,
+    pub(crate) server_name: TlsServerName,
     pub(crate) trust_anchors: TlsTrustAnchors,
 }
 
-impl Default for TlsClientConfig {
-    fn default() -> Self {
+impl TlsClientConfig {
+    pub fn new(server_name: TlsServerName, trust_anchors: TlsTrustAnchors) -> Self {
         Self {
             cipher_suites: OfferedCipherSuites::defaults(),
             signature_schemes: OfferedSignatureSchemes::defaults(),
             named_groups: OfferedNamedGroups::defaults(),
             alpn_protocols: AlpnProtocols::empty(),
-            server_name: None,
-            trust_anchors: TlsTrustAnchors::empty(),
+            server_name,
+            trust_anchors,
         }
     }
-}
 
-impl TlsClientConfig {
-    pub fn new() -> Self {
-        Self::default()
-    }
-
-    pub fn with_server_name(mut self, name: &str) -> Result<Self, TlsClientConfigError> {
-        self.server_name = Some(TlsServerName::parse(name)?);
-        Ok(self)
+    pub fn for_server_name(
+        name: &str,
+        trust_anchors: TlsTrustAnchors,
+    ) -> Result<Self, TlsClientConfigError> {
+        Ok(Self::new(TlsServerName::parse(name)?, trust_anchors))
     }
 
     pub fn with_alpn(mut self, protocols: &[&str]) -> Result<Self, TlsClientConfigError> {
