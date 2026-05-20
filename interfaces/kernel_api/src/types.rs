@@ -1056,4 +1056,59 @@ mod packet_ref_tests {
         drop(packet);
         assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
     }
+
+    #[test]
+    fn packet_ref_take_front_exact_len_keeps_single_owner() {
+        DMA_RELEASES.store(0, Ordering::SeqCst);
+
+        let packet = make_dma_packet();
+        let len = PacketByteCount::new(packet.len()).expect("non-empty packet");
+
+        match packet.take_front(len).expect("exact split succeeds") {
+            PacketFront::Whole(packet) => {
+                assert_eq!(packet.data(), b"packet!");
+                drop(packet);
+            }
+            PacketFront::Prefix { .. } => panic!("exact split must not create windows"),
+        }
+
+        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn packet_ref_take_front_splits_disjoint_windows() {
+        DMA_RELEASES.store(0, Ordering::SeqCst);
+
+        let packet = make_dma_packet();
+        let len = PacketByteCount::new(3).expect("non-empty prefix");
+
+        let (front, remainder) = match packet.take_front(len).expect("prefix split succeeds") {
+            PacketFront::Prefix { front, remainder } => (front, remainder),
+            PacketFront::Whole(_) => panic!("prefix split must produce two windows"),
+        };
+
+        assert_eq!(front.data(), b"pac");
+        assert_eq!(remainder.data(), b"ket!");
+        assert_eq!(front.device_address(), 0x4000);
+        assert_eq!(remainder.device_address(), 0x4003);
+
+        drop(front);
+        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 0);
+        drop(remainder);
+        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn packet_ref_take_front_rejects_out_of_bounds_len() {
+        DMA_RELEASES.store(0, Ordering::SeqCst);
+
+        let packet = make_dma_packet();
+        let len = PacketByteCount::new(packet.len() + 1).expect("non-empty invalid length");
+
+        assert_eq!(
+            packet.take_front(len).err(),
+            Some(PacketWindowError::OutOfBounds)
+        );
+        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+    }
 }

@@ -17,7 +17,6 @@ impl RuntimeCommandHandler {
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let pkt_len = packet.len();
-        let data = packet.data();
         let current_time = stack.current_time();
         let Some(selected_if_id) = stack.resolve_ingress_if(if_id) else {
             return EventHandleResult::Success;
@@ -28,25 +27,14 @@ impl RuntimeCommandHandler {
             else {
                 return EventHandleResult::Success;
             };
-            state.process_ethernet(data)
+            state.process_ethernet(packet)
         };
 
         match ethernet_result {
-            crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                let Some(offset) = data.len().checked_sub(payload.len()) else {
-                    if let Some(stats) = stack.interface_stats(selected_if_id) {
-                        stats.record_rx_error();
-                    }
-                    return EventHandleResult::Success;
-                };
-                let payload_len = payload.len();
-                let mut ip_packet = packet;
-                if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
-                    if let Some(stats) = stack.interface_stats(selected_if_id) {
-                        stats.record_rx_error();
-                    }
-                    return EventHandleResult::Success;
-                }
+            crate::net::l2::ethernet::EthernetIngress::Ipv4 {
+                packet: ip_packet,
+                src_mac,
+            } => {
                 self.handle_ipv4_ingress_with_stack(
                     runtime,
                     Some(selected_if_id),
@@ -60,11 +48,11 @@ impl RuntimeCommandHandler {
                 }
                 EventHandleResult::Success
             }
-            crate::net::l2::ethernet::ProcessResult::Arp(payload, src_mac) => {
+            crate::net::l2::ethernet::EthernetIngress::Arp { packet, src_mac } => {
                 stack.process_arp(
                     runtime,
                     Some(selected_if_id),
-                    payload,
+                    packet.data(),
                     current_time,
                     src_mac,
                 );
@@ -73,25 +61,14 @@ impl RuntimeCommandHandler {
                 }
                 EventHandleResult::Success
             }
-            crate::net::l2::ethernet::ProcessResult::Ipv6(payload, src_mac) => {
+            crate::net::l2::ethernet::EthernetIngress::Ipv6 {
+                packet: ip_packet,
+                src_mac,
+            } => {
                 let ipv6_enabled = stack
                     .interface_state_for_ingress(Some(selected_if_id))
                     .is_some_and(|(_, state)| state.has_ipv6());
                 if ipv6_enabled {
-                    let Some(offset) = data.len().checked_sub(payload.len()) else {
-                        if let Some(stats) = stack.interface_stats(selected_if_id) {
-                            stats.record_rx_error();
-                        }
-                        return EventHandleResult::Success;
-                    };
-                    let payload_len = payload.len();
-                    let mut ip_packet = packet;
-                    if !ip_packet.advance(offset) || !ip_packet.set_len(payload_len) {
-                        if let Some(stats) = stack.interface_stats(selected_if_id) {
-                            stats.record_rx_error();
-                        }
-                        return EventHandleResult::Success;
-                    }
                     let ip_data = ip_packet.data();
                     // ── ファイアウォール Ingress チェック (IPv6) ──
                     if ip_data.len() >= 40 {
@@ -553,113 +530,43 @@ impl RuntimeCommandHandler {
             }
         }
 
-        let is_fragment = ip_packet.as_ref().is_some_and(|packet_ref| {
-            crate::net::l3::ipv4::Ipv4Packet::parse(packet_ref.data()).is_some_and(|packet| {
-                packet.header().more_fragments() || packet.header().fragment_offset() != 0
-            })
-        });
-
-        let result = if is_fragment {
-            let Some(packet_ref) = ip_packet.take() else {
-                return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-            };
-            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
-            else {
-                return EventHandleResult::Success;
-            };
-            state.process_ipv4_fragment_owned_packet(packet_ref, current_time)
-        } else {
-            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id))
-            else {
-                return EventHandleResult::Success;
-            };
-            state.process_ipv4_with_time_and_packet(data, ip_packet.as_ref(), current_time)
+        let Some(packet_ref) = ip_packet.take() else {
+            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
         };
+        let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id)) else {
+            return EventHandleResult::Success;
+        };
+        let result = state.process_ipv4_owned_packet(packet_ref, current_time);
 
         match result {
-            crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
-                let (offset, payload_len) = {
-                    let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = data.len().checked_sub(payload.len()) else {
-                        return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                    };
-                    (offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let original_packet = PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    payload_len,
-                ) else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let Ok(payload) = window.move_from(original_packet) else {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(packet, src_ip, dst_ip, ttl) => {
+                let Ok(payload) = packet.into_payload() else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 stack.process_icmp_payload(runtime, payload, src_ip, dst_ip, ttl, current_time);
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
-                let (offset, payload_len) = {
-                    let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = data.len().checked_sub(payload.len()) else {
-                        return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                    };
-                    (offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let original_packet = PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    payload_len,
-                ) else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let Ok(payload) = window.move_from(original_packet) else {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(packet, src_ip, ttl) => {
+                let Ok(payload) = packet.into_payload() else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 stack.process_igmp_payload(&payload, src_ip, ttl);
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, _orig) => {
-                let (offset, ttl, src_port, dst_port, data_len) = {
-                    let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = data.len().checked_sub(payload.len()) else {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Udp(packet, src_ip, dst_ip, ttl) => {
+                let (src_port, dst_port, data_len) = {
+                    let Some(span) = packet.span() else {
                         return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                     };
-                    if payload.len() < 8 {
+                    if span.total_len() < 8 {
                         return EventHandleResult::Success;
                     }
-                    let src_port = u16::from_be_bytes([payload[0], payload[1]]);
-                    let dst_port = u16::from_be_bytes([payload[2], payload[3]]);
+                    let Some(ports) = span.read_array::<4>(0) else {
+                        return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                    };
                     (
-                        offset,
-                        data.get(8).copied().unwrap_or(64),
-                        src_port,
-                        dst_port,
-                        payload.len() - 8,
+                        u16::from_be_bytes([ports[0], ports[1]]),
+                        u16::from_be_bytes([ports[2], ports[3]]),
+                        span.total_len() - 8,
                     )
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let original_packet = PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    data_len + 8,
-                ) else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-                };
-                let Some(packet) =
-                    crate::net::payload::OwnedPayloadWindow::new(original_packet, window)
-                else {
-                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 self.handle_udp_ingress_with_stack(
                     runtime,
@@ -675,26 +582,8 @@ impl RuntimeCommandHandler {
                     current_time,
                 );
             }
-            crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
-                let (offset, payload_len) = {
-                    let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = data.len().checked_sub(payload.len()) else {
-                        return EventHandleResult::Success;
-                    };
-                    (offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    return EventHandleResult::Success;
-                };
-                let original_packet = PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    payload_len,
-                ) else {
-                    return EventHandleResult::Success;
-                };
-                let Ok(tcp_segment_payload) = window.move_from(original_packet) else {
+            crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(packet, src_ip, dst_ip) => {
+                let Ok(tcp_segment_payload) = packet.into_payload() else {
                     return EventHandleResult::Success;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
@@ -737,23 +626,22 @@ impl RuntimeCommandHandler {
                 }
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Success => {}
-            crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(proto, src, _dst) => {
+            crate::net::l3::ipv4::Ipv4ProcessResult::UnknownProtocol(
+                proto,
+                src,
+                _dst,
+                original_packet,
+            ) => {
                 log::warn!(
                     "[NET] Unknown protocol {} from {} - sending ICMP Protocol Unreachable",
                     proto,
                     src
                 );
-                let Some(packet_ref) = ip_packet.take() else {
-                    if let Some(stats) = stack.interface_stats(ingress_if_id) {
-                        stats.record_rx_error();
-                    }
-                    return EventHandleResult::Success;
-                };
                 stack.send_icmp_error_payload(
                     src,
                     crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
                     None,
-                    PacketPayload::single(packet_ref),
+                    original_packet,
                     current_time,
                 );
             }

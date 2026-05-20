@@ -9,7 +9,7 @@ use crate::net::payload::alloc_packet_with_headroom;
 use crate::net::runtime::create_runtime;
 use crate::net::services::dhcp;
 use crate::net::types::InterfaceScope;
-use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 macro_rules! run_case {
     ($func:path) => {{

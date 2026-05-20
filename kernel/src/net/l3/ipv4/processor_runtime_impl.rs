@@ -4,58 +4,110 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
+use crate::net::payload::{OwnedPayloadWindow, VerifiedPayloadWindow};
+use kernel_api::resource::net::PacketPayload;
+
+struct Ipv4NonFragmentIngress {
+    src: Ipv4Address,
+    dst: Ipv4Address,
+    protocol: IpProtocol,
+    ttl: u8,
+    payload_offset: usize,
+    payload_len: usize,
+}
 
 impl Ipv4Processor {
-    pub fn process_with_time_and_packet<'a>(
+    pub fn process_owned_packet(
         &mut self,
-        data: &'a [u8],
-        packet_ref: Option<&PacketRef>,
+        packet_ref: PacketRef,
         current_time: u64,
-    ) -> Ipv4ProcessResult<'a> {
+    ) -> Ipv4ProcessResult {
         let current_time = Self::normalize_time(current_time);
 
-        let packet = match Ipv4Packet::parse(data) {
-            Some(p) => p,
-            None => {
-                self.stats.rx_errors += 1;
+        let ingress = {
+            let data = packet_ref.data();
+            let packet = match Ipv4Packet::parse(data) {
+                Some(p) => p,
+                None => {
+                    self.stats.rx_errors += 1;
+                    return Ipv4ProcessResult::Error;
+                }
+            };
+
+            // Verify checksum
+            if !packet.verify_checksum() {
+                self.stats.checksum_errors += 1;
                 return Ipv4ProcessResult::Error;
+            }
+
+            // Check destination
+            let dst = packet.destination();
+            if !self.is_for_us(&dst) {
+                self.stats.rx_dropped += 1;
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            self.stats.rx_packets += 1;
+
+            let src = packet.source();
+
+            if self.should_drop_src_dst_pair(src, dst) {
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            if self.should_drop_martian_source(src) {
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            let header_len = packet.header().header_len();
+            if self.should_drop_forbidden_options(data, header_len) {
+                return Ipv4ProcessResult::Dropped;
+            }
+
+            if packet.header().more_fragments() || packet.header().fragment_offset() != 0 {
+                return self.process_fragment_owned_packet(packet_ref, current_time);
+            }
+
+            Ipv4NonFragmentIngress {
+                src,
+                dst,
+                protocol: packet.protocol(),
+                ttl: packet.ttl(),
+                payload_offset: header_len,
+                payload_len: packet.payload().len(),
             }
         };
 
-        // Verify checksum
-        if !packet.verify_checksum() {
-            self.stats.checksum_errors += 1;
+        let original = PacketPayload::single(packet_ref);
+        let Some(window) = VerifiedPayloadWindow::for_payload(
+            &original,
+            ingress.payload_offset,
+            ingress.payload_len,
+        ) else {
+            self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
+        };
+        let Some(packet) = OwnedPayloadWindow::new(original, window) else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
+
+        match ingress.protocol {
+            IpProtocol::Icmp => {
+                Ipv4ProcessResult::Icmp(packet, ingress.src, ingress.dst, ingress.ttl)
+            }
+            IpProtocol::Igmp => Ipv4ProcessResult::Igmp(packet, ingress.src, ingress.ttl),
+            IpProtocol::Tcp => Ipv4ProcessResult::Tcp(packet, ingress.src, ingress.dst),
+            IpProtocol::Udp => {
+                Ipv4ProcessResult::Udp(packet, ingress.src, ingress.dst, ingress.ttl)
+            }
+            p => Ipv4ProcessResult::UnknownProtocol(
+                p.into(),
+                ingress.src,
+                ingress.dst,
+                packet.into_original_payload(),
+            ),
         }
-
-        // Check destination
-        let dst = packet.destination();
-        if !self.is_for_us(&dst) {
-            self.stats.rx_dropped += 1;
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        self.stats.rx_packets += 1;
-
-        let src = packet.source();
-
-        if self.should_drop_src_dst_pair(src, dst) {
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        if self.should_drop_martian_source(src) {
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        if self.should_drop_forbidden_options(data, packet.header().header_len()) {
-            return Ipv4ProcessResult::Dropped;
-        }
-
-        if packet.header().more_fragments() || packet.header().fragment_offset() != 0 {
-            return self.process_fragment_packet(&packet, data, packet_ref, current_time);
-        }
-
-        self.process_non_fragment_packet(&packet, data, src, dst, packet_ref)
     }
 
     #[inline]

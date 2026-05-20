@@ -5,8 +5,20 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
-use crate::net::payload::{GeneratedPacketWriter, VerifiedPayloadWindow, append_payload};
+use crate::net::payload::{
+    GeneratedPacketWriter, OwnedPayloadWindow, VerifiedPayloadWindow, append_payload,
+};
 use kernel_api::resource::net::PacketPayload;
+
+struct Ipv6UpperLayerIngress {
+    src: Ipv6Address,
+    dst: Ipv6Address,
+    protocol: IpProtocol,
+    hop_limit: u8,
+    next_header_ptr: u32,
+    payload_offset: usize,
+    payload_len: usize,
+}
 
 fn generated_ipv6_header_payload(header: &[u8]) -> Option<PacketPayload> {
     let mut writer = GeneratedPacketWriter::new(
@@ -45,75 +57,111 @@ impl Ipv6Processor {
         &self.stats
     }
 
-    /// Process an incoming IPv6 packet
-    pub fn process<'a>(&mut self, data: &'a [u8], current_time: u64) -> Ipv6ProcessResult<'a> {
-        self.process_with_packet(data, current_time, None)
-    }
-
-    pub fn process_with_packet<'a>(
+    /// Process an incoming IPv6 packet by consuming the packet owner.
+    pub fn process_owned_packet(
         &mut self,
-        data: &'a [u8],
-        _current_time: u64,
-        _packet_ref: Option<&PacketRef>,
-    ) -> Ipv6ProcessResult<'a> {
-        // Parse the packet
-        let packet = match Ipv6Packet::parse(data) {
-            Some(p) => p,
-            None => {
-                self.stats.record_header_error();
-                return Ipv6ProcessResult::Error;
+        packet_ref: PacketRef,
+        current_time: u64,
+    ) -> Ipv6ProcessResult {
+        let ingress = {
+            let data = packet_ref.data();
+            // Parse the packet
+            let packet = match Ipv6Packet::parse(data) {
+                Some(p) => p,
+                None => {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                }
+            };
+
+            self.stats.record_rx();
+
+            let src = packet.source();
+
+            // SECURITY: Martian packet を破棄する。
+            // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
+            // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
+            if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
+                self.stats.record_dropped();
+                log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
+                return Ipv6ProcessResult::Dropped;
+            }
+
+            let dst = packet.destination();
+
+            // Check if the packet is for us
+            if !self.is_for_us(&dst) {
+                self.stats.record_dropped();
+                return Ipv6ProcessResult::Dropped;
+            }
+
+            // Check hop limit
+            if packet.hop_limit() == 0 {
+                self.stats.record_hop_limit_exceeded();
+                return Ipv6ProcessResult::HopLimitExceeded(
+                    src,
+                    dst,
+                    PacketPayload::single(packet_ref),
+                );
+            }
+
+            // Walk extension headers with fragment awareness.
+            match skip_extension_headers_fraginfo(data) {
+                ExtHeaderResult::NoFragment(final_protocol, upper_payload, next_header_ptr) => {
+                    let Some(payload_offset) = data.len().checked_sub(upper_payload.len()) else {
+                        self.stats.record_header_error();
+                        return Ipv6ProcessResult::Error;
+                    };
+                    Ipv6UpperLayerIngress {
+                        src,
+                        dst,
+                        protocol: final_protocol,
+                        hop_limit: packet.hop_limit(),
+                        next_header_ptr,
+                        payload_offset,
+                        payload_len: upper_payload.len(),
+                    }
+                }
+                ExtHeaderResult::Fragment { .. } => {
+                    return self.process_fragment_owned_packet(packet_ref, current_time);
+                }
             }
         };
 
-        self.stats.record_rx();
+        let original = PacketPayload::single(packet_ref);
+        let Some(window) = VerifiedPayloadWindow::for_payload(
+            &original,
+            ingress.payload_offset,
+            ingress.payload_len,
+        ) else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
+        let Some(packet) = OwnedPayloadWindow::new(original, window) else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
 
-        let src = packet.source();
-
-        // SECURITY: Martian packet を破棄する。
-        // 1. Source IP cannot be multicast (RFC 4291 Section 2.7)
-        // 2. Source IP cannot be the loopback address unless it's truly a loopback packet
-        if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
-            self.stats.record_dropped();
-            log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
-            return Ipv6ProcessResult::Dropped;
-        }
-
-        let dst = packet.destination();
-
-        // Check if the packet is for us
-        if !self.is_for_us(&dst) {
-            self.stats.record_dropped();
-            return Ipv6ProcessResult::Dropped;
-        }
-
-        // Check hop limit
-        if packet.hop_limit() == 0 {
-            self.stats.record_hop_limit_exceeded();
-            return Ipv6ProcessResult::HopLimitExceeded(src, dst);
-        }
-
-        // Walk extension headers with fragment awareness
-        match skip_extension_headers_fraginfo(data) {
-            ExtHeaderResult::NoFragment(final_protocol, upper_payload, next_header_ptr) => {
-                // Dispatch based on upper-layer protocol
-                match final_protocol {
-                    IpProtocol::Icmpv6 => {
-                        Ipv6ProcessResult::Icmpv6(upper_payload, src, dst, packet.hop_limit())
-                    }
-                    IpProtocol::Tcp => {
-                        Ipv6ProcessResult::Tcp(upper_payload, src, dst, packet.hop_limit())
-                    }
-                    IpProtocol::Udp => {
-                        Ipv6ProcessResult::Udp(upper_payload, src, dst, packet.hop_limit())
-                    }
-                    p => {
-                        // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header
-                        // The pointer indicates the octet of the unrecognized Next Header type
-                        Ipv6ProcessResult::UnknownNextHeader(p.into(), next_header_ptr, src, dst)
-                    }
-                }
+        match ingress.protocol {
+            IpProtocol::Icmpv6 => {
+                Ipv6ProcessResult::Icmpv6(packet, ingress.src, ingress.dst, ingress.hop_limit)
             }
-            ExtHeaderResult::Fragment { .. } => Ipv6ProcessResult::Error,
+            IpProtocol::Tcp => {
+                Ipv6ProcessResult::Tcp(packet, ingress.src, ingress.dst, ingress.hop_limit)
+            }
+            IpProtocol::Udp => {
+                Ipv6ProcessResult::Udp(packet, ingress.src, ingress.dst, ingress.hop_limit)
+            }
+            p => {
+                // RFC 4443 Section 3.4: Parameter Problem Code 1 for unrecognized Next Header.
+                Ipv6ProcessResult::UnknownNextHeader(
+                    p.into(),
+                    ingress.next_header_ptr,
+                    ingress.src,
+                    ingress.dst,
+                    packet.into_original_payload(),
+                )
+            }
         }
     }
 
@@ -121,7 +169,7 @@ impl Ipv6Processor {
         &mut self,
         packet_ref: PacketRef,
         current_time: u64,
-    ) -> Ipv6ProcessResult<'static> {
+    ) -> Ipv6ProcessResult {
         let fragment_info = {
             let raw_packet = packet_ref.data();
             let packet = match Ipv6Packet::parse(raw_packet) {
@@ -148,7 +196,7 @@ impl Ipv6Processor {
             }
 
             if packet.hop_limit() == 0 {
-                return Ipv6ProcessResult::HopLimitExceededOwned(
+                return Ipv6ProcessResult::HopLimitExceeded(
                     src,
                     dst,
                     PacketPayload::single(packet_ref),

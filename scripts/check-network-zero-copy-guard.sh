@@ -337,6 +337,12 @@ if rg -n "\\bprocess_on\\([^\\n]*&\\[u8\\]|\\bprocess_v6_on\\([^\\n]*&\\[u8\\]|\
   fail "found removed byte-slice UDP ingress surface"
 fi
 
+if rg -n "pub enum ProcessResult<'|pub enum Ipv4ProcessResult<'|pub enum Ipv6ProcessResult<'|\\bprocess_with_time_and_packet\\b|\\bprocess_with_packet\\(" \
+  kernel/src/net/l2/ethernet kernel/src/net/l3 kernel/src/net/runtime \
+  >/dev/null; then
+  fail "found removed borrowed L2/L3 ingress result or processor API"
+fi
+
 if rg -n "pub struct NetTxSegment[[:space:]]*\\{|pub cpu_ptr:|pub device_addr:|pub len:" \
   interfaces/kernel_api/src/netdev.rs \
   >/dev/null; then

@@ -888,4 +888,63 @@ mod tests {
     fn alloc_packet_with_headroom_rejects_length_overflow() {
         assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
     }
+
+    fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
+        let mut packet =
+            alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM).expect("packet");
+        packet.data_mut().copy_from_slice(bytes);
+        packet
+    }
+
+    fn assert_payload_bytes(payload: &PacketPayload, expected: &[u8]) {
+        assert!(PayloadSpanRef::from_payload(payload).eq_bytes(expected));
+    }
+
+    #[test]
+    fn packet_payload_take_front_splits_single_packet() {
+        let payload = PacketPayload::single(test_packet_with_contents(b"abcdef"));
+        let len = PacketByteCount::new(3).expect("non-empty prefix");
+
+        let (front, remainder) = match payload.take_front(len).expect("single split") {
+            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
+            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
+        };
+
+        assert_payload_bytes(&front, b"abc");
+        assert_payload_bytes(&remainder, b"def");
+    }
+
+    #[test]
+    fn packet_payload_take_front_splits_on_chain_boundary() {
+        let payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+            test_packet_with_contents(b"abc"),
+            test_packet_with_contents(b"def"),
+        ]));
+        let len = PacketByteCount::new(3).expect("non-empty prefix");
+
+        let (front, remainder) = match payload.take_front(len).expect("chain boundary split") {
+            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
+            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
+        };
+
+        assert_payload_bytes(&front, b"abc");
+        assert_payload_bytes(&remainder, b"def");
+    }
+
+    #[test]
+    fn packet_payload_take_front_splits_inside_chain_segment() {
+        let payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+            test_packet_with_contents(b"abc"),
+            test_packet_with_contents(b"defgh"),
+        ]));
+        let len = PacketByteCount::new(5).expect("non-empty prefix");
+
+        let (front, remainder) = match payload.take_front(len).expect("middle segment split") {
+            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
+            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
+        };
+
+        assert_payload_bytes(&front, b"abcde");
+        assert_payload_bytes(&remainder, b"fgh");
+    }
 }

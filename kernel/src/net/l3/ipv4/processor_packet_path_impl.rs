@@ -12,7 +12,7 @@ impl Ipv4Processor {
         &mut self,
         packet_ref: PacketRef,
         current_time: u64,
-    ) -> Ipv4ProcessResult<'static> {
+    ) -> Ipv4ProcessResult {
         let original = PacketPayload::single(packet_ref);
         let (total_len, header_len, header_copy, header, protocol) = {
             let view = PacketPayloadView::new(&original);
@@ -142,62 +142,6 @@ impl Ipv4Processor {
             Ipv4ProcessResult::ReassemblyTimeout(src, header_data)
         } else {
             Ipv4ProcessResult::FragmentPending
-        }
-    }
-
-    pub(super) fn process_fragment_packet<'a>(
-        &mut self,
-        packet: &Ipv4Packet<'a>,
-        data: &'a [u8],
-        _packet_ref: Option<&PacketRef>,
-        current_time: u64,
-    ) -> Ipv4ProcessResult<'a> {
-        let header = packet.header();
-        let protocol = packet.protocol();
-        if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
-            let fragment_offset = header.fragment_offset();
-            let payload_len = packet.payload().len();
-            let min_len = if protocol == IpProtocol::Tcp { 20 } else { 8 };
-
-            if fragment_offset == 0 && payload_len < min_len {
-                log::warn!(
-                    "[NET-IPV4] Dropping tiny fragment (FO=0, protocol={:?}, len={}) - RFC 1858 violation",
-                    protocol,
-                    payload_len
-                );
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Dropped;
-            }
-
-            if fragment_offset == 1 && protocol == IpProtocol::Tcp {
-                log::warn!("[NET-IPV4] Dropping suspicious fragment (FO=1) - RFC 1858 violation");
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Dropped;
-            }
-        }
-
-        let _ = (packet, data, current_time);
-        self.stats.rx_errors += 1;
-        Ipv4ProcessResult::Error
-    }
-
-    pub(super) fn process_non_fragment_packet<'a>(
-        &self,
-        packet: &Ipv4Packet<'a>,
-        data: &'a [u8],
-        src: Ipv4Address,
-        dst: Ipv4Address,
-        _packet_ref: Option<&PacketRef>,
-    ) -> Ipv4ProcessResult<'a> {
-        // Non-fragmented packet - process normally
-        let payload = packet.payload();
-
-        match packet.protocol() {
-            IpProtocol::Icmp => Ipv4ProcessResult::Icmp(payload, src, dst, packet.ttl(), data),
-            IpProtocol::Igmp => Ipv4ProcessResult::Igmp(payload, src, packet.ttl(), data),
-            IpProtocol::Tcp => Ipv4ProcessResult::Tcp(payload, src, dst, data),
-            IpProtocol::Udp => Ipv4ProcessResult::Udp(payload, src, dst, data),
-            p => Ipv4ProcessResult::UnknownProtocol(p.into(), src, dst),
         }
     }
 }

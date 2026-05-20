@@ -3,6 +3,7 @@
 // ============================================================================
 
 use super::*;
+use crate::net::payload::OwnedPayloadWindow;
 use kernel_api::resource::net::PacketPayload;
 
 /// IPv4 packet processor
@@ -37,23 +38,23 @@ pub struct Ipv4Stats {
 }
 
 /// Result of IPv4 packet processing
-pub enum Ipv4ProcessResult<'a> {
+pub enum Ipv4ProcessResult {
     /// ICMP packet with source address, destination address, TTL, and original packet data
-    Icmp(&'a [u8], Ipv4Address, Ipv4Address, u8, &'a [u8]),
+    Icmp(OwnedPayloadWindow, Ipv4Address, Ipv4Address, u8),
     /// IGMP packet with source address, TTL, and original packet data
-    Igmp(&'a [u8], Ipv4Address, u8, &'a [u8]),
+    Igmp(OwnedPayloadWindow, Ipv4Address, u8),
     /// TCP packet with source address, destination address, and original packet data
-    Tcp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
+    Tcp(OwnedPayloadWindow, Ipv4Address, Ipv4Address),
     /// UDP packet with source address, destination address, and original packet data
-    Udp(&'a [u8], Ipv4Address, Ipv4Address, &'a [u8]),
+    Udp(OwnedPayloadWindow, Ipv4Address, Ipv4Address, u8),
     /// Reassembled packet backed by the fragment ownership chain
     Reassembled(PacketPayload),
     /// Fragment received, reassembly in progress
     FragmentPending,
     /// Reassembly timeout (source address and first fragment's header for ICMP)
     ReassemblyTimeout(Ipv4Address, PacketPayload),
-    /// Unknown protocol (RFC 792 Protocol Unreachable); caller still owns the packet.
-    UnknownProtocol(u8, Ipv4Address, Ipv4Address),
+    /// Unknown protocol (RFC 792 Protocol Unreachable).
+    UnknownProtocol(u8, Ipv4Address, Ipv4Address, PacketPayload),
     /// Dropped
     Dropped,
     /// Error

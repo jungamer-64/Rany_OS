@@ -1098,13 +1098,28 @@ pub enum Ipv6ReassemblyError {
 }
 
 /// Result of IPv6 packet processing
-pub enum Ipv6ProcessResult<'a> {
+pub enum Ipv6ProcessResult {
     /// ICMPv6 payload with addresses and hop limit
-    Icmpv6(&'a [u8], Ipv6Address, Ipv6Address, u8),
+    Icmpv6(
+        crate::net::payload::OwnedPayloadWindow,
+        Ipv6Address,
+        Ipv6Address,
+        u8,
+    ),
     /// TCP payload with addresses and hop limit
-    Tcp(&'a [u8], Ipv6Address, Ipv6Address, u8),
+    Tcp(
+        crate::net::payload::OwnedPayloadWindow,
+        Ipv6Address,
+        Ipv6Address,
+        u8,
+    ),
     /// UDP payload with addresses and hop limit
-    Udp(&'a [u8], Ipv6Address, Ipv6Address, u8),
+    Udp(
+        crate::net::payload::OwnedPayloadWindow,
+        Ipv6Address,
+        Ipv6Address,
+        u8,
+    ),
     /// Reassembled packet backed by the fragment ownership chain
     Reassembled(kernel_api::resource::net::PacketPayload),
     /// Fragment received, reassembly in progress
@@ -1123,20 +1138,16 @@ pub enum Ipv6ProcessResult<'a> {
         Ipv6Address,
         kernel_api::resource::net::PacketPayload,
     ),
-    /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1)
-    UnknownNextHeader(u8, u32, Ipv6Address, Ipv6Address),
-    /// Unknown Next Header encountered while the processor owns the packet.
-    UnknownNextHeaderOwned(
+    /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1).
+    UnknownNextHeader(
         u8,
         u32,
         Ipv6Address,
         Ipv6Address,
         kernel_api::resource::net::PacketPayload,
     ),
-    /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0)
-    HopLimitExceeded(Ipv6Address, Ipv6Address),
-    /// Hop Limit exceeded while the processor owns the packet.
-    HopLimitExceededOwned(
+    /// Hop Limit exceeded (RFC 4443 Time Exceeded Code 0).
+    HopLimitExceeded(
         Ipv6Address,
         Ipv6Address,
         kernel_api::resource::net::PacketPayload,

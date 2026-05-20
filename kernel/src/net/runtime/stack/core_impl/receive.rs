@@ -152,33 +152,14 @@ impl NetworkStack {
             }
         }
 
-        // Detect fragment-header traffic up-front so ownership-preserving
-        // reassembly path is selected before normal protocol dispatch.
-        let is_fragment = matches!(
-            crate::net::l3::ipv6::skip_extension_headers_fraginfo(
-                ip_packet.as_ref().map_or(&[][..], PacketRef::data),
-            ),
-            crate::net::l3::ipv6::ExtHeaderResult::Fragment { .. }
-        );
+        let Some(packet_ref) = ip_packet.take() else {
+            self.stats().record_rx_error();
+            return;
+        };
         let result = {
-            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-            if is_fragment {
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
-                    if let Some(ref mut ipv6) = state.ipv6 {
-                        ipv6.process_fragment_owned_packet(packet_ref, current_time)
-                    } else {
-                        return;
-                    }
-                } else {
-                    return;
-                }
-            } else if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
+            if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
                 if let Some(ref mut ipv6) = state.ipv6 {
-                    ipv6.process_with_packet(data, current_time, ip_packet.as_ref())
+                    ipv6.process_owned_packet(packet_ref, current_time)
                 } else {
                     return;
                 }
@@ -188,33 +169,8 @@ impl NetworkStack {
         };
 
         match result {
-            Ipv6ProcessResult::Icmpv6(payload, src, dst, hop_limit) => {
-                let (data_offset, payload_len) = {
-                    let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    let Some(data_offset) = packet_ref.data().len().checked_sub(payload.len())
-                    else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    (data_offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    data_offset,
-                    payload_len,
-                ) else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let Ok(icmpv6_payload) = window.move_from(original_packet) else {
+            Ipv6ProcessResult::Icmpv6(packet, src, dst, hop_limit) => {
+                let Ok(icmpv6_payload) = packet.into_payload() else {
                     self.stats().record_rx_error();
                     return;
                 };
@@ -229,32 +185,8 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            Ipv6ProcessResult::Tcp(payload, src, dst, _hop_limit) => {
-                let (offset, payload_len) = {
-                    let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    let Some(offset) = packet_ref.data().len().checked_sub(payload.len()) else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    (offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    payload_len,
-                ) else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let Ok(tcp_segment_payload) = window.move_from(original_packet) else {
+            Ipv6ProcessResult::Tcp(packet, src, dst, _hop_limit) => {
+                let Ok(tcp_segment_payload) = packet.into_payload() else {
                     self.stats().record_rx_error();
                     return;
                 };
@@ -266,37 +198,7 @@ impl NetworkStack {
                     tcp_segment_payload,
                 );
             }
-            Ipv6ProcessResult::Udp(payload, src, dst, hop_limit) => {
-                let (offset, payload_len) = {
-                    let Some(packet_ref) = ip_packet.as_ref() else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    let Some(offset) = packet_ref.data().len().checked_sub(payload.len()) else {
-                        self.stats().record_rx_error();
-                        return;
-                    };
-                    (offset, payload.len())
-                };
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
-                    &original_packet,
-                    offset,
-                    payload_len,
-                ) else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                let Some(packet) =
-                    crate::net::payload::OwnedPayloadWindow::new(original_packet, window)
-                else {
-                    self.stats().record_rx_error();
-                    return;
-                };
+            Ipv6ProcessResult::Udp(packet, src, dst, hop_limit) => {
                 self.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
             }
             Ipv6ProcessResult::Reassembled(payload) => {
@@ -370,35 +272,12 @@ impl NetworkStack {
                     );
                 }
             },
-            Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst) => {
+            Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.4: Parameter Problem (Code 1).
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                self.send_icmpv6_parameter_problem_payload(
-                    src,
-                    1,
-                    pointer,
-                    kernel_api::resource::net::PacketPayload::single(packet_ref),
-                );
-            }
-            Ipv6ProcessResult::UnknownNextHeaderOwned(_proto, pointer, src, _dst, orig_packet) => {
                 self.send_icmpv6_parameter_problem_payload(src, 1, pointer, orig_packet);
             }
-            Ipv6ProcessResult::HopLimitExceeded(src, _dst) => {
+            Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.3: Time Exceeded (Code 0).
-                let Some(packet_ref) = ip_packet.take() else {
-                    self.stats().record_rx_error();
-                    return;
-                };
-                self.send_icmpv6_time_exceeded(
-                    src,
-                    0,
-                    kernel_api::resource::net::PacketPayload::single(packet_ref),
-                );
-            }
-            Ipv6ProcessResult::HopLimitExceededOwned(src, _dst, orig_packet) => {
                 self.send_icmpv6_time_exceeded(src, 0, orig_packet);
             }
             Ipv6ProcessResult::Dropped => self.stats().record_dropped(),

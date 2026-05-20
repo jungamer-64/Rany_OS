@@ -377,30 +377,19 @@ impl InterfaceStackState {
         self.ipv6.is_some()
     }
 
-    pub(crate) fn process_ethernet<'a>(
+    pub(crate) fn process_ethernet(
         &mut self,
-        data: &'a [u8],
-    ) -> crate::net::l2::ethernet::ProcessResult<'a> {
-        self.ethernet.process(data)
+        packet: kernel_api::resource::net::PacketRef,
+    ) -> crate::net::l2::ethernet::EthernetIngress {
+        self.ethernet.process_packet(packet)
     }
 
-    pub(crate) fn process_ipv4_fragment_owned_packet(
+    pub(crate) fn process_ipv4_owned_packet(
         &mut self,
         packet: kernel_api::resource::net::PacketRef,
         current_time: u64,
-    ) -> Ipv4ProcessResult<'static> {
-        self.ipv4
-            .process_fragment_owned_packet(packet, current_time)
-    }
-
-    pub(crate) fn process_ipv4_with_time_and_packet<'a>(
-        &mut self,
-        data: &'a [u8],
-        packet: Option<&kernel_api::resource::net::PacketRef>,
-        current_time: u64,
-    ) -> Ipv4ProcessResult<'a> {
-        self.ipv4
-            .process_with_time_and_packet(data, packet, current_time)
+    ) -> Ipv4ProcessResult {
+        self.ipv4.process_owned_packet(packet, current_time)
     }
 }
 

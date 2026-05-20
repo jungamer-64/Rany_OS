@@ -7,6 +7,7 @@
 //! as specified in Section 6.2 of the ExoRust specification.
 
 use core::fmt;
+use kernel_api::resource::net::PacketRef;
 
 /// Ethernet frame type (EtherType)
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -326,21 +327,30 @@ pub struct EthernetStats {
     pub rx_errors: u64,
 }
 
-/// Result of processing an Ethernet frame
-pub enum ProcessResult<'a> {
+/// Result of consuming an Ethernet frame owner.
+pub enum EthernetIngress {
     /// IPv4 packet to process
-    Ipv4(&'a [u8], MacAddress),
+    Ipv4 {
+        packet: PacketRef,
+        src_mac: MacAddress,
+    },
     /// IPv6 packet to process
-    Ipv6(&'a [u8], MacAddress),
+    Ipv6 {
+        packet: PacketRef,
+        src_mac: MacAddress,
+    },
     /// ARP packet to process
-    Arp(&'a [u8], MacAddress),
+    Arp {
+        packet: PacketRef,
+        src_mac: MacAddress,
+    },
     /// VLAN tagged frame - contains (VLAN ID, inner payload, inner EtherType)
     VlanTagged {
         vlan_id: u16,
         pcp: u8,
         dei: bool,
         inner_type: EtherType,
-        payload: &'a [u8],
+        packet: PacketRef,
         src_mac: MacAddress,
     },
     /// Frame was dropped (not for us)
@@ -378,89 +388,135 @@ impl EthernetProcessor {
         self.stats = EthernetStats::default();
     }
 
-    /// Process an incoming Ethernet frame (zero-copy)
-    pub fn process<'a>(&mut self, data: &'a [u8]) -> ProcessResult<'a> {
-        let frame = match EthernetFrame::parse(data) {
-            Some(f) => f,
-            None => {
-                self.stats.rx_errors += 1;
-                return ProcessResult::Error;
-            }
-        };
+    /// Process an incoming Ethernet frame by consuming the packet owner.
+    pub fn process_packet(&mut self, packet: PacketRef) -> EthernetIngress {
+        let (frame_len, src_mac, ether_type, payload_len) = {
+            let data = packet.data();
+            let frame = match EthernetFrame::parse(data) {
+                Some(f) => f,
+                None => {
+                    self.stats.rx_errors += 1;
+                    return EthernetIngress::Error;
+                }
+            };
 
-        // Check destination
-        let dst = frame.destination();
-        if !dst.is_broadcast() && !self.is_for_us(&dst) {
-            self.stats.rx_dropped += 1;
-            return ProcessResult::Dropped;
-        }
+            // Check destination
+            let dst = frame.destination();
+            if !dst.is_broadcast() && !self.is_for_us(&dst) {
+                self.stats.rx_dropped += 1;
+                return EthernetIngress::Dropped;
+            }
+
+            (
+                data.len(),
+                frame.source(),
+                frame.ether_type(),
+                frame.payload().len(),
+            )
+        };
 
         // Update stats
         self.stats.rx_packets += 1;
-        self.stats.rx_bytes += data.len() as u64;
+        self.stats.rx_bytes += frame_len as u64;
 
         // Dispatch by EtherType
-        let src_mac = frame.source();
-        match frame.ether_type() {
-            EtherType::Ipv4 => ProcessResult::Ipv4(frame.payload(), src_mac),
-            EtherType::Ipv6 => ProcessResult::Ipv6(frame.payload(), src_mac),
-            EtherType::Arp => ProcessResult::Arp(frame.payload(), src_mac),
-            EtherType::Vlan => self.process_vlan_tag(frame.payload(), src_mac),
-            _ => ProcessResult::Dropped,
+        match ether_type {
+            EtherType::Ipv4 => {
+                self.finish_payload_packet(packet, EthernetHeader::SIZE, payload_len, |packet| {
+                    EthernetIngress::Ipv4 { packet, src_mac }
+                })
+            }
+            EtherType::Ipv6 => {
+                self.finish_payload_packet(packet, EthernetHeader::SIZE, payload_len, |packet| {
+                    EthernetIngress::Ipv6 { packet, src_mac }
+                })
+            }
+            EtherType::Arp => {
+                self.finish_payload_packet(packet, EthernetHeader::SIZE, payload_len, |packet| {
+                    EthernetIngress::Arp { packet, src_mac }
+                })
+            }
+            EtherType::Vlan => self.process_vlan_packet(packet, src_mac),
+            _ => EthernetIngress::Dropped,
         }
     }
 
     /// Process a VLAN-tagged frame (802.1Q)
-    fn process_vlan_tag<'a>(
-        &mut self,
-        payload: &'a [u8],
-        src_mac: MacAddress,
-    ) -> ProcessResult<'a> {
-        // VLAN tag is 4 bytes: TPID (2) + TCI (2)
-        // After VLAN tag, we have the inner EtherType (2 bytes) + inner payload
-        if payload.len() < 4 {
-            return ProcessResult::Error;
-        }
+    fn process_vlan_packet(&mut self, packet: PacketRef, src_mac: MacAddress) -> EthernetIngress {
+        let Some((vlan_id, pcp, dei, inner_type, inner_payload_len)) =
+            self.parse_vlan_payload(packet.data())
+        else {
+            return EthernetIngress::Error;
+        };
 
-        let tci = u16::from_be_bytes([payload[0], payload[1]]);
-        let vlan_id = tci & 0x0FFF;
-        let pcp = ((tci >> 13) & 0x07) as u8;
-        let dei = (tci & 0x1000) != 0;
-
-        // The next 2 bytes are the inner EtherType
-        if payload.len() < 4 {
-            return ProcessResult::Error;
-        }
-        let inner_ethertype = u16::from_be_bytes([payload[2], payload[3]]);
-        let inner_type = EtherType::from(inner_ethertype);
-        let inner_payload = &payload[4..];
-
-        // Return the VLAN tagged result or process the inner frame directly
-        // For simple cases, we can directly dispatch the inner frame
+        let inner_payload_offset = EthernetHeader::SIZE + 4;
         match inner_type {
-            EtherType::Ipv4 => ProcessResult::Ipv4(inner_payload, src_mac),
-            EtherType::Ipv6 => ProcessResult::Ipv6(inner_payload, src_mac),
-            EtherType::Arp => ProcessResult::Arp(inner_payload, src_mac),
-            EtherType::Vlan => {
-                // Nested VLAN (Q-in-Q) - return as VlanTagged for caller to handle
-                ProcessResult::VlanTagged {
+            EtherType::Ipv4 => self.finish_payload_packet(
+                packet,
+                inner_payload_offset,
+                inner_payload_len,
+                |packet| EthernetIngress::Ipv4 { packet, src_mac },
+            ),
+            EtherType::Ipv6 => self.finish_payload_packet(
+                packet,
+                inner_payload_offset,
+                inner_payload_len,
+                |packet| EthernetIngress::Ipv6 { packet, src_mac },
+            ),
+            EtherType::Arp => self.finish_payload_packet(
+                packet,
+                inner_payload_offset,
+                inner_payload_len,
+                |packet| EthernetIngress::Arp { packet, src_mac },
+            ),
+            _ => self.finish_payload_packet(
+                packet,
+                inner_payload_offset,
+                inner_payload_len,
+                |packet| EthernetIngress::VlanTagged {
                     vlan_id,
                     pcp,
                     dei,
                     inner_type,
-                    payload: inner_payload,
+                    packet,
                     src_mac,
-                }
-            }
-            _ => ProcessResult::VlanTagged {
-                vlan_id,
-                pcp,
-                dei,
-                inner_type,
-                payload: inner_payload,
-                src_mac,
-            },
+                },
+            ),
         }
+    }
+
+    fn parse_vlan_payload(
+        &mut self,
+        frame_data: &[u8],
+    ) -> Option<(u16, u8, bool, EtherType, usize)> {
+        let payload = frame_data.get(EthernetHeader::SIZE..)?;
+        // Payload starts after the outer 0x8100 EtherType: TCI (2 bytes),
+        // inner EtherType (2 bytes), then the inner payload.
+        if payload.len() < 4 {
+            self.stats.rx_errors += 1;
+            return None;
+        }
+        let tci = u16::from_be_bytes([payload[0], payload[1]]);
+        let vlan_id = tci & 0x0FFF;
+        let pcp = ((tci >> 13) & 0x07) as u8;
+        let dei = (tci & 0x1000) != 0;
+        let inner_ethertype = u16::from_be_bytes([payload[2], payload[3]]);
+        let inner_type = EtherType::from(inner_ethertype);
+        Some((vlan_id, pcp, dei, inner_type, payload.len() - 4))
+    }
+
+    fn finish_payload_packet(
+        &mut self,
+        mut packet: PacketRef,
+        offset: usize,
+        len: usize,
+        make_result: impl FnOnce(PacketRef) -> EthernetIngress,
+    ) -> EthernetIngress {
+        if !packet.advance(offset) || !packet.set_len(len) {
+            self.stats.rx_errors += 1;
+            return EthernetIngress::Error;
+        }
+        make_result(packet)
     }
 
     /// Check if a MAC address is for us
@@ -694,6 +750,8 @@ pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
+    use crate::net::payload::alloc_packet_with_headroom;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     #[cfg_attr(test, test_case)]
     pub fn test_mac_address() {
@@ -710,5 +768,33 @@ pub mod tests {
         assert_eq!(EtherType::from(0x0800), EtherType::Ipv4);
         assert_eq!(EtherType::from(0x0806), EtherType::Arp);
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);
+    }
+
+    fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
+        let mut packet =
+            alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM).expect("packet");
+        packet.data_mut().copy_from_slice(bytes);
+        packet
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_process_packet_returns_owned_ipv4_payload() {
+        let local = MacAddress::from_octets(0x02, 0, 0, 0, 0, 1);
+        let src = MacAddress::from_octets(0x02, 0, 0, 0, 0, 2);
+        let mut frame = [0u8; EthernetHeader::SIZE + 4];
+        frame[0..6].copy_from_slice(local.as_bytes());
+        frame[6..12].copy_from_slice(src.as_bytes());
+        frame[12..14].copy_from_slice(&u16::to_be_bytes(EtherType::Ipv4.into()));
+        frame[EthernetHeader::SIZE..].copy_from_slice(b"ipv4");
+
+        let mut processor = EthernetProcessor::new(local);
+
+        match processor.process_packet(test_packet_with_contents(&frame)) {
+            EthernetIngress::Ipv4 { packet, src_mac } => {
+                assert_eq!(src_mac, src);
+                assert_eq!(packet.data(), b"ipv4");
+            }
+            _ => panic!("expected owned IPv4 ingress"),
+        }
     }
 }
