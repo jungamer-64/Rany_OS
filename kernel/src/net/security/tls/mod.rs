@@ -15,10 +15,9 @@ mod buffer;
 mod config;
 mod credentials;
 mod protocol;
-mod state;
 
-pub mod connection;
-pub mod crypto;
+mod connection;
+mod crypto;
 pub mod error;
 
 #[cfg(all(test, not(feature = "qemu-test-export")))]
@@ -27,12 +26,11 @@ mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-pub use config::TlsConfig;
-pub use connection::ExperimentalTlsConnection;
+pub use config::TlsClientConfig;
+pub use connection::{TlsEstablishedSession, TlsHandshake, TlsHandshakeStep};
 pub use credentials::Certificate;
 pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};
-pub use state::TlsState;
 
 pub(crate) use buffer::TlsBytes;
 pub(crate) use config::{TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TLS_SERVER_NAME_CAPACITY};
