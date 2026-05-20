@@ -12,19 +12,7 @@ pub mod random;
 // ── HMAC ────────────────────────────────────────────────────────────────────
 pub use hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 
-// ── HKDF + TLS 1.3 Key Schedule ─────────────────────────────────────────────
-pub use hkdf::{
-    hkdf_expand_label, hkdf_expand_label_sha384, tls13_derive_secret, tls13_derive_secret_sha384,
-    tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384, tls13_early_secret,
-    tls13_early_secret_sha384, tls13_finished_key, tls13_finished_key_sha384,
-    tls13_handshake_secret, tls13_handshake_secret_sha384, tls13_master_secret,
-    tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
-};
-
 // ── AES Core ─────────────────────────────────────────────────────────────────
-
-// ── AES-GCM ──────────────────────────────────────────────────────────────────
-pub(crate) use aes_gcm::AesGcmKey;
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
