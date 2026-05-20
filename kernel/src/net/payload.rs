@@ -62,17 +62,6 @@ impl PayloadRange {
         PayloadSpanRef::from_range(payload, self.offset, self.len)
     }
 
-    pub fn move_from(self, payload: PacketPayload) -> Result<PacketPayload, PacketWindowError> {
-        OwnedPayloadWindow::new(
-            payload,
-            VerifiedPayloadWindow {
-                offset: self.offset,
-                len: self.len,
-            },
-        )
-        .ok_or(PacketWindowError::OutOfBounds)?
-        .into_payload()
-    }
 }
 
 impl<'a> PayloadSpanRef<'a> {
@@ -326,15 +315,9 @@ impl<'a> PayloadSpanRef<'a> {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct VerifiedPayloadWindow {
-    offset: usize,
-    len: usize,
-}
-
 pub struct OwnedPayloadWindow {
     payload: PacketPayload,
-    window: VerifiedPayloadWindow,
+    window: PayloadRange,
 }
 
 pub type PayloadFront = PacketPayloadFront;
@@ -344,53 +327,9 @@ pub struct GeneratedPacketWriter {
     offset: usize,
 }
 
-impl VerifiedPayloadWindow {
-    pub fn for_payload(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
-        let total_len = payload.total_len();
-        if offset > total_len || len > total_len.saturating_sub(offset) {
-            return None;
-        }
-        Some(Self { offset, len })
-    }
-
-    pub fn whole(payload: &PacketPayload) -> Self {
-        Self {
-            offset: 0,
-            len: payload.total_len(),
-        }
-    }
-
-    pub const fn offset(&self) -> usize {
-        self.offset
-    }
-
-    pub const fn total_len(&self) -> usize {
-        self.len
-    }
-
-    pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_range(payload, self.offset, self.len)
-    }
-
-    pub fn move_from(self, payload: PacketPayload) -> Result<PacketPayload, PacketWindowError> {
-        OwnedPayloadWindow::new(payload, self)
-            .ok_or(PacketWindowError::OutOfBounds)?
-            .into_payload()
-    }
-}
-
 impl OwnedPayloadWindow {
-    pub fn new(payload: PacketPayload, window: VerifiedPayloadWindow) -> Option<Self> {
-        if window.offset > payload.total_len()
-            || window.len > payload.total_len().saturating_sub(window.offset)
-        {
-            return None;
-        }
-        Some(Self { payload, window })
-    }
-
     pub fn whole(payload: PacketPayload) -> Self {
-        let window = VerifiedPayloadWindow::whole(&payload);
+        let window = PayloadRange::new(0, payload.total_len());
         Self { payload, window }
     }
 
@@ -659,40 +598,6 @@ impl<'a> PacketPayloadView<'a> {
             end: self.total_len(),
         }
     }
-}
-
-pub fn for_each_payload_window_chunk_mut(
-    payload: &mut PacketPayload,
-    offset: usize,
-    len: usize,
-    mut f: impl FnMut(&mut [u8]),
-) -> Option<()> {
-    if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
-        return None;
-    }
-
-    let span_start = offset;
-    let span_end = offset.checked_add(len)?;
-    let mut cursor = 0usize;
-
-    for segment in payload.segments_mut() {
-        let segment_len = segment.len();
-        let segment_start = cursor;
-        let segment_end = cursor.checked_add(segment_len)?;
-        cursor = segment_end;
-
-        if segment_end <= span_start || segment_start >= span_end {
-            continue;
-        }
-
-        let local_start = span_start.saturating_sub(segment_start);
-        let local_end = segment_len.min(span_end.saturating_sub(segment_start));
-        if local_start < local_end {
-            f(&mut segment.data_mut()[local_start..local_end]);
-        }
-    }
-
-    Some(())
 }
 
 pub struct PacketPayloadCursor<'a> {
