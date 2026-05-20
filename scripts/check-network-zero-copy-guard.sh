@@ -211,6 +211,12 @@ if rg -n "\\bPayloadWindowRequest\\b|\\bPayloadWindow::new\\s*\\(|\\bPayloadWind
   fail "found unchecked payload window or range constructor"
 fi
 
+if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayloadWindow::take_payload\\s*\\(|\\bPayloadSpanMut::from_window\\s*\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found detached payload window API"
+fi
+
 if rg -n "pub fn (set_len|advance|retreat)\\(&mut self, [a-z_]+: usize\\)" \
   interfaces/kernel_api/src/types.rs interfaces/kernel_api/src/driver_abi.rs \
   >/dev/null; then
@@ -239,6 +245,12 @@ if rg -n "\\bNetTxSegment::new\\s*\\(" \
   kernel/src interfaces/kernel_api/src drivers/mlx5/src drivers/virtio/src \
   >/dev/null; then
   fail "found raw NetTxSegment constructor"
+fi
+
+if rg -n "\\bTxFragmentWindow::new\\s*\\(|\\bOwnedTxPayloadWindow::new\\s*\\(" \
+  kernel/src/net \
+  >/dev/null; then
+  fail "found detached TX payload window API"
 fi
 
 if rg -n "\\bsegments_ptr\\b|\\bsegments_len\\b" \

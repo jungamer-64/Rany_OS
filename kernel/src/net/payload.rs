@@ -21,12 +21,6 @@ pub struct PayloadRange {
     len: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PayloadWindow {
-    offset: usize,
-    len: usize,
-}
-
 #[derive(Debug)]
 pub struct FixedPayloadBytes<const N: usize> {
     bytes: [u8; N],
@@ -78,41 +72,6 @@ impl PayloadRange {
         PayloadSpanRef::from_range(payload, self.offset, self.len)
     }
 
-    pub fn window(self, payload: &PacketPayload) -> Option<PayloadWindow> {
-        PayloadWindow::within_payload(payload, self.offset, self.len)
-    }
-}
-
-impl PayloadWindow {
-    pub fn within_payload(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
-        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
-            return None;
-        }
-        Some(Self { offset, len })
-    }
-
-    pub fn whole(payload: &PacketPayload) -> Self {
-        Self {
-            offset: 0,
-            len: payload.total_len(),
-        }
-    }
-
-    pub const fn offset(self) -> usize {
-        self.offset
-    }
-
-    pub const fn total_len(self) -> usize {
-        self.len
-    }
-
-    pub const fn checked_end_offset(self) -> Option<usize> {
-        self.offset.checked_add(self.len)
-    }
-
-    pub fn span<'a>(self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_range(payload, self.offset, self.len)
-    }
 }
 
 impl<'a> PayloadSpanRef<'a> {
@@ -371,7 +330,8 @@ impl<'a> PayloadSpanRef<'a> {
 
 pub struct OwnedPayloadWindow {
     payload: PacketPayload,
-    request: PayloadWindow,
+    offset: usize,
+    len: usize,
 }
 
 pub type PayloadFront = PacketPayloadFront;
@@ -382,31 +342,17 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
-    pub fn take(payload: PacketPayload, request: PayloadWindow) -> Option<Self> {
-        if request.offset > payload.total_len()
-            || request.len > payload.total_len().saturating_sub(request.offset)
-        {
-            return None;
-        }
-        Some(Self { payload, request })
-    }
-
-    pub fn take_payload(
-        payload: PacketPayload,
-        request: PayloadWindow,
-    ) -> Result<PacketPayload, PacketWindowError> {
-        Self::take(payload, request)
-            .ok_or(PacketWindowError::OutOfBounds)?
-            .into_payload()
-    }
-
     pub fn whole(payload: PacketPayload) -> Self {
-        let request = PayloadWindow::whole(&payload);
-        Self { payload, request }
+        let len = payload.total_len();
+        Self {
+            payload,
+            offset: 0,
+            len,
+        }
     }
 
     pub fn span(&self) -> Option<PayloadSpanRef<'_>> {
-        self.request.span(&self.payload)
+        PayloadSpanRef::from_range(&self.payload, self.offset, self.len)
     }
 
     pub fn into_original_payload(self) -> PacketPayload {
@@ -414,26 +360,25 @@ impl OwnedPayloadWindow {
     }
 
     pub fn into_payload(self) -> Result<PacketPayload, PacketWindowError> {
-        if self.request.len == 0 {
+        if self.len == 0 {
             return Ok(PacketPayload::default());
         }
 
-        let payload = if self.request.offset == 0 {
+        let payload = if self.offset == 0 {
             self.payload
         } else {
-            let prefix_len =
-                PacketByteCount::new(self.request.offset).ok_or(PacketWindowError::Empty)?;
+            let prefix_len = PacketByteCount::new(self.offset).ok_or(PacketWindowError::Empty)?;
             match self.payload.take_front(prefix_len)? {
                 PacketPayloadFront::Whole(_) => return Err(PacketWindowError::OutOfBounds),
                 PacketPayloadFront::Prefix { remainder, .. } => remainder,
             }
         };
 
-        if payload.total_len() == self.request.len {
+        if payload.total_len() == self.len {
             return Ok(payload);
         }
 
-        let front_len = PacketByteCount::new(self.request.len).ok_or(PacketWindowError::Empty)?;
+        let front_len = PacketByteCount::new(self.len).ok_or(PacketWindowError::Empty)?;
         match payload.take_front(front_len)? {
             PacketPayloadFront::Whole(payload) => Ok(payload),
             PacketPayloadFront::Prefix { front, .. } => Ok(front),
@@ -519,7 +464,8 @@ pub struct PacketPayloadView<'a> {
 
 pub struct PayloadSpanMut<'a> {
     payload: &'a mut PacketPayload,
-    request: PayloadWindow,
+    offset: usize,
+    len: usize,
 }
 
 impl<'a> PacketPayloadView<'a> {
@@ -678,23 +624,18 @@ impl<'a> PacketPayloadView<'a> {
 }
 
 impl<'a> PayloadSpanMut<'a> {
-    pub fn from_window(payload: &'a mut PacketPayload, request: PayloadWindow) -> Option<Self> {
-        if request.offset > payload.total_len()
-            || request.len > payload.total_len().saturating_sub(request.offset)
-        {
-            return None;
-        }
-        Some(Self { payload, request })
-    }
-
     pub fn whole(payload: &'a mut PacketPayload) -> Self {
-        let request = PayloadWindow::whole(payload);
-        Self { payload, request }
+        let len = payload.total_len();
+        Self {
+            payload,
+            offset: 0,
+            len,
+        }
     }
 
     pub fn for_each_chunk_mut(&mut self, mut f: impl FnMut(&mut [u8])) -> Option<()> {
-        let span_start = self.request.offset;
-        let span_end = self.request.checked_end_offset()?;
+        let span_start = self.offset;
+        let span_end = self.offset.checked_add(self.len)?;
         let mut cursor = 0usize;
 
         for segment in self.payload.segments_mut() {

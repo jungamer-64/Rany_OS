@@ -189,17 +189,6 @@ pub(crate) struct TxFragmentWindow {
 }
 
 impl TxFragmentWindow {
-    pub(crate) fn new(packets: &[PacketRef], offset: usize, len: usize) -> Option<Self> {
-        let len = PacketByteCount::new(len)?;
-        let total_len = packets
-            .iter()
-            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
-        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
-            return None;
-        }
-        Some(Self { offset, len })
-    }
-
     const fn offset(self) -> usize {
         self.offset
     }
@@ -215,10 +204,6 @@ pub(crate) struct OwnedTxPayloadWindow<'a> {
 }
 
 impl<'a> OwnedTxPayloadWindow<'a> {
-    pub(crate) const fn new(packets: &'a [PacketRef], window: TxFragmentWindow) -> Self {
-        Self { packets, window }
-    }
-
     pub(crate) fn to_segments(&self) -> Option<Vec<NetTxSegment>> {
         tx_payload_window_to_segments(self.packets, self.window)
     }
