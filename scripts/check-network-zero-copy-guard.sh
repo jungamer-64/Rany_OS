@@ -211,7 +211,7 @@ if rg -n "\\bPayloadWindowRequest\\b|\\bPayloadWindow::new\\s*\\(|\\bPayloadWind
   fail "found unchecked payload window or range constructor"
 fi
 
-if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayloadWindow::take_payload\\s*\\(|\\bPayloadSpanMut::from_window\\s*\\(" \
+if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayloadWindow::take_payload\\s*\\(|\\bPayloadSpanMut::from_window\\s*\\(|\\bPayloadSpanRef::from_range\\s*\\(" \
   "${network_tree[@]}" \
   >/dev/null; then
   fail "found detached payload window API"
@@ -247,7 +247,7 @@ if rg -n "\\bNetTxSegment::new\\s*\\(" \
   fail "found raw NetTxSegment constructor"
 fi
 
-if rg -n "\\bTxFragmentWindow::new\\s*\\(|\\bOwnedTxPayloadWindow::new\\s*\\(" \
+if rg -n "\\bTxFragmentWindow\\b|\\bOwnedTxPayloadWindow::new\\s*\\(" \
   kernel/src/net \
   >/dev/null; then
   fail "found detached TX payload window API"

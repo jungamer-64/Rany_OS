@@ -24,6 +24,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::future::Future;
+use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
@@ -89,14 +90,48 @@ impl TxLeaseState {
 pub(crate) struct TxOwnerGroupState {
     keepalive: Vec<PacketRef>,
     completion_id: Option<u64>,
-    remaining_leases: usize,
+    remaining_leases: TxOwnerGroupLeaseCount,
     result: TxCompletionResult,
 }
 
+pub(crate) struct TxOwnerGroupKeepalive {
+    packets: Vec<PacketRef>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct TxOwnerGroupLeaseCount(NonZeroUsize);
+
+impl TxOwnerGroupKeepalive {
+    pub(crate) fn from_packets(packets: Vec<PacketRef>) -> Option<Self> {
+        (!packets.is_empty()).then_some(Self { packets })
+    }
+
+    fn into_vec(self) -> Vec<PacketRef> {
+        self.packets
+    }
+}
+
+impl TxOwnerGroupLeaseCount {
+    pub(crate) const fn new(leases: usize) -> Option<Self> {
+        match NonZeroUsize::new(leases) {
+            Some(leases) => Some(Self(leases)),
+            None => None,
+        }
+    }
+
+    const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
 impl TxOwnerGroupState {
-    fn new(keepalive: Vec<PacketRef>, completion_id: Option<u64>, remaining_leases: usize) -> Self {
+    fn new(
+        keepalive: TxOwnerGroupKeepalive,
+        completion_id: Option<u64>,
+        remaining_leases: TxOwnerGroupLeaseCount,
+    ) -> Self {
         Self {
-            keepalive,
+            keepalive: keepalive.into_vec(),
             completion_id,
             remaining_leases,
             result: Ok(()),
@@ -107,8 +142,13 @@ impl TxOwnerGroupState {
         if self.result.is_ok() {
             self.result = result;
         }
-        self.remaining_leases = self.remaining_leases.saturating_sub(1);
-        self.remaining_leases == 0
+        let remaining = self.remaining_leases.get();
+        if remaining == 1 {
+            return true;
+        }
+        self.remaining_leases =
+            TxOwnerGroupLeaseCount::new(remaining - 1).expect("remaining lease stays non-zero");
+        false
     }
 
     fn into_parts(self) -> (Vec<PacketRef>, Option<u64>, TxCompletionResult) {
@@ -153,13 +193,10 @@ fn complete_tx_owner_group_in(
 
 pub(crate) fn register_tx_owner_group_in(
     runtime: NetRuntimeHandle,
-    keepalive: Vec<PacketRef>,
-    remaining_leases: usize,
+    keepalive: TxOwnerGroupKeepalive,
+    remaining_leases: TxOwnerGroupLeaseCount,
     completion_id: Option<u64>,
-) -> Option<u64> {
-    if keepalive.is_empty() || remaining_leases == 0 {
-        return None;
-    }
+) -> u64 {
     let group_id = runtime_context_for(runtime)
         .tx_owner_group_next_id
         .fetch_add(1, Ordering::Relaxed);
@@ -171,7 +208,7 @@ pub(crate) fn register_tx_owner_group_in(
             group_id,
             TxOwnerGroupState::new(keepalive, completion_id, remaining_leases),
         );
-    Some(group_id)
+    group_id
 }
 
 pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: u64) {
@@ -183,12 +220,12 @@ pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TxFragmentWindow {
+struct TxPayloadBounds {
     offset: usize,
     len: PacketByteCount,
 }
 
-impl TxFragmentWindow {
+impl TxPayloadBounds {
     const fn offset(self) -> usize {
         self.offset
     }
@@ -200,23 +237,41 @@ impl TxFragmentWindow {
 
 pub(crate) struct OwnedTxPayloadWindow<'a> {
     packets: &'a [PacketRef],
-    window: TxFragmentWindow,
+    bounds: TxPayloadBounds,
 }
 
 impl<'a> OwnedTxPayloadWindow<'a> {
+    pub(crate) fn from_owner_bounds(
+        packets: &'a [PacketRef],
+        offset: usize,
+        len: usize,
+    ) -> Option<Self> {
+        let len = PacketByteCount::new(len)?;
+        let total_len = packets
+            .iter()
+            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
+        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self {
+            packets,
+            bounds: TxPayloadBounds { offset, len },
+        })
+    }
+
     pub(crate) fn to_segments(&self) -> Option<Vec<NetTxSegment>> {
-        tx_payload_window_to_segments(self.packets, self.window)
+        tx_payload_bounds_to_segments(self.packets, self.bounds)
     }
 }
 
-fn tx_payload_window_to_segments(
+fn tx_payload_bounds_to_segments(
     packets: &[PacketRef],
-    window: TxFragmentWindow,
+    bounds: TxPayloadBounds,
 ) -> Option<Vec<NetTxSegment>> {
     let mut descriptors = Vec::new();
     let mut cursor = 0usize;
-    let offset = window.offset();
-    let window_end = offset.checked_add(window.len())?;
+    let offset = bounds.offset();
+    let window_end = offset.checked_add(bounds.len())?;
     for packet in packets {
         let packet_start = cursor;
         let packet_end = cursor.checked_add(packet.len())?;
@@ -2651,8 +2706,8 @@ mod tests {
         let base_device_addr = packet.device_address();
         let packets = alloc::vec![packet];
 
-        let window = TxFragmentWindow::new(&packets, 8, 16).expect("window");
-        let descriptors = OwnedTxPayloadWindow::new(&packets, window)
+        let descriptors = OwnedTxPayloadWindow::from_owner_bounds(&packets, 8, 16)
+            .expect("owner-bound window")
             .to_segments()
             .expect("segments");
 
@@ -2668,9 +2723,9 @@ mod tests {
         let packet = test_packet_ref_with_device_addr(16, u64::MAX - 4);
         let packets = alloc::vec![packet];
 
-        let window = TxFragmentWindow::new(&packets, 8, 4).expect("window");
         assert!(
-            OwnedTxPayloadWindow::new(&packets, window)
+            OwnedTxPayloadWindow::from_owner_bounds(&packets, 8, 4)
+                .expect("owner-bound window")
                 .to_segments()
                 .is_none()
         );
@@ -2689,11 +2744,10 @@ mod tests {
         let (completion_id, future) = register_tx_completion_in(default_runtime());
         let group_id = register_tx_owner_group_in(
             default_runtime(),
-            alloc::vec![owner],
-            2,
+            TxOwnerGroupKeepalive::from_packets(alloc::vec![owner]).expect("non-empty owner"),
+            TxOwnerGroupLeaseCount::new(2).expect("non-zero leases"),
             Some(completion_id),
-        )
-        .expect("owner group");
+        );
         let request_a = register_grouped_tx_lease_in(
             default_runtime(),
             alloc::vec![header_a],

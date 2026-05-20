@@ -984,14 +984,13 @@ impl DhcpV6Client {
         }
 
         if let Some((server_duid_offset, server_duid_len)) = server_duid_range {
-            let retained_server_duid = crate::net::payload::PayloadWindow::within_payload(
-                &payload,
-                server_duid_offset,
-                server_duid_len,
-            )
-            .and_then(|window| {
-                crate::net::payload::OwnedPayloadWindow::take_payload(payload, window).ok()
-            });
+            let retained_server_duid =
+                crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
+                    payload,
+                    server_duid_offset,
+                    server_duid_len,
+                )
+                .ok();
             if let Ok(mut g) = self.server_duid.lock() {
                 *g = retained_server_duid;
             }
@@ -1055,7 +1054,7 @@ impl DhcpV6Client {
                 // Client Identifier (Option 1)
                 if off + len <= view.total_len() {
                     let Some(duid) =
-                        crate::net::payload::PayloadSpanRef::from_range(payload, off, len)
+                        crate::net::payload::PayloadSpanRef::from_payload_bounds(payload, off, len)
                     else {
                         return false;
                     };

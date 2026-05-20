@@ -6,9 +6,7 @@ use super::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpMethod, HttpRequestUri,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{
-    GeneratedPacketWriter, PayloadRange, PayloadSpanRef, PayloadWindow, append_payload,
-};
+use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef, append_payload};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
@@ -152,8 +150,12 @@ impl HttpBodyView {
             return None;
         }
         let range = self.ranges.into_iter().next()?;
-        let window = PayloadWindow::within_payload(&payload, range.offset(), range.total_len())?;
-        crate::net::payload::OwnedPayloadWindow::take_payload(payload, window).ok()
+        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
+            payload,
+            range.offset(),
+            range.total_len(),
+        )
+        .ok()
     }
 }
 

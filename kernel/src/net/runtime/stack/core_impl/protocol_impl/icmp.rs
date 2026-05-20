@@ -132,7 +132,7 @@ impl NetworkStack {
                     let mut frame_payload =
                         kernel_api::resource::net::PacketPayload::single(packet);
                     crate::net::payload::append_payload(&mut frame_payload, echo_data);
-                    let Some(icmp_span) = crate::net::payload::PayloadSpanRef::from_range(
+                    let Some(icmp_span) = crate::net::payload::PayloadSpanRef::from_payload_bounds(
                         &frame_payload,
                         EthernetHeader::SIZE + 20,
                         icmp_len,

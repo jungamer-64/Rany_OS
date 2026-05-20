@@ -5,9 +5,7 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
-use crate::net::payload::{
-    GeneratedPacketWriter, OwnedPayloadWindow, PayloadWindow, append_payload,
-};
+use crate::net::payload::{GeneratedPacketWriter, OwnedPayloadWindow, append_payload};
 use kernel_api::resource::net::PacketPayload;
 
 struct Ipv6UpperLayerIngress {
@@ -129,13 +127,9 @@ impl Ipv6Processor {
         };
 
         let original = PacketPayload::single(packet_ref);
-        let Some(window) =
-            PayloadWindow::within_payload(&original, ingress.payload_offset, ingress.payload_len)
+        let Some(packet) =
+            OwnedPayloadWindow::from_bounds(original, ingress.payload_offset, ingress.payload_len)
         else {
-            self.stats.record_header_error();
-            return Ipv6ProcessResult::Error;
-        };
-        let Some(packet) = OwnedPayloadWindow::take(original, window) else {
             self.stats.record_header_error();
             return Ipv6ProcessResult::Error;
         };
@@ -258,14 +252,12 @@ impl Ipv6Processor {
             frag_payload_len,
             frag_header,
         ) = fragment_info;
-        let Some(window) =
-            PayloadWindow::within_payload(&original, frag_payload_offset, frag_payload_len)
-        else {
-            self.stats.record_header_error();
-            return Ipv6ProcessResult::Error;
-        };
         let Ok(frag_payload_packet) =
-            crate::net::payload::OwnedPayloadWindow::take_payload(original, window)
+            crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
+                original,
+                frag_payload_offset,
+                frag_payload_len,
+            )
         else {
             self.stats.record_header_error();
             return Ipv6ProcessResult::Error;

@@ -52,16 +52,12 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(window) = crate::net::payload::PayloadWindow::within_payload(
-                    &payload,
-                    data_offset,
-                    data_len,
-                ) else {
-                    self.stats().record_rx_error();
-                    return;
-                };
                 let Ok(echo_data) =
-                    crate::net::payload::OwnedPayloadWindow::take_payload(payload, window)
+                    crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
+                        payload,
+                        data_offset,
+                        data_len,
+                    )
                 else {
                     self.stats().record_rx_error();
                     return;

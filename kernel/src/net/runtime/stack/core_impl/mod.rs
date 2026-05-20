@@ -5,7 +5,9 @@
 use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
-use crate::net::runtime::device::{OwnedTxPayloadWindow, TxFragmentWindow};
+use crate::net::runtime::device::{
+    OwnedTxPayloadWindow, TxOwnerGroupKeepalive, TxOwnerGroupLeaseCount,
+};
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::NetTxSegment;
 
@@ -655,13 +657,16 @@ impl NetworkStack {
             .iter()
             .try_fold(0usize, |acc, fragment| acc.checked_add(fragment.frame_len))
             .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        let owner_keepalive = TxOwnerGroupKeepalive::from_packets(owners)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        let remaining_leases = TxOwnerGroupLeaseCount::new(fragments.len())
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let group_id = crate::net::runtime::device::register_tx_owner_group_in(
             runtime,
-            owners,
-            fragments.len(),
+            owner_keepalive,
+            remaining_leases,
             meta.device_completion_ticket().map(|ticket| ticket.get()),
-        )
-        .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        );
 
         let mut request_meta = meta;
         request_meta.completion = kernel_api::service::netdev::TxCompletionMode::QueueAcceptance;
@@ -893,12 +898,10 @@ impl NetworkStack {
                 more_fragments,
                 fragment_offset_units,
             )?;
-            let payload_window = TxFragmentWindow::new(&owners, offset, fragment_data_len)
-                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let descriptors = Self::build_fragment_tx_descriptors(
-                &packet,
-                OwnedTxPayloadWindow::new(&owners, payload_window),
-            )?;
+            let payload_window =
+                OwnedTxPayloadWindow::from_owner_bounds(&owners, offset, fragment_data_len)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let descriptors = Self::build_fragment_tx_descriptors(&packet, payload_window)?;
             let frame_len = packet
                 .len()
                 .checked_add(fragment_data_len)

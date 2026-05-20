@@ -69,9 +69,8 @@ impl PayloadRange {
     }
 
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_range(payload, self.offset, self.len)
+        PayloadSpanRef::from_payload_bounds(payload, self.offset, self.len)
     }
-
 }
 
 impl<'a> PayloadSpanRef<'a> {
@@ -83,7 +82,11 @@ impl<'a> PayloadSpanRef<'a> {
         }
     }
 
-    pub fn from_range(payload: &'a PacketPayload, offset: usize, len: usize) -> Option<Self> {
+    pub fn from_payload_bounds(
+        payload: &'a PacketPayload,
+        offset: usize,
+        len: usize,
+    ) -> Option<Self> {
         let total_len = payload.total_len();
         if offset > total_len || len > total_len.saturating_sub(offset) {
             return None;
@@ -122,7 +125,7 @@ impl<'a> PayloadSpanRef<'a> {
         if offset > self.len || len > self.len.saturating_sub(offset) {
             return None;
         }
-        Self::from_range(self.payload, self.offset + offset, len)
+        Self::from_payload_bounds(self.payload, self.offset.checked_add(offset)?, len)
     }
 
     pub fn byte_at(&self, index: usize) -> Option<u8> {
@@ -299,7 +302,7 @@ impl<'a> PayloadSpanRef<'a> {
             end -= 1;
         }
 
-        Self::from_range(self.payload, self.offset.checked_add(start)?, end - start)
+        Self::from_payload_bounds(self.payload, self.offset.checked_add(start)?, end - start)
     }
 
     pub fn starts_with(&self, prefix: &[u8]) -> bool {
@@ -342,6 +345,27 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
+    pub fn from_bounds(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
+            return None;
+        }
+        Some(Self {
+            payload,
+            offset,
+            len,
+        })
+    }
+
+    pub fn take_payload_from_bounds(
+        payload: PacketPayload,
+        offset: usize,
+        len: usize,
+    ) -> Result<PacketPayload, PacketWindowError> {
+        Self::from_bounds(payload, offset, len)
+            .ok_or(PacketWindowError::OutOfBounds)?
+            .into_payload()
+    }
+
     pub fn whole(payload: PacketPayload) -> Self {
         let len = payload.total_len();
         Self {
@@ -351,8 +375,9 @@ impl OwnedPayloadWindow {
         }
     }
 
-    pub fn span(&self) -> Option<PayloadSpanRef<'_>> {
-        PayloadSpanRef::from_range(&self.payload, self.offset, self.len)
+    pub fn span(&self) -> PayloadSpanRef<'_> {
+        PayloadSpanRef::from_payload_bounds(&self.payload, self.offset, self.len)
+            .expect("OwnedPayloadWindow bounds are validated at construction")
     }
 
     pub fn into_original_payload(self) -> PacketPayload {
@@ -624,6 +649,21 @@ impl<'a> PacketPayloadView<'a> {
 }
 
 impl<'a> PayloadSpanMut<'a> {
+    pub fn from_payload_bounds(
+        payload: &'a mut PacketPayload,
+        offset: usize,
+        len: usize,
+    ) -> Option<Self> {
+        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
+            return None;
+        }
+        Some(Self {
+            payload,
+            offset,
+            len,
+        })
+    }
+
     pub fn whole(payload: &'a mut PacketPayload) -> Self {
         let len = payload.total_len();
         Self {
@@ -633,15 +673,15 @@ impl<'a> PayloadSpanMut<'a> {
         }
     }
 
-    pub fn for_each_chunk_mut(&mut self, mut f: impl FnMut(&mut [u8])) -> Option<()> {
+    pub fn for_each_chunk_mut(&mut self, mut f: impl FnMut(&mut [u8])) {
         let span_start = self.offset;
-        let span_end = self.offset.checked_add(self.len)?;
+        let span_end = self.offset + self.len;
         let mut cursor = 0usize;
 
         for segment in self.payload.segments_mut() {
             let segment_len = segment.len();
             let segment_start = cursor;
-            let segment_end = cursor.checked_add(segment_len)?;
+            let segment_end = cursor + segment_len;
             cursor = segment_end;
 
             if segment_end <= span_start || segment_start >= span_end {
@@ -654,8 +694,6 @@ impl<'a> PayloadSpanMut<'a> {
                 f(&mut segment.data_mut()[local_start..local_end]);
             }
         }
-
-        Some(())
     }
 }
 
@@ -709,13 +747,13 @@ impl<'a> PacketPayloadCursor<'a> {
         if len > self.remaining() {
             return None;
         }
-        let span = PayloadSpanRef::from_range(self.view.payload(), self.offset, len)?;
+        let span = PayloadSpanRef::from_payload_bounds(self.view.payload(), self.offset, len)?;
         self.offset += len;
         Some(span)
     }
 
     pub fn remaining_span(&self) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_range(self.view.payload(), self.offset, self.remaining())
+        PayloadSpanRef::from_payload_bounds(self.view.payload(), self.offset, self.remaining())
     }
 }
 
@@ -811,7 +849,7 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
     }
 
     let transport_len = view.total_len().checked_sub(offset)?;
-    PayloadSpanRef::from_range(payload, offset, transport_len)
+    PayloadSpanRef::from_payload_bounds(payload, offset, transport_len)
         .map(|transport| (next_header, transport))
 }
 
@@ -858,12 +896,14 @@ mod tests {
     }
 
     #[test]
-    fn payload_window_rejects_out_of_bounds_request() {
+    fn payload_bound_window_rejects_out_of_bounds_request() {
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
 
-        assert!(PayloadWindow::within_payload(&payload, 4, 0).is_some());
-        assert!(PayloadWindow::within_payload(&payload, 5, 0).is_none());
-        assert!(PayloadWindow::within_payload(&payload, 3, 2).is_none());
+        assert!(OwnedPayloadWindow::from_bounds(payload, 4, 0).is_some());
+        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+        assert!(OwnedPayloadWindow::from_bounds(payload, 5, 0).is_none());
+        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+        assert!(OwnedPayloadWindow::from_bounds(payload, 3, 2).is_none());
     }
 
     fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
@@ -926,13 +966,22 @@ mod tests {
     }
 
     #[test]
-    fn owned_payload_window_revalidates_request_against_consumed_payload() {
+    fn owned_payload_window_takes_bounds_from_same_payload() {
         let source = PacketPayload::single(test_packet_with_contents(b"abcdef"));
-        let request = PayloadWindow::within_payload(&source, 3, 3)
-            .expect("request is valid for source payload");
+
+        let taken = OwnedPayloadWindow::take_payload_from_bounds(source, 3, 3)
+            .expect("same-payload bounds are valid");
+
+        assert_payload_bytes(&taken, b"def");
+    }
+
+    #[test]
+    fn owned_payload_window_rejects_bounds_against_target_payload() {
         let shorter_payload = PacketPayload::single(test_packet_with_contents(b"xy"));
 
-        assert!(OwnedPayloadWindow::take_payload(shorter_payload, request).is_err());
-        assert_payload_bytes(&source, b"abcdef");
+        assert!(
+            OwnedPayloadWindow::take_payload_from_bounds(shorter_payload, 3, 3).is_err(),
+            "bounds are validated against the consumed payload"
+        );
     }
 }

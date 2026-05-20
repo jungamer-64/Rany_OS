@@ -926,7 +926,7 @@ impl DhcpClient {
             }
 
             let Some(opt_data) =
-                crate::net::payload::PayloadSpanRef::from_range(&payload, offset + 2, len)
+                crate::net::payload::PayloadSpanRef::from_payload_bounds(&payload, offset + 2, len)
             else {
                 break;
             };
