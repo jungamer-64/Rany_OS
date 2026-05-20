@@ -394,14 +394,6 @@ impl PacketPayloadWindow {
     }
 }
 
-pub fn move_payload_window_owned(
-    payload: PacketPayload,
-    offset: usize,
-    len: usize,
-) -> Option<PacketPayload> {
-    PacketPayloadWindow::new(payload, offset, len)?.into_payload()
-}
-
 impl GeneratedPacketWriter {
     pub fn new(len: usize, headroom: usize) -> Option<Self> {
         Some(Self {
@@ -747,14 +739,6 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
         return None;
     }
     Some(packet)
-}
-
-pub fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
-    let base = container.as_ptr() as usize;
-    let sub = subslice.as_ptr() as usize;
-    let end = base.checked_add(container.len())?;
-    let sub_end = sub.checked_add(subslice.len())?;
-    (sub >= base && sub_end <= end).then_some(sub - base)
 }
 
 pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PayloadSpanRef<'_>)> {

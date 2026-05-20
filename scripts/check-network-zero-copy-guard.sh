@@ -156,6 +156,12 @@ if rg -n "\\.clone\\(" "${network_tree[@]}" interfaces/kernel_api/src/netdev.rs 
   fail "found clone call in network ownership scope"
 fi
 
+if rg -n "\\btry_clone_ref\\b|\\bclone_storage\\b" \
+  "${network_tree[@]}" interfaces/kernel_api/src/types.rs interfaces/kernel_api/src/netdev.rs \
+  >/dev/null; then
+  fail "found removed PacketRef overlapping clone surface"
+fi
+
 if rg -n "#\\[derive\\([^\\]]*Clone[^\\]]*\\)\\]" "${network_tree[@]}" interfaces/kernel_api/src/netdev.rs interfaces/kernel_api/src/types.rs interfaces/kernel_api/src/services.rs \
   | rg -v "Copy" >/dev/null; then
   fail "found non-Copy Clone derive in network ownership scope"
@@ -193,6 +199,16 @@ if rg -n "\\bsplit_payload_owned\\b|\\bcopy_segment_range\\b|\\bcopy_span_to_pac
   "${network_tree[@]}" \
   >/dev/null; then
   fail "found removed packet payload split/copy root"
+fi
+
+if rg -n "\\bmove_payload_window_owned\\b" "${network_tree[@]}" >/dev/null; then
+  fail "found removed raw usize owned payload window helper"
+fi
+
+if rg -n "\\bsubslice_offset\\b" \
+  kernel/src/net/runtime/command_handler kernel/src/net/runtime/stack kernel/src/net/l3 \
+  >/dev/null; then
+  fail "found removed borrowed-slice ingress offset recovery"
 fi
 
 if rg -n "\\bclone_payload_window_owned\\b|\\bsend_icmp_echo_fallback\\b|\\brecord_recv_copy_fallback\\b|\\brecv_copy_fallback" \
@@ -313,6 +329,18 @@ if rg -n "\\btransmit_bytes_internal\\b|\\btransmit_bytes_with_meta_internal\\b"
   kernel/src/net \
   >/dev/null; then
   fail "found removed byte-slice TX runtime surface"
+fi
+
+if rg -n "\\bprocess_on\\([^\\n]*&\\[u8\\]|\\bprocess_v6_on\\([^\\n]*&\\[u8\\]|\\bprocess_with_packet(_v6)?_on\\b" \
+  kernel/src/net/l4/udp kernel/src/net/runtime kernel/src/net/tests \
+  >/dev/null; then
+  fail "found removed byte-slice UDP ingress surface"
+fi
+
+if rg -n "pub struct NetTxSegment[[:space:]]*\\{|pub cpu_ptr:|pub device_addr:|pub len:" \
+  interfaces/kernel_api/src/netdev.rs \
+  >/dev/null; then
+  fail "found public raw NetTxSegment descriptor fields"
 fi
 
 if rg -n "PacketRef::from_vec|PacketPayload::from_vec|PacketPayload::into_vec|\\.to_vec\\(\\)" \

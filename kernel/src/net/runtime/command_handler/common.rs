@@ -31,15 +31,6 @@ pub(super) fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAd
 }
 
 #[inline]
-pub(super) fn subslice_offset(container: &[u8], subslice: &[u8]) -> Option<usize> {
-    let base = container.as_ptr() as usize;
-    let sub = subslice.as_ptr() as usize;
-    let end = base.checked_add(container.len())?;
-    let sub_end = sub.checked_add(subslice.len())?;
-    (sub >= base && sub_end <= end).then_some(sub - base)
-}
-
-#[inline]
 pub(super) fn endpoint_error_from_network(error: crate::net::types::NetworkError) -> EndpointError {
     match error {
         crate::net::types::NetworkError::InvalidAddress => EndpointError::InvalidArgument,

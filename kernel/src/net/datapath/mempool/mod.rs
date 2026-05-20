@@ -358,16 +358,6 @@ unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
     }
 }
 
-unsafe fn pooled_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
-    unsafe {
-        let state = pooled_state_ref(storage);
-        if !state.buffer.as_ref().add_ref() {
-            return None;
-        }
-        Some(PacketRefStorage::from_state(*state))
-    }
-}
-
 static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: pooled_data_ptr,
     data_mut_ptr: pooled_data_mut_ptr,
@@ -379,7 +369,6 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: pooled_headroom,
     advance: pooled_advance,
     retreat: pooled_retreat,
-    clone_storage: pooled_clone_storage,
     drop_storage: pooled_drop,
 };
 
@@ -472,19 +461,6 @@ unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     }
 }
 
-unsafe fn dma_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
-    unsafe {
-        let state = dma_state_ref(storage);
-        if !dma_add_ref(state.buf) {
-            return None;
-        }
-        Some(PacketRefStorage::from_state(DmaPacketState {
-            buf: state.buf,
-            window: state.window,
-        }))
-    }
-}
-
 static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: dma_data_ptr,
     data_mut_ptr: dma_data_mut_ptr,
@@ -496,7 +472,6 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: dma_headroom,
     advance: dma_advance,
     retreat: dma_retreat,
-    clone_storage: dma_clone_storage,
     drop_storage: dma_drop,
 };
 
@@ -583,11 +558,6 @@ unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool 
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
-    unsafe { Some(PacketRefStorage::from_state(*borrowed_state_ref(storage))) }
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
 static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: borrowed_data_ptr,
     data_mut_ptr: borrowed_data_mut_ptr,
@@ -599,7 +569,6 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: borrowed_headroom,
     advance: borrowed_advance,
     retreat: borrowed_retreat,
-    clone_storage: borrowed_clone_storage,
     drop_storage: borrowed_drop,
 };
 

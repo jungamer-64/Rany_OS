@@ -216,7 +216,6 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
-    pub clone_storage: unsafe fn(&PacketRefStorage) -> Option<PacketRefStorage>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -309,12 +308,6 @@ impl PacketRef {
     #[inline]
     pub fn retreat(&mut self, size: usize) -> bool {
         unsafe { (self.vtable.retreat)(&mut self.storage, size) }
-    }
-
-    #[inline]
-    pub fn try_clone_ref(&self) -> Option<Self> {
-        let storage = unsafe { (self.vtable.clone_storage)(&self.storage) }?;
-        Some(unsafe { Self::from_opaque_parts(storage, self.vtable) })
     }
 
     #[inline]
@@ -812,11 +805,6 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn dma_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
-        let _ = storage;
-        None
-    }
-
     unsafe fn dma_drop(storage: &mut PacketRefStorage) {
         let state = unsafe { storage.as_state_mut::<DmaPacketState>() };
         let backing = state.backing;
@@ -837,7 +825,6 @@ mod packet_ref_tests {
         headroom: dma_headroom,
         advance: dma_advance,
         retreat: dma_retreat,
-        clone_storage: dma_clone_storage,
         drop_storage: dma_drop,
     };
 
