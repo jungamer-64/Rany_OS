@@ -29,8 +29,10 @@ use alloc::vec::Vec;
 
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
-use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, append_payload};
-use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketChain, PacketPayload};
+use crate::net::payload::{
+    GeneratedPacketWriter, PacketPayloadView, append_payload, move_payload_window_owned,
+};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 // =====================================================
 // Fragment Header Parsing
@@ -666,7 +668,7 @@ impl Ipv6FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        if let Some(prefix) = Self::take_payload_prefix(segment.payload, 8) {
+                        if let Some(prefix) = move_payload_window_owned(segment.payload, 0, 8) {
                             append_payload(&mut quoted, prefix);
                         }
                     }

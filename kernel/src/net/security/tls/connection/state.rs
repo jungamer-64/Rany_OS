@@ -3,8 +3,9 @@
 // ============================================================================
 
 use super::super::{NegotiatedCipherSuite, ServerPublicKey, TlsBytes, TlsError, TlsResult};
-use crate::net::payload::{append_payload, move_payload_window_owned};
+use crate::net::payload::{append_payload, packet_payload_from_segments};
 use crate::net::security::ecdh;
+use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,14 +193,12 @@ impl TlsSeqNo {
 
 pub(super) struct TlsRecordIngressQueue {
     payload: PacketPayload,
-    cursor: usize,
 }
 
 impl Default for TlsRecordIngressQueue {
     fn default() -> Self {
         Self {
             payload: PacketPayload::default(),
-            cursor: 0,
         }
     }
 }
@@ -213,40 +212,44 @@ impl TlsRecordIngressQueue {
         &self.payload
     }
 
-    pub(super) fn payload_mut(&mut self) -> &mut PacketPayload {
-        &mut self.payload
-    }
-
-    pub(super) fn cursor(&self) -> usize {
-        self.cursor
-    }
-
-    pub(super) fn advance(&mut self, len: usize) -> Option<()> {
-        let next = self.cursor.checked_add(len)?;
-        (next <= self.payload.total_len()).then(|| {
-            self.cursor = next;
-        })
-    }
-
-    pub(super) fn compact_consumed(&mut self) -> Option<()> {
-        if self.cursor == 0 {
-            return Some(());
+    pub(super) fn take_front_record(&mut self, len: usize) -> Option<PacketPayload> {
+        if len > self.payload.total_len() {
+            return None;
+        }
+        if len == 0 {
+            return Some(PacketPayload::default());
         }
 
-        let remaining_len = self.payload.total_len().checked_sub(self.cursor)?;
-        let remaining = move_payload_window_owned(
-            core::mem::take(&mut self.payload),
-            self.cursor,
-            remaining_len,
-        )?;
-        self.payload = remaining;
-        self.cursor = 0;
-        Some(())
-    }
+        let mut remaining = len;
+        let mut record_segments = Vec::new();
+        let mut queued_segments = Vec::new();
 
-    pub(super) fn clear(&mut self) {
-        self.payload = PacketPayload::default();
-        self.cursor = 0;
+        for segment in core::mem::take(&mut self.payload).into_segments() {
+            if remaining == 0 {
+                queued_segments.push(segment);
+                continue;
+            }
+
+            let segment_len = segment.len();
+            if segment_len <= remaining {
+                remaining -= segment_len;
+                record_segments.push(segment);
+            } else {
+                let mut restored = record_segments;
+                restored.push(segment);
+                restored.extend(queued_segments);
+                self.payload = packet_payload_from_segments(restored);
+                return None;
+            }
+        }
+
+        if remaining != 0 {
+            self.payload = packet_payload_from_segments(record_segments);
+            return None;
+        }
+
+        self.payload = packet_payload_from_segments(queued_segments);
+        Some(packet_payload_from_segments(record_segments))
     }
 }
 

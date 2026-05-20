@@ -331,36 +331,27 @@ impl TlsConnectionCore {
 
     pub(super) fn consume_tls_record_payload(
         &mut self,
-        record: &mut PacketPayload,
-        record_offset: usize,
+        mut record: PacketPayload,
         plaintext: &mut PacketPayload,
-    ) -> TlsResult<bool> {
-        let record_span = PayloadSpanRef::from_range(
-            record,
-            record_offset,
-            record.total_len().saturating_sub(record_offset),
-        )
-        .ok_or(TlsError::DecodeError)?;
+    ) -> TlsResult<()> {
+        let record_span = PayloadSpanRef::from_payload(&record);
         let header = record_span
             .read_array::<5>(0)
             .ok_or(TlsError::DecodeError)?;
         let header = TlsRecordHeader::parse(header)?;
         let record_len = header.body_len.get();
-        let body_offset = record_offset.checked_add(5).ok_or(TlsError::DecodeError)?;
-        let body = PayloadSpanRef::from_range(record, body_offset, record_len)
+        let body_offset = 5usize;
+        let body = PayloadSpanRef::from_range(&record, body_offset, record_len)
             .ok_or(TlsError::DecodeError)?;
 
         match header.content_type {
             ContentType::Handshake => self.process_handshake(body)?,
             ContentType::Alert => self.handle_alert_payload(body)?,
             ContentType::ApplicationData => {
-                let inner = self.decrypt_tls13_record_payload(record, body_offset, record_len)?;
-                let inner_span =
-                    PayloadSpanRef::from_range(record, body_offset, inner.content_len())
-                        .ok_or(TlsError::DecodeError)?;
+                let inner = self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
-                        let owned = crate::net::payload::clone_payload_window_owned(
+                        let owned = crate::net::payload::move_payload_window_owned(
                             record,
                             body_offset,
                             inner.content_len(),
@@ -369,51 +360,53 @@ impl TlsConnectionCore {
                         append_payload(plaintext, owned);
                     }
                     ContentType::Handshake => {
+                        let inner_span =
+                            PayloadSpanRef::from_range(&record, body_offset, inner.content_len())
+                                .ok_or(TlsError::DecodeError)?;
                         if self.negotiation.progress.is_established() {
                             self.tls13_process_post_handshake(inner_span)?;
                         } else {
                             self.process_handshake(inner_span)?;
                         }
                     }
-                    ContentType::Alert => self.handle_alert_payload(inner_span)?,
+                    ContentType::Alert => {
+                        let inner_span =
+                            PayloadSpanRef::from_range(&record, body_offset, inner.content_len())
+                                .ok_or(TlsError::DecodeError)?;
+                        self.handle_alert_payload(inner_span)?;
+                    }
                 }
             }
         }
-        Ok(false)
+        Ok(())
     }
 
     pub fn process_incoming_payload(&mut self, payload: PacketPayload) -> TlsResult<PacketPayload> {
         self.record.ingress.push(payload);
         let mut plaintext = PacketPayload::default();
-        let mut ingress = core::mem::take(&mut self.record.ingress);
 
         loop {
-            let view = PacketPayloadView::new(ingress.payload());
-            let consumed = ingress.cursor();
-            let remaining = view.total_len().saturating_sub(consumed);
-            if remaining < 5 {
-                break;
-            }
-            let header = view
-                .read_array::<5>(consumed)
-                .ok_or(TlsError::DecodeError)?;
-            let header = TlsRecordHeader::parse(header)?;
-            let total_len = header.total_len()?;
-            if remaining < total_len {
-                break;
-            }
+            let record_len = {
+                let view = PacketPayloadView::new(self.record.ingress.payload());
+                if view.total_len() < 5 {
+                    break;
+                }
+                let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+                let header = TlsRecordHeader::parse(header)?;
+                let total_len = header.total_len()?;
+                if view.total_len() < total_len {
+                    break;
+                }
+                total_len
+            };
 
-            let record_consumed =
-                self.consume_tls_record_payload(ingress.payload_mut(), consumed, &mut plaintext)?;
-            if record_consumed {
-                ingress.clear();
-                self.record.ingress = ingress;
-                return Ok(plaintext);
-            }
-            ingress.advance(total_len).ok_or(TlsError::DecodeError)?;
+            let record = self
+                .record
+                .ingress
+                .take_front_record(record_len)
+                .ok_or(TlsError::DecodeError)?;
+            self.consume_tls_record_payload(record, &mut plaintext)?;
         }
-        ingress.compact_consumed().ok_or(TlsError::DecodeError)?;
-        self.record.ingress = ingress;
         Ok(plaintext)
     }
 
