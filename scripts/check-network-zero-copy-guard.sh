@@ -195,6 +195,18 @@ if rg -n "\\bsplit_payload_owned\\b|\\bcopy_segment_range\\b|\\bcopy_span_to_pac
   fail "found removed packet payload split/copy root"
 fi
 
+if rg -n "\\bclone_payload_window_owned\\b|\\bsend_icmp_echo_fallback\\b|\\brecord_recv_copy_fallback\\b|\\brecv_copy_fallback" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found removed network copy fallback root"
+fi
+
+if rg -n "Fallback to copy-based path|\\btake_payload_prefix\\s*\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found removed network copy fallback path"
+fi
+
 if rg -n "\\btls13_encrypt_application_payload\\(&|\\.encrypt\\(" \
   kernel/src/net/security/tls kernel/src/net/services/http \
   >/dev/null; then

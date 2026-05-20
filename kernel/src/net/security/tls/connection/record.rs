@@ -348,7 +348,8 @@ impl TlsConnectionCore {
             ContentType::Handshake => self.process_handshake(body)?,
             ContentType::Alert => self.handle_alert_payload(body)?,
             ContentType::ApplicationData => {
-                let inner = self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
+                let inner =
+                    self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
                         let owned = crate::net::payload::move_payload_window_owned(
@@ -821,6 +822,20 @@ mod tests {
         matches && offset == expected.len()
     }
 
+    fn single_packet_payload_from_payloads(payloads: &[&PacketPayload]) -> PacketPayload {
+        let total_len = payloads.iter().map(|payload| payload.total_len()).sum();
+        let mut writer = GeneratedPacketWriter::new(total_len, DEFAULT_PACKET_HEADROOM)
+            .expect("test coalesced packet allocation succeeds");
+        for payload in payloads {
+            PacketPayloadView::new(payload).for_each_chunk(|chunk| {
+                writer
+                    .write_bytes(chunk)
+                    .expect("test coalesced packet write succeeds");
+            });
+        }
+        writer.finish().expect("test coalesced packet is exact")
+    }
+
     fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
         let key = [0x11; 16];
         let iv = [0x22; 12];
@@ -864,5 +879,32 @@ mod tests {
 
         assert!(payload_matches(&plaintext, b"alphabeta"));
         assert!(matches!(conn.record.read_seq.current(), Ok(2)));
+    }
+
+    #[test]
+    fn encrypted_records_inside_one_packet_ref_do_not_copy_split() {
+        let config = super::super::TlsClientConfig::for_server_name(
+            "example.com",
+            super::super::TlsTrustAnchors::empty(),
+        )
+        .expect("test server name fits");
+        let mut conn =
+            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+        establish_loopback_record_keys(&mut conn);
+
+        let first = conn
+            .tls13_encrypt_application_payload(test_payload(b"alpha"))
+            .expect("first record encrypts");
+        let second = conn
+            .tls13_encrypt_application_payload(test_payload(b"beta"))
+            .expect("second record encrypts");
+        let coalesced = single_packet_payload_from_payloads(&[&first, &second]);
+
+        let err = conn
+            .process_incoming_payload(coalesced)
+            .expect_err("same-packet record split must not copy fallback");
+
+        assert!(matches!(err, TlsError::DecodeError));
+        assert!(matches!(conn.record.read_seq.current(), Ok(0)));
     }
 }
