@@ -385,7 +385,7 @@ fn test_validate_certificate_chain_requires_trust_anchor() {
     let cert = X509Parser::parse_certificate(chain[0]).expect("test certificate parses");
     let context = TlsServerVerificationContext {
         now_unix: cert.not_before,
-        server_name: None,
+        server_name: "Test",
         trusted_roots: &[],
     };
 
@@ -408,7 +408,7 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     assert!(
         CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
-            server_name: None,
+            server_name: "Test",
             trusted_roots: &trusted,
         })
         .verify_chain(&chain)
@@ -417,7 +417,7 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     assert!(
         CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
-            server_name: Some("example.com"),
+            server_name: "example.com",
             trusted_roots: &trusted,
         })
         .verify_chain(&chain)
@@ -426,7 +426,7 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     assert!(
         CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
-            server_name: Some("Test"),
+            server_name: "Other",
             trusted_roots: &trusted,
         })
         .verify_chain(&chain)
@@ -456,7 +456,7 @@ fn test_validate_certificate_chain_rejects_empty_chain() {
     assert!(
         CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: 0,
-            server_name: None,
+            server_name: "example.com",
             trusted_roots: &[],
         })
         .verify_chain(&[])

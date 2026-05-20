@@ -4,7 +4,7 @@
 
 use super::super::connection::TlsConnectionCore;
 use super::super::protocol::ContentType;
-use super::super::{TlsBytes, TlsClientConfig, TlsError, TlsHandshake};
+use super::super::{TlsBytes, TlsClientConfig, TlsError, TlsHandshake, TlsTrustAnchors};
 use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
@@ -51,14 +51,15 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
 }
 
 pub fn wave8_tls_tls_handshake_start_smoke() -> bool {
-    let config = TlsClientConfig::new();
+    let config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+        .expect("test server name fits");
     TlsHandshake::start(config).is_ok()
 }
 
 pub fn wave8_tls_tls_handshake_client_hello_smoke() -> bool {
-    let config = match TlsClientConfig::new().with_server_name("example.com") {
-        Ok(config) => config,
-        Err(_) => return false,
+    let Ok(config) = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+    else {
+        return false;
     };
     let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
@@ -71,7 +72,8 @@ pub fn wave8_tls_tls_handshake_client_hello_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls_handshake_surface_smoke() -> bool {
-    let config = TlsClientConfig::new();
+    let config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+        .expect("test server name fits");
     TlsHandshake::start(config).is_ok()
 }
 
@@ -80,7 +82,8 @@ pub fn wave8_tls_tls13_coalesced_application_records_smoke() -> bool {
 }
 
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
-    let config = TlsClientConfig::new();
+    let config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+        .expect("test server name fits");
     let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
@@ -99,9 +102,9 @@ pub fn wave8_tls_tls13_handshake_start_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
-    let config = match TlsClientConfig::new().with_server_name("example.com") {
-        Ok(config) => config,
-        Err(_) => return false,
+    let Ok(config) = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+    else {
+        return false;
     };
     let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
@@ -113,7 +116,8 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
-    let config = TlsClientConfig::new();
+    let config = TlsClientConfig::for_server_name("example.com", TlsTrustAnchors::empty())
+        .expect("test server name fits");
     let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
     };
