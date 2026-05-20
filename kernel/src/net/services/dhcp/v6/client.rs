@@ -984,11 +984,12 @@ impl DhcpV6Client {
         }
 
         if let Some((server_duid_offset, server_duid_len)) = server_duid_range {
-            let retained_server_duid = crate::net::payload::move_payload_window_owned(
-                payload,
+            let retained_server_duid = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                &payload,
                 server_duid_offset,
                 server_duid_len,
-            );
+            )
+            .and_then(|window| window.move_from(payload).ok());
             if let Ok(mut g) = self.server_duid.lock() {
                 *g = retained_server_duid;
             }

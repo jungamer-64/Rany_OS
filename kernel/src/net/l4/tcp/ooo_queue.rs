@@ -15,6 +15,7 @@
 // Building block: Out-of-order queue implementation
 
 use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_before};
+use crate::net::payload::VerifiedPayloadWindow;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::transport::tcp_runtime_in;
 use crate::sync::PoisonLock;
@@ -122,11 +123,15 @@ impl ConnectionOooQueue {
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    let Some(trimmed) = crate::net::payload::move_payload_window_owned(
-                        packet,
+                    let Some(window) = VerifiedPayloadWindow::for_payload(
+                        &packet,
                         overlap,
                         seg_end.wrapping_sub(rcv_nxt) as usize,
                     ) else {
+                        total_count.fetch_sub(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    let Ok(trimmed) = window.move_from(packet) else {
                         total_count.fetch_sub(1, Ordering::Relaxed);
                         continue;
                     };

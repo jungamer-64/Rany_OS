@@ -30,7 +30,7 @@ use alloc::vec::Vec;
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
 use crate::net::payload::{
-    GeneratedPacketWriter, PacketPayloadView, append_payload, move_payload_window_owned,
+    GeneratedPacketWriter, PacketPayloadView, VerifiedPayloadWindow, append_payload,
 };
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
@@ -668,7 +668,12 @@ impl Ipv6FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        if let Some(prefix) = move_payload_window_owned(segment.payload, 0, 8) {
+                        if let Some(window) =
+                            VerifiedPayloadWindow::for_payload(&segment.payload, 0, 8)
+                        {
+                            let Ok(prefix) = window.move_from(segment.payload) else {
+                                continue;
+                            };
                             append_payload(&mut quoted, prefix);
                         }
                     }

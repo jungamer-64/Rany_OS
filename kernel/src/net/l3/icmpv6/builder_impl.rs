@@ -167,9 +167,14 @@ impl Icmpv6Builder {
 
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {
+            let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                &trigger_packet,
+                0,
+                max_trigger,
+            )?;
             crate::net::payload::append_payload(
                 &mut message_payload,
-                crate::net::payload::move_payload_window_owned(trigger_packet, 0, max_trigger)?,
+                window.move_from(trigger_packet).ok()?,
             );
         }
 

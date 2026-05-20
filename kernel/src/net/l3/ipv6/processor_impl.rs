@@ -5,9 +5,7 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
-use crate::net::payload::{
-    GeneratedPacketWriter, append_payload, move_payload_window_owned, subslice_offset,
-};
+use crate::net::payload::{GeneratedPacketWriter, VerifiedPayloadWindow, append_payload};
 use kernel_api::resource::net::PacketPayload;
 
 fn generated_ipv6_header_payload(header: &[u8]) -> Option<PacketPayload> {
@@ -184,7 +182,8 @@ impl Ipv6Processor {
                         self.stats.record_header_error();
                         return Ipv6ProcessResult::Error;
                     };
-                    let Some(frag_payload_offset) = subslice_offset(raw_packet, frag_payload)
+                    let Some(frag_payload_offset) =
+                        raw_packet.len().checked_sub(frag_payload.len())
                     else {
                         self.stats.record_header_error();
                         return Ipv6ProcessResult::Error;
@@ -213,9 +212,13 @@ impl Ipv6Processor {
             frag_payload_len,
             frag_header,
         ) = fragment_info;
-        let Some(frag_payload_packet) =
-            move_payload_window_owned(original, frag_payload_offset, frag_payload_len)
+        let Some(window) =
+            VerifiedPayloadWindow::for_payload(&original, frag_payload_offset, frag_payload_len)
         else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
+        let Ok(frag_payload_packet) = window.move_from(original) else {
             self.stats.record_header_error();
             return Ipv6ProcessResult::Error;
         };

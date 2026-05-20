@@ -6,8 +6,9 @@ use crate::KapiResult;
 use crate::service::kernel;
 
 pub use crate::types_impl::{
-    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketChain, PacketMeta, PacketPayload,
-    PacketRef, PacketRefStorage, PacketRefVTable, PacketType, PhysicalAddress,
+    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketChain,
+    PacketFront, PacketMeta, PacketPayload, PacketPayloadFront, PacketRef, PacketRefStorage,
+    PacketRefVTable, PacketType, PacketWindowError, PhysicalAddress,
 };
 
 pub async fn tcp_connection_dial(

@@ -622,11 +622,10 @@ impl NetDevicePort for NetdevPortAdapter {
         let abi_segments: Vec<AbiNetTxSegmentV4> = submission
             .segments()
             .iter()
-            .copied()
-            .map(|segment: NetTxSegment| AbiNetTxSegmentV4 {
-                cpu_ptr: segment.cpu_ptr as *const u8,
-                device_addr: segment.device_addr,
-                len: segment.len,
+            .map(|segment| AbiNetTxSegmentV4 {
+                cpu_ptr: segment.cpu_ptr(),
+                device_addr: segment.device_addr(),
+                len: segment.len(),
             })
             .collect();
         let abi_submission = AbiNetTxSubmissionV4 {

@@ -232,8 +232,14 @@ pub fn runtime_udp_missing_ingress_interface_is_explicit_smoke() -> bool {
     };
     let processor = UdpProcessor::new();
 
-    processor.process_on(runtime, None, &[], Ipv4Address::ANY, Ipv4Address::ANY, 64)
-        == UdpResult::NoIngressInterface
+    processor.process_payload_on(
+        runtime,
+        None,
+        PacketPayload::default(),
+        Ipv4Address::ANY,
+        Ipv4Address::ANY,
+        64,
+    ) == UdpResult::NoIngressInterface
 }
 
 pub fn runtime_large_packet_headroom_preserves_request_smoke() -> bool {

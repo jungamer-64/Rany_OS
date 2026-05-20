@@ -32,8 +32,8 @@ use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
     NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeCookie, NetPortRuntimeHandle,
-    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxCompletionPolicy, NetTxMeta, NetTxSegment,
-    PrimaryPortPolicy, TxLeaseId, TxSubmission,
+    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
+    TxCompletionMode, TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -603,7 +603,12 @@ fn register_payload_tx_request_in(
     meta: NetTxMeta,
 ) -> Option<RegisteredTx> {
     let (keepalive, descriptors) = payload_to_keepalive_and_descriptors(payload)?;
-    let mut registered = register_tx_lease_in(runtime, keepalive, descriptors, meta.completion_id)?;
+    let mut registered = register_tx_lease_in(
+        runtime,
+        keepalive,
+        descriptors,
+        meta.device_completion_ticket().map(|ticket| ticket.get()),
+    )?;
     let request = registered
         .request
         .as_mut()
@@ -1077,7 +1082,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                 return;
             }
 
-            let completion_policy = request.meta.completion_policy;
+            let completion = request.meta.completion();
             let submission = TxSubmission::new(request.lease_id, &request.descriptors);
             let submitted = with_port_handle_in(runtime, if_id, |handle| {
                 (
@@ -1095,9 +1100,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                         err
                     );
                 }
-                Some((_, Ok(())))
-                    if completion_policy == NetTxCompletionPolicy::QueueAcceptance =>
-                {
+                Some((_, Ok(()))) if completion == TxCompletionMode::QueueAcceptance => {
                     let _ = complete_tx_lease_in(runtime, request.lease_id, Ok(()));
                 }
                 Some((_, Ok(()))) => {}
@@ -1818,7 +1821,7 @@ pub fn transmit_packet_in(
 ) -> bool {
     let resolved_if = if_id.or_else(|| primary_if_in(runtime));
     let Some(resolved_if) = resolved_if else {
-        if let Some(completion_id) = meta.completion_id {
+        if let Some(completion_id) = meta.device_completion_ticket().map(|ticket| ticket.get()) {
             let _ = complete_tx_request_in(
                 runtime,
                 completion_id,
@@ -1834,7 +1837,8 @@ pub fn transmit_packet_in(
         Some(true) => true,
         Some(false) => false,
         None => {
-            if let Some(completion_id) = meta.completion_id {
+            if let Some(completion_id) = meta.device_completion_ticket().map(|ticket| ticket.get())
+            {
                 let _ =
                     complete_tx_request_in(runtime, completion_id, Err("device handle missing"));
             }
@@ -2174,12 +2178,28 @@ mod tests {
 
     unsafe fn test_packet_drop(_: &mut kernel_api::resource::net::PacketRefStorage) {}
 
-    unsafe fn test_packet_clone_storage(
+    unsafe fn test_packet_split_front(
         storage: &kernel_api::resource::net::PacketRefStorage,
-    ) -> Option<kernel_api::resource::net::PacketRefStorage> {
-        Some(unsafe {
-            kernel_api::resource::net::PacketRefStorage::from_state(*test_packet_state(storage))
-        })
+        len: usize,
+    ) -> Option<(
+        kernel_api::resource::net::PacketRefStorage,
+        kernel_api::resource::net::PacketRefStorage,
+    )> {
+        let state = *unsafe { test_packet_state(storage) };
+        if len == 0 || len >= state.len {
+            return None;
+        }
+        let front = TestPacketRefState { len, ..state };
+        let remainder = TestPacketRefState {
+            ptr: unsafe { state.ptr.add(len) },
+            len: state.len - len,
+            capacity: state.capacity.saturating_sub(len),
+            device_addr: state.device_addr.wrapping_add(len as u64),
+        };
+        Some((
+            unsafe { kernel_api::resource::net::PacketRefStorage::from_state(front) },
+            unsafe { kernel_api::resource::net::PacketRefStorage::from_state(remainder) },
+        ))
     }
 
     static TEST_PACKET_REF_VTABLE: kernel_api::resource::net::PacketRefVTable =
@@ -2194,7 +2214,7 @@ mod tests {
             headroom: test_packet_headroom,
             advance: test_packet_advance,
             retreat: test_packet_retreat,
-            clone_storage: test_packet_clone_storage,
+            split_front: test_packet_split_front,
             drop_storage: test_packet_drop,
         };
 
@@ -2595,9 +2615,9 @@ mod tests {
         let descriptors = packet_window_to_tx_segments(&packets, 8, 16).expect("window");
 
         assert_eq!(descriptors.len(), 1);
-        assert_eq!(descriptors[0].cpu_ptr, base_ptr + 8);
-        assert_eq!(descriptors[0].device_addr, base_device_addr + 8);
-        assert_eq!(descriptors[0].len, 16);
+        assert_eq!(descriptors[0].cpu_ptr(), (base_ptr + 8) as *const u8);
+        assert_eq!(descriptors[0].device_addr(), base_device_addr + 8);
+        assert_eq!(descriptors[0].len(), 16);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

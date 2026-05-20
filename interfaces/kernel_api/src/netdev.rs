@@ -8,6 +8,7 @@ use crate::resource::net::PacketRef;
 use crate::service::kernel;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::num::NonZeroU64;
 use core::num::NonZeroUsize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -75,12 +76,27 @@ pub struct NetRxMeta {
     pub flags: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TxCompletionTicket(NonZeroU64);
+
+impl TxCompletionTicket {
+    pub const fn new(id: u64) -> Option<Self> {
+        match NonZeroU64::new(id) {
+            Some(id) => Some(Self(id)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> u64 {
+        self.0.get()
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-#[repr(u8)]
-pub enum NetTxCompletionPolicy {
+pub enum TxCompletionMode {
     #[default]
-    QueueAcceptance = 0,
-    DeviceCompletion = 1,
+    QueueAcceptance,
+    DeviceCompletion(TxCompletionTicket),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,8 +104,7 @@ pub struct NetTxMeta {
     pub queue_index: Option<u16>,
     pub flags: u32,
     pub vlan_tag: Option<u16>,
-    pub completion_id: Option<u64>,
-    pub completion_policy: NetTxCompletionPolicy,
+    pub completion: TxCompletionMode,
 }
 
 impl Default for NetTxMeta {
@@ -98,33 +113,61 @@ impl Default for NetTxMeta {
             queue_index: None,
             flags: 0,
             vlan_tag: None,
-            completion_id: None,
-            completion_policy: NetTxCompletionPolicy::QueueAcceptance,
+            completion: TxCompletionMode::QueueAcceptance,
+        }
+    }
+}
+
+impl NetTxMeta {
+    pub const fn completion(&self) -> TxCompletionMode {
+        self.completion
+    }
+
+    pub const fn device_completion_ticket(&self) -> Option<TxCompletionTicket> {
+        match self.completion {
+            TxCompletionMode::QueueAcceptance => None,
+            TxCompletionMode::DeviceCompletion(ticket) => Some(ticket),
         }
     }
 }
 
 pub type TxLeaseId = u64;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
-pub struct NetTxSegment {
-    pub cpu_ptr: usize,
-    pub device_addr: u64,
-    pub len: usize,
+pub struct NetTxSegment(NetTxSegmentDescriptor);
+
+#[derive(Debug, PartialEq, Eq)]
+#[repr(C)]
+struct NetTxSegmentDescriptor {
+    cpu_ptr: usize,
+    device_addr: u64,
+    len: usize,
 }
 
 impl NetTxSegment {
     pub fn new(cpu_ptr: *const u8, device_addr: u64, len: usize) -> Self {
-        Self {
+        Self(NetTxSegmentDescriptor {
             cpu_ptr: cpu_ptr as usize,
             device_addr,
             len,
-        }
+        })
     }
 
-    pub const fn is_empty(self) -> bool {
-        self.len == 0
+    pub const fn cpu_ptr(&self) -> *const u8 {
+        self.0.cpu_ptr as *const u8
+    }
+
+    pub const fn device_addr(&self) -> u64 {
+        self.0.device_addr
+    }
+
+    pub const fn len(&self) -> usize {
+        self.0.len
+    }
+
+    pub const fn is_empty(&self) -> bool {
+        self.0.len == 0
     }
 }
 

@@ -4,7 +4,7 @@
 //! RuntimeCommandHandler Ingress系メソッド
 
 use super::*;
-use crate::net::runtime::command_handler::common::{extract_ports, subslice_offset};
+use crate::net::runtime::command_handler::common::extract_ports;
 use kernel_api::resource::net::PacketPayload;
 
 impl RuntimeCommandHandler {
@@ -33,7 +33,7 @@ impl RuntimeCommandHandler {
 
         match ethernet_result {
             crate::net::l2::ethernet::ProcessResult::Ipv4(payload, src_mac) => {
-                let Some(offset) = subslice_offset(data, payload) else {
+                let Some(offset) = data.len().checked_sub(payload.len()) else {
                     if let Some(stats) = stack.interface_stats(selected_if_id) {
                         stats.record_rx_error();
                     }
@@ -78,7 +78,7 @@ impl RuntimeCommandHandler {
                     .interface_state_for_ingress(Some(selected_if_id))
                     .is_some_and(|(_, state)| state.has_ipv6());
                 if ipv6_enabled {
-                    let Some(offset) = subslice_offset(data, payload) else {
+                    let Some(offset) = data.len().checked_sub(payload.len()) else {
                         if let Some(stats) = stack.interface_stats(selected_if_id) {
                             stats.record_rx_error();
                         }
@@ -281,11 +281,14 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         header_len,
                         transport_len,
-                    ) {
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    if let Ok(transport_payload) = window.move_from(payload) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                             runtime,
                             Some(ingress_if_id),
@@ -308,11 +311,14 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
-                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         header_len,
                         transport_len,
-                    ) {
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    if let Ok(transport_payload) = window.move_from(payload) {
                         stack.process_icmp_payload(
                             runtime,
                             transport_payload,
@@ -324,11 +330,14 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
-                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         header_len,
                         transport_len,
-                    ) {
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    if let Ok(transport_payload) = window.move_from(payload) {
                         stack.process_igmp_payload(&transport_payload, src_ip, ttl);
                     }
                 }
@@ -407,11 +416,14 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         payload_offset,
                         transport_len,
-                    ) {
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    if let Ok(transport_payload) = window.move_from(payload) {
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                             runtime,
                             Some(ingress_if_id),
@@ -433,11 +445,14 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                    if let Some(transport_payload) = crate::net::payload::move_payload_window_owned(
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         payload_offset,
                         transport_len,
-                    ) {
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    if let Ok(transport_payload) = window.move_from(payload) {
                         stack.process_icmpv6_data(
                             runtime,
                             Some(ingress_if_id),
@@ -552,7 +567,7 @@ impl RuntimeCommandHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(payload, src_ip, dst_ip, ttl, _orig) => {
                 let (offset, payload_len) = {
                     let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    let Some(offset) = data.len().checked_sub(payload.len()) else {
                         return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                     };
                     (offset, payload.len())
@@ -561,11 +576,14 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::move_payload_window_owned(
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     offset,
                     payload_len,
                 ) else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
+                let Ok(payload) = window.move_from(original_packet) else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 stack.process_icmp_payload(runtime, payload, src_ip, dst_ip, ttl, current_time);
@@ -573,7 +591,7 @@ impl RuntimeCommandHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(payload, src_ip, ttl, _orig) => {
                 let (offset, payload_len) = {
                     let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    let Some(offset) = data.len().checked_sub(payload.len()) else {
                         return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                     };
                     (offset, payload.len())
@@ -582,11 +600,14 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(payload) = crate::net::payload::move_payload_window_owned(
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     offset,
                     payload_len,
                 ) else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
+                let Ok(payload) = window.move_from(original_packet) else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 stack.process_igmp_payload(&payload, src_ip, ttl);
@@ -594,7 +615,7 @@ impl RuntimeCommandHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(payload, src_ip, dst_ip, _orig) => {
                 let (offset, ttl, src_port, dst_port, data_len) = {
                     let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    let Some(offset) = data.len().checked_sub(payload.len()) else {
                         return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                     };
                     if payload.len() < 8 {
@@ -633,7 +654,7 @@ impl RuntimeCommandHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::Tcp(payload, src_ip, dst_ip, _orig) => {
                 let (offset, payload_len) = {
                     let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-                    let Some(offset) = crate::net::payload::subslice_offset(data, payload) else {
+                    let Some(offset) = data.len().checked_sub(payload.len()) else {
                         return EventHandleResult::Success;
                     };
                     (offset, payload.len())
@@ -642,11 +663,14 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::Success;
                 };
                 let original_packet = PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) = crate::net::payload::move_payload_window_owned(
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     offset,
                     payload_len,
                 ) else {
+                    return EventHandleResult::Success;
+                };
+                let Ok(tcp_segment_payload) = window.move_from(original_packet) else {
                     return EventHandleResult::Success;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(

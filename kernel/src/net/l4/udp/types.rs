@@ -211,11 +211,15 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
-        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
-            packet,
+        let Some(window) = VerifiedPayloadWindow::for_payload(
+            &packet,
             offset + UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err((UdpResult::Invalid, PacketPayload::default()));
+        };
+        let Ok(udp_payload) = window.move_from(packet) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -310,11 +314,15 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet));
         };
 
-        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
-            packet,
+        let Some(window) = VerifiedPayloadWindow::for_payload(
+            &packet,
             offset + UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err((UdpResult::Invalid, PacketPayload::default()));
+        };
+        let Ok(udp_payload) = window.move_from(packet) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -376,11 +384,12 @@ impl UdpProcessor {
             }
         }
 
-        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
-            payload,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
+        let Some(window) =
+            VerifiedPayloadWindow::for_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+        else {
+            return UdpResult::Invalid;
+        };
+        let Ok(udp_payload) = window.move_from(payload) else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::EndpointAddr::new(
@@ -443,11 +452,12 @@ impl UdpProcessor {
             return UdpResult::ChecksumError;
         }
 
-        let Some(udp_payload) = crate::net::payload::move_payload_window_owned(
-            payload,
-            UdpHeader::SIZE,
-            length - UdpHeader::SIZE,
-        ) else {
+        let Some(window) =
+            VerifiedPayloadWindow::for_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+        else {
+            return UdpResult::Invalid;
+        };
+        let Ok(udp_payload) = window.move_from(payload) else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::EndpointAddr::new_v6(
@@ -482,7 +492,14 @@ mod tests {
         let processor = UdpProcessor::new();
 
         assert_eq!(
-            processor.process_on(runtime, None, &[], Ipv4Address::ANY, Ipv4Address::ANY, 64),
+            processor.process_payload_on(
+                runtime,
+                None,
+                PacketPayload::default(),
+                Ipv4Address::ANY,
+                Ipv4Address::ANY,
+                64,
+            ),
             UdpResult::NoIngressInterface
         );
     }

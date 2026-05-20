@@ -12,7 +12,7 @@ use crate::net::payload::packet_payload_from_segments;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketPayloadFront};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TcpSocketState {
@@ -85,7 +85,6 @@ pub(crate) struct TcpSocketEntry {
 
 pub(crate) struct QueuedPayload {
     payload: PacketPayload,
-    consumed: usize,
 }
 
 pub(crate) struct TcpSendBuffer {
@@ -95,14 +94,11 @@ pub(crate) struct TcpSendBuffer {
 
 impl QueuedPayload {
     pub fn new(payload: PacketPayload) -> Self {
-        Self {
-            payload,
-            consumed: 0,
-        }
+        Self { payload }
     }
 
     fn remaining_len(&self) -> usize {
-        self.payload.total_len().saturating_sub(self.consumed)
+        self.payload.total_len()
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -110,8 +106,7 @@ impl QueuedPayload {
     }
 
     fn into_remaining_payload(self) -> Option<PacketPayload> {
-        let len = self.remaining_len();
-        crate::net::payload::move_payload_window_owned(self.payload, self.consumed, len)
+        Some(self.payload)
     }
 
     fn take_front(&mut self, len: usize) -> Option<PacketPayload> {
@@ -119,39 +114,15 @@ impl QueuedPayload {
             return None;
         }
 
-        let mut remaining = len;
-        let mut skip = self.consumed;
-        let mut segments = alloc::vec::Vec::new();
-
-        for segment in self.payload.segments() {
-            if skip >= segment.len() {
-                skip -= segment.len();
-                continue;
-            }
-
-            let segment_offset = skip;
-            let available = segment.len() - segment_offset;
-            let take = remaining.min(available);
-            let mut cloned = segment.try_clone_ref()?;
-            if segment_offset > 0 && !cloned.advance(segment_offset) {
-                return None;
-            }
-            if !cloned.set_len(take) {
-                return None;
-            }
-            segments.push(cloned);
-            remaining -= take;
-            skip = 0;
-            if remaining == 0 {
-                break;
+        let count = PacketByteCount::new(len)?;
+        let payload = core::mem::take(&mut self.payload);
+        match payload.take_front(count).ok()? {
+            PacketPayloadFront::Whole(front) => Some(front),
+            PacketPayloadFront::Prefix { front, remainder } => {
+                self.payload = remainder;
+                Some(front)
             }
         }
-
-        if remaining != 0 {
-            return None;
-        }
-        self.consumed = self.consumed.saturating_add(len);
-        Some(packet_payload_from_segments(segments))
     }
 }
 

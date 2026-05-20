@@ -385,19 +385,18 @@ extern "C" fn netdev_submit_tx_chain(
     };
     let mut segments = Vec::with_capacity(abi_segments.len());
     for segment in abi_segments {
-        segments.push(NetTxSegment {
-            cpu_ptr: segment.cpu_ptr as usize,
-            device_addr: segment.device_addr,
-            len: segment.len,
-        });
+        segments.push(NetTxSegment::new(
+            segment.cpu_ptr,
+            segment.device_addr,
+            segment.len,
+        ));
     }
     let tx = TxSubmission::new(submission.lease_id, &segments);
     let tx_meta = NetTxMeta {
         queue_index: meta.has_queue_index.then_some(meta.queue_index),
         flags: meta.flags,
         vlan_tag: meta.has_vlan_tag.then_some(meta.vlan_tag),
-        completion_id: None,
-        completion_policy: Default::default(),
+        completion: Default::default(),
     };
     let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) else {
         return AbiError::NotInitialized as i32;

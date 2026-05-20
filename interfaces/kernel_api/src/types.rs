@@ -10,7 +10,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::marker::PhantomData;
-use core::mem::{MaybeUninit, align_of, size_of};
+use core::mem::{ManuallyDrop, MaybeUninit, align_of, size_of};
+use core::num::NonZeroUsize;
 use core::ops::{Add, AddAssign};
 use core::ptr;
 
@@ -153,6 +154,29 @@ impl PacketMeta {
 
 pub const PACKET_REF_STORAGE_WORDS: usize = 5;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct PacketByteCount(NonZeroUsize);
+
+impl PacketByteCount {
+    pub const fn new(bytes: usize) -> Option<Self> {
+        match NonZeroUsize::new(bytes) {
+            Some(bytes) => Some(Self(bytes)),
+            None => None,
+        }
+    }
+
+    pub const fn get(self) -> usize {
+        self.0.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketWindowError {
+    Empty,
+    OutOfBounds,
+    BackendSplitUnsupported,
+}
+
 /// Inline opaque storage used by `PacketRef` backings.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -216,7 +240,25 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, usize) -> bool,
     pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub split_front:
+        unsafe fn(&PacketRefStorage, usize) -> Option<(PacketRefStorage, PacketRefStorage)>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
+}
+
+pub enum PacketFront {
+    Whole(PacketRef),
+    Prefix {
+        front: PacketRef,
+        remainder: PacketRef,
+    },
+}
+
+pub enum PacketPayloadFront {
+    Whole(PacketPayload),
+    Prefix {
+        front: PacketPayload,
+        remainder: PacketPayload,
+    },
 }
 
 /// Shared zero-copy packet reference used by kernel adapters and driver crates.
@@ -308,6 +350,32 @@ impl PacketRef {
     #[inline]
     pub fn retreat(&mut self, size: usize) -> bool {
         unsafe { (self.vtable.retreat)(&mut self.storage, size) }
+    }
+
+    pub fn take_front(self, len: PacketByteCount) -> Result<PacketFront, PacketWindowError> {
+        let take = len.get();
+        let total_len = self.len();
+        if take > total_len {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        if take == total_len {
+            return Ok(PacketFront::Whole(self));
+        }
+
+        let mut packet = ManuallyDrop::new(self);
+        let storage = packet.storage;
+        let vtable = packet.vtable;
+        let Some((front_storage, remainder_storage)) =
+            (unsafe { (vtable.split_front)(&storage, take) })
+        else {
+            unsafe { ManuallyDrop::drop(&mut packet) };
+            return Err(PacketWindowError::BackendSplitUnsupported);
+        };
+
+        Ok(PacketFront::Prefix {
+            front: unsafe { Self::from_opaque_parts(front_storage, vtable) },
+            remainder: unsafe { Self::from_opaque_parts(remainder_storage, vtable) },
+        })
     }
 
     #[inline]
@@ -464,6 +532,70 @@ impl PacketPayload {
         match self {
             Self::Single(packet) => alloc::vec![packet],
             Self::Chain(chain) => chain.into_segments(),
+        }
+    }
+
+    pub fn take_front(self, len: PacketByteCount) -> Result<PacketPayloadFront, PacketWindowError> {
+        let take = len.get();
+        let total_len = self.total_len();
+        if take > total_len {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        if take == total_len {
+            return Ok(PacketPayloadFront::Whole(self));
+        }
+
+        let mut remaining = take;
+        let mut front_segments = Vec::new();
+        let mut remainder_segments = Vec::new();
+        let mut collecting_remainder = false;
+
+        for segment in self.into_segments() {
+            if collecting_remainder {
+                remainder_segments.push(segment);
+                continue;
+            }
+
+            let segment_len = segment.len();
+            if remaining == 0 {
+                collecting_remainder = true;
+                remainder_segments.push(segment);
+                continue;
+            }
+
+            if remaining >= segment_len {
+                remaining -= segment_len;
+                front_segments.push(segment);
+                continue;
+            }
+
+            let count = PacketByteCount::new(remaining).ok_or(PacketWindowError::Empty)?;
+            match segment.take_front(count)? {
+                PacketFront::Whole(front) => front_segments.push(front),
+                PacketFront::Prefix { front, remainder } => {
+                    front_segments.push(front);
+                    remainder_segments.push(remainder);
+                    collecting_remainder = true;
+                }
+            }
+            remaining = 0;
+        }
+
+        if remaining != 0 || front_segments.is_empty() || remainder_segments.is_empty() {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+
+        Ok(PacketPayloadFront::Prefix {
+            front: Self::from_segments(front_segments),
+            remainder: Self::from_segments(remainder_segments),
+        })
+    }
+
+    fn from_segments(mut segments: Vec<PacketRef>) -> Self {
+        match segments.len() {
+            0 => Self::default(),
+            1 => Self::Single(segments.remove(0)),
+            _ => Self::Chain(PacketChain::from_segments(segments)),
         }
     }
 }
@@ -717,8 +849,10 @@ mod packet_ref_tests {
         dma: Box<crate::dma::DmaSlice<crate::dma::CpuOwned>>,
         phys_addr: u64,
         device_addr: u64,
+        ref_count: AtomicUsize,
     }
 
+    #[derive(Clone, Copy)]
     struct DmaPacketState {
         backing: NonNull<SharedDmaBuffer>,
         offset: usize,
@@ -808,10 +942,42 @@ mod packet_ref_tests {
     unsafe fn dma_drop(storage: &mut PacketRefStorage) {
         let state = unsafe { storage.as_state_mut::<DmaPacketState>() };
         let backing = state.backing;
-        unsafe {
-            ptr::drop_in_place(state);
-            drop(Box::from_raw(backing.as_ptr()));
+        if unsafe { backing.as_ref().ref_count.fetch_sub(1, Ordering::AcqRel) } == 1 {
+            unsafe {
+                ptr::drop_in_place(state);
+                drop(Box::from_raw(backing.as_ptr()));
+            }
         }
+    }
+
+    unsafe fn dma_split_front(
+        storage: &PacketRefStorage,
+        len: usize,
+    ) -> Option<(PacketRefStorage, PacketRefStorage)> {
+        let state = *unsafe { dma_state_ref(storage) };
+        if len == 0 || len >= state.len {
+            return None;
+        }
+        unsafe {
+            state
+                .backing
+                .as_ref()
+                .ref_count
+                .fetch_add(1, Ordering::AcqRel);
+        }
+        let front = DmaPacketState {
+            backing: state.backing,
+            offset: state.offset,
+            len,
+        };
+        let remainder = DmaPacketState {
+            backing: state.backing,
+            offset: state.offset.checked_add(len)?,
+            len: state.len - len,
+        };
+        Some((unsafe { PacketRefStorage::from_state(front) }, unsafe {
+            PacketRefStorage::from_state(remainder)
+        }))
     }
 
     static DMA_VTABLE: PacketRefVTable = PacketRefVTable {
@@ -825,6 +991,7 @@ mod packet_ref_tests {
         headroom: dma_headroom,
         advance: dma_advance,
         retreat: dma_retreat,
+        split_front: dma_split_front,
         drop_storage: dma_drop,
     };
 
@@ -854,6 +1021,7 @@ mod packet_ref_tests {
             backing: NonNull::from(Box::leak(Box::new(SharedDmaBuffer {
                 phys_addr: 0x3000,
                 device_addr: 0x4000,
+                ref_count: AtomicUsize::new(1),
                 dma: Box::new(dma),
             }))),
             offset: 0,

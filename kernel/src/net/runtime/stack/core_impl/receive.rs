@@ -52,9 +52,15 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(echo_data) =
-                    crate::net::payload::move_payload_window_owned(payload, data_offset, data_len)
-                else {
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &payload,
+                    data_offset,
+                    data_len,
+                ) else {
+                    self.stats().record_rx_error();
+                    return;
+                };
+                let Ok(echo_data) = window.move_from(payload) else {
                     self.stats().record_rx_error();
                     return;
                 };
@@ -188,8 +194,7 @@ impl NetworkStack {
                         self.stats().record_rx_error();
                         return;
                     };
-                    let Some(data_offset) =
-                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
+                    let Some(data_offset) = packet_ref.data().len().checked_sub(payload.len())
                     else {
                         self.stats().record_rx_error();
                         return;
@@ -201,11 +206,15 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(icmpv6_payload) = crate::net::payload::move_payload_window_owned(
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     data_offset,
                     payload_len,
                 ) else {
+                    self.stats().record_rx_error();
+                    return;
+                };
+                let Ok(icmpv6_payload) = window.move_from(original_packet) else {
                     self.stats().record_rx_error();
                     return;
                 };
@@ -226,9 +235,7 @@ impl NetworkStack {
                         self.stats().record_rx_error();
                         return;
                     };
-                    let Some(offset) =
-                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
-                    else {
+                    let Some(offset) = packet_ref.data().len().checked_sub(payload.len()) else {
                         self.stats().record_rx_error();
                         return;
                     };
@@ -239,11 +246,15 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                let Some(tcp_segment_payload) = crate::net::payload::move_payload_window_owned(
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     offset,
                     payload_len,
                 ) else {
+                    self.stats().record_rx_error();
+                    return;
+                };
+                let Ok(tcp_segment_payload) = window.move_from(original_packet) else {
                     self.stats().record_rx_error();
                     return;
                 };
@@ -261,9 +272,7 @@ impl NetworkStack {
                         self.stats().record_rx_error();
                         return;
                     };
-                    let Some(offset) =
-                        crate::net::payload::subslice_offset(packet_ref.data(), payload)
-                    else {
+                    let Some(offset) = packet_ref.data().len().checked_sub(payload.len()) else {
                         self.stats().record_rx_error();
                         return;
                     };

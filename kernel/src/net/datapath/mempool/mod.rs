@@ -258,7 +258,7 @@ struct PooledPacketState {
     window: PacketWindow,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 struct DmaPacketState {
     buf: NonNull<DmaBuffer>,
     window: PacketWindow,
@@ -358,6 +358,27 @@ unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
     }
 }
 
+unsafe fn pooled_split_front(
+    storage: &PacketRefStorage,
+    len: usize,
+) -> Option<(PacketRefStorage, PacketRefStorage)> {
+    unsafe {
+        let state = *pooled_state_ref(storage);
+        if len == 0 || len >= state.window.len() || !state.buffer.as_ref().add_ref() {
+            return None;
+        }
+        let mut front = state;
+        let mut remainder = state;
+        if !front.window.set_len(len) || !remainder.window.advance(len) {
+            return None;
+        }
+        Some((
+            PacketRefStorage::from_state(front),
+            PacketRefStorage::from_state(remainder),
+        ))
+    }
+}
+
 static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: pooled_data_ptr,
     data_mut_ptr: pooled_data_mut_ptr,
@@ -369,6 +390,7 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: pooled_headroom,
     advance: pooled_advance,
     retreat: pooled_retreat,
+    split_front: pooled_split_front,
     drop_storage: pooled_drop,
 };
 
@@ -461,6 +483,27 @@ unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     }
 }
 
+unsafe fn dma_split_front(
+    storage: &PacketRefStorage,
+    len: usize,
+) -> Option<(PacketRefStorage, PacketRefStorage)> {
+    unsafe {
+        let state = *dma_state_ref(storage);
+        if len == 0 || len >= state.window.len() || !dma_add_ref(state.buf) {
+            return None;
+        }
+        let mut front = state;
+        let mut remainder = state;
+        if !front.window.set_len(len) || !remainder.window.advance(len) {
+            return None;
+        }
+        Some((
+            PacketRefStorage::from_state(front),
+            PacketRefStorage::from_state(remainder),
+        ))
+    }
+}
+
 static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: dma_data_ptr,
     data_mut_ptr: dma_data_mut_ptr,
@@ -472,6 +515,7 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: dma_headroom,
     advance: dma_advance,
     retreat: dma_retreat,
+    split_front: dma_split_front,
     drop_storage: dma_drop,
 };
 
@@ -558,6 +602,28 @@ unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool 
 unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
+unsafe fn borrowed_split_front(
+    storage: &PacketRefStorage,
+    len: usize,
+) -> Option<(PacketRefStorage, PacketRefStorage)> {
+    unsafe {
+        let state = *borrowed_state_ref(storage);
+        if len == 0 || len >= state.window.len() {
+            return None;
+        }
+        let mut front = state;
+        let mut remainder = state;
+        if !front.window.set_len(len) || !remainder.window.advance(len) {
+            return None;
+        }
+        Some((
+            PacketRefStorage::from_state(front),
+            PacketRefStorage::from_state(remainder),
+        ))
+    }
+}
+
+#[cfg(any(test, feature = "qemu-test-export"))]
 static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: borrowed_data_ptr,
     data_mut_ptr: borrowed_data_mut_ptr,
@@ -569,6 +635,7 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     headroom: borrowed_headroom,
     advance: borrowed_advance,
     retreat: borrowed_retreat,
+    split_front: borrowed_split_front,
     drop_storage: borrowed_drop,
 };
 

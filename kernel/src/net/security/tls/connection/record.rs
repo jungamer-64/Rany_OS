@@ -352,12 +352,15 @@ impl TlsConnectionCore {
                     self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
-                        let owned = crate::net::payload::move_payload_window_owned(
-                            record,
+                        let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                            &record,
                             body_offset,
                             inner.content_len(),
                         )
                         .ok_or(TlsError::DecodeError)?;
+                        let owned = window
+                            .move_from(record)
+                            .map_err(|_| TlsError::DecodeError)?;
                         append_payload(plaintext, owned);
                     }
                     ContentType::Handshake => {
@@ -436,21 +439,27 @@ impl TlsConnectionCore {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
                 ContentType::ApplicationData => {
-                    let inner_payload = crate::net::payload::move_payload_window_owned(
-                        decrypted,
+                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = window
+                        .move_from(decrypted)
+                        .map_err(|_| TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
                 ContentType::Handshake => {
-                    let inner_payload = crate::net::payload::move_payload_window_owned(
-                        decrypted,
+                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = window
+                        .move_from(decrypted)
+                        .map_err(|_| TlsError::DecodeError)?;
                     if self.negotiation.progress.is_established() {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
                         self.tls13_process_post_handshake(inner_data)?;
@@ -459,12 +468,15 @@ impl TlsConnectionCore {
                     }
                 }
                 ContentType::Alert => {
-                    let inner_payload = crate::net::payload::move_payload_window_owned(
-                        decrypted,
+                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = window
+                        .move_from(decrypted)
+                        .map_err(|_| TlsError::DecodeError)?;
                     self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
                 }
             }

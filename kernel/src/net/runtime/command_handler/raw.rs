@@ -14,7 +14,7 @@ use crate::net::runtime::command::{
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::types::NetworkError;
-use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
+use kernel_api::service::netdev::{NetTxMeta, TxCompletionMode, TxCompletionTicket};
 
 fn finish_raw_send(
     reply: CommandReplyTicket<Result<(), EndpointError>>,
@@ -29,10 +29,11 @@ fn finish_raw_send(
 }
 
 fn tx_meta(completion_id: Option<u64>) -> Option<NetTxMeta> {
-    completion_id.map(|completion_id| NetTxMeta {
-        completion_id: Some(completion_id),
-        completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-        ..NetTxMeta::default()
+    completion_id.and_then(|completion_id| {
+        Some(NetTxMeta {
+            completion: TxCompletionMode::DeviceCompletion(TxCompletionTicket::new(completion_id)?),
+            ..NetTxMeta::default()
+        })
     })
 }
 

@@ -14,7 +14,7 @@ use crate::net::l4::socket::{
     Socket, allocate_udp_ephemeral_port_in, bind_udp_dual_stack_in, unregister_socket_in,
 };
 use crate::net::l4::types::EndpointError;
-use crate::net::payload::PacketPayloadView;
+use crate::net::payload::{PacketPayloadView, VerifiedPayloadWindow};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::manager::NetIfId;

@@ -552,11 +552,10 @@ impl NetworkStack {
             let meta = self.pending_tx_meta.unwrap_or_default();
             let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
             if f(self.runtime, if_id, payload, meta) {
-                if !self.transmit_awaits_device_completion
-                    && meta.completion_policy
-                        == kernel_api::service::netdev::NetTxCompletionPolicy::DeviceCompletion
-                {
-                    if let Some(completion_id) = meta.completion_id {
+                if !self.transmit_awaits_device_completion {
+                    if let Some(completion_id) =
+                        meta.device_completion_ticket().map(|ticket| ticket.get())
+                    {
                         let _ = crate::net::runtime::device::complete_tx_request_in(
                             self.runtime,
                             completion_id,
@@ -654,12 +653,12 @@ impl NetworkStack {
             runtime,
             owners,
             fragments.len(),
-            meta.completion_id,
+            meta.device_completion_ticket().map(|ticket| ticket.get()),
         )
         .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
 
         let mut request_meta = meta;
-        request_meta.completion_id = None;
+        request_meta.completion = kernel_api::service::netdev::TxCompletionMode::QueueAcceptance;
         let mut requests: Vec<crate::net::runtime::device::TxRequest> = Vec::new();
         for fragment in fragments {
             let mut header_keepalive = Vec::new();

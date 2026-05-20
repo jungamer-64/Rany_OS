@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, move_payload_window_owned};
+use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, VerifiedPayloadWindow};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 impl Ipv4Processor {
@@ -119,9 +119,15 @@ impl Ipv4Processor {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };
-        let Some(payload_packet) =
-            move_payload_window_owned(original, header_len, total_len.saturating_sub(header_len))
-        else {
+        let Some(window) = VerifiedPayloadWindow::for_payload(
+            &original,
+            header_len,
+            total_len.saturating_sub(header_len),
+        ) else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
+        let Ok(payload_packet) = window.move_from(original) else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };
