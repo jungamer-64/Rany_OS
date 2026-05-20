@@ -822,70 +822,6 @@ impl NetworkStack {
         }
     }
 
-    pub(crate) fn send_icmp_echo_fallback(
-        &mut self,
-        target: Ipv4Address,
-        dst_mac: MacAddress,
-        local_ip: Ipv4Address,
-        identifier: u16,
-        sequence: u16,
-    ) -> Result<u64, ()> {
-        let mut packet = self
-            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + 20 + 8)
-            .ok_or(())?;
-        let src_mac = self.mac_address();
-        let mut built = false;
-
-        if let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) {
-            frame
-                .set_destination(dst_mac)
-                .set_source(src_mac)
-                .set_ether_type(EtherType::Ipv4);
-
-            if let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) {
-                ip_packet
-                    .init_header()
-                    .set_source(local_ip)
-                    .set_destination(target)
-                    .set_protocol(IpProtocol::Icmp)
-                    .set_ttl(64);
-
-                if let Some(mut icmp) = IcmpEchoBuilder::new(ip_packet.payload_mut()) {
-                    icmp.build_request(identifier, sequence);
-                    let icmp_len = icmp.finalize();
-                    ip_packet.finalize(icmp_len);
-
-                    let ip_len = ip_packet.total_len();
-                    frame.set_payload_len(ip_len);
-                    let frame_len = frame.as_bytes().len();
-                    drop(frame);
-                    built = packet.set_len(frame_len);
-                }
-            }
-        }
-
-        if !built {
-            return Err(());
-        }
-
-        let send_time = self.current_time();
-
-        if self.transmit_packet_on(
-            None,
-            kernel_api::resource::net::PacketPayload::single(packet),
-        ) {
-            log::info!("[NET-PING] Sent ICMP echo to {} seq={}", target, sequence);
-            Ok(send_time)
-        } else {
-            log::warn!(
-                "[NET-PING] Failed to transmit ICMP echo to {} seq={}",
-                target,
-                sequence
-            );
-            Err(())
-        }
-    }
-
     /// Send ICMP echo request (ping)
     pub fn send_icmp_echo_request(
         &mut self,
@@ -968,8 +904,7 @@ impl NetworkStack {
             }
         }
 
-        // Fallback to copy-based path
-        self.send_icmp_echo_fallback(target, dst_mac, local_ip, identifier, sequence)
+        Err(())
     }
 
     /// Handle ICMPv6 error messages for transport layer notification (RFC 5927 / RFC 4443)

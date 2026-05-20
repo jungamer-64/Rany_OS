@@ -66,30 +66,6 @@ pub struct FragmentBuffer {
 }
 
 impl FragmentBuffer {
-    fn take_payload_prefix(payload: PacketPayload, len: usize) -> Option<PacketPayload> {
-        let mut remaining = len;
-        let mut segments = Vec::new();
-        for mut segment in payload.into_segments() {
-            if remaining == 0 {
-                break;
-            }
-            let take = segment.len().min(remaining);
-            if !segment.set_len(take) {
-                return None;
-            }
-            segments.push(segment);
-            remaining -= take;
-        }
-
-        Some(match segments.len() {
-            0 => PacketPayload::default(),
-            1 => PacketPayload::single(segments.remove(0)),
-            _ => PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
-                segments,
-            )),
-        })
-    }
-
     /// Maximum reassembled packet size (64KB - IP header)
     /// RFC 791 defines the maximum IP packet size as 65535 bytes.
     /// Since the header is at least 20 bytes, the max payload is 65515.

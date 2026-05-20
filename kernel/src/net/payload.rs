@@ -402,51 +402,6 @@ pub fn move_payload_window_owned(
     PacketPayloadWindow::new(payload, offset, len)?.into_payload()
 }
 
-pub fn clone_payload_window_owned(
-    payload: &PacketPayload,
-    offset: usize,
-    len: usize,
-) -> Option<PacketPayload> {
-    let total_len = payload.total_len();
-    if offset > total_len || len > total_len.saturating_sub(offset) {
-        return None;
-    }
-    if len == 0 {
-        return Some(PacketPayload::default());
-    }
-
-    let mut remaining_offset = offset;
-    let mut remaining_len = len;
-    let mut segments = Vec::new();
-
-    for segment in payload.segments() {
-        if remaining_len == 0 {
-            break;
-        }
-        if remaining_offset >= segment.len() {
-            remaining_offset -= segment.len();
-            continue;
-        }
-
-        let mut cloned = segment.try_clone_ref()?;
-        if remaining_offset > 0 {
-            if !cloned.advance(remaining_offset) {
-                return None;
-            }
-            remaining_offset = 0;
-        }
-
-        let take = remaining_len.min(cloned.len());
-        if !cloned.set_len(take) {
-            return None;
-        }
-        remaining_len -= take;
-        segments.push(cloned);
-    }
-
-    (remaining_len == 0).then(|| packet_payload_from_segments(segments))
-}
-
 impl GeneratedPacketWriter {
     pub fn new(len: usize, headroom: usize) -> Option<Self> {
         Some(Self {

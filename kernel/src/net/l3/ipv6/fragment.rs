@@ -562,28 +562,6 @@ impl Ipv6FragmentReassembler {
         &self.stats
     }
 
-    fn take_payload_prefix(payload: PacketPayload, len: usize) -> Option<PacketPayload> {
-        let mut remaining = len;
-        let mut segments = Vec::new();
-        for mut segment in payload.into_segments() {
-            if remaining == 0 {
-                break;
-            }
-            let take = segment.len().min(remaining);
-            if !segment.set_len(take) {
-                return None;
-            }
-            segments.push(segment);
-            remaining -= take;
-        }
-
-        Some(match segments.len() {
-            0 => PacketPayload::default(),
-            1 => PacketPayload::single(segments.remove(0)),
-            _ => PacketPayload::chain(PacketChain::from_segments(segments)),
-        })
-    }
-
     pub fn process_fragment(
         &mut self,
         src: Ipv6Address,

@@ -44,9 +44,6 @@ pub struct TcpStats {
     pub app_bytes_delivered: u64,
     pub retransmissions: u64,
     pub rtt_us: u64,
-    pub recv_copy_fallback_bytes: u64,
-    pub recv_copy_fallback_packets: u64,
-    pub recv_copy_fallback_peak_bytes: u64,
     pub oom_dropped_packets: u64,
     pub oom_dropped_bytes: u64,
 }
@@ -67,14 +64,6 @@ impl TcpStats {
     #[inline]
     pub fn record_rx_delivered(&mut self, len: usize) {
         self.app_bytes_delivered = self.app_bytes_delivered.saturating_add(len as u64);
-    }
-
-    #[inline]
-    pub fn record_recv_copy_fallback(&mut self, len: usize, queue_bytes: usize) {
-        self.recv_copy_fallback_bytes = self.recv_copy_fallback_bytes.saturating_add(len as u64);
-        self.recv_copy_fallback_packets = self.recv_copy_fallback_packets.saturating_add(1);
-        self.recv_copy_fallback_peak_bytes =
-            self.recv_copy_fallback_peak_bytes.max(queue_bytes as u64);
     }
 
     #[inline]
