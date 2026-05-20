@@ -11,7 +11,7 @@ pub fn init_net_mempool_in(runtime: NetRuntimeHandle, capacity: usize) -> Result
         .context()
         .packet_pool
         .call_once(|| Mempool::new(runtime.id().0 as u32));
-    pool.init(capacity)
+    pool.init(capacity).map_err(MempoolError::as_str)
 }
 
 /// ランタイム所有メモリプールを取得
@@ -21,11 +21,7 @@ pub fn net_mempool_in(runtime: NetRuntimeHandle) -> Option<&'static Mempool> {
 
 /// パケットバッファを割り当て
 pub fn alloc_packet_in(runtime: NetRuntimeHandle) -> Option<PacketRef> {
-    if let Some(packet) = super::alloc_packet_for_active_dma_device() {
-        return Some(packet);
-    }
-
-    net_mempool_in(runtime)?.alloc()
+    net_mempool_in(runtime)?.alloc().ok()
 }
 
 /// 境界コード用。通常の runtime path では `alloc_packet_in` を使う。

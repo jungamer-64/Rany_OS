@@ -16,10 +16,8 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering, fence};
-use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice as KapiDmaSlice};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketRefStorage, PacketRefVTable};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
-use kernel_api::service::kernel::instance as kernel_instance;
 use x86_64::PhysAddr;
 
 use crate::mm::types::PAGE_SIZE_4K;
@@ -114,11 +112,6 @@ impl PacketBuffer {
 
 use crate::io::dma::{CpuOwned as KernelCpuOwned, TypedDmaSlice};
 
-const NO_PACKET_DMA_DEVICE: u64 = u64::MAX;
-const DMA_PACKET_BUFFER_SIZE: usize = DMA_PAGE_SIZE;
-
-static PACKET_DMA_DEVICE_ID: AtomicU64 = AtomicU64::new(NO_PACKET_DMA_DEVICE);
-
 #[derive(Debug, Clone, Copy, Eq, PartialEq)]
 struct PacketWindow {
     capacity: usize,
@@ -180,22 +173,13 @@ impl PacketWindow {
     }
 }
 
-enum DmaBufferOwner {
-    Kernel {
-        _slice: PoisonLock<TypedDmaSlice<KernelCpuOwned>>,
-    },
-    Kapi {
-        _slice: PoisonLock<KapiDmaSlice<KapiCpuOwned>>,
-    },
-}
-
 struct DmaBuffer {
     pub(super) ptr: NonNull<u8>,
     pub(super) phys_addr: PhysAddr,
     pub(super) device_addr: u64,
     pub(super) size: usize,
     ref_count: AtomicU64,
-    _owner: DmaBufferOwner,
+    _slice: PoisonLock<TypedDmaSlice<KernelCpuOwned>>,
 }
 
 impl fmt::Debug for DmaBuffer {
@@ -221,27 +205,7 @@ impl DmaBuffer {
             device_addr,
             size,
             ref_count: AtomicU64::new(1),
-            _owner: DmaBufferOwner::Kernel {
-                _slice: PoisonLock::new(slice),
-            },
-        }
-    }
-
-    fn from_kapi(slice: KapiDmaSlice<KapiCpuOwned>) -> Self {
-        let size = slice.size();
-        let device_addr = slice.device_address();
-        let ptr = slice.as_ptr();
-        Self {
-            ptr: NonNull::new(ptr).expect("DmaSlice returned null pointer"),
-            // Driver-domain DMA buffers intentionally expose only the
-            // hardware-visible address across the KAPI boundary.
-            phys_addr: PhysAddr::new(device_addr),
-            device_addr,
-            size,
-            ref_count: AtomicU64::new(1),
-            _owner: DmaBufferOwner::Kapi {
-                _slice: PoisonLock::new(slice),
-            },
+            _slice: PoisonLock::new(slice),
         }
     }
 }
@@ -677,36 +641,6 @@ pub fn packet_ref_from_dma_slice_with_headroom(
     })
 }
 
-fn packet_ref_from_kapi_dma_slice(slice: KapiDmaSlice<KapiCpuOwned>) -> PacketRef {
-    let size = slice.size();
-    let window = PacketWindow::new(size, DEFAULT_PACKET_HEADROOM.min(size), 0)
-        .expect("KAPI DMA packet headroom is bounded by capacity");
-    let state = DmaPacketState {
-        buf: NonNull::from(Box::leak(Box::new(DmaBuffer::from_kapi(slice)))),
-        window,
-    };
-    unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_PACKET_VTABLE) }
-}
-
-pub(crate) fn alloc_packet_for_dma_device(device_id: u64) -> Option<PacketRef> {
-    if device_id == NO_PACKET_DMA_DEVICE {
-        return None;
-    }
-
-    kernel_instance()
-        .alloc_dma_for_device(
-            DMA_PACKET_BUFFER_SIZE,
-            kernel_api::abi::driver::PackedPciLocation::from_raw(device_id),
-        )
-        .ok()
-        .map(packet_ref_from_kapi_dma_slice)
-}
-
-pub(crate) fn alloc_packet_for_active_dma_device() -> Option<PacketRef> {
-    let device_id = PACKET_DMA_DEVICE_ID.load(Ordering::Acquire);
-    alloc_packet_for_dma_device(device_id)
-}
-
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> Option<PacketRef> {
     if cap == 0 {
@@ -734,6 +668,38 @@ pub struct Mempool {
 unsafe impl Send for Mempool {}
 unsafe impl Sync for Mempool {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MempoolLock {
+    BufferRegistry,
+    FreeList,
+    LocalCache,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MempoolError {
+    LockPoisoned(MempoolLock),
+    BufferAllocationFailed,
+    OutOfBuffers,
+}
+
+impl MempoolError {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::LockPoisoned(MempoolLock::BufferRegistry) => "mempool buffer registry poisoned",
+            Self::LockPoisoned(MempoolLock::FreeList) => "mempool free list poisoned",
+            Self::LockPoisoned(MempoolLock::LocalCache) => "mempool local cache poisoned",
+            Self::BufferAllocationFailed => "mempool buffer allocation failed",
+            Self::OutOfBuffers => "mempool exhausted",
+        }
+    }
+}
+
+impl fmt::Display for MempoolError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 impl Mempool {
     pub fn new(id: u32) -> Self {
         Self {
@@ -746,48 +712,68 @@ impl Mempool {
         }
     }
 
-    pub fn init(&self, capacity: usize) -> Result<(), &'static str> {
-        let mut buffers = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
-        let mut free_list = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
+    pub fn init(&self, capacity: usize) -> Result<(), MempoolError> {
+        let mut buffers = self
+            .buffers
+            .lock()
+            .map_err(|_| MempoolError::LockPoisoned(MempoolLock::BufferRegistry))?;
+        let mut free_list = self
+            .free_list
+            .lock()
+            .map_err(|_| MempoolError::LockPoisoned(MempoolLock::FreeList))?;
         for i in 0..capacity {
             let layout = alloc::alloc::Layout::new::<PacketBuffer>();
             let nn = crate::mm::cache::exchange_heap::allocate_raw(layout)
-                .ok_or("Failed to allocate buffer")?;
+                .ok_or(MempoolError::BufferAllocationFailed)?;
             let non_null = nn.cast::<PacketBuffer>();
             crate::sas::register_object(
                 non_null.as_ptr() as usize,
                 layout.size(),
                 crate::sas::DomainId::new(0),
             );
-            unsafe {
-                let buffer_ptr = non_null.as_ptr();
-                (*buffer_ptr).meta.pool_id = self.id;
-                (*buffer_ptr).meta.index = i as u32;
-                (*buffer_ptr).meta.ref_count = AtomicU64::new(0);
-                let virt_addr = buffer_ptr as u64;
-                let offset = crate::mm::virt::mapping::physical_memory_offset();
-                let phys = if virt_addr >= offset {
-                    virt_addr - offset
-                } else {
-                    virt_addr
-                };
-                (*buffer_ptr).meta.phys_addr = PhysAddr::new(phys);
-            }
+            unsafe { Self::write_initial_packet_buffer(non_null, self.id, i as u32) };
             buffers.push(non_null);
             free_list.push(non_null);
         }
         Ok(())
     }
 
-    pub fn alloc(&'static self) -> Option<PacketRef> {
-        let buffer = self
-            .free_list
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .pop()?;
+    unsafe fn write_initial_packet_buffer(
+        buffer: NonNull<PacketBuffer>,
+        pool_id: u32,
+        index: u32,
+    ) {
+        let buffer_ptr = buffer.as_ptr();
+        let virt_addr = buffer_ptr as u64;
+        let offset = crate::mm::virt::mapping::physical_memory_offset();
+        let phys = if virt_addr >= offset {
+            virt_addr - offset
+        } else {
+            virt_addr
+        };
         unsafe {
-            // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
-            // Previously we only cleared up to prev_len, which failed if an offset was used.
+            core::ptr::addr_of_mut!((*buffer_ptr).data)
+                .cast::<u8>()
+                .write_bytes(0, DEFAULT_BUFFER_SIZE);
+            core::ptr::addr_of_mut!((*buffer_ptr).meta).write(PacketBufferMeta {
+                phys_addr: PhysAddr::new(phys),
+                device_addr: 0,
+                pool_id,
+                index,
+                ref_count: AtomicU64::new(0),
+                _padding: [0; 8],
+            });
+        }
+    }
+
+    fn record_alloc_failure(&self, error: MempoolError) -> MempoolError {
+        self.alloc_failed.fetch_add(1, Ordering::Relaxed);
+        error
+    }
+
+    unsafe fn init_buffer_for_alloc(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
+        // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
+        unsafe {
             core::ptr::write_bytes(
                 buffer.as_ref().data.as_ptr() as *mut u8,
                 0,
@@ -795,8 +781,18 @@ impl Mempool {
             );
             buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
         }
+        new_pooled_packet_ref(buffer, pool)
+    }
+
+    pub fn alloc(&'static self) -> Result<PacketRef, MempoolError> {
+        let buffer = self
+            .free_list
+            .lock()
+            .map_err(|_| self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList)))?
+            .pop()
+            .ok_or_else(|| self.record_alloc_failure(MempoolError::OutOfBuffers))?;
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        Some(new_pooled_packet_ref(buffer, self))
+        Ok(unsafe { Self::init_buffer_for_alloc(buffer, self) })
     }
 
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
@@ -868,37 +864,21 @@ impl PerCoreMempoolCache {
         }
     }
 
-    #[inline]
-    unsafe fn init_buffer_for_alloc(
-        buffer: NonNull<PacketBuffer>,
-        pool: &'static Mempool,
-    ) -> PacketRef {
-        // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
-        // SAFETY: callers only pass PacketBuffer pointers owned by this pool's
-        // free list/cache; resetting the whole backing buffer and refcount
-        // prepares it for a fresh PacketRef owner.
-        unsafe {
-            core::ptr::write_bytes(
-                buffer.as_ref().data.as_ptr() as *mut u8,
-                0,
-                DEFAULT_BUFFER_SIZE,
-            );
-            buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
-        }
-        new_pooled_packet_ref(buffer, pool)
-    }
-
     pub fn alloc(&'static self) -> Option<PacketRef> {
-        let mut cache = self.local_cache.lock().unwrap_or_else(|e| e.into_inner());
+        let Ok(mut cache) = self.local_cache.lock() else {
+            self.parent
+                .record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::LocalCache));
+            return None;
+        };
         if let Some(buffer) = cache.pop() {
-            return Some(unsafe { Self::init_buffer_for_alloc(buffer, self.parent) });
+            return Some(unsafe { Mempool::init_buffer_for_alloc(buffer, self.parent) });
         }
         let refill_count = BATCH_REFILL_COUNT.min(self.cache_capacity);
-        let mut free_list = self
-            .parent
-            .free_list
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+        let Ok(mut free_list) = self.parent.free_list.lock() else {
+            self.parent
+                .record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList));
+            return None;
+        };
         let available = free_list.len().min(refill_count);
         if available > 0 {
             let split_at = free_list.len() - available;
@@ -910,11 +890,11 @@ impl PerCoreMempoolCache {
             }
             if let Some(buffer) = first {
                 self.parent.alloc_count.fetch_add(1, Ordering::Relaxed);
-                return Some(unsafe { Self::init_buffer_for_alloc(buffer, self.parent) });
+                return Some(unsafe { Mempool::init_buffer_for_alloc(buffer, self.parent) });
             }
         }
         drop(free_list);
-        self.parent.alloc()
+        self.parent.alloc().ok()
     }
 
     pub fn free(&self, buffer: NonNull<PacketBuffer>) {

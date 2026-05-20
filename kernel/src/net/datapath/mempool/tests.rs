@@ -20,7 +20,10 @@ fn test_mempool_poisoned_alloc_fails() {
     set_panicking(false);
 
     // Allocation should fail and increment alloc_failed
-    assert!(pool.alloc().is_none());
+    assert_eq!(
+        pool.alloc(),
+        Err(MempoolError::LockPoisoned(MempoolLock::FreeList))
+    );
     assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
 }
 
