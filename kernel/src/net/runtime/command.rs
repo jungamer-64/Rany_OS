@@ -53,76 +53,8 @@ pub(crate) enum TransportCommand {
         payload: PacketPayload,
         remote: EndpointAddr,
     },
-    RawUdpSend {
-        src_port: u16,
-        src_ip: Option<[u8; 4]>,
-        dst_ip: [u8; 4],
-        dst_port: u16,
-        payload: PacketPayload,
-        ttl: u8,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawTcpSend {
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
-        payload: PacketPayload,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawUdpV6Send {
-        src_port: u16,
-        src_ip: [u8; 16],
-        dst_ip: [u8; 16],
-        dst_port: u16,
-        payload: PacketPayload,
-        ttl: u8,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawTcpV6Send {
-        src_ip: [u8; 16],
-        dst_ip: [u8; 16],
-        payload: PacketPayload,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawUdpSendOn {
-        if_id: u16,
-        src_port: u16,
-        src_ip: Option<[u8; 4]>,
-        dst_ip: [u8; 4],
-        dst_port: u16,
-        payload: PacketPayload,
-        ttl: u8,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawTcpSendOn {
-        if_id: u16,
-        src_ip: [u8; 4],
-        dst_ip: [u8; 4],
-        payload: PacketPayload,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawUdpV6SendOn {
-        if_id: u16,
-        src_port: u16,
-        src_ip: [u8; 16],
-        dst_ip: [u8; 16],
-        dst_port: u16,
-        payload: PacketPayload,
-        ttl: u8,
-        completion_id: Option<u64>,
-        reply: CommandReplyTicket<Result<(), EndpointError>>,
-    },
-    RawTcpV6SendOn {
-        if_id: u16,
-        src_ip: [u8; 16],
-        dst_ip: [u8; 16],
-        payload: PacketPayload,
-        completion_id: Option<u64>,
+    RawSend {
+        command: RawSendCommand,
         reply: CommandReplyTicket<Result<(), EndpointError>>,
     },
     TcpDial {
@@ -141,6 +73,52 @@ pub(crate) enum TransportCommand {
             Result<crate::net::l4::tcp::TcpAcceptor, crate::net::l4::tcp::TcpError>,
         >,
     },
+}
+
+#[derive(Debug)]
+pub(crate) enum RawSendCommand {
+    Ipv4 {
+        scope: InterfaceScope,
+        src: RawIpv4Source,
+        dst: [u8; 4],
+        transport: RawIpv4Transport,
+        payload: PacketPayload,
+        completion_id: Option<u64>,
+    },
+    Ipv6 {
+        scope: InterfaceScope,
+        src: [u8; 16],
+        dst: [u8; 16],
+        transport: RawIpv6Transport,
+        payload: PacketPayload,
+        completion_id: Option<u64>,
+    },
+}
+
+impl RawSendCommand {
+    pub(crate) const fn completion_id(&self) -> Option<u64> {
+        match self {
+            Self::Ipv4 { completion_id, .. } | Self::Ipv6 { completion_id, .. } => *completion_id,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawIpv4Source {
+    Auto,
+    Addr([u8; 4]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawIpv4Transport {
+    Udp { src_port: u16, dst_port: u16, ttl: u8 },
+    Tcp,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum RawIpv6Transport {
+    Udp { src_port: u16, dst_port: u16, ttl: u8 },
+    Tcp,
 }
 
 #[derive(Debug)]
