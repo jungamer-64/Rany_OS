@@ -108,6 +108,7 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_tls_wave8_sha384_empty_smoke", crate::qemu_tests::net_tls_wave8_sha384_empty_smoke),
     ("net_tls_wave8_tls13_client_hello_key_share_smoke", crate::qemu_tests::net_tls_wave8_tls13_client_hello_key_share_smoke),
     ("net_tls_wave8_tls13_client_hello_supported_versions_smoke", crate::qemu_tests::net_tls_wave8_tls13_client_hello_supported_versions_smoke),
+    ("net_tls_wave8_tls13_coalesced_application_records_smoke", crate::qemu_tests::net_tls_wave8_tls13_coalesced_application_records_smoke),
     ("net_tls_wave8_tls13_derive_secret_smoke", crate::qemu_tests::net_tls_wave8_tls13_derive_secret_smoke),
     ("net_tls_wave8_tls13_derive_traffic_keys_smoke", crate::qemu_tests::net_tls_wave8_tls13_derive_traffic_keys_smoke),
     ("net_tls_wave8_tls13_early_secret_no_psk_smoke", crate::qemu_tests::net_tls_wave8_tls13_early_secret_no_psk_smoke),
@@ -126,5 +127,8 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_tls_wave8_tls_version_smoke", crate::qemu_tests::net_tls_wave8_tls_version_smoke),
     ("net_tls_wave8_x509_extract_rsa_pubkey_smoke", crate::qemu_tests::net_tls_wave8_x509_extract_rsa_pubkey_smoke),
     ("net_tls_wave8_x509_parse_self_signed_smoke", crate::qemu_tests::net_tls_wave8_x509_parse_self_signed_smoke),
+    ("net_tls_wave8_x509_rejects_invalid_time_values_smoke", crate::qemu_tests::net_tls_wave8_x509_rejects_invalid_time_values_smoke),
+    ("net_tls_wave8_x509_rejects_strict_der_negatives_smoke", crate::qemu_tests::net_tls_wave8_x509_rejects_strict_der_negatives_smoke),
     ("net_tls_wave8_x509_signature_algorithm_oid_smoke", crate::qemu_tests::net_tls_wave8_x509_signature_algorithm_oid_smoke),
+    ("net_tls_wave8_x509_tls13_leaf_requires_digital_signature_smoke", crate::qemu_tests::net_tls_wave8_x509_tls13_leaf_requires_digital_signature_smoke),
 ];

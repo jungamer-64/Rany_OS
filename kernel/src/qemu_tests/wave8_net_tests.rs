@@ -28,6 +28,10 @@ pub fn net_tls_wave8_tls13_client_hello_supported_versions_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_tls13_client_hello_supported_versions_smoke()
 }
 
+pub fn net_tls_wave8_tls13_coalesced_application_records_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_coalesced_application_records_smoke()
+}
+
 pub fn net_tls_wave8_tls13_strip_content_type_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_tls13_strip_content_type_smoke()
 }
@@ -202,6 +206,18 @@ pub fn net_tls_wave8_x509_extract_rsa_pubkey_smoke() -> bool {
 
 pub fn net_tls_wave8_x509_signature_algorithm_oid_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_x509_signature_algorithm_oid_smoke()
+}
+
+pub fn net_tls_wave8_x509_rejects_strict_der_negatives_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_rejects_strict_der_negatives_smoke()
+}
+
+pub fn net_tls_wave8_x509_rejects_invalid_time_values_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_rejects_invalid_time_values_smoke()
+}
+
+pub fn net_tls_wave8_x509_tls13_leaf_requires_digital_signature_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_x509_tls13_leaf_requires_digital_signature_smoke()
 }
 
 pub fn net_tls_wave8_rsa_modexp_small_smoke() -> bool {

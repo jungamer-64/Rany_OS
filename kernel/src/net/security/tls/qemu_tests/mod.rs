@@ -11,7 +11,8 @@ pub use connection::{
     wave8_tls_tls_connection_client_hello_smoke,
     wave8_tls_tls_connection_encrypt_not_established_smoke,
     wave8_tls_tls_connection_initial_state_smoke, wave8_tls_tls13_client_hello_key_share_smoke,
-    wave8_tls_tls13_client_hello_supported_versions_smoke, wave8_tls_tls13_initial_state_smoke,
+    wave8_tls_tls13_client_hello_supported_versions_smoke,
+    wave8_tls_tls13_coalesced_application_records_smoke, wave8_tls_tls13_initial_state_smoke,
     wave8_tls_tls13_strip_content_type_smoke,
 };
 pub use crypto::{
@@ -48,7 +49,10 @@ pub use crypto::{
     wave8_tls_tls13_handshake_secret_smoke, wave8_tls_tls13_hkdf_expand_label_rfc8446_smoke,
     wave8_tls_tls13_key_schedule_chain_consistency_smoke, wave8_tls_tls13_master_secret_smoke,
     wave8_tls_x509_extract_rsa_pubkey_smoke, wave8_tls_x509_parse_self_signed_smoke,
+    wave8_tls_x509_rejects_invalid_time_values_smoke,
+    wave8_tls_x509_rejects_strict_der_negatives_smoke,
     wave8_tls_x509_signature_algorithm_oid_smoke,
+    wave8_tls_x509_tls13_leaf_requires_digital_signature_smoke,
 };
 pub use protocol::{
     wave8_tls_base64_decode_smoke, wave8_tls_cipher_suite_defaults_smoke,

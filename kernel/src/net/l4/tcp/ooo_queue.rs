@@ -262,7 +262,7 @@ impl OooRuntimeState {
         }
     }
 
-    fn reset(&self) {
+    pub(crate) fn reset(&self) {
         self.total_count.store(0, Ordering::SeqCst);
         for shard in &self.shards {
             if let Ok(mut guard) = shard.lock() {

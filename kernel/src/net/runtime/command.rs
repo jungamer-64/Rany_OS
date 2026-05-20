@@ -626,6 +626,8 @@ pub(crate) struct RuntimeCommandQueue {
 }
 
 impl RuntimeCommandQueue {
+    pub(crate) const CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY;
+
     /// 新規作成
     pub const fn new() -> Self {
         Self {

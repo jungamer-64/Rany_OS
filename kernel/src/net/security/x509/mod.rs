@@ -156,6 +156,9 @@ impl<'a> StrictDerCursor<'a> {
     fn read_tlv(&mut self) -> Option<DerTlv<'a>> {
         let start = self.pos;
         let tag = self.read_u8()?;
+        if tag & 0x1F == 0x1F {
+            return None;
+        }
         let length = self.read_length()?;
         let value_start = self.pos;
         let end = value_start.checked_add(length)?;
@@ -703,16 +706,7 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
     }
 
     let leaf = certs.first()?;
-    if let Some(key_usage) = leaf.key_usage {
-        if !key_usage.digital_signature {
-            return None;
-        }
-    }
-    if let Some(eku) = leaf.extended_key_usage {
-        if !eku.server_auth {
-            return None;
-        }
-    }
+    validate_tls13_leaf_usage(leaf)?;
     if let Some(name) = context.server_name {
         if !match_hostname(leaf, name, context.allow_subject_cn_fallback) {
             return None;
@@ -741,6 +735,20 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
     } else {
         None
     }
+}
+
+fn validate_tls13_leaf_usage(leaf: &X509Certificate<'_>) -> Option<()> {
+    if let Some(key_usage) = leaf.key_usage {
+        if !key_usage.digital_signature {
+            return None;
+        }
+    }
+    if let Some(eku) = leaf.extended_key_usage {
+        if !eku.server_auth {
+            return None;
+        }
+    }
+    Some(())
 }
 
 fn match_hostname(
@@ -965,6 +973,12 @@ fn test_cert_payload() -> kernel_api::resource::net::PacketPayload {
 pub mod qemu_tests {
     use super::*;
 
+    fn der_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
+        let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len(), 0).unwrap();
+        packet.data_mut().copy_from_slice(data);
+        kernel_api::resource::net::PacketPayload::single(packet)
+    }
+
     pub fn x509_der_parse_tag_length_smoke() -> bool {
         let payload = test_cert_payload();
         let span = PayloadSpanRef::from_payload(&payload);
@@ -1025,6 +1039,56 @@ pub mod qemu_tests {
             return false;
         };
         cert.signature_algorithm == SignatureAlgorithmId::Sha256WithRsa
+    }
+
+    pub fn x509_rejects_strict_der_negatives_smoke() -> bool {
+        let overlong_short = der_payload(&[0x02, 0x81, 0x7F]);
+        let leading_zero_length = der_payload(&[0x30, 0x82, 0x00, 0x80]);
+        let high_tag_number = der_payload(&[0x1F, 0x01, 0x00]);
+        let mut trailing = [0u8; TEST_CERT_DER.len() + 1];
+        trailing[..TEST_CERT_DER.len()].copy_from_slice(&TEST_CERT_DER);
+        let trailing_payload = der_payload(&trailing);
+
+        StrictDerCursor::new(PayloadSpanRef::from_payload(&overlong_short))
+            .read_tlv()
+            .is_none()
+            && StrictDerCursor::new(PayloadSpanRef::from_payload(&leading_zero_length))
+                .read_tlv()
+                .is_none()
+            && StrictDerCursor::new(PayloadSpanRef::from_payload(&high_tag_number))
+                .read_tlv()
+                .is_none()
+            && X509Parser::parse_certificate(PayloadSpanRef::from_payload(&trailing_payload))
+                .is_none()
+    }
+
+    pub fn x509_rejects_invalid_time_values_smoke() -> bool {
+        let utc_trailing = der_payload(b"250101000000Z0");
+        let generalized_trailing = der_payload(b"20250101000000Z0");
+        let feb_31 = der_payload(b"250231000000Z");
+        let non_leap_feb_29 = der_payload(b"230229000000Z");
+        let pre_unix = der_payload(b"491231235959Z");
+
+        parse_time_value(0x17, PayloadSpanRef::from_payload(&utc_trailing)).is_none()
+            && parse_time_value(0x18, PayloadSpanRef::from_payload(&generalized_trailing)).is_none()
+            && parse_time_value(0x17, PayloadSpanRef::from_payload(&feb_31)).is_none()
+            && parse_time_value(0x17, PayloadSpanRef::from_payload(&non_leap_feb_29)).is_none()
+            && parse_time_value(0x17, PayloadSpanRef::from_payload(&pre_unix)).is_none()
+    }
+
+    pub fn x509_tls13_leaf_requires_digital_signature_smoke() -> bool {
+        let payload = test_cert_payload();
+        let span = PayloadSpanRef::from_payload(&payload);
+        let Some(mut leaf) = X509Parser::parse_certificate(span) else {
+            return false;
+        };
+        leaf.key_usage = Some(KeyUsage {
+            digital_signature: false,
+            key_encipherment: true,
+            key_cert_sign: false,
+        });
+
+        validate_tls13_leaf_usage(&leaf).is_none()
     }
 }
 

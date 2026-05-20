@@ -917,6 +917,18 @@ pub fn wave8_tls_x509_signature_algorithm_oid_smoke() -> bool {
     crate::net::security::x509::qemu_tests::x509_signature_algorithm_oid_smoke()
 }
 
+pub fn wave8_tls_x509_rejects_strict_der_negatives_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_rejects_strict_der_negatives_smoke()
+}
+
+pub fn wave8_tls_x509_rejects_invalid_time_values_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_rejects_invalid_time_values_smoke()
+}
+
+pub fn wave8_tls_x509_tls13_leaf_requires_digital_signature_smoke() -> bool {
+    crate::net::security::x509::qemu_tests::x509_tls13_leaf_requires_digital_signature_smoke()
+}
+
 pub fn wave8_tls_rsa_modexp_small_smoke() -> bool {
     crate::net::security::rsa::qemu_tests::rsa_modexp_small_smoke()
 }

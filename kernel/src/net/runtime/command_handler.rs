@@ -539,6 +539,18 @@ impl Default for RuntimeCommandHandler {
     }
 }
 
+pub(crate) fn drive_tcp_data_ready_in(
+    runtime: NetRuntimeHandle,
+    socket_id: SocketId,
+) -> EventHandleResult {
+    RuntimeCommandHandler::new().handle_event_in(
+        runtime,
+        RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+        ),
+    )
+}
+
 /// ネットワークイベント処理の初期化
 pub fn init_network_event_handler() {
     // イベントキューは既に初期化済み（NETWORK_EVENT_QUEUE）

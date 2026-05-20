@@ -7,6 +7,7 @@ use crate::net::l4::tcp::ooo_queue::OooRuntimeState;
 use crate::net::l4::tcp::retransmit::RetransmitRuntimeState;
 use crate::net::l4::tcp::tcb::TcbTable;
 use crate::net::runtime::NetRuntimeHandle;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) struct TransportState {
     tcp: TcpRuntimeState,
@@ -28,6 +29,7 @@ pub(crate) struct TcpRuntimeState {
     tcbs: TcbTable,
     ooo: OooRuntimeState,
     retransmit: RetransmitRuntimeState,
+    initialized: AtomicBool,
 }
 
 impl TcpRuntimeState {
@@ -36,6 +38,7 @@ impl TcpRuntimeState {
             tcbs: TcbTable::new(),
             ooo: OooRuntimeState::new(),
             retransmit: RetransmitRuntimeState::new(),
+            initialized: AtomicBool::new(false),
         }
     }
 
@@ -50,6 +53,30 @@ impl TcpRuntimeState {
     pub(crate) const fn retransmit(&self) -> &RetransmitRuntimeState {
         &self.retransmit
     }
+
+    fn ensure_initialized(&self) -> Result<(), crate::net::security::tls::crypto::RandomError> {
+        if self
+            .initialized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+
+        if let Err(error) = crate::net::l4::types::init_hash_secrets() {
+            self.initialized.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        if let Err(error) = self.tcbs.init_syncookies() {
+            self.initialized.store(false, Ordering::Release);
+            return Err(error);
+        }
+
+        self.ooo.reset();
+        self.retransmit.init_timer_wheel();
+        Ok(())
+    }
 }
 
 pub(crate) fn tcp_runtime_in(runtime: NetRuntimeHandle) -> &'static TcpRuntimeState {
@@ -58,4 +85,10 @@ pub(crate) fn tcp_runtime_in(runtime: NetRuntimeHandle) -> &'static TcpRuntimeSt
 
 pub(crate) fn tcp_table_in(runtime: NetRuntimeHandle) -> &'static TcbTable {
     tcp_runtime_in(runtime).tcbs()
+}
+
+pub(crate) fn ensure_tcp_runtime_initialized_in(
+    runtime: NetRuntimeHandle,
+) -> Result<(), crate::net::security::tls::crypto::RandomError> {
+    tcp_runtime_in(runtime).ensure_initialized()
 }

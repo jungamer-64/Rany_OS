@@ -84,6 +84,10 @@ pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
     )
 }
 
+pub fn wave8_tls_tls13_coalesced_application_records_smoke() -> bool {
+    ExperimentalTlsConnection::tls13_coalesced_application_records_smoke()
+}
+
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
     let config = TlsConfig::new();
     let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {

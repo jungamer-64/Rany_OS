@@ -7,7 +7,7 @@
 
 use crate::sync::PoisonRwLock;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
 use super::congestion::TcpCongestionController;
 use super::flow_control::FlowController;
@@ -727,6 +727,7 @@ pub struct TcbTable {
     syncookie_secret: PoisonRwLock<[u8; 32]>,
     /// ISN 生成用の安定したシークレットキー (RFC 6528)
     isn_secret: PoisonRwLock<[u8; 32]>,
+    secrets_initialized: AtomicBool,
 }
 
 const MAX_TCB_ENTRIES: usize = 8192;
@@ -840,17 +841,38 @@ impl TcbTable {
             syn_recv_count: AtomicUsize::new(0),
             syncookie_secret: PoisonRwLock::new([0u8; 32]),
             isn_secret: PoisonRwLock::new([0u8; 32]),
+            secrets_initialized: AtomicBool::new(false),
         }
     }
 
     /// シークレットキーを初期化する
     pub fn init_syncookies(&self) -> Result<(), crate::net::security::tls::crypto::RandomError> {
+        if self
+            .secrets_initialized
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Ok(());
+        }
+
         if let Ok(mut secret) = self.syncookie_secret.write() {
-            let random_bytes = crate::net::security::tls::crypto::generate_random()?;
+            let random_bytes = match crate::net::security::tls::crypto::generate_random() {
+                Ok(random_bytes) => random_bytes,
+                Err(error) => {
+                    self.secrets_initialized.store(false, Ordering::Release);
+                    return Err(error);
+                }
+            };
             secret.copy_from_slice(&random_bytes[0..32]);
         }
         if let Ok(mut secret) = self.isn_secret.write() {
-            let random_bytes = crate::net::security::tls::crypto::generate_random()?;
+            let random_bytes = match crate::net::security::tls::crypto::generate_random() {
+                Ok(random_bytes) => random_bytes,
+                Err(error) => {
+                    self.secrets_initialized.store(false, Ordering::Release);
+                    return Err(error);
+                }
+            };
             secret.copy_from_slice(&random_bytes[0..32]);
         }
         log::info!("[TCP] SYN Cookies and ISN secrets initialized.");

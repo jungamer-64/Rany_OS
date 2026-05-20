@@ -99,17 +99,17 @@ fn try_enqueue_close_socket_in(
     .map_err(|_| TcpError::BufferFull)
 }
 
-fn try_enqueue_tcp_data_ready_in(
-    runtime: NetRuntimeHandle,
-    socket_id: SocketId,
-) -> Result<(), TcpError> {
-    try_enqueue_command_in(
+fn trigger_tcp_data_ready_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    if try_enqueue_command_in(
         runtime,
         RuntimeCommand::Transport(
             crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
         ),
     )
-    .map_err(|_| TcpError::BufferFull)
+    .is_err()
+    {
+        let _ = crate::net::runtime::command_handler::drive_tcp_data_ready_in(runtime, socket_id);
+    }
 }
 
 fn socket_inner_stats(socket: &Socket) -> TcpStats {
@@ -723,22 +723,22 @@ impl<'a> Future for SendPayloadFuture<'a> {
                 .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
 
         match outcome {
-            SendOutcome::Enqueued => Poll::Ready(try_enqueue_tcp_data_ready_in(
-                this.connection.runtime,
-                this.connection.socket.socket_id(),
-            )),
+            SendOutcome::Enqueued => {
+                trigger_tcp_data_ready_in(
+                    this.connection.runtime,
+                    this.connection.socket.socket_id(),
+                );
+                Poll::Ready(Ok(()))
+            }
             SendOutcome::Pending {
                 payload,
                 has_queued_data,
             } => {
                 if has_queued_data {
-                    if let Err(error) = try_enqueue_tcp_data_ready_in(
+                    trigger_tcp_data_ready_in(
                         this.connection.runtime,
                         this.connection.socket.socket_id(),
-                    ) {
-                        this.payload = Some(payload);
-                        return Poll::Ready(Err(error));
-                    }
+                    );
                 }
                 this.payload = Some(payload);
                 Poll::Pending
@@ -778,12 +778,7 @@ impl<'a> Future for DrainTxFuture<'a> {
             return Poll::Ready(Ok(()));
         }
 
-        if let Err(error) = try_enqueue_tcp_data_ready_in(
-            this.connection.runtime,
-            this.connection.socket.socket_id(),
-        ) {
-            return Poll::Ready(Err(error));
-        }
+        trigger_tcp_data_ready_in(this.connection.runtime, this.connection.socket.socket_id());
         Poll::Pending
     }
 }

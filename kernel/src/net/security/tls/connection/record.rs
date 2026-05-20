@@ -663,4 +663,135 @@ impl ExperimentalTlsConnection {
         self.negotiation.state = TlsState::Closing;
         Some(record)
     }
+
+    #[cfg(feature = "qemu-test-export")]
+    pub(crate) fn tls13_coalesced_application_records_smoke() -> bool {
+        fn payload(data: &[u8]) -> Option<PacketPayload> {
+            let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
+            writer.write_bytes(data)?;
+            writer.finish()
+        }
+
+        fn payload_matches(payload: &PacketPayload, expected: &[u8]) -> bool {
+            let view = PacketPayloadView::new(payload);
+            if view.total_len() != expected.len() {
+                return false;
+            }
+
+            let mut offset = 0usize;
+            let mut matches = true;
+            view.for_each_chunk(|chunk| {
+                let end = offset + chunk.len();
+                if expected.get(offset..end) != Some(chunk) {
+                    matches = false;
+                }
+                offset = end;
+            });
+            matches && offset == expected.len()
+        }
+
+        let Ok(mut conn) = Self::new(super::TlsConfig::new()) else {
+            return false;
+        };
+        let key = [0x11; 16];
+        let iv = [0x22; 12];
+        if Self::set_tls_bytes(&mut conn.record.read_key, &key).is_err()
+            || Self::set_tls_bytes(&mut conn.record.write_key, &key).is_err()
+            || Self::set_tls_bytes(&mut conn.record.read_iv, &iv).is_err()
+            || Self::set_tls_bytes(&mut conn.record.write_iv, &iv).is_err()
+        {
+            return false;
+        }
+        conn.negotiation.negotiated_cipher = Some(CipherSuite::TLS_AES_128_GCM_SHA256);
+        conn.negotiation.state = TlsState::Established;
+
+        let Some(alpha) = payload(b"alpha") else {
+            return false;
+        };
+        let Some(beta) = payload(b"beta") else {
+            return false;
+        };
+        let Ok(mut first) = conn.tls13_encrypt_application_payload(alpha) else {
+            return false;
+        };
+        let Ok(second) = conn.tls13_encrypt_application_payload(beta) else {
+            return false;
+        };
+        append_payload(&mut first, second);
+
+        let Ok(plaintext) = conn.process_incoming_payload(first) else {
+            return false;
+        };
+        payload_matches(&plaintext, b"alphabeta") && matches!(conn.record.read_seq.current(), Ok(2))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn test_payload(data: &[u8]) -> PacketPayload {
+        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
+            .expect("test payload allocation succeeds");
+        writer
+            .write_bytes(data)
+            .expect("test payload write succeeds");
+        writer.finish().expect("test payload is exact")
+    }
+
+    fn payload_matches(payload: &PacketPayload, expected: &[u8]) -> bool {
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() != expected.len() {
+            return false;
+        }
+
+        let mut offset = 0;
+        let mut matches = true;
+        view.for_each_chunk(|chunk| {
+            let end = offset + chunk.len();
+            if expected.get(offset..end) != Some(chunk) {
+                matches = false;
+            }
+            offset = end;
+        });
+        matches && offset == expected.len()
+    }
+
+    fn establish_loopback_record_keys(conn: &mut ExperimentalTlsConnection) {
+        let key = [0x11; 16];
+        let iv = [0x22; 12];
+        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.read_key, &key)
+            .expect("read key fits");
+        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.write_key, &key)
+            .expect("write key fits");
+        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.read_iv, &iv)
+            .expect("read iv fits");
+        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.write_iv, &iv)
+            .expect("write iv fits");
+        conn.negotiation.negotiated_cipher = Some(CipherSuite::TLS_AES_128_GCM_SHA256);
+        conn.negotiation.state = TlsState::Established;
+    }
+
+    #[test]
+    fn encrypted_application_records_are_processed_from_one_ingress_payload() {
+        let config = super::super::TlsConfig::new();
+        let mut conn = ExperimentalTlsConnection::new(config)
+            .expect("test TLS connection entropy is available");
+        establish_loopback_record_keys(&mut conn);
+
+        let mut first = conn
+            .tls13_encrypt_application_payload(test_payload(b"alpha"))
+            .expect("first record encrypts");
+        let second = conn
+            .tls13_encrypt_application_payload(test_payload(b"beta"))
+            .expect("second record encrypts");
+        append_payload(&mut first, second);
+
+        let plaintext = conn
+            .process_incoming_payload(first)
+            .expect("coalesced encrypted records decrypt");
+
+        assert!(payload_matches(&plaintext, b"alphabeta"));
+        assert!(matches!(conn.record.read_seq.current(), Ok(2)));
+    }
 }

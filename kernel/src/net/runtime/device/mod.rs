@@ -13,7 +13,7 @@ use crate::net::l3::ipv4::Ipv4Config;
 use crate::net::runtime::NetRuntimeHandle;
 #[cfg(test)]
 use crate::net::runtime::context::default_runtime_context;
-use crate::net::runtime::context::{self, NetRuntimeContext, NetRuntimeId};
+use crate::net::runtime::context::{self, NetRuntimeContext, NetRuntimeGeneration, NetRuntimeId};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
 use crate::per_cpu::in_interrupt_context;
@@ -645,29 +645,37 @@ pub fn complete_tx_lease_in(
 #[derive(Clone, Copy)]
 struct RuntimeHandleId {
     runtime_id: NetRuntimeId,
+    generation: NetRuntimeGeneration,
 }
 
 impl RuntimeHandleId {
     fn from_context(context: &'static NetRuntimeContext) -> Option<Self> {
         Some(Self {
             runtime_id: context.id(),
+            generation: context.generation(),
         })
     }
 
     fn from_cookie(cookie: NetPortRuntimeCookie) -> Option<Self> {
-        let raw = cookie.as_raw();
-        let id = raw.checked_sub(1)?;
+        let raw = u64::try_from(cookie.as_raw()).ok()?.checked_sub(1)?;
+        let id = raw & u32::MAX as u64;
+        let generation = raw >> 32;
+        let generation = u32::try_from(generation).ok()?;
         Some(Self {
-            runtime_id: NetRuntimeId(id as u64),
+            runtime_id: NetRuntimeId(id),
+            generation: NetRuntimeGeneration::from_raw(generation),
         })
     }
 
     fn into_cookie(self) -> Option<NetPortRuntimeCookie> {
-        NetPortRuntimeCookie::from_raw(self.runtime_id.0.checked_add(1)? as usize)
+        let id = u32::try_from(self.runtime_id.0).ok()? as u64;
+        let raw = ((self.generation.raw() as u64) << 32) | id;
+        NetPortRuntimeCookie::from_raw(usize::try_from(raw.checked_add(1)?).ok()?)
     }
 
     fn context(self) -> Option<&'static NetRuntimeContext> {
-        context::runtime(self.runtime_id).map(NetRuntimeHandle::context)
+        context::runtime_with_generation(self.runtime_id, self.generation)
+            .map(NetRuntimeHandle::context)
     }
 }
 
@@ -1400,6 +1408,14 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
         .is_err()
     {
         return Ok(());
+    }
+
+    if let Err(err) = crate::net::runtime::transport::ensure_tcp_runtime_initialized_in(runtime) {
+        runtime_context_for(runtime)
+            .stack_initialized
+            .store(false, Ordering::Release);
+        log::warn!(target: "net::device", "TCP runtime init failed: {:?}", err);
+        return Err("network secure entropy unavailable");
     }
 
     if let Err(err) = crate::net::datapath::mempool::init_net_mempool_in(runtime, 1024) {

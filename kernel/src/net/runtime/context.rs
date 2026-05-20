@@ -28,6 +28,26 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NetRuntimeId(pub u64);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct NetRuntimeGeneration(u32);
+
+impl NetRuntimeGeneration {
+    pub(crate) const fn from_raw(raw: u32) -> Self {
+        Self(raw)
+    }
+
+    pub(crate) const fn raw(self) -> u32 {
+        self.0
+    }
+
+    fn next(self) -> Self {
+        match self.0.checked_add(1) {
+            Some(next) => Self(next),
+            None => Self(1),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeAllocationError {
     IdSpaceExhausted,
@@ -46,6 +66,10 @@ impl NetRuntimeHandle {
 
     pub const fn id(self) -> NetRuntimeId {
         self.context.id
+    }
+
+    pub(crate) const fn generation(self) -> NetRuntimeGeneration {
+        self.context.generation
     }
 
     pub const fn context(self) -> &'static NetRuntimeContext {
@@ -71,6 +95,7 @@ impl Eq for NetRuntimeHandle {}
 
 pub struct NetRuntimeContext {
     id: NetRuntimeId,
+    generation: NetRuntimeGeneration,
     pub(crate) stack: PoisonLock<Option<NetworkStack>>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) command_queue: RuntimeCommandQueue,
@@ -103,9 +128,10 @@ pub struct NetRuntimeContext {
 }
 
 impl NetRuntimeContext {
-    fn new(id: NetRuntimeId) -> Self {
+    fn new(id: NetRuntimeId, generation: NetRuntimeGeneration) -> Self {
         Self {
             id,
+            generation,
             stack: PoisonLock::new(None),
             manager: PoisonLock::new(None),
             command_queue: RuntimeCommandQueue::new(),
@@ -142,6 +168,10 @@ impl NetRuntimeContext {
         self.id
     }
 
+    pub(crate) const fn generation(&self) -> NetRuntimeGeneration {
+        self.generation
+    }
+
     pub const fn handle(&'static self) -> NetRuntimeHandle {
         NetRuntimeHandle::new(self)
     }
@@ -151,6 +181,7 @@ impl NetRuntimeContext {
 struct RuntimeRegistry {
     default: Option<NetRuntimeId>,
     next_id: Option<u64>,
+    generation: NetRuntimeGeneration,
     runtimes: BTreeMap<NetRuntimeId, &'static NetRuntimeContext>,
 }
 
@@ -159,6 +190,7 @@ impl RuntimeRegistry {
         Self {
             default: None,
             next_id: Some(0),
+            generation: NetRuntimeGeneration(1),
             runtimes: BTreeMap::new(),
         }
     }
@@ -173,7 +205,7 @@ impl RuntimeRegistry {
         }
 
         self.next_id = raw_id.checked_add(1);
-        let context = Box::leak(Box::new(NetRuntimeContext::new(id)));
+        let context = Box::leak(Box::new(NetRuntimeContext::new(id, self.generation)));
         self.runtimes.insert(id, context);
         Ok(context)
     }
@@ -218,6 +250,15 @@ pub fn runtime(id: NetRuntimeId) -> Option<NetRuntimeHandle> {
         .map(NetRuntimeContext::handle)
 }
 
+pub(crate) fn runtime_with_generation(
+    id: NetRuntimeId,
+    generation: NetRuntimeGeneration,
+) -> Option<NetRuntimeHandle> {
+    let registry = RUNTIME_REGISTRY.lock().ok()?;
+    let context = registry.runtimes.get(&id).copied()?;
+    (context.generation() == generation).then(|| context.handle())
+}
+
 pub fn list_runtimes() -> alloc::vec::Vec<NetRuntimeHandle> {
     let registry = match RUNTIME_REGISTRY.lock() {
         Ok(registry) => registry,
@@ -242,6 +283,7 @@ pub fn reset_runtime_registry_for_tests() {
     if let Ok(mut registry) = RUNTIME_REGISTRY.lock() {
         registry.default = None;
         registry.next_id = Some(0);
+        registry.generation = registry.generation.next();
         registry.runtimes.clear();
     }
 }
@@ -340,5 +382,21 @@ mod tests {
             Err(RuntimeAllocationError::IdAlreadyAllocated)
         ));
         assert_eq!(registry.runtimes.len(), 1);
+    }
+
+    #[test]
+    fn runtime_generation_changes_after_test_registry_reset() {
+        reset_runtime_registry_for_tests();
+        let old = default_runtime();
+        let old_id = old.id();
+        let old_generation = old.generation();
+
+        reset_runtime_registry_for_tests();
+        let new = default_runtime();
+
+        assert_eq!(old_id, new.id());
+        assert_ne!(old_generation, new.generation());
+        assert!(runtime_with_generation(old_id, old_generation).is_none());
+        assert!(runtime_with_generation(new.id(), new.generation()).is_some());
     }
 }

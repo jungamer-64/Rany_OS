@@ -15,7 +15,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering, fence};
 use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice as KapiDmaSlice};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketRefStorage, PacketRefVTable};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
@@ -76,11 +76,39 @@ impl PacketBuffer {
     pub fn set_device_address(&mut self, addr: u64) {
         self.meta.device_addr = addr;
     }
-    pub fn add_ref(&self) {
-        self.meta.ref_count.fetch_add(1, Ordering::Relaxed);
+    pub fn add_ref(&self) -> bool {
+        self.meta
+            .ref_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current == 0 {
+                    return None;
+                }
+                current.checked_add(1)
+            })
+            .is_ok()
     }
+
     pub fn release(&self) -> bool {
-        self.meta.ref_count.fetch_sub(1, Ordering::Release) == 1
+        loop {
+            let current = self.meta.ref_count.load(Ordering::Acquire);
+            debug_assert!(current > 0);
+            if current == 0 {
+                return false;
+            }
+            let next = current - 1;
+            if self
+                .meta
+                .ref_count
+                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                if next == 0 {
+                    fence(Ordering::Acquire);
+                    return true;
+                }
+                return false;
+            }
+        }
     }
 }
 
@@ -218,6 +246,47 @@ impl DmaBuffer {
     }
 }
 
+fn dma_add_ref(buf: NonNull<DmaBuffer>) -> bool {
+    unsafe {
+        buf.as_ref()
+            .ref_count
+            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+                if current == 0 {
+                    return None;
+                }
+                current.checked_add(1)
+            })
+            .is_ok()
+    }
+}
+
+fn dma_release(buf: NonNull<DmaBuffer>) -> bool {
+    loop {
+        let current = unsafe { buf.as_ref().ref_count.load(Ordering::Acquire) };
+        debug_assert!(current > 0);
+        if current == 0 {
+            return false;
+        }
+        let next = current - 1;
+        if unsafe {
+            buf.as_ref().ref_count.compare_exchange_weak(
+                current,
+                next,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+        }
+        .is_ok()
+        {
+            if next == 0 {
+                fence(Ordering::Acquire);
+                return true;
+            }
+            return false;
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct PooledPacketState {
     buffer: NonNull<PacketBuffer>,
@@ -328,7 +397,9 @@ unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
 unsafe fn pooled_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
     unsafe {
         let state = pooled_state_ref(storage);
-        state.buffer.as_ref().add_ref();
+        if !state.buffer.as_ref().add_ref() {
+            return None;
+        }
         Some(PacketRefStorage::from_state(*state))
     }
 }
@@ -430,7 +501,7 @@ unsafe fn dma_drop(storage: &mut PacketRefStorage) {
     unsafe {
         let state = storage.as_state_mut::<DmaPacketState>();
         let buf = state.buf;
-        if buf.as_ref().ref_count.fetch_sub(1, Ordering::Release) == 1 {
+        if dma_release(buf) {
             core::ptr::drop_in_place(state);
             drop(Box::from_raw(buf.as_ptr()));
         }
@@ -440,7 +511,9 @@ unsafe fn dma_drop(storage: &mut PacketRefStorage) {
 unsafe fn dma_clone_storage(storage: &PacketRefStorage) -> Option<PacketRefStorage> {
     unsafe {
         let state = dma_state_ref(storage);
-        state.buf.as_ref().ref_count.fetch_add(1, Ordering::Relaxed);
+        if !dma_add_ref(state.buf) {
+            return None;
+        }
         Some(PacketRefStorage::from_state(DmaPacketState {
             buf: state.buf,
             window: state.window,

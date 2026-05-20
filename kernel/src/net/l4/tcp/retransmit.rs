@@ -365,6 +365,11 @@ impl RetransmitRuntimeState {
             timer_wheel: PoisonLock::new(None),
         }
     }
+
+    pub(crate) fn init_timer_wheel(&self) {
+        let mut timer_wheel = self.timer_wheel.lock().unwrap_or_else(|e| e.into_inner());
+        *timer_wheel = Some(TimingWheel::new());
+    }
 }
 
 fn build_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
@@ -403,12 +408,7 @@ fn unregister_tcp_tx_return_target(
 
 /// タイミングホイールを初期化する
 pub fn init_timer_wheel_in(runtime: NetRuntimeHandle) {
-    let mut tw = tcp_runtime_in(runtime)
-        .retransmit()
-        .timer_wheel
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *tw = Some(TimingWheel::new());
+    tcp_runtime_in(runtime).retransmit().init_timer_wheel();
 }
 
 /// タイミングホイールにタイマーを登録する

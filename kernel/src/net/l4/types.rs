@@ -5,7 +5,7 @@
 //!
 //! SocketId, EndpointError, EndpointAddr, AcceptedConnection 等
 
-use core::sync::atomic::AtomicU32;
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 use crate::net::runtime::manager::NetIfId;
 
@@ -362,14 +362,28 @@ impl AcceptedConnection {
 
 /// 接続キーのハッシュ用シークレット（起動ごとにランダム化）
 static CONN_HASH_SECRET: AtomicU32 = AtomicU32::new(0);
+static CONN_HASH_SECRET_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// ハッシュシークレットを初期化（ネットワークスタック起動時に一度だけ呼ぶ）
 pub(crate) fn init_hash_secrets() -> Result<(), crate::net::security::tls::crypto::RandomError> {
+    if CONN_HASH_SECRET_INITIALIZED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+
     let mut bytes = [0u8; 4];
-    let rand = crate::net::security::tls::crypto::generate_random()?;
+    let rand = match crate::net::security::tls::crypto::generate_random() {
+        Ok(rand) => rand,
+        Err(error) => {
+            CONN_HASH_SECRET_INITIALIZED.store(false, Ordering::Release);
+            return Err(error);
+        }
+    };
     bytes.copy_from_slice(&rand[0..4]);
     let secret = u32::from_le_bytes(bytes);
-    CONN_HASH_SECRET.store(secret, core::sync::atomic::Ordering::Relaxed);
+    CONN_HASH_SECRET.store(secret, Ordering::Release);
     Ok(())
 }
 
@@ -382,7 +396,7 @@ pub(crate) fn conn_key_hash(local: &EndpointAddr, remote: &EndpointAddr) -> u32 
     const FNV_OFFSET: u32 = 0x811c9dc5;
     const FNV_PRIME: u32 = 0x01000193;
 
-    let mut h = FNV_OFFSET ^ CONN_HASH_SECRET.load(core::sync::atomic::Ordering::Relaxed);
+    let mut h = FNV_OFFSET ^ CONN_HASH_SECRET.load(Ordering::Acquire);
     let hash_bytes = |h: &mut u32, addr: &EndpointAddr| match addr {
         EndpointAddr::V4 { ip, port } => {
             for &b in ip {
