@@ -248,62 +248,9 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::GetTcpConnections { .. },
             ) => self.handle_query_event_with_stack(runtime, query_event),
             RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSend {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSend {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6Send {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-                    completion_id,
-                    reply,
-                    ..
-                },
-            )
-            | RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-                    completion_id,
-                    reply,
-                    ..
-                },
+                crate::net::runtime::command::TransportCommand::RawSend { command, reply },
             ) => {
-                if let Some(completion_id) = completion_id {
+                if let Some(completion_id) = command.completion_id() {
                     let _ = crate::net::runtime::device::complete_tx_request_in(
                         runtime,
                         completion_id,
@@ -352,16 +299,7 @@ impl RuntimeCommandHandler {
                 },
             ) => self.handle_send_to_with_stack(runtime, socket_id, remote, payload, stack),
             raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSend { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSend { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6Send { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6Send { .. },
+                crate::net::runtime::command::TransportCommand::RawSend { .. },
             ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
             RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::IcmpEchoRequest { target, sequence },
@@ -404,19 +342,6 @@ impl RuntimeCommandHandler {
             | lifecycle_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessTimeouts,
             ) => self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSendOn { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSendOn { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-            raw_event @ RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn { .. },
-            ) => self.handle_raw_event_with_stack(runtime, raw_event, stack),
-
             // ================================================================
             // Async utility events (with stack)
             // ================================================================

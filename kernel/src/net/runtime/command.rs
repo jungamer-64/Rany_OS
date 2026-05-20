@@ -79,7 +79,6 @@ pub(crate) enum TransportCommand {
 pub(crate) enum RawSendCommand {
     Ipv4 {
         scope: InterfaceScope,
-        src: RawIpv4Source,
         dst: [u8; 4],
         transport: RawIpv4Transport,
         payload: PacketPayload,
@@ -87,7 +86,6 @@ pub(crate) enum RawSendCommand {
     },
     Ipv6 {
         scope: InterfaceScope,
-        src: [u8; 16],
         dst: [u8; 16],
         transport: RawIpv6Transport,
         payload: PacketPayload,
@@ -111,14 +109,28 @@ pub(crate) enum RawIpv4Source {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RawIpv4Transport {
-    Udp { src_port: u16, dst_port: u16, ttl: u8 },
-    Tcp,
+    Udp {
+        src: RawIpv4Source,
+        src_port: u16,
+        dst_port: u16,
+        ttl: u8,
+    },
+    Tcp {
+        src: [u8; 4],
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum RawIpv6Transport {
-    Udp { src_port: u16, dst_port: u16, ttl: u8 },
-    Tcp,
+    Udp {
+        src: [u8; 16],
+        src_port: u16,
+        dst_port: u16,
+        ttl: u8,
+    },
+    Tcp {
+        src: [u8; 16],
+    },
 }
 
 #[derive(Debug)]

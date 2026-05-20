@@ -3,10 +3,17 @@
 // ============================================================================
 //! RuntimeCommandHandler Raw送信系メソッド
 
+use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::runtime::command::{CommandReplyTicket, RuntimeCommand, complete_command};
+use crate::net::runtime::command::{
+    CommandReplyTicket, RawIpv4Source, RawIpv4Transport, RawIpv6Transport, RawSendCommand,
+    RuntimeCommand, TransportCommand, complete_command,
+};
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
+use crate::net::runtime::stack::NetworkStack;
+use crate::net::types::NetworkError;
 use kernel_api::service::netdev::{NetTxCompletionPolicy, NetTxMeta};
 
 fn finish_raw_send(
@@ -21,169 +28,148 @@ fn finish_raw_send(
     handled
 }
 
+fn tx_meta(completion_id: Option<u64>) -> Option<NetTxMeta> {
+    completion_id.map(|completion_id| NetTxMeta {
+        completion_id: Some(completion_id),
+        completion_policy: NetTxCompletionPolicy::DeviceCompletion,
+        ..NetTxMeta::default()
+    })
+}
+
+fn send_bool_with_tx_meta(
+    stack: &mut NetworkStack,
+    completion_id: Option<u64>,
+    send: impl FnOnce(&mut NetworkStack) -> bool,
+) -> bool {
+    match tx_meta(completion_id) {
+        Some(meta) => stack.with_pending_tx_meta(meta, send),
+        None => send(stack),
+    }
+}
+
+fn send_result_with_tx_meta(
+    stack: &mut NetworkStack,
+    completion_id: Option<u64>,
+    send: impl FnOnce(&mut NetworkStack) -> Result<(), NetworkError>,
+) -> bool {
+    match tx_meta(completion_id) {
+        Some(meta) => stack.with_pending_tx_meta(meta, send).is_ok(),
+        None => send(stack).is_ok(),
+    }
+}
+
+fn complete_failed_tx(runtime: NetRuntimeHandle, completion_id: Option<u64>, reason: &'static str) {
+    if let Some(completion_id) = completion_id {
+        let _ = crate::net::runtime::device::complete_tx_request_in(
+            runtime,
+            completion_id,
+            Err(reason),
+        );
+    }
+}
+
 impl RuntimeCommandHandler {
-    pub(super) fn handle_raw_event_with_stack(
+    fn handle_raw_send_command(
         &self,
         runtime: NetRuntimeHandle,
-        event: RuntimeCommand,
-        stack: &mut crate::net::runtime::stack::NetworkStack,
+        stack: &mut NetworkStack,
+        command: RawSendCommand,
+        reply: CommandReplyTicket<Result<(), EndpointError>>,
     ) -> EventHandleResult {
-        match event {
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSend {
+        match command {
+            RawSendCommand::Ipv4 {
+                scope,
+                dst,
+                transport,
+                payload,
+                completion_id,
+            } => match transport {
+                RawIpv4Transport::Udp {
+                    src,
                     src_port,
-                    src_ip,
-                    dst_ip,
                     dst_port,
-                    payload,
                     ttl,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            crate::net::l3::ipv4::Ipv4Address::new(ip),
+                } => {
+                    let dst = Ipv4Address::new(dst);
+                    let mut payload = Some(payload);
+                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| match src {
+                        RawIpv4Source::Auto => stack.send_udp_raw_payload_scoped_auto_ttl(
+                            scope,
                             src_port,
                             dst,
                             dst_port,
                             payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload.take().expect("raw UDP payload already moved"),
-                            ttl,
-                        ),
-                    }),
-                    None => match src_ip {
-                        Some(ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            crate::net::l3::ipv4::Ipv4Address::new(ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload.take().expect("raw UDP payload already moved"),
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload.take().expect("raw UDP payload already moved"),
-                            ttl,
-                        ),
-                    },
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw UDP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSend {
-                    src_ip,
-                    dst_ip,
-                    payload,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload(
+                        RawIpv4Source::Addr(src_ip) => stack
+                            .send_udp_raw_payload_scoped_with_src_ttl(
+                                scope,
+                                Ipv4Address::new(src_ip),
+                                src_port,
+                                dst,
+                                dst_port,
+                                payload.take().expect("raw UDP payload already moved"),
+                                ttl,
+                            ),
+                    });
+                    let result = if sent {
+                        Ok(())
+                    } else {
+                        complete_failed_tx(runtime, completion_id, "raw UDP send failed");
+                        Err(EndpointError::NetworkUnreachable)
+                    };
+                    finish_raw_send(reply, result)
+                }
+                RawIpv4Transport::Tcp { src } => {
+                    let src = Ipv4Address::new(src);
+                    let dst = Ipv4Address::new(dst);
+                    let if_id = scope.as_if_id();
+                    let mut payload = Some(payload);
+                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| match if_id {
+                        Some(if_id) => stack.send_tcp_payload_on(
+                            if_id,
                             src,
                             dst,
                             payload.take().expect("raw TCP payload already moved"),
-                        )
-                    }),
-                    None => stack.send_tcp_payload(
-                        src,
-                        dst,
-                        payload.take().expect("raw TCP payload already moved"),
-                    ),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw TCP send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6Send {
-                    src_port,
-                    src_ip,
-                    dst_ip,
-                    dst_port,
-                    payload,
-                    ttl,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack
-                        .with_pending_tx_meta(meta, |stack| {
-                            stack.send_udp_v6_payload_scoped_with_ttl(
-                                crate::net::types::InterfaceScope::Any,
-                                src_port,
-                                src,
-                                dst,
-                                dst_port,
-                                payload.take().expect("raw UDPv6 payload already moved"),
-                                ttl,
-                            )
+                        ),
+                        None => stack.send_tcp_payload(
+                            src,
+                            dst,
+                            payload.take().expect("raw TCP payload already moved"),
+                        ),
+                    });
+                    let result = if sent {
+                        Ok(())
+                    } else {
+                        complete_failed_tx(runtime, completion_id, "raw TCP send failed");
+                        Err(if if_id.is_some() {
+                            EndpointError::NetworkUnreachable
+                        } else {
+                            EndpointError::ResourceExhausted
                         })
-                        .is_ok(),
-                    None => stack
-                        .send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Any,
+                    };
+                    finish_raw_send(reply, result)
+                }
+            },
+            RawSendCommand::Ipv6 {
+                scope,
+                dst,
+                transport,
+                payload,
+                completion_id,
+            } => match transport {
+                RawIpv6Transport::Udp {
+                    src,
+                    src_port,
+                    dst_port,
+                    ttl,
+                } => {
+                    let src = Ipv6Address::new(src);
+                    let dst = Ipv6Address::new(dst);
+                    let mut payload = Some(payload);
+                    let sent = send_result_with_tx_meta(stack, completion_id, |stack| {
+                        stack.send_udp_v6_payload_scoped_with_ttl(
+                            scope,
                             src_port,
                             src,
                             dst,
@@ -191,329 +177,59 @@ impl RuntimeCommandHandler {
                             payload.take().expect("raw UDPv6 payload already moved"),
                             ttl,
                         )
-                        .is_ok(),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw UDPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-                    src_ip,
-                    dst_ip,
-                    payload,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack
-                        .with_pending_tx_meta(meta, |stack| {
-                            stack.send_tcp_v6_payload(
+                    });
+                    let result = if sent {
+                        Ok(())
+                    } else {
+                        complete_failed_tx(runtime, completion_id, "raw UDPv6 send failed");
+                        Err(EndpointError::ResourceExhausted)
+                    };
+                    finish_raw_send(reply, result)
+                }
+                RawIpv6Transport::Tcp { src } => {
+                    let src = Ipv6Address::new(src);
+                    let dst = Ipv6Address::new(dst);
+                    let if_id = scope.as_if_id();
+                    let mut payload = Some(payload);
+                    let sent =
+                        send_result_with_tx_meta(stack, completion_id, |stack| match if_id {
+                            Some(if_id) => stack.send_tcp_v6_payload_on(
+                                if_id,
                                 src,
                                 dst,
                                 payload.take().expect("raw TCPv6 payload already moved"),
-                            )
-                        })
-                        .is_ok(),
-                    None => stack
-                        .send_tcp_v6_payload(
-                            src,
-                            dst,
-                            payload.take().expect("raw TCPv6 payload already moved"),
-                        )
-                        .is_ok(),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("raw TCPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-                    if_id,
-                    src_port,
-                    src_ip,
-                    dst_ip,
-                    dst_port,
-                    payload,
-                    ttl,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload
-                                .take()
-                                .expect("scoped raw UDP payload already moved"),
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload
-                                .take()
-                                .expect("scoped raw UDP payload already moved"),
-                            ttl,
-                        ),
-                    }),
-                    None => match src_ip {
-                        Some(src_ip) => stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            crate::net::l3::ipv4::Ipv4Address::new(src_ip),
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload
-                                .take()
-                                .expect("scoped raw UDP payload already moved"),
-                            ttl,
-                        ),
-                        None => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            dst,
-                            dst_port,
-                            payload
-                                .take()
-                                .expect("scoped raw UDP payload already moved"),
-                            ttl,
-                        ),
-                    },
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw UDP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-                    if_id,
-                    src_ip,
-                    dst_ip,
-                    payload,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv4::Ipv4Address::new(src_ip);
-                let dst = crate::net::l3::ipv4::Ipv4Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack.with_pending_tx_meta(meta, |stack| {
-                        stack.send_tcp_payload_on(
-                            net_if,
-                            src,
-                            dst,
-                            payload
-                                .take()
-                                .expect("scoped raw TCP payload already moved"),
-                        )
-                    }),
-                    None => stack.send_tcp_payload_on(
-                        net_if,
-                        src,
-                        dst,
-                        payload
-                            .take()
-                            .expect("scoped raw TCP payload already moved"),
-                    ),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw TCP send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-                    if_id,
-                    src_port,
-                    src_ip,
-                    dst_ip,
-                    dst_port,
-                    payload,
-                    ttl,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack
-                        .with_pending_tx_meta(meta, |stack| {
-                            stack.send_udp_v6_payload_scoped_with_ttl(
-                                crate::net::types::InterfaceScope::Pinned(net_if),
-                                src_port,
+                            ),
+                            None => stack.send_tcp_v6_payload(
                                 src,
                                 dst,
-                                dst_port,
-                                payload
-                                    .take()
-                                    .expect("scoped raw UDPv6 payload already moved"),
-                                ttl,
-                            )
+                                payload.take().expect("raw TCPv6 payload already moved"),
+                            ),
+                        });
+                    let result = if sent {
+                        Ok(())
+                    } else {
+                        complete_failed_tx(runtime, completion_id, "raw TCPv6 send failed");
+                        Err(if if_id.is_some() {
+                            EndpointError::NetworkUnreachable
+                        } else {
+                            EndpointError::ResourceExhausted
                         })
-                        .is_ok(),
-                    None => stack
-                        .send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Pinned(net_if),
-                            src_port,
-                            src,
-                            dst,
-                            dst_port,
-                            payload
-                                .take()
-                                .expect("scoped raw UDPv6 payload already moved"),
-                            ttl,
-                        )
-                        .is_ok(),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw UDPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::ResourceExhausted)
-                };
-                finish_raw_send(reply, result)
-            }
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-                    if_id,
-                    src_ip,
-                    dst_ip,
-                    payload,
-                    completion_id,
-                    reply,
-                },
-            ) => {
-                let src = crate::net::l3::ipv6::Ipv6Address::new(src_ip);
-                let dst = crate::net::l3::ipv6::Ipv6Address::new(dst_ip);
-                let net_if = crate::net::runtime::manager::NetIfId(if_id);
-                let mut payload = Some(payload);
-                let tx_meta = completion_id.map(|completion_id| NetTxMeta {
-                    completion_id: Some(completion_id),
-                    completion_policy: NetTxCompletionPolicy::DeviceCompletion,
-                    ..NetTxMeta::default()
-                });
-                let sent = match tx_meta {
-                    Some(meta) => stack
-                        .with_pending_tx_meta(meta, |stack| {
-                            stack.send_tcp_v6_payload_on(
-                                net_if,
-                                src,
-                                dst,
-                                payload
-                                    .take()
-                                    .expect("scoped raw TCPv6 payload already moved"),
-                            )
-                        })
-                        .is_ok(),
-                    None => stack
-                        .send_tcp_v6_payload_on(
-                            net_if,
-                            src,
-                            dst,
-                            payload
-                                .take()
-                                .expect("scoped raw TCPv6 payload already moved"),
-                        )
-                        .is_ok(),
-                };
-                let result = if sent {
-                    Ok(())
-                } else {
-                    if let Some(completion_id) = completion_id {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            runtime,
-                            completion_id,
-                            Err("scoped raw TCPv6 send failed"),
-                        );
-                    }
-                    Err(EndpointError::NetworkUnreachable)
-                };
-                finish_raw_send(reply, result)
+                    };
+                    finish_raw_send(reply, result)
+                }
+            },
+        }
+    }
+
+    pub(super) fn handle_raw_event_with_stack(
+        &self,
+        runtime: NetRuntimeHandle,
+        event: RuntimeCommand,
+        stack: &mut NetworkStack,
+    ) -> EventHandleResult {
+        match event {
+            RuntimeCommand::Transport(TransportCommand::RawSend { command, reply }) => {
+                self.handle_raw_send_command(runtime, stack, command, reply)
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),
         }

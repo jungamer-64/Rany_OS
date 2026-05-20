@@ -5,7 +5,8 @@
 use super::*;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
-    CommandReplyTicket, new_detached_command_channel_in, poll_command_result,
+    CommandReplyTicket, RawIpv4Source, RawIpv4Transport, RawIpv6Transport, RawSendCommand,
+    TransportCommand, new_detached_command_channel_in, poll_command_result,
 };
 
 /// Initialize a runtime-local network stack.
@@ -38,6 +39,18 @@ pub(crate) fn receive_batch_on_in(
     }
 }
 
+fn enqueue_raw_send_in(runtime: NetRuntimeHandle, command: RawSendCommand) -> bool {
+    let reply = new_detached_command_channel_in(runtime);
+    let _ = crate::net::runtime::command::try_enqueue_command_in(
+        runtime,
+        crate::net::runtime::command::RuntimeCommand::Transport(TransportCommand::RawSend {
+            command,
+            reply,
+        }),
+    );
+    true
+}
+
 pub(crate) fn enqueue_udp_send_scoped_with_src_in(
     runtime: NetRuntimeHandle,
     scope: crate::net::types::InterfaceScope,
@@ -48,28 +61,21 @@ pub(crate) fn enqueue_udp_send_scoped_with_src_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    if let Some(if_id) = scope.as_if_id() {
-        return enqueue_udp_send_on_with_src_in(
-            runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
-        );
-    }
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawUdpSend {
+        RawSendCommand::Ipv4 {
+            scope,
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Udp {
+                src: RawIpv4Source::Addr(*src_ip.as_bytes()),
                 src_port,
-                src_ip: Some(*src_ip.as_bytes()),
-                dst_ip: *dst_ip.as_bytes(),
                 dst_port,
-                payload,
                 ttl,
-                completion_id: None,
-                reply,
             },
-        ),
-    );
-    true
+            payload,
+            completion_id: None,
+        },
+    )
 }
 
 pub(crate) fn enqueue_udp_v6_send_scoped_in(
@@ -82,28 +88,21 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    if let Some(if_id) = scope.as_if_id() {
-        return enqueue_udp_v6_send_on_in(
-            runtime, if_id, src_port, src_ip, dst_ip, dst_port, payload, ttl,
-        );
-    }
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawUdpV6Send {
+        RawSendCommand::Ipv6 {
+            scope,
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Udp {
+                src: src_ip.octets(),
                 src_port,
-                src_ip: src_ip.octets(),
-                dst_ip: dst_ip.octets(),
                 dst_port,
-                payload,
                 ttl,
-                completion_id: None,
-                reply,
             },
-        ),
-    );
-    true
+            payload,
+            completion_id: None,
+        },
+    )
 }
 
 pub(crate) fn enqueue_tcp_send_in(
@@ -113,20 +112,18 @@ pub(crate) fn enqueue_tcp_send_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawTcpSend {
-                src_ip: *src_ip.as_bytes(),
-                dst_ip: *dst_ip.as_bytes(),
-                payload,
-                completion_id,
-                reply,
+        RawSendCommand::Ipv4 {
+            scope: crate::net::types::InterfaceScope::Any,
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Tcp {
+                src: *src_ip.as_bytes(),
             },
-        ),
-    );
-    true
+            payload,
+            completion_id,
+        },
+    )
 }
 
 pub(crate) fn enqueue_tcp_v6_send_in(
@@ -136,20 +133,18 @@ pub(crate) fn enqueue_tcp_v6_send_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawTcpV6Send {
-                src_ip: src_ip.octets(),
-                dst_ip: dst_ip.octets(),
-                payload,
-                completion_id,
-                reply,
+        RawSendCommand::Ipv6 {
+            scope: crate::net::types::InterfaceScope::Any,
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Tcp {
+                src: src_ip.octets(),
             },
-        ),
-    );
-    true
+            payload,
+            completion_id,
+        },
+    )
 }
 
 /// 非同期タイムアウト処理タスク
@@ -302,24 +297,21 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawUdpSendOn {
-                if_id: if_id.0,
+        RawSendCommand::Ipv4 {
+            scope: crate::net::types::InterfaceScope::Pinned(if_id),
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Udp {
+                src: RawIpv4Source::Addr(*src_ip.as_bytes()),
                 src_port,
-                src_ip: Some(*src_ip.as_bytes()),
-                dst_ip: *dst_ip.as_bytes(),
                 dst_port,
-                payload,
                 ttl,
-                completion_id: None,
-                reply,
             },
-        ),
-    );
-    true
+            payload,
+            completion_id: None,
+        },
+    )
 }
 
 pub(crate) fn enqueue_tcp_send_on_in(
@@ -330,21 +322,18 @@ pub(crate) fn enqueue_tcp_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawTcpSendOn {
-                if_id: if_id.0,
-                src_ip: *src_ip.as_bytes(),
-                dst_ip: *dst_ip.as_bytes(),
-                payload,
-                completion_id,
-                reply,
+        RawSendCommand::Ipv4 {
+            scope: crate::net::types::InterfaceScope::Pinned(if_id),
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Tcp {
+                src: *src_ip.as_bytes(),
             },
-        ),
-    );
-    true
+            payload,
+            completion_id,
+        },
+    )
 }
 
 fn enqueue_udp_v6_send_on_in(
@@ -357,24 +346,21 @@ fn enqueue_udp_v6_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawUdpV6SendOn {
-                if_id: if_id.0,
+        RawSendCommand::Ipv6 {
+            scope: crate::net::types::InterfaceScope::Pinned(if_id),
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Udp {
+                src: src_ip.octets(),
                 src_port,
-                src_ip: src_ip.octets(),
-                dst_ip: dst_ip.octets(),
                 dst_port,
-                payload,
                 ttl,
-                completion_id: None,
-                reply,
             },
-        ),
-    );
-    true
+            payload,
+            completion_id: None,
+        },
+    )
 }
 
 pub(crate) fn enqueue_tcp_v6_send_on_in(
@@ -385,19 +371,16 @@ pub(crate) fn enqueue_tcp_v6_send_on_in(
     payload: kernel_api::resource::net::PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let reply = new_detached_command_channel_in(runtime);
-    let _ = crate::net::runtime::command::try_enqueue_command_in(
+    enqueue_raw_send_in(
         runtime,
-        crate::net::runtime::command::RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::RawTcpV6SendOn {
-                if_id: if_id.0,
-                src_ip: src_ip.octets(),
-                dst_ip: dst_ip.octets(),
-                payload,
-                completion_id,
-                reply,
+        RawSendCommand::Ipv6 {
+            scope: crate::net::types::InterfaceScope::Pinned(if_id),
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Tcp {
+                src: src_ip.octets(),
             },
-        ),
-    );
-    true
+            payload,
+            completion_id,
+        },
+    )
 }
