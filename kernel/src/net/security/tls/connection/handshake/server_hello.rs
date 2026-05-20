@@ -2,10 +2,10 @@
 // kernel/src/net/security/tls/connection/handshake/server_hello.rs
 // ============================================================================
 
-use super::super::{TlsConnectionCore, PayloadSpanRef, ecdh};
 use super::super::state::{NegotiatedTlsParameters, TlsConnectionPhase};
-use crate::net::security::tls::{NegotiatedCipherSuite, TlsVersion};
+use super::super::{PayloadSpanRef, TlsConnectionCore, ecdh};
 use crate::net::security::tls::error::{TlsError, TlsResult};
+use crate::net::security::tls::{NegotiatedCipherSuite, TlsVersion};
 
 impl TlsConnectionCore {
     pub(super) fn process_server_hello(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {

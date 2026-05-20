@@ -2,12 +2,12 @@
 // kernel/src/net/security/tls/connection/client_hello.rs - TLS 1.3 ClientHello
 // ============================================================================
 
-use super::{
-    ContentType, TlsConnectionCore, GeneratedPacketWriter, HandshakeType, PacketPayload,
-    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsError,
-    TlsResult, ecdh,
-};
 use super::state::TlsConnectionPhase;
+use super::{
+    ContentType, GeneratedPacketWriter, HandshakeType, PacketPayload,
+    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsConnectionCore,
+    TlsError, TlsResult, ecdh,
+};
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
@@ -38,7 +38,7 @@ impl TlsConnectionCore {
         self.transcript.initialize();
     }
 
-    pub(super) fn build_client_hello_payload(&mut self) -> TlsResult<PacketPayload> {
+    pub(crate) fn build_client_hello_payload(&mut self) -> TlsResult<PacketPayload> {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 

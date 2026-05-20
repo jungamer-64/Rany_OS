@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/connection/handshake/certificate.rs
 // ============================================================================
 
-use super::super::{TlsConnectionCore, ServerPublicKey};
+use super::super::{ServerPublicKey, TlsConnectionCore};
 use crate::net::security::tls::error::{TlsError, TlsResult};
 use crate::net::security::x509::{VerifiedServerCertificate, VerifiedServerPublicKey};
 

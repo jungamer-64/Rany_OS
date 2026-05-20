@@ -2,8 +2,8 @@
 // kernel/src/net/security/tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
-use super::{HandshakeType, TlsConnectionCore};
 use super::state::TlsConnectionPhase;
+use super::{HandshakeType, TlsConnectionCore};
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
@@ -47,9 +47,7 @@ impl TlsConnectionCore {
             (
                 TlsConnectionPhase::ClientHelloSent(_),
                 Tls13ServerHandshakeMessage::ServerHello(payload),
-            ) => {
-                self.process_server_hello(payload)
-            }
+            ) => self.process_server_hello(payload),
             (
                 TlsConnectionPhase::EncryptedExtensionsPending(_),
                 Tls13ServerHandshakeMessage::EncryptedExtensions(payload),
@@ -69,9 +67,7 @@ impl TlsConnectionCore {
             (
                 TlsConnectionPhase::ServerFinishedPending(_),
                 Tls13ServerHandshakeMessage::Finished(payload),
-            ) => {
-                self.tls13_process_server_finished(payload)
-            }
+            ) => self.tls13_process_server_finished(payload),
             _ => Err(TlsError::UnexpectedMessage),
         }
     }

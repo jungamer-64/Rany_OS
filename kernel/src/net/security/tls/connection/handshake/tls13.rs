@@ -4,12 +4,11 @@
 
 use arrayvec::ArrayVec;
 
-use super::super::{
-    ContentType, TlsConnectionCore, PacketPayload, PayloadSpanRef, TLS_CA_CERTS_CAPACITY,
-    TLS_CERT_CHAIN_CAPACITY, TlsError, TlsResult, ecdh,
-};
 use super::super::state::TlsConnectionPhase;
-use crate::net::security::tls::protocol::SignatureScheme;
+use super::super::{
+    ContentType, PacketPayload, PayloadSpanRef, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY,
+    TlsConnectionCore, TlsError, TlsResult, ecdh,
+};
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, tls13_derive_secret, tls13_derive_secret_sha384,
     tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384, tls13_early_secret,
@@ -17,6 +16,7 @@ use crate::net::security::tls::crypto::{
     tls13_handshake_secret, tls13_handshake_secret_sha384, tls13_master_secret,
     tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
 };
+use crate::net::security::tls::protocol::SignatureScheme;
 
 impl TlsConnectionCore {
     pub(crate) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
@@ -527,16 +527,16 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn certificate_verify_rejects_unoffered_signature_scheme() {
-        let mut config = crate::net::security::tls::TlsClientConfig::new();
-        config.signature_schemes.clear();
-        config
-            .signature_schemes
-            .push(crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256);
-        let conn = TlsConnectionCore::new(config)
-            .expect("test TLS connection entropy is available");
+        let config = crate::net::security::tls::TlsClientConfig::new()
+            .with_signature_schemes(&[
+                crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256,
+            ])
+            .expect("test signature scheme set is non-empty");
+        let conn =
+            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
         let result = conn.dispatch_tls13_signature_verification(
-            crate::net::security::tls::protocol::SignatureScheme::RSA_PSS_RSAE_SHA256.0,
+            crate::net::security::tls::protocol::SignatureScheme::RSA_PSS_RSAE_SHA256.wire(),
             b"content",
             b"signature",
         );

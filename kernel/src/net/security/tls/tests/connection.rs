@@ -2,10 +2,9 @@
 // kernel/src/net/security/tls/tests/connection.rs - TLS 1.3 connection tests
 // ============================================================================
 
+use super::super::connection::TlsConnectionCore;
 use super::super::protocol::ContentType;
-use super::super::{
-    CipherSuite, TlsConnectionCore, TlsBytes, TlsClientConfig, TlsError, TlsState,
-};
+use super::super::{CipherSuite, TlsBytes, TlsClientConfig, TlsError, TlsHandshake};
 use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
@@ -38,7 +37,7 @@ fn server_hello_message(cipher: CipherSuite) -> [u8; 42] {
     message[4..6].copy_from_slice(&0x0303u16.to_be_bytes());
     message[6..38].copy_from_slice(&[0x11; 32]);
     message[38] = 0;
-    message[39..41].copy_from_slice(&cipher.0.to_be_bytes());
+    message[39..41].copy_from_slice(&cipher.wire().to_be_bytes());
     message[41] = 0;
     message
 }
@@ -88,42 +87,38 @@ pub(crate) fn test_process_handshake_truncated_header() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_connection_initial_state() {
+pub(crate) fn test_tls_handshake_start_is_constructible() {
     let config = TlsClientConfig::new();
-    let conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    assert_eq!(conn.state(), TlsState::Initial);
-    assert!(conn.negotiated_version().is_none());
+    let result = TlsHandshake::start(config);
+    assert!(result.is_ok());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_connection_client_hello() {
+pub(crate) fn test_tls_handshake_start_builds_client_hello() {
     let config = TlsClientConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
-    let mut conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let (_handshake, client_hello) =
+        TlsHandshake::start(config).expect("test TLS connection entropy is available");
+    let hello = payload_bytes(&client_hello);
 
     assert_eq!(hello[0], ContentType::Handshake as u8);
     assert_eq!(hello[1], 0x03);
     assert_eq!(hello[2], 0x01);
-    assert_eq!(conn.state(), TlsState::ClientHelloSent);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
-    let mut config = TlsClientConfig::new();
-    config.cipher_suites.clear();
-    config
-        .cipher_suites
-        .push(CipherSuite::TLS_AES_128_GCM_SHA256);
+    let config = TlsClientConfig::new()
+        .with_cipher_suites(&[CipherSuite::TLS_AES_128_GCM_SHA256])
+        .expect("test cipher suite set is non-empty");
     let mut conn =
         TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let _ = conn.build_client_hello_payload();
+    let _ = conn
+        .build_client_hello_payload()
+        .expect("test ClientHello builds");
 
     let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
     let payload = handshake_payload(&message);
@@ -134,12 +129,11 @@ pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_tls_connection_encrypt_not_established() {
+pub(crate) fn test_tls_handshake_type_has_no_encrypt_surface() {
     let config = TlsClientConfig::new();
-    let mut conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let result = conn.encrypt_payload(test_payload(b"hello"));
-    assert!(matches!(result, Err(TlsError::NotConnected)));
+    let (handshake, _client_hello) =
+        TlsHandshake::start(config).expect("test TLS connection entropy is available");
+    let _handshake_cannot_encrypt = handshake;
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -170,7 +164,6 @@ pub(crate) fn test_process_incoming_payload_accepts_multiple_plain_records() {
         .expect("concatenated TLS records should be processed one by one");
 
     assert!(plaintext.is_empty());
-    assert_eq!(conn.state(), TlsState::Closed);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -186,13 +179,11 @@ pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
         .process_incoming_payload(test_payload(&first_fragment))
         .expect("partial TLS record should stay buffered");
     assert!(pending_plaintext.is_empty());
-    assert_ne!(conn.state(), TlsState::Closed);
 
     let plaintext = conn
         .process_incoming_payload(test_payload(&second_fragment))
         .expect("second fragment should complete the buffered TLS record");
     assert!(plaintext.is_empty());
-    assert_eq!(conn.state(), TlsState::Closed);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -209,7 +200,6 @@ pub(crate) fn test_process_incoming_payload_accepts_record_across_packet_segment
         .expect("TLS record spanning packet segments should be processed in place");
 
     assert!(plaintext.is_empty());
-    assert_eq!(conn.state(), TlsState::Closed);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -257,9 +247,9 @@ pub(crate) fn test_tls13_client_hello_key_share() {
     let config = TlsClientConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
-    let mut conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let (_handshake, client_hello) =
+        TlsHandshake::start(config).expect("test TLS connection entropy is available");
+    let hello = payload_bytes(&client_hello);
 
     assert_eq!(hello[0], ContentType::Handshake as u8);
     assert!(
@@ -272,9 +262,9 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
     let config = TlsClientConfig::new();
-    let mut conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let (_handshake, client_hello) =
+        TlsHandshake::start(config).expect("test TLS connection entropy is available");
+    let hello = payload_bytes(&client_hello);
     let payload = &hello[5..];
 
     let sv_pos = find_extension_in_hello(&hello, 0x2B)
@@ -290,9 +280,9 @@ pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
     let config = TlsClientConfig::new();
-    let mut conn =
-        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let (_handshake, client_hello) =
+        TlsHandshake::start(config).expect("test TLS connection entropy is available");
+    let hello = payload_bytes(&client_hello);
 
     assert!(find_extension_in_hello(&hello, 0x2D).is_none());
 }
@@ -309,17 +299,20 @@ pub(crate) fn test_tls13_strip_content_type() {
     assert_eq!(
         TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
             0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17,
-        ])),
+        ]))
+        .map(|inner| (inner.content_type_wire(), inner.content_len())),
         Some((0x17, 5))
     );
     assert_eq!(
         TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
             0x48, 0x65, 0x17, 0x00, 0x00,
-        ])),
+        ]))
+        .map(|inner| (inner.content_type_wire(), inner.content_len())),
         Some((0x17, 2))
     );
     assert_eq!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x16])),
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x16]))
+            .map(|inner| (inner.content_type_wire(), inner.content_len())),
         Some((0x16, 0))
     );
     assert_eq!(

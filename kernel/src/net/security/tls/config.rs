@@ -67,6 +67,10 @@ impl AlpnProtocol {
         self.0.len()
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
@@ -136,6 +140,10 @@ impl OfferedCipherSuites {
 
     pub(crate) fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, CipherSuite> {
@@ -215,6 +223,10 @@ impl OfferedSignatureSchemes {
         self.0.len()
     }
 
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, SignatureScheme> {
         self.0.iter()
     }
@@ -251,12 +263,20 @@ impl OfferedNamedGroups {
     }
 
     pub(crate) fn defaults() -> Self {
-        Self::from_slice(&[NamedGroup::X25519, NamedGroup::SECP256R1, NamedGroup::SECP384R1])
-            .expect("default TLS named groups fit the fixed capacity")
+        Self::from_slice(&[
+            NamedGroup::X25519,
+            NamedGroup::SECP256R1,
+            NamedGroup::SECP384R1,
+        ])
+        .expect("default TLS named groups fit the fixed capacity")
     }
 
     pub(crate) fn len(&self) -> usize {
         self.0.len()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, NamedGroup> {
@@ -289,6 +309,10 @@ impl TlsTrustAnchors {
 
     pub(crate) fn iter(&self) -> core::slice::Iter<'_, Certificate> {
         self.0.iter()
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.0.is_empty()
     }
 }
 

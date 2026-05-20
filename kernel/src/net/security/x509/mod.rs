@@ -664,7 +664,10 @@ fn parse_certificate_outer<'a>(outer_value: PayloadSpanRef<'a>) -> Option<X509Ce
 }
 
 impl<'ctx> CertificatePolicy<'ctx> {
-    pub fn verify_chain<'a>(&self, chain: &[PayloadSpanRef<'a>]) -> Option<VerifiedServerCertificate> {
+    pub fn verify_chain<'a>(
+        &self,
+        chain: &[PayloadSpanRef<'a>],
+    ) -> Option<VerifiedServerCertificate> {
         match self {
             CertificatePolicy::Tls13ServerAuth(context) => {
                 validate_tls13_server_auth_chain(chain, context)
@@ -726,7 +729,7 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
     let leaf = certs.first()?;
     validate_tls13_leaf_usage(leaf)?;
     if let Some(name) = context.server_name {
-        if !match_hostname(leaf, name, false) {
+        if !match_hostname(leaf, name) {
             return None;
         }
     }
@@ -786,15 +789,11 @@ fn validate_tls13_leaf_usage(leaf: &X509Certificate<'_>) -> Option<()> {
     Some(())
 }
 
-fn match_hostname(
-    cert: &X509Certificate<'_>,
-    hostname: &str,
-    allow_subject_cn_fallback: bool,
-) -> bool {
+fn match_hostname(cert: &X509Certificate<'_>, hostname: &str) -> bool {
     if let Some(san) = cert.san_raw {
         return match_hostname_in_san(san, hostname);
     }
-    allow_subject_cn_fallback && match_hostname_in_subject(cert.subject_raw, hostname)
+    false
 }
 
 fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {

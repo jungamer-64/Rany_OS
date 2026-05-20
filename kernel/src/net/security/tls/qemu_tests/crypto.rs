@@ -11,10 +11,11 @@ use super::super::crypto::chacha20::{
     chacha20_xor_in_place, poly1305_mac,
 };
 use super::super::crypto::hkdf::{hkdf_expand as hkdf_expand_into, hkdf_extract};
+use super::super::crypto::hmac::{hmac_sha256, hmac_sha384};
 use super::super::crypto::{
     aes_gcm_decrypt_into, aes_gcm_encrypt_into, generate_random,
-    hkdf_expand_label as hkdf_expand_label_into, hmac_sha256, hmac_sha384,
-    qemu_test_clear_random_override, qemu_test_set_random_override_seed, tls13_derive_secret,
+    hkdf_expand_label as hkdf_expand_label_into, qemu_test_clear_random_override,
+    qemu_test_set_random_override_seed, tls13_derive_secret,
     tls13_derive_traffic_keys as tls13_derive_traffic_keys_into, tls13_early_secret,
     tls13_finished_key, tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
 };

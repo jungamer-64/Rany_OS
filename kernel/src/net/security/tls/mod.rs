@@ -35,8 +35,6 @@ pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};
 
 pub(crate) use buffer::TlsBytes;
-pub(crate) use config::{
-    NegotiatedCipherSuite, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TLS_SERVER_NAME_CAPACITY,
-};
+pub(crate) use config::{NegotiatedCipherSuite, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY};
 pub(crate) use credentials::ServerPublicKey;
 pub(crate) use protocol::{AlertDescription, ContentType, HandshakeType};

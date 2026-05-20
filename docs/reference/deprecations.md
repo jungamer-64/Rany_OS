@@ -106,10 +106,10 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the token-aware API: `UdpSocketTable::bind_with_token(port, Some(token))`. For the no-token case use `UdpSocketTable::bind_with_token(port, None)` or the stack helper `bind_udp(port)`/`bind_udp_with_token(port, token)` as appropriate.
   - `UdpEndpoint::bind_registered_with_token_in(runtime, scope, port, token)` ❌ **removed**
     - Migration: Use `UdpEndpoint::bind_in(runtime, scope, port, token)`.
-  - `kernel/src/net/security/tls/connection::TlsConnection` の byte-slice / `Vec<u8>` TLS record APIs (`process_incoming(&[u8])`, `encrypt_application_data(&[u8])`, `send_early_data(&[u8])`, `get_rejected_early_data()`, `build_key_update_response()`, `close()`) ❌ **removed**
-    - Migration: Use the packet-backed APIs `process_incoming_payload(payload)`, `encrypt_application_payload(&payload)`, `send_early_data_payload(payload)`, `get_rejected_early_data_payload()`, `build_key_update_response_payload()`, and `close_payload()`.
-  - TLS handshake record builders returning `Vec<u8>` (`build_client_key_exchange()`, `build_client_key_exchange_rsa()`, `build_change_cipher_spec()`, `build_client_finished_tls12()`, `build_client_finished_tls13()`) ❌ **removed**
-    - Migration: Use the payload-native builders `build_client_key_exchange_payload()`, `build_client_key_exchange_rsa_payload()`, `build_change_cipher_spec_payload()`, `build_client_finished_tls12_payload()`, and `build_client_finished_tls13_payload()`.
+  - TLS state-polling connection APIs (`ExperimentalTlsConnection`, `TlsState`, `state()`, `negotiated_version()`, pre-established `encrypt_payload()`) ❌ **removed**
+    - Migration: Start with `TlsHandshake::start(config)`, drive `TlsHandshakeStep`, and only encrypt/read/close through `TlsEstablishedSession`.
+  - TLS handshake record builders returning `Vec<u8>` or exposing handshake-phase payload builders directly (`build_client_hello()`, `build_client_finished_tls13()`) ❌ **removed**
+    - Migration: Let `TlsHandshake::start` emit ClientHello and `TlsHandshakeStep::Established { payload, session }` emit ClientFinished.
   - TLS copy helpers (`vec_from_payload()`, `packet_payload_from_slice()`, `packet_payload_from_parts()`, `span_from_bytes()`) ❌ **removed**
     - Migration: Operate on `PacketPayloadView`, `PayloadSpan`, and `PacketPayloadBuilder` directly at each call site. Do not reintroduce TLS-local payload flatten/build helpers.
   - TLS subtree `read_vec()`-based parser / record paths ❌ **removed**
@@ -118,8 +118,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use the in-place / buffer-out APIs `aes_gcm_encrypt_into`, `aes_gcm_decrypt_into`, `chacha20_poly1305_*_in_place`, `aes_cbc_*_in_place`, `tls_add_padding_in_place`, `compute_tls_mac_into`, `rsa_pkcs1_encrypt_into`, `mgf1_into`, `hash_compute_into`, `BigUint::write_be_bytes`, and `BigUint::write_be_bytes_padded`.
   - `TlsClientConfig` / `SessionCache` の `Vec<String>` / `String` / `VecDeque` surface (`with_server_name(&str) -> TlsClientConfig`, `with_alpn(&[&str]) -> TlsClientConfig`, dynamic session cache) ❌ **removed**
     - Migration: Use the fixed-capacity API: `with_server_name(&str) -> Result<TlsClientConfig, TlsClientConfigError>`, `with_alpn(&[&str]) -> Result<TlsClientConfig, TlsClientConfigError>`, `ArrayVec`-backed `TlsClientConfig`, and fixed-capacity `SessionCache`.
-  - Legacy payload builder name `build_client_hello()` ❌ **removed**
-    - Migration: Use `build_client_hello_payload()`.
+  - Legacy payload builder names (`build_client_hello()`, `build_client_hello_payload()`) ❌ **removed**
+    - Migration: Use `TlsHandshake::start(config)`.
   - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**
     - Migration: Verify transcript progress through state, emitted payload records, or transcript-hash-based helpers instead of byte accumulation snapshots.
   - IPv6 copy-based quoted-packet / timeout paths (`packet_from_bytes` / `payload_from_bytes` rebuild in the IPv6 receive path) ❌ **removed**

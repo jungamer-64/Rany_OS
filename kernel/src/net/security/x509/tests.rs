@@ -383,11 +383,10 @@ fn test_validate_certificate_chain_requires_trust_anchor() {
     let payload = test_cert_payload();
     let chain = [PayloadSpanRef::from_payload(&payload)];
     let cert = X509Parser::parse_certificate(chain[0]).expect("test certificate parses");
-    let context = X509VerificationContext {
+    let context = TlsServerVerificationContext {
         now_unix: cert.not_before,
         server_name: None,
         trusted_roots: &[],
-        allow_subject_cn_fallback: false,
     };
 
     assert!(
@@ -407,31 +406,28 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
     let cert = X509Parser::parse_certificate(span).expect("test certificate parses");
 
     assert!(
-        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+        CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
-            server_name: Some("Test"),
+            server_name: None,
             trusted_roots: &trusted,
-            allow_subject_cn_fallback: true,
         })
         .verify_chain(&chain)
         .is_some()
     );
     assert!(
-        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+        CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
             server_name: Some("example.com"),
             trusted_roots: &trusted,
-            allow_subject_cn_fallback: true,
         })
         .verify_chain(&chain)
         .is_none()
     );
     assert!(
-        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+        CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: cert.not_before,
             server_name: Some("Test"),
             trusted_roots: &trusted,
-            allow_subject_cn_fallback: false,
         })
         .verify_chain(&chain)
         .is_none()
@@ -458,11 +454,10 @@ fn test_tls13_server_auth_rejects_leaf_without_digital_signature_key_usage() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_rejects_empty_chain() {
     assert!(
-        CertificatePolicy::Tls13ServerAuth(X509VerificationContext {
+        CertificatePolicy::Tls13ServerAuth(TlsServerVerificationContext {
             now_unix: 0,
             server_name: None,
             trusted_roots: &[],
-            allow_subject_cn_fallback: false,
         })
         .verify_chain(&[])
         .is_none()

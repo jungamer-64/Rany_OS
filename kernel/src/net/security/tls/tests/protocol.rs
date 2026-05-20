@@ -49,11 +49,11 @@ pub(crate) fn test_tls_version_is_closed_to_tls13() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_cipher_suite_defaults_are_tls13_only() {
-    let defaults = CipherSuite::defaults();
+    let defaults = TlsClientConfig::new().cipher_suites;
     assert_eq!(defaults.len(), 3);
-    assert!(defaults.contains(&CipherSuite::TLS_AES_128_GCM_SHA256));
-    assert!(defaults.contains(&CipherSuite::TLS_AES_256_GCM_SHA384));
-    assert!(defaults.contains(&CipherSuite::TLS_CHACHA20_POLY1305_SHA256));
+    assert!(defaults.contains(CipherSuite::TLS_AES_128_GCM_SHA256));
+    assert!(defaults.contains(CipherSuite::TLS_AES_256_GCM_SHA384));
+    assert!(defaults.contains(CipherSuite::TLS_CHACHA20_POLY1305_SHA256));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -63,5 +63,5 @@ pub(crate) fn test_tls_config_defaults_are_tls13_client_only() {
     assert_eq!(config.cipher_suites.len(), 3);
     assert!(!config.signature_schemes.is_empty());
     assert!(!config.named_groups.is_empty());
-    assert!(config.ca_certs.is_empty());
+    assert!(config.trust_anchors.is_empty());
 }

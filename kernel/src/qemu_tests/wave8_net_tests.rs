@@ -16,8 +16,8 @@ pub fn net_tls_wave8_tls13_finished_round_trip_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_tls13_finished_round_trip_smoke()
 }
 
-pub fn net_tls_wave8_tls13_initial_state_smoke() -> bool {
-    crate::net::security::tls::qemu_tests::wave8_tls_tls13_initial_state_smoke()
+pub fn net_tls_wave8_tls13_handshake_start_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_tls13_handshake_start_smoke()
 }
 
 pub fn net_tls_wave8_tls13_client_hello_key_share_smoke() -> bool {
@@ -112,16 +112,16 @@ pub fn net_tls_wave8_cipher_suite_defaults_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_cipher_suite_defaults_smoke()
 }
 
-pub fn net_tls_wave8_tls_connection_initial_state_smoke() -> bool {
-    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_initial_state_smoke()
+pub fn net_tls_wave8_tls_handshake_start_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_handshake_start_smoke()
 }
 
-pub fn net_tls_wave8_tls_connection_client_hello_smoke() -> bool {
-    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_client_hello_smoke()
+pub fn net_tls_wave8_tls_handshake_client_hello_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_handshake_client_hello_smoke()
 }
 
-pub fn net_tls_wave8_tls_connection_encrypt_not_established_smoke() -> bool {
-    crate::net::security::tls::qemu_tests::wave8_tls_tls_connection_encrypt_not_established_smoke()
+pub fn net_tls_wave8_tls_handshake_surface_smoke() -> bool {
+    crate::net::security::tls::qemu_tests::wave8_tls_tls_handshake_surface_smoke()
 }
 
 pub fn net_tls_wave8_process_handshake_truncated_header_smoke() -> bool {

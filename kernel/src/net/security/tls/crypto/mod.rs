@@ -10,7 +10,7 @@ pub mod hmac;
 pub mod random;
 
 // ── HMAC ────────────────────────────────────────────────────────────────────
-pub use hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, hmac_sha256, hmac_sha384};
+pub use hmac::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 
 // ── HKDF + TLS 1.3 Key Schedule ─────────────────────────────────────────────
 pub use hkdf::{
@@ -29,7 +29,6 @@ pub(crate) use aes_gcm::AesGcmKey;
 pub(crate) use aes_gcm::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
 
 // ── ChaCha20-Poly1305 ────────────────────────────────────────────────────────
-pub use chacha20::{chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place};
 pub(crate) use chacha20::{chacha20_poly1305_tag_chunks, chacha20_xor_chunks_in_place};
 
 // ── Random ───────────────────────────────────────────────────────────────────

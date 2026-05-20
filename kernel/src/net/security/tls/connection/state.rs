@@ -145,9 +145,7 @@ impl TlsConnectionPhase {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum NegotiatedTlsParameters {
     Pending,
-    Tls13 {
-        cipher: NegotiatedCipherSuite,
-    },
+    Tls13 { cipher: NegotiatedCipherSuite },
 }
 
 impl NegotiatedTlsParameters {

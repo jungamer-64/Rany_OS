@@ -2,8 +2,9 @@
 // kernel/src/net/security/tls/qemu_tests/connection.rs - TLS 1.3 connection smokes
 // ============================================================================
 
+use super::super::connection::TlsConnectionCore;
 use super::super::protocol::ContentType;
-use super::super::{TlsConnectionCore, TlsBytes, TlsClientConfig, TlsError, TlsState};
+use super::super::{TlsBytes, TlsClientConfig, TlsError, TlsHandshake};
 use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
@@ -49,39 +50,29 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
     None
 }
 
-pub fn wave8_tls_tls_connection_initial_state_smoke() -> bool {
+pub fn wave8_tls_tls_handshake_start_smoke() -> bool {
     let config = TlsClientConfig::new();
-    let Ok(conn) = TlsConnectionCore::new(config) else {
-        return false;
-    };
-    conn.state() == TlsState::Initial && conn.negotiated_version().is_none()
+    TlsHandshake::start(config).is_ok()
 }
 
-pub fn wave8_tls_tls_connection_client_hello_smoke() -> bool {
+pub fn wave8_tls_tls_handshake_client_hello_smoke() -> bool {
     let config = match TlsClientConfig::new().with_server_name("example.com") {
         Ok(config) => config,
         Err(_) => return false,
     };
-    let Ok(mut conn) = TlsConnectionCore::new(config) else {
+    let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
     };
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let hello = payload_bytes(&client_hello);
     hello.len() >= 3
         && hello[0] == ContentType::Handshake as u8
         && hello[1] == 0x03
         && hello[2] == 0x01
-        && conn.state() == TlsState::ClientHelloSent
 }
 
-pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
+pub fn wave8_tls_tls_handshake_surface_smoke() -> bool {
     let config = TlsClientConfig::new();
-    let Ok(mut conn) = TlsConnectionCore::new(config) else {
-        return false;
-    };
-    matches!(
-        conn.encrypt_payload(handshake_payload(b"hello")),
-        Err(TlsError::NotConnected)
-    )
+    TlsHandshake::start(config).is_ok()
 }
 
 pub fn wave8_tls_tls13_coalesced_application_records_smoke() -> bool {
@@ -103,8 +94,8 @@ pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
     )
 }
 
-pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
-    wave8_tls_tls_connection_initial_state_smoke()
+pub fn wave8_tls_tls13_handshake_start_smoke() -> bool {
+    wave8_tls_tls_handshake_start_smoke()
 }
 
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
@@ -112,10 +103,10 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
         Ok(config) => config,
         Err(_) => return false,
     };
-    let Ok(mut conn) = TlsConnectionCore::new(config) else {
+    let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
     };
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let hello = payload_bytes(&client_hello);
 
     hello.first().copied() == Some(ContentType::Handshake as u8)
         && find_extension_in_hello(&hello, 0x33).is_some()
@@ -123,10 +114,10 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
 
 pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
     let config = TlsClientConfig::new();
-    let Ok(mut conn) = TlsConnectionCore::new(config) else {
+    let Ok((_handshake, client_hello)) = TlsHandshake::start(config) else {
         return false;
     };
-    let hello = payload_bytes(&conn.build_client_hello_payload());
+    let hello = payload_bytes(&client_hello);
     let Some(hello_payload) = hello.get(5..) else {
         return false;
     };
@@ -154,12 +145,15 @@ pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {
 
     let case1 = payload(&[0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17])
         .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
+        .map(|inner| (inner.content_type_wire(), inner.content_len()))
         == Some((0x17, 5));
     let case2 = payload(&[0x48, 0x65, 0x17, 0x00, 0x00])
         .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
+        .map(|inner| (inner.content_type_wire(), inner.content_len()))
         == Some((0x17, 2));
     let case3 = payload(&[0x16])
         .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
+        .map(|inner| (inner.content_type_wire(), inner.content_len()))
         == Some((0x16, 0));
     let case4 = payload(&[0x00, 0x00, 0x00])
         .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))

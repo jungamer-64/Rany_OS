@@ -128,7 +128,7 @@ impl TlsEstablishedSession {
 }
 
 impl TlsConnectionCore {
-    fn new(mut config: TlsClientConfig) -> TlsResult<Self> {
+    pub(crate) fn new(mut config: TlsClientConfig) -> TlsResult<Self> {
         let client_random = generate_random().map_err(|_| TlsError::SecureRandomUnavailable)?;
         let server_name = config.server_name.take();
 

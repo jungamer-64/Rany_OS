@@ -7,9 +7,10 @@ use super::super::crypto::chacha20::{
     chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
 };
 use super::super::crypto::hkdf::{hkdf_expand, hkdf_expand_label, hkdf_extract};
+use super::super::crypto::hmac::{hmac_sha256, hmac_sha384};
 use super::super::crypto::{
-    hmac_sha256, hmac_sha384, tls13_derive_secret, tls13_derive_traffic_keys, tls13_early_secret,
-    tls13_finished_key, tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
+    tls13_derive_secret, tls13_derive_traffic_keys, tls13_early_secret, tls13_finished_key,
+    tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
 };
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

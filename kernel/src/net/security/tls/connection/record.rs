@@ -2,12 +2,14 @@
 // kernel/src/net/security/tls/connection/record.rs - TLS 1.3 record layer
 // ============================================================================
 
+#[cfg(any(test, feature = "qemu-test-export"))]
+use super::state::NegotiatedTlsParameters;
+use super::state::TlsConnectionPhase;
 use super::{
-    AlertDescription, CipherSuite, ContentType, TlsConnectionCore, GeneratedPacketWriter,
-    HandshakeType, PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsError, TlsResult,
-    append_payload,
+    AlertDescription, CipherSuite, ContentType, GeneratedPacketWriter, HandshakeType,
+    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsConnectionCore, TlsError,
+    TlsResult, append_payload,
 };
-use super::state::{NegotiatedTlsParameters, TlsConnectionPhase};
 use crate::net::security::tls::crypto::{
     AesGcmKey, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, chacha20_poly1305_tag_chunks,
     chacha20_xor_chunks_in_place, tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384,
@@ -84,6 +86,10 @@ impl Tls13InnerPlaintext {
 
     const fn content_type(self) -> ContentType {
         self.content_type
+    }
+
+    pub(crate) const fn content_type_wire(self) -> u8 {
+        self.content_type as u8
     }
 
     pub(crate) const fn content_len(self) -> usize {
@@ -313,8 +319,9 @@ impl TlsConnectionCore {
             ContentType::Alert => self.handle_alert_payload(body)?,
             ContentType::ApplicationData => {
                 let inner = self.decrypt_tls13_record_payload(record, body_offset, record_len)?;
-                let inner_span = PayloadSpanRef::from_range(record, body_offset, inner.content_len())
-                    .ok_or(TlsError::DecodeError)?;
+                let inner_span =
+                    PayloadSpanRef::from_range(record, body_offset, inner.content_len())
+                        .ok_or(TlsError::DecodeError)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
                         let owned = crate::net::payload::clone_payload_window_owned(
@@ -396,23 +403,21 @@ impl TlsConnectionCore {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
                 ContentType::ApplicationData => {
-                    let inner_payload =
-                        crate::net::payload::move_payload_window_owned(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = crate::net::payload::move_payload_window_owned(
+                        decrypted,
+                        0,
+                        inner.content_len(),
+                    )
+                    .ok_or(TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
                 ContentType::Handshake => {
-                    let inner_payload =
-                        crate::net::payload::move_payload_window_owned(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = crate::net::payload::move_payload_window_owned(
+                        decrypted,
+                        0,
+                        inner.content_len(),
+                    )
+                    .ok_or(TlsError::DecodeError)?;
                     if self.negotiation.phase.is_established() {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
                         self.tls13_process_post_handshake(inner_data)?;
@@ -421,13 +426,12 @@ impl TlsConnectionCore {
                     }
                 }
                 ContentType::Alert => {
-                    let inner_payload =
-                        crate::net::payload::move_payload_window_owned(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .ok_or(TlsError::DecodeError)?;
+                    let inner_payload = crate::net::payload::move_payload_window_owned(
+                        decrypted,
+                        0,
+                        inner.content_len(),
+                    )
+                    .ok_or(TlsError::DecodeError)?;
                     self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
                 }
             }
@@ -791,14 +795,10 @@ mod tests {
     fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
         let key = [0x11; 16];
         let iv = [0x22; 12];
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_key, &key)
-            .expect("read key fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_key, &key)
-            .expect("write key fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_iv, &iv)
-            .expect("read iv fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_iv, &iv)
-            .expect("write iv fits");
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_key, &key).expect("read key fits");
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_key, &key).expect("write key fits");
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_iv, &iv).expect("read iv fits");
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_iv, &iv).expect("write iv fits");
         conn.negotiation.negotiated = NegotiatedTlsParameters::tls13(
             conn.config
                 .cipher_suites
@@ -811,8 +811,8 @@ mod tests {
     #[test]
     fn encrypted_application_records_are_processed_from_one_ingress_payload() {
         let config = super::super::TlsClientConfig::new();
-        let mut conn = TlsConnectionCore::new(config)
-            .expect("test TLS connection entropy is available");
+        let mut conn =
+            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
         establish_loopback_record_keys(&mut conn);
 
         let mut first = conn

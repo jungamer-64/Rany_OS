@@ -7,12 +7,11 @@ mod crypto;
 mod protocol;
 
 pub use connection::{
-    wave8_tls_process_handshake_truncated_header_smoke,
-    wave8_tls_tls_connection_client_hello_smoke,
-    wave8_tls_tls_connection_encrypt_not_established_smoke,
-    wave8_tls_tls_connection_initial_state_smoke, wave8_tls_tls13_client_hello_key_share_smoke,
+    wave8_tls_process_handshake_truncated_header_smoke, wave8_tls_tls_handshake_client_hello_smoke,
+    wave8_tls_tls_handshake_start_smoke, wave8_tls_tls_handshake_surface_smoke,
+    wave8_tls_tls13_client_hello_key_share_smoke,
     wave8_tls_tls13_client_hello_supported_versions_smoke,
-    wave8_tls_tls13_coalesced_application_records_smoke, wave8_tls_tls13_initial_state_smoke,
+    wave8_tls_tls13_coalesced_application_records_smoke, wave8_tls_tls13_handshake_start_smoke,
     wave8_tls_tls13_strip_content_type_smoke,
 };
 pub use crypto::{
@@ -56,6 +55,5 @@ pub use crypto::{
 };
 pub use protocol::{
     wave8_tls_base64_decode_smoke, wave8_tls_cipher_suite_defaults_smoke,
-    wave8_tls_cipher_suite_helpers_smoke, wave8_tls_protocol_config_defaults_smoke,
-    wave8_tls_protocol_version_bytes_smoke, wave8_tls_tls_version_smoke,
+    wave8_tls_cipher_suite_helpers_smoke, wave8_tls_tls_version_smoke,
 };
