@@ -3,10 +3,10 @@
 // ============================================================================
 
 use super::super::{NegotiatedCipherSuite, ServerPublicKey, TlsBytes, TlsError, TlsResult};
-use crate::net::payload::{append_payload, packet_payload_from_segments};
+use super::record::TlsRecordPacket;
+use crate::net::payload::append_payload;
 use crate::net::security::ecdh;
-use alloc::vec::Vec;
-use kernel_api::resource::net::PacketPayload;
+use kernel_api::resource::net::{PacketPayload, PacketPayloadFront, PacketWindowError};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TlsClientRandom([u8; 32]);
@@ -208,48 +208,27 @@ impl TlsRecordIngressQueue {
         append_payload(&mut self.payload, payload);
     }
 
-    pub(super) fn payload(&self) -> &PacketPayload {
-        &self.payload
-    }
-
-    pub(super) fn take_front_record(&mut self, len: usize) -> Option<PacketPayload> {
-        if len > self.payload.total_len() {
-            return None;
-        }
-        if len == 0 {
-            return Some(PacketPayload::default());
-        }
-
-        let mut remaining = len;
-        let mut record_segments = Vec::new();
-        let mut queued_segments = Vec::new();
-
-        for segment in core::mem::take(&mut self.payload).into_segments() {
-            if remaining == 0 {
-                queued_segments.push(segment);
-                continue;
+    pub(super) fn pop_ready_record(&mut self) -> TlsResult<Option<TlsRecordPacket>> {
+        let Some(len) = TlsRecordPacket::ready_len(&self.payload)? else {
+            return Ok(None);
+        };
+        let queued = core::mem::take(&mut self.payload);
+        let record = match queued.take_front(len) {
+            Ok(PacketPayloadFront::Whole(record)) => record,
+            Ok(PacketPayloadFront::Prefix { front, remainder }) => {
+                self.payload = remainder;
+                front
             }
-
-            let segment_len = segment.len();
-            if segment_len <= remaining {
-                remaining -= segment_len;
-                record_segments.push(segment);
-            } else {
-                let mut restored = record_segments;
-                restored.push(segment);
-                restored.extend(queued_segments);
-                self.payload = packet_payload_from_segments(restored);
-                return None;
+            Err(PacketWindowError::BackendSplitUnsupported) => {
+                self.payload = PacketPayload::default();
+                return Err(TlsError::DecodeError);
             }
-        }
-
-        if remaining != 0 {
-            self.payload = packet_payload_from_segments(record_segments);
-            return None;
-        }
-
-        self.payload = packet_payload_from_segments(queued_segments);
-        Some(packet_payload_from_segments(record_segments))
+            Err(PacketWindowError::Empty | PacketWindowError::OutOfBounds) => {
+                self.payload = PacketPayload::default();
+                return Err(TlsError::DecodeError);
+            }
+        };
+        TlsRecordPacket::parse(record).map(Some)
     }
 }
 

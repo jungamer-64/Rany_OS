@@ -7,8 +7,8 @@ use super::state::SelectedTls13Parameters;
 use super::state::{TlsHandshakeProgress, TlsRecordEpoch};
 use super::{
     AlertDescription, ContentType, GeneratedPacketWriter, HandshakeType, KeyUpdateRequest,
-    PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsConnectionCore, TlsError,
-    TlsResult, append_payload,
+    PacketPayload, PacketPayloadView, PayloadSpanMut, PayloadSpanRef, PayloadWindowRequest,
+    TlsBytes, TlsConnectionCore, TlsError, TlsResult, append_payload,
 };
 use crate::net::security::tls::crypto::aes_gcm::AesGcmKey;
 use crate::net::security::tls::crypto::hkdf::{
@@ -76,6 +76,71 @@ impl TlsRecordHeader {
     }
 }
 
+pub(super) struct TlsRecordPacket {
+    payload: PacketPayload,
+    header: TlsRecordHeader,
+}
+
+pub(super) struct TlsRecordBody<'a> {
+    span: PayloadSpanRef<'a>,
+}
+
+impl<'a> TlsRecordBody<'a> {
+    const fn span(self) -> PayloadSpanRef<'a> {
+        self.span
+    }
+}
+
+impl TlsRecordPacket {
+    const HEADER_LEN: usize = 5;
+
+    pub(super) fn ready_len(
+        payload: &PacketPayload,
+    ) -> TlsResult<Option<kernel_api::resource::net::PacketByteCount>> {
+        let view = PacketPayloadView::new(payload);
+        if view.total_len() < Self::HEADER_LEN {
+            return Ok(None);
+        }
+        let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let header = TlsRecordHeader::parse(header)?;
+        let total_len = header.total_len()?;
+        if view.total_len() < total_len {
+            return Ok(None);
+        }
+        kernel_api::resource::net::PacketByteCount::new(total_len)
+            .map(Some)
+            .ok_or(TlsError::DecodeError)
+    }
+
+    pub(super) fn parse(payload: PacketPayload) -> TlsResult<Self> {
+        let view = PacketPayloadView::new(&payload);
+        let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
+        let header = TlsRecordHeader::parse(header)?;
+        if header.total_len()? != view.total_len() {
+            return Err(TlsError::DecodeError);
+        }
+        Ok(Self { payload, header })
+    }
+
+    const fn header(&self) -> TlsRecordHeader {
+        self.header
+    }
+
+    fn body(&self) -> TlsResult<TlsRecordBody<'_>> {
+        let request = self.body_request();
+        let span = request.span(&self.payload).ok_or(TlsError::DecodeError)?;
+        Ok(TlsRecordBody { span })
+    }
+
+    fn body_request(&self) -> PayloadWindowRequest {
+        PayloadWindowRequest::new(Self::HEADER_LEN, self.header.body_len.get())
+    }
+
+    fn into_payload(self) -> PacketPayload {
+        self.payload
+    }
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct Tls13InnerPlaintext {
     content_type: ContentType,
@@ -130,6 +195,13 @@ impl TlsConnectionCore {
         ]
     }
 
+    fn payload_window_mut(
+        payload: &mut PacketPayload,
+        request: PayloadWindowRequest,
+    ) -> TlsResult<PayloadSpanMut<'_>> {
+        PayloadSpanMut::from_window(payload, request).ok_or(TlsError::DecodeError)
+    }
+
     pub(super) fn encrypt_aead_payload_owned(
         key: TlsAeadKey<'_>,
         nonce: AeadNonce,
@@ -140,13 +212,9 @@ impl TlsConnectionCore {
         let tag = match key {
             TlsAeadKey::ChaCha20Poly1305(key) => {
                 let key_arr = *key.as_bytes();
+                let mut ciphertext = PayloadSpanMut::whole(&mut plaintext);
                 chacha20_xor_chunks_in_place(&key_arr, nonce.as_bytes(), 1, |visitor| {
-                    crate::net::payload::for_each_payload_window_chunk_mut(
-                        &mut plaintext,
-                        0,
-                        ciphertext_len,
-                        |chunk| visitor(chunk),
-                    );
+                    let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
                 });
                 let poly_key_block = crate::net::security::tls::crypto::chacha20::chacha20_block(
                     &key_arr,
@@ -162,13 +230,9 @@ impl TlsConnectionCore {
             }
             TlsAeadKey::Aes128Gcm(key) => {
                 let key = AesGcmKey::new(key.as_bytes()).ok_or(TlsError::CryptoError)?;
+                let mut ciphertext = PayloadSpanMut::whole(&mut plaintext);
                 key.xor_chunks_in_place(nonce.as_bytes(), |visitor| {
-                    crate::net::payload::for_each_payload_window_chunk_mut(
-                        &mut plaintext,
-                        0,
-                        ciphertext_len,
-                        |chunk| visitor(chunk),
-                    );
+                    let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
                 })
                 .map_err(|_| TlsError::CryptoError)?;
                 key.tag_for_ciphertext_chunks(nonce.as_bytes(), aad, ciphertext_len, |visitor| {
@@ -178,13 +242,9 @@ impl TlsConnectionCore {
             }
             TlsAeadKey::Aes256Gcm(key) => {
                 let key = AesGcmKey::new(key.as_bytes()).ok_or(TlsError::CryptoError)?;
+                let mut ciphertext = PayloadSpanMut::whole(&mut plaintext);
                 key.xor_chunks_in_place(nonce.as_bytes(), |visitor| {
-                    crate::net::payload::for_each_payload_window_chunk_mut(
-                        &mut plaintext,
-                        0,
-                        ciphertext_len,
-                        |chunk| visitor(chunk),
-                    );
+                    let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
                 })
                 .map_err(|_| TlsError::CryptoError)?;
                 key.tag_for_ciphertext_chunks(nonce.as_bytes(), aad, ciphertext_len, |visitor| {
@@ -281,13 +341,13 @@ impl TlsConnectionCore {
             if !constant_time_tag_eq(AeadTag::new(expected), tag) {
                 return Err(TlsError::DecryptError);
             }
+            let mut ciphertext = Self::payload_window_mut(
+                payload,
+                PayloadWindowRequest::new(body_offset, ciphertext_len),
+            )
+            .map_err(|_| TlsError::DecryptError)?;
             chacha20_xor_chunks_in_place(&key_arr, nonce.as_bytes(), 1, |visitor| {
-                crate::net::payload::for_each_payload_window_chunk_mut(
-                    payload,
-                    body_offset,
-                    ciphertext_len,
-                    |chunk| visitor(chunk),
-                );
+                let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
             });
         } else {
             let key = match aead_key {
@@ -308,13 +368,13 @@ impl TlsConnectionCore {
                 tag.as_bytes(),
             )
             .map_err(|_| TlsError::DecryptError)?;
+            let mut ciphertext = Self::payload_window_mut(
+                payload,
+                PayloadWindowRequest::new(body_offset, ciphertext_len),
+            )
+            .map_err(|_| TlsError::DecryptError)?;
             key.xor_chunks_in_place(nonce.as_bytes(), |visitor| {
-                crate::net::payload::for_each_payload_window_chunk_mut(
-                    payload,
-                    body_offset,
-                    ciphertext_len,
-                    |chunk| visitor(chunk),
-                );
+                let _ = ciphertext.for_each_chunk_mut(|chunk| visitor(chunk));
             })
             .map_err(|_| TlsError::DecryptError)?;
         }
@@ -331,36 +391,31 @@ impl TlsConnectionCore {
 
     pub(super) fn consume_tls_record_payload(
         &mut self,
-        mut record: PacketPayload,
+        record: TlsRecordPacket,
         plaintext: &mut PacketPayload,
     ) -> TlsResult<()> {
-        let record_span = PayloadSpanRef::from_payload(&record);
-        let header = record_span
-            .read_array::<5>(0)
-            .ok_or(TlsError::DecodeError)?;
-        let header = TlsRecordHeader::parse(header)?;
+        let header = record.header();
         let record_len = header.body_len.get();
         let body_offset = 5usize;
-        let body = PayloadSpanRef::from_range(&record, body_offset, record_len)
-            .ok_or(TlsError::DecodeError)?;
 
         match header.content_type {
-            ContentType::Handshake => self.process_handshake(body)?,
-            ContentType::Alert => self.handle_alert_payload(body)?,
+            ContentType::Handshake => self.process_handshake(record.body()?.span())?,
+            ContentType::Alert => self.handle_alert_payload(record.body()?.span())?,
             ContentType::ApplicationData => {
+                let mut record = record.into_payload();
                 let inner =
                     self.decrypt_tls13_record_payload(&mut record, body_offset, record_len)?;
                 match inner.content_type() {
                     ContentType::ApplicationData => {
-                        let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        let window = crate::net::payload::PayloadWindowRequest::bounded_by(
                             &record,
                             body_offset,
                             inner.content_len(),
                         )
                         .ok_or(TlsError::DecodeError)?;
-                        let owned = window
-                            .move_from(record)
-                            .map_err(|_| TlsError::DecodeError)?;
+                        let owned =
+                            crate::net::payload::OwnedPayloadWindow::take_payload(record, window)
+                                .map_err(|_| TlsError::DecodeError)?;
                         append_payload(plaintext, owned);
                     }
                     ContentType::Handshake => {
@@ -390,25 +445,9 @@ impl TlsConnectionCore {
         let mut plaintext = PacketPayload::default();
 
         loop {
-            let record_len = {
-                let view = PacketPayloadView::new(self.record.ingress.payload());
-                if view.total_len() < 5 {
-                    break;
-                }
-                let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
-                let header = TlsRecordHeader::parse(header)?;
-                let total_len = header.total_len()?;
-                if view.total_len() < total_len {
-                    break;
-                }
-                total_len
+            let Some(record) = self.record.ingress.pop_ready_record()? else {
+                break;
             };
-
-            let record = self
-                .record
-                .ingress
-                .take_front_record(record_len)
-                .ok_or(TlsError::DecodeError)?;
             self.consume_tls_record_payload(record, &mut plaintext)?;
         }
         Ok(plaintext)
@@ -439,27 +478,27 @@ impl TlsConnectionCore {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
                 ContentType::ApplicationData => {
-                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
                         &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = window
-                        .move_from(decrypted)
-                        .map_err(|_| TlsError::DecodeError)?;
+                    let inner_payload =
+                        crate::net::payload::OwnedPayloadWindow::take_payload(decrypted, window)
+                            .map_err(|_| TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
                 ContentType::Handshake => {
-                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
                         &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = window
-                        .move_from(decrypted)
-                        .map_err(|_| TlsError::DecodeError)?;
+                    let inner_payload =
+                        crate::net::payload::OwnedPayloadWindow::take_payload(decrypted, window)
+                            .map_err(|_| TlsError::DecodeError)?;
                     if self.negotiation.progress.is_established() {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
                         self.tls13_process_post_handshake(inner_data)?;
@@ -468,15 +507,15 @@ impl TlsConnectionCore {
                     }
                 }
                 ContentType::Alert => {
-                    let window = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    let window = crate::net::payload::PayloadWindowRequest::bounded_by(
                         &decrypted,
                         0,
                         inner.content_len(),
                     )
                     .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = window
-                        .move_from(decrypted)
-                        .map_err(|_| TlsError::DecodeError)?;
+                    let inner_payload =
+                        crate::net::payload::OwnedPayloadWindow::take_payload(decrypted, window)
+                            .map_err(|_| TlsError::DecodeError)?;
                     self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
                 }
             }
@@ -894,7 +933,7 @@ mod tests {
     }
 
     #[test]
-    fn encrypted_records_inside_one_packet_ref_do_not_copy_split() {
+    fn encrypted_records_inside_one_packet_ref_split_without_copy_fallback() {
         let config = super::super::TlsClientConfig::for_server_name(
             "example.com",
             super::super::TlsTrustAnchors::empty(),
@@ -912,11 +951,11 @@ mod tests {
             .expect("second record encrypts");
         let coalesced = single_packet_payload_from_payloads(&[&first, &second]);
 
-        let err = conn
+        let plaintext = conn
             .process_incoming_payload(coalesced)
-            .expect_err("same-packet record split must not copy fallback");
+            .expect("same-packet records split through PacketPayload::take_front");
 
-        assert!(matches!(err, TlsError::DecodeError));
-        assert!(matches!(conn.record.read_seq.current(), Ok(0)));
+        assert!(payload_matches(&plaintext, b"alphabeta"));
+        assert!(matches!(conn.record.read_seq.current(), Ok(2)));
     }
 }

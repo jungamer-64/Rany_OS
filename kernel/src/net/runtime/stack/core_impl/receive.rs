@@ -52,7 +52,7 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                let Some(window) = crate::net::payload::PayloadWindowRequest::bounded_by(
                     &payload,
                     data_offset,
                     data_len,
@@ -60,7 +60,9 @@ impl NetworkStack {
                     self.stats().record_rx_error();
                     return;
                 };
-                let Ok(echo_data) = window.move_from(payload) else {
+                let Ok(echo_data) =
+                    crate::net::payload::OwnedPayloadWindow::take_payload(payload, window)
+                else {
                     self.stats().record_rx_error();
                     return;
                 };

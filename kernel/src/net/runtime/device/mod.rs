@@ -32,8 +32,8 @@ use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
     NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeCookie, NetPortRuntimeHandle,
-    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
-    TxCompletionMode, TxLeaseId, TxSubmission,
+    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, NonEmptyTxSegments,
+    PrimaryPortPolicy, TxCompletionMode, TxLeaseId, TxSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -244,10 +244,14 @@ fn tx_payload_window_to_segments(
         if local_start >= local_end {
             continue;
         }
-        let descriptor_len = local_end - local_start;
+        let descriptor_len = PacketByteCount::new(local_end - local_start)?;
         let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
         let device_addr = packet.device_address().checked_add(local_start as u64)?;
-        descriptors.push(NetTxSegment::new(cpu_ptr, device_addr, descriptor_len));
+        descriptors.push(NetTxSegment::from_dma(
+            cpu_ptr,
+            device_addr,
+            descriptor_len,
+        )?);
     }
 
     (!descriptors.is_empty()).then_some(descriptors)
@@ -590,11 +594,8 @@ pub fn complete_tx_request_in(
 }
 
 fn packet_to_tx_segment(packet: &PacketRef) -> Option<NetTxSegment> {
-    (!packet.is_empty()).then_some(NetTxSegment::new(
-        packet.data().as_ptr(),
-        packet.device_address(),
-        packet.len(),
-    ))
+    let len = PacketByteCount::new(packet.len())?;
+    NetTxSegment::from_dma(packet.data().as_ptr(), packet.device_address(), len)
 }
 
 fn payload_to_keepalive_and_descriptors(
@@ -774,8 +775,8 @@ fn runtime_submit_rx(
         context.handle(),
         if_id,
         packet,
-        meta.header_len as usize,
-        meta.payload_len as usize,
+        meta.layout().header_len(),
+        meta.layout().payload_len(),
     );
     Ok(())
 }
@@ -1121,7 +1122,12 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
             }
 
             let completion = request.meta.completion();
-            let submission = TxSubmission::new(request.lease_id, &request.descriptors);
+            let Some(segments) = NonEmptyTxSegments::new(&request.descriptors) else {
+                let _ = complete_tx_lease_in(runtime, request.lease_id, Err("empty tx request"));
+                pending = pop_tx_request_in(runtime, if_id);
+                continue;
+            };
+            let submission = TxSubmission::new(request.lease_id, segments);
             let submitted = with_port_handle_in(runtime, if_id, |handle| {
                 (
                     handle.binding().port_id,
@@ -2272,6 +2278,16 @@ mod tests {
         }
     }
 
+    fn test_tx_segment(device_addr: u64, len: usize) -> NetTxSegment {
+        static TEST_TX_BYTES: [u8; 64] = [0; 64];
+        NetTxSegment::from_dma(
+            TEST_TX_BYTES.as_ptr(),
+            device_addr,
+            PacketByteCount::new(len).expect("test segment length is non-zero"),
+        )
+        .expect("test descriptor is valid")
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_queue_roundtrip_smoke() {
@@ -2279,7 +2295,7 @@ mod tests {
         let queue = NetTxQueue::new();
         let request = TxRequest {
             lease_id: 1,
-            descriptors: alloc::vec![NetTxSegment::new(core::ptr::null(), 0, 1)],
+            descriptors: alloc::vec![test_tx_segment(1, 1)],
             meta: NetTxMeta::default(),
         };
         assert_eq!(queue.capacity(), NetTxQueue::CAPACITY);
@@ -2657,8 +2673,8 @@ mod tests {
 
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].cpu_ptr(), (base_ptr + 8) as *const u8);
-        assert_eq!(descriptors[0].device_addr(), base_device_addr + 8);
-        assert_eq!(descriptors[0].len(), 16);
+        assert_eq!(descriptors[0].device_addr().get(), base_device_addr + 8);
+        assert_eq!(descriptors[0].len_bytes(), 16);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2697,7 +2713,7 @@ mod tests {
             default_runtime(),
             alloc::vec![header_a],
             group_id,
-            alloc::vec![NetTxSegment::new(core::ptr::null(), 0, 8)],
+            alloc::vec![test_tx_segment(1, 8)],
             NetTxMeta::default(),
         )
         .expect("request a");
@@ -2705,7 +2721,7 @@ mod tests {
             default_runtime(),
             alloc::vec![header_b],
             group_id,
-            alloc::vec![NetTxSegment::new(core::ptr::null(), 8, 8)],
+            alloc::vec![test_tx_segment(8, 8)],
             NetTxMeta::default(),
         )
         .expect("request b");

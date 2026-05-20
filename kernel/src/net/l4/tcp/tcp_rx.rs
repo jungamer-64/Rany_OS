@@ -28,7 +28,7 @@ use crate::net::l4::socket::{
     Socket, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
 };
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketId};
-use crate::net::payload::{PacketPayloadView, VerifiedPayloadWindow};
+use crate::net::payload::{PacketPayloadView, PayloadWindowRequest};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
@@ -359,8 +359,9 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let window = VerifiedPayloadWindow::for_payload(&segment, data_offset, payload_len)?;
-        let payload = window.move_from(segment).ok()?;
+        let window = PayloadWindowRequest::bounded_by(&segment, data_offset, payload_len)?;
+        let payload =
+            crate::net::payload::OwnedPayloadWindow::take_payload(segment, window).ok()?;
 
         Some((
             ParsedTcpHeader {
@@ -969,15 +970,15 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            let Some(window) = VerifiedPayloadWindow::for_payload(
-                &data_payload,
-                skip,
-                payload_len as usize - skip,
-            ) else {
+            let Some(window) =
+                PayloadWindowRequest::bounded_by(&data_payload, skip, payload_len as usize - skip)
+            else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };
-            let Ok(trimmed) = window.move_from(data_payload) else {
+            let Ok(trimmed) =
+                crate::net::payload::OwnedPayloadWindow::take_payload(data_payload, window)
+            else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };

@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{PacketPayloadView, VerifiedPayloadWindow, append_payload};
+use crate::net::payload::{PacketPayloadView, PayloadWindowRequest, append_payload};
 use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
@@ -490,9 +490,12 @@ impl FragmentReassembler {
                         .find(|segment| segment.offset == 0)
                     {
                         if let Some(window) =
-                            VerifiedPayloadWindow::for_payload(&segment.payload, 0, 8)
+                            PayloadWindowRequest::bounded_by(&segment.payload, 0, 8)
                         {
-                            let Ok(prefix) = window.move_from(segment.payload) else {
+                            let Ok(prefix) = crate::net::payload::OwnedPayloadWindow::take_payload(
+                                segment.payload,
+                                window,
+                            ) else {
                                 continue;
                             };
                             append_payload(&mut quoted, prefix);

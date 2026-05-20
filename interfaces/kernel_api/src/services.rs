@@ -11,7 +11,7 @@ extern crate alloc;
 
 use crate::KapiResult;
 use crate::abi::driver::{
-    AbiBlockDeviceRegistration, AbiNetPortRegistrationV5, AbiNvmeNamespaceRegistration, AbiRRefRaw,
+    AbiBlockDeviceRegistration, AbiNetPortRegistration, AbiNvmeNamespaceRegistration, AbiRRefRaw,
     KernelApiV4, PackedPciLocation,
 };
 use crate::dma::{CpuOwned, DmaSlice};
@@ -140,7 +140,7 @@ pub trait KernelServices: Send + Sync {
     fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()>;
 
     /// Register a network port bridge owned by the current driver domain.
-    fn register_netdev_port(&self, registration: &AbiNetPortRegistrationV5) -> KapiResult<u64>;
+    fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64>;
 
     /// Unregister a previously registered network port bridge.
     fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()>;
@@ -810,7 +810,7 @@ mod standalone {
             }
         }
 
-        fn register_netdev_port(&self, registration: &AbiNetPortRegistrationV5) -> KapiResult<u64> {
+        fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_netdev_port)(registration, &mut handle);
             if AbiError::from_raw(status).is_success() {

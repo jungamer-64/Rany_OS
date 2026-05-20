@@ -57,7 +57,7 @@ use alloc::boxed::Box;
 use core::mem::{MaybeUninit, align_of, size_of};
 use core::ptr;
 use core::sync::atomic::AtomicBool;
-pub const DRIVER_ABI_VERSION: u64 = 3;
+pub const DRIVER_ABI_VERSION: u64 = 4;
 
 // Include the generated type hash
 include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
@@ -69,7 +69,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 9;
+pub const KERNEL_API_ABI_VERSION: u32 = 10;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
@@ -645,12 +645,83 @@ pub enum AbiNetDriverEventKind {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
+pub struct AbiNetRxFrameLayout {
+    frame_len: usize,
+    header_len: u16,
+    payload_len: u16,
+    reserved: u32,
+}
+
+impl AbiNetRxFrameLayout {
+    pub fn new(frame_len: usize, header_len: usize, payload_len: usize) -> Option<Self> {
+        if frame_len == 0
+            || header_len > u16::MAX as usize
+            || payload_len > u16::MAX as usize
+            || header_len.checked_add(payload_len)? != frame_len
+        {
+            return None;
+        }
+        Some(Self {
+            frame_len,
+            header_len: header_len as u16,
+            payload_len: payload_len as u16,
+            reserved: 0,
+        })
+    }
+
+    pub fn whole_payload(frame_len: usize) -> Option<Self> {
+        Self::new(frame_len, 0, frame_len)
+    }
+
+    pub const fn frame_len(self) -> usize {
+        self.frame_len
+    }
+
+    pub const fn header_len(self) -> usize {
+        self.header_len as usize
+    }
+
+    pub const fn payload_len(self) -> usize {
+        self.payload_len as usize
+    }
+
+    pub const fn is_valid(self) -> bool {
+        self.frame_len != 0
+            && self.header_len as usize + self.payload_len as usize == self.frame_len
+    }
+}
+
+#[repr(C)]
+#[derive(Clone, Copy, Debug)]
 pub struct AbiNetRxMeta {
-    pub queue_index: u16,
-    pub header_len: u16,
-    pub payload_len: u16,
-    pub flags: u32,
+    queue_index: u16,
+    reserved0: u16,
+    flags: u32,
+    layout: AbiNetRxFrameLayout,
+}
+
+impl AbiNetRxMeta {
+    pub const fn new(queue_index: u16, layout: AbiNetRxFrameLayout, flags: u32) -> Self {
+        Self {
+            queue_index,
+            reserved0: 0,
+            flags,
+            layout,
+        }
+    }
+
+    pub const fn queue_index(self) -> u16 {
+        self.queue_index
+    }
+
+    pub const fn flags(self) -> u32 {
+        self.flags
+    }
+
+    pub const fn layout(self) -> AbiNetRxFrameLayout {
+        self.layout
+    }
 }
 
 #[repr(C)]
@@ -666,19 +737,72 @@ pub struct AbiNetTxMeta {
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct AbiNetTxSegment {
-    pub cpu_ptr: *const u8,
-    pub device_addr: u64,
-    pub len: usize,
+    cpu_ptr: *const u8,
+    device_addr: u64,
+    len: usize,
+}
+
+impl AbiNetTxSegment {
+    pub const fn from_checked_parts(
+        cpu_ptr: *const u8,
+        device_addr: u64,
+        len: usize,
+    ) -> Option<Self> {
+        if cpu_ptr.is_null() || device_addr == 0 || len == 0 {
+            return None;
+        }
+        Some(Self {
+            cpu_ptr,
+            device_addr,
+            len,
+        })
+    }
+
+    pub const fn cpu_ptr(self) -> *const u8 {
+        self.cpu_ptr
+    }
+
+    pub const fn device_addr(self) -> u64 {
+        self.device_addr
+    }
+
+    pub const fn len(self) -> usize {
+        self.len
+    }
 }
 
 #[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug)]
 pub struct AbiNetTxSubmission {
-    pub lease_id: u64,
-    pub segments_ptr: *const AbiNetTxSegment,
-    pub segments_len: usize,
+    lease_id: u64,
+    segments_ptr: *const AbiNetTxSegment,
+    segments_len: usize,
+}
+
+impl AbiNetTxSubmission {
+    pub fn new(lease_id: u64, segments: &[AbiNetTxSegment]) -> Option<Self> {
+        if segments.is_empty() {
+            return None;
+        }
+        Some(Self {
+            lease_id,
+            segments_ptr: segments.as_ptr(),
+            segments_len: segments.len(),
+        })
+    }
+
+    pub const fn lease_id(self) -> u64 {
+        self.lease_id
+    }
+
+    pub fn segments(&self) -> Option<&[AbiNetTxSegment]> {
+        if self.segments_ptr.is_null() || self.segments_len == 0 {
+            return None;
+        }
+        Some(unsafe { core::slice::from_raw_parts(self.segments_ptr, self.segments_len) })
+    }
 }
 
 #[repr(C)]

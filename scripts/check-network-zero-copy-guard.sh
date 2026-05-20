@@ -205,6 +205,30 @@ if rg -n "\\bmove_payload_window_owned\\b" "${network_tree[@]}" >/dev/null; then
   fail "found removed raw usize owned payload window helper"
 fi
 
+if rg -n "\\bVerifiedPayloadWindow\\b" \
+  kernel/src interfaces/kernel_api/src drivers/mlx5/src \
+  >/dev/null; then
+  fail "found removed reusable verified payload window token"
+fi
+
+if rg -n "\\bfor_each_payload_window_chunk_mut\\b" \
+  kernel/src/net/security/tls kernel/src/net/payload.rs \
+  >/dev/null; then
+  fail "found raw TLS mutable payload window call"
+fi
+
+if rg -n "\\b(AbiNetTxSegmentV4|AbiNetTxSubmissionV4|AbiNetPortRuntimeV3|AbiNetPortRegistrationV5|AbiNetPortOpsV5)\\b" \
+  kernel/src interfaces/kernel_api/src drivers/mlx5/src interfaces/kernel_api/build.rs \
+  >/dev/null; then
+  fail "found removed version-suffixed netdev ABI name"
+fi
+
+if rg -n "\\bNetTxSegment::new\\s*\\(" \
+  kernel/src interfaces/kernel_api/src drivers/mlx5/src \
+  >/dev/null; then
+  fail "found raw NetTxSegment constructor"
+fi
+
 if rg -n "\\bsubslice_offset\\b" \
   kernel/src/net/runtime/command_handler kernel/src/net/runtime/stack kernel/src/net/l3 \
   >/dev/null; then

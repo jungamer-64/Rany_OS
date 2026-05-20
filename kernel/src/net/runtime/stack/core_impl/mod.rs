@@ -6,7 +6,7 @@ use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::device::{OwnedTxPayloadWindow, TxFragmentWindow};
-use kernel_api::resource::net::{PacketPayload, PacketRef};
+use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::NetTxSegment;
 
 mod global_instance;
@@ -609,11 +609,10 @@ impl NetworkStack {
         if packet.is_empty() {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
-        Ok(NetTxSegment::new(
-            packet.data().as_ptr(),
-            packet.device_address(),
-            packet.len(),
-        ))
+        let len = PacketByteCount::new(packet.len())
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        NetTxSegment::from_dma(packet.data().as_ptr(), packet.device_address(), len)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)
     }
 
     fn build_fragment_tx_descriptors(

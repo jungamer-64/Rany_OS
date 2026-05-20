@@ -204,7 +204,7 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(window) = VerifiedPayloadWindow::for_payload(
+        let Some(window) = PayloadWindowRequest::bounded_by(
             &udp_segment,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -212,7 +212,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Ok(udp_payload) = window.move_from(udp_segment) else {
+        let Ok(udp_payload) =
+            crate::net::payload::OwnedPayloadWindow::take_payload(udp_segment, window)
+        else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -300,7 +302,7 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(window) = VerifiedPayloadWindow::for_payload(
+        let Some(window) = PayloadWindowRequest::bounded_by(
             &udp_segment,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -308,7 +310,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Ok(udp_payload) = window.move_from(udp_segment) else {
+        let Ok(udp_payload) =
+            crate::net::payload::OwnedPayloadWindow::take_payload(udp_segment, window)
+        else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -371,11 +375,13 @@ impl UdpProcessor {
         }
 
         let Some(window) =
-            VerifiedPayloadWindow::for_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+            PayloadWindowRequest::bounded_by(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
         else {
             return UdpResult::Invalid;
         };
-        let Ok(udp_payload) = window.move_from(payload) else {
+        let Ok(udp_payload) =
+            crate::net::payload::OwnedPayloadWindow::take_payload(payload, window)
+        else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::EndpointAddr::new(
@@ -439,11 +445,13 @@ impl UdpProcessor {
         }
 
         let Some(window) =
-            VerifiedPayloadWindow::for_payload(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
+            PayloadWindowRequest::bounded_by(&payload, UdpHeader::SIZE, length - UdpHeader::SIZE)
         else {
             return UdpResult::Invalid;
         };
-        let Ok(udp_payload) = window.move_from(payload) else {
+        let Ok(udp_payload) =
+            crate::net::payload::OwnedPayloadWindow::take_payload(payload, window)
+        else {
             return UdpResult::Invalid;
         };
         let src = crate::net::l4::EndpointAddr::new_v6(

@@ -8,7 +8,8 @@ pub(crate) use super::{
     TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TlsBytes, TlsClientConfig,
 };
 pub(crate) use crate::net::payload::{
-    GeneratedPacketWriter, PacketPayloadView, PayloadSpanRef, append_payload,
+    GeneratedPacketWriter, PacketPayloadView, PayloadSpanMut, PayloadSpanRef, PayloadWindowRequest,
+    append_payload,
 };
 pub(crate) use crate::net::security::ecdh;
 pub(crate) use kernel_api::resource::net::PacketPayload;

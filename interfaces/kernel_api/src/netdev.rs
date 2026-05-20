@@ -4,12 +4,13 @@
 
 extern crate alloc;
 
-use crate::resource::net::PacketRef;
+use crate::resource::net::{PacketByteCount, PacketRef};
 use crate::service::kernel;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::num::NonZeroU64;
 use core::num::NonZeroUsize;
+use core::ptr::NonNull;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MacAddress(pub [u8; 6]);
@@ -68,12 +69,72 @@ pub enum NetDriverEvent {
     Poll,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NetRxFrameLayout {
+    frame_len: PacketByteCount,
+    header_len: u16,
+    payload_len: u16,
+}
+
+impl NetRxFrameLayout {
+    pub fn new(frame_len: PacketByteCount, header_len: usize, payload_len: usize) -> Option<Self> {
+        if header_len > u16::MAX as usize || payload_len > u16::MAX as usize {
+            return None;
+        }
+        if header_len.checked_add(payload_len)? != frame_len.get() {
+            return None;
+        }
+        Some(Self {
+            frame_len,
+            header_len: header_len as u16,
+            payload_len: payload_len as u16,
+        })
+    }
+
+    pub fn whole_payload(frame_len: PacketByteCount) -> Option<Self> {
+        Self::new(frame_len, 0, frame_len.get())
+    }
+
+    pub const fn frame_len(self) -> PacketByteCount {
+        self.frame_len
+    }
+
+    pub const fn header_len(self) -> usize {
+        self.header_len as usize
+    }
+
+    pub const fn payload_len(self) -> usize {
+        self.payload_len as usize
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetRxMeta {
-    pub queue_index: u16,
-    pub header_len: u16,
-    pub payload_len: u16,
-    pub flags: u32,
+    queue_index: u16,
+    layout: NetRxFrameLayout,
+    flags: u32,
+}
+
+impl NetRxMeta {
+    pub const fn new(queue_index: u16, layout: NetRxFrameLayout, flags: u32) -> Self {
+        Self {
+            queue_index,
+            layout,
+            flags,
+        }
+    }
+
+    pub const fn queue_index(self) -> u16 {
+        self.queue_index
+    }
+
+    pub const fn layout(self) -> NetRxFrameLayout {
+        self.layout
+    }
+
+    pub const fn flags(self) -> u32 {
+        self.flags
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -137,48 +198,73 @@ pub type TxLeaseId = u64;
 #[repr(C)]
 pub struct NetTxSegment(NetTxSegmentDescriptor);
 
+// SAFETY: the descriptor carries a read-only packet data pointer plus DMA
+// address and length. The runtime keeps the owning packet lease alive while the
+// descriptor may cross worker queues.
+unsafe impl Send for NetTxSegment {}
+unsafe impl Sync for NetTxSegment {}
+
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
 struct NetTxSegmentDescriptor {
-    cpu_ptr: usize,
-    device_addr: u64,
-    len: usize,
+    cpu_ptr: NonNull<u8>,
+    device_addr: NonZeroU64,
+    len: PacketByteCount,
 }
 
 impl NetTxSegment {
-    pub fn new(cpu_ptr: *const u8, device_addr: u64, len: usize) -> Self {
-        Self(NetTxSegmentDescriptor {
-            cpu_ptr: cpu_ptr as usize,
-            device_addr,
+    pub fn from_dma(cpu_ptr: *const u8, device_addr: u64, len: PacketByteCount) -> Option<Self> {
+        Some(Self(NetTxSegmentDescriptor {
+            cpu_ptr: NonNull::new(cpu_ptr.cast_mut())?,
+            device_addr: NonZeroU64::new(device_addr)?,
             len,
-        })
+        }))
     }
 
     pub const fn cpu_ptr(&self) -> *const u8 {
-        self.0.cpu_ptr as *const u8
+        self.0.cpu_ptr.as_ptr().cast_const()
     }
 
-    pub const fn device_addr(&self) -> u64 {
+    pub const fn device_addr(&self) -> NonZeroU64 {
         self.0.device_addr
     }
 
-    pub const fn len(&self) -> usize {
+    pub const fn len(&self) -> PacketByteCount {
         self.0.len
     }
 
-    pub const fn is_empty(&self) -> bool {
-        self.0.len == 0
+    pub const fn len_bytes(&self) -> usize {
+        self.0.len.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct NonEmptyTxSegments<'a> {
+    segments: &'a [NetTxSegment],
+}
+
+impl<'a> NonEmptyTxSegments<'a> {
+    pub const fn new(segments: &'a [NetTxSegment]) -> Option<Self> {
+        if segments.is_empty() {
+            None
+        } else {
+            Some(Self { segments })
+        }
+    }
+
+    pub const fn as_slice(self) -> &'a [NetTxSegment] {
+        self.segments
     }
 }
 
 #[derive(Debug, Clone, Copy)]
 pub struct TxSubmission<'a> {
     lease_id: TxLeaseId,
-    segments: &'a [NetTxSegment],
+    segments: NonEmptyTxSegments<'a>,
 }
 
 impl<'a> TxSubmission<'a> {
-    pub const fn new(lease_id: TxLeaseId, segments: &'a [NetTxSegment]) -> Self {
+    pub const fn new(lease_id: TxLeaseId, segments: NonEmptyTxSegments<'a>) -> Self {
         Self { lease_id, segments }
     }
 
@@ -187,11 +273,7 @@ impl<'a> TxSubmission<'a> {
     }
 
     pub const fn segments(self) -> &'a [NetTxSegment] {
-        self.segments
-    }
-
-    pub const fn is_empty(self) -> bool {
-        self.segments.is_empty()
+        self.segments.as_slice()
     }
 }
 
@@ -546,5 +628,48 @@ mod tests {
         assert_eq!(port.info().port_id, NetPortId::new(99));
         assert_eq!(port.stats().rx_packets, 4);
         assert!(port.stats().initialized);
+    }
+
+    #[test]
+    fn tx_segment_requires_checked_pointer_dma_and_len() {
+        static BYTES: [u8; 8] = [0; 8];
+        let len = PacketByteCount::new(8).expect("non-zero length");
+
+        assert!(NetTxSegment::from_dma(core::ptr::null(), 1, len).is_none());
+        assert!(NetTxSegment::from_dma(BYTES.as_ptr(), 0, len).is_none());
+        assert!(PacketByteCount::new(0).is_none());
+
+        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, len).expect("valid descriptor");
+        assert_eq!(segment.cpu_ptr(), BYTES.as_ptr());
+        assert_eq!(segment.device_addr().get(), 1);
+        assert_eq!(segment.len_bytes(), 8);
+    }
+
+    #[test]
+    fn tx_submission_requires_non_empty_segments() {
+        static BYTES: [u8; 1] = [0; 1];
+        let len = PacketByteCount::new(1).expect("non-zero length");
+        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, len).expect("valid descriptor");
+
+        assert!(NonEmptyTxSegments::new(&[]).is_none());
+        let segments = [segment];
+        let non_empty = NonEmptyTxSegments::new(&segments).expect("non-empty slice");
+        let submission = TxSubmission::new(7, non_empty);
+
+        assert_eq!(submission.lease_id(), 7);
+        assert_eq!(submission.segments().len(), 1);
+    }
+
+    #[test]
+    fn rx_frame_layout_rejects_inconsistent_lengths() {
+        let frame_len = PacketByteCount::new(8).expect("non-zero frame");
+
+        assert!(NetRxFrameLayout::new(frame_len, 4, 3).is_none());
+        assert!(NetRxFrameLayout::new(frame_len, u16::MAX as usize + 1, 0).is_none());
+
+        let layout = NetRxFrameLayout::new(frame_len, 3, 5).expect("consistent layout");
+        assert_eq!(layout.frame_len().get(), 8);
+        assert_eq!(layout.header_len(), 3);
+        assert_eq!(layout.payload_len(), 5);
     }
 }

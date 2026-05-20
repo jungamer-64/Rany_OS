@@ -50,8 +50,12 @@ fn calculate_abi_hash(content: &str) -> u64 {
             "pub struct AbiPacketRefStorage",
             "pub struct AbiPacketRefVTable",
             "pub struct AbiPacketRefRaw",
-            "pub struct AbiNetPortRuntimeV3",
-            "pub struct AbiNetPortRegistrationV5",
+            "pub struct AbiNetRxFrameLayout",
+            "pub struct AbiNetRxMeta",
+            "pub struct AbiNetTxSegment",
+            "pub struct AbiNetTxSubmission",
+            "pub struct AbiNetPortRuntime",
+            "pub struct AbiNetPortRegistration",
             "pub struct KernelApiV4",
             "pub struct DriverExportsV1",
             "pub enum AbiDriverType",
@@ -70,8 +74,12 @@ fn calculate_abi_hash(content: &str) -> u64 {
     extract_and_hash_decl(content, "pub struct AbiPacketRefStorage", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiPacketRefVTable", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiPacketRefRaw", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetPortRuntimeV3", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetPortRegistrationV5", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetRxFrameLayout", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetRxMeta", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetTxSegment", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetTxSubmission", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetPortRuntime", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiNetPortRegistration", &mut hasher);
     extract_and_hash_decl(content, "pub struct KernelApiV4", &mut hasher);
     extract_and_hash_decl(content, "pub struct DriverExportsV1", &mut hasher);
     extract_and_hash_decl(content, "pub enum AbiDriverType", &mut hasher);
