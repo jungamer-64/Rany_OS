@@ -22,7 +22,7 @@ pub struct PayloadRange {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PayloadWindowRequest {
+pub struct PayloadWindow {
     offset: usize,
     len: usize,
 }
@@ -48,8 +48,18 @@ impl<const N: usize> FixedPayloadBytes<N> {
 }
 
 impl PayloadRange {
-    pub const fn new(offset: usize, len: usize) -> Self {
-        Self { offset, len }
+    pub fn from_payload_bounds(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
+            return None;
+        }
+        Some(Self { offset, len })
+    }
+
+    pub const fn from_span(span: PayloadSpanRef<'_>) -> Self {
+        Self {
+            offset: span.offset,
+            len: span.len,
+        }
     }
 
     pub const fn offset(&self) -> usize {
@@ -68,24 +78,13 @@ impl PayloadRange {
         PayloadSpanRef::from_range(payload, self.offset, self.len)
     }
 
-    pub const fn window_request(self) -> PayloadWindowRequest {
-        PayloadWindowRequest::from_range(self)
+    pub fn window(self, payload: &PacketPayload) -> Option<PayloadWindow> {
+        PayloadWindow::within_payload(payload, self.offset, self.len)
     }
 }
 
-impl PayloadWindowRequest {
-    pub const fn new(offset: usize, len: usize) -> Self {
-        Self { offset, len }
-    }
-
-    pub const fn from_range(range: PayloadRange) -> Self {
-        Self {
-            offset: range.offset,
-            len: range.len,
-        }
-    }
-
-    pub fn bounded_by(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
+impl PayloadWindow {
+    pub fn within_payload(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
         if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
             return None;
         }
@@ -154,7 +153,10 @@ impl<'a> PayloadSpanRef<'a> {
     }
 
     pub const fn range(self) -> PayloadRange {
-        PayloadRange::new(self.offset, self.len)
+        PayloadRange {
+            offset: self.offset,
+            len: self.len,
+        }
     }
 
     pub fn subspan(self, offset: usize, len: usize) -> Option<Self> {
@@ -369,7 +371,7 @@ impl<'a> PayloadSpanRef<'a> {
 
 pub struct OwnedPayloadWindow {
     payload: PacketPayload,
-    request: PayloadWindowRequest,
+    request: PayloadWindow,
 }
 
 pub type PayloadFront = PacketPayloadFront;
@@ -380,7 +382,7 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
-    pub fn take(payload: PacketPayload, request: PayloadWindowRequest) -> Option<Self> {
+    pub fn take(payload: PacketPayload, request: PayloadWindow) -> Option<Self> {
         if request.offset > payload.total_len()
             || request.len > payload.total_len().saturating_sub(request.offset)
         {
@@ -391,7 +393,7 @@ impl OwnedPayloadWindow {
 
     pub fn take_payload(
         payload: PacketPayload,
-        request: PayloadWindowRequest,
+        request: PayloadWindow,
     ) -> Result<PacketPayload, PacketWindowError> {
         Self::take(payload, request)
             .ok_or(PacketWindowError::OutOfBounds)?
@@ -517,7 +519,7 @@ pub struct PacketPayloadView<'a> {
 
 pub struct PayloadSpanMut<'a> {
     payload: &'a mut PacketPayload,
-    request: PayloadWindowRequest,
+    request: PayloadWindow,
 }
 
 impl<'a> PacketPayloadView<'a> {
@@ -678,7 +680,7 @@ impl<'a> PacketPayloadView<'a> {
 impl<'a> PayloadSpanMut<'a> {
     pub fn from_window(
         payload: &'a mut PacketPayload,
-        request: PayloadWindowRequest,
+        request: PayloadWindow,
     ) -> Option<Self> {
         if request.offset > payload.total_len()
             || request.len > payload.total_len().saturating_sub(request.offset)

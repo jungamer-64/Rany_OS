@@ -317,8 +317,8 @@ impl PacketRef {
 
     #[inline]
     #[must_use]
-    pub fn set_len(&mut self, len: usize) -> bool {
-        unsafe { (self.vtable.set_len)(&mut self.storage, len) }
+    pub fn set_len(&mut self, len: PacketByteCount) -> bool {
+        unsafe { (self.vtable.set_len)(&mut self.storage, len.get()) }
     }
 
     #[inline]
@@ -343,13 +343,13 @@ impl PacketRef {
 
     #[inline]
     #[must_use]
-    pub fn advance(&mut self, size: usize) -> bool {
-        unsafe { (self.vtable.advance)(&mut self.storage, size) }
+    pub fn advance(&mut self, size: PacketByteCount) -> bool {
+        unsafe { (self.vtable.advance)(&mut self.storage, size.get()) }
     }
 
     #[inline]
-    pub fn retreat(&mut self, size: usize) -> bool {
-        unsafe { (self.vtable.retreat)(&mut self.storage, size) }
+    pub fn retreat(&mut self, size: PacketByteCount) -> bool {
+        unsafe { (self.vtable.retreat)(&mut self.storage, size.get()) }
     }
 
     pub fn take_front(self, len: PacketByteCount) -> Result<PacketFront, PacketWindowError> {

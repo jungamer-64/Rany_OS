@@ -1190,9 +1190,9 @@ impl AbiPacketRefRaw {
     }
 
     #[must_use]
-    pub fn set_len(&mut self, len: usize) -> bool {
+    pub fn set_len(&mut self, len: crate::resource::net::PacketByteCount) -> bool {
         if !self.vtable.is_null() {
-            return unsafe { ((*self.vtable).set_len)(&mut self.storage, len) };
+            return unsafe { ((*self.vtable).set_len)(&mut self.storage, len.get()) };
         }
         false
     }
