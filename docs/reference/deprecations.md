@@ -116,8 +116,8 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Parse TLS records and handshake payloads from `PacketPayloadView`, `PacketPayloadCursor`, `PayloadSpan`, or fixed-capacity TLS scratch without `Vec<u8>` flatten helpers.
   - TLS / RSA owned-buffer crypto helpers (`aes_gcm_encrypt`, `aes_gcm_decrypt`, `chacha20_poly1305_encrypt`, `chacha20_poly1305_decrypt`, `aes_cbc_encrypt`, `aes_cbc_decrypt`, `tls_add_padding`, `compute_tls_mac`, `rsa_pkcs1_encrypt`, `mgf1`, `hash_compute`, `BigUint::to_be_bytes`, `BigUint::to_be_bytes_padded`) ❌ **removed**
     - Migration: Use the in-place / buffer-out APIs `aes_gcm_encrypt_into`, `aes_gcm_decrypt_into`, `chacha20_poly1305_*_in_place`, `aes_cbc_*_in_place`, `tls_add_padding_in_place`, `compute_tls_mac_into`, `rsa_pkcs1_encrypt_into`, `mgf1_into`, `hash_compute_into`, `BigUint::write_be_bytes`, and `BigUint::write_be_bytes_padded`.
-  - `TlsConfig` / `SessionCache` の `Vec<String>` / `String` / `VecDeque` surface (`with_server_name(&str) -> TlsConfig`, `with_alpn(&[&str]) -> TlsConfig`, dynamic session cache) ❌ **removed**
-    - Migration: Use the fixed-capacity API: `with_server_name(&str) -> Result<TlsConfig, TlsConfigError>`, `with_alpn(&[&str]) -> Result<TlsConfig, TlsConfigError>`, `ArrayVec`-backed `TlsConfig`, and fixed-capacity `SessionCache`.
+  - `TlsClientConfig` / `SessionCache` の `Vec<String>` / `String` / `VecDeque` surface (`with_server_name(&str) -> TlsClientConfig`, `with_alpn(&[&str]) -> TlsClientConfig`, dynamic session cache) ❌ **removed**
+    - Migration: Use the fixed-capacity API: `with_server_name(&str) -> Result<TlsClientConfig, TlsClientConfigError>`, `with_alpn(&[&str]) -> Result<TlsClientConfig, TlsClientConfigError>`, `ArrayVec`-backed `TlsClientConfig`, and fixed-capacity `SessionCache`.
   - Legacy payload builder name `build_client_hello()` ❌ **removed**
     - Migration: Use `build_client_hello_payload()`.
   - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**

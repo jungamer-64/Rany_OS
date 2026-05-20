@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::super::credentials::base64_decode_payload;
-use super::super::{CipherSuite, TlsConfig, TlsVersion};
+use super::super::{CipherSuite, TlsClientConfig, TlsVersion};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -59,7 +59,7 @@ pub(crate) fn test_cipher_suite_defaults_are_tls13_only() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_config_defaults_are_tls13_client_only() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     assert_eq!(config.cipher_suites.len(), 3);
     assert!(!config.signature_schemes.is_empty());
     assert!(!config.named_groups.is_empty());

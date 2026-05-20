@@ -2,27 +2,25 @@
 // kernel/src/net/security/tls/connection/handshake/certificate.rs
 // ============================================================================
 
-use super::super::{ExperimentalTlsConnection, ServerPublicKey};
+use super::super::{TlsConnectionCore, ServerPublicKey};
 use crate::net::security::tls::error::{TlsError, TlsResult};
+use crate::net::security::x509::{VerifiedServerCertificate, VerifiedServerPublicKey};
 
-impl ExperimentalTlsConnection {
-    pub(crate) fn extract_server_public_key_from_spki(
+impl TlsConnectionCore {
+    pub(crate) fn install_verified_server_certificate(
         &mut self,
-        spki: crate::net::security::x509::SubjectPublicKeyInfo,
+        certificate: VerifiedServerCertificate,
     ) -> TlsResult<()> {
-        self.handshake_secrets.server_public_key = Some(match spki {
-            crate::net::security::x509::SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+        self.handshake_secrets.server_public_key = Some(match certificate.public_key {
+            VerifiedServerPublicKey::Rsa { modulus, exponent } => {
                 ServerPublicKey::rsa(modulus.as_slice(), exponent.as_slice())
                     .ok_or(TlsError::DecodeError)?
             }
-            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+            VerifiedServerPublicKey::EcdsaP256 { public_key } => {
                 ServerPublicKey::ecdsa_p256(public_key.as_slice()).ok_or(TlsError::DecodeError)?
             }
-            crate::net::security::x509::SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+            VerifiedServerPublicKey::EcdsaP384 { public_key } => {
                 ServerPublicKey::ecdsa_p384(public_key.as_slice()).ok_or(TlsError::DecodeError)?
-            }
-            crate::net::security::x509::SubjectPublicKeyInfo::Unknown => {
-                return Err(TlsError::UnsupportedCipherSuite);
             }
         });
         Ok(())

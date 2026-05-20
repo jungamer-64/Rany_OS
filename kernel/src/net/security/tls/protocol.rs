@@ -2,10 +2,6 @@
 // kernel/src/net/security/tls/protocol.rs - TLS 1.3 protocol primitives
 // ============================================================================
 
-use arrayvec::ArrayVec;
-
-use super::config::TLS_CIPHER_SUITES_CAPACITY;
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TlsVersion;
 
@@ -27,35 +23,46 @@ impl TlsVersion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct CipherSuite(pub u16);
+pub enum CipherSuite {
+    TlsAes128GcmSha256,
+    TlsAes256GcmSha384,
+    TlsChacha20Poly1305Sha256,
+}
 
 impl CipherSuite {
-    pub const TLS_AES_128_GCM_SHA256: Self = Self(0x1301);
-    pub const TLS_AES_256_GCM_SHA384: Self = Self(0x1302);
-    pub const TLS_CHACHA20_POLY1305_SHA256: Self = Self(0x1303);
+    pub const TLS_AES_128_GCM_SHA256: Self = Self::TlsAes128GcmSha256;
+    pub const TLS_AES_256_GCM_SHA384: Self = Self::TlsAes256GcmSha384;
+    pub const TLS_CHACHA20_POLY1305_SHA256: Self = Self::TlsChacha20Poly1305Sha256;
 
     pub fn from_wire(value: u16) -> Option<Self> {
         match value {
-            0x1301 => Some(Self::TLS_AES_128_GCM_SHA256),
-            0x1302 => Some(Self::TLS_AES_256_GCM_SHA384),
-            0x1303 => Some(Self::TLS_CHACHA20_POLY1305_SHA256),
+            0x1301 => Some(Self::TlsAes128GcmSha256),
+            0x1302 => Some(Self::TlsAes256GcmSha384),
+            0x1303 => Some(Self::TlsChacha20Poly1305Sha256),
             _ => None,
         }
     }
 
+    pub const fn wire(self) -> u16 {
+        match self {
+            Self::TlsAes128GcmSha256 => 0x1301,
+            Self::TlsAes256GcmSha384 => 0x1302,
+            Self::TlsChacha20Poly1305Sha256 => 0x1303,
+        }
+    }
+
     pub const fn is_chacha20_poly1305(self) -> bool {
-        matches!(self.0, 0x1303)
+        matches!(self, Self::TlsChacha20Poly1305Sha256)
     }
 
     pub const fn is_aes_gcm(self) -> bool {
-        matches!(self.0, 0x1301 | 0x1302)
+        matches!(self, Self::TlsAes128GcmSha256 | Self::TlsAes256GcmSha384)
     }
 
     pub const fn key_len(self) -> usize {
-        match self.0 {
-            0x1301 => 16,
-            0x1302 | 0x1303 => 32,
-            _ => 16,
+        match self {
+            Self::TlsAes128GcmSha256 => 16,
+            Self::TlsAes256GcmSha384 | Self::TlsChacha20Poly1305Sha256 => 32,
         }
     }
 
@@ -63,37 +70,77 @@ impl CipherSuite {
         12
     }
 
-    pub fn defaults() -> ArrayVec<Self, TLS_CIPHER_SUITES_CAPACITY> {
-        let mut defaults = ArrayVec::new();
-        defaults.push(Self::TLS_AES_128_GCM_SHA256);
-        defaults.push(Self::TLS_AES_256_GCM_SHA384);
-        defaults.push(Self::TLS_CHACHA20_POLY1305_SHA256);
-        defaults
-    }
-
     pub const fn uses_sha384(self) -> bool {
-        matches!(self.0, 0x1302)
+        matches!(self, Self::TlsAes256GcmSha384)
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct SignatureScheme(pub u16);
+pub enum SignatureScheme {
+    EcdsaSecp256r1Sha256,
+    EcdsaSecp384r1Sha384,
+    RsaPssRsaeSha256,
+    RsaPssRsaeSha384,
+    RsaPssRsaeSha512,
+}
 
 impl SignatureScheme {
-    pub const ECDSA_SECP256R1_SHA256: Self = Self(0x0403);
-    pub const ECDSA_SECP384R1_SHA384: Self = Self(0x0503);
-    pub const RSA_PSS_RSAE_SHA256: Self = Self(0x0804);
-    pub const RSA_PSS_RSAE_SHA384: Self = Self(0x0805);
-    pub const RSA_PSS_RSAE_SHA512: Self = Self(0x0806);
+    pub const ECDSA_SECP256R1_SHA256: Self = Self::EcdsaSecp256r1Sha256;
+    pub const ECDSA_SECP384R1_SHA384: Self = Self::EcdsaSecp384r1Sha384;
+    pub const RSA_PSS_RSAE_SHA256: Self = Self::RsaPssRsaeSha256;
+    pub const RSA_PSS_RSAE_SHA384: Self = Self::RsaPssRsaeSha384;
+    pub const RSA_PSS_RSAE_SHA512: Self = Self::RsaPssRsaeSha512;
+
+    pub fn from_wire(value: u16) -> Option<Self> {
+        match value {
+            0x0403 => Some(Self::EcdsaSecp256r1Sha256),
+            0x0503 => Some(Self::EcdsaSecp384r1Sha384),
+            0x0804 => Some(Self::RsaPssRsaeSha256),
+            0x0805 => Some(Self::RsaPssRsaeSha384),
+            0x0806 => Some(Self::RsaPssRsaeSha512),
+            _ => None,
+        }
+    }
+
+    pub const fn wire(self) -> u16 {
+        match self {
+            Self::EcdsaSecp256r1Sha256 => 0x0403,
+            Self::EcdsaSecp384r1Sha384 => 0x0503,
+            Self::RsaPssRsaeSha256 => 0x0804,
+            Self::RsaPssRsaeSha384 => 0x0805,
+            Self::RsaPssRsaeSha512 => 0x0806,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct NamedGroup(pub u16);
+pub enum NamedGroup {
+    Secp256r1,
+    Secp384r1,
+    X25519,
+}
 
 impl NamedGroup {
-    pub const SECP256R1: Self = Self(0x0017);
-    pub const SECP384R1: Self = Self(0x0018);
-    pub const X25519: Self = Self(0x001D);
+    pub const SECP256R1: Self = Self::Secp256r1;
+    pub const SECP384R1: Self = Self::Secp384r1;
+    pub const X25519: Self = Self::X25519;
+
+    pub fn from_wire(value: u16) -> Option<Self> {
+        match value {
+            0x0017 => Some(Self::Secp256r1),
+            0x0018 => Some(Self::Secp384r1),
+            0x001D => Some(Self::X25519),
+            _ => None,
+        }
+    }
+
+    pub const fn wire(self) -> u16 {
+        match self {
+            Self::Secp256r1 => 0x0017,
+            Self::Secp384r1 => 0x0018,
+            Self::X25519 => 0x001D,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

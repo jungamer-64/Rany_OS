@@ -3,17 +3,20 @@
 // ============================================================================
 
 use super::{
-    ContentType, ExperimentalTlsConnection, GeneratedPacketWriter, HandshakeType, PacketPayload,
-    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsState, ecdh,
+    ContentType, TlsConnectionCore, GeneratedPacketWriter, HandshakeType, PacketPayload,
+    TLS_CLIENT_HELLO_SCRATCH_CAPACITY, TLS_EXTENSION_SCRATCH_CAPACITY, TlsBytes, TlsError,
+    TlsResult, ecdh,
 };
+use super::state::TlsConnectionPhase;
 use crate::net::security::tls::crypto::{SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
-impl ExperimentalTlsConnection {
+impl TlsConnectionCore {
     pub(super) fn hash_len(&self) -> usize {
         if self
             .negotiation
-            .negotiated_cipher
+            .negotiated
+            .cipher()
             .map_or(false, |cipher| cipher.uses_sha384())
         {
             SHA384_OUTPUT_SIZE
@@ -35,7 +38,7 @@ impl ExperimentalTlsConnection {
         self.transcript.initialize();
     }
 
-    pub fn build_client_hello_payload(&mut self) -> PacketPayload {
+    pub(super) fn build_client_hello_payload(&mut self) -> TlsResult<PacketPayload> {
         self.prepare_tls13_ecdh_keypair();
         self.init_transcript_hash();
 
@@ -49,17 +52,17 @@ impl ExperimentalTlsConnection {
                 .append_be_u16((self.config.cipher_suites.len() * 2) as u16)
                 .is_none()
         {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         }
 
         for cipher in &self.config.cipher_suites {
-            if hello.append_be_u16(cipher.0).is_none() {
-                return PacketPayload::default();
+            if hello.append_be_u16(cipher.wire()).is_none() {
+                return Err(TlsError::DecodeError);
             }
         }
 
         if hello.append_slice(&[0x01, 0x00]).is_none() {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         }
 
         let mut extensions = TlsBytes::<TLS_EXTENSION_SCRATCH_CAPACITY>::new();
@@ -67,7 +70,7 @@ impl ExperimentalTlsConnection {
             || hello.append_be_u16(extensions.len() as u16).is_none()
             || hello.append_slice(extensions.as_slice()).is_none()
         {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         }
 
         let mut message = TlsBytes::<TLS_CLIENT_HELLO_SCRATCH_CAPACITY>::new();
@@ -77,7 +80,7 @@ impl ExperimentalTlsConnection {
             || message.append_be_u24(hello.len()).is_none()
             || message.append_slice(hello.as_slice()).is_none()
         {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         }
 
         self.append_transcript_bytes(message.as_slice())
@@ -91,19 +94,19 @@ impl ExperimentalTlsConnection {
             message.len() as u8,
         ];
 
-        self.negotiation.state = TlsState::ClientHelloSent;
+        self.negotiation.phase = TlsConnectionPhase::client_hello_sent();
         let Some(mut writer) = GeneratedPacketWriter::new(
             record_header.len().saturating_add(message.len()),
             DEFAULT_PACKET_HEADROOM,
         ) else {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         };
         if writer.write_bytes(&record_header).is_none()
             || writer.write_bytes(message.as_slice()).is_none()
         {
-            return PacketPayload::default();
+            return Err(TlsError::DecodeError);
         }
-        writer.finish().unwrap_or_default()
+        writer.finish().ok_or(TlsError::DecodeError)
     }
 
     fn append_supported_versions_ext<const N: usize>(&self, ext: &mut TlsBytes<N>) -> Option<()> {
@@ -143,7 +146,7 @@ impl ExperimentalTlsConnection {
         let mut groups = TlsBytes::<128>::new();
         groups.append_be_u16((self.config.named_groups.len() * 2) as u16)?;
         for group in &self.config.named_groups {
-            groups.append_be_u16(group.0)?;
+            groups.append_be_u16(group.wire())?;
         }
         extensions.append_slice(&[0, 10])?;
         extensions.append_be_u16(groups.len() as u16)?;
@@ -152,7 +155,7 @@ impl ExperimentalTlsConnection {
         let mut signatures = TlsBytes::<128>::new();
         signatures.append_be_u16((self.config.signature_schemes.len() * 2) as u16)?;
         for scheme in &self.config.signature_schemes {
-            signatures.append_be_u16(scheme.0)?;
+            signatures.append_be_u16(scheme.wire())?;
         }
         extensions.append_slice(&[0, 13])?;
         extensions.append_be_u16(signatures.len() as u16)?;

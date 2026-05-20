@@ -3,14 +3,14 @@
 // ============================================================================
 
 use super::super::credentials::base64_decode_payload;
-use super::super::{CipherSuite, TlsConfig, TlsVersion};
+use super::super::{CipherSuite, TlsClientConfig, TlsVersion};
 
 pub fn wave8_tls_protocol_version_bytes_smoke() -> bool {
     TlsVersion::TLS_1_3.to_bytes() == [0x03, 0x04]
 }
 
 pub fn wave8_tls_protocol_config_defaults_smoke() -> bool {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     config.cipher_suites.len() == 3
         && config
             .cipher_suites

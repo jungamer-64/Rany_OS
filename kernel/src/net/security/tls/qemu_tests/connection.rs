@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::super::protocol::ContentType;
-use super::super::{ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState};
+use super::super::{TlsConnectionCore, TlsBytes, TlsClientConfig, TlsError, TlsState};
 use crate::net::payload::PayloadSpanRef;
 
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> TlsBytes<16384> {
@@ -50,19 +50,19 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
 }
 
 pub fn wave8_tls_tls_connection_initial_state_smoke() -> bool {
-    let config = TlsConfig::new();
-    let Ok(conn) = ExperimentalTlsConnection::new(config) else {
+    let config = TlsClientConfig::new();
+    let Ok(conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     conn.state() == TlsState::Initial && conn.negotiated_version().is_none()
 }
 
 pub fn wave8_tls_tls_connection_client_hello_smoke() -> bool {
-    let config = match TlsConfig::new().with_server_name("example.com") {
+    let config = match TlsClientConfig::new().with_server_name("example.com") {
         Ok(config) => config,
         Err(_) => return false,
     };
-    let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
+    let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     let hello = payload_bytes(&conn.build_client_hello_payload());
@@ -74,8 +74,8 @@ pub fn wave8_tls_tls_connection_client_hello_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
-    let config = TlsConfig::new();
-    let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
+    let config = TlsClientConfig::new();
+    let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     matches!(
@@ -85,12 +85,12 @@ pub fn wave8_tls_tls_connection_encrypt_not_established_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_coalesced_application_records_smoke() -> bool {
-    ExperimentalTlsConnection::tls13_coalesced_application_records_smoke()
+    TlsConnectionCore::tls13_coalesced_application_records_smoke()
 }
 
 pub fn wave8_tls_process_handshake_truncated_header_smoke() -> bool {
-    let config = TlsConfig::new();
-    let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
+    let config = TlsClientConfig::new();
+    let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     let data = [2u8, 0, 0];
@@ -108,11 +108,11 @@ pub fn wave8_tls_tls13_initial_state_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
-    let config = match TlsConfig::new().with_server_name("example.com") {
+    let config = match TlsClientConfig::new().with_server_name("example.com") {
         Ok(config) => config,
         Err(_) => return false,
     };
-    let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
+    let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     let hello = payload_bytes(&conn.build_client_hello_payload());
@@ -122,8 +122,8 @@ pub fn wave8_tls_tls13_client_hello_key_share_smoke() -> bool {
 }
 
 pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
-    let config = TlsConfig::new();
-    let Ok(mut conn) = ExperimentalTlsConnection::new(config) else {
+    let config = TlsClientConfig::new();
+    let Ok(mut conn) = TlsConnectionCore::new(config) else {
         return false;
     };
     let hello = payload_bytes(&conn.build_client_hello_payload());
@@ -153,16 +153,16 @@ pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {
     }
 
     let case1 = payload(&[0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17])
-        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
         == Some((0x17, 5));
     let case2 = payload(&[0x48, 0x65, 0x17, 0x00, 0x00])
-        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
         == Some((0x17, 2));
     let case3 = payload(&[0x16])
-        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
         == Some((0x16, 0));
     let case4 = payload(&[0x00, 0x00, 0x00])
-        .and_then(|payload| ExperimentalTlsConnection::tls13_split_content_type_payload(&payload))
+        .and_then(|payload| TlsConnectionCore::tls13_split_content_type_payload(&payload))
         .is_none();
 
     case1 && case2 && case3 && case4

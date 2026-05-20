@@ -11,7 +11,9 @@ use super::types::{
 };
 use crate::net::l4::tcp::{EndpointAddr, TcpConnection};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::security::tls::{ExperimentalTlsConnection, TlsConfig, TlsState};
+use crate::net::security::tls::{
+    KeyUpdateAction, TlsClientConfig, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep,
+};
 use crate::net::services::dns::resolve_ipv4_in;
 use kernel_api::resource::net::PacketPayload;
 
@@ -38,45 +40,31 @@ async fn recv_tls_handshake_payload(
         .ok_or(HttpClientError::TlsHandshakeFailed)
 }
 
-fn process_tls_handshake_payload(
-    tls: &mut ExperimentalTlsConnection,
-    in_payload: PacketPayload,
-) -> Result<(), HttpClientError> {
-    let _ignored_app_data = tls
-        .process_incoming_payload(in_payload)
-        .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    Ok(())
-}
-
-async fn send_tls_handshake_followup(
-    tls: &mut ExperimentalTlsConnection,
+async fn complete_tls_handshake(
+    mut handshake: TlsHandshake,
     connection: &mut TcpConnection,
-) -> Result<(), HttpClientError> {
-    if tls.state() == TlsState::Tls13ServerFinishedReceived {
-        if let Ok(fin) = tls.build_client_finished_tls13_payload() {
-            send_payload(connection, fin).await?;
+) -> Result<TlsEstablishedSession, HttpClientError> {
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+    loop {
+        let in_payload = recv_tls_handshake_payload(connection).await?;
+        match handshake
+            .process_incoming_payload(in_payload)
+            .map_err(|_| HttpClientError::TlsHandshakeFailed)?
+        {
+            TlsHandshakeStep::NeedMoreInput(next) => handshake = next,
+            TlsHandshakeStep::SendClientHello {
+                handshake: next,
+                payload,
+            } => {
+                send_payload(connection, payload).await?;
+                handshake = next;
+            }
+            TlsHandshakeStep::Established { session, payload } => {
+                send_payload(connection, payload).await?;
+                return Ok(session);
+            }
         }
     }
-
-    Ok(())
-}
-
-async fn complete_tls_handshake(
-    tls: &mut ExperimentalTlsConnection,
-    connection: &mut TcpConnection,
-) -> Result<(), HttpClientError> {
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while tls.state() != TlsState::Established && tls.state() != TlsState::Error {
-        let in_payload = recv_tls_handshake_payload(connection).await?;
-        process_tls_handshake_payload(tls, in_payload)?;
-        send_tls_handshake_followup(tls, connection).await?;
-    }
-
-    if tls.state() != TlsState::Established {
-        return Err(HttpClientError::TlsHandshakeFailed);
-    }
-
-    Ok(())
 }
 
 async fn receive_plain_response(
@@ -97,7 +85,7 @@ async fn receive_plain_response(
 }
 
 async fn receive_tls_response(
-    tls: &mut ExperimentalTlsConnection,
+    tls: &mut TlsEstablishedSession,
     connection: &mut TcpConnection,
     parser: &mut HttpParser,
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
@@ -107,19 +95,19 @@ async fn receive_tls_response(
             return Ok(None);
         };
 
-        let app_data = tls
+        let inbound = tls
             .process_incoming_payload(in_payload)
             .map_err(|_| HttpClientError::ReadError)?;
 
-        if let Some(resp) = tls.build_key_update_response_payload() {
-            send_payload(connection, resp).await?;
+        if let KeyUpdateAction::Send(payload) = inbound.key_update {
+            send_payload(connection, payload).await?;
         }
 
-        if app_data.is_empty() {
+        if inbound.application_data.is_empty() {
             continue;
         }
 
-        parser.push_payload(app_data);
+        parser.push_payload(inbound.application_data);
         if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
             return Ok(Some(response));
         }
@@ -141,20 +129,16 @@ async fn send_over_tls_transport(
     request_payload: PacketPayload,
     parser: &mut HttpParser,
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
-    let tls_config = TlsConfig::default()
+    let tls_config = TlsClientConfig::default()
         .with_server_name(host)
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
-    let mut tls = Box::new(
-        ExperimentalTlsConnection::new(tls_config)
-            .map_err(|_| HttpClientError::TlsHandshakeFailed)?,
-    );
-
-    let client_hello = tls.build_client_hello_payload();
+    let (handshake, client_hello) =
+        TlsHandshake::start(tls_config).map_err(|_| HttpClientError::TlsHandshakeFailed)?;
     send_payload(connection, client_hello).await?;
-    complete_tls_handshake(&mut tls, connection).await?;
+    let mut tls = Box::new(complete_tls_handshake(handshake, connection).await?);
 
     let encrypted_request = tls
-        .tls13_encrypt_application_payload(request_payload)
+        .encrypt_payload(request_payload)
         .map_err(|_| HttpClientError::WriteError)?;
     send_payload(connection, encrypted_request).await?;
 

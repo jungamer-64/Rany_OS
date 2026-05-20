@@ -4,7 +4,7 @@
 
 use super::super::protocol::ContentType;
 use super::super::{
-    CipherSuite, ExperimentalTlsConnection, TlsBytes, TlsConfig, TlsError, TlsState,
+    CipherSuite, TlsConnectionCore, TlsBytes, TlsClientConfig, TlsError, TlsState,
 };
 use crate::net::payload::PayloadSpanRef;
 
@@ -76,9 +76,9 @@ fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_truncated_header() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
     let data = [2u8, 0, 0];
     let payload = handshake_payload(&data);
@@ -89,9 +89,9 @@ pub(crate) fn test_process_handshake_truncated_header() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_initial_state() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     assert_eq!(conn.state(), TlsState::Initial);
     assert!(conn.negotiated_version().is_none());
 }
@@ -99,11 +99,11 @@ pub(crate) fn test_tls_connection_initial_state() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_client_hello() {
-    let config = TlsConfig::new()
+    let config = TlsClientConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
@@ -116,13 +116,13 @@ pub(crate) fn test_tls_connection_client_hello() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
-    let mut config = TlsConfig::new();
+    let mut config = TlsClientConfig::new();
     config.cipher_suites.clear();
     config
         .cipher_suites
         .push(CipherSuite::TLS_AES_128_GCM_SHA256);
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let _ = conn.build_client_hello_payload();
 
     let message = server_hello_message(CipherSuite::TLS_AES_256_GCM_SHA384);
@@ -135,9 +135,9 @@ pub(crate) fn test_server_hello_rejects_unoffered_cipher_suite() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls_connection_encrypt_not_established() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let result = conn.encrypt_payload(test_payload(b"hello"));
     assert!(matches!(result, Err(TlsError::NotConnected)));
 }
@@ -145,9 +145,9 @@ pub(crate) fn test_tls_connection_encrypt_not_established() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_incoming_payload_accepts_multiple_plain_records() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let records = [
         ContentType::Alert as u8,
         0x03,
@@ -176,9 +176,9 @@ pub(crate) fn test_process_incoming_payload_accepts_multiple_plain_records() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let first_fragment = [ContentType::Alert as u8, 0x03, 0x03, 0, 2, 1];
     let second_fragment = [0];
 
@@ -198,9 +198,9 @@ pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_incoming_payload_accepts_record_across_packet_segments() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let payload =
         test_chained_payload(&[&[ContentType::Alert as u8, 0x03], &[0x03, 0, 2], &[1, 0]]);
 
@@ -215,9 +215,9 @@ pub(crate) fn test_process_incoming_payload_accepts_record_across_packet_segment
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
     let data = [20u8, 0, 0, 0];
     let payload = handshake_payload(&data);
@@ -228,9 +228,9 @@ pub(crate) fn test_process_handshake_finished_without_verify_data_rejected() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_unknown_message_rejected() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
     let data = [99u8, 0, 0, 0];
     let payload = handshake_payload(&data);
@@ -241,9 +241,9 @@ pub(crate) fn test_process_handshake_unknown_message_rejected() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_process_handshake_certificate_before_server_hello_rejected() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
 
     let data = [11u8, 0, 0, 0];
     let payload = handshake_payload(&data);
@@ -254,11 +254,11 @@ pub(crate) fn test_process_handshake_certificate_before_server_hello_rejected() 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_key_share() {
-    let config = TlsConfig::new()
+    let config = TlsClientConfig::new()
         .with_server_name("example.com")
         .expect("test server name fits fixed TLS capacity");
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
     assert_eq!(hello[0], ContentType::Handshake as u8);
@@ -271,9 +271,9 @@ pub(crate) fn test_tls13_client_hello_key_share() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let hello = payload_bytes(&conn.build_client_hello_payload());
     let payload = &hello[5..];
 
@@ -289,9 +289,9 @@ pub(crate) fn test_tls13_client_hello_supported_versions_only_offer_tls13() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
-    let config = TlsConfig::new();
+    let config = TlsClientConfig::new();
     let mut conn =
-        ExperimentalTlsConnection::new(config).expect("test TLS connection entropy is available");
+        TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
     let hello = payload_bytes(&conn.build_client_hello_payload());
 
     assert!(find_extension_in_hello(&hello, 0x2D).is_none());
@@ -307,23 +307,23 @@ pub(crate) fn test_tls13_strip_content_type() {
     }
 
     assert_eq!(
-        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
             0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17,
         ])),
         Some((0x17, 5))
     );
     assert_eq!(
-        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
             0x48, 0x65, 0x17, 0x00, 0x00,
         ])),
         Some((0x17, 2))
     );
     assert_eq!(
-        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[0x16])),
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x16])),
         Some((0x16, 0))
     );
     assert_eq!(
-        ExperimentalTlsConnection::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00])),
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00])),
         None
     );
 }

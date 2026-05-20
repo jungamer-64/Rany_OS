@@ -2,7 +2,8 @@
 // kernel/src/net/security/tls/connection/handshake/mod.rs - Handshake frame dispatch
 // ============================================================================
 
-use super::super::{ExperimentalTlsConnection, HandshakeType, TlsState};
+use super::{HandshakeType, TlsConnectionCore};
+use super::state::TlsConnectionPhase;
 use crate::net::payload::PayloadSpanRef;
 use crate::net::security::tls::error::{TlsError, TlsResult};
 
@@ -33,35 +34,42 @@ impl<'a> Tls13ServerHandshakeMessage<'a> {
     }
 }
 
-impl ExperimentalTlsConnection {
+impl TlsConnectionCore {
     pub(super) fn dispatch_handshake_message(
         &mut self,
         msg_type: u8,
         payload: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
         match (
-            self.negotiation.state,
+            self.negotiation.phase,
             Tls13ServerHandshakeMessage::from_wire(msg_type, payload)?,
         ) {
-            (TlsState::ClientHelloSent, Tls13ServerHandshakeMessage::ServerHello(payload)) => {
+            (
+                TlsConnectionPhase::ClientHelloSent(_),
+                Tls13ServerHandshakeMessage::ServerHello(payload),
+            ) => {
                 self.process_server_hello(payload)
             }
             (
-                TlsState::Tls13WaitEncryptedExtensions,
+                TlsConnectionPhase::EncryptedExtensionsPending(_),
                 Tls13ServerHandshakeMessage::EncryptedExtensions(payload),
             ) => self.tls13_process_encrypted_extensions(payload),
-            (TlsState::Tls13WaitCertificate, Tls13ServerHandshakeMessage::Certificate(payload)) => {
-                self.tls13_process_certificate(payload)
-            }
             (
-                TlsState::Tls13WaitCertificate,
+                TlsConnectionPhase::CertificatePending(_),
+                Tls13ServerHandshakeMessage::Certificate(payload),
+            ) => self.tls13_process_certificate(payload),
+            (
+                TlsConnectionPhase::CertificatePending(_),
                 Tls13ServerHandshakeMessage::CertificateRequest(payload),
             ) => self.tls13_process_certificate_request(payload),
             (
-                TlsState::Tls13WaitCertificateVerify,
+                TlsConnectionPhase::CertificateVerifyPending(_),
                 Tls13ServerHandshakeMessage::CertificateVerify(payload),
             ) => self.tls13_process_certificate_verify(payload),
-            (TlsState::Tls13WaitFinished, Tls13ServerHandshakeMessage::Finished(payload)) => {
+            (
+                TlsConnectionPhase::ServerFinishedPending(_),
+                Tls13ServerHandshakeMessage::Finished(payload),
+            ) => {
                 self.tls13_process_server_finished(payload)
             }
             _ => Err(TlsError::UnexpectedMessage),

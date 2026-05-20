@@ -5,7 +5,7 @@
 //! # HTTP/HTTPS クライアント実装
 //!
 //! ExoRust カーネル用の非同期・ゼロコピー指向 HTTP/1.1 クライアントです。
-//! `TcpConnection` と `ExperimentalTlsConnection` を統合し、セキュアなHTTPSリクエストを
+//! `TcpConnection` と `TlsConnectionCore` を統合し、セキュアなHTTPSリクエストを
 //! フルスクラッチでサポートします。
 
 pub mod client;

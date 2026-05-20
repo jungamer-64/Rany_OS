@@ -5,9 +5,11 @@
 use arrayvec::ArrayVec;
 
 use super::super::{
-    CipherSuite, ContentType, ExperimentalTlsConnection, PacketPayload, PayloadSpanRef,
-    TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY, TlsError, TlsResult, TlsState, ecdh,
+    ContentType, TlsConnectionCore, PacketPayload, PayloadSpanRef, TLS_CA_CERTS_CAPACITY,
+    TLS_CERT_CHAIN_CAPACITY, TlsError, TlsResult, ecdh,
 };
+use super::super::state::TlsConnectionPhase;
+use crate::net::security::tls::protocol::SignatureScheme;
 use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, tls13_derive_secret, tls13_derive_secret_sha384,
     tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384, tls13_early_secret,
@@ -16,12 +18,9 @@ use crate::net::security::tls::crypto::{
     tls13_master_secret_sha384, tls13_verify_data, tls13_verify_data_sha384,
 };
 
-impl ExperimentalTlsConnection {
+impl TlsConnectionCore {
     pub(crate) fn tls13_derive_handshake_keys(&mut self) -> TlsResult<()> {
-        let cipher = self
-            .negotiation
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self.negotiation.negotiated.cipher()?;
         let key_len = cipher.key_len();
 
         if cipher.uses_sha384() {
@@ -104,7 +103,7 @@ impl ExperimentalTlsConnection {
             self.handshake_secrets.master_secret[..32].copy_from_slice(&ms);
         }
 
-        self.negotiation.state = TlsState::Tls13WaitEncryptedExtensions;
+        self.negotiation.phase = TlsConnectionPhase::encrypted_extensions_pending();
         Ok(())
     }
 
@@ -136,7 +135,7 @@ impl ExperimentalTlsConnection {
                 return Err(TlsError::DecodeError);
             }
         }
-        self.negotiation.state = TlsState::Tls13WaitCertificate;
+        self.negotiation.phase = TlsConnectionPhase::certificate_pending();
         Ok(())
     }
 
@@ -204,13 +203,13 @@ impl ExperimentalTlsConnection {
         }
 
         let mut ca_certs = ArrayVec::<PayloadSpanRef<'_>, TLS_CA_CERTS_CAPACITY>::new();
-        for cert in &self.config.ca_certs {
+        for cert in self.config.trust_anchors.iter() {
             ca_certs
                 .try_push(cert.der_span())
                 .map_err(|_| TlsError::CertificateError)?;
         }
 
-        let verification_context = crate::net::security::x509::X509VerificationContext {
+        let verification_context = crate::net::security::x509::TlsServerVerificationContext {
             now_unix: crate::drivers::time::unix_timestamp(),
             server_name: self
                 .negotiation
@@ -218,15 +217,14 @@ impl ExperimentalTlsConnection {
                 .as_ref()
                 .map(|name| name.as_str()),
             trusted_roots: &ca_certs,
-            allow_subject_cn_fallback: false,
         };
-        let validated_spki =
+        let verified_certificate =
             crate::net::security::x509::CertificatePolicy::Tls13ServerAuth(verification_context)
                 .verify_chain(&certs)
                 .ok_or(TlsError::CertificateError)?;
         drop(ca_certs);
-        self.extract_server_public_key_from_spki(validated_spki)?;
-        self.negotiation.state = TlsState::Tls13WaitCertificateVerify;
+        self.install_verified_server_certificate(verified_certificate)?;
+        self.negotiation.phase = TlsConnectionPhase::certificate_verify_pending();
         Ok(())
     }
 
@@ -249,7 +247,7 @@ impl ExperimentalTlsConnection {
             .ok_or(TlsError::DecodeError)?;
 
         self.verify_tls13_certificate_verify(sig_algorithm, signature.as_slice())?;
-        self.negotiation.state = TlsState::Tls13WaitFinished;
+        self.negotiation.phase = TlsConnectionPhase::server_finished_pending();
         Ok(())
     }
 
@@ -259,10 +257,7 @@ impl ExperimentalTlsConnection {
         signature: &[u8],
     ) -> TlsResult<()> {
         const LABEL: &[u8] = b"TLS 1.3, server CertificateVerify";
-        let use_384 = self
-            .negotiation
-            .negotiated_cipher
-            .map_or(false, |cipher| cipher.uses_sha384());
+        let use_384 = self.negotiation.negotiated.cipher()?.uses_sha384();
         let mut content = [0u8; 64 + LABEL.len() + 1 + SHA384_OUTPUT_SIZE];
         content[..64].fill(0x20);
         let mut offset = 64;
@@ -292,8 +287,9 @@ impl ExperimentalTlsConnection {
         content: &[u8],
         signature: &[u8],
     ) -> TlsResult<()> {
-        let selected_scheme = crate::net::security::tls::protocol::SignatureScheme(sig_algorithm);
-        if !self.config.signature_schemes.contains(&selected_scheme) {
+        let selected_scheme =
+            SignatureScheme::from_wire(sig_algorithm).ok_or(TlsError::UnsupportedCipherSuite)?;
+        if !self.config.signature_schemes.contains(selected_scheme) {
             return Err(TlsError::UnsolicitedSignatureScheme);
         }
 
@@ -398,11 +394,7 @@ impl ExperimentalTlsConnection {
             .read_fixed_bytes::<SHA384_OUTPUT_SIZE>(hash_len)
             .ok_or(TlsError::DecodeError)?;
 
-        if self
-            .negotiation
-            .negotiated_cipher
-            .map_or(false, |cipher| cipher.uses_sha384())
-        {
+        if self.negotiation.negotiated.cipher()?.uses_sha384() {
             let transcript = self.transcript_hash_sha384();
             let mut shs = [0u8; 48];
             shs.copy_from_slice(&self.tls13.server_hs_traffic_secret);
@@ -422,24 +414,20 @@ impl ExperimentalTlsConnection {
             }
         }
 
-        self.negotiation.state = TlsState::Tls13ServerFinishedReceived;
+        self.negotiation.phase = TlsConnectionPhase::server_finished_received();
         Ok(())
     }
 
-    pub(super) fn compute_tls13_client_verify_data(&self) -> ([u8; 48], usize) {
-        if self
-            .negotiation
-            .negotiated_cipher
-            .map_or(false, |cipher| cipher.uses_sha384())
-        {
+    pub(super) fn compute_tls13_client_verify_data(&self) -> TlsResult<([u8; 48], usize)> {
+        if self.negotiation.negotiated.cipher()?.uses_sha384() {
             let transcript = self.transcript_hash_sha384();
             let mut chs = [0u8; 48];
             chs.copy_from_slice(&self.tls13.client_hs_traffic_secret);
             let finished_key = tls13_finished_key_sha384(&chs);
-            (
+            Ok((
                 tls13_verify_data_sha384(&finished_key, &transcript),
                 SHA384_OUTPUT_SIZE,
-            )
+            ))
         } else {
             let transcript = self.transcript_hash_sha256();
             let mut chs = [0u8; 32];
@@ -448,16 +436,16 @@ impl ExperimentalTlsConnection {
             let mut out = [0u8; 48];
             out[..SHA256_OUTPUT_SIZE]
                 .copy_from_slice(&tls13_verify_data(&finished_key, &transcript));
-            (out, SHA256_OUTPUT_SIZE)
+            Ok((out, SHA256_OUTPUT_SIZE))
         }
     }
 
     pub fn build_client_finished_tls13_payload(&mut self) -> TlsResult<PacketPayload> {
-        if self.negotiation.state != TlsState::Tls13ServerFinishedReceived {
+        if !self.negotiation.phase.is_server_finished_received() {
             return Err(TlsError::UnexpectedMessage);
         }
 
-        let (verify_data, verify_len) = self.compute_tls13_client_verify_data();
+        let (verify_data, verify_len) = self.compute_tls13_client_verify_data()?;
         let mut finished_msg = [0u8; 4 + SHA384_OUTPUT_SIZE];
         finished_msg[0] = 20;
         finished_msg[3] = verify_len as u8;
@@ -474,10 +462,7 @@ impl ExperimentalTlsConnection {
     }
 
     pub(super) fn tls13_derive_application_keys(&mut self) -> TlsResult<()> {
-        let cipher = self
-            .negotiation
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self.negotiation.negotiated.cipher()?;
         let key_len = cipher.key_len();
         if cipher.uses_sha384() {
             let transcript = self.transcript_hash_sha384();
@@ -519,7 +504,7 @@ impl ExperimentalTlsConnection {
 
         self.record.read_seq.reset();
         self.record.write_seq.reset();
-        self.negotiation.state = TlsState::Established;
+        self.negotiation.phase = TlsConnectionPhase::established();
         Ok(())
     }
 }
@@ -542,12 +527,12 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn certificate_verify_rejects_unoffered_signature_scheme() {
-        let mut config = crate::net::security::tls::TlsConfig::new();
+        let mut config = crate::net::security::tls::TlsClientConfig::new();
         config.signature_schemes.clear();
         config
             .signature_schemes
             .push(crate::net::security::tls::protocol::SignatureScheme::ECDSA_SECP256R1_SHA256);
-        let conn = ExperimentalTlsConnection::new(config)
+        let conn = TlsConnectionCore::new(config)
             .expect("test TLS connection entropy is available");
 
         let result = conn.dispatch_tls13_signature_verification(

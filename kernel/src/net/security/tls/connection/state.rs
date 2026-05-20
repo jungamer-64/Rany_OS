@@ -3,33 +3,184 @@
 // ============================================================================
 
 use super::super::{
-    CipherSuite, ServerPublicKey, TLS_SERVER_NAME_CAPACITY, TlsBytes, TlsError, TlsResult,
-    TlsState, TlsVersion,
+    NegotiatedCipherSuite, ServerPublicKey, TlsBytes, TlsError, TlsResult, TlsServerName,
 };
 use crate::net::payload::{append_payload, move_payload_window_owned};
 use crate::net::security::ecdh;
-use arrayvec::ArrayString;
 use kernel_api::resource::net::PacketPayload;
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct InitialPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClientHelloSentPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ServerHelloReceivedPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct HelloRetryPendingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EncryptedExtensionsPendingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CertificatePendingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct CertificateVerifyPendingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ServerFinishedPendingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ServerFinishedReceivedPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct EstablishedPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClosingPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct ClosedPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct FailedPhase;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum TlsConnectionPhase {
+    Initial(InitialPhase),
+    ClientHelloSent(ClientHelloSentPhase),
+    ServerHelloReceived(ServerHelloReceivedPhase),
+    HelloRetryPending(HelloRetryPendingPhase),
+    EncryptedExtensionsPending(EncryptedExtensionsPendingPhase),
+    CertificatePending(CertificatePendingPhase),
+    CertificateVerifyPending(CertificateVerifyPendingPhase),
+    ServerFinishedPending(ServerFinishedPendingPhase),
+    ServerFinishedReceived(ServerFinishedReceivedPhase),
+    Established(EstablishedPhase),
+    Closing(ClosingPhase),
+    Closed(ClosedPhase),
+    Failed(FailedPhase),
+}
+
+impl TlsConnectionPhase {
+    pub(super) const fn initial() -> Self {
+        Self::Initial(InitialPhase)
+    }
+
+    pub(super) const fn client_hello_sent() -> Self {
+        Self::ClientHelloSent(ClientHelloSentPhase)
+    }
+
+    pub(super) const fn server_hello_received() -> Self {
+        Self::ServerHelloReceived(ServerHelloReceivedPhase)
+    }
+
+    pub(super) const fn hello_retry_pending() -> Self {
+        Self::HelloRetryPending(HelloRetryPendingPhase)
+    }
+
+    pub(super) const fn encrypted_extensions_pending() -> Self {
+        Self::EncryptedExtensionsPending(EncryptedExtensionsPendingPhase)
+    }
+
+    pub(super) const fn certificate_pending() -> Self {
+        Self::CertificatePending(CertificatePendingPhase)
+    }
+
+    pub(super) const fn certificate_verify_pending() -> Self {
+        Self::CertificateVerifyPending(CertificateVerifyPendingPhase)
+    }
+
+    pub(super) const fn server_finished_pending() -> Self {
+        Self::ServerFinishedPending(ServerFinishedPendingPhase)
+    }
+
+    pub(super) const fn server_finished_received() -> Self {
+        Self::ServerFinishedReceived(ServerFinishedReceivedPhase)
+    }
+
+    pub(super) const fn established() -> Self {
+        Self::Established(EstablishedPhase)
+    }
+
+    pub(super) const fn closing() -> Self {
+        Self::Closing(ClosingPhase)
+    }
+
+    pub(super) const fn closed() -> Self {
+        Self::Closed(ClosedPhase)
+    }
+
+    pub(super) const fn failed() -> Self {
+        Self::Failed(FailedPhase)
+    }
+
+    pub(super) const fn reads_handshake_records(self) -> bool {
+        matches!(
+            self,
+            Self::EncryptedExtensionsPending(_)
+                | Self::CertificatePending(_)
+                | Self::CertificateVerifyPending(_)
+                | Self::ServerFinishedPending(_)
+                | Self::ServerFinishedReceived(_)
+        )
+    }
+
+    pub(super) const fn is_established(self) -> bool {
+        matches!(self, Self::Established(_))
+    }
+
+    pub(super) const fn is_server_finished_received(self) -> bool {
+        matches!(self, Self::ServerFinishedReceived(_))
+    }
+
+    pub(super) const fn is_hello_retry_pending(self) -> bool {
+        matches!(self, Self::HelloRetryPending(_))
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum NegotiatedTlsParameters {
+    Pending,
+    Tls13 {
+        cipher: NegotiatedCipherSuite,
+    },
+}
+
+impl NegotiatedTlsParameters {
+    pub(super) const fn pending() -> Self {
+        Self::Pending
+    }
+
+    pub(super) const fn tls13(cipher: NegotiatedCipherSuite) -> Self {
+        Self::Tls13 { cipher }
+    }
+
+    pub(super) fn cipher(self) -> TlsResult<NegotiatedCipherSuite> {
+        match self {
+            Self::Pending => Err(TlsError::HandshakeFailure),
+            Self::Tls13 { cipher } => Ok(cipher),
+        }
+    }
+}
+
 pub(super) struct NegotiationState {
-    pub(super) server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
-    pub(super) state: TlsState,
-    pub(super) negotiated_version: Option<TlsVersion>,
-    pub(super) negotiated_cipher: Option<CipherSuite>,
+    pub(super) server_name: Option<TlsServerName>,
+    pub(super) phase: TlsConnectionPhase,
+    pub(super) negotiated: NegotiatedTlsParameters,
     pub(super) client_random: [u8; 32],
     pub(super) server_random: [u8; 32],
 }
 
 impl NegotiationState {
-    pub(super) fn new(
-        server_name: Option<ArrayString<TLS_SERVER_NAME_CAPACITY>>,
-        client_random: [u8; 32],
-    ) -> Self {
+    pub(super) fn new(server_name: Option<TlsServerName>, client_random: [u8; 32]) -> Self {
         Self {
             server_name,
-            state: TlsState::Initial,
-            negotiated_version: None,
-            negotiated_cipher: None,
+            phase: TlsConnectionPhase::initial(),
+            negotiated: NegotiatedTlsParameters::pending(),
             client_random,
             server_random: [0; 32],
         }
@@ -176,7 +327,7 @@ pub(super) struct Tls13State {
     pub(super) hs_write_iv: TlsBytes<16>,
     pub(super) hs_read_seq: TlsSeqNo,
     pub(super) hs_write_seq: TlsSeqNo,
-    pub(super) pending_key_update_response: bool,
+    pub(super) key_update_response: KeyUpdateResponseState,
 }
 
 impl Default for Tls13State {
@@ -192,7 +343,33 @@ impl Default for Tls13State {
             hs_write_iv: TlsBytes::new(),
             hs_read_seq: TlsSeqNo::new(),
             hs_write_seq: TlsSeqNo::new(),
-            pending_key_update_response: false,
+            key_update_response: KeyUpdateResponseState::idle(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum KeyUpdateResponseState {
+    Idle,
+    Required,
+}
+
+impl KeyUpdateResponseState {
+    pub(super) const fn idle() -> Self {
+        Self::Idle
+    }
+
+    pub(super) fn require(&mut self) {
+        *self = Self::Required;
+    }
+
+    pub(super) fn take_required(&mut self) -> bool {
+        match *self {
+            Self::Idle => false,
+            Self::Required => {
+                *self = Self::Idle;
+                true
+            }
         }
     }
 }

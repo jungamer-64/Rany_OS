@@ -77,17 +77,35 @@ pub struct X509Certificate<'a> {
     pub extended_key_usage: Option<ExtendedKeyUsage>,
 }
 
-pub struct X509VerificationContext<'a> {
+pub struct TlsServerVerificationContext<'a> {
     pub now_unix: u64,
     pub server_name: Option<&'a str>,
     pub trusted_roots: &'a [PayloadSpanRef<'a>],
-    pub allow_subject_cn_fallback: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct VerifiedServerCertificate {
+    pub public_key: VerifiedServerPublicKey,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum VerifiedServerPublicKey {
+    Rsa {
+        modulus: ArrayVec<u8, 1024>,
+        exponent: ArrayVec<u8, 8>,
+    },
+    EcdsaP256 {
+        public_key: ArrayVec<u8, 65>,
+    },
+    EcdsaP384 {
+        public_key: ArrayVec<u8, 97>,
+    },
 }
 
 pub struct X509Parser;
 
 pub enum CertificatePolicy<'ctx> {
-    Tls13ServerAuth(X509VerificationContext<'ctx>),
+    Tls13ServerAuth(TlsServerVerificationContext<'ctx>),
 }
 
 impl X509Certificate<'_> {
@@ -646,7 +664,7 @@ fn parse_certificate_outer<'a>(outer_value: PayloadSpanRef<'a>) -> Option<X509Ce
 }
 
 impl<'ctx> CertificatePolicy<'ctx> {
-    pub fn verify_chain<'a>(&self, chain: &[PayloadSpanRef<'a>]) -> Option<SubjectPublicKeyInfo> {
+    pub fn verify_chain<'a>(&self, chain: &[PayloadSpanRef<'a>]) -> Option<VerifiedServerCertificate> {
         match self {
             CertificatePolicy::Tls13ServerAuth(context) => {
                 validate_tls13_server_auth_chain(chain, context)
@@ -688,8 +706,8 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
 
 fn validate_tls13_server_auth_chain<'a, 'ctx>(
     chain: &[PayloadSpanRef<'a>],
-    context: &X509VerificationContext<'ctx>,
-) -> Option<SubjectPublicKeyInfo> {
+    context: &TlsServerVerificationContext<'ctx>,
+) -> Option<VerifiedServerCertificate> {
     if chain.is_empty() || chain.len() > 8 {
         return None;
     }
@@ -708,7 +726,7 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
     let leaf = certs.first()?;
     validate_tls13_leaf_usage(leaf)?;
     if let Some(name) = context.server_name {
-        if !match_hostname(leaf, name, context.allow_subject_cn_fallback) {
+        if !match_hostname(leaf, name, false) {
             return None;
         }
     }
@@ -731,9 +749,26 @@ fn validate_tls13_server_auth_chain<'a, 'ctx>(
         }
     }
     if trusted {
-        Some(certs.remove(0).subject_public_key_info)
+        Some(VerifiedServerCertificate {
+            public_key: verify_server_public_key(certs.remove(0).subject_public_key_info)?,
+        })
     } else {
         None
+    }
+}
+
+fn verify_server_public_key(spki: SubjectPublicKeyInfo) -> Option<VerifiedServerPublicKey> {
+    match spki {
+        SubjectPublicKeyInfo::Rsa { modulus, exponent } => {
+            Some(VerifiedServerPublicKey::Rsa { modulus, exponent })
+        }
+        SubjectPublicKeyInfo::EcdsaP256 { public_key } => {
+            Some(VerifiedServerPublicKey::EcdsaP256 { public_key })
+        }
+        SubjectPublicKeyInfo::EcdsaP384 { public_key } => {
+            Some(VerifiedServerPublicKey::EcdsaP384 { public_key })
+        }
+        SubjectPublicKeyInfo::Unknown => None,
     }
 }
 

@@ -3,10 +3,11 @@
 // ============================================================================
 
 use super::{
-    AlertDescription, CipherSuite, ContentType, ExperimentalTlsConnection, GeneratedPacketWriter,
+    AlertDescription, CipherSuite, ContentType, TlsConnectionCore, GeneratedPacketWriter,
     HandshakeType, PacketPayload, PacketPayloadView, PayloadSpanRef, TlsBytes, TlsError, TlsResult,
-    TlsState, append_payload,
+    append_payload,
 };
+use super::state::{NegotiatedTlsParameters, TlsConnectionPhase};
 use crate::net::security::tls::crypto::{
     AesGcmKey, SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, chacha20_poly1305_tag_chunks,
     chacha20_xor_chunks_in_place, tls13_derive_traffic_keys, tls13_derive_traffic_keys_sha384,
@@ -46,6 +47,50 @@ impl TlsCiphertextLen {
     }
 }
 
+#[derive(Clone, Copy)]
+struct TlsRecordHeader {
+    content_type: ContentType,
+    body_len: TlsCiphertextLen,
+}
+
+impl TlsRecordHeader {
+    fn parse(bytes: [u8; 5]) -> TlsResult<Self> {
+        Ok(Self {
+            content_type: ContentType::from_u8(bytes[0]).ok_or(TlsError::UnexpectedMessage)?,
+            body_len: TlsCiphertextLen::new(u16::from_be_bytes([bytes[3], bytes[4]]) as usize)?,
+        })
+    }
+
+    fn total_len(self) -> TlsResult<usize> {
+        5usize
+            .checked_add(self.body_len.get())
+            .ok_or(TlsError::DecodeError)
+    }
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct Tls13InnerPlaintext {
+    content_type: ContentType,
+    content_len: usize,
+}
+
+impl Tls13InnerPlaintext {
+    const fn new(content_type: ContentType, content_len: usize) -> Self {
+        Self {
+            content_type,
+            content_len,
+        }
+    }
+
+    const fn content_type(self) -> ContentType {
+        self.content_type
+    }
+
+    pub(crate) const fn content_len(self) -> usize {
+        self.content_len
+    }
+}
+
 fn constant_time_tag_eq(a: &[u8; 16], b: &[u8; 16]) -> bool {
     let mut diff = 0u8;
     for i in 0..16 {
@@ -54,7 +99,7 @@ fn constant_time_tag_eq(a: &[u8; 16], b: &[u8; 16]) -> bool {
     diff == 0
 }
 
-impl ExperimentalTlsConnection {
+impl TlsConnectionCore {
     pub(super) fn set_tls_bytes<const N: usize>(
         slot: &mut TlsBytes<N>,
         data: &[u8],
@@ -142,14 +187,7 @@ impl ExperimentalTlsConnection {
     }
 
     pub(super) fn tls13_reads_handshake_records(&self) -> bool {
-        matches!(
-            self.negotiation.state,
-            TlsState::Tls13WaitEncryptedExtensions
-                | TlsState::Tls13WaitCertificate
-                | TlsState::Tls13WaitCertificateVerify
-                | TlsState::Tls13WaitFinished
-                | TlsState::Tls13ServerFinishedReceived
-        )
+        self.negotiation.phase.reads_handshake_records()
     }
 
     pub(super) fn decrypt_tls13_record_payload(
@@ -157,11 +195,8 @@ impl ExperimentalTlsConnection {
         payload: &mut PacketPayload,
         body_offset: usize,
         record_len: usize,
-    ) -> TlsResult<(u8, usize)> {
-        let cipher = self
-            .negotiation
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+    ) -> TlsResult<Tls13InnerPlaintext> {
+        let cipher = self.negotiation.negotiated.cipher()?.cipher();
         if record_len < 16 {
             return Err(TlsError::DecodeError);
         }
@@ -267,43 +302,39 @@ impl ExperimentalTlsConnection {
         let header = record_span
             .read_array::<5>(0)
             .ok_or(TlsError::DecodeError)?;
-        let content_type = header[0];
-        let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-        let record_len = TlsCiphertextLen::new(record_len)?.get();
+        let header = TlsRecordHeader::parse(header)?;
+        let record_len = header.body_len.get();
         let body_offset = record_offset.checked_add(5).ok_or(TlsError::DecodeError)?;
         let body = PayloadSpanRef::from_range(record, body_offset, record_len)
             .ok_or(TlsError::DecodeError)?;
 
-        match ContentType::from_u8(content_type) {
-            Some(ContentType::Handshake) => self.process_handshake(body)?,
-            Some(ContentType::Alert) => self.handle_alert_payload(body)?,
-            Some(ContentType::ApplicationData) => {
-                let (inner_ct, inner_len) =
-                    self.decrypt_tls13_record_payload(record, body_offset, record_len)?;
-                let inner_span = PayloadSpanRef::from_range(record, body_offset, inner_len)
+        match header.content_type {
+            ContentType::Handshake => self.process_handshake(body)?,
+            ContentType::Alert => self.handle_alert_payload(body)?,
+            ContentType::ApplicationData => {
+                let inner = self.decrypt_tls13_record_payload(record, body_offset, record_len)?;
+                let inner_span = PayloadSpanRef::from_range(record, body_offset, inner.content_len())
                     .ok_or(TlsError::DecodeError)?;
-                match ContentType::from_u8(inner_ct) {
-                    Some(ContentType::ApplicationData) => {
+                match inner.content_type() {
+                    ContentType::ApplicationData => {
                         let owned = crate::net::payload::clone_payload_window_owned(
                             record,
                             body_offset,
-                            inner_len,
+                            inner.content_len(),
                         )
                         .ok_or(TlsError::DecodeError)?;
                         append_payload(plaintext, owned);
                     }
-                    Some(ContentType::Handshake) => {
-                        if self.negotiation.state == TlsState::Established {
+                    ContentType::Handshake => {
+                        if self.negotiation.phase.is_established() {
                             self.tls13_process_post_handshake(inner_span)?;
                         } else {
                             self.process_handshake(inner_span)?;
                         }
                     }
-                    Some(ContentType::Alert) => self.handle_alert_payload(inner_span)?,
-                    _ => {}
+                    ContentType::Alert => self.handle_alert_payload(inner_span)?,
                 }
             }
-            _ => {}
         }
         Ok(false)
     }
@@ -323,11 +354,8 @@ impl ExperimentalTlsConnection {
             let header = view
                 .read_array::<5>(consumed)
                 .ok_or(TlsError::DecodeError)?;
-            let record_len = u16::from_be_bytes([header[3], header[4]]) as usize;
-            let record_len = TlsCiphertextLen::new(record_len)?.get();
-            let total_len = 5usize
-                .checked_add(record_len)
-                .ok_or(TlsError::DecodeError)?;
+            let header = TlsRecordHeader::parse(header)?;
+            let total_len = header.total_len()?;
             if remaining < total_len {
                 break;
             }
@@ -352,9 +380,9 @@ impl ExperimentalTlsConnection {
         }
         let description = payload.read_u8(1).ok_or(TlsError::DecodeError)?;
         if description == AlertDescription::CloseNotify as u8 {
-            self.negotiation.state = TlsState::Closed;
+            self.negotiation.phase = TlsConnectionPhase::closed();
         } else {
-            self.negotiation.state = TlsState::Error;
+            self.negotiation.phase = TlsConnectionPhase::failed();
             return Err(TlsError::Alert(description));
         }
         Ok(())
@@ -365,32 +393,43 @@ impl ExperimentalTlsConnection {
         decrypted: PacketPayload,
         plaintext: &mut PacketPayload,
     ) -> TlsResult<()> {
-        if let Some((inner_ct, inner_len)) = Self::tls13_split_content_type_payload(&decrypted) {
-            match ContentType::from_u8(inner_ct) {
-                Some(ContentType::ApplicationData) => {
+        if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
+            match inner.content_type() {
+                ContentType::ApplicationData => {
                     let inner_payload =
-                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
-                            .ok_or(TlsError::DecodeError)?;
+                        crate::net::payload::move_payload_window_owned(
+                            decrypted,
+                            0,
+                            inner.content_len(),
+                        )
+                        .ok_or(TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
-                Some(ContentType::Handshake) => {
+                ContentType::Handshake => {
                     let inner_payload =
-                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
-                            .ok_or(TlsError::DecodeError)?;
-                    if self.negotiation.state == TlsState::Established {
+                        crate::net::payload::move_payload_window_owned(
+                            decrypted,
+                            0,
+                            inner.content_len(),
+                        )
+                        .ok_or(TlsError::DecodeError)?;
+                    if self.negotiation.phase.is_established() {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
                         self.tls13_process_post_handshake(inner_data)?;
                     } else {
                         self.process_handshake(PayloadSpanRef::from_payload(&inner_payload))?;
                     }
                 }
-                Some(ContentType::Alert) => {
+                ContentType::Alert => {
                     let inner_payload =
-                        crate::net::payload::move_payload_window_owned(decrypted, 0, inner_len)
-                            .ok_or(TlsError::DecodeError)?;
+                        crate::net::payload::move_payload_window_owned(
+                            decrypted,
+                            0,
+                            inner.content_len(),
+                        )
+                        .ok_or(TlsError::DecodeError)?;
                     self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
                 }
-                _ => {}
             }
         }
         Ok(())
@@ -430,10 +469,7 @@ impl ExperimentalTlsConnection {
         is_handshake: bool,
     ) -> TlsResult<PacketPayload> {
         let plaintext_len = TlsPlaintextLen::new(inner_plaintext.total_len())?.get();
-        let cipher = self
-            .negotiation
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self.negotiation.negotiated.cipher()?.cipher();
         let (key, iv, seq) = if is_handshake {
             (
                 &self.tls13.hs_write_key,
@@ -520,24 +556,19 @@ impl ExperimentalTlsConnection {
         self.tls13_encrypt_owned_inner(payload, false)
     }
 
-    pub fn encrypt_payload(&mut self, payload: PacketPayload) -> TlsResult<PacketPayload> {
-        if self.negotiation.state != TlsState::Established {
-            return Err(TlsError::NotConnected);
-        }
-        self.tls13_encrypt_application_payload(payload)
-    }
-
     pub(crate) fn tls13_split_content_type_payload(
         decrypted: &PacketPayload,
-    ) -> Option<(u8, usize)> {
+    ) -> Option<Tls13InnerPlaintext> {
         Self::tls13_split_content_type_span(PayloadSpanRef::from_payload(decrypted))
     }
 
-    pub(crate) fn tls13_split_content_type_span(span: PayloadSpanRef<'_>) -> Option<(u8, usize)> {
+    pub(crate) fn tls13_split_content_type_span(
+        span: PayloadSpanRef<'_>,
+    ) -> Option<Tls13InnerPlaintext> {
         for i in (0..span.total_len()).rev() {
             let byte = span.byte_at(i)?;
             if byte != 0 {
-                return Some((byte, i));
+                return Some(Tls13InnerPlaintext::new(ContentType::from_u8(byte)?, i));
             }
         }
         None
@@ -572,10 +603,7 @@ impl ExperimentalTlsConnection {
 
     pub(super) fn tls13_process_key_update(&mut self, data: PayloadSpanRef<'_>) -> TlsResult<()> {
         let request_update = data.read_u8(0).ok_or(TlsError::DecodeError)?;
-        let cipher = self
-            .negotiation
-            .negotiated_cipher
-            .unwrap_or(CipherSuite::TLS_AES_128_GCM_SHA256);
+        let cipher = self.negotiation.negotiated.cipher()?.cipher();
         let key_len = cipher.key_len();
         let hash_len = if cipher.uses_sha384() {
             SHA384_OUTPUT_SIZE
@@ -623,18 +651,18 @@ impl ExperimentalTlsConnection {
         self.record.read_seq.reset();
 
         if request_update == 1 {
-            self.tls13.pending_key_update_response = true;
+            self.tls13.key_update_response.require();
         }
         Ok(())
     }
 
-    pub fn build_key_update_response_payload(&mut self) -> Option<PacketPayload> {
-        if !self.tls13.pending_key_update_response
-            || self.negotiation.state != TlsState::Established
-        {
-            return None;
+    pub(super) fn take_key_update_response_payload(&mut self) -> TlsResult<Option<PacketPayload>> {
+        if !self.tls13.key_update_response.take_required() {
+            return Ok(None);
         }
-        self.tls13.pending_key_update_response = false;
+        if !self.negotiation.phase.is_established() {
+            return Err(TlsError::NotConnected);
+        }
         let inner = [
             HandshakeType::KeyUpdate as u8,
             0,
@@ -643,25 +671,21 @@ impl ExperimentalTlsConnection {
             0,
             ContentType::Handshake as u8,
         ];
-        self.tls13_encrypt_record(&inner, false).ok()
+        Ok(Some(self.tls13_encrypt_record(&inner, false)?))
     }
 
-    pub fn is_handshake_complete(&self) -> bool {
-        self.negotiation.state == TlsState::Established
-    }
-
-    pub fn send_close_notify(&mut self) -> Option<PacketPayload> {
+    pub(super) fn send_close_notify(&mut self) -> TlsResult<PacketPayload> {
         if self.record.write_key.is_empty() {
-            return None;
+            return Err(TlsError::NotConnected);
         }
         let inner = [
             1,
             AlertDescription::CloseNotify as u8,
             ContentType::Alert as u8,
         ];
-        let record = self.tls13_encrypt_record(&inner, false).ok()?;
-        self.negotiation.state = TlsState::Closing;
-        Some(record)
+        let record = self.tls13_encrypt_record(&inner, false)?;
+        self.negotiation.phase = TlsConnectionPhase::closing();
+        Ok(record)
     }
 
     #[cfg(feature = "qemu-test-export")]
@@ -690,7 +714,7 @@ impl ExperimentalTlsConnection {
             matches && offset == expected.len()
         }
 
-        let Ok(mut conn) = Self::new(super::TlsConfig::new()) else {
+        let Ok(mut conn) = Self::new(super::TlsClientConfig::new()) else {
             return false;
         };
         let key = [0x11; 16];
@@ -702,8 +726,15 @@ impl ExperimentalTlsConnection {
         {
             return false;
         }
-        conn.negotiation.negotiated_cipher = Some(CipherSuite::TLS_AES_128_GCM_SHA256);
-        conn.negotiation.state = TlsState::Established;
+        let Ok(cipher) = conn
+            .config
+            .cipher_suites
+            .negotiate_wire(CipherSuite::TLS_AES_128_GCM_SHA256.wire())
+        else {
+            return false;
+        };
+        conn.negotiation.negotiated = NegotiatedTlsParameters::tls13(cipher);
+        conn.negotiation.phase = TlsConnectionPhase::established();
 
         let Some(alpha) = payload(b"alpha") else {
             return false;
@@ -757,25 +788,30 @@ mod tests {
         matches && offset == expected.len()
     }
 
-    fn establish_loopback_record_keys(conn: &mut ExperimentalTlsConnection) {
+    fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
         let key = [0x11; 16];
         let iv = [0x22; 12];
-        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.read_key, &key)
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_key, &key)
             .expect("read key fits");
-        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.write_key, &key)
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_key, &key)
             .expect("write key fits");
-        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.read_iv, &iv)
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_iv, &iv)
             .expect("read iv fits");
-        ExperimentalTlsConnection::set_tls_bytes(&mut conn.record.write_iv, &iv)
+        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_iv, &iv)
             .expect("write iv fits");
-        conn.negotiation.negotiated_cipher = Some(CipherSuite::TLS_AES_128_GCM_SHA256);
-        conn.negotiation.state = TlsState::Established;
+        conn.negotiation.negotiated = NegotiatedTlsParameters::tls13(
+            conn.config
+                .cipher_suites
+                .negotiate_wire(CipherSuite::TLS_AES_128_GCM_SHA256.wire())
+                .expect("default cipher suite is offered"),
+        );
+        conn.negotiation.phase = TlsConnectionPhase::established();
     }
 
     #[test]
     fn encrypted_application_records_are_processed_from_one_ingress_payload() {
-        let config = super::super::TlsConfig::new();
-        let mut conn = ExperimentalTlsConnection::new(config)
+        let config = super::super::TlsClientConfig::new();
+        let mut conn = TlsConnectionCore::new(config)
             .expect("test TLS connection entropy is available");
         establish_loopback_record_keys(&mut conn);
 
