@@ -140,64 +140,53 @@ impl UdpProcessor {
         &self,
         runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
-        packet: PacketPayload,
-        offset: usize,
-        len: usize,
+        packet: OwnedPayloadWindow,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
         let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return Err((UdpResult::NoIngressInterface, packet));
+            return Err((
+                UdpResult::NoIngressInterface,
+                packet.into_original_payload(),
+            ));
         };
-        self.process_window_impl(
-            runtime,
-            resolved_if_id,
-            packet,
-            offset,
-            len,
-            src_ip,
-            dst_ip,
-            ttl,
-        )
+        self.process_window_impl(runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
     }
 
     fn process_window_impl(
         &self,
         runtime: NetRuntimeHandle,
         if_id: NetIfId,
-        packet: PacketPayload,
-        offset: usize,
-        len: usize,
+        packet: OwnedPayloadWindow,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
         use core::sync::atomic::Ordering;
 
-        let Some(segment) = crate::net::payload::PayloadSpanRef::from_range(&packet, offset, len)
-        else {
-            return Err((UdpResult::Invalid, packet));
+        let Some(segment) = packet.span() else {
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         let Some(header) = segment.read_array::<8>(0) else {
-            return Err((UdpResult::Invalid, packet));
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         let length = u16::from_be_bytes([header[4], header[5]]) as usize;
         if !(UdpHeader::SIZE..=segment.total_len()).contains(&length)
             || length != segment.total_len()
         {
-            return Err((UdpResult::Invalid, packet));
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         }
 
         let checksum = u16::from_be_bytes([header[6], header[7]]);
         if checksum != 0 {
             let pseudo = pseudo_header_checksum(src_ip, dst_ip, IpProtocol::Udp, length as u16);
             let Some(checksum_span) = segment.subspan(0, length) else {
-                return Err((UdpResult::Invalid, packet));
+                return Err((UdpResult::Invalid, packet.into_original_payload()));
             };
             if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
                 self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
-                return Err((UdpResult::ChecksumError, packet));
+                return Err((UdpResult::ChecksumError, packet.into_original_payload()));
             }
         }
 
@@ -208,18 +197,22 @@ impl UdpProcessor {
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let family = SocketFamily::Ipv4;
         let Some(endpoint) = self.lookup_socket(runtime, if_id, family, dst_port) else {
-            return Err((UdpResult::NoEndpoint, packet));
+            return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
+        let Ok(udp_segment) = packet.into_payload() else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err((UdpResult::Invalid, PacketPayload::default()));
+        };
         let Some(window) = VerifiedPayloadWindow::for_payload(
-            &packet,
-            offset + UdpHeader::SIZE,
+            &udp_segment,
+            UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Ok(udp_payload) = window.move_from(packet) else {
+        let Ok(udp_payload) = window.move_from(udp_segment) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -240,68 +233,57 @@ impl UdpProcessor {
         &self,
         runtime: NetRuntimeHandle,
         if_id: Option<NetIfId>,
-        packet: PacketPayload,
-        offset: usize,
-        len: usize,
+        packet: OwnedPayloadWindow,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
         let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return Err((UdpResult::NoIngressInterface, packet));
+            return Err((
+                UdpResult::NoIngressInterface,
+                packet.into_original_payload(),
+            ));
         };
-        self.process_window_v6_impl(
-            runtime,
-            resolved_if_id,
-            packet,
-            offset,
-            len,
-            src_ip,
-            dst_ip,
-            ttl,
-        )
+        self.process_window_v6_impl(runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
     }
 
     fn process_window_v6_impl(
         &self,
         runtime: NetRuntimeHandle,
         if_id: NetIfId,
-        packet: PacketPayload,
-        offset: usize,
-        len: usize,
+        packet: OwnedPayloadWindow,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
         use core::sync::atomic::Ordering;
 
-        let Some(segment) = crate::net::payload::PayloadSpanRef::from_range(&packet, offset, len)
-        else {
-            return Err((UdpResult::Invalid, packet));
+        let Some(segment) = packet.span() else {
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         let Some(header) = segment.read_array::<8>(0) else {
-            return Err((UdpResult::Invalid, packet));
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         let length = u16::from_be_bytes([header[4], header[5]]) as usize;
         if !(UdpHeader::SIZE..=segment.total_len()).contains(&length)
             || length != segment.total_len()
         {
-            return Err((UdpResult::Invalid, packet));
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         }
 
         let checksum = u16::from_be_bytes([header[6], header[7]]);
         if checksum == 0 {
             self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::ChecksumError, packet));
+            return Err((UdpResult::ChecksumError, packet.into_original_payload()));
         }
 
         let pseudo = ipv6_pseudo_header_checksum(&src_ip, &dst_ip, IpProtocol::Udp, length as u32);
         let Some(checksum_span) = segment.subspan(0, length) else {
-            return Err((UdpResult::Invalid, packet));
+            return Err((UdpResult::Invalid, packet.into_original_payload()));
         };
         if Self::payload_span_checksum(checksum_span, pseudo) != 0 {
             self.stats.checksum_errors.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::ChecksumError, packet));
+            return Err((UdpResult::ChecksumError, packet.into_original_payload()));
         }
 
         let src = crate::net::l4::EndpointAddr::new_v6(
@@ -311,18 +293,22 @@ impl UdpProcessor {
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
         let family = SocketFamily::Ipv6;
         let Some(endpoint) = self.lookup_socket(runtime, if_id, family, dst_port) else {
-            return Err((UdpResult::NoEndpoint, packet));
+            return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
+        let Ok(udp_segment) = packet.into_payload() else {
+            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+            return Err((UdpResult::Invalid, PacketPayload::default()));
+        };
         let Some(window) = VerifiedPayloadWindow::for_payload(
-            &packet,
-            offset + UdpHeader::SIZE,
+            &udp_segment,
+            UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Ok(udp_payload) = window.move_from(packet) else {
+        let Ok(udp_payload) = window.move_from(udp_segment) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
@@ -509,13 +495,12 @@ mod tests {
     fn process_window_without_ingress_interface_reports_missing_interface() {
         let runtime = create_runtime().expect("test runtime allocation");
         let processor = UdpProcessor::new();
+        let packet = OwnedPayloadWindow::whole(PacketPayload::default());
 
         let Err((result, _)) = processor.process_window_on(
             runtime,
             None,
-            PacketPayload::default(),
-            0,
-            0,
+            packet,
             Ipv4Address::ANY,
             Ipv4Address::ANY,
             64,

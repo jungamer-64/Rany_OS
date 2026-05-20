@@ -283,15 +283,21 @@ impl NetworkStack {
                     return;
                 };
                 let original_packet = kernel_api::resource::net::PacketPayload::single(packet_ref);
-                self.process_udp_payload_v6(
-                    Some(ingress_if_id),
-                    original_packet,
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
                     offset,
                     payload_len,
-                    src,
-                    dst,
-                    hop_limit,
-                );
+                ) else {
+                    self.stats().record_rx_error();
+                    return;
+                };
+                let Some(packet) =
+                    crate::net::payload::OwnedPayloadWindow::new(original_packet, window)
+                else {
+                    self.stats().record_rx_error();
+                    return;
+                };
+                self.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
             }
             Ipv6ProcessResult::Reassembled(payload) => {
                 // Reassembled IPv6 payload is offloaded to endpoint async path.

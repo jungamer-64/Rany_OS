@@ -6,7 +6,6 @@
 //! This module implements zero-copy UDP packet processing
 //! for the ExoRust networking stack.
 
-use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, data_checksum, pseudo_header_checksum};
 use crate::net::l3::ipv6::{Ipv6Address, ipv6_pseudo_header_checksum};
 use crate::net::l4::EndpointAddr;
@@ -14,7 +13,7 @@ use crate::net::l4::socket::{
     Socket, allocate_udp_ephemeral_port_in, bind_udp_dual_stack_in, unregister_socket_in,
 };
 use crate::net::l4::types::EndpointError;
-use crate::net::payload::{PacketPayloadView, VerifiedPayloadWindow};
+use crate::net::payload::{OwnedPayloadWindow, PacketPayloadView, VerifiedPayloadWindow};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::CommandDispatch;
 use crate::net::runtime::manager::NetIfId;

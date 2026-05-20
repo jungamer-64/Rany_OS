@@ -398,6 +398,10 @@ impl OwnedPayloadWindow {
         self.window.span(&self.payload)
     }
 
+    pub fn into_original_payload(self) -> PacketPayload {
+        self.payload
+    }
+
     pub fn into_payload(self) -> Result<PacketPayload, PacketWindowError> {
         if self.window.len == 0 {
             return Ok(PacketPayload::default());

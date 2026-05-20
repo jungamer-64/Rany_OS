@@ -20,9 +20,7 @@ impl RuntimeCommandHandler {
         data_len: usize,
         ttl: u8,
         stack: &mut crate::net::runtime::stack::NetworkStack,
-        original_packet: PacketPayload,
-        udp_offset: usize,
-        udp_len: usize,
+        packet: crate::net::payload::OwnedPayloadWindow,
         current_time: u64,
     ) -> EventHandleResult {
         if data_len > u16::MAX as usize {
@@ -34,9 +32,7 @@ impl RuntimeCommandHandler {
         let _ = dst_port;
         stack.process_udp_payload(
             if_id,
-            original_packet,
-            udp_offset,
-            udp_len,
+            packet,
             crate::net::l3::ipv4::Ipv4Address::new(src_ip),
             crate::net::l3::ipv4::Ipv4Address::new(dst_ip),
             ttl,

@@ -27,7 +27,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
-use kernel_api::resource::net::{PacketPayload, PacketRef};
+use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
@@ -182,18 +182,56 @@ pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: 
         .remove(&group_id);
 }
 
-pub(crate) fn packet_window_to_tx_segments(
-    packets: &[PacketRef],
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TxFragmentWindow {
     offset: usize,
-    len: usize,
-) -> Option<Vec<NetTxSegment>> {
-    if len == 0 {
-        return None;
+    len: PacketByteCount,
+}
+
+impl TxFragmentWindow {
+    pub(crate) fn new(packets: &[PacketRef], offset: usize, len: usize) -> Option<Self> {
+        let len = PacketByteCount::new(len)?;
+        let total_len = packets
+            .iter()
+            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
+        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self { offset, len })
     }
 
+    const fn offset(self) -> usize {
+        self.offset
+    }
+
+    const fn len(self) -> usize {
+        self.len.get()
+    }
+}
+
+pub(crate) struct OwnedTxPayloadWindow<'a> {
+    packets: &'a [PacketRef],
+    window: TxFragmentWindow,
+}
+
+impl<'a> OwnedTxPayloadWindow<'a> {
+    pub(crate) const fn new(packets: &'a [PacketRef], window: TxFragmentWindow) -> Self {
+        Self { packets, window }
+    }
+
+    pub(crate) fn to_segments(&self) -> Option<Vec<NetTxSegment>> {
+        tx_payload_window_to_segments(self.packets, self.window)
+    }
+}
+
+fn tx_payload_window_to_segments(
+    packets: &[PacketRef],
+    window: TxFragmentWindow,
+) -> Option<Vec<NetTxSegment>> {
     let mut descriptors = Vec::new();
     let mut cursor = 0usize;
-    let window_end = offset.checked_add(len)?;
+    let offset = window.offset();
+    let window_end = offset.checked_add(window.len())?;
     for packet in packets {
         let packet_start = cursor;
         let packet_end = cursor.checked_add(packet.len())?;
@@ -2612,7 +2650,10 @@ mod tests {
         let base_device_addr = packet.device_address();
         let packets = alloc::vec![packet];
 
-        let descriptors = packet_window_to_tx_segments(&packets, 8, 16).expect("window");
+        let window = TxFragmentWindow::new(&packets, 8, 16).expect("window");
+        let descriptors = OwnedTxPayloadWindow::new(&packets, window)
+            .to_segments()
+            .expect("segments");
 
         assert_eq!(descriptors.len(), 1);
         assert_eq!(descriptors[0].cpu_ptr(), (base_ptr + 8) as *const u8);
@@ -2626,7 +2667,12 @@ mod tests {
         let packet = test_packet_ref_with_device_addr(16, u64::MAX - 4);
         let packets = alloc::vec![packet];
 
-        assert!(packet_window_to_tx_segments(&packets, 8, 4).is_none());
+        let window = TxFragmentWindow::new(&packets, 8, 4).expect("window");
+        assert!(
+            OwnedTxPayloadWindow::new(&packets, window)
+                .to_segments()
+                .is_none()
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

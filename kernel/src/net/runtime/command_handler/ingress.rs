@@ -299,11 +299,21 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    stack.process_udp_payload(
-                        Some(ingress_if_id),
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         header_len,
                         transport_len,
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    let Some(packet) =
+                        crate::net::payload::OwnedPayloadWindow::new(payload, window)
+                    else {
+                        return EventHandleResult::Success;
+                    };
+                    stack.process_udp_payload(
+                        Some(ingress_if_id),
+                        packet,
                         src_ip,
                         dst_ip,
                         ttl,
@@ -434,15 +444,19 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    stack.process_udp_payload_v6(
-                        Some(ingress_if_id),
-                        payload,
+                    let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                        &payload,
                         payload_offset,
                         transport_len,
-                        src,
-                        dst,
-                        hop_limit,
-                    );
+                    ) else {
+                        return EventHandleResult::Success;
+                    };
+                    let Some(packet) =
+                        crate::net::payload::OwnedPayloadWindow::new(payload, window)
+                    else {
+                        return EventHandleResult::Success;
+                    };
+                    stack.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                     let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
@@ -635,6 +649,18 @@ impl RuntimeCommandHandler {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
                 let original_packet = PacketPayload::single(packet_ref);
+                let Some(window) = crate::net::payload::VerifiedPayloadWindow::for_payload(
+                    &original_packet,
+                    offset,
+                    data_len + 8,
+                ) else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
+                let Some(packet) =
+                    crate::net::payload::OwnedPayloadWindow::new(original_packet, window)
+                else {
+                    return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                };
                 self.handle_udp_ingress_with_stack(
                     runtime,
                     Some(ingress_if_id),
@@ -645,9 +671,7 @@ impl RuntimeCommandHandler {
                     data_len,
                     ttl,
                     stack,
-                    original_packet,
-                    offset,
-                    data_len + 8,
+                    packet,
                     current_time,
                 );
             }

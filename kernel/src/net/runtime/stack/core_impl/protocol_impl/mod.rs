@@ -179,9 +179,7 @@ impl NetworkStack {
     pub fn process_udp_payload(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
-        original_packet: PacketPayload,
-        udp_offset: usize,
-        udp_len: usize,
+        packet: crate::net::payload::OwnedPayloadWindow,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
@@ -197,9 +195,7 @@ impl NetworkStack {
             state.udp.process_window_on(
                 self.runtime,
                 Some(resolved_if_id),
-                original_packet,
-                udp_offset,
-                udp_len,
+                packet,
                 src_ip,
                 dst_ip,
                 ttl,
@@ -238,9 +234,7 @@ impl NetworkStack {
     pub(crate) fn process_udp_payload_v6(
         &mut self,
         if_id: Option<crate::net::runtime::manager::NetIfId>,
-        original_packet: PacketPayload,
-        udp_offset: usize,
-        udp_len: usize,
+        packet: crate::net::payload::OwnedPayloadWindow,
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
@@ -255,9 +249,7 @@ impl NetworkStack {
             state.udp.process_window_v6_on(
                 self.runtime,
                 Some(resolved_if_id),
-                original_packet,
-                udp_offset,
-                udp_len,
+                packet,
                 src,
                 dst,
                 hop_limit,

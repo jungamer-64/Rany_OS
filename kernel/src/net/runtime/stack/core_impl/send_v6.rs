@@ -203,8 +203,12 @@ impl NetworkStack {
                 return Err(crate::net::types::NetworkError::BufferTooSmall);
             }
 
-            let descriptors =
-                Self::build_fragment_tx_descriptors(&packet, &owners, offset, fragment_data_len)?;
+            let payload_window = TxFragmentWindow::new(&owners, offset, fragment_data_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let descriptors = Self::build_fragment_tx_descriptors(
+                &packet,
+                OwnedTxPayloadWindow::new(&owners, payload_window),
+            )?;
             let frame_len = packet
                 .len()
                 .checked_add(fragment_data_len)

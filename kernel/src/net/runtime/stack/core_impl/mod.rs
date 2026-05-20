@@ -5,6 +5,7 @@
 use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
+use crate::net::runtime::device::{OwnedTxPayloadWindow, TxFragmentWindow};
 use kernel_api::resource::net::{PacketPayload, PacketRef};
 use kernel_api::service::netdev::NetTxSegment;
 
@@ -617,18 +618,13 @@ impl NetworkStack {
 
     fn build_fragment_tx_descriptors(
         header: &PacketRef,
-        owners: &[PacketRef],
-        payload_offset: usize,
-        payload_len: usize,
+        payload_window: OwnedTxPayloadWindow<'_>,
     ) -> Result<Vec<NetTxSegment>, crate::net::types::NetworkError> {
         let mut descriptors = Vec::new();
         descriptors.push(Self::tx_segment_for_packet(header)?);
-        let payload_descriptors = crate::net::runtime::device::packet_window_to_tx_segments(
-            owners,
-            payload_offset,
-            payload_len,
-        )
-        .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        let payload_descriptors = payload_window
+            .to_segments()
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         descriptors.extend(payload_descriptors);
         Ok(descriptors)
     }
@@ -891,8 +887,12 @@ impl NetworkStack {
                 more_fragments,
                 fragment_offset_units,
             )?;
-            let descriptors =
-                Self::build_fragment_tx_descriptors(&packet, &owners, offset, fragment_data_len)?;
+            let payload_window = TxFragmentWindow::new(&owners, offset, fragment_data_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let descriptors = Self::build_fragment_tx_descriptors(
+                &packet,
+                OwnedTxPayloadWindow::new(&owners, payload_window),
+            )?;
             let frame_len = packet
                 .len()
                 .checked_add(fragment_data_len)

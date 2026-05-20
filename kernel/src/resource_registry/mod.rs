@@ -28,8 +28,7 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
-    NetPortRuntimeHandle, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, PrimaryPortPolicy,
-    TxSubmission,
+    NetPortRuntimeHandle, NetPortStats, NetRxMeta, NetTxMeta, PrimaryPortPolicy, TxSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
 
