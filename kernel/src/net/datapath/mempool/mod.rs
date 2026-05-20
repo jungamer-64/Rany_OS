@@ -738,11 +738,7 @@ impl Mempool {
         Ok(())
     }
 
-    unsafe fn write_initial_packet_buffer(
-        buffer: NonNull<PacketBuffer>,
-        pool_id: u32,
-        index: u32,
-    ) {
+    unsafe fn write_initial_packet_buffer(buffer: NonNull<PacketBuffer>, pool_id: u32, index: u32) {
         let buffer_ptr = buffer.as_ptr();
         let virt_addr = buffer_ptr as u64;
         let offset = crate::mm::virt::mapping::physical_memory_offset();
@@ -771,7 +767,10 @@ impl Mempool {
         error
     }
 
-    unsafe fn init_buffer_for_alloc(buffer: NonNull<PacketBuffer>, pool: &'static Mempool) -> PacketRef {
+    unsafe fn init_buffer_for_alloc(
+        buffer: NonNull<PacketBuffer>,
+        pool: &'static Mempool,
+    ) -> PacketRef {
         // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
         unsafe {
             core::ptr::write_bytes(
@@ -788,7 +787,9 @@ impl Mempool {
         let buffer = self
             .free_list
             .lock()
-            .map_err(|_| self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList)))?
+            .map_err(|_| {
+                self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList))
+            })?
             .pop()
             .ok_or_else(|| self.record_alloc_failure(MempoolError::OutOfBuffers))?;
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
