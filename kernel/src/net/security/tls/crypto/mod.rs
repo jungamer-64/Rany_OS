@@ -7,6 +7,7 @@ pub mod aes_gcm;
 pub mod chacha20;
 pub mod hkdf;
 pub mod hmac;
+pub mod material;
 pub mod random;
 
 // ── HMAC ────────────────────────────────────────────────────────────────────

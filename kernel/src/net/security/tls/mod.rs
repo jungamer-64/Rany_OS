@@ -26,7 +26,7 @@ mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-pub use config::{TlsClientConfig, TlsClientConfigError, TlsServerName};
+pub use config::{TlsClientConfig, TlsClientConfigError, TlsServerName, TlsTrustAnchors};
 pub use connection::{
     KeyUpdateAction, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep, TlsInboundPlaintext,
 };
@@ -37,4 +37,4 @@ pub use protocol::{CipherSuite, TlsVersion};
 pub(crate) use buffer::TlsBytes;
 pub(crate) use config::{NegotiatedCipherSuite, TLS_CA_CERTS_CAPACITY, TLS_CERT_CHAIN_CAPACITY};
 pub(crate) use credentials::ServerPublicKey;
-pub(crate) use protocol::{AlertDescription, ContentType, HandshakeType};
+pub(crate) use protocol::{AlertDescription, ContentType, HandshakeType, KeyUpdateRequest};

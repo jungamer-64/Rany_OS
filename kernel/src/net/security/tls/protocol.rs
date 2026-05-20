@@ -34,7 +34,7 @@ impl CipherSuite {
     pub const TLS_AES_256_GCM_SHA384: Self = Self::TlsAes256GcmSha384;
     pub const TLS_CHACHA20_POLY1305_SHA256: Self = Self::TlsChacha20Poly1305Sha256;
 
-    pub fn from_wire(value: u16) -> Option<Self> {
+    pub(crate) fn parse_wire(value: u16) -> Option<Self> {
         match value {
             0x1301 => Some(Self::TlsAes128GcmSha256),
             0x1302 => Some(Self::TlsAes256GcmSha384),
@@ -43,7 +43,7 @@ impl CipherSuite {
         }
     }
 
-    pub const fn wire(self) -> u16 {
+    pub(crate) const fn wire(self) -> u16 {
         match self {
             Self::TlsAes128GcmSha256 => 0x1301,
             Self::TlsAes256GcmSha384 => 0x1302,
@@ -91,7 +91,7 @@ impl SignatureScheme {
     pub const RSA_PSS_RSAE_SHA384: Self = Self::RsaPssRsaeSha384;
     pub const RSA_PSS_RSAE_SHA512: Self = Self::RsaPssRsaeSha512;
 
-    pub fn from_wire(value: u16) -> Option<Self> {
+    pub(crate) fn parse_wire(value: u16) -> Option<Self> {
         match value {
             0x0403 => Some(Self::EcdsaSecp256r1Sha256),
             0x0503 => Some(Self::EcdsaSecp384r1Sha384),
@@ -102,7 +102,7 @@ impl SignatureScheme {
         }
     }
 
-    pub const fn wire(self) -> u16 {
+    pub(crate) const fn wire(self) -> u16 {
         match self {
             Self::EcdsaSecp256r1Sha256 => 0x0403,
             Self::EcdsaSecp384r1Sha384 => 0x0503,
@@ -125,7 +125,7 @@ impl NamedGroup {
     pub const SECP384R1: Self = Self::Secp384r1;
     pub const X25519: Self = Self::X25519;
 
-    pub fn from_wire(value: u16) -> Option<Self> {
+    pub(crate) fn parse_wire(value: u16) -> Option<Self> {
         match value {
             0x0017 => Some(Self::Secp256r1),
             0x0018 => Some(Self::Secp384r1),
@@ -134,7 +134,7 @@ impl NamedGroup {
         }
     }
 
-    pub const fn wire(self) -> u16 {
+    pub(crate) const fn wire(self) -> u16 {
         match self {
             Self::Secp256r1 => 0x0017,
             Self::Secp384r1 => 0x0018,
@@ -151,7 +151,7 @@ pub(crate) enum ContentType {
 }
 
 impl ContentType {
-    pub(crate) fn from_u8(v: u8) -> Option<Self> {
+    pub(crate) fn parse_wire(v: u8) -> Option<Self> {
         match v {
             21 => Some(Self::Alert),
             22 => Some(Self::Handshake),
@@ -175,7 +175,7 @@ pub(crate) enum HandshakeType {
 }
 
 impl HandshakeType {
-    pub(crate) fn from_u8(value: u8) -> Option<Self> {
+    pub(crate) fn parse_wire(value: u8) -> Option<Self> {
         match value {
             1 => Some(Self::ClientHello),
             2 => Some(Self::ServerHello),
@@ -194,4 +194,35 @@ impl HandshakeType {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum AlertDescription {
     CloseNotify = 0,
+}
+
+impl AlertDescription {
+    pub(crate) const fn parse_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::CloseNotify),
+            _ => None,
+        }
+    }
+
+    pub(crate) const fn wire(self) -> u8 {
+        match self {
+            Self::CloseNotify => 0,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum KeyUpdateRequest {
+    UpdateNotRequested,
+    UpdateRequested,
+}
+
+impl KeyUpdateRequest {
+    pub(crate) const fn parse_wire(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::UpdateNotRequested),
+            1 => Some(Self::UpdateRequested),
+            _ => None,
+        }
+    }
 }
