@@ -878,7 +878,10 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         return AbiError::NotInitialized as i32;
     }
 
-    let data_len: usize = segments.iter().map(|segment| segment.len()).sum();
+    let data_len: usize = segments
+        .iter()
+        .map(|segment| segment.len().get())
+        .sum();
     if data_len == 0 {
         return AbiError::InvalidParam as i32;
     }
@@ -907,9 +910,9 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         options.vlan_tag = meta.vlan_tag;
     }
 
-    let mut dma_segments = Vec::with_capacity(segments.len());
+    let mut dma_segments = Vec::with_capacity(segments.count());
     for segment in segments.iter() {
-        let segment_len = segment.len();
+        let segment_len = segment.len().get();
         let Ok(len) = u32::try_from(segment_len) else {
             return AbiError::InvalidParam as i32;
         };

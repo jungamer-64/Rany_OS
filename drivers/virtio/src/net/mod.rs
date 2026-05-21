@@ -238,7 +238,7 @@ impl NetVirtQueue {
         for (index, segment) in segments.iter().enumerate() {
             let desc = self.vq.get_desc_mut(data_descs[index]);
             desc.addr = segment.device_addr().get();
-            desc.len = segment.len_bytes() as u32;
+            desc.len = segment.len().get() as u32;
             if index + 1 < data_descs.len() {
                 desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
                 desc.next = data_descs[index + 1];

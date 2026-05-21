@@ -232,10 +232,6 @@ impl NetTxSegment {
     pub const fn len(&self) -> PacketByteCount {
         self.0.len
     }
-
-    pub const fn len_bytes(&self) -> usize {
-        self.0.len.get()
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -642,7 +638,7 @@ mod tests {
         let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, len).expect("valid descriptor");
         assert_eq!(segment.cpu_ptr(), BYTES.as_ptr());
         assert_eq!(segment.device_addr().get(), 1);
-        assert_eq!(segment.len_bytes(), 8);
+        assert_eq!(segment.len().get(), 8);
     }
 
     #[test]

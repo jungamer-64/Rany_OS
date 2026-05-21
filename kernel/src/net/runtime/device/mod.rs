@@ -2728,9 +2728,9 @@ mod tests {
 
         assert_eq!(lease.descriptors.len(), 2);
         assert_eq!(lease.descriptors[0].device_addr().get(), 0x1000);
-        assert_eq!(lease.descriptors[0].len_bytes(), 8);
+        assert_eq!(lease.descriptors[0].len().get(), 8);
         assert_eq!(lease.descriptors[1].device_addr().get(), 0x2000);
-        assert_eq!(lease.descriptors[1].len_bytes(), 16);
+        assert_eq!(lease.descriptors[1].len().get(), 16);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2765,7 +2765,7 @@ mod tests {
         assert_eq!(lease.descriptors.len(), 2);
         assert_eq!(payload_descriptor.cpu_ptr(), (base_ptr + 8) as *const u8);
         assert_eq!(payload_descriptor.device_addr().get(), base_device_addr + 8);
-        assert_eq!(payload_descriptor.len_bytes(), 16);
+        assert_eq!(payload_descriptor.len().get(), 16);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -634,7 +634,7 @@ impl NetDevicePort for NetdevPortAdapter {
                 AbiNetTxSegment::from_checked_parts(
                     segment.cpu_ptr(),
                     segment.device_addr().get(),
-                    segment.len_bytes(),
+                    segment.len(),
                 )
                 .expect("NetTxSegment already validates ABI descriptor invariants")
             })

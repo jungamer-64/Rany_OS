@@ -477,6 +477,18 @@ if rg -n "pub struct NetTxSegment[[:space:]]*\\{|pub cpu_ptr:|pub device_addr:|p
   fail "found public raw NetTxSegment descriptor fields"
 fi
 
+if rg -n "\\blen_bytes\\s*\\(" \
+  interfaces/kernel_api/src/netdev.rs kernel/src/net/runtime/device/mod.rs drivers/virtio/src \
+  >/dev/null; then
+  fail "found raw NetTxSegment byte-length accessor"
+fi
+
+if rg -n "from_checked_parts\\([^\\n]*len:\\s*usize|pub const fn len\\(self\\) -> usize|PacketByteCount::new\\(segment\\.len\\(\\)\\)" \
+  interfaces/kernel_api/src/driver_abi.rs drivers/virtio/src/ffi.rs drivers/mlx5/src/ffi.rs kernel/src/resource_registry/mod.rs \
+  >/dev/null; then
+  fail "found raw ABI TX segment length API"
+fi
+
 if rg -n "PacketRef::from_vec|PacketPayload::from_vec|PacketPayload::into_vec|\\.to_vec\\(\\)" \
   kernel/src/net interfaces/kernel_api/src \
   >/dev/null; then

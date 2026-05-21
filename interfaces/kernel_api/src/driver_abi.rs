@@ -39,6 +39,8 @@
 //! All functions in the vtable use `extern "C"` calling convention and
 //! only pass C-compatible types across the ABI boundary.
 
+use crate::resource::net::PacketByteCount;
+
 // ============================================================================
 // ABI Version
 // ============================================================================
@@ -748,32 +750,63 @@ impl AbiNetTxSegment {
     pub const fn from_checked_parts(
         cpu_ptr: *const u8,
         device_addr: u64,
-        len: usize,
+        len: PacketByteCount,
     ) -> Option<Self> {
-        if cpu_ptr.is_null() || device_addr == 0 || len == 0 {
+        if cpu_ptr.is_null() || device_addr == 0 {
             return None;
         }
         Some(Self {
             cpu_ptr,
             device_addr,
-            len,
+            len: len.get(),
         })
-    }
-
-    pub const fn cpu_ptr(self) -> *const u8 {
-        self.cpu_ptr
-    }
-
-    pub const fn device_addr(self) -> u64 {
-        self.device_addr
-    }
-
-    pub const fn len(self) -> usize {
-        self.len
     }
 
     pub const fn is_valid(self) -> bool {
         !self.cpu_ptr.is_null() && self.device_addr != 0 && self.len != 0
+    }
+}
+
+#[derive(Clone, Copy, Debug)]
+pub struct CheckedAbiNetTxSegment<'a> {
+    segment: &'a AbiNetTxSegment,
+    len: PacketByteCount,
+}
+
+impl<'a> CheckedAbiNetTxSegment<'a> {
+    fn new(segment: &'a AbiNetTxSegment) -> Option<Self> {
+        Some(Self {
+            segment,
+            len: PacketByteCount::new(segment.len)?,
+        })
+    }
+
+    pub const fn cpu_ptr(self) -> *const u8 {
+        self.segment.cpu_ptr
+    }
+
+    pub const fn device_addr(self) -> u64 {
+        self.segment.device_addr
+    }
+
+    pub const fn len(self) -> PacketByteCount {
+        self.len
+    }
+}
+
+pub struct AbiNetTxSegmentsIter<'a> {
+    segments: core::slice::Iter<'a, AbiNetTxSegment>,
+}
+
+impl<'a> Iterator for AbiNetTxSegmentsIter<'a> {
+    type Item = CheckedAbiNetTxSegment<'a>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let segment = self.segments.next()?;
+        Some(
+            CheckedAbiNetTxSegment::new(segment)
+                .expect("AbiNetTxSegments validates every TX segment"),
+        )
     }
 }
 
@@ -790,19 +823,24 @@ impl<'a> AbiNetTxSegments<'a> {
         Some(Self { segments })
     }
 
-    pub const fn as_slice(self) -> &'a [AbiNetTxSegment] {
+    pub fn iter(self) -> AbiNetTxSegmentsIter<'a> {
+        AbiNetTxSegmentsIter {
+            segments: self.segments.iter(),
+        }
+    }
+
+    pub fn first(self) -> CheckedAbiNetTxSegment<'a> {
+        CheckedAbiNetTxSegment::new(&self.segments[0])
+            .expect("AbiNetTxSegments validates every TX segment")
+    }
+
+    pub fn get(self, index: usize) -> Option<CheckedAbiNetTxSegment<'a>> {
         self.segments
+            .get(index)
+            .and_then(CheckedAbiNetTxSegment::new)
     }
 
-    pub fn iter(self) -> core::slice::Iter<'a, AbiNetTxSegment> {
-        self.segments.iter()
-    }
-
-    pub const fn first(self) -> &'a AbiNetTxSegment {
-        &self.segments[0]
-    }
-
-    pub const fn len(self) -> usize {
+    pub const fn count(self) -> usize {
         self.segments.len()
     }
 }
@@ -846,8 +884,10 @@ mod tests {
     #[test]
     fn abi_tx_submission_rejects_empty_and_invalid_segments() {
         static BYTES: [u8; 4] = [0; 4];
-        let valid = AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, BYTES.len())
-            .expect("valid ABI segment");
+        let valid_len = PacketByteCount::new(BYTES.len()).expect("non-empty segment");
+        let valid =
+            AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, valid_len)
+                .expect("valid ABI segment");
 
         assert!(AbiNetTxSubmission::new(1, &[]).is_none());
 
@@ -881,7 +921,7 @@ mod tests {
         let valid_segments = [valid];
         let submission = AbiNetTxSubmission::new(9, &valid_segments).expect("valid ABI submission");
         assert_eq!(submission.lease_id(), 9);
-        assert_eq!(submission.segments().expect("validated segments").len(), 1);
+        assert_eq!(submission.segments().expect("validated segments").count(), 1);
     }
 
     #[test]
@@ -889,23 +929,37 @@ mod tests {
         static FIRST: [u8; 3] = [1, 2, 3];
         static SECOND: [u8; 5] = [4, 5, 6, 7, 8];
         let segments = [
-            AbiNetTxSegment::from_checked_parts(FIRST.as_ptr(), 0x1000, FIRST.len())
-                .expect("first segment"),
-            AbiNetTxSegment::from_checked_parts(SECOND.as_ptr(), 0x2000, SECOND.len())
-                .expect("second segment"),
+            AbiNetTxSegment::from_checked_parts(
+                FIRST.as_ptr(),
+                0x1000,
+                PacketByteCount::new(FIRST.len()).expect("first non-empty segment"),
+            )
+            .expect("first segment"),
+            AbiNetTxSegment::from_checked_parts(
+                SECOND.as_ptr(),
+                0x2000,
+                PacketByteCount::new(SECOND.len()).expect("second non-empty segment"),
+            )
+            .expect("second segment"),
         ];
 
         let validated = AbiNetTxSegments::new(&segments).expect("fragmented descriptors");
-        assert_eq!(validated.len(), 2);
+        assert_eq!(validated.count(), 2);
         assert_eq!(validated.first().device_addr(), 0x1000);
-        assert_eq!(validated.as_slice()[1].len(), SECOND.len());
+        assert_eq!(
+            validated.get(1).expect("second segment").len().get(),
+            SECOND.len()
+        );
 
         let submission = AbiNetTxSubmission::new(11, &segments).expect("fragmented submission");
         let submitted = submission
             .segments()
             .expect("validated submission segments");
-        assert_eq!(submitted.as_slice()[0].cpu_ptr(), FIRST.as_ptr());
-        assert_eq!(submitted.as_slice()[1].device_addr(), 0x2000);
+        assert_eq!(submitted.first().cpu_ptr(), FIRST.as_ptr());
+        assert_eq!(
+            submitted.get(1).expect("second submitted segment").device_addr(),
+            0x2000
+        );
     }
 }
 

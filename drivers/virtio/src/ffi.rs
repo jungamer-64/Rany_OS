@@ -19,7 +19,7 @@ use kernel_api::netdev::{
     NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDevicePort, NetTxMeta,
     NetTxSegment, NonEmptyTxSegments, TxSubmission,
 };
-use kernel_api::resource::net::{PacketByteCount, PacketRef};
+use kernel_api::resource::net::PacketRef;
 use kernel_api::service::kernel;
 use spin::Mutex;
 
@@ -398,12 +398,10 @@ extern "C" fn netdev_submit_tx_chain(
     let Some(abi_segments) = submission.segments() else {
         return AbiError::InvalidParam as i32;
     };
-    let mut segments = Vec::with_capacity(abi_segments.len());
+    let mut segments = Vec::with_capacity(abi_segments.count());
     for segment in abi_segments.iter() {
-        let Some(len) = PacketByteCount::new(segment.len()) else {
-            return AbiError::InvalidParam as i32;
-        };
-        let Some(segment) = NetTxSegment::from_dma(segment.cpu_ptr(), segment.device_addr(), len)
+        let Some(segment) =
+            NetTxSegment::from_dma(segment.cpu_ptr(), segment.device_addr(), segment.len())
         else {
             return AbiError::InvalidParam as i32;
         };
