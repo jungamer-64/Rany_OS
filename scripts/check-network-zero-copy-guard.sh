@@ -265,6 +265,18 @@ if rg -n "\\bTxFragmentWindow\\b|\\bOwnedTxPayloadWindow::new\\s*\\(" \
   fail "found detached TX payload window API"
 fi
 
+if rg -n "\\bpayload_to_keepalive_and_descriptors\\b|\\bregister_tx_lease_in\\b|\\bregister_grouped_tx_lease_in\\b|\\bTxOwnerGroupKeepalive\\b|\\bOwnedTxPayloadWindow\\b|\\bTxOwnerPayloadBounds\\b|filter_map\\(packet_to_tx_segment\\)" \
+  kernel/src/net \
+  >/dev/null; then
+  fail "found loose TX owner/descriptor pair boundary"
+fi
+
+if rg -n "\\bgenerated_payload_from_bytes\\b|\\bgenerated_payload_from_string\\b|\\bbody_bytes\\b" \
+  kernel/src/net/services/http \
+  >/dev/null; then
+  fail "found HTTP byte-body packet materialization convenience"
+fi
+
 if rg -n "\\bsegments_ptr\\b|\\bsegments_len\\b" \
   drivers/mlx5/src drivers/virtio/src \
   >/dev/null; then

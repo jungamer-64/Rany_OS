@@ -94,22 +94,8 @@ pub(crate) struct TxOwnerGroupState {
     result: TxCompletionResult,
 }
 
-pub(crate) struct TxOwnerGroupKeepalive {
-    packets: Vec<PacketRef>,
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TxOwnerGroupLeaseCount(NonZeroUsize);
-
-impl TxOwnerGroupKeepalive {
-    pub(crate) fn from_packets(packets: Vec<PacketRef>) -> Option<Self> {
-        (!packets.is_empty()).then_some(Self { packets })
-    }
-
-    fn into_vec(self) -> Vec<PacketRef> {
-        self.packets
-    }
-}
 
 impl TxOwnerGroupLeaseCount {
     pub(crate) const fn new(leases: usize) -> Option<Self> {
@@ -126,12 +112,12 @@ impl TxOwnerGroupLeaseCount {
 
 impl TxOwnerGroupState {
     fn new(
-        keepalive: TxOwnerGroupKeepalive,
+        keepalive: Vec<PacketRef>,
         completion_id: Option<u64>,
         remaining_leases: TxOwnerGroupLeaseCount,
     ) -> Self {
         Self {
-            keepalive: keepalive.into_vec(),
+            keepalive,
             completion_id,
             remaining_leases,
             result: Ok(()),
@@ -191,135 +177,12 @@ fn complete_tx_owner_group_in(
     true
 }
 
-pub(crate) fn register_tx_owner_group_in(
-    runtime: NetRuntimeHandle,
-    keepalive: TxOwnerGroupKeepalive,
-    remaining_leases: TxOwnerGroupLeaseCount,
-    completion_id: Option<u64>,
-) -> u64 {
-    let group_id = runtime_context_for(runtime)
-        .tx_owner_group_next_id
-        .fetch_add(1, Ordering::Relaxed);
-    runtime_context_for(runtime)
-        .tx_owner_groups
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(
-            group_id,
-            TxOwnerGroupState::new(keepalive, completion_id, remaining_leases),
-        );
-    group_id
-}
-
 pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: u64) {
     runtime_context_for(runtime)
         .tx_owner_groups
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&group_id);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) struct TxOwnerPayloadBounds {
-    offset: usize,
-    len: PacketByteCount,
-}
-
-impl TxOwnerPayloadBounds {
-    pub(crate) fn checked(
-        packets: &[PacketRef],
-        offset: usize,
-        len: PacketByteCount,
-    ) -> Option<Self> {
-        let total_len = packets
-            .iter()
-            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
-        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
-            return None;
-        }
-        Some(Self { offset, len })
-    }
-
-    const fn offset(self) -> usize {
-        self.offset
-    }
-
-    const fn len(self) -> usize {
-        self.len.get()
-    }
-}
-
-pub(crate) struct OwnedTxPayloadWindow<'a> {
-    packets: &'a [PacketRef],
-    bounds: TxOwnerPayloadBounds,
-}
-
-impl<'a> OwnedTxPayloadWindow<'a> {
-    pub(crate) fn from_bounds(packets: &'a [PacketRef], bounds: TxOwnerPayloadBounds) -> Self {
-        Self { packets, bounds }
-    }
-
-    pub(crate) fn to_segments(&self) -> Option<Vec<NetTxSegment>> {
-        tx_payload_bounds_to_segments(self.packets, self.bounds)
-    }
-}
-
-fn tx_payload_bounds_to_segments(
-    packets: &[PacketRef],
-    bounds: TxOwnerPayloadBounds,
-) -> Option<Vec<NetTxSegment>> {
-    let mut descriptors = Vec::new();
-    let mut cursor = 0usize;
-    let offset = bounds.offset();
-    let window_end = offset.checked_add(bounds.len())?;
-    for packet in packets {
-        let packet_start = cursor;
-        let packet_end = cursor.checked_add(packet.len())?;
-        cursor = packet_end;
-        if packet_end <= offset || packet_start >= window_end {
-            continue;
-        }
-        let local_start = offset.saturating_sub(packet_start);
-        let local_end = packet.len().min(window_end.saturating_sub(packet_start));
-        if local_start >= local_end {
-            continue;
-        }
-        let descriptor_len = PacketByteCount::new(local_end - local_start)?;
-        let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
-        let device_addr = packet.device_address().checked_add(local_start as u64)?;
-        descriptors.push(NetTxSegment::from_dma(
-            cpu_ptr,
-            device_addr,
-            descriptor_len,
-        )?);
-    }
-
-    (!descriptors.is_empty()).then_some(descriptors)
-}
-
-pub(crate) fn register_grouped_tx_lease_in(
-    runtime: NetRuntimeHandle,
-    keepalive: Vec<PacketRef>,
-    owner_group_id: u64,
-    descriptors: Vec<NetTxSegment>,
-    meta: NetTxMeta,
-) -> Option<TxRequest> {
-    if descriptors.is_empty() {
-        return None;
-    }
-    let lease_id = runtime_context_for(runtime)
-        .tx_lease_next_id
-        .fetch_add(1, Ordering::Relaxed);
-    runtime_context_for(runtime)
-        .tx_leases
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(lease_id, TxLeaseState::grouped(keepalive, owner_group_id));
-    Some(TxRequest {
-        lease_id,
-        descriptors,
-        meta,
-    })
 }
 
 pub struct TxCompletionFuture {
@@ -636,44 +499,6 @@ pub fn complete_tx_request_in(
 fn packet_to_tx_segment(packet: &PacketRef) -> Option<NetTxSegment> {
     let len = PacketByteCount::new(packet.len())?;
     NetTxSegment::from_dma(packet.data().as_ptr(), packet.device_address(), len)
-}
-
-fn payload_to_keepalive_and_descriptors(
-    payload: PacketPayload,
-) -> Option<(Vec<PacketRef>, Vec<NetTxSegment>)> {
-    let keepalive = payload.into_segments();
-    let descriptors: Vec<NetTxSegment> =
-        keepalive.iter().filter_map(packet_to_tx_segment).collect();
-    (!descriptors.is_empty()).then_some((keepalive, descriptors))
-}
-
-pub(crate) fn register_tx_lease_in(
-    runtime: NetRuntimeHandle,
-    keepalive: Vec<PacketRef>,
-    descriptors: Vec<NetTxSegment>,
-    completion_id: Option<u64>,
-) -> Option<RegisteredTx> {
-    if descriptors.is_empty() {
-        return None;
-    }
-
-    let lease_id = runtime_context_for(runtime)
-        .tx_lease_next_id
-        .fetch_add(1, Ordering::Relaxed);
-    let state = TxLeaseState::new(keepalive, completion_id);
-    runtime_context_for(runtime)
-        .tx_leases
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(lease_id, state);
-    Some(RegisteredTx::new(
-        runtime,
-        TxRequest {
-            lease_id,
-            descriptors,
-            meta: NetTxMeta::default(),
-        },
-    ))
 }
 
 fn register_payload_tx_request_in(
