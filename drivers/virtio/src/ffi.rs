@@ -27,8 +27,8 @@ use crate::blk::{get_virtio_blk_device_at_index, init_virtio_blk_with_transport_
 use crate::defs::VirtioDeviceType;
 use crate::net::{
     NetDmaDirection, NetDmaMappingToken, NetDmaPurpose, NetRuntime, VirtioNetDriverAdapter,
-    VirtioNetError, get_virtio_net_device_at_index, handle_virtio_net_interrupt_for_index,
-    init_virtio_net_with_transport_at_index,
+    VirtioNetError, handle_virtio_net_interrupt_for_index, init_virtio_net_with_transport_at_index,
+    with_virtio_net_at_index,
 };
 use crate::transport::{VirtioMmioTransport, VirtioPciTransport, VirtioTransport};
 
@@ -58,6 +58,21 @@ struct StandaloneNetRuntime {
     runtime: Mutex<Option<AbiNetPortRuntime>>,
 }
 
+#[derive(Clone, Copy)]
+struct StandaloneNetRuntimeHandle(core::ptr::NonNull<StandaloneNetRuntime>);
+
+unsafe impl Send for StandaloneNetRuntimeHandle {}
+
+impl StandaloneNetRuntimeHandle {
+    fn new(runtime: &StandaloneNetRuntime) -> Self {
+        Self(core::ptr::NonNull::from(runtime))
+    }
+
+    fn install_runtime(self, runtime: AbiNetPortRuntime) {
+        unsafe { self.0.as_ref() }.install_runtime(runtime);
+    }
+}
+
 impl StandaloneNetRuntime {
     const fn new(pci_locator: PackedPciLocation) -> Self {
         Self {
@@ -78,7 +93,7 @@ impl StandaloneNetRuntime {
 struct VirtioStandaloneState {
     kind: VirtioStandaloneKind,
     mapped_bars: Vec<MappedBar>,
-    net_runtime: Option<Arc<StandaloneNetRuntime>>,
+    net_runtime: Option<StandaloneNetRuntimeHandle>,
     netdev_handle: Option<u64>,
     block_handle: Option<u64>,
     block_pending: BTreeMap<u16, u64>,
@@ -352,16 +367,19 @@ extern "C" fn netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime) -> i
     let Some(net_runtime) = state.net_runtime.as_ref() else {
         return AbiError::NotSupported as i32;
     };
-    net_runtime.install_runtime(unsafe { *runtime });
-    if let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) {
+    (*net_runtime).install_runtime(unsafe { *runtime });
+    let _ = with_virtio_net_at_index(PORT_INDEX, |device| {
         device.refill_rx_queues();
-    }
+    });
     AbiError::Success as i32
 }
 
 extern "C" fn netdev_bind(_opaque: u64, if_id: u16) -> i32 {
-    if let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) {
+    if with_virtio_net_at_index(PORT_INDEX, |device| {
         device.set_net_if_id(if_id);
+    })
+    .is_some()
+    {
         AbiError::Success as i32
     } else {
         AbiError::NotInitialized as i32
@@ -401,19 +419,23 @@ extern "C" fn netdev_submit_tx_chain(
         vlan_tag: meta.has_vlan_tag.then_some(meta.vlan_tag),
         completion: Default::default(),
     };
-    let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) else {
-        return AbiError::NotInitialized as i32;
-    };
-    match device.enqueue_send_submission(tx, tx_meta) {
-        Ok(()) => AbiError::Success as i32,
-        Err(_) => AbiError::DeviceBusy as i32,
-    }
+    with_virtio_net_at_index(
+        PORT_INDEX,
+        |device| match device.enqueue_send_submission(tx, tx_meta) {
+            Ok(()) => AbiError::Success as i32,
+            Err(_) => AbiError::DeviceBusy as i32,
+        },
+    )
+    .unwrap_or(AbiError::NotInitialized as i32)
 }
 
 extern "C" fn netdev_poll(_opaque: u64, _if_id: u16) -> i32 {
-    if let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) {
+    if with_virtio_net_at_index(PORT_INDEX, |device| {
         device.process_interrupt_deferred();
         device.refill_rx_queues();
+    })
+    .is_some()
+    {
         AbiError::Success as i32
     } else {
         AbiError::NotInitialized as i32
@@ -428,28 +450,28 @@ extern "C" fn netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 {
     if out.is_null() {
         return AbiError::InvalidParam as i32;
     }
-    let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) else {
-        return AbiError::NotInitialized as i32;
-    };
-    let stats = device.net_port_stats();
-    unsafe {
-        *out = AbiNetPortStats {
-            tx_packets: stats.tx_packets,
-            rx_packets: stats.rx_packets,
-            tx_errors: stats.tx_errors,
-            rx_errors: stats.rx_errors,
-            initialized: stats.initialized,
-            reserved: [0; 7],
-        };
-    }
-    AbiError::Success as i32
+    with_virtio_net_at_index(PORT_INDEX, |device| {
+        let stats = device.net_port_stats();
+        unsafe {
+            *out = AbiNetPortStats {
+                tx_packets: stats.tx_packets,
+                rx_packets: stats.rx_packets,
+                tx_errors: stats.tx_errors,
+                rx_errors: stats.rx_errors,
+                initialized: stats.initialized,
+                reserved: [0; 7],
+            };
+        }
+        AbiError::Success as i32
+    })
+    .unwrap_or(AbiError::NotInitialized as i32)
 }
 
 extern "C" fn netdev_stop(_opaque: u64) {
     if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_ref()
         && let Some(runtime) = state.net_runtime.as_ref()
     {
-        runtime.install_runtime(AbiNetPortRuntime::new(
+        (*runtime).install_runtime(AbiNetPortRuntime::new(
             0,
             empty_alloc_packet,
             empty_submit_rx_packet,
@@ -462,8 +484,11 @@ extern "C" fn netdev_stop(_opaque: u64) {
 }
 
 extern "C" fn netdev_set_interrupts_enabled(_opaque: u64, enabled: bool) -> i32 {
-    if let Some(device) = get_virtio_net_device_at_index(PORT_INDEX) {
+    if with_virtio_net_at_index(PORT_INDEX, |device| {
         device.set_interrupts_enabled_all(enabled);
+    })
+    .is_some()
+    {
         AbiError::Success as i32
     } else {
         AbiError::NotInitialized as i32
@@ -648,10 +673,11 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
     let result = match kind {
         VirtioStandaloneKind::Net => {
             let runtime = Arc::new(StandaloneNetRuntime::new(pci_locator));
+            let runtime_handle = StandaloneNetRuntimeHandle::new(runtime.as_ref());
             let init = unsafe {
-                init_virtio_net_with_transport_at_index(PORT_INDEX, transport, runtime.clone())
+                init_virtio_net_with_transport_at_index(PORT_INDEX, transport, runtime)
             };
-            init.map(|_| Some(runtime)).map_err(|_| ())
+            init.map(|_| Some(runtime_handle)).map_err(|_| ())
         }
         VirtioStandaloneKind::Block => {
             let init = unsafe {

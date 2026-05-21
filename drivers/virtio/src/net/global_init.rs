@@ -224,10 +224,10 @@ pub unsafe fn init_virtio_net_with_transport_at_index(
 }
 
 pub fn handle_virtio_net_interrupt_for_index(index: u8) {
-    if let Some(device) = get_virtio_net_device_at_index(index) {
+    let _ = with_virtio_net_at_index(index, |device| {
         device.ack_interrupt();
         device.handle_interrupt();
-    }
+    });
 }
 
 #[cfg(test)]
@@ -378,18 +378,19 @@ mod tests {
     fn registry_tracks_multiple_device_indices() {
         clear_virtio_net_devices_for_tests();
 
-        let runtime: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
+        let runtime0: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             0,
             Arc::new(VirtioNetDevice::new(
                 0,
                 Box::new(NoopTransport),
-                runtime.clone(),
+                runtime0,
             )),
         );
+        let runtime3: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             3,
-            Arc::new(VirtioNetDevice::new(3, Box::new(NoopTransport), runtime)),
+            Arc::new(VirtioNetDevice::new(3, Box::new(NoopTransport), runtime3)),
         );
 
         let mut seen = Vec::new();

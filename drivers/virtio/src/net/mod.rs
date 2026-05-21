@@ -297,7 +297,7 @@ impl NetVirtQueue {
 }
 
 /// Shared device configuration snapshot.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct VirtioNetConfig {
     pub mac: [u8; 6],
     pub max_queues: u16,
@@ -389,7 +389,7 @@ impl VirtioNetHeader {
 }
 
 /// Shared statistics snapshot for virtio-net adapters.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub struct VirtioNetStats {
     pub tx_packets: u32,
     pub rx_packets: u32,
