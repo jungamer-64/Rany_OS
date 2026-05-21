@@ -231,6 +231,12 @@ if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayload
   fail "found detached payload window API"
 fi
 
+if rg -n "\\bOwnedPayloadWindow::from_range\\s*\\(|\\bPayloadSpanMut::from_range\\s*\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found PayloadRange-backed owned or mutable payload window API"
+fi
+
 if rg -n "\\bPayloadRange::from_payload_bounds\\s*\\(|\\bPayloadSpanRef::from_payload_bounds\\s*\\(|\\bPayloadSpanMut::from_payload_bounds\\s*\\(|\\bOwnedPayloadWindow::from_bounds\\s*\\(|\\bOwnedPayloadWindow::take_payload_from_bounds\\s*\\(|\\bOwnedTxPayloadWindow::from_owner_bounds\\s*\\(" \
   "${network_tree[@]}" \
   >/dev/null; then

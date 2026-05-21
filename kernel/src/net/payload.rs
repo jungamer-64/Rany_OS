@@ -368,11 +368,6 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
-    pub fn from_range(payload: PacketPayload, range: PayloadRange) -> Option<Self> {
-        PayloadRange::checked(&payload, range.offset(), range.total_len())?;
-        Some(Self { payload, range })
-    }
-
     pub fn whole(payload: PacketPayload) -> Self {
         let range = PayloadRange {
             offset: PayloadByteOffset::ZERO,
@@ -657,15 +652,6 @@ impl<'a> PacketPayloadView<'a> {
 }
 
 impl<'a> PayloadSpanMut<'a> {
-    pub fn from_range(payload: &'a mut PacketPayload, range: PayloadRange) -> Option<Self> {
-        PayloadRange::checked(payload, range.offset(), range.total_len())?;
-        Some(Self {
-            payload,
-            offset: range.offset(),
-            len: range.total_len(),
-        })
-    }
-
     pub fn whole(payload: &'a mut PacketPayload) -> Self {
         let len = payload.total_len();
         Self {
