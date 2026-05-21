@@ -19,8 +19,8 @@ use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegist
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout,
-    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSegment, AbiNetTxSubmission, AbiPacketRefRaw,
-    DriverContext, KernelApiV4, PackedPciLocation,
+    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiPacketRefRaw, DriverContext, KernelApiV4,
+    PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
@@ -858,10 +858,6 @@ extern "C" fn mlx5_netdev_bind(_opaque: u64, _if_id: u16) -> i32 {
     AbiError::Success as i32
 }
 
-unsafe fn tx_segment_bytes(segment: &AbiNetTxSegment) -> &[u8] {
-    unsafe { core::slice::from_raw_parts(segment.cpu_ptr(), segment.len()) }
-}
-
 extern "C" fn mlx5_netdev_submit_tx_chain(
     _opaque: u64,
     submission: *const AbiNetTxSubmission,
@@ -887,26 +883,18 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         return AbiError::InvalidParam as i32;
     }
 
-    let frame_len = cmp::max(data_len, 60);
-    let inline_len = match state
+    if state
         .device
         .port(0)
         .map(|port| port.min_wqe_inline_mode())
         .unwrap_or(0)
+        != 0
     {
-        0 => 0,
-        1 => {
-            let first = segments.first();
-            let first_bytes = unsafe { tx_segment_bytes(first) };
-            cmp::min(frame_len, cmp::min(first_bytes.len(), 18))
-        }
-        _ => return AbiError::NotSupported as i32,
-    };
-    let mut inline_hdr = [0u8; 18];
-    if inline_len > 0 {
-        let first_bytes = unsafe { tx_segment_bytes(segments.first()) };
-        inline_hdr[..inline_len].copy_from_slice(&first_bytes[..inline_len]);
+        return AbiError::NotSupported as i32;
     }
+    let Ok(total_len) = u32::try_from(data_len) else {
+        return AbiError::InvalidParam as i32;
+    };
     let sq_count = state.tx_slots.len().max(1) as u32;
     let sq_index = if meta.has_queue_index {
         (meta.queue_index as u32 % sq_count) as usize
@@ -920,18 +908,15 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
     }
 
     let mut dma_segments = Vec::with_capacity(segments.len());
-    let mut remaining_inline = inline_len;
     for segment in segments.iter() {
         let segment_len = segment.len();
-        let skip = remaining_inline.min(segment_len);
-        remaining_inline = remaining_inline.saturating_sub(skip);
-        if skip == segment_len {
-            continue;
-        }
+        let Ok(len) = u32::try_from(segment_len) else {
+            return AbiError::InvalidParam as i32;
+        };
         dma_segments.push(crate::wq::DmaSegment {
-            device_addr: segment.device_addr() + skip as u64,
-            virt_addr: segment.cpu_ptr() as u64 + skip as u64,
-            len: (segment_len - skip) as u32,
+            device_addr: segment.device_addr(),
+            virt_addr: segment.cpu_ptr() as u64,
+            len,
         });
     }
     if dma_segments.is_empty() {
@@ -942,8 +927,7 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         state.device.transmit_segments(
             sq_index,
             &dma_segments,
-            frame_len as u32,
-            &inline_hdr[..inline_len],
+            total_len,
             options,
         )
     } {

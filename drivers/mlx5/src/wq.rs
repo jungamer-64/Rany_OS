@@ -161,7 +161,6 @@ impl SendQueue {
         buf_idx: usize,
         wqe_counter: u16,
         wqe_ptr: *const u8,
-        inline_hdr_sz: u16,
         data_seg_ptr: *const u8,
     ) {
         let mut wqe_bytes = [0u8; 64];
@@ -170,7 +169,6 @@ impl SendQueue {
             valid: true,
             wqe_counter,
             wqe_addr: wqe_ptr as u64,
-            inline_hdr_sz,
             opmod_idx: read_be32_raw(wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
             qpn_ds: read_be32_raw(wqe_ptr, wqe::ctrl::QPN_DS),
             general_id: read_be32_raw(wqe_ptr, wqe::ctrl::GENERAL_ID),
@@ -185,20 +183,13 @@ impl SendQueue {
     pub unsafe fn post_send(
         &mut self,
         segments: &[DmaSegment],
-        inline_hdr: &[u8],
         options: TxOptions,
     ) -> Option<u16> {
         if !self.has_space() || segments.is_empty() || segments.len() > 2 {
             return None;
         }
 
-        let inline_len = inline_hdr.len().min(u16::MAX as usize);
-        let inline_ds = if inline_len > 2 {
-            (inline_len - 2).div_ceil(16)
-        } else {
-            0
-        };
-        let ds_count = 2 + inline_ds as u32 + segments.len() as u32;
+        let ds_count = 2 + segments.len() as u32;
         if ds_count > 4 {
             return None;
         }
@@ -237,22 +228,9 @@ impl SendQueue {
         // TSO MSS
         write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
 
-        if inline_len > 0 {
-            write_be16_raw(
-                eth_ptr,
-                wqe::eth::TRAILER_OR_INLINE_HDR_SZ,
-                inline_len as u16,
-            );
-            core::ptr::copy_nonoverlapping(
-                inline_hdr.as_ptr(),
-                eth_ptr.add(wqe::eth::INLINE_HDR_START),
-                inline_len,
-            );
-        }
+        let data_seg_base = 32;
 
-        let data_seg_base = 32 + inline_ds * 16;
-
-        // Data Segments (16 bytes each) after the optional inline header spill area
+        // Data Segments (16 bytes each)
         for (i, seg) in segments.iter().enumerate() {
             let data_seg_ptr = ctrl_ptr.add(data_seg_base + i * 16);
             // Byte count
@@ -268,7 +246,6 @@ impl SendQueue {
             buf_idx,
             wqe_idx,
             wqe_ptr as *const u8,
-            inline_len as u16,
             first_data_seg_ptr as *const u8,
         );
 
@@ -333,7 +310,7 @@ impl SendQueue {
         }
         write_u8_raw(eth_ptr, wqe::eth::CS_FLAGS, cs_flags);
         write_be16_raw(eth_ptr, wqe::eth::MSS, options.mss);
-        // MPWQE では inline header は通常使用しない（各パケットが独立した L2 ヘッダを持つため）
+        // MPWQE records packet-owned L2 bytes through descriptors.
 
         // Data Segments
         for (i, pkt) in packets.iter().enumerate() {
@@ -357,7 +334,6 @@ impl SendQueue {
             buf_idx,
             wqe_idx,
             wqe_ptr as *const u8,
-            0,
             first_data_seg_ptr as *const u8,
         );
 
@@ -433,14 +409,7 @@ impl SendQueue {
         let last_wqe_counter = self.producer_counter.wrapping_sub(1);
         let last_idx = (last_wqe_counter as u32 % self.sq_depth) as usize;
         let last_wqe_ptr = (self.buf_virt as usize + last_idx * 64) as *const u8;
-        let last_inline_hdr_sz =
-            read_be16_raw(last_wqe_ptr.add(16), wqe::eth::TRAILER_OR_INLINE_HDR_SZ) as usize;
-        let last_inline_ds = if last_inline_hdr_sz > 2 {
-            (last_inline_hdr_sz - 2).div_ceil(16)
-        } else {
-            0
-        };
-        let last_data_seg_ptr = last_wqe_ptr.add(32 + last_inline_ds * 16);
+        let last_data_seg_ptr = last_wqe_ptr.add(32);
 
         let doorbell_be = core::ptr::read_volatile((self.doorbell_virt as *const u32).add(1));
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
@@ -456,7 +425,6 @@ impl SendQueue {
             doorbell_host,
             last_wqe_counter,
             last_wqe_addr: last_wqe_ptr as u64,
-            last_wqe_inline_hdr_sz: last_inline_hdr_sz as u16,
             last_wqe_opmod_idx: read_be32_raw(last_wqe_ptr, wqe::ctrl::OPMOD_IDX_OPCODE),
             last_wqe_qpn_ds: read_be32_raw(last_wqe_ptr, wqe::ctrl::QPN_DS),
             last_wqe_general_id: read_be32_raw(last_wqe_ptr, wqe::ctrl::GENERAL_ID),
@@ -494,7 +462,6 @@ pub struct TxQueueDebugState {
     pub doorbell_host: u32,
     pub last_wqe_counter: u16,
     pub last_wqe_addr: u64,
-    pub last_wqe_inline_hdr_sz: u16,
     pub last_wqe_opmod_idx: u32,
     pub last_wqe_qpn_ds: u32,
     pub last_wqe_general_id: u32,
@@ -510,7 +477,6 @@ pub struct TxWqeDebugInfo {
     pub valid: bool,
     pub wqe_counter: u16,
     pub wqe_addr: u64,
-    pub inline_hdr_sz: u16,
     pub opmod_idx: u32,
     pub qpn_ds: u32,
     pub general_id: u32,
@@ -526,7 +492,6 @@ impl Default for TxWqeDebugInfo {
             valid: false,
             wqe_counter: 0,
             wqe_addr: 0,
-            inline_hdr_sz: 0,
             opmod_idx: 0,
             qpn_ds: 0,
             general_id: 0,
@@ -1067,6 +1032,7 @@ unsafe fn read_be32_raw(base: *const u8, offset: usize) -> u32 {
 }
 
 /// ビッグエンディアンu16をrawポインタから読み込む
+#[cfg(test)]
 unsafe fn read_be16_raw(base: *const u8, offset: usize) -> u16 {
     let ptr = base.add(offset);
     let b0 = core::ptr::read_volatile(ptr);

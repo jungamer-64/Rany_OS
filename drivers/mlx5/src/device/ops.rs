@@ -152,7 +152,6 @@ impl Mlx5Device {
         sq_index: usize,
         segments: &[crate::wq::DmaSegment],
         total_len: u32,
-        inline_hdr: &[u8],
         options: crate::wq::TxOptions,
     ) -> Mlx5Result<u16> {
         if self.state != DeviceState::Active {
@@ -163,13 +162,11 @@ impl Mlx5Device {
             .get_mut(sq_index)
             .ok_or(Mlx5Error::InvalidParameter)?;
 
-        let inline_len = core::cmp::min(inline_hdr.len(), total_len as usize) as u32;
-        let payload_len = total_len.saturating_sub(inline_len);
-        if payload_len == 0 || segments.is_empty() {
+        if total_len == 0 || segments.is_empty() {
             return Err(Mlx5Error::InvalidParameter);
         }
 
-        sq.post_send(segments, inline_hdr, options)
+        sq.post_send(segments, options)
             .ok_or(Mlx5Error::NoResources)
     }
 
@@ -180,21 +177,18 @@ impl Mlx5Device {
         data_phys: u64,
         data_virt: u64,
         data_len: u32,
-        inline_hdr: &[u8],
         options: crate::wq::TxOptions,
     ) -> Mlx5Result<u16> {
-        let inline_len = core::cmp::min(inline_hdr.len(), data_len as usize) as u32;
-        let payload_len = data_len.saturating_sub(inline_len);
-        if payload_len == 0 {
+        if data_len == 0 {
             return Err(Mlx5Error::InvalidParameter);
         }
 
         let segments = [crate::wq::DmaSegment {
-            device_addr: data_phys + inline_len as u64,
-            virt_addr: data_virt + inline_len as u64,
-            len: payload_len,
+            device_addr: data_phys,
+            virt_addr: data_virt,
+            len: data_len,
         }];
-        self.transmit_segments(sq_index, &segments, data_len, inline_hdr, options)
+        self.transmit_segments(sq_index, &segments, data_len, options)
     }
 
     /// 受信バッファを投入
