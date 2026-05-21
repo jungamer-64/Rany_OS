@@ -16,9 +16,15 @@ pub struct PayloadSpanRef<'a> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadByteOffset(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PayloadByteLen(usize);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct PayloadRange {
-    offset: usize,
-    len: usize,
+    offset: PayloadByteOffset,
+    len: PayloadByteLen,
 }
 
 #[derive(Debug)]
@@ -42,34 +48,53 @@ impl<const N: usize> FixedPayloadBytes<N> {
 }
 
 impl PayloadRange {
-    pub fn from_payload_bounds(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
+    pub fn checked(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
         if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
             return None;
         }
-        Some(Self { offset, len })
+        Some(Self {
+            offset: PayloadByteOffset(offset),
+            len: PayloadByteLen(len),
+        })
     }
 
     pub const fn from_span(span: PayloadSpanRef<'_>) -> Self {
         Self {
-            offset: span.offset,
-            len: span.len,
+            offset: PayloadByteOffset(span.offset),
+            len: PayloadByteLen(span.len),
         }
     }
 
     pub const fn offset(&self) -> usize {
-        self.offset
+        self.offset.get()
     }
 
     pub const fn total_len(&self) -> usize {
-        self.len
+        self.len.get()
     }
 
     pub const fn checked_end_offset(&self) -> Option<usize> {
-        self.offset.checked_add(self.len)
+        self.offset.get().checked_add(self.len.get())
     }
 
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_payload_bounds(payload, self.offset, self.len)
+        PayloadSpanRef::from_range(payload, *self)
+    }
+}
+
+impl PayloadByteOffset {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn get(self) -> usize {
+        self.0
+    }
+}
+
+impl PayloadByteLen {
+    pub const ZERO: Self = Self(0);
+
+    pub const fn get(self) -> usize {
+        self.0
     }
 }
 
@@ -82,19 +107,12 @@ impl<'a> PayloadSpanRef<'a> {
         }
     }
 
-    pub fn from_payload_bounds(
-        payload: &'a PacketPayload,
-        offset: usize,
-        len: usize,
-    ) -> Option<Self> {
-        let total_len = payload.total_len();
-        if offset > total_len || len > total_len.saturating_sub(offset) {
-            return None;
-        }
+    pub fn from_range(payload: &'a PacketPayload, range: PayloadRange) -> Option<Self> {
+        PayloadRange::checked(payload, range.offset(), range.total_len())?;
         Some(Self {
             payload,
-            offset,
-            len,
+            offset: range.offset(),
+            len: range.total_len(),
         })
     }
 
@@ -116,8 +134,8 @@ impl<'a> PayloadSpanRef<'a> {
 
     pub const fn range(self) -> PayloadRange {
         PayloadRange {
-            offset: self.offset,
-            len: self.len,
+            offset: PayloadByteOffset(self.offset),
+            len: PayloadByteLen(self.len),
         }
     }
 
@@ -125,7 +143,10 @@ impl<'a> PayloadSpanRef<'a> {
         if offset > self.len || len > self.len.saturating_sub(offset) {
             return None;
         }
-        Self::from_payload_bounds(self.payload, self.offset.checked_add(offset)?, len)
+        Self::from_range(
+            self.payload,
+            PayloadRange::checked(self.payload, self.offset.checked_add(offset)?, len)?,
+        )
     }
 
     pub fn byte_at(&self, index: usize) -> Option<u8> {
@@ -302,7 +323,10 @@ impl<'a> PayloadSpanRef<'a> {
             end -= 1;
         }
 
-        Self::from_payload_bounds(self.payload, self.offset.checked_add(start)?, end - start)
+        Self::from_range(
+            self.payload,
+            PayloadRange::checked(self.payload, self.offset.checked_add(start)?, end - start)?,
+        )
     }
 
     pub fn starts_with(&self, prefix: &[u8]) -> bool {
@@ -333,8 +357,7 @@ impl<'a> PayloadSpanRef<'a> {
 
 pub struct OwnedPayloadWindow {
     payload: PacketPayload,
-    offset: usize,
-    len: usize,
+    range: PayloadRange,
 }
 
 pub type PayloadFront = PacketPayloadFront;
@@ -345,38 +368,24 @@ pub struct GeneratedPacketWriter {
 }
 
 impl OwnedPayloadWindow {
-    pub fn from_bounds(payload: PacketPayload, offset: usize, len: usize) -> Option<Self> {
-        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
-            return None;
-        }
-        Some(Self {
-            payload,
-            offset,
-            len,
-        })
-    }
-
-    pub fn take_payload_from_bounds(
-        payload: PacketPayload,
-        offset: usize,
-        len: usize,
-    ) -> Result<PacketPayload, PacketWindowError> {
-        Self::from_bounds(payload, offset, len)
-            .ok_or(PacketWindowError::OutOfBounds)?
-            .into_payload()
+    pub fn from_range(payload: PacketPayload, range: PayloadRange) -> Option<Self> {
+        PayloadRange::checked(&payload, range.offset(), range.total_len())?;
+        Some(Self { payload, range })
     }
 
     pub fn whole(payload: PacketPayload) -> Self {
-        let len = payload.total_len();
+        let range = PayloadRange {
+            offset: PayloadByteOffset::ZERO,
+            len: PayloadByteLen(payload.total_len()),
+        };
         Self {
             payload,
-            offset: 0,
-            len,
+            range,
         }
     }
 
     pub fn span(&self) -> PayloadSpanRef<'_> {
-        PayloadSpanRef::from_payload_bounds(&self.payload, self.offset, self.len)
+        PayloadSpanRef::from_range(&self.payload, self.range)
             .expect("OwnedPayloadWindow bounds are validated at construction")
     }
 
@@ -385,25 +394,27 @@ impl OwnedPayloadWindow {
     }
 
     pub fn into_payload(self) -> Result<PacketPayload, PacketWindowError> {
-        if self.len == 0 {
+        let offset = self.range.offset();
+        let len = self.range.total_len();
+        if len == 0 {
             return Ok(PacketPayload::default());
         }
 
-        let payload = if self.offset == 0 {
+        let payload = if offset == 0 {
             self.payload
         } else {
-            let prefix_len = PacketByteCount::new(self.offset).ok_or(PacketWindowError::Empty)?;
+            let prefix_len = PacketByteCount::new(offset).ok_or(PacketWindowError::Empty)?;
             match self.payload.take_front(prefix_len)? {
                 PacketPayloadFront::Whole(_) => return Err(PacketWindowError::OutOfBounds),
                 PacketPayloadFront::Prefix { remainder, .. } => remainder,
             }
         };
 
-        if payload.total_len() == self.len {
+        if payload.total_len() == len {
             return Ok(payload);
         }
 
-        let front_len = PacketByteCount::new(self.len).ok_or(PacketWindowError::Empty)?;
+        let front_len = PacketByteCount::new(len).ok_or(PacketWindowError::Empty)?;
         match payload.take_front(front_len)? {
             PacketPayloadFront::Whole(payload) => Ok(payload),
             PacketPayloadFront::Prefix { front, .. } => Ok(front),
@@ -649,18 +660,12 @@ impl<'a> PacketPayloadView<'a> {
 }
 
 impl<'a> PayloadSpanMut<'a> {
-    pub fn from_payload_bounds(
-        payload: &'a mut PacketPayload,
-        offset: usize,
-        len: usize,
-    ) -> Option<Self> {
-        if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
-            return None;
-        }
+    pub fn from_range(payload: &'a mut PacketPayload, range: PayloadRange) -> Option<Self> {
+        PayloadRange::checked(payload, range.offset(), range.total_len())?;
         Some(Self {
             payload,
-            offset,
-            len,
+            offset: range.offset(),
+            len: range.total_len(),
         })
     }
 
@@ -747,13 +752,19 @@ impl<'a> PacketPayloadCursor<'a> {
         if len > self.remaining() {
             return None;
         }
-        let span = PayloadSpanRef::from_payload_bounds(self.view.payload(), self.offset, len)?;
+        let span = PayloadSpanRef::from_range(
+            self.view.payload(),
+            PayloadRange::checked(self.view.payload(), self.offset, len)?,
+        )?;
         self.offset += len;
         Some(span)
     }
 
     pub fn remaining_span(&self) -> Option<PayloadSpanRef<'a>> {
-        PayloadSpanRef::from_payload_bounds(self.view.payload(), self.offset, self.remaining())
+        PayloadSpanRef::from_range(
+            self.view.payload(),
+            PayloadRange::checked(self.view.payload(), self.offset, self.remaining())?,
+        )
     }
 }
 

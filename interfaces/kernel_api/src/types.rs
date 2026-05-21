@@ -233,15 +233,15 @@ pub struct PacketRefVTable {
     pub data_ptr: unsafe fn(&PacketRefStorage) -> *const u8,
     pub data_mut_ptr: unsafe fn(&mut PacketRefStorage) -> *mut u8,
     pub len: unsafe fn(&PacketRefStorage) -> usize,
-    pub set_len: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub set_len: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
     pub capacity: unsafe fn(&PacketRefStorage) -> usize,
     pub phys_addr: unsafe fn(&PacketRefStorage) -> u64,
     pub device_address: unsafe fn(&PacketRefStorage) -> u64,
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
-    pub advance: unsafe fn(&mut PacketRefStorage, usize) -> bool,
-    pub retreat: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub advance: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
+    pub retreat: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
     pub split_front:
-        unsafe fn(&PacketRefStorage, usize) -> Option<(PacketRefStorage, PacketRefStorage)>,
+        unsafe fn(&PacketRefStorage, PacketByteCount) -> Option<(PacketRefStorage, PacketRefStorage)>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -318,7 +318,7 @@ impl PacketRef {
     #[inline]
     #[must_use]
     pub fn set_len(&mut self, len: PacketByteCount) -> bool {
-        unsafe { (self.vtable.set_len)(&mut self.storage, len.get()) }
+        unsafe { (self.vtable.set_len)(&mut self.storage, len) }
     }
 
     #[inline]
@@ -344,12 +344,12 @@ impl PacketRef {
     #[inline]
     #[must_use]
     pub fn advance(&mut self, size: PacketByteCount) -> bool {
-        unsafe { (self.vtable.advance)(&mut self.storage, size.get()) }
+        unsafe { (self.vtable.advance)(&mut self.storage, size) }
     }
 
     #[inline]
     pub fn retreat(&mut self, size: PacketByteCount) -> bool {
-        unsafe { (self.vtable.retreat)(&mut self.storage, size.get()) }
+        unsafe { (self.vtable.retreat)(&mut self.storage, size) }
     }
 
     pub fn take_front(self, len: PacketByteCount) -> Result<PacketFront, PacketWindowError> {
@@ -366,7 +366,7 @@ impl PacketRef {
         let storage = packet.storage;
         let vtable = packet.vtable;
         let Some((front_storage, remainder_storage)) =
-            (unsafe { (vtable.split_front)(&storage, take) })
+            (unsafe { (vtable.split_front)(&storage, len) })
         else {
             unsafe { ManuallyDrop::drop(&mut packet) };
             return Err(PacketWindowError::BackendSplitUnsupported);
