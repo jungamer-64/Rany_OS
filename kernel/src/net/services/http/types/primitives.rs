@@ -22,7 +22,7 @@ pub enum HttpMethod {
 }
 
 impl HttpMethod {
-    const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Self::Get => "GET",
             Self::Post => "POST",
@@ -90,6 +90,13 @@ pub enum HttpVersion {
 }
 
 impl HttpVersion {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Http1_0 => "HTTP/1.0",
+            Self::Http1_1 => "HTTP/1.1",
+        }
+    }
+
     pub fn parse_span_ref(span: PayloadSpanRef<'_>) -> Option<Self> {
         if span.eq_bytes(b"HTTP/1.0") {
             Some(Self::Http1_0)
@@ -103,10 +110,7 @@ impl HttpVersion {
 
 impl fmt::Display for HttpVersion {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            HttpVersion::Http1_0 => write!(f, "HTTP/1.0"),
-            HttpVersion::Http1_1 => write!(f, "HTTP/1.1"),
-        }
+        write!(f, "{}", self.as_str())
     }
 }
 

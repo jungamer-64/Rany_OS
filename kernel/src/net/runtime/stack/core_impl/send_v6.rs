@@ -147,7 +147,8 @@ impl NetworkStack {
 
         let identification = Self::next_ipv6_fragment_identification();
         let total_payload_len = payload_view.total_len();
-        let owners = payload.into_segments();
+        let owners = TxPayloadOwners::from_payload(payload)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let mut fragments = Vec::new();
         let mut offset = 0usize;
 
@@ -208,19 +209,16 @@ impl NetworkStack {
 
             let fragment_len = PacketByteCount::new(fragment_data_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let payload_bounds = TxOwnerPayloadBounds::checked(&owners, offset, fragment_len)
+            let payload_bounds = TxPayloadWindowBounds::checked(&owners, offset, fragment_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let payload_window = OwnedTxPayloadWindow::from_bounds(&owners, payload_bounds);
-            let descriptors = Self::build_fragment_tx_descriptors(&packet, payload_window)?;
             let frame_len = packet
                 .len()
                 .checked_add(fragment_data_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            fragments.push(FragmentTxPacket {
-                header: packet,
-                descriptors,
-                frame_len,
-            });
+            let lease =
+                TxPayloadLease::from_header_and_owner_window(packet, &owners, payload_bounds)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            fragments.push(FragmentTxPacket { lease, frame_len });
 
             offset += fragment_data_len;
         }

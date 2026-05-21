@@ -64,23 +64,23 @@ impl TxCompletionState {
 }
 
 pub(crate) struct TxLeaseState {
-    keepalive: Vec<PacketRef>,
+    owners: TxPayloadOwners,
     completion_id: Option<u64>,
     owner_group_id: Option<u64>,
 }
 
 impl TxLeaseState {
-    fn new(keepalive: Vec<PacketRef>, completion_id: Option<u64>) -> Self {
+    fn new(owners: TxPayloadOwners, completion_id: Option<u64>) -> Self {
         Self {
-            keepalive,
+            owners,
             completion_id,
             owner_group_id: None,
         }
     }
 
-    fn grouped(keepalive: Vec<PacketRef>, owner_group_id: u64) -> Self {
+    fn grouped(owners: TxPayloadOwners, owner_group_id: u64) -> Self {
         Self {
-            keepalive,
+            owners,
             completion_id: None,
             owner_group_id: Some(owner_group_id),
         }
@@ -88,7 +88,7 @@ impl TxLeaseState {
 }
 
 pub(crate) struct TxOwnerGroupState {
-    keepalive: Vec<PacketRef>,
+    owners: TxPayloadOwners,
     completion_id: Option<u64>,
     remaining_leases: TxOwnerGroupLeaseCount,
     result: TxCompletionResult,
@@ -110,14 +110,105 @@ impl TxOwnerGroupLeaseCount {
     }
 }
 
+pub(crate) struct TxPayloadOwners {
+    packets: Vec<PacketRef>,
+}
+
+impl TxPayloadOwners {
+    pub(crate) fn from_payload(payload: PacketPayload) -> Option<Self> {
+        Self::from_packets(payload.into_segments())
+    }
+
+    pub(crate) fn from_packets(packets: Vec<PacketRef>) -> Option<Self> {
+        (!packets.is_empty()).then_some(Self { packets })
+    }
+
+    fn as_packets(&self) -> &[PacketRef] {
+        &self.packets
+    }
+
+    fn total_len(&self) -> Option<usize> {
+        self.packets
+            .iter()
+            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))
+    }
+
+    fn into_packets(self) -> Vec<PacketRef> {
+        self.packets
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct TxPayloadWindowBounds {
+    offset: usize,
+    len: PacketByteCount,
+}
+
+impl TxPayloadWindowBounds {
+    pub(crate) fn checked(
+        owners: &TxPayloadOwners,
+        offset: usize,
+        len: PacketByteCount,
+    ) -> Option<Self> {
+        let total_len = owners.total_len()?;
+        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self { offset, len })
+    }
+
+    const fn offset(self) -> usize {
+        self.offset
+    }
+
+    const fn len(self) -> usize {
+        self.len.get()
+    }
+}
+
+pub(crate) struct TxPayloadLease {
+    owners: TxPayloadOwners,
+    descriptors: Vec<NetTxSegment>,
+}
+
+impl TxPayloadLease {
+    pub(crate) fn from_payload(payload: PacketPayload) -> Option<Self> {
+        let owners = TxPayloadOwners::from_payload(payload)?;
+        let descriptors = tx_payload_owners_to_segments(owners.as_packets())?;
+        Some(Self {
+            owners,
+            descriptors,
+        })
+    }
+
+    pub(crate) fn from_header_and_owner_window(
+        header: PacketRef,
+        owners: &TxPayloadOwners,
+        bounds: TxPayloadWindowBounds,
+    ) -> Option<Self> {
+        let mut descriptors = Vec::new();
+        descriptors.push(packet_to_tx_segment(&header)?);
+        descriptors.extend(tx_payload_window_to_segments(owners.as_packets(), bounds)?);
+        let owners = TxPayloadOwners::from_packets(alloc::vec![header])?;
+        Some(Self {
+            owners,
+            descriptors,
+        })
+    }
+
+    fn into_parts(self) -> (TxPayloadOwners, Vec<NetTxSegment>) {
+        (self.owners, self.descriptors)
+    }
+}
+
 impl TxOwnerGroupState {
     fn new(
-        keepalive: Vec<PacketRef>,
+        owners: TxPayloadOwners,
         completion_id: Option<u64>,
         remaining_leases: TxOwnerGroupLeaseCount,
     ) -> Self {
         Self {
-            keepalive,
+            owners,
             completion_id,
             remaining_leases,
             result: Ok(()),
@@ -137,8 +228,8 @@ impl TxOwnerGroupState {
         false
     }
 
-    fn into_parts(self) -> (Vec<PacketRef>, Option<u64>, TxCompletionResult) {
-        (self.keepalive, self.completion_id, self.result)
+    fn into_parts(self) -> (TxPayloadOwners, Option<u64>, TxCompletionResult) {
+        (self.owners, self.completion_id, self.result)
     }
 }
 
@@ -164,17 +255,37 @@ fn complete_tx_owner_group_in(
     let Some(group) = completed else {
         return false;
     };
-    let (keepalive, completion_id, final_result) = group.into_parts();
+    let (owners, completion_id, final_result) = group.into_parts();
     if let Some(completion_id) = completion_id {
         let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
             runtime,
             completion_id,
-            keepalive,
+            owners.into_packets(),
             final_result,
         );
         let _ = complete_tx_request_in(runtime, completion_id, final_result);
     }
     true
+}
+
+pub(crate) fn register_tx_owner_group_in(
+    runtime: NetRuntimeHandle,
+    owners: TxPayloadOwners,
+    remaining_leases: TxOwnerGroupLeaseCount,
+    completion_id: Option<u64>,
+) -> u64 {
+    let group_id = runtime_context_for(runtime)
+        .tx_owner_group_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    runtime_context_for(runtime)
+        .tx_owner_groups
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(
+            group_id,
+            TxOwnerGroupState::new(owners, completion_id, remaining_leases),
+        );
+    group_id
 }
 
 pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: u64) {
@@ -501,24 +612,107 @@ fn packet_to_tx_segment(packet: &PacketRef) -> Option<NetTxSegment> {
     NetTxSegment::from_dma(packet.data().as_ptr(), packet.device_address(), len)
 }
 
+fn tx_payload_owners_to_segments(packets: &[PacketRef]) -> Option<Vec<NetTxSegment>> {
+    let mut descriptors = Vec::new();
+    for packet in packets {
+        descriptors.push(packet_to_tx_segment(packet)?);
+    }
+    (!descriptors.is_empty()).then_some(descriptors)
+}
+
+fn tx_payload_window_to_segments(
+    packets: &[PacketRef],
+    bounds: TxPayloadWindowBounds,
+) -> Option<Vec<NetTxSegment>> {
+    let mut descriptors = Vec::new();
+    let mut cursor = 0usize;
+    let offset = bounds.offset();
+    let window_end = offset.checked_add(bounds.len())?;
+    for packet in packets {
+        let packet_start = cursor;
+        let packet_end = cursor.checked_add(packet.len())?;
+        cursor = packet_end;
+        if packet_end <= offset || packet_start >= window_end {
+            continue;
+        }
+        let local_start = offset.saturating_sub(packet_start);
+        let local_end = packet.len().min(window_end.saturating_sub(packet_start));
+        if local_start >= local_end {
+            continue;
+        }
+        let descriptor_len = PacketByteCount::new(local_end - local_start)?;
+        let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
+        let device_addr = packet.device_address().checked_add(local_start as u64)?;
+        descriptors.push(NetTxSegment::from_dma(
+            cpu_ptr,
+            device_addr,
+            descriptor_len,
+        )?);
+    }
+
+    (!descriptors.is_empty()).then_some(descriptors)
+}
+
+pub(crate) fn register_grouped_tx_payload_lease_in(
+    runtime: NetRuntimeHandle,
+    lease: TxPayloadLease,
+    owner_group_id: u64,
+    meta: NetTxMeta,
+) -> Option<TxRequest> {
+    let (owners, descriptors) = lease.into_parts();
+    let lease_id = runtime_context_for(runtime)
+        .tx_lease_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    runtime_context_for(runtime)
+        .tx_leases
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(lease_id, TxLeaseState::grouped(owners, owner_group_id));
+    Some(TxRequest {
+        lease_id,
+        descriptors,
+        meta,
+    })
+}
+
+pub(crate) fn register_tx_payload_lease_in(
+    runtime: NetRuntimeHandle,
+    lease: TxPayloadLease,
+    completion_id: Option<u64>,
+    meta: NetTxMeta,
+) -> Option<RegisteredTx> {
+    let (owners, descriptors) = lease.into_parts();
+    let lease_id = runtime_context_for(runtime)
+        .tx_lease_next_id
+        .fetch_add(1, Ordering::Relaxed);
+    let state = TxLeaseState::new(owners, completion_id);
+    runtime_context_for(runtime)
+        .tx_leases
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(lease_id, state);
+    Some(RegisteredTx::new(
+        runtime,
+        TxRequest {
+            lease_id,
+            descriptors,
+            meta,
+        },
+    ))
+}
+
 fn register_payload_tx_request_in(
     runtime: NetRuntimeHandle,
     payload: PacketPayload,
     meta: NetTxMeta,
 ) -> Option<RegisteredTx> {
-    let (keepalive, descriptors) = payload_to_keepalive_and_descriptors(payload)?;
-    let mut registered = register_tx_lease_in(
+    let lease = TxPayloadLease::from_payload(payload)?;
+    register_tx_payload_lease_in(
         runtime,
-        keepalive,
-        descriptors,
+        lease,
         meta.device_completion_ticket().map(|ticket| ticket.get()),
-    )?;
-    let request = registered
-        .request
-        .as_mut()
-        .expect("registered TX request missing before metadata assignment");
-    request.meta = meta;
-    Some(registered)
+        meta,
+    )
 }
 
 pub fn complete_tx_lease_in(
@@ -539,7 +733,7 @@ pub fn complete_tx_lease_in(
             let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
                 runtime,
                 completion_id,
-                lease.keepalive,
+                lease.owners.into_packets(),
                 result,
             );
             let _ = complete_tx_request_in(runtime, completion_id, result);
@@ -2523,47 +2717,75 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn tx_payload_lease_derives_descriptor_for_each_owner() {
+        let first = test_packet_ref_with_device_addr(8, 0x1000);
+        let second = test_packet_ref_with_device_addr(16, 0x2000);
+        let payload = PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
+            alloc::vec![first, second],
+        ));
+
+        let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
+
+        assert_eq!(lease.descriptors.len(), 2);
+        assert_eq!(lease.descriptors[0].device_addr().get(), 0x1000);
+        assert_eq!(lease.descriptors[0].len_bytes(), 8);
+        assert_eq!(lease.descriptors[1].device_addr().get(), 0x2000);
+        assert_eq!(lease.descriptors[1].len_bytes(), 16);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn tx_payload_lease_rejects_invalid_packet_descriptor() {
+        let payload = PacketPayload::single(test_packet_ref_with_device_addr(8, 0));
+
+        assert!(TxPayloadLease::from_payload(payload).is_none());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn packet_window_descriptors_reference_original_packet_range() {
         let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let mut packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
         assert!(packet.set_len(PacketByteCount::new(32).expect("non-empty packet")));
         let base_ptr = packet.data().as_ptr() as usize;
         let base_device_addr = packet.device_address();
-        let packets = alloc::vec![packet];
+        let owners = TxPayloadOwners::from_packets(alloc::vec![packet]).expect("owners");
+        let header = test_packet_ref_with_device_addr(8, 0x40);
 
-        let bounds = TxOwnerPayloadBounds::checked(
-            &packets,
+        let bounds = TxPayloadWindowBounds::checked(
+            &owners,
             8,
             PacketByteCount::new(16).expect("non-empty window"),
         )
         .expect("owner-bound window");
-        let descriptors = OwnedTxPayloadWindow::from_bounds(&packets, bounds)
-            .to_segments()
-            .expect("segments");
+        let lease = TxPayloadLease::from_header_and_owner_window(header, &owners, bounds)
+            .expect("fragment lease");
+        let payload_descriptor = &lease.descriptors[1];
 
-        assert_eq!(descriptors.len(), 1);
-        assert_eq!(descriptors[0].cpu_ptr(), (base_ptr + 8) as *const u8);
-        assert_eq!(descriptors[0].device_addr().get(), base_device_addr + 8);
-        assert_eq!(descriptors[0].len_bytes(), 16);
+        assert_eq!(lease.descriptors.len(), 2);
+        assert_eq!(payload_descriptor.cpu_ptr(), (base_ptr + 8) as *const u8);
+        assert_eq!(payload_descriptor.device_addr().get(), base_device_addr + 8);
+        assert_eq!(payload_descriptor.len_bytes(), 16);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn packet_window_descriptor_rejects_device_address_overflow() {
         let packet = test_packet_ref_with_device_addr(16, u64::MAX - 4);
-        let packets = alloc::vec![packet];
+        let owners = TxPayloadOwners::from_packets(alloc::vec![packet]).expect("owners");
+        let header = test_packet_ref_with_device_addr(8, 0x40);
 
         assert!(
-            OwnedTxPayloadWindow::from_bounds(
-                &packets,
-                TxOwnerPayloadBounds::checked(
-                    &packets,
+            TxPayloadLease::from_header_and_owner_window(
+                header,
+                &owners,
+                TxPayloadWindowBounds::checked(
+                    &owners,
                     8,
                     PacketByteCount::new(4).expect("non-empty window"),
                 )
                 .expect("owner-bound window"),
             )
-            .to_segments()
             .is_none()
         );
     }
@@ -2579,25 +2801,24 @@ mod tests {
         let mut header_b = crate::net::datapath::mempool::alloc_packet().expect("header b");
         assert!(header_b.set_len(PacketByteCount::new(8).expect("non-empty header")));
         let (completion_id, future) = register_tx_completion_in(default_runtime());
+        let owners = TxPayloadOwners::from_packets(alloc::vec![owner]).expect("non-empty owner");
         let group_id = register_tx_owner_group_in(
             default_runtime(),
-            TxOwnerGroupKeepalive::from_packets(alloc::vec![owner]).expect("non-empty owner"),
+            owners,
             TxOwnerGroupLeaseCount::new(2).expect("non-zero leases"),
             Some(completion_id),
         );
-        let request_a = register_grouped_tx_lease_in(
+        let request_a = register_grouped_tx_payload_lease_in(
             default_runtime(),
-            alloc::vec![header_a],
+            TxPayloadLease::from_payload(PacketPayload::single(header_a)).expect("request a lease"),
             group_id,
-            alloc::vec![test_tx_segment(1, 8)],
             NetTxMeta::default(),
         )
         .expect("request a");
-        let request_b = register_grouped_tx_lease_in(
+        let request_b = register_grouped_tx_payload_lease_in(
             default_runtime(),
-            alloc::vec![header_b],
+            TxPayloadLease::from_payload(PacketPayload::single(header_b)).expect("request b lease"),
             group_id,
-            alloc::vec![test_tx_segment(8, 8)],
             NetTxMeta::default(),
         )
         .expect("request b");

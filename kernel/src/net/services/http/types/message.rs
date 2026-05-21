@@ -11,29 +11,88 @@ use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
-fn generated_payload_from_bytes(data: &[u8]) -> Option<PacketPayload> {
-    let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
-    writer.write_bytes(data)?;
-    writer.finish()
+fn checked_add_len(total: usize, len: usize) -> Option<usize> {
+    total.checked_add(len)
 }
 
-fn generated_payload_from_string(data: &str) -> Option<PacketPayload> {
-    generated_payload_from_bytes(data.as_bytes())
+fn headers_wire_len(headers: &[HttpHeader]) -> Option<usize> {
+    headers.iter().try_fold(0usize, |total, header| {
+        checked_add_len(total, header.name.as_str().len())?
+            .checked_add(2)?
+            .checked_add(header.value.as_str().len())?
+            .checked_add(2)
+    })
 }
 
-fn write_headers(out: &mut String, headers: &[HttpHeader]) {
+fn write_headers(writer: &mut GeneratedPacketWriter, headers: &[HttpHeader]) -> Option<()> {
     for header in headers {
-        out.push_str(header.name.as_str());
-        out.push_str(": ");
-        out.push_str(header.value.as_str());
-        out.push_str("\r\n");
+        writer.write_bytes(header.name.as_str().as_bytes())?;
+        writer.write_bytes(b": ")?;
+        writer.write_bytes(header.value.as_str().as_bytes())?;
+        writer.write_bytes(b"\r\n")?;
     }
+    Some(())
 }
 
 fn append_optional_body(target: &mut PacketPayload, body: Option<PacketPayload>) {
     if let Some(body) = body {
         append_payload(target, body);
     }
+}
+
+fn request_head_payload(request: &HttpRequest) -> Option<PacketPayload> {
+    let method = request.method.as_str();
+    let target = request.uri.as_request_target().as_str();
+    let version = request.version.as_str();
+    let head_len = checked_add_len(method.len(), 1)?
+        .checked_add(target.len())?
+        .checked_add(1)?
+        .checked_add(version.len())?
+        .checked_add(2)?
+        .checked_add(headers_wire_len(&request.headers)?)?
+        .checked_add(2)?;
+    let mut writer = GeneratedPacketWriter::new(head_len, DEFAULT_PACKET_HEADROOM)?;
+    writer.write_bytes(method.as_bytes())?;
+    writer.write_bytes(b" ")?;
+    writer.write_bytes(target.as_bytes())?;
+    writer.write_bytes(b" ")?;
+    writer.write_bytes(version.as_bytes())?;
+    writer.write_bytes(b"\r\n")?;
+    write_headers(&mut writer, &request.headers)?;
+    writer.write_bytes(b"\r\n")?;
+    writer.finish()
+}
+
+fn status_code_bytes(status_code: HttpStatusCode) -> [u8; 3] {
+    let code = status_code.as_u16();
+    [
+        b'0' + (code / 100) as u8,
+        b'0' + ((code / 10) % 10) as u8,
+        b'0' + (code % 10) as u8,
+    ]
+}
+
+fn response_head_payload(response: &HttpResponse) -> Option<PacketPayload> {
+    let version = response.version.as_str();
+    let status = status_code_bytes(response.status_code);
+    let reason = response.reason_phrase.as_str();
+    let head_len = checked_add_len(version.len(), 1)?
+        .checked_add(status.len())?
+        .checked_add(1)?
+        .checked_add(reason.len())?
+        .checked_add(2)?
+        .checked_add(headers_wire_len(&response.headers)?)?
+        .checked_add(2)?;
+    let mut writer = GeneratedPacketWriter::new(head_len, DEFAULT_PACKET_HEADROOM)?;
+    writer.write_bytes(version.as_bytes())?;
+    writer.write_bytes(b" ")?;
+    writer.write_bytes(&status)?;
+    writer.write_bytes(b" ")?;
+    writer.write_bytes(reason.as_bytes())?;
+    writer.write_bytes(b"\r\n")?;
+    write_headers(&mut writer, &response.headers)?;
+    writer.write_bytes(b"\r\n")?;
+    writer.finish()
 }
 
 #[derive(Debug)]
@@ -82,10 +141,6 @@ impl HttpRequest {
         Some(self)
     }
 
-    pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
-        self.body_payload(generated_payload_from_bytes(data)?)
-    }
-
     pub fn get_header(&self, name: HttpHeaderName) -> Option<&HttpHeaderValue> {
         self.headers.iter().find_map(|header| {
             if header.name.eq_name(&name) {
@@ -101,15 +156,7 @@ impl HttpRequest {
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut head = alloc::format!(
-            "{} {} {}\r\n",
-            self.method,
-            self.uri.as_request_target(),
-            self.version
-        );
-        write_headers(&mut head, &self.headers);
-        head.push_str("\r\n");
-        let mut payload = generated_payload_from_string(&head)?;
+        let mut payload = request_head_payload(&self)?;
         append_optional_body(&mut payload, self.body);
         Some(payload)
     }
@@ -246,20 +293,8 @@ impl HttpResponse {
         Some(self)
     }
 
-    pub fn body_bytes(self, data: &[u8]) -> Option<Self> {
-        self.body_payload(generated_payload_from_bytes(data)?)
-    }
-
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut head = alloc::format!(
-            "{} {} {}\r\n",
-            self.version,
-            self.status_code.as_u16(),
-            self.reason_phrase
-        );
-        write_headers(&mut head, &self.headers);
-        head.push_str("\r\n");
-        let mut payload = generated_payload_from_string(&head)?;
+        let mut payload = response_head_payload(&self)?;
         append_payload(&mut payload, self.body);
         Some(payload)
     }

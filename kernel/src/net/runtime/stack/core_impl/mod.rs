@@ -6,10 +6,9 @@ use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::device::{
-    OwnedTxPayloadWindow, TxOwnerGroupKeepalive, TxOwnerGroupLeaseCount, TxOwnerPayloadBounds,
+    TxOwnerGroupLeaseCount, TxPayloadLease, TxPayloadOwners, TxPayloadWindowBounds,
 };
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
-use kernel_api::service::netdev::NetTxSegment;
 
 fn set_packet_visible_len(
     packet: &mut PacketRef,
@@ -32,8 +31,7 @@ mod receive;
 mod send_v6;
 
 struct FragmentTxPacket {
-    header: PacketRef,
-    descriptors: Vec<NetTxSegment>,
+    lease: TxPayloadLease,
     frame_len: usize,
 }
 
@@ -616,35 +614,10 @@ impl NetworkStack {
         crate::net::payload::alloc_packet_with_headroom(frame_len.max(60), 0)
     }
 
-    fn tx_segment_for_packet(
-        packet: &PacketRef,
-    ) -> Result<NetTxSegment, crate::net::types::NetworkError> {
-        if packet.is_empty() {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
-        let len = PacketByteCount::new(packet.len())
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        NetTxSegment::from_dma(packet.data().as_ptr(), packet.device_address(), len)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)
-    }
-
-    fn build_fragment_tx_descriptors(
-        header: &PacketRef,
-        payload_window: OwnedTxPayloadWindow<'_>,
-    ) -> Result<Vec<NetTxSegment>, crate::net::types::NetworkError> {
-        let mut descriptors = Vec::new();
-        descriptors.push(Self::tx_segment_for_packet(header)?);
-        let payload_descriptors = payload_window
-            .to_segments()
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        descriptors.extend(payload_descriptors);
-        Ok(descriptors)
-    }
-
     fn transmit_fragment_packets_on(
         &self,
         if_id: Option<NetIfId>,
-        owners: Vec<PacketRef>,
+        owners: TxPayloadOwners,
         fragments: Vec<FragmentTxPacket>,
     ) -> Result<(), crate::net::types::NetworkError> {
         if fragments.is_empty() {
@@ -657,13 +630,11 @@ impl NetworkStack {
             .iter()
             .try_fold(0usize, |acc, fragment| acc.checked_add(fragment.frame_len))
             .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let owner_keepalive = TxOwnerGroupKeepalive::from_packets(owners)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let remaining_leases = TxOwnerGroupLeaseCount::new(fragments.len())
             .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let group_id = crate::net::runtime::device::register_tx_owner_group_in(
             runtime,
-            owner_keepalive,
+            owners,
             remaining_leases,
             meta.device_completion_ticket().map(|ticket| ticket.get()),
         );
@@ -672,13 +643,10 @@ impl NetworkStack {
         request_meta.completion = kernel_api::service::netdev::TxCompletionMode::QueueAcceptance;
         let mut requests: Vec<crate::net::runtime::device::TxRequest> = Vec::new();
         for fragment in fragments {
-            let mut header_keepalive = Vec::new();
-            header_keepalive.push(fragment.header);
-            let Some(request) = crate::net::runtime::device::register_grouped_tx_lease_in(
+            let Some(request) = crate::net::runtime::device::register_grouped_tx_payload_lease_in(
                 runtime,
-                header_keepalive,
+                fragment.lease,
                 group_id,
-                fragment.descriptors,
                 request_meta,
             ) else {
                 for request in requests {
@@ -867,7 +835,8 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
-        let owners = payload.into_segments();
+        let owners = TxPayloadOwners::from_payload(payload)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let mut fragments = Vec::new();
         let mut offset = 0usize;
         while offset < payload_len {
@@ -900,19 +869,16 @@ impl NetworkStack {
             )?;
             let fragment_len = PacketByteCount::new(fragment_data_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let payload_bounds = TxOwnerPayloadBounds::checked(&owners, offset, fragment_len)
+            let payload_bounds = TxPayloadWindowBounds::checked(&owners, offset, fragment_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let payload_window = OwnedTxPayloadWindow::from_bounds(&owners, payload_bounds);
-            let descriptors = Self::build_fragment_tx_descriptors(&packet, payload_window)?;
             let frame_len = packet
                 .len()
                 .checked_add(fragment_data_len)
                 .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            fragments.push(FragmentTxPacket {
-                header: packet,
-                descriptors,
-                frame_len,
-            });
+            let lease =
+                TxPayloadLease::from_header_and_owner_window(packet, &owners, payload_bounds)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            fragments.push(FragmentTxPacket { lease, frame_len });
 
             offset += fragment_data_len;
         }
