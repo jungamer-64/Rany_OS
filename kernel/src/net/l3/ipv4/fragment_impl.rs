@@ -489,16 +489,14 @@ impl FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        let Some(range) =
-                            crate::net::payload::PayloadRange::checked(&segment.payload, 0, 8)
+                        let Some(bounds) =
+                            crate::net::payload::OwnedPayloadBounds::checked(&segment.payload, 0, 8)
                         else {
                             continue;
                         };
-                        let Some(prefix) = crate::net::payload::OwnedPayloadWindow::from_range(
-                            segment.payload,
-                            range,
-                        )
-                        .and_then(|window| window.into_payload().ok()) else {
+                        let Some(prefix) = bounds
+                            .take_from(segment.payload)
+                            .and_then(|window| window.into_payload().ok()) else {
                             continue;
                         };
                         append_payload(&mut quoted, prefix);

@@ -207,9 +207,10 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        let range = crate::net::payload::PayloadRange::checked(&payload, 2, msg_len)
+        let bounds = crate::net::payload::OwnedPayloadBounds::checked(&payload, 2, msg_len)
             .ok_or(DnsResponseCode::FormatError)?;
-        let message = crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+        let message = bounds
+            .take_from(payload)
             .and_then(|window| window.into_payload().ok())
             .ok_or(DnsResponseCode::FormatError)?;
         self.parse_response_payload(message, current_tick, expected_name, expected_type)

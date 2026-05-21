@@ -202,7 +202,7 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(range) = crate::net::payload::PayloadRange::checked(
+        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &udp_segment,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -210,9 +210,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(udp_payload) =
-            crate::net::payload::OwnedPayloadWindow::from_range(udp_segment, range)
-                .and_then(|window| window.into_payload().ok())
+        let Some(udp_payload) = bounds
+            .take_from(udp_segment)
+            .and_then(|window| window.into_payload().ok())
         else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
@@ -299,7 +299,7 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(range) = crate::net::payload::PayloadRange::checked(
+        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &udp_segment,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
@@ -307,9 +307,9 @@ impl UdpProcessor {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
         };
-        let Some(udp_payload) =
-            crate::net::payload::OwnedPayloadWindow::from_range(udp_segment, range)
-                .and_then(|window| window.into_payload().ok())
+        let Some(udp_payload) = bounds
+            .take_from(udp_segment)
+            .and_then(|window| window.into_payload().ok())
         else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return Err((UdpResult::Invalid, PacketPayload::default()));
@@ -372,14 +372,15 @@ impl UdpProcessor {
             }
         }
 
-        let Some(range) = crate::net::payload::PayloadRange::checked(
+        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &payload,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
             return UdpResult::Invalid;
         };
-        let Some(udp_payload) = crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+        let Some(udp_payload) = bounds
+            .take_from(payload)
             .and_then(|window| window.into_payload().ok())
         else {
             return UdpResult::Invalid;
@@ -444,14 +445,15 @@ impl UdpProcessor {
             return UdpResult::ChecksumError;
         }
 
-        let Some(range) = crate::net::payload::PayloadRange::checked(
+        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &payload,
             UdpHeader::SIZE,
             length - UdpHeader::SIZE,
         ) else {
             return UdpResult::Invalid;
         };
-        let Some(udp_payload) = crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+        let Some(udp_payload) = bounds
+            .take_from(payload)
             .and_then(|window| window.into_payload().ok())
         else {
             return UdpResult::Invalid;

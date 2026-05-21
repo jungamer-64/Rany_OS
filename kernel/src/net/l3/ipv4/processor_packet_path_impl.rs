@@ -119,7 +119,7 @@ impl Ipv4Processor {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };
-        let Some(range) = crate::net::payload::PayloadRange::checked(
+        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &original,
             header_len,
             total_len.saturating_sub(header_len),
@@ -127,9 +127,9 @@ impl Ipv4Processor {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };
-        let Some(payload_packet) =
-            crate::net::payload::OwnedPayloadWindow::from_range(original, range)
-                .and_then(|window| window.into_payload().ok())
+        let Some(payload_packet) = bounds
+            .take_from(original)
+            .and_then(|window| window.into_payload().ok())
         else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;

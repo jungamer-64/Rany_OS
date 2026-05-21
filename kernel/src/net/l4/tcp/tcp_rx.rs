@@ -359,8 +359,10 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let range = crate::net::payload::PayloadRange::checked(&segment, data_offset, payload_len)?;
-        let payload = crate::net::payload::OwnedPayloadWindow::from_range(segment, range)?
+        let bounds =
+            crate::net::payload::OwnedPayloadBounds::checked(&segment, data_offset, payload_len)?;
+        let payload = bounds
+            .take_from(segment)?
             .into_payload()
             .ok()?;
 
@@ -971,7 +973,7 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
-            let Some(range) = crate::net::payload::PayloadRange::checked(
+            let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                 &data_payload,
                 skip,
                 payload_len as usize - skip,
@@ -979,9 +981,9 @@ fn handle_data_received_with_delayed_ack(
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };
-            let Some(trimmed) =
-                crate::net::payload::OwnedPayloadWindow::from_range(data_payload, range)
-                    .and_then(|window| window.into_payload().ok())
+            let Some(trimmed) = bounds
+                .take_from(data_payload)
+                .and_then(|window| window.into_payload().ok())
             else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;

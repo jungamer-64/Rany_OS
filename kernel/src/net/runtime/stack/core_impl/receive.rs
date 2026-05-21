@@ -52,15 +52,15 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(range) =
-                    crate::net::payload::PayloadRange::checked(&payload, data_offset, data_len)
+                let Some(bounds) =
+                    crate::net::payload::OwnedPayloadBounds::checked(&payload, data_offset, data_len)
                 else {
                     self.stats().record_rx_error();
                     return;
                 };
-                let Some(echo_data) =
-                    crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
-                        .and_then(|window| window.into_payload().ok())
+                let Some(echo_data) = bounds
+                    .take_from(payload)
+                    .and_then(|window| window.into_payload().ok())
                 else {
                     self.stats().record_rx_error();
                     return;

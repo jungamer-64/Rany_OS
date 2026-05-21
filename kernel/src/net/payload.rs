@@ -27,6 +27,18 @@ pub struct PayloadRange {
     len: PayloadByteLen,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OwnedPayloadBounds {
+    offset: PayloadByteOffset,
+    len: PayloadByteLen,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MutablePayloadBounds {
+    offset: PayloadByteOffset,
+    len: PayloadByteLen,
+}
+
 #[derive(Debug)]
 pub struct FixedPayloadBytes<const N: usize> {
     bytes: [u8; N],
@@ -80,6 +92,81 @@ impl PayloadRange {
     pub fn span<'a>(&self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
         PayloadSpanRef::from_range(payload, *self)
     }
+}
+
+impl OwnedPayloadBounds {
+    pub fn checked(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        checked_payload_bounds(payload, offset, len).map(|(offset, len)| Self { offset, len })
+    }
+
+    pub const fn offset(self) -> usize {
+        self.offset.get()
+    }
+
+    pub const fn total_len(self) -> usize {
+        self.len.get()
+    }
+
+    pub fn take_from(self, payload: PacketPayload) -> Option<OwnedPayloadWindow> {
+        checked_payload_bounds(&payload, self.offset(), self.total_len())?;
+        Some(OwnedPayloadWindow {
+            payload,
+            range: self.into_range(),
+        })
+    }
+
+    const fn into_range(self) -> PayloadRange {
+        PayloadRange {
+            offset: self.offset,
+            len: self.len,
+        }
+    }
+}
+
+impl MutablePayloadBounds {
+    pub fn checked(payload: &PacketPayload, offset: usize, len: usize) -> Option<Self> {
+        checked_payload_bounds(payload, offset, len).map(|(offset, len)| Self { offset, len })
+    }
+
+    pub const fn offset(self) -> usize {
+        self.offset.get()
+    }
+
+    pub const fn total_len(self) -> usize {
+        self.len.get()
+    }
+
+    pub fn open<'a>(self, payload: &'a mut PacketPayload) -> Option<PayloadSpanMut<'a>> {
+        checked_payload_bounds(payload, self.offset(), self.total_len())?;
+        Some(PayloadSpanMut {
+            payload,
+            offset: self.offset(),
+            len: self.total_len(),
+        })
+    }
+
+    pub fn span<'a>(self, payload: &'a PacketPayload) -> Option<PayloadSpanRef<'a>> {
+        checked_payload_bounds(payload, self.offset(), self.total_len())?;
+        PayloadSpanRef::from_range(payload, self.into_range())
+    }
+
+    const fn into_range(self) -> PayloadRange {
+        PayloadRange {
+            offset: self.offset,
+            len: self.len,
+        }
+    }
+}
+
+fn checked_payload_bounds(
+    payload: &PacketPayload,
+    offset: usize,
+    len: usize,
+) -> Option<(PayloadByteOffset, PayloadByteLen)> {
+    if offset > payload.total_len() || len > payload.total_len().saturating_sub(offset) {
+        return None;
+    }
+    Some((PayloadByteOffset(offset), PayloadByteLen(len)))
 }
 
 impl PayloadByteOffset {
@@ -894,8 +981,8 @@ mod tests {
     fn payload_bound_window_rejects_out_of_bounds_request() {
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
 
-        let range = PayloadRange::checked(&payload, 4, 0).expect("empty tail range");
-        assert!(OwnedPayloadWindow::from_range(payload, range).is_some());
+        let bounds = OwnedPayloadBounds::checked(&payload, 4, 0).expect("empty tail bounds");
+        assert!(bounds.take_from(payload).is_some());
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
         assert!(PayloadRange::checked(&payload, 5, 0).is_none());
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
@@ -965,9 +1052,10 @@ mod tests {
     fn owned_payload_window_takes_bounds_from_same_payload() {
         let source = PacketPayload::single(test_packet_with_contents(b"abcdef"));
 
-        let range = PayloadRange::checked(&source, 3, 3).expect("same-payload bounds");
-        let taken = OwnedPayloadWindow::from_range(source, range)
-            .expect("same-payload range")
+        let bounds = OwnedPayloadBounds::checked(&source, 3, 3).expect("same-payload bounds");
+        let taken = bounds
+            .take_from(source)
+            .expect("same-payload owned bounds")
             .into_payload()
             .expect("same-payload bounds are valid");
 
@@ -980,8 +1068,8 @@ mod tests {
             test_packet_with_contents(b"abcd"),
             test_packet_with_contents(b"efgh"),
         ]));
-        let range = PayloadRange::checked(&payload, 2, 4).expect("cross-segment range");
-        let mut span = PayloadSpanMut::from_range(&mut payload, range).expect("mutable span");
+        let bounds = MutablePayloadBounds::checked(&payload, 2, 4).expect("cross-segment bounds");
+        let mut span = bounds.open(&mut payload).expect("mutable span");
 
         span.for_each_chunk_mut(|chunk| {
             for byte in chunk {

@@ -258,13 +258,14 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(range) = crate::net::payload::PayloadRange::checked(
+                    if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         header_len,
                         transport_len,
                     ) {
                         let Some(transport_payload) =
-                            crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+                            bounds
+                                .take_from(payload)
                                 .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
@@ -279,16 +280,14 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    let Some(range) = crate::net::payload::PayloadRange::checked(
+                    let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         header_len,
                         transport_len,
                     ) else {
                         return EventHandleResult::Success;
                     };
-                    let Some(packet) =
-                        crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
-                    else {
+                    let Some(packet) = bounds.take_from(payload) else {
                         return EventHandleResult::Success;
                     };
                     stack.process_udp_payload(
@@ -301,13 +300,14 @@ impl RuntimeCommandHandler {
                     );
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmp => {
-                    if let Some(range) = crate::net::payload::PayloadRange::checked(
+                    if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         header_len,
                         transport_len,
                     ) {
                         let Some(transport_payload) =
-                            crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+                            bounds
+                                .take_from(payload)
                                 .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
@@ -323,13 +323,14 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Igmp => {
-                    if let Some(range) = crate::net::payload::PayloadRange::checked(
+                    if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         header_len,
                         transport_len,
                     ) {
                         let Some(transport_payload) =
-                            crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+                            bounds
+                                .take_from(payload)
                                 .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
@@ -412,13 +413,14 @@ impl RuntimeCommandHandler {
 
             match protocol {
                 crate::net::l3::ipv4::IpProtocol::Tcp => {
-                    if let Some(range) = crate::net::payload::PayloadRange::checked(
+                    if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         payload_offset,
                         transport_len,
                     ) {
                         let Some(transport_payload) =
-                            crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+                            bounds
+                                .take_from(payload)
                                 .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
@@ -433,28 +435,27 @@ impl RuntimeCommandHandler {
                     }
                 }
                 crate::net::l3::ipv4::IpProtocol::Udp => {
-                    let Some(range) = crate::net::payload::PayloadRange::checked(
+                    let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         payload_offset,
                         transport_len,
                     ) else {
                         return EventHandleResult::Success;
                     };
-                    let Some(packet) =
-                        crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
-                    else {
+                    let Some(packet) = bounds.take_from(payload) else {
                         return EventHandleResult::Success;
                     };
                     stack.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
-                    if let Some(range) = crate::net::payload::PayloadRange::checked(
+                    if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                         &payload,
                         payload_offset,
                         transport_len,
                     ) {
                         let Some(transport_payload) =
-                            crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+                            bounds
+                                .take_from(payload)
                                 .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;

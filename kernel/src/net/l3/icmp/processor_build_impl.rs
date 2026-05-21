@@ -68,11 +68,9 @@ impl IcmpProcessor {
 
         let mut message = PacketPayload::single(packet);
         if quote_len != 0 {
-            let range = crate::net::payload::PayloadRange::checked(&original_packet, 0, quote_len)?;
-            let quoted =
-                crate::net::payload::OwnedPayloadWindow::from_range(original_packet, range)?
-                    .into_payload()
-                    .ok()?;
+            let bounds =
+                crate::net::payload::OwnedPayloadBounds::checked(&original_packet, 0, quote_len)?;
+            let quoted = bounds.take_from(original_packet)?.into_payload().ok()?;
             append_payload(&mut message, quoted);
         }
 
