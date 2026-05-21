@@ -7,8 +7,8 @@ use super::state::SelectedTls13Parameters;
 use super::state::{TlsHandshakeProgress, TlsRecordEpoch};
 use super::{
     AlertDescription, ContentType, GeneratedPacketWriter, HandshakeType, KeyUpdateRequest,
-    PacketPayload, PacketPayloadView, PayloadSpanMut, PayloadSpanRef, TlsBytes, TlsConnectionCore,
-    TlsError, TlsResult, append_payload,
+    PacketPayload, PacketPayloadView, PayloadRange, PayloadSpanMut, PayloadSpanRef, TlsBytes,
+    TlsConnectionCore, TlsError, TlsResult, append_payload,
 };
 use crate::net::security::tls::crypto::aes_gcm::AesGcmKey;
 use crate::net::security::tls::crypto::hkdf::{
@@ -20,7 +20,7 @@ use crate::net::security::tls::crypto::{
     SHA256_OUTPUT_SIZE, SHA384_OUTPUT_SIZE, chacha20_poly1305_tag_chunks,
     chacha20_xor_chunks_in_place,
 };
-use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketByteCount};
 
 const TLS13_MAX_PLAINTEXT_LEN: usize = 16 * 1024;
 const TLS13_MAX_CIPHERTEXT_LEN: usize = TLS13_MAX_PLAINTEXT_LEN + 256;
@@ -69,10 +69,11 @@ impl TlsRecordHeader {
         })
     }
 
-    fn total_len(self) -> TlsResult<usize> {
-        5usize
+    fn total_len(self) -> TlsResult<PacketByteCount> {
+        let total_len = 5usize
             .checked_add(self.body_len.get())
-            .ok_or(TlsError::DecodeError)
+            .ok_or(TlsError::DecodeError)?;
+        PacketByteCount::new(total_len).ok_or(TlsError::DecodeError)
     }
 }
 
@@ -87,10 +88,9 @@ pub(super) struct TlsRecordBody<'a> {
 
 #[derive(Clone, Copy)]
 struct TlsEncryptedRecordBody {
-    body_offset: usize,
-    body_len: usize,
-    ciphertext_len: usize,
-    tag_offset: usize,
+    body: PayloadRange,
+    ciphertext: PayloadRange,
+    tag: PayloadRange,
 }
 
 pub(super) struct TlsEncryptedRecordPayload {
@@ -105,7 +105,11 @@ impl<'a> TlsRecordBody<'a> {
 }
 
 impl TlsEncryptedRecordBody {
-    fn from_record_body(body_offset: usize, body_len: usize) -> TlsResult<Self> {
+    fn from_record_body(
+        payload: &PacketPayload,
+        body_offset: usize,
+        body_len: usize,
+    ) -> TlsResult<Self> {
         if body_len < 16 {
             return Err(TlsError::DecodeError);
         }
@@ -113,11 +117,15 @@ impl TlsEncryptedRecordBody {
         let tag_offset = body_offset
             .checked_add(ciphertext_len)
             .ok_or(TlsError::DecodeError)?;
+        let body =
+            PayloadRange::checked(payload, body_offset, body_len).ok_or(TlsError::DecodeError)?;
+        let ciphertext = PayloadRange::checked(payload, body_offset, ciphertext_len)
+            .ok_or(TlsError::DecodeError)?;
+        let tag = PayloadRange::checked(payload, tag_offset, 16).ok_or(TlsError::DecodeError)?;
         Ok(Self {
-            body_offset,
-            body_len,
-            ciphertext_len,
-            tag_offset,
+            body,
+            ciphertext,
+            tag,
         })
     }
 }
@@ -125,7 +133,9 @@ impl TlsEncryptedRecordBody {
 impl TlsEncryptedRecordPayload {
     fn tag(&self) -> TlsResult<AeadTag> {
         Ok(AeadTag::new(
-            PayloadSpanRef::from_payload_bounds(&self.payload, self.body.tag_offset, 16)
+            self.body
+                .tag
+                .span(&self.payload)
                 .ok_or(TlsError::DecodeError)?
                 .read_array::<16>(0)
                 .ok_or(TlsError::DecodeError)?,
@@ -133,39 +143,30 @@ impl TlsEncryptedRecordPayload {
     }
 
     fn ciphertext_span(&self) -> TlsResult<PayloadSpanRef<'_>> {
-        PayloadSpanRef::from_payload_bounds(
-            &self.payload,
-            self.body.body_offset,
-            self.body.ciphertext_len,
-        )
-        .ok_or(TlsError::DecryptError)
+        self.body
+            .ciphertext
+            .span(&self.payload)
+            .ok_or(TlsError::DecryptError)
     }
 
     fn ciphertext_span_mut(&mut self) -> TlsResult<PayloadSpanMut<'_>> {
-        PayloadSpanMut::from_payload_bounds(
-            &mut self.payload,
-            self.body.body_offset,
-            self.body.ciphertext_len,
-        )
-        .ok_or(TlsError::DecryptError)
+        PayloadSpanMut::from_range(&mut self.payload, self.body.ciphertext)
+            .ok_or(TlsError::DecryptError)
     }
 
     fn plaintext_span(&self, inner: Tls13InnerPlaintext) -> TlsResult<PayloadSpanRef<'_>> {
-        PayloadSpanRef::from_payload_bounds(
-            &self.payload,
-            self.body.body_offset,
-            inner.content_len(),
-        )
-        .ok_or(TlsError::DecodeError)
+        PayloadRange::checked(&self.payload, self.body.body.offset(), inner.content_len())
+            .and_then(|range| PayloadSpanRef::from_range(&self.payload, range))
+            .ok_or(TlsError::DecodeError)
     }
 
     fn into_plaintext_payload(self, inner: Tls13InnerPlaintext) -> TlsResult<PacketPayload> {
-        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-            self.payload,
-            self.body.body_offset,
-            inner.content_len(),
-        )
-        .map_err(|_| TlsError::DecodeError)
+        let range =
+            PayloadRange::checked(&self.payload, self.body.body.offset(), inner.content_len())
+                .ok_or(TlsError::DecodeError)?;
+        crate::net::payload::OwnedPayloadWindow::from_range(self.payload, range)
+            .and_then(|window| window.into_payload().ok())
+            .ok_or(TlsError::DecodeError)
     }
 }
 
@@ -182,19 +183,17 @@ impl TlsRecordPacket {
         let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
         let header = TlsRecordHeader::parse(header)?;
         let total_len = header.total_len()?;
-        if view.total_len() < total_len {
+        if view.total_len() < total_len.get() {
             return Ok(None);
         }
-        kernel_api::resource::net::PacketByteCount::new(total_len)
-            .map(Some)
-            .ok_or(TlsError::DecodeError)
+        Ok(Some(total_len))
     }
 
     pub(super) fn parse(payload: PacketPayload) -> TlsResult<Self> {
         let view = PacketPayloadView::new(&payload);
         let header = view.read_array::<5>(0).ok_or(TlsError::DecodeError)?;
         let header = TlsRecordHeader::parse(header)?;
-        if header.total_len()? != view.total_len() {
+        if header.total_len()?.get() != view.total_len() {
             return Err(TlsError::DecodeError);
         }
         Ok(Self { payload, header })
@@ -205,12 +204,10 @@ impl TlsRecordPacket {
     }
 
     fn body(&self) -> TlsResult<TlsRecordBody<'_>> {
-        let span = PayloadSpanRef::from_payload_bounds(
-            &self.payload,
-            Self::HEADER_LEN,
-            self.header.body_len.get(),
-        )
-        .ok_or(TlsError::DecodeError)?;
+        let range =
+            PayloadRange::checked(&self.payload, Self::HEADER_LEN, self.header.body_len.get())
+                .ok_or(TlsError::DecodeError)?;
+        let span = PayloadSpanRef::from_range(&self.payload, range).ok_or(TlsError::DecodeError)?;
         Ok(TlsRecordBody { span })
     }
 
@@ -219,10 +216,11 @@ impl TlsRecordPacket {
     }
 
     fn into_encrypted_payload(self) -> TlsResult<TlsEncryptedRecordPayload> {
-        let body =
-            TlsEncryptedRecordBody::from_record_body(Self::HEADER_LEN, self.header.body_len.get())?;
-        PayloadSpanRef::from_payload_bounds(&self.payload, body.body_offset, body.body_len)
-            .ok_or(TlsError::DecodeError)?;
+        let body = TlsEncryptedRecordBody::from_record_body(
+            &self.payload,
+            Self::HEADER_LEN,
+            self.header.body_len.get(),
+        )?;
         Ok(TlsEncryptedRecordPayload {
             payload: self.payload,
             body,
@@ -369,8 +367,8 @@ impl TlsConnectionCore {
         encrypted: &mut TlsEncryptedRecordPayload,
     ) -> TlsResult<Tls13InnerPlaintext> {
         let cipher = self.negotiation.selected()?.cipher().cipher();
-        let record_len = encrypted.body.body_len;
-        let ciphertext_len = encrypted.body.ciphertext_len;
+        let record_len = encrypted.body.body.total_len();
+        let ciphertext_len = encrypted.body.ciphertext.total_len();
         let tag = encrypted.tag()?;
 
         let (key, iv, seq, epoch) = if self.tls13_reads_handshake_records() {
@@ -528,23 +526,21 @@ impl TlsConnectionCore {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
                 ContentType::ApplicationData => {
+                    let range = PayloadRange::checked(&decrypted, 0, inner.content_len())
+                        .ok_or(TlsError::DecodeError)?;
                     let inner_payload =
-                        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .map_err(|_| TlsError::DecodeError)?;
+                        crate::net::payload::OwnedPayloadWindow::from_range(decrypted, range)
+                            .and_then(|window| window.into_payload().ok())
+                            .ok_or(TlsError::DecodeError)?;
                     append_payload(plaintext, inner_payload);
                 }
                 ContentType::Handshake => {
+                    let range = PayloadRange::checked(&decrypted, 0, inner.content_len())
+                        .ok_or(TlsError::DecodeError)?;
                     let inner_payload =
-                        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .map_err(|_| TlsError::DecodeError)?;
+                        crate::net::payload::OwnedPayloadWindow::from_range(decrypted, range)
+                            .and_then(|window| window.into_payload().ok())
+                            .ok_or(TlsError::DecodeError)?;
                     if self.negotiation.progress.is_established() {
                         let inner_data = PayloadSpanRef::from_payload(&inner_payload);
                         self.tls13_process_post_handshake(inner_data)?;
@@ -553,13 +549,12 @@ impl TlsConnectionCore {
                     }
                 }
                 ContentType::Alert => {
+                    let range = PayloadRange::checked(&decrypted, 0, inner.content_len())
+                        .ok_or(TlsError::DecodeError)?;
                     let inner_payload =
-                        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                            decrypted,
-                            0,
-                            inner.content_len(),
-                        )
-                        .map_err(|_| TlsError::DecodeError)?;
+                        crate::net::payload::OwnedPayloadWindow::from_range(decrypted, range)
+                            .and_then(|window| window.into_payload().ok())
+                            .ok_or(TlsError::DecodeError)?;
                     self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
                 }
             }

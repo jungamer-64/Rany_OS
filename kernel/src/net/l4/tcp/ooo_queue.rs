@@ -122,12 +122,17 @@ impl ConnectionOooQueue {
                 if seq_before(rcv_nxt, seg_end) {
                     // 部分的な重複: rcv_nxtより前の部分をカットして再挿入候補にする
                     let overlap = rcv_nxt.wrapping_sub(seq) as usize;
-                    let Ok(trimmed) =
-                        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                            packet,
-                            overlap,
-                            seg_end.wrapping_sub(rcv_nxt) as usize,
-                        )
+                    let Some(range) = crate::net::payload::PayloadRange::checked(
+                        &packet,
+                        overlap,
+                        seg_end.wrapping_sub(rcv_nxt) as usize,
+                    ) else {
+                        total_count.fetch_sub(1, Ordering::Relaxed);
+                        continue;
+                    };
+                    let Some(trimmed) =
+                        crate::net::payload::OwnedPayloadWindow::from_range(packet, range)
+                            .and_then(|window| window.into_payload().ok())
                     else {
                         total_count.fetch_sub(1, Ordering::Relaxed);
                         continue;

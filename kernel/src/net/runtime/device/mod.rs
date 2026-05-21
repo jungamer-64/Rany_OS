@@ -220,12 +220,26 @@ pub(crate) fn unregister_tx_owner_group_in(runtime: NetRuntimeHandle, group_id: 
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-struct TxPayloadBounds {
+pub(crate) struct TxOwnerPayloadBounds {
     offset: usize,
     len: PacketByteCount,
 }
 
-impl TxPayloadBounds {
+impl TxOwnerPayloadBounds {
+    pub(crate) fn checked(
+        packets: &[PacketRef],
+        offset: usize,
+        len: PacketByteCount,
+    ) -> Option<Self> {
+        let total_len = packets
+            .iter()
+            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
+        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
+            return None;
+        }
+        Some(Self { offset, len })
+    }
+
     const fn offset(self) -> usize {
         self.offset
     }
@@ -237,26 +251,12 @@ impl TxPayloadBounds {
 
 pub(crate) struct OwnedTxPayloadWindow<'a> {
     packets: &'a [PacketRef],
-    bounds: TxPayloadBounds,
+    bounds: TxOwnerPayloadBounds,
 }
 
 impl<'a> OwnedTxPayloadWindow<'a> {
-    pub(crate) fn from_owner_bounds(
-        packets: &'a [PacketRef],
-        offset: usize,
-        len: usize,
-    ) -> Option<Self> {
-        let len = PacketByteCount::new(len)?;
-        let total_len = packets
-            .iter()
-            .try_fold(0usize, |total, packet| total.checked_add(packet.len()))?;
-        if offset > total_len || len.get() > total_len.saturating_sub(offset) {
-            return None;
-        }
-        Some(Self {
-            packets,
-            bounds: TxPayloadBounds { offset, len },
-        })
+    pub(crate) fn from_bounds(packets: &'a [PacketRef], bounds: TxOwnerPayloadBounds) -> Self {
+        Self { packets, bounds }
     }
 
     pub(crate) fn to_segments(&self) -> Option<Vec<NetTxSegment>> {
@@ -266,7 +266,7 @@ impl<'a> OwnedTxPayloadWindow<'a> {
 
 fn tx_payload_bounds_to_segments(
     packets: &[PacketRef],
-    bounds: TxPayloadBounds,
+    bounds: TxOwnerPayloadBounds,
 ) -> Option<Vec<NetTxSegment>> {
     let mut descriptors = Vec::new();
     let mut cursor = 0usize;
@@ -2706,8 +2706,13 @@ mod tests {
         let base_device_addr = packet.device_address();
         let packets = alloc::vec![packet];
 
-        let descriptors = OwnedTxPayloadWindow::from_owner_bounds(&packets, 8, 16)
-            .expect("owner-bound window")
+        let bounds = TxOwnerPayloadBounds::checked(
+            &packets,
+            8,
+            PacketByteCount::new(16).expect("non-empty window"),
+        )
+        .expect("owner-bound window");
+        let descriptors = OwnedTxPayloadWindow::from_bounds(&packets, bounds)
             .to_segments()
             .expect("segments");
 
@@ -2724,10 +2729,17 @@ mod tests {
         let packets = alloc::vec![packet];
 
         assert!(
-            OwnedTxPayloadWindow::from_owner_bounds(&packets, 8, 4)
-                .expect("owner-bound window")
-                .to_segments()
-                .is_none()
+            OwnedTxPayloadWindow::from_bounds(
+                &packets,
+                TxOwnerPayloadBounds::checked(
+                    &packets,
+                    8,
+                    PacketByteCount::new(4).expect("non-empty window"),
+                )
+                .expect("owner-bound window"),
+            )
+            .to_segments()
+            .is_none()
         );
     }
 

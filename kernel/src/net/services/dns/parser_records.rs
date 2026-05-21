@@ -38,7 +38,7 @@ impl DnsClient {
     ) -> DnsRecordData {
         let raw_span = || {
             DnsRecordData::Raw(
-                PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                PayloadRange::checked(payload, rdata_offset, rdlength)
                     .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
             )
         };

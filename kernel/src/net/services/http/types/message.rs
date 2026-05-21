@@ -150,12 +150,8 @@ impl HttpBodyView {
             return None;
         }
         let range = self.ranges.into_iter().next()?;
-        crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-            payload,
-            range.offset(),
-            range.total_len(),
-        )
-        .ok()
+        crate::net::payload::OwnedPayloadWindow::from_range(payload, range)
+            .and_then(|window| window.into_payload().ok())
     }
 }
 

@@ -206,9 +206,11 @@ impl NetworkStack {
             drop(frame);
             set_packet_visible_len(&mut packet, frame_len)?;
 
-            let payload_window =
-                OwnedTxPayloadWindow::from_owner_bounds(&owners, offset, fragment_data_len)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let fragment_len = PacketByteCount::new(fragment_data_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let payload_bounds = TxOwnerPayloadBounds::checked(&owners, offset, fragment_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let payload_window = OwnedTxPayloadWindow::from_bounds(&owners, payload_bounds);
             let descriptors = Self::build_fragment_tx_descriptors(&packet, payload_window)?;
             let frame_len = packet
                 .len()

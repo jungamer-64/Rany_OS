@@ -666,13 +666,16 @@ impl Ipv6FragmentReassembler {
                         .into_iter()
                         .find(|segment| segment.offset == 0)
                     {
-                        let Ok(prefix) =
-                            crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                                segment.payload,
-                                0,
-                                8,
-                            )
+                        let Some(range) =
+                            crate::net::payload::PayloadRange::checked(&segment.payload, 0, 8)
                         else {
+                            continue;
+                        };
+                        let Some(prefix) = crate::net::payload::OwnedPayloadWindow::from_range(
+                            segment.payload,
+                            range,
+                        )
+                        .and_then(|window| window.into_payload().ok()) else {
                             continue;
                         };
                         append_payload(&mut quoted, prefix);

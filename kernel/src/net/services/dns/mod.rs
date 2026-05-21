@@ -338,7 +338,7 @@ impl DnsNameOwned {
         let mut labels = Vec::new();
         for (offset, len) in label_bounds {
             labels.push(
-                PayloadRange::from_payload_bounds(&payload, offset, len)
+                PayloadRange::checked(&payload, offset, len)
                     .ok_or(DnsNameError::AllocationFailed)?,
             );
         }

@@ -6,7 +6,7 @@ use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::device::{
-    OwnedTxPayloadWindow, TxOwnerGroupKeepalive, TxOwnerGroupLeaseCount,
+    OwnedTxPayloadWindow, TxOwnerGroupKeepalive, TxOwnerGroupLeaseCount, TxOwnerPayloadBounds,
 };
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::NetTxSegment;
@@ -898,9 +898,11 @@ impl NetworkStack {
                 more_fragments,
                 fragment_offset_units,
             )?;
-            let payload_window =
-                OwnedTxPayloadWindow::from_owner_bounds(&owners, offset, fragment_data_len)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let fragment_len = PacketByteCount::new(fragment_data_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let payload_bounds = TxOwnerPayloadBounds::checked(&owners, offset, fragment_len)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let payload_window = OwnedTxPayloadWindow::from_bounds(&owners, payload_bounds);
             let descriptors = Self::build_fragment_tx_descriptors(&packet, payload_window)?;
             let frame_len = packet
                 .len()

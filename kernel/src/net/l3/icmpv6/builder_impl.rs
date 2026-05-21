@@ -169,15 +169,13 @@ impl Icmpv6Builder {
 
         let mut message_payload = PacketPayload::single(packet);
         if max_trigger > 0 {
-            crate::net::payload::append_payload(
-                &mut message_payload,
-                crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                    trigger_packet,
-                    0,
-                    max_trigger,
-                )
-                .ok()?,
-            );
+            let range =
+                crate::net::payload::PayloadRange::checked(&trigger_packet, 0, max_trigger)?;
+            let trigger_payload =
+                crate::net::payload::OwnedPayloadWindow::from_range(trigger_packet, range)?
+                    .into_payload()
+                    .ok()?;
+            crate::net::payload::append_payload(&mut message_payload, trigger_payload);
         }
 
         // Compute checksum

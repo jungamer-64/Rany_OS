@@ -378,10 +378,7 @@ impl OwnedPayloadWindow {
             offset: PayloadByteOffset::ZERO,
             len: PayloadByteLen(payload.total_len()),
         };
-        Self {
-            payload,
-            range,
-        }
+        Self { payload, range }
     }
 
     pub fn span(&self) -> PayloadSpanRef<'_> {
@@ -860,7 +857,8 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
     }
 
     let transport_len = view.total_len().checked_sub(offset)?;
-    PayloadSpanRef::from_payload_bounds(payload, offset, transport_len)
+    PayloadRange::checked(payload, offset, transport_len)
+        .and_then(|range| PayloadSpanRef::from_range(payload, range))
         .map(|transport| (next_header, transport))
 }
 
@@ -872,8 +870,8 @@ mod tests {
     #[test]
     fn payload_range_checked_end_rejects_overflow() {
         let range = PayloadRange {
-            offset: usize::MAX,
-            len: 1,
+            offset: PayloadByteOffset(usize::MAX),
+            len: PayloadByteLen(1),
         };
 
         assert_eq!(range.checked_end_offset(), None);
@@ -910,11 +908,12 @@ mod tests {
     fn payload_bound_window_rejects_out_of_bounds_request() {
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
 
-        assert!(OwnedPayloadWindow::from_bounds(payload, 4, 0).is_some());
+        let range = PayloadRange::checked(&payload, 4, 0).expect("empty tail range");
+        assert!(OwnedPayloadWindow::from_range(payload, range).is_some());
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
-        assert!(OwnedPayloadWindow::from_bounds(payload, 5, 0).is_none());
+        assert!(PayloadRange::checked(&payload, 5, 0).is_none());
         let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
-        assert!(OwnedPayloadWindow::from_bounds(payload, 3, 2).is_none());
+        assert!(PayloadRange::checked(&payload, 3, 2).is_none());
     }
 
     fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
@@ -980,10 +979,31 @@ mod tests {
     fn owned_payload_window_takes_bounds_from_same_payload() {
         let source = PacketPayload::single(test_packet_with_contents(b"abcdef"));
 
-        let taken = OwnedPayloadWindow::take_payload_from_bounds(source, 3, 3)
+        let range = PayloadRange::checked(&source, 3, 3).expect("same-payload bounds");
+        let taken = OwnedPayloadWindow::from_range(source, range)
+            .expect("same-payload range")
+            .into_payload()
             .expect("same-payload bounds are valid");
 
         assert_payload_bytes(&taken, b"def");
+    }
+
+    #[test]
+    fn payload_span_mut_mutates_only_checked_range() {
+        let mut payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+            test_packet_with_contents(b"abcd"),
+            test_packet_with_contents(b"efgh"),
+        ]));
+        let range = PayloadRange::checked(&payload, 2, 4).expect("cross-segment range");
+        let mut span = PayloadSpanMut::from_range(&mut payload, range).expect("mutable span");
+
+        span.for_each_chunk_mut(|chunk| {
+            for byte in chunk {
+                *byte = byte.to_ascii_uppercase();
+            }
+        });
+
+        assert_payload_bytes(&payload, b"abCDEFgh");
     }
 
     #[test]
@@ -991,7 +1011,7 @@ mod tests {
         let shorter_payload = PacketPayload::single(test_packet_with_contents(b"xy"));
 
         assert!(
-            OwnedPayloadWindow::take_payload_from_bounds(shorter_payload, 3, 3).is_err(),
+            PayloadRange::checked(&shorter_payload, 3, 3).is_none(),
             "bounds are validated against the consumed payload"
         );
     }

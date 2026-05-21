@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::OwnedPayloadWindow;
+use crate::net::payload::{OwnedPayloadWindow, PayloadRange};
 use kernel_api::resource::net::PacketPayload;
 
 struct Ipv4NonFragmentIngress {
@@ -79,9 +79,13 @@ impl Ipv4Processor {
         };
 
         let original = PacketPayload::single(packet_ref);
-        let Some(packet) =
-            OwnedPayloadWindow::from_bounds(original, ingress.payload_offset, ingress.payload_len)
+        let Some(range) =
+            PayloadRange::checked(&original, ingress.payload_offset, ingress.payload_len)
         else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
+        let Some(packet) = OwnedPayloadWindow::from_range(original, range) else {
             self.stats.rx_errors += 1;
             return Ipv4ProcessResult::Error;
         };

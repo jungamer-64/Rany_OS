@@ -211,16 +211,28 @@ if rg -n "\\bPayloadWindowRequest\\b|\\bPayloadWindow::new\\s*\\(|\\bPayloadWind
   fail "found unchecked payload window or range constructor"
 fi
 
-if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayloadWindow::take_payload\\s*\\(|\\bPayloadSpanMut::from_window\\s*\\(|\\bPayloadSpanRef::from_range\\s*\\(" \
+if rg -n "\\bPayloadWindow\\b|\\bOwnedPayloadWindow::take\\s*\\(|\\bOwnedPayloadWindow::take_payload\\s*\\(|\\bPayloadSpanMut::from_window\\s*\\(" \
   "${network_tree[@]}" \
   >/dev/null; then
   fail "found detached payload window API"
+fi
+
+if rg -n "\\bPayloadRange::from_payload_bounds\\s*\\(|\\bPayloadSpanRef::from_payload_bounds\\s*\\(|\\bPayloadSpanMut::from_payload_bounds\\s*\\(|\\bOwnedPayloadWindow::from_bounds\\s*\\(|\\bOwnedPayloadWindow::take_payload_from_bounds\\s*\\(|\\bOwnedTxPayloadWindow::from_owner_bounds\\s*\\(" \
+  "${network_tree[@]}" \
+  >/dev/null; then
+  fail "found removed raw zero-copy bounds constructor"
 fi
 
 if rg -n "pub fn (set_len|advance|retreat)\\(&mut self, [a-z_]+: usize\\)" \
   interfaces/kernel_api/src/types.rs interfaces/kernel_api/src/driver_abi.rs \
   >/dev/null; then
   fail "found raw usize PacketRef length API"
+fi
+
+if rg -n "(set_len|advance|retreat): unsafe fn\\(&mut PacketRefStorage, usize\\)|split_front:\\s*unsafe fn\\(&PacketRefStorage, usize\\)" \
+  interfaces/kernel_api/src/types.rs \
+  >/dev/null; then
+  fail "found raw usize PacketRef vtable length callback"
 fi
 
 if rg -n "\\bVerifiedPayloadWindow\\b" \

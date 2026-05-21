@@ -16,7 +16,9 @@ use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering, fence};
-use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketRefStorage, PacketRefVTable};
+use kernel_api::resource::net::{
+    DEFAULT_PACKET_HEADROOM, PacketByteCount, PacketRefStorage, PacketRefVTable,
+};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
 use x86_64::PhysAddr;
 
@@ -303,11 +305,11 @@ unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe { pooled_state_ref(storage).window.len() }
 }
-unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
+unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe {
         let state = pooled_state_mut(storage);
-        state.window.set_len(len)
+        state.window.set_len(len.get())
     }
 }
 unsafe fn pooled_capacity(_: &PacketRefStorage) -> usize {
@@ -333,18 +335,18 @@ unsafe fn pooled_device_address(storage: &PacketRefStorage) -> u64 {
         state.buffer.as_ref().device_address() + state.window.offset() as u64
     }
 }
-unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn pooled_advance(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe {
         let state = pooled_state_mut(storage);
-        state.window.advance(size)
+        state.window.advance(size.get())
     }
 }
-unsafe fn pooled_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn pooled_retreat(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe {
         let state = pooled_state_mut(storage);
-        state.window.retreat(size)
+        state.window.retreat(size.get())
     }
 }
 unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
@@ -360,10 +362,11 @@ unsafe fn pooled_drop(storage: &mut PacketRefStorage) {
 
 unsafe fn pooled_split_front(
     storage: &PacketRefStorage,
-    len: usize,
+    len: PacketByteCount,
 ) -> Option<(PacketRefStorage, PacketRefStorage)> {
     unsafe {
         let state = *pooled_state_ref(storage);
+        let len = len.get();
         if len == 0 || len >= state.window.len() || !state.buffer.as_ref().add_ref() {
             return None;
         }
@@ -424,11 +427,11 @@ unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe { dma_state_ref(storage).window.len() }
 }
-unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
+unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe {
         let state = dma_state_mut(storage);
-        state.window.set_len(len)
+        state.window.set_len(len.get())
     }
 }
 unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
@@ -455,18 +458,18 @@ unsafe fn dma_device_address(storage: &PacketRefStorage) -> u64 {
         state.buf.as_ref().device_addr + state.window.offset() as u64
     }
 }
-unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn dma_advance(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe {
         let state = dma_state_mut(storage);
-        state.window.advance(size)
+        state.window.advance(size.get())
     }
 }
-unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe {
         let state = dma_state_mut(storage);
-        state.window.retreat(size)
+        state.window.retreat(size.get())
     }
 }
 unsafe fn dma_drop(storage: &mut PacketRefStorage) {
@@ -485,10 +488,11 @@ unsafe fn dma_drop(storage: &mut PacketRefStorage) {
 
 unsafe fn dma_split_front(
     storage: &PacketRefStorage,
-    len: usize,
+    len: PacketByteCount,
 ) -> Option<(PacketRefStorage, PacketRefStorage)> {
     unsafe {
         let state = *dma_state_ref(storage);
+        let len = len.get();
         if len == 0 || len >= state.window.len() || !dma_add_ref(state.buf) {
             return None;
         }
@@ -555,11 +559,11 @@ unsafe fn borrowed_len(storage: &PacketRefStorage) -> usize {
     unsafe { borrowed_state_ref(storage).window.len() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
+unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
     // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
     unsafe {
         let state = borrowed_state_mut(storage);
-        state.window.set_len(len)
+        state.window.set_len(len.get())
     }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -583,19 +587,19 @@ unsafe fn borrowed_device_address(storage: &PacketRefStorage) -> u64 {
     unsafe { borrowed_phys_addr(storage) }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn borrowed_advance(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
     unsafe {
         let state = borrowed_state_mut(storage);
-        state.window.advance(size)
+        state.window.advance(size.get())
     }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+unsafe fn borrowed_retreat(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
     // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
     unsafe {
         let state = borrowed_state_mut(storage);
-        state.window.retreat(size)
+        state.window.retreat(size.get())
     }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -604,10 +608,11 @@ unsafe fn borrowed_drop(_: &mut PacketRefStorage) {}
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_split_front(
     storage: &PacketRefStorage,
-    len: usize,
+    len: PacketByteCount,
 ) -> Option<(PacketRefStorage, PacketRefStorage)> {
     unsafe {
         let state = *borrowed_state_ref(storage);
+        let len = len.get();
         if len == 0 || len >= state.window.len() {
             return None;
         }

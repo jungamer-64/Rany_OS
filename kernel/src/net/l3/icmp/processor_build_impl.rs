@@ -68,15 +68,12 @@ impl IcmpProcessor {
 
         let mut message = PacketPayload::single(packet);
         if quote_len != 0 {
-            append_payload(
-                &mut message,
-                crate::net::payload::OwnedPayloadWindow::take_payload_from_bounds(
-                    original_packet,
-                    0,
-                    quote_len,
-                )
-                .ok()?,
-            );
+            let range = crate::net::payload::PayloadRange::checked(&original_packet, 0, quote_len)?;
+            let quoted =
+                crate::net::payload::OwnedPayloadWindow::from_range(original_packet, range)?
+                    .into_payload()
+                    .ok()?;
+            append_payload(&mut message, quoted);
         }
 
         let checksum = packet_payload_checksum(&PacketPayloadView::new(&message), 0);

@@ -240,8 +240,10 @@ pub struct PacketRefVTable {
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
     pub advance: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
     pub retreat: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
-    pub split_front:
-        unsafe fn(&PacketRefStorage, PacketByteCount) -> Option<(PacketRefStorage, PacketRefStorage)>,
+    pub split_front: unsafe fn(
+        &PacketRefStorage,
+        PacketByteCount,
+    ) -> Option<(PacketRefStorage, PacketRefStorage)>,
     pub drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
@@ -885,8 +887,9 @@ mod packet_ref_tests {
         unsafe { dma_state_ref(storage) }.len
     }
 
-    unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: usize) -> bool {
+    unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
         let state = unsafe { dma_state_mut(storage) };
+        let len = len.get();
         if len > dma_backing(state).dma.size().saturating_sub(state.offset) {
             return false;
         }
@@ -912,8 +915,9 @@ mod packet_ref_tests {
         dma_backing(state).device_addr + state.offset as u64
     }
 
-    unsafe fn dma_advance(storage: &mut PacketRefStorage, size: usize) -> bool {
+    unsafe fn dma_advance(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
         let state = unsafe { dma_state_mut(storage) };
+        let size = size.get();
         if size > state.len {
             return false;
         }
@@ -922,8 +926,9 @@ mod packet_ref_tests {
         true
     }
 
-    unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: usize) -> bool {
+    unsafe fn dma_retreat(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
         let state = unsafe { dma_state_mut(storage) };
+        let size = size.get();
         if size > state.offset {
             return false;
         }
@@ -952,9 +957,10 @@ mod packet_ref_tests {
 
     unsafe fn dma_split_front(
         storage: &PacketRefStorage,
-        len: usize,
+        len: PacketByteCount,
     ) -> Option<(PacketRefStorage, PacketRefStorage)> {
         let state = *unsafe { dma_state_ref(storage) };
+        let len = len.get();
         if len == 0 || len >= state.len {
             return None;
         }

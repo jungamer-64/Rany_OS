@@ -312,8 +312,7 @@ impl DnsClient {
             return Err(DnsResponseCode::FormatError);
         }
 
-        PayloadRange::from_payload_bounds(payload, offset + 1, len as usize)
-            .ok_or(DnsResponseCode::FormatError)
+        PayloadRange::checked(payload, offset + 1, len as usize).ok_or(DnsResponseCode::FormatError)
     }
 
     pub(crate) fn parse_name_payload(
@@ -379,20 +378,20 @@ impl DnsClient {
         while offset < end {
             let Some(len) = view.read_u8(offset).map(usize::from) else {
                 return DnsRecordData::Raw(
-                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                    PayloadRange::checked(payload, rdata_offset, rdlength)
                         .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
                 );
             };
             offset = offset.saturating_add(1);
             if offset.saturating_add(len) > end {
                 return DnsRecordData::Raw(
-                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                    PayloadRange::checked(payload, rdata_offset, rdlength)
                         .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
                 );
             }
-            let Some(span) = PayloadRange::from_payload_bounds(payload, offset, len) else {
+            let Some(span) = PayloadRange::checked(payload, offset, len) else {
                 return DnsRecordData::Raw(
-                    PayloadRange::from_payload_bounds(payload, rdata_offset, rdlength)
+                    PayloadRange::checked(payload, rdata_offset, rdlength)
                         .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
                 );
             };
