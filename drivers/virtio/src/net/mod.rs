@@ -75,12 +75,10 @@ impl NetDmaMappingToken {
     }
 }
 
-/// Runtime DMA allocation purpose for virtio-net queue and bounce memory.
+/// Runtime DMA allocation purpose for virtio-net queue-owned memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetDmaPurpose {
     QueueMemory,
-    TxBounce,
-    RxBounce,
     TxHeaders,
 }
 

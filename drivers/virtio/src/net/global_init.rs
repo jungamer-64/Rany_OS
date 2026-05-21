@@ -4,7 +4,6 @@ use crate::transport::{VirtioMmioTransport, VirtioTransport};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use exorust_sync::PoisonRwLock;
 use kernel_api::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRuntimeHandle,
@@ -62,36 +61,27 @@ fn install_virtio_net_device(index: u8, device: Arc<VirtioNetDevice>) {
         .insert(index, device);
 }
 
-pub fn get_virtio_net_device_at_index(index: u8) -> Option<Arc<VirtioNetDevice>> {
-    registry_state()
-        .devices
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&index)
-        .cloned()
-}
-
 pub fn with_virtio_net_at_index<F, R>(index: u8, f: F) -> Option<R>
 where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
-    get_virtio_net_device_at_index(index).as_deref().map(f)
+    let devices = registry_state()
+        .devices
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    devices.get(&index).map(|device| f(device.as_ref()))
 }
 
 pub fn for_each_virtio_net<F>(mut f: F)
 where
     F: FnMut(u8, &VirtioNetDevice),
 {
-    let entries: Vec<(u8, Arc<VirtioNetDevice>)> = registry_state()
+    let devices = registry_state()
         .devices
         .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .iter()
-        .map(|(index, device)| (*index, device.clone()))
-        .collect();
-
-    for (index, device) in entries {
-        f(index, &device);
+        .unwrap_or_else(|e| e.into_inner());
+    for (index, device) in devices.iter() {
+        f(*index, device.as_ref());
     }
 }
 

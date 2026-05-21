@@ -9,6 +9,20 @@ network_tree=(
   kernel/src/net/security
 )
 
+network_driver_tree=(
+  drivers/virtio/src/net
+  drivers/virtio/src/ffi.rs
+  drivers/mlx5/src/ffi.rs
+  drivers/mlx5/src/wq.rs
+  drivers/mlx5/src/device/ops.rs
+)
+
+network_live_docs=(
+  docs/reference/network-core.md
+  docs/reference/api-reference.md
+  docs/reference/deprecations.md
+)
+
 fail() {
   echo "check-network-zero-copy-guard: $1" >&2
   exit 1
@@ -257,6 +271,36 @@ if rg -n "\\bNetTxSegment::new\\s*\\(" \
   kernel/src interfaces/kernel_api/src drivers/mlx5/src drivers/virtio/src \
   >/dev/null; then
   fail "found raw NetTxSegment constructor"
+fi
+
+if rg -n "\\bTxBounce\\b|\\bRxBounce\\b|bounce memory|\\bbounce\\b" \
+  drivers/virtio/src/net drivers/virtio/src/ffi.rs \
+  >/dev/null; then
+  fail "found VirtIO network bounce-buffer surface"
+fi
+
+if rg -n "\\bget_virtio_net_device_at_index\\b|\\.clone\\(" \
+  drivers/virtio/src/net drivers/virtio/src/ffi.rs \
+  >/dev/null; then
+  fail "found VirtIO network Arc clone registry surface"
+fi
+
+if rg -n "#\\[derive\\([^\\]]*Clone[^\\]]*\\)\\]" \
+  "${network_driver_tree[@]}" \
+  | rg -v "Copy" >/dev/null; then
+  fail "found non-Copy Clone derive in network driver scope"
+fi
+
+if rg -n "\\binline_hdr\\b|\\binline_len\\b|\\binline_ds\\b|TRAILER_OR_INLINE_HDR_SZ|INLINE_HDR_START" \
+  drivers/mlx5/src/ffi.rs drivers/mlx5/src/wq.rs drivers/mlx5/src/device/ops.rs \
+  >/dev/null; then
+  fail "found mlx5 inline TX header copy path"
+fi
+
+if rg -n "copy path|copy-based|byte-buffer|materialize|linearize|flatten|bounce" \
+  "${network_live_docs[@]}" \
+  >/dev/null; then
+  fail "found live network docs presenting copy/materialization wording"
 fi
 
 if rg -n "\\bTxFragmentWindow\\b|\\bOwnedTxPayloadWindow::new\\s*\\(" \

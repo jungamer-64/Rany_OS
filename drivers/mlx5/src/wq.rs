@@ -149,8 +149,6 @@ pub struct TxOptions {
     pub l3_cs: bool,
     /// TCP/UDP チェックサムオフロードを要求
     pub l4_cs: bool,
-    /// インラインヘッダの長さ
-    pub inline_len: u16,
     /// TSO MSS。0 の場合は TSO を使用しない。
     pub mss: u16,
     /// 挿入する VLAN タグ (TCI)。0 の場合は挿入しない。
