@@ -44,7 +44,7 @@ fn dhcpv4_generated_payload(bytes: &[u8]) -> Result<PacketPayload, &'static str>
     let mut writer = GeneratedPacketWriter::new(bytes.len(), DEFAULT_PACKET_HEADROOM)
         .ok_or("Failed to allocate DHCPv4 payload")?;
     writer
-        .write_bytes(bytes)
+        .write_generated_bytes(bytes)
         .ok_or("Failed to write DHCPv4 payload")?;
     writer.finish().ok_or("Incomplete DHCPv4 payload")
 }

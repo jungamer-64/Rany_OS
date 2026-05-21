@@ -32,7 +32,7 @@ fn handshake_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     ) else {
         return kernel_api::resource::net::PacketPayload::default();
     };
-    if writer.write_bytes(data).is_none() {
+    if writer.write_generated_bytes(data).is_none() {
         return kernel_api::resource::net::PacketPayload::default();
     }
     writer
@@ -143,7 +143,7 @@ pub fn wave8_tls_tls13_client_hello_supported_versions_smoke() -> bool {
 pub fn wave8_tls_tls13_strip_content_type_smoke() -> bool {
     fn payload(data: &[u8]) -> Option<kernel_api::resource::net::PacketPayload> {
         let mut writer = crate::net::payload::GeneratedPacketWriter::new(data.len(), 0)?;
-        writer.write_bytes(data)?;
+        writer.write_generated_bytes(data)?;
         writer.finish()
     }
 

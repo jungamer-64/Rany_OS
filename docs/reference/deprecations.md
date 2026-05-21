@@ -110,10 +110,10 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Start with `TlsHandshake::start(config)`, drive `TlsHandshakeStep`, and only encrypt/read/close through `TlsEstablishedSession`.
   - TLS handshake record builders returning `Vec<u8>` or exposing handshake-phase payload builders directly (`build_client_hello()`, `build_client_finished_tls13()`) ❌ **removed**
     - Migration: Let `TlsHandshake::start` emit ClientHello and `TlsHandshakeStep::Established { payload, session }` emit ClientFinished.
-  - TLS copy helpers (`vec_from_payload()`, `packet_payload_from_slice()`, `packet_payload_from_parts()`, `span_from_bytes()`) ❌ **removed**
-    - Migration: Operate on `PacketPayloadView`, `PayloadSpan`, and `PacketPayloadBuilder` directly at each call site. Do not reintroduce TLS-local payload flatten/build helpers.
+  - TLS payload ownership helpers (`vec_from_payload()`, `packet_payload_from_slice()`, `packet_payload_from_parts()`, `span_from_bytes()`) ❌ **removed**
+    - Migration: Operate on `PacketPayloadView`, `PayloadSpan`, and `PacketPayloadBuilder` directly at each call site. Do not reintroduce TLS-local payload assembly helpers.
   - TLS subtree `read_vec()`-based parser / record paths ❌ **removed**
-    - Migration: Parse TLS records and handshake payloads from `PacketPayloadView`, `PacketPayloadCursor`, `PayloadSpan`, or fixed-capacity TLS scratch without `Vec<u8>` flatten helpers.
+    - Migration: Parse TLS records and handshake payloads from `PacketPayloadView`, `PacketPayloadCursor`, `PayloadSpan`, or fixed-capacity TLS scratch without `Vec<u8>` assembly helpers.
   - TLS / RSA owned-buffer crypto helpers (`aes_gcm_encrypt`, `aes_gcm_decrypt`, `chacha20_poly1305_encrypt`, `chacha20_poly1305_decrypt`, `aes_cbc_encrypt`, `aes_cbc_decrypt`, `tls_add_padding`, `compute_tls_mac`, `rsa_pkcs1_encrypt`, `mgf1`, `hash_compute`, `BigUint::to_be_bytes`, `BigUint::to_be_bytes_padded`) ❌ **removed**
     - Migration: Use the in-place / buffer-out APIs `aes_gcm_encrypt_into`, `aes_gcm_decrypt_into`, `chacha20_poly1305_*_in_place`, `aes_cbc_*_in_place`, `tls_add_padding_in_place`, `compute_tls_mac_into`, `rsa_pkcs1_encrypt_into`, `mgf1_into`, `hash_compute_into`, `BigUint::write_be_bytes`, and `BigUint::write_be_bytes_padded`.
   - `TlsClientConfig` / `SessionCache` の `Vec<String>` / `String` / `VecDeque` surface (`with_server_name(&str) -> TlsClientConfig`, `with_alpn(&[&str]) -> TlsClientConfig`, dynamic session cache) ❌ **removed**
@@ -122,9 +122,9 @@ This document lists deprecated symbols and recent removals that still matter for
     - Migration: Use `TlsHandshake::start(config)`.
   - TLS helper accessors exposing raw transcript bytes (`handshake_messages_ref()`) ❌ **removed**
     - Migration: Verify transcript progress through state, emitted payload records, or transcript-hash-based helpers instead of byte accumulation snapshots.
-  - IPv6 copy-based quoted-packet / timeout paths (`packet_from_bytes` / `payload_from_bytes` rebuild in the IPv6 receive path) ❌ **removed**
+  - IPv6 owned-byte quoted-packet / timeout paths (`packet_from_bytes` / `payload_from_bytes` rebuild in the IPv6 receive path) ❌ **removed**
     - Migration: Keep quoted packets packet-backed and pass `PacketPayload` directly into ICMPv6 builders and reassembly results.
-  - IPv4 copy-based quoted/original-packet rebuild paths (`packet_from_bytes` rebuild in the IPv4 receive / ingress path) ❌ **removed**
+  - IPv4 owned-byte quoted/original-packet rebuild paths (`packet_from_bytes` rebuild in the IPv4 receive / ingress path) ❌ **removed**
     - Migration: `Ipv4ProcessResult::ReassemblyTimeout` / `UnknownProtocol` now carry `PacketPayload` directly. Keep quoted/original packets packet-backed through ICMP error generation.
   - Stale endpoint event branch `NetworkEvent::ApplyIpv6Address` in handler-side fallback dispatch ❌ **removed**
     - Migration: `endpoint/event.rs` is the source of truth. Use the active DHCPv6 lease application event `DhcpV6ApplyLease` instead of reviving removed handler-only variants.
@@ -239,11 +239,11 @@ This document lists deprecated symbols and recent removals that still matter for
   - `client()` ❌ **removed**
     - Migration: Use high-level DNS helpers such as `init()`, `set_ipv4_servers()`, `set_ipv6_servers()`, `resolve_ipv4()`, `resolve_mx()`, `resolve_ptr_ipv6()`, `build_tcp_query_payload()`, and `cleanup_cache()` instead of locking the singleton directly.
   - `DnsRecordData::Raw(Vec<u8>)` ❌ **removed**
-    - Migration: Use `DnsRecordData::Raw(PayloadSpan)` and explicitly materialize bytes only at the call site that actually needs them.
+    - Migration: Use `DnsRecordData::Raw(PayloadSpan)` and convert to owned bytes only at the call site that actually needs them.
   - byte-slice DNS response parsers (`parse_response(&[u8], ...)`, `parse_tcp_response(&[u8], ...)`) ❌ **removed**
     - Migration: Use `parse_response_payload(&payload, ...)` and `parse_tcp_response_payload(&payload, ...)`.
   - owned-string DNS record variants (`DnsRecord.name: String`, `DnsRecordData::Name(String)`, `DnsRecordData::TXT(String)`, `DnsRecordData::MX(_, String)`, `DnsRecordData::SRV { target: String, .. }`) ❌ **removed**
-    - Migration: Use `DnsNameView`, `DnsTxtView`, and `PayloadSpan`-backed record data. Materialize `String` only at the outermost consumer that needs text.
+    - Migration: Use `DnsNameView`, `DnsTxtView`, and `PayloadSpan`-backed record data. Create `String` values only at the outermost consumer that needs text.
   - `DnsCache` / mDNS cache の raw `String` key ownership ❌ **removed**
     - Migration: Use `DnsNameOwned` as the canonical owned cache key for packet-backed DNS/mDNS names. Convert to text only for shell / diagnostics / tests.
   - `Vec<DnsRecord>` response/cache ownership (`parse_* -> Vec<DnsRecord>`, `DnsCacheEntry.records-only` cache entries) ❌ **removed**

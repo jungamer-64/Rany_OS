@@ -90,8 +90,8 @@ impl TlsConnectionCore {
         ) else {
             return Err(TlsError::DecodeError);
         };
-        if writer.write_bytes(&record_header).is_none()
-            || writer.write_bytes(message.as_slice()).is_none()
+        if writer.write_generated_bytes(&record_header).is_none()
+            || writer.write_generated_bytes(message.as_slice()).is_none()
         {
             return Err(TlsError::DecodeError);
         }

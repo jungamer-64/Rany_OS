@@ -419,7 +419,7 @@ impl MdnsService {
         writer.write_u16_be(DNS_CLASS_IN | MDNS_CACHE_FLUSH_BIT)?;
         writer.write_u32_be(ttl)?;
         writer.write_u16_be(4)?;
-        writer.write_bytes(ip.as_bytes())?;
+        writer.write_generated_bytes(ip.as_bytes())?;
         writer.finish()
     }
 
@@ -641,7 +641,7 @@ fn write_dns_name_payload(writer: &mut GeneratedPacketWriter, name: &DnsNameOwne
         let span = label.span(name.payload())?;
         let mut wrote = true;
         span.for_each_chunk(|chunk| {
-            if wrote && writer.write_bytes(chunk).is_none() {
+            if wrote && writer.write_generated_bytes(chunk).is_none() {
                 wrote = false;
             }
         });

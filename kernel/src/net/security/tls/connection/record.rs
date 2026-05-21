@@ -581,7 +581,7 @@ impl TlsConnectionCore {
         let mut writer = GeneratedPacketWriter::new(inner_plaintext.len(), DEFAULT_PACKET_HEADROOM)
             .ok_or(TlsError::DecodeError)?;
         writer
-            .write_bytes(inner_plaintext)
+            .write_generated_bytes(inner_plaintext)
             .ok_or(TlsError::DecodeError)?;
         let payload = writer.finish().ok_or(TlsError::DecodeError)?;
         self.tls13_encrypt_owned_inner(payload, epoch)
@@ -636,7 +636,7 @@ impl TlsConnectionCore {
                 GeneratedPacketWriter::new(record_header.len(), DEFAULT_PACKET_HEADROOM)
                     .ok_or(TlsError::DecodeError)?;
             writer
-                .write_bytes(&record_header)
+                .write_generated_bytes(&record_header)
                 .ok_or(TlsError::DecodeError)?;
             writer.finish().ok_or(TlsError::DecodeError)?
         };
@@ -644,7 +644,7 @@ impl TlsConnectionCore {
         let mut tag_writer = GeneratedPacketWriter::new(auth_tag.len(), DEFAULT_PACKET_HEADROOM)
             .ok_or(TlsError::DecodeError)?;
         tag_writer
-            .write_bytes(auth_tag.as_bytes())
+            .write_generated_bytes(auth_tag.as_bytes())
             .ok_or(TlsError::DecodeError)?;
         append_payload(
             &mut record,
@@ -660,7 +660,7 @@ impl TlsConnectionCore {
         let mut content_type =
             GeneratedPacketWriter::new(1, DEFAULT_PACKET_HEADROOM).ok_or(TlsError::DecodeError)?;
         content_type
-            .write_bytes(&[ContentType::ApplicationData as u8])
+            .write_generated_bytes(&[ContentType::ApplicationData as u8])
             .ok_or(TlsError::DecodeError)?;
         append_payload(
             &mut payload,
@@ -810,7 +810,7 @@ impl TlsConnectionCore {
     pub(crate) fn tls13_coalesced_application_records_smoke() -> bool {
         fn payload(data: &[u8]) -> Option<PacketPayload> {
             let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
-            writer.write_bytes(data)?;
+            writer.write_generated_bytes(data)?;
             writer.finish()
         }
 
@@ -891,7 +891,7 @@ mod tests {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("test payload allocation succeeds");
         writer
-            .write_bytes(data)
+            .write_generated_bytes(data)
             .expect("test payload write succeeds");
         writer.finish().expect("test payload is exact")
     }
@@ -921,7 +921,7 @@ mod tests {
         for payload in payloads {
             PacketPayloadView::new(payload).for_each_chunk(|chunk| {
                 writer
-                    .write_bytes(chunk)
+                    .write_generated_bytes(chunk)
                     .expect("test coalesced packet write succeeds");
             });
         }

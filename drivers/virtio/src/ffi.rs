@@ -419,13 +419,12 @@ extern "C" fn netdev_submit_tx_chain(
         vlan_tag: meta.has_vlan_tag.then_some(meta.vlan_tag),
         completion: Default::default(),
     };
-    with_virtio_net_at_index(
-        PORT_INDEX,
-        |device| match device.enqueue_send_submission(tx, tx_meta) {
+    with_virtio_net_at_index(PORT_INDEX, |device| {
+        match device.enqueue_send_submission(tx, tx_meta) {
             Ok(()) => AbiError::Success as i32,
             Err(_) => AbiError::DeviceBusy as i32,
-        },
-    )
+        }
+    })
     .unwrap_or(AbiError::NotInitialized as i32)
 }
 
@@ -674,9 +673,8 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
         VirtioStandaloneKind::Net => {
             let runtime = Arc::new(StandaloneNetRuntime::new(pci_locator));
             let runtime_handle = StandaloneNetRuntimeHandle::new(runtime.as_ref());
-            let init = unsafe {
-                init_virtio_net_with_transport_at_index(PORT_INDEX, transport, runtime)
-            };
+            let init =
+                unsafe { init_virtio_net_with_transport_at_index(PORT_INDEX, transport, runtime) };
             init.map(|_| Some(runtime_handle)).map_err(|_| ())
         }
         VirtioStandaloneKind::Block => {

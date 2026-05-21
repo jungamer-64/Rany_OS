@@ -44,7 +44,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - TCP でも core の性能モデルは packet-backed payload handoff を優先する。
 - datapath の正規面は ownership / payload / queue に置く。
-- end-to-end zero-copy が達成できていない経路は `implementation pending` として扱い、copy path を canonical baseline とみなさない。
+- end-to-end zero-copy が達成できていない経路は `implementation pending` として扱い、packet-native ownership を canonical baseline にする。
 
 ## 2. Core vocabulary
 
@@ -53,7 +53,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 | mempool / packet allocation | NIC DMA と packet 再利用のための固定長バッファ供給 | `net::datapath::mempool`, `PacketRef`, `PacketPayload` |
 | packet-backed payload | packet ownership を保った送受信単位 | `PacketRef`, `PacketPayload` |
 | ownership-based buffering | queue / endpoint / protocol 層が payload 所有権を明示して受け渡す設計 | `net::l4::endpoint`, `net::datapath`, `kernel_api::resource::net` |
-| end-to-end zero-copy | driver -> protocol -> app まで flatten / copy を最小化する経路 | `Canonical target` |
+| end-to-end zero-copy | driver -> protocol -> app まで packet ownership を維持する経路 | `Canonical target` |
 | adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::adaptive_polling`, runtime device control |
 | batch processing | 複数 packet をまとめて処理する最適化 | `PacketBatch`, `BatchProcessor` |
 | scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` / `NetTxSegment` による driver queue submission |
@@ -63,7 +63,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 ### 3.1 Normative: PacketRef / PacketPayload を中心に据える
 
 - NIC は事前に確保された packet / DMA buffer へ直接読み書きする。
-- protocol 層は `Vec<u8>` flatten を前提にせず、packet-backed payload を運ぶ。
+- protocol 層は `Vec<u8>` への統合を前提にせず、packet-backed payload を運ぶ。
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
 - network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`
   facade や byte-slice TX surface を再導入しない。
@@ -77,7 +77,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 ### 3.3 Canonical target: batch / scatter-gather / offload を packet-native に統合する
 
 - batch processing は packet queue / endpoint / driver submission と整合した形で設計する。
-- scatter-gather は「複数 buffer を flatten してから送る」前処理ではなく、descriptor chaining を含む native submission として扱う。
+- scatter-gather は「複数 buffer を単一 owner に畳んでから送る」前処理ではなく、descriptor chaining を含む native submission として扱う。
 - checksum / segmentation / RSS / offload は packet ownership と矛盾しない形で組み込む。
 
 ## 4. Endpoint model
@@ -91,7 +91,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - TCP は connection semantics を持つが、core では packet-backed payload queue と endpoint-owned state を中心に扱う。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先する。
-- DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期 materialize を baseline にしない。
+- DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期変換を baseline にしない。
 - DNS 応答の canonical ownership は `DnsResponseView { payload, records }` に置き、cache も response payload ownership + record metadata を保持する。
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。

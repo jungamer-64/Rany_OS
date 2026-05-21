@@ -329,7 +329,7 @@ impl DnsNameOwned {
         for label in trimmed.split('.') {
             let bytes = label.as_bytes();
             writer
-                .write_bytes(bytes)
+                .write_generated_bytes(bytes)
                 .ok_or(DnsNameError::AllocationFailed)?;
             label_bounds.push((payload_offset, bytes.len()));
             payload_offset = payload_offset.saturating_add(bytes.len());

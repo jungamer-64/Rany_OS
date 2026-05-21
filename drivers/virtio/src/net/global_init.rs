@@ -381,11 +381,7 @@ mod tests {
         let runtime0: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             0,
-            Arc::new(VirtioNetDevice::new(
-                0,
-                Box::new(NoopTransport),
-                runtime0,
-            )),
+            Arc::new(VirtioNetDevice::new(0, Box::new(NoopTransport), runtime0)),
         );
         let runtime3: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(

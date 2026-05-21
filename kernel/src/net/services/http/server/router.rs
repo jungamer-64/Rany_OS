@@ -497,7 +497,7 @@ fn build_payload_response(
     let mut writer = GeneratedPacketWriter::new(head.len(), DEFAULT_PACKET_HEADROOM)
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
     writer
-        .write_bytes(head.as_bytes())
+        .write_generated_bytes(head.as_bytes())
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
     let mut payload = writer
         .finish()
@@ -516,7 +516,7 @@ fn build_custom_response_with_headers(
     let mut writer = GeneratedPacketWriter::new(body.len(), DEFAULT_PACKET_HEADROOM)
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
     writer
-        .write_bytes(body.as_bytes())
+        .write_generated_bytes(body.as_bytes())
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
     build_payload_response(
         status,

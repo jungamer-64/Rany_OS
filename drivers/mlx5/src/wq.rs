@@ -180,11 +180,7 @@ impl SendQueue {
     }
 
     /// 送信WQEを構築してSQに投入
-    pub unsafe fn post_send(
-        &mut self,
-        segments: &[DmaSegment],
-        options: TxOptions,
-    ) -> Option<u16> {
+    pub unsafe fn post_send(&mut self, segments: &[DmaSegment], options: TxOptions) -> Option<u16> {
         if !self.has_space() || segments.is_empty() || segments.len() > 2 {
             return None;
         }

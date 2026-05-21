@@ -235,7 +235,7 @@ impl NetworkStack {
                         self.stats().record_rx_error();
                         return;
                     };
-                    if writer.write_bytes(&fh).is_none() {
+                    if writer.write_generated_bytes(&fh).is_none() {
                         self.stats().record_rx_error();
                         return;
                     }

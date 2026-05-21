@@ -655,7 +655,10 @@ impl Ipv6FragmentReassembler {
                             fragment_header.len(),
                             DEFAULT_PACKET_HEADROOM,
                         ) {
-                            if header_writer.write_bytes(&fragment_header).is_some() {
+                            if header_writer
+                                .write_generated_bytes(&fragment_header)
+                                .is_some()
+                            {
                                 if let Some(header_payload) = header_writer.finish() {
                                     append_payload(&mut quoted, header_payload);
                                 }

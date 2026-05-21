@@ -428,15 +428,15 @@ impl GeneratedPacketWriter {
     }
 
     pub fn write_u8(&mut self, value: u8) -> Option<()> {
-        self.write_bytes(&[value])
+        self.write_generated_bytes(&[value])
     }
 
     pub fn write_u16_be(&mut self, value: u16) -> Option<()> {
-        self.write_bytes(&value.to_be_bytes())
+        self.write_generated_bytes(&value.to_be_bytes())
     }
 
     pub fn write_u24_be(&mut self, value: u32) -> Option<()> {
-        self.write_bytes(&[
+        self.write_generated_bytes(&[
             ((value >> 16) & 0xff) as u8,
             ((value >> 8) & 0xff) as u8,
             (value & 0xff) as u8,
@@ -444,10 +444,10 @@ impl GeneratedPacketWriter {
     }
 
     pub fn write_u32_be(&mut self, value: u32) -> Option<()> {
-        self.write_bytes(&value.to_be_bytes())
+        self.write_generated_bytes(&value.to_be_bytes())
     }
 
-    pub fn write_bytes(&mut self, bytes: &[u8]) -> Option<()> {
+    pub fn write_generated_bytes(&mut self, bytes: &[u8]) -> Option<()> {
         let end = self.offset.checked_add(bytes.len())?;
         let data = self.packet.data_mut();
         if end > data.len() {

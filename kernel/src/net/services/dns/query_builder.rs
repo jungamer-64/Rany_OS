@@ -57,7 +57,7 @@ impl DnsClient {
                 .ok_or("Invalid DNS label payload range")?;
             let mut pushed = true;
             span.for_each_chunk(|chunk| {
-                if pushed && writer.write_bytes(chunk).is_none() {
+                if pushed && writer.write_generated_bytes(chunk).is_none() {
                     pushed = false;
                 }
             });

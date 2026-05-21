@@ -362,7 +362,7 @@ pub(crate) mod tests {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("IGMP test payload allocation");
         writer
-            .write_bytes(data)
+            .write_generated_bytes(data)
             .expect("IGMP test payload write succeeds");
         writer.finish().expect("IGMP test payload is exact")
     }

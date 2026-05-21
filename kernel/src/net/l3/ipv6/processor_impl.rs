@@ -25,7 +25,7 @@ fn generated_ipv6_header_payload(header: &[u8]) -> Option<PacketPayload> {
         header.len(),
         kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
     )?;
-    writer.write_bytes(header)?;
+    writer.write_generated_bytes(header)?;
     writer.finish()
 }
 

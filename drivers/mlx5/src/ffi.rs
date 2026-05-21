@@ -924,12 +924,9 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
     }
 
     match unsafe {
-        state.device.transmit_segments(
-            sq_index,
-            &dma_segments,
-            total_len,
-            options,
-        )
+        state
+            .device
+            .transmit_segments(sq_index, &dma_segments, total_len, options)
     } {
         Ok(wqe_idx) => {
             let slot = (wqe_idx as usize) % (MLX5_WQ_DEPTH as usize);

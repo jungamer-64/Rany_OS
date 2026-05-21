@@ -202,7 +202,7 @@ impl NtpClient {
         let mut writer = GeneratedPacketWriter::new(NtpHeader::SIZE, DEFAULT_PACKET_HEADROOM)
             .ok_or(EndpointError::Internal)?;
         writer
-            .write_bytes(&req.encode())
+            .write_generated_bytes(&req.encode())
             .ok_or(EndpointError::Internal)?;
 
         socket

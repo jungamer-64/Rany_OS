@@ -281,7 +281,7 @@ let completed: Buffer = virtqueue.poll().await;
 - **Normative:** POSIXソケット（`socket`, `bind`, `listen`）は提供しません。
 - **Normative:** ネットワークの主語は packet-backed payload です。
 - **Normative:** `PacketPayload`、packet pool、queue ownership、endpoint-owned state を中心に語彙を整理します。
-- **Canonical target:** TCP を含む end-to-end zero-copy path を第一級に扱います。
+- **Canonical target:** TCP を含む end-to-end zero-copy datapath を第一級に扱います。
 - **Guidance:** network core の公開語彙は datapath / ownership semantics に固定します。
 
 ### モジュール: `exorust::net`
@@ -333,7 +333,7 @@ tcp_connection_send_payload(&connection, payload).await?;
 #### batch / scatter-gather / polling
 
 - adaptive polling、batch processing、scatter-gather、offload は network runtime / datapath の baseline として扱います。
-- IPv6 の unfragmented / fragmented TX は header 前置 + payload chain を基準にし、flatten / scratch copy を正規面にしません。
+- IPv6 の unfragmented / fragmented TX は header 前置 + payload chain を基準にし、scratch 用の単一 owner 化を正規面にしません。
 - 実装順序や workstream の詳細は [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) を参照してください。
 - benchmark target と測定 gate は [performance-targets.md](performance-targets.md) を参照してください。
 

@@ -26,10 +26,10 @@ fn headers_wire_len(headers: &[HttpHeader]) -> Option<usize> {
 
 fn write_headers(writer: &mut GeneratedPacketWriter, headers: &[HttpHeader]) -> Option<()> {
     for header in headers {
-        writer.write_bytes(header.name.as_str().as_bytes())?;
-        writer.write_bytes(b": ")?;
-        writer.write_bytes(header.value.as_str().as_bytes())?;
-        writer.write_bytes(b"\r\n")?;
+        writer.write_generated_bytes(header.name.as_str().as_bytes())?;
+        writer.write_generated_bytes(b": ")?;
+        writer.write_generated_bytes(header.value.as_str().as_bytes())?;
+        writer.write_generated_bytes(b"\r\n")?;
     }
     Some(())
 }
@@ -52,14 +52,14 @@ fn request_head_payload(request: &HttpRequest) -> Option<PacketPayload> {
         .checked_add(headers_wire_len(&request.headers)?)?
         .checked_add(2)?;
     let mut writer = GeneratedPacketWriter::new(head_len, DEFAULT_PACKET_HEADROOM)?;
-    writer.write_bytes(method.as_bytes())?;
-    writer.write_bytes(b" ")?;
-    writer.write_bytes(target.as_bytes())?;
-    writer.write_bytes(b" ")?;
-    writer.write_bytes(version.as_bytes())?;
-    writer.write_bytes(b"\r\n")?;
+    writer.write_generated_bytes(method.as_bytes())?;
+    writer.write_generated_bytes(b" ")?;
+    writer.write_generated_bytes(target.as_bytes())?;
+    writer.write_generated_bytes(b" ")?;
+    writer.write_generated_bytes(version.as_bytes())?;
+    writer.write_generated_bytes(b"\r\n")?;
     write_headers(&mut writer, &request.headers)?;
-    writer.write_bytes(b"\r\n")?;
+    writer.write_generated_bytes(b"\r\n")?;
     writer.finish()
 }
 
@@ -84,14 +84,14 @@ fn response_head_payload(response: &HttpResponse) -> Option<PacketPayload> {
         .checked_add(headers_wire_len(&response.headers)?)?
         .checked_add(2)?;
     let mut writer = GeneratedPacketWriter::new(head_len, DEFAULT_PACKET_HEADROOM)?;
-    writer.write_bytes(version.as_bytes())?;
-    writer.write_bytes(b" ")?;
-    writer.write_bytes(&status)?;
-    writer.write_bytes(b" ")?;
-    writer.write_bytes(reason.as_bytes())?;
-    writer.write_bytes(b"\r\n")?;
+    writer.write_generated_bytes(version.as_bytes())?;
+    writer.write_generated_bytes(b" ")?;
+    writer.write_generated_bytes(&status)?;
+    writer.write_generated_bytes(b" ")?;
+    writer.write_generated_bytes(reason.as_bytes())?;
+    writer.write_generated_bytes(b"\r\n")?;
     write_headers(&mut writer, &response.headers)?;
-    writer.write_bytes(b"\r\n")?;
+    writer.write_generated_bytes(b"\r\n")?;
     writer.finish()
 }
 

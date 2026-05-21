@@ -109,7 +109,7 @@ impl Ipv4Processor {
             return Ipv4ProcessResult::Error;
         };
         if header_writer
-            .write_bytes(&header_copy[..header_len])
+            .write_generated_bytes(&header_copy[..header_len])
             .is_none()
         {
             self.stats.rx_errors += 1;

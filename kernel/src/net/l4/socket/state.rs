@@ -539,7 +539,7 @@ pub mod tests {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("test payload allocation");
         writer
-            .write_bytes(data)
+            .write_generated_bytes(data)
             .expect("test payload write succeeds");
         writer.finish().expect("test payload is exact")
     }

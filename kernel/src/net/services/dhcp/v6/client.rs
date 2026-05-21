@@ -27,7 +27,7 @@ impl DhcpV6Client {
         let mut writer = GeneratedPacketWriter::new(bytes.len(), DEFAULT_PACKET_HEADROOM)
             .ok_or("Failed to allocate DHCPv6 payload")?;
         writer
-            .write_bytes(bytes)
+            .write_generated_bytes(bytes)
             .ok_or("Failed to write DHCPv6 payload")?;
         writer.finish().ok_or("Incomplete DHCPv6 payload")
     }

@@ -51,7 +51,7 @@ fn test_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     )
     .expect("test payload allocation succeeds");
     writer
-        .write_bytes(data)
+        .write_generated_bytes(data)
         .expect("test payload write succeeds");
     writer.finish().expect("test payload is exact")
 }
@@ -304,7 +304,7 @@ pub(crate) fn test_tls13_client_hello_has_no_resumption_modes() {
 pub(crate) fn test_tls13_strip_content_type() {
     fn payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
         let mut writer = crate::net::payload::GeneratedPacketWriter::new(data.len(), 0).unwrap();
-        writer.write_bytes(data).unwrap();
+        writer.write_generated_bytes(data).unwrap();
         writer.finish().unwrap()
     }
 
