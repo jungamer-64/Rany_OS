@@ -361,10 +361,7 @@ impl TcpOptionsScratch {
         let payload_len = view.total_len().saturating_sub(data_offset);
         let bounds =
             crate::net::payload::OwnedPayloadBounds::checked(&segment, data_offset, payload_len)?;
-        let payload = bounds
-            .take_from(segment)?
-            .into_payload()
-            .ok()?;
+        let payload = bounds.take_from(segment)?.into_payload().ok()?;
 
         Some((
             ParsedTcpHeader {

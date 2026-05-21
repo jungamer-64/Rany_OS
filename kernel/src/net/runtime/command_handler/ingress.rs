@@ -263,10 +263,9 @@ impl RuntimeCommandHandler {
                         header_len,
                         transport_len,
                     ) {
-                        let Some(transport_payload) =
-                            bounds
-                                .take_from(payload)
-                                .and_then(|window| window.into_payload().ok())
+                        let Some(transport_payload) = bounds
+                            .take_from(payload)
+                            .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
                         };
@@ -305,10 +304,9 @@ impl RuntimeCommandHandler {
                         header_len,
                         transport_len,
                     ) {
-                        let Some(transport_payload) =
-                            bounds
-                                .take_from(payload)
-                                .and_then(|window| window.into_payload().ok())
+                        let Some(transport_payload) = bounds
+                            .take_from(payload)
+                            .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
                         };
@@ -328,10 +326,9 @@ impl RuntimeCommandHandler {
                         header_len,
                         transport_len,
                     ) {
-                        let Some(transport_payload) =
-                            bounds
-                                .take_from(payload)
-                                .and_then(|window| window.into_payload().ok())
+                        let Some(transport_payload) = bounds
+                            .take_from(payload)
+                            .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
                         };
@@ -418,10 +415,9 @@ impl RuntimeCommandHandler {
                         payload_offset,
                         transport_len,
                     ) {
-                        let Some(transport_payload) =
-                            bounds
-                                .take_from(payload)
-                                .and_then(|window| window.into_payload().ok())
+                        let Some(transport_payload) = bounds
+                            .take_from(payload)
+                            .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
                         };
@@ -453,10 +449,9 @@ impl RuntimeCommandHandler {
                         payload_offset,
                         transport_len,
                     ) {
-                        let Some(transport_payload) =
-                            bounds
-                                .take_from(payload)
-                                .and_then(|window| window.into_payload().ok())
+                        let Some(transport_payload) = bounds
+                            .take_from(payload)
+                            .and_then(|window| window.into_payload().ok())
                         else {
                             return EventHandleResult::Success;
                         };

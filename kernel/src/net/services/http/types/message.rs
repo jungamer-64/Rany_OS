@@ -203,7 +203,7 @@ impl HttpBodyView {
             range.total_len(),
         )?
         .take_from(payload)
-            .and_then(|window| window.into_payload().ok())
+        .and_then(|window| window.into_payload().ok())
     }
 }
 

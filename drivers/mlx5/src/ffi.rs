@@ -878,10 +878,7 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         return AbiError::NotInitialized as i32;
     }
 
-    let data_len: usize = segments
-        .iter()
-        .map(|segment| segment.len().get())
-        .sum();
+    let data_len: usize = segments.iter().map(|segment| segment.len().get()).sum();
     if data_len == 0 {
         return AbiError::InvalidParam as i32;
     }

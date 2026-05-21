@@ -885,9 +885,8 @@ mod tests {
     fn abi_tx_submission_rejects_empty_and_invalid_segments() {
         static BYTES: [u8; 4] = [0; 4];
         let valid_len = PacketByteCount::new(BYTES.len()).expect("non-empty segment");
-        let valid =
-            AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, valid_len)
-                .expect("valid ABI segment");
+        let valid = AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, valid_len)
+            .expect("valid ABI segment");
 
         assert!(AbiNetTxSubmission::new(1, &[]).is_none());
 
@@ -921,7 +920,10 @@ mod tests {
         let valid_segments = [valid];
         let submission = AbiNetTxSubmission::new(9, &valid_segments).expect("valid ABI submission");
         assert_eq!(submission.lease_id(), 9);
-        assert_eq!(submission.segments().expect("validated segments").count(), 1);
+        assert_eq!(
+            submission.segments().expect("validated segments").count(),
+            1
+        );
     }
 
     #[test]
@@ -957,7 +959,10 @@ mod tests {
             .expect("validated submission segments");
         assert_eq!(submitted.first().cpu_ptr(), FIRST.as_ptr());
         assert_eq!(
-            submitted.get(1).expect("second submitted segment").device_addr(),
+            submitted
+                .get(1)
+                .expect("second submitted segment")
+                .device_addr(),
             0x2000
         );
     }

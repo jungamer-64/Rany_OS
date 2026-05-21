@@ -52,9 +52,11 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
-                let Some(bounds) =
-                    crate::net::payload::OwnedPayloadBounds::checked(&payload, data_offset, data_len)
-                else {
+                let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
+                    &payload,
+                    data_offset,
+                    data_len,
+                ) else {
                     self.stats().record_rx_error();
                     return;
                 };

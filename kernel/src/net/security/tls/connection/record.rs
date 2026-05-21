@@ -164,9 +164,12 @@ impl TlsEncryptedRecordPayload {
     }
 
     fn into_plaintext_payload(self, inner: Tls13InnerPlaintext) -> TlsResult<PacketPayload> {
-        let bounds =
-            OwnedPayloadBounds::checked(&self.payload, self.body.body.offset(), inner.content_len())
-                .ok_or(TlsError::DecodeError)?;
+        let bounds = OwnedPayloadBounds::checked(
+            &self.payload,
+            self.body.body.offset(),
+            inner.content_len(),
+        )
+        .ok_or(TlsError::DecodeError)?;
         bounds
             .take_from(self.payload)
             .and_then(|window| window.into_payload().ok())
