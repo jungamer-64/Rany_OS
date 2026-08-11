@@ -244,37 +244,23 @@ impl ConnectionOooQueue {
 /// 接続キー
 type ConnKey = (EndpointAddr, EndpointAddr);
 
-/// シャード数
-const OOO_SHARD_COUNT: usize = 16;
-const OOO_SHARD_MASK: usize = OOO_SHARD_COUNT - 1;
-
-/// シャードインデックスを算出
-#[inline(always)]
-fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
-    (conn_key_hash(local, remote) as usize) & OOO_SHARD_MASK
-}
-
 pub(crate) struct OooRuntimeState {
     total_count: AtomicUsize,
-    shards: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARD_COUNT],
+    queues: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>,
 }
 
 impl OooRuntimeState {
     pub(crate) const fn new() -> Self {
-        const EMPTY: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>> =
-            PoisonLock::new(None);
         Self {
             total_count: AtomicUsize::new(0),
-            shards: [EMPTY; OOO_SHARD_COUNT],
+            queues: PoisonLock::new(None),
         }
     }
 
     pub(crate) fn reset(&self) {
         self.total_count.store(0, Ordering::SeqCst);
-        for shard in &self.shards {
-            if let Ok(mut guard) = shard.lock() {
-                *guard = Some(BTreeMap::new());
-            }
+        if let Ok(mut guard) = self.queues.lock() {
+            *guard = Some(BTreeMap::new());
         }
     }
 }
@@ -303,15 +289,13 @@ pub fn insert_ooo_segment(
         return;
     }
 
-    let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = state.shards[idx].lock() else {
+    let Ok(mut guard) = state.queues.lock() else {
         return;
     };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
     // 接続数制限チェック
-    let per_shard_limit = MAX_OOO_CONNECTIONS / OOO_SHARD_COUNT;
-    if !queues.contains_key(&(local, remote)) && queues.len() >= per_shard_limit.max(8) {
+    if !queues.contains_key(&(local, remote)) && queues.len() >= MAX_OOO_CONNECTIONS {
         return;
     }
 
@@ -335,8 +319,7 @@ where
     F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
 {
     let state = tcp_runtime_in(runtime).ooo();
-    let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = state.shards[idx].lock() else {
+    let Ok(mut guard) = state.queues.lock() else {
         return (rcv_nxt, false);
     };
     let Some(queues) = guard.as_mut() else {
@@ -359,8 +342,7 @@ where
 /// 接続のOOOキューを削除
 pub fn remove_ooo_queue(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
     let state = tcp_runtime_in(runtime).ooo();
-    let idx = ooo_shard_index(&local, &remote);
-    let Ok(mut guard) = state.shards[idx].lock() else {
+    let Ok(mut guard) = state.queues.lock() else {
         return;
     };
     if let Some(queues) = guard.as_mut() {
@@ -382,8 +364,7 @@ pub fn has_ooo_segments(
     remote: EndpointAddr,
 ) -> bool {
     let state = tcp_runtime_in(runtime).ooo();
-    let idx = ooo_shard_index(&local, &remote);
-    let Ok(guard) = state.shards[idx].lock() else {
+    let Ok(guard) = state.queues.lock() else {
         return false; // ロック取得失敗 → 安全側でfalse
     };
     guard

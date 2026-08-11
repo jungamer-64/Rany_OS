@@ -11,14 +11,43 @@ use crate::net::runtime::command::{
 
 /// Initialize a runtime-local network stack.
 pub(crate) fn init_in(runtime: NetRuntimeHandle) {
-    // Initialization-time best-effort recovery: use helper
-    let mut stack = stack_in(runtime).lock_for_init("[NET] Global Stack init");
-    *stack = Some(NetworkStack::new_in(runtime));
+    for stack_lock in &runtime.context().stacks {
+        let mut stack = stack_lock.lock_for_init("[NET] Global Stack init");
+        if stack.is_none() {
+            *stack = Some(NetworkStack::new_in(runtime));
+        }
+    }
+}
+
+pub(crate) fn register_interface_in(
+    runtime: NetRuntimeHandle,
+    id: NetIfId,
+    config: NetworkConfig,
+) -> bool {
+    let mut success = false;
+    for stack_lock in &runtime.context().stacks {
+        let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stack) = &mut *guard {
+            stack.register_interface_state(id, config);
+            success = true;
+        }
+    }
+    success
+}
+
+pub(crate) fn unregister_interface_in(runtime: NetRuntimeHandle, id: NetIfId) {
+    for stack_lock in &runtime.context().stacks {
+        let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(stack) = &mut *guard {
+            stack.unregister_interface_state(id);
+        }
+    }
 }
 
 /// Get the runtime-local network stack
 pub(crate) fn stack_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<NetworkStack>> {
-    &runtime.context().stack
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
+    &runtime.context().stacks[cpu_id]
 }
 
 /// Process a batch of received packets on a specific runtime.

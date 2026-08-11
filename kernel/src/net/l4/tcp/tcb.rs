@@ -712,13 +712,11 @@ impl TcpControlBlock {
     }
 }
 
-const TCB_SHARD_COUNT: usize = 16;
-const TCB_SHARD_MASK: usize = TCB_SHARD_COUNT - 1;
 const TCB_BUCKETS_PER_SHARD: usize = 64;
-const TCB_SLOTS_PER_SHARD: usize = MAX_TCB_ENTRIES / TCB_SHARD_COUNT;
+// TCB_SLOTS_PER_SHARD is removed
 
 pub struct TcbTable {
-    shards: [PoisonRwLock<Option<TcbShardStorage>>; TCB_SHARD_COUNT],
+    storage: PoisonRwLock<Option<TcbStorage>>,
     seq_counter: AtomicU32,
     pub current_tick: AtomicU64,
     total_count: AtomicUsize,
@@ -739,15 +737,15 @@ struct TcbBucketEntry {
     next: Option<usize>,
 }
 
-struct TcbShardStorage {
+struct TcbStorage {
     entries: Vec<TcbBucketEntry>,
     buckets: [Option<usize>; TCB_BUCKETS_PER_SHARD],
 }
 
-impl TcbShardStorage {
+impl TcbStorage {
     fn new() -> Self {
         Self {
-            entries: Vec::with_capacity(TCB_SLOTS_PER_SHARD),
+            entries: Vec::with_capacity(MAX_TCB_ENTRIES),
             buckets: [None; TCB_BUCKETS_PER_SHARD],
         }
     }
@@ -787,7 +785,7 @@ impl TcbShardStorage {
             let old = core::mem::replace(&mut self.entries[index].entry, entry);
             return Ok(Some(old));
         }
-        if self.entries.len() >= TCB_SLOTS_PER_SHARD {
+        if self.entries.len() >= MAX_TCB_ENTRIES {
             return Err(entry);
         }
         let bucket = Self::bucket_for(&key.0, &key.1);
@@ -825,16 +823,10 @@ impl TcbShardStorage {
     }
 }
 
-#[inline(always)]
-fn shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
-    (conn_key_hash(local, remote) as usize) & TCB_SHARD_MASK
-}
-
 impl TcbTable {
     pub const fn new() -> Self {
-        const EMPTY_SHARD: PoisonRwLock<Option<TcbShardStorage>> = PoisonRwLock::new(None);
         Self {
-            shards: [EMPTY_SHARD; TCB_SHARD_COUNT],
+            storage: PoisonRwLock::new(None),
             seq_counter: AtomicU32::new(0),
             current_tick: AtomicU64::new(0),
             total_count: AtomicUsize::new(0),
@@ -991,28 +983,25 @@ impl TcbTable {
     fn scavenge_fin_wait_2(&self, current_tick: u64) {
         const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
         const MAX_SCAVENGE_PER_SHARD: usize = 8;
-        for shard in &self.shards {
-            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entries) = guard.as_mut() else {
-                continue;
-            };
-            let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
-            for bucket_entry in entries.entries.iter() {
-                let entry = &bucket_entry.entry;
-                if entry.is_state(TcpConnectionState::FinWait2)
-                    && current_tick.saturating_sub(entry.last_send_tick())
-                        > FIN_WAIT_2_TIMEOUT_TICKS
-                {
-                    to_remove.push(bucket_entry.key);
-                    if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
-                        break;
-                    }
+        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let Some(entries) = guard.as_mut() else {
+            return;
+        };
+        let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
+        for bucket_entry in entries.entries.iter() {
+            let entry = &bucket_entry.entry;
+            if entry.is_state(TcpConnectionState::FinWait2)
+                && current_tick.saturating_sub(entry.last_send_tick()) > FIN_WAIT_2_TIMEOUT_TICKS
+            {
+                to_remove.push(bucket_entry.key);
+                if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                    break;
                 }
             }
-            for key in to_remove {
-                entries.remove(&key);
-                self.total_count.fetch_sub(1, Ordering::Relaxed);
-            }
+        }
+        for key in to_remove {
+            entries.remove(&key);
+            self.total_count.fetch_sub(1, Ordering::Relaxed);
         }
     }
 
@@ -1020,59 +1009,57 @@ impl TcbTable {
         use super::retransmit::retransmit_queue_push;
         use super::segment::TcpSegmentBuilder;
         use crate::net::l4::socket::lookup_socket_in;
-        for shard in &self.shards {
-            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entries) = guard.as_mut() else {
+        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let Some(entries) = guard.as_mut() else {
+            return;
+        };
+        for bucket_entry in entries.entries.iter_mut() {
+            let key = bucket_entry.key;
+            let entry = &mut bucket_entry.entry;
+            if !matches!(entry.state.kind(), TcpConnectionState::Established) {
+                continue;
+            }
+            let Some(data) = entry.state.connection_data_mut() else {
                 continue;
             };
-            for bucket_entry in entries.entries.iter_mut() {
-                let key = bucket_entry.key;
-                let entry = &mut bucket_entry.entry;
-                if !matches!(entry.state.kind(), TcpConnectionState::Established) {
-                    continue;
-                }
-                let Some(data) = entry.state.connection_data_mut() else {
-                    continue;
-                };
-                if data.seq.snd_nxt != data.seq.snd_una {
-                    continue;
-                }
-                if !data.flow_control.should_send_probe(current_tick) {
-                    continue;
-                }
-                if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
-                    if let Some(probe_payload) = socket
-                        .with_inner_mut(|inner| inner.take_send_segment_window(1))
-                        .flatten()
-                    {
-                        let seq = data.seq.snd_nxt;
-                        let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
-                            .seq(seq)
-                            .ack(data.seq.rcv_nxt)
-                            .ack_flag()
-                            .psh()
-                            .window(data.advertised_recv_window())
-                            .payload_packet(probe_payload);
-                        if data.ts_enabled {
-                            let ts_val = (current_tick / 10) as u32;
-                            builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
-                        }
-                        let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
-                            continue;
-                        };
-                        retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
-                        if super::retransmit::retransmit_queue_transmit_ready(
-                            runtime, key.0, key.1, seq,
-                        ) {
-                            data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
-                            data.flow_control.on_probe_sent(current_tick);
-                        } else {
-                            log::warn!(
-                                "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
-                                key.0,
-                                key.1
-                            );
-                        }
+            if data.seq.snd_nxt != data.seq.snd_una {
+                continue;
+            }
+            if !data.flow_control.should_send_probe(current_tick) {
+                continue;
+            }
+            if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
+                if let Some(probe_payload) = socket
+                    .with_inner_mut(|inner| inner.take_send_segment_window(1))
+                    .flatten()
+                {
+                    let seq = data.seq.snd_nxt;
+                    let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                        .seq(seq)
+                        .ack(data.seq.rcv_nxt)
+                        .ack_flag()
+                        .psh()
+                        .window(data.advertised_recv_window())
+                        .payload_packet(probe_payload);
+                    if data.ts_enabled {
+                        let ts_val = (current_tick / 10) as u32;
+                        builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
+                    }
+                    let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
+                        continue;
+                    };
+                    retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
+                    if super::retransmit::retransmit_queue_transmit_ready(
+                        runtime, key.0, key.1, seq,
+                    ) {
+                        data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                        data.flow_control.on_probe_sent(current_tick);
+                    } else {
+                        log::warn!(
+                            "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
+                            key.0,
+                            key.1
+                        );
                     }
                 }
             }
@@ -1082,26 +1069,24 @@ impl TcbTable {
     fn scavenge_time_wait(&self, current_tick: u64) {
         const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
         const MAX_SCAVENGE_PER_SHARD: usize = 16;
-        for shard in &self.shards {
-            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entries) = guard.as_mut() else {
-                continue;
-            };
-            let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
-            for bucket_entry in entries.entries.iter() {
-                let entry = &bucket_entry.entry;
-                if entry.is_state(TcpConnectionState::TimeWait)
-                    && current_tick.saturating_sub(entry.last_send_tick()) > TIME_WAIT_TIMEOUT_TICKS
-                {
-                    to_remove.push(bucket_entry.key);
-                    if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
-                        break;
-                    }
+        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let Some(entries) = guard.as_mut() else {
+            return;
+        };
+        let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
+        for bucket_entry in entries.entries.iter() {
+            let entry = &bucket_entry.entry;
+            if entry.is_state(TcpConnectionState::TimeWait)
+                && current_tick.saturating_sub(entry.last_send_tick()) > TIME_WAIT_TIMEOUT_TICKS
+            {
+                to_remove.push(bucket_entry.key);
+                if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                    break;
                 }
             }
-            for key in to_remove {
-                entries.remove(&key);
-            }
+        }
+        for key in to_remove {
+            entries.remove(&key);
         }
     }
 
@@ -1123,30 +1108,28 @@ impl TcbTable {
             (SYN_RECV_TIMEOUT_TICKS, 8) // 低・中負荷時
         };
 
-        for shard in &self.shards {
-            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entries) = guard.as_mut() else {
-                continue;
-            };
-            let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> =
-                alloc::vec::Vec::with_capacity(max_per_shard);
-            for bucket_entry in entries.entries.iter() {
-                let entry = &bucket_entry.entry;
-                if entry.is_syn_received()
-                    && current_tick.saturating_sub(entry.last_send_tick()) > timeout
-                {
-                    to_remove.push(bucket_entry.key);
-                    if to_remove.len() >= max_per_shard {
-                        break;
-                    }
+        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let Some(entries) = guard.as_mut() else {
+            return;
+        };
+        let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> =
+            alloc::vec::Vec::with_capacity(max_per_shard);
+        for bucket_entry in entries.entries.iter() {
+            let entry = &bucket_entry.entry;
+            if entry.is_syn_received()
+                && current_tick.saturating_sub(entry.last_send_tick()) > timeout
+            {
+                to_remove.push(bucket_entry.key);
+                if to_remove.len() >= max_per_shard {
+                    break;
                 }
             }
-            for key in to_remove {
-                if let Some(entry) = entries.remove(&key) {
-                    self.total_count.fetch_sub(1, Ordering::Relaxed);
-                    if entry.is_syn_received() {
-                        self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                    }
+        }
+        for key in to_remove {
+            if let Some(entry) = entries.remove(&key) {
+                self.total_count.fetch_sub(1, Ordering::Relaxed);
+                if entry.is_syn_received() {
+                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                 }
             }
         }
@@ -1170,10 +1153,9 @@ impl TcbTable {
                 return Err("Too many SYN-RECV connections");
             }
         }
-        let idx = shard_index(&entry.local, &entry.remote);
         let key = (entry.local, entry.remote);
-        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
-        let storage = shard.get_or_insert_with(TcbShardStorage::new);
+        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let storage = shard.get_or_insert_with(TcbStorage::new);
         let is_syn_recv = entry.is_syn_received();
         match storage.insert(key, entry) {
             Ok(None) => {
@@ -1198,8 +1180,7 @@ impl TcbTable {
     where
         F: FnOnce(&TcpControlBlock) -> R,
     {
-        let idx = shard_index(&local, &remote);
-        let shard = self.shards[idx].read().unwrap_or_else(|e| e.into_inner());
+        let shard = self.storage.read().unwrap_or_else(|e| e.into_inner());
         shard.as_ref()?.get(&(local, remote)).map(f)
     }
 
@@ -1207,8 +1188,7 @@ impl TcbTable {
     where
         F: FnOnce(&mut TcpControlBlock),
     {
-        let idx = shard_index(&local, &remote);
-        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let Some(storage) = shard.as_mut() else {
             return false;
         };
@@ -1679,8 +1659,7 @@ impl TcbTable {
     }
 
     pub fn remove(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlock> {
-        let idx = shard_index(&local, &remote);
-        let mut shard = self.shards[idx].write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let storage = shard.as_mut()?;
         if let Some(entry) = storage.remove(&(local, remote)) {
             self.total_count.fetch_sub(1, Ordering::Relaxed);
@@ -1694,16 +1673,14 @@ impl TcbTable {
     }
 
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {
-        for shard in &self.shards {
-            let mut guard = shard.write().unwrap_or_else(|e| e.into_inner());
-            if let Some(storage) = guard.as_mut() {
-                if let Some(entry) = storage.remove_by_socket_id(socket_id) {
-                    self.total_count.fetch_sub(1, Ordering::Relaxed);
-                    if entry.is_syn_received() {
-                        self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                    }
-                    return Some(entry);
+        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(storage) = guard.as_mut() {
+            if let Some(entry) = storage.remove_by_socket_id(socket_id) {
+                self.total_count.fetch_sub(1, Ordering::Relaxed);
+                if entry.is_syn_received() {
+                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                 }
+                return Some(entry);
             }
         }
         None
@@ -1711,18 +1688,16 @@ impl TcbTable {
 
     pub fn list_connections(&self) -> alloc::vec::Vec<TcpConnectionSnapshot> {
         let mut result = alloc::vec::Vec::new();
-        for shard in &self.shards {
-            let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(storage) = guard.as_ref() {
-                result.extend(storage.entries.iter().map(|bucket_entry| {
-                    let entry = &bucket_entry.entry;
-                    TcpConnectionSnapshot {
-                        local: entry.local,
-                        remote: entry.remote,
-                        state: entry.state.kind(),
-                    }
-                }));
-            }
+        let guard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(storage) = guard.as_ref() {
+            result.extend(storage.entries.iter().map(|bucket_entry| {
+                let entry = &bucket_entry.entry;
+                TcpConnectionSnapshot {
+                    local: entry.local,
+                    remote: entry.remote,
+                    state: entry.state.kind(),
+                }
+            }));
         }
         result
     }
@@ -1756,14 +1731,12 @@ impl TcbTable {
     where
         F: FnMut(&TcpControlBlock),
     {
-        for shard in &self.shards {
-            let guard = shard.read().unwrap_or_else(|e| e.into_inner());
-            if let Some(storage) = guard.as_ref() {
-                for bucket_entry in &storage.entries {
-                    let entry = &bucket_entry.entry;
-                    if entry.is_state(TcpConnectionState::Established) {
-                        f(entry);
-                    }
+        let guard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        if let Some(storage) = guard.as_ref() {
+            for bucket_entry in &storage.entries {
+                let entry = &bucket_entry.entry;
+                if entry.is_state(TcpConnectionState::Established) {
+                    f(entry);
                 }
             }
         }

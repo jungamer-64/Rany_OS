@@ -54,7 +54,7 @@ impl RuntimeCommandHandler {
     ) -> EventHandleResult {
         // 最適パス: スタックロックを1回取得し、handle_event_with_stack_in() に委譲
         // これにより、各イベントが個別にロックを取得する非効率なパターンを排除する
-        if let Ok(mut stack_guard) = runtime.context().stack.lock() {
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::stack_in(runtime).lock() {
             if let Some(ref mut stack) = *stack_guard {
                 return self.handle_event_with_stack_in(runtime, event, stack);
             }

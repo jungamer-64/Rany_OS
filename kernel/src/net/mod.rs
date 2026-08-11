@@ -20,6 +20,7 @@
 #![deny(unsafe_op_in_unsafe_fn)]
 
 pub mod api;
+pub mod event_queue;
 pub mod obs;
 pub mod types;
 

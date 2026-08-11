@@ -96,7 +96,7 @@ impl Eq for NetRuntimeHandle {}
 pub struct NetRuntimeContext {
     id: NetRuntimeId,
     generation: NetRuntimeGeneration,
-    pub(crate) stack: PoisonLock<Option<NetworkStack>>,
+    pub(crate) stacks: [PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS],
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) command_queue: RuntimeCommandQueue,
     pub(crate) command_replies: CommandReplyRegistry,
@@ -132,7 +132,7 @@ impl NetRuntimeContext {
         Self {
             id,
             generation,
-            stack: PoisonLock::new(None),
+            stacks: [const { PoisonLock::new(None) }; crate::per_cpu::MAX_CPUS],
             manager: PoisonLock::new(None),
             command_queue: RuntimeCommandQueue::new(),
             command_replies: CommandReplyRegistry::new(),

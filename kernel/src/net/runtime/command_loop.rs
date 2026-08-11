@@ -41,7 +41,7 @@ pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
     loop {
         let event = command_queue_in(runtime).wait_for_events().await;
 
-        if let Ok(mut stack_guard) = runtime.context().stack.lock() {
+        if let Ok(mut stack_guard) = crate::net::runtime::stack::stack_in(runtime).lock() {
             if let Some(ref mut stack) = *stack_guard {
                 let result = handler.handle_event_with_stack_in(runtime, event, stack);
                 process_handle_result(runtime, result);

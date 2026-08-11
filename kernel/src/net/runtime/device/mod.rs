@@ -1581,22 +1581,14 @@ fn interface_for_port(
         if_id
     };
 
-    if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-        if let Some(stack) = guard.as_mut() {
-            stack.register_interface_state(if_id, config);
-        }
-    }
+    stack::register_interface_in(runtime, if_id, config);
 
     Ok(if_id)
 }
 
 fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
-    if let Ok(mut guard) = stack::stack_in(runtime).lock()
-        && let Some(stack) = guard.as_mut()
-    {
-        stack.unregister_interface_state(if_id);
-    }
+    stack::unregister_interface_in(runtime, if_id);
     let _ = manager::unregister_interface_in(runtime, if_id);
 }
 
@@ -1715,9 +1707,11 @@ pub fn register_port_in(
 
     if selected_as_primary {
         apply_runtime_network_config_in(runtime, &config);
-        if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.set_primary_interface_state(Some(if_id));
+        for stack_lock in &runtime_context_for(runtime).stacks {
+            if let Ok(mut guard) = stack_lock.lock() {
+                if let Some(stack) = guard.as_mut() {
+                    stack.set_primary_interface_state(Some(if_id));
+                }
             }
         }
     }
@@ -1804,11 +1798,7 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
         let _ = manager::set_interface_down_in(runtime, if_id);
         handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
-        if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.unregister_interface_state(if_id);
-            }
-        }
+        stack::unregister_interface_in(runtime, if_id);
         let _ = manager::unregister_interface_in(runtime, if_id);
         handle.stop();
         true
@@ -1872,9 +1862,11 @@ pub fn primary_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
 
 pub fn set_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     set_primary_slot_in(runtime, Some(if_id));
-    if let Ok(mut guard) = runtime_context_for(runtime).stack.lock() {
-        if let Some(stack) = guard.as_mut() {
-            stack.set_primary_interface_state(Some(if_id));
+    for stack_lock in &runtime_context_for(runtime).stacks {
+        if let Ok(mut guard) = stack_lock.lock() {
+            if let Some(stack) = guard.as_mut() {
+                stack.set_primary_interface_state(Some(if_id));
+            }
         }
     }
     if let Err(err) = apply_primary_runtime_for_interface_in(runtime, if_id) {
@@ -1910,6 +1902,16 @@ pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
     // self-deadlocking on the global stack lock during primary selection.
     if claim_bound_primary_slot_in(runtime, if_id) {
         stack.set_primary_interface_state(Some(if_id));
+        let current_core = crate::cpu::try_current_id().unwrap_or(0);
+        for (i, stack_lock) in runtime_context_for(runtime).stacks.iter().enumerate() {
+            if i != current_core {
+                if let Ok(mut guard) = stack_lock.lock() {
+                    if let Some(other_stack) = guard.as_mut() {
+                        other_stack.set_primary_interface_state(Some(if_id));
+                    }
+                }
+            }
+        }
         true
     } else {
         false

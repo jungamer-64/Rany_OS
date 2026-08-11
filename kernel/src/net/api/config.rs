@@ -188,7 +188,7 @@ pub(crate) fn primary_interface_config_from_runtime_in(
 pub(crate) fn list_interface_stats_from_runtime_in(
     runtime: NetRuntimeHandle,
 ) -> alloc::vec::Vec<InterfaceStatsSnapshot> {
-    if let Ok(guard) = runtime.context().stack.lock() {
+    if let Ok(guard) = crate::net::runtime::stack::stack_in(runtime).lock() {
         if let Some(stack) = guard.as_ref() {
             return list_interface_stats_with_stack_in(runtime, Some(stack));
         }

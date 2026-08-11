@@ -28,9 +28,7 @@ pub type NetCompletionHandler = fn(u8, NetCompletionKind, u16, u32) -> bool;
 
 pub struct ManagedNetVirtQueue {
     inner: IrqPoisonLock<CoreNetVirtQueue>,
-    pending_wakers: PoisonLock<Vec<Waker>>,
     dma_buffer: Option<VirtioDmaBuffer>,
-    completion_map: PoisonLock<BTreeMap<u16, u32>>,
 }
 
 unsafe impl Send for ManagedNetVirtQueue {}
@@ -59,9 +57,7 @@ impl ManagedNetVirtQueue {
 
         Self {
             inner: IrqPoisonLock::new(net_vq_core),
-            pending_wakers: PoisonLock::new(Vec::new()),
             dma_buffer,
-            completion_map: PoisonLock::new(BTreeMap::new()),
         }
     }
 
@@ -126,19 +122,10 @@ impl ManagedNetVirtQueue {
         {
             let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
             while let Some((desc_idx, len)) = inner.poll_complete() {
-                self.completion_map
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .insert(desc_idx, len);
                 on_complete(desc_idx, len);
                 count += 1;
             }
         }
-
-        if count > 0 {
-            self.wake_all();
-        }
-
         count
     }
 
@@ -146,34 +133,6 @@ impl ManagedNetVirtQueue {
         let mut completed = Vec::new();
         let _ = self.process_used_with(|desc_idx, len| completed.push((desc_idx, len)));
         completed
-    }
-
-    pub fn register_waker(&self, waker: Waker) {
-        let mut pending = self
-            .pending_wakers
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        if pending.iter().any(|existing| existing.will_wake(&waker)) {
-            return;
-        }
-        pending.push(waker);
-    }
-
-    pub fn take_completion(&self, desc_idx: u16) -> Option<u32> {
-        if let Some(len) = self
-            .completion_map
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&desc_idx)
-        {
-            return Some(len);
-        }
-
-        let _ = self.process_used();
-        self.completion_map
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&desc_idx)
     }
 
     pub fn free_desc_chain(&self, head: u16) {
@@ -190,20 +149,6 @@ impl ManagedNetVirtQueue {
 
     pub fn queue_dma(&self) -> Option<&VirtioDmaBuffer> {
         self.dma_buffer.as_ref()
-    }
-
-    fn wake_all(&self) {
-        let waiters = {
-            let mut pending = self
-                .pending_wakers
-                .lock()
-                .unwrap_or_else(|e| e.into_inner());
-            core::mem::take(&mut *pending)
-        };
-
-        for waker in waiters {
-            waker.wake();
-        }
     }
 }
 
