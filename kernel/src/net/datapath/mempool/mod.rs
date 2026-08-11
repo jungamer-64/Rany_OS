@@ -696,11 +696,15 @@ pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> 
     })
 }
 
+const PER_CORE_CACHE_CAPACITY: usize = 32;
+const BATCH_SIZE: usize = 16;
+
 #[derive(Debug)]
 pub struct Mempool {
     id: u32,
     buffers: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     free_list: PoisonLock<Vec<NonNull<PacketBuffer>>>,
+    local_caches: [PoisonLock<Vec<NonNull<PacketBuffer>>>; crate::per_cpu::MAX_CPUS],
     alloc_count: AtomicU64,
     free_count: AtomicU64,
     alloc_failed: AtomicU64,
@@ -747,6 +751,7 @@ impl Mempool {
             id,
             buffers: PoisonLock::new(Vec::new()),
             free_list: PoisonLock::new(Vec::new()),
+            local_caches: [const { PoisonLock::new(Vec::new()) }; crate::per_cpu::MAX_CPUS],
             alloc_count: AtomicU64::new(0),
             free_count: AtomicU64::new(0),
             alloc_failed: AtomicU64::new(0),
@@ -825,12 +830,28 @@ impl Mempool {
     }
 
     pub fn alloc(&'static self) -> Result<PacketRef, MempoolError> {
-        let buffer = self
-            .free_list
-            .lock()
-            .map_err(|_| {
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
+        let cache_lock = &self.local_caches[cpu_id % crate::per_cpu::MAX_CPUS];
+        let mut cache = cache_lock.lock().map_err(|_| {
+            self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::LocalCache))
+        })?;
+
+        if cache.is_empty() {
+            let mut global_free = self.free_list.lock().map_err(|_| {
                 self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList))
-            })?
+            })?;
+            if global_free.is_empty() {
+                return Err(self.record_alloc_failure(MempoolError::OutOfBuffers));
+            }
+            let count_to_refill = BATCH_SIZE.min(global_free.len());
+            for _ in 0..count_to_refill {
+                if let Some(buf) = global_free.pop() {
+                    cache.push(buf);
+                }
+            }
+        }
+
+        let buffer = cache
             .pop()
             .ok_or_else(|| self.record_alloc_failure(MempoolError::OutOfBuffers))?;
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
@@ -838,10 +859,22 @@ impl Mempool {
     }
 
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
-        self.free_list
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push(buffer);
+        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
+        let cache_lock = &self.local_caches[cpu_id % crate::per_cpu::MAX_CPUS];
+        if let Ok(mut cache) = cache_lock.lock() {
+            cache.push(buffer);
+            if cache.len() >= PER_CORE_CACHE_CAPACITY {
+                let mid = cache.len() / 2;
+                let to_flush = cache.split_off(mid);
+                if let Ok(mut global_free) = self.free_list.lock() {
+                    global_free.extend(to_flush);
+                } else {
+                    cache.extend(to_flush);
+                }
+            }
+        } else if let Ok(mut global_free) = self.free_list.lock() {
+            global_free.push(buffer);
+        }
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
 
@@ -862,15 +895,18 @@ impl Mempool {
 
     pub fn stats(&self) -> MempoolStats {
         let total = self.buffers.lock().unwrap_or_else(|e| e.into_inner()).len();
-        let free = self
+        let mut free = self
             .free_list
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len();
+        for cache_lock in &self.local_caches {
+            free += cache_lock.lock().unwrap_or_else(|e| e.into_inner()).len();
+        }
         MempoolStats {
             total_buffers: total,
             free_buffers: free,
-            used_buffers: total - free,
+            used_buffers: total.saturating_sub(free),
             alloc_count: self.alloc_count.load(Ordering::Relaxed),
             free_count: self.free_count.load(Ordering::Relaxed),
             alloc_failed: self.alloc_failed.load(Ordering::Relaxed),
