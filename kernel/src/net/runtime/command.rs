@@ -31,11 +31,11 @@ pub(crate) enum RuntimeCommand {
 #[derive(Debug)]
 pub(crate) enum IngressCommand {
     Packet {
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         packet: PacketRef,
     },
     Reassembled {
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         payload: PacketPayload,
     },
 }

@@ -11,9 +11,7 @@ use crate::net::runtime::stack::NetworkConfig;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
-use core::sync::atomic::{AtomicBool, AtomicU16, Ordering};
-
-const INVALID_IF_ID: u16 = u16::MAX;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 struct DhcpInterfaceRuntime {
     if_id: NetIfId,
@@ -49,7 +47,6 @@ pub(crate) struct DhcpRuntimeState {
     interface_runtimes: PoisonLock<BTreeMap<NetIfId, &'static DhcpInterfaceRuntime>>,
     v4_dispatcher_started: AtomicBool,
     v6_dispatcher_started: AtomicBool,
-    primary_if_id: AtomicU16,
 }
 
 impl DhcpRuntimeState {
@@ -58,7 +55,6 @@ impl DhcpRuntimeState {
             interface_runtimes: PoisonLock::new(BTreeMap::new()),
             v4_dispatcher_started: AtomicBool::new(false),
             v6_dispatcher_started: AtomicBool::new(false),
-            primary_if_id: AtomicU16::new(INVALID_IF_ID),
         }
     }
 }
@@ -123,19 +119,6 @@ pub(crate) fn unregister_interface_runtime_in(runtime: NetRuntimeHandle, if_id: 
         interface_runtime.active.store(false, Ordering::Release);
     }
     clear_primary_interface_in(runtime, if_id);
-}
-
-pub(crate) fn mark_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    runtime_state_for(runtime)
-        .primary_if_id
-        .store(if_id.0, Ordering::Release);
-}
-
-pub(crate) fn clear_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    let state = runtime_state_for(runtime);
-    if state.primary_if_id.load(Ordering::Acquire) == if_id.0 {
-        state.primary_if_id.store(INVALID_IF_ID, Ordering::Release);
-    }
 }
 
 fn interface_runtime_in(

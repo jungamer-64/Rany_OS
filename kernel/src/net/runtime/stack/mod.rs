@@ -138,17 +138,13 @@ impl NetworkStats {
 /// Transmit callback invoked by the network stack when it needs to send
 /// an Ethernet frame out to the wire.
 ///
-/// The `Option<NetIfId>` parameter indicates which logical interface the
-/// packet should be emitted on.  `None` is used when the stack has no
-/// particular interface preference or when the caller elected not to specify
-/// an interface. This extra metadata allows
-/// the bridge layer to support multiple ports and other multi-NIC
-/// configurations without racing for a single global transmit function.
+/// The `NetIfId` parameter identifies the exact logical interface selected by
+/// routing before the frame crosses the device boundary.
 ///
 /// The callback should return `true` if the packet was successfully queued
 /// for transmission; `false` indicates failure and will usually result in the
 /// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(NetRuntimeHandle, Option<NetIfId>, PacketPayload, NetTxMeta) -> bool;
+pub type TransmitFn = fn(NetRuntimeHandle, NetIfId, PacketPayload, NetTxMeta) -> bool;
 
 // ICMP Redirect Cache Entry
 #[derive(Debug)]
@@ -275,9 +271,6 @@ pub struct NetworkStack {
     /// Per-core protocol state derived from the manager-owned configurations.
     interfaces: BTreeMap<NetIfId, InterfaceStackState>,
     /// Manager revision fully applied to this per-core stack.
-    applied_interface_config_revision: crate::net::runtime::manager::InterfaceConfigRevision,
-    /// Preferred interface for scope-less runtime resolution.
-    primary_interface: Option<NetIfId>,
     /// Timeout wheel for periodic tasks
     timeout_wheel: TimeoutWheel,
     /// Transmit callback

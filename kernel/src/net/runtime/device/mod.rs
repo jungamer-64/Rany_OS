@@ -1276,7 +1276,6 @@ async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
 pub struct NetDeviceManager {
     handles: BTreeMap<NetIfId, NetDeviceHandle>,
     port_map: BTreeMap<NetPortId, NetIfId>,
-    primary: Option<NetIfId>,
 }
 
 impl NetDeviceManager {
@@ -1284,7 +1283,6 @@ impl NetDeviceManager {
         Self {
             handles: BTreeMap::new(),
             port_map: BTreeMap::new(),
-            primary: None,
         }
     }
 }
@@ -1377,13 +1375,6 @@ fn select_surviving_primary_in(
             .flatten()
             .is_some_and(|iface| iface.admin_up && interface_supports_failover_in(runtime, *if_id))
     })
-}
-
-fn set_primary_slot_in(runtime: NetRuntimeHandle, primary: Option<NetIfId>) {
-    device_manager_in(runtime)
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .primary = primary;
 }
 
 fn apply_primary_runtime_for_interface_in(
@@ -1853,89 +1844,13 @@ pub fn list_port_ids_in(runtime: NetRuntimeHandle) -> Vec<NetPortId> {
         .collect()
 }
 
-pub fn primary_if_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
-    device_manager_in(runtime)
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .primary
-}
-
-pub fn set_primary_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    set_primary_slot_in(runtime, Some(if_id));
-    for stack_lock in &runtime_context_for(runtime).stacks {
-        if let Ok(mut guard) = stack_lock.lock() {
-            if let Some(stack) = guard.as_mut() {
-                stack.set_primary_interface_state(Some(if_id));
-            }
-        }
-    }
-    if let Err(err) = apply_primary_runtime_for_interface_in(runtime, if_id) {
-        log::warn!(
-            target: "net::device",
-            "failed to synchronize primary if{}: {}",
-            if_id.0,
-            err
-        );
-        sync_runtime_config_for_interface_in(runtime, if_id);
-    }
-}
-
-fn claim_bound_primary_slot_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    if runtime_context_for(runtime)
-        .dhcp_bound_primary_selected
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        set_primary_slot_in(runtime, Some(if_id));
-        true
-    } else {
-        false
-    }
-}
-
-pub(crate) fn claim_bound_primary_interface_with_stack_state_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    stack: &mut stack::NetworkStack,
-) -> bool {
-    // DHCP lease binding runs under NETWORK_STACK; reuse that guard to avoid
-    // self-deadlocking on the global stack lock during primary selection.
-    if claim_bound_primary_slot_in(runtime, if_id) {
-        stack.set_primary_interface_state(Some(if_id));
-        let current_core = crate::cpu::try_current_id().unwrap_or(0);
-        for (i, stack_lock) in runtime_context_for(runtime).stacks.iter().enumerate() {
-            if i != current_core {
-                if let Ok(mut guard) = stack_lock.lock() {
-                    if let Some(other_stack) = guard.as_mut() {
-                        other_stack.set_primary_interface_state(Some(if_id));
-                    }
-                }
-            }
-        }
-        true
-    } else {
-        false
-    }
-}
-
 pub fn transmit_packet_in(
     runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
+    if_id: NetIfId,
     payload: PacketPayload,
     meta: NetTxMeta,
 ) -> bool {
-    let resolved_if = if_id.or_else(|| primary_if_in(runtime));
-    let Some(resolved_if) = resolved_if else {
-        if let Some(completion_id) = meta.device_completion_ticket().map(|ticket| ticket.get()) {
-            let _ = complete_tx_request_in(
-                runtime,
-                completion_id,
-                Err("network interface unavailable"),
-            );
-        }
-        return false;
-    };
-    let queued = with_port_handle_in(runtime, resolved_if, |handle| {
+    let queued = with_port_handle_in(runtime, if_id, |handle| {
         handle.enqueue_tx_in(runtime, payload, meta)
     });
     match queued {
@@ -1954,16 +1869,11 @@ pub fn transmit_packet_in(
 
 pub(crate) fn transmit_registered_tx_request_in(
     runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
+    if_id: NetIfId,
     request: TxRequest,
 ) -> bool {
     let lease_id = request.lease_id;
-    let resolved_if = if_id.or_else(|| primary_if_in(runtime));
-    let Some(resolved_if) = resolved_if else {
-        let _ = complete_tx_lease_in(runtime, lease_id, Err("network interface unavailable"));
-        return false;
-    };
-    let queued = with_port_handle_in(runtime, resolved_if, |handle| {
+    let queued = with_port_handle_in(runtime, if_id, |handle| {
         handle.enqueue_tx_request(request)
     });
     match queued {

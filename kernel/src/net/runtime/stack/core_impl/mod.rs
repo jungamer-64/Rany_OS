@@ -216,25 +216,6 @@ impl NetworkStack {
         Ok((resolved.0, resolved.1, src_ip))
     }
 
-    pub(crate) fn resolve_ingress_if(&self, if_id: Option<NetIfId>) -> Option<NetIfId> {
-        if let Some(if_id) = if_id {
-            return self.interfaces.contains_key(&if_id).then_some(if_id);
-        }
-        self.primary_interface
-            .filter(|if_id| self.interfaces.contains_key(if_id))
-            .or_else(|| {
-                crate::net::runtime::manager::list_interfaces_in(self.runtime)
-                    .ok()
-                    .and_then(|ifaces| {
-                        ifaces
-                            .iter()
-                            .map(|iface| iface.if_id)
-                            .find(|if_id| self.interfaces.contains_key(if_id))
-                    })
-            })
-            .or_else(|| self.interfaces.keys().next().copied())
-    }
-
     pub fn send_raw_ip_payload_scoped(
         &mut self,
         scope: crate::net::types::InterfaceScope,
@@ -515,9 +496,6 @@ impl NetworkStack {
                 self.interfaces.insert(if_id, state);
             }
         }
-        if self.primary_interface.is_none() {
-            self.primary_interface = Some(if_id);
-        }
     }
 
     pub(crate) fn needs_interface_config_revision(
@@ -545,11 +523,6 @@ impl NetworkStack {
             self.register_interface_state(if_id, config);
         }
         self.applied_interface_config_revision = revision;
-    }
-
-    /// Select the preferred interface used for scope-less runtime resolution.
-    pub fn set_primary_interface_state(&mut self, if_id: Option<NetIfId>) {
-        self.primary_interface = if_id;
     }
 
     pub fn interface_config(&self, if_id: NetIfId) -> Option<NetworkConfig> {

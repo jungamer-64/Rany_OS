@@ -15,40 +15,6 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NetIfId(pub u16);
 
-/// Version token for the runtime's complete configured-interface set.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub(crate) struct InterfaceConfigRevision(u64);
-
-impl InterfaceConfigRevision {
-    pub(crate) const INITIAL: Self = Self(0);
-
-    fn next_from(previous: u64) -> Self {
-        Self(previous.wrapping_add(1))
-    }
-}
-
-/// Complete manager-owned input used to reconcile one per-core stack.
-pub(crate) struct InterfaceConfigurations {
-    revision: InterfaceConfigRevision,
-    entries: Vec<(NetIfId, NetworkConfig)>,
-}
-
-impl InterfaceConfigurations {
-    pub(crate) fn revision(&self) -> InterfaceConfigRevision {
-        self.revision
-    }
-
-    pub(crate) fn contains(&self, if_id: NetIfId) -> bool {
-        self.entries
-            .binary_search_by_key(&if_id, |(entry_if_id, _)| *entry_if_id)
-            .is_ok()
-    }
-
-    pub(crate) fn into_entries(self) -> alloc::vec::IntoIter<(NetIfId, NetworkConfig)> {
-        self.entries.into_iter()
-    }
-}
-
 /// Route flags for static/connected/default routes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RouteFlags {
