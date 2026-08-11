@@ -771,6 +771,8 @@ impl PerCoreExecutor {
 
 pub struct ExecutorManager {
     executors: PoisonLock<Vec<Arc<PerCoreExecutor>>>,
+    /// Lock-free publication used by ISR dispatch after executor slots exist.
+    published_slot_count: AtomicUsize,
     bootstrap_queue: PoisonLock<VecDeque<Arc<ScheduledTask>>>,
     global_enqueued: AtomicUsize,
     global_dequeued: AtomicUsize,
@@ -781,6 +783,7 @@ impl ExecutorManager {
     pub const fn new() -> Self {
         Self {
             executors: PoisonLock::new(Vec::new()),
+            published_slot_count: AtomicUsize::new(1),
             bootstrap_queue: PoisonLock::new(VecDeque::new()),
             global_enqueued: AtomicUsize::new(0),
             global_dequeued: AtomicUsize::new(0),
@@ -797,6 +800,7 @@ impl ExecutorManager {
         }
         drop(executors);
 
+        self.published_slot_count.store(count, Ordering::Release);
         self.redistribute_bootstrap_queue();
     }
 
@@ -805,6 +809,8 @@ impl ExecutorManager {
         let mut executors = self.executors.lock_for_init("[EXECUTOR] provision");
         let current = executors.len();
         if current >= count {
+            self.published_slot_count
+                .store(current.clamp(1, MAX_CPUS), Ordering::Release);
             return;
         }
 
@@ -816,14 +822,12 @@ impl ExecutorManager {
         }
         drop(executors);
 
+        self.published_slot_count.store(count, Ordering::Release);
         self.redistribute_bootstrap_queue();
     }
 
     pub fn active_cpu_count(&self) -> usize {
-        match self.executors.lock() {
-            Ok(executors) => executors.len().clamp(1, MAX_CPUS),
-            Err(_) => 1,
-        }
+        self.published_slot_count.load(Ordering::Acquire)
     }
 
     pub fn get_executor(&self, core_id: u32) -> Option<Arc<PerCoreExecutor>> {

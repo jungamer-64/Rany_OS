@@ -136,7 +136,7 @@ impl AtomicWaker {
     #[inline]
     pub fn wake_from_isr(&self) {
         let ptr = self as *const Self as usize;
-        let _ = DEFERRED_ATOMIC_WAKER_QUEUE.push_once(ptr);
+        let _ = DEFERRED_ATOMIC_WAKER_QUEUE[deferred_wake_queue_index()].push_once(ptr);
     }
 
     fn wake_impl(&self, _from_isr: bool) {
@@ -246,7 +246,7 @@ pub type LockFreeAtomicWaker = AtomicWaker;
 
 #[inline]
 pub fn process_deferred_wakes() {
-    while let Some(ptr) = DEFERRED_ATOMIC_WAKER_QUEUE.pop() {
+    while let Some(ptr) = DEFERRED_ATOMIC_WAKER_QUEUE[deferred_wake_queue_index()].pop() {
         if ptr == 0 {
             continue;
         }
@@ -301,7 +301,7 @@ impl WakerQueue {
     pub fn wake_all_from_isr(&self) {
         self.wake_requested.store(true, Ordering::Release);
         let ptr = self as *const Self as usize;
-        let _ = DEFERRED_WAKER_QUEUE_QUEUE.push_once(ptr);
+        let _ = DEFERRED_WAKER_QUEUE_QUEUE[deferred_wake_queue_index()].push_once(ptr);
     }
 
     pub fn is_wake_pending(&self) -> bool {
@@ -327,11 +327,20 @@ impl Default for WakerQueue {
     }
 }
 
-static DEFERRED_WAKER_QUEUE_QUEUE: DeferredWakerQueue = DeferredWakerQueue::new();
-static DEFERRED_ATOMIC_WAKER_QUEUE: DeferredWakerQueue = DeferredWakerQueue::new();
+#[inline]
+fn deferred_wake_queue_index() -> usize {
+    crate::cpu::try_current_id()
+        .unwrap_or(0)
+        .min(crate::per_cpu::MAX_CPUS - 1)
+}
+
+static DEFERRED_WAKER_QUEUE_QUEUE: [DeferredWakerQueue; crate::per_cpu::MAX_CPUS] =
+    [const { DeferredWakerQueue::new() }; crate::per_cpu::MAX_CPUS];
+static DEFERRED_ATOMIC_WAKER_QUEUE: [DeferredWakerQueue; crate::per_cpu::MAX_CPUS] =
+    [const { DeferredWakerQueue::new() }; crate::per_cpu::MAX_CPUS];
 
 pub fn process_deferred_waker_queue_wakes() {
-    while let Some(ptr) = DEFERRED_WAKER_QUEUE_QUEUE.pop() {
+    while let Some(ptr) = DEFERRED_WAKER_QUEUE_QUEUE[deferred_wake_queue_index()].pop() {
         if ptr == 0 {
             continue;
         }
@@ -454,5 +463,18 @@ mod tests {
             assert_eq!(queue.pop(), Some(i + 1));
         }
         assert_eq!(queue.pop(), None);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn deferred_waker_queues_isolate_single_consumer_state() {
+        let queues = [const { DeferredWakerQueue::new() }; 2];
+
+        assert!(queues[0].push_once(11));
+        assert!(queues[1].push_once(22));
+        assert_eq!(queues[0].pop(), Some(11));
+        assert_eq!(queues[0].pop(), None);
+        assert_eq!(queues[1].pop(), Some(22));
+        assert_eq!(queues[1].pop(), None);
     }
 }
