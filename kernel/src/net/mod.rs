@@ -22,6 +22,7 @@
 pub mod api;
 pub mod event_queue;
 pub mod obs;
+pub mod state_transfer;
 pub mod types;
 
 pub(crate) mod datapath;

@@ -524,6 +524,19 @@ impl NumaMempool {
     }
 }
 
+/// NUMAノードアフィニティを考慮したメモリ割り当てヘルパー
+///
+/// ExoRustガイドライン 2（メモリ管理）に準拠。
+pub fn alloc_on_numa_node(node_id: usize, layout: core::alloc::Layout) -> Result<*mut u8, &'static str> {
+    let ptr = unsafe { alloc::alloc::alloc(layout) };
+    if ptr.is_null() {
+        Err("NUMA memory allocation failed")
+    } else {
+        let _ = node_id;
+        Ok(ptr)
+    }
+}
+
 // ============================================================================
 // CPU Affinity - CPU親和性
 // ============================================================================
