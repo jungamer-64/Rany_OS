@@ -162,6 +162,7 @@ pub struct VirtioNetDevice {
     tx_queues: Vec<ManagedNetVirtQueue>,
     completion_handler: PoisonLock<Option<NetCompletionHandler>>,
     initialized: AtomicBool,
+    link_up: AtomicBool,
     rx_packets: AtomicU32,
     rx_bytes: AtomicU32,
     tx_packets: AtomicU32,
@@ -187,6 +188,7 @@ impl VirtioNetDevice {
             tx_queues: Vec::new(),
             completion_handler: PoisonLock::new(None),
             initialized: AtomicBool::new(false),
+            link_up: AtomicBool::new(false),
             rx_packets: AtomicU32::new(0),
             rx_bytes: AtomicU32::new(0),
             tx_packets: AtomicU32::new(0),
@@ -198,6 +200,11 @@ impl VirtioNetDevice {
         self.core.init(self.transport.as_ref())?;
         self.setup_queues()?;
         self.transport.add_status(status::VIRTIO_STATUS_DRIVER_OK);
+
+        self.link_up.store(
+            self.core.link_up(self.transport.as_ref()),
+            Ordering::Release,
+        );
 
         for rx_queue in &self.rx_queues {
             rx_queue.notify(self.transport.as_ref());
@@ -219,6 +226,7 @@ impl VirtioNetDevice {
     }
 
     pub fn process_interrupt_deferred(&self) {
+        self.refresh_link_state();
         self.process_rx_completions();
         self.process_tx_completions();
     }
@@ -314,6 +322,25 @@ impl VirtioNetDevice {
         self.initialized.load(Ordering::Acquire)
     }
 
+    pub fn link_up(&self) -> bool {
+        self.link_up.load(Ordering::Acquire)
+    }
+
+    pub fn publish_link_state(&self) {
+        if let Some(runtime) = crate::net::virtio_net_runtime(self.virtio_index) {
+            let _ = runtime.update_link(self.link_up());
+        }
+        self.runtime.update_link(self.link_up());
+    }
+
+    fn refresh_link_state(&self) {
+        let current = self.core.link_up(self.transport.as_ref());
+        let previous = self.link_up.swap(current, Ordering::AcqRel);
+        if previous != current {
+            self.publish_link_state();
+        }
+    }
+
     pub fn net_port_stats(&self) -> NetPortStats {
         NetPortStats {
             tx_packets: self.tx_packets.load(Ordering::Relaxed) as u64,
@@ -335,8 +362,13 @@ impl VirtioNetDevice {
             mac: kernel_api::netdev::MacAddress::from_octets(
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
             ),
-            flags: kernel_api::netdev::NETDEV_FLAG_HEALTHY
-                | kernel_api::netdev::NETDEV_FLAG_LINK_UP,
+            flags: kernel_api::netdev::NETDEV_FLAG_ADMIN_UP
+                | kernel_api::netdev::NETDEV_FLAG_HEALTHY
+                | if self.link_up() {
+                    kernel_api::netdev::NETDEV_FLAG_LINK_UP
+                } else {
+                    0
+                },
         }
     }
 

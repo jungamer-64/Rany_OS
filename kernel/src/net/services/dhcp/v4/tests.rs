@@ -43,6 +43,7 @@ fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
 pub fn test_check_timeout_poisoned_state_reset_skips() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
     {
@@ -100,6 +101,7 @@ pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
 pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
 
@@ -141,6 +143,7 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
 pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
 
@@ -177,6 +180,7 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
 pub fn test_build_discover_reuse_xid_on_retransmit() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
 
@@ -207,6 +211,7 @@ pub fn test_build_discover_reuse_xid_on_retransmit() {
 pub fn test_build_discover_state_lock_poison_returns_err() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
 
@@ -228,6 +233,7 @@ pub fn test_process_response_chaddr_mismatch() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([1, 2, 3, 4, 5, 6]),
     );
     client.xid.store(0x1234_5678, Ordering::SeqCst);
@@ -266,6 +272,7 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([1, 2, 3, 4, 5, 6]),
     );
     client.xid.store(0x2222_3333, Ordering::SeqCst);
@@ -299,6 +306,7 @@ pub fn test_process_response_ack_requesting_mismatch() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([8, 8, 8, 8, 8, 8]),
     );
     client.xid.store(0x6666_7777, Ordering::SeqCst);
@@ -357,6 +365,7 @@ pub fn test_process_response_ack_renewal_success() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([9, 9, 9, 9, 9, 9]),
     );
     client.xid.store(0x9999_aaaa, Ordering::SeqCst);
@@ -422,6 +431,7 @@ pub fn test_build_decline_and_build_release_contents() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([1, 2, 3, 4, 5, 6]),
     );
     client.xid.store(0xabab_cdef, Ordering::SeqCst);
@@ -501,6 +511,7 @@ pub fn test_release_clears_lease_and_sets_last_released() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([5, 5, 5, 5, 5, 5]),
     );
     let lease = DhcpLease {
@@ -532,6 +543,7 @@ pub fn test_release_clears_lease_and_sets_last_released() {
 pub fn test_parse_t1_t2_and_timeout_transitions() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
     client.xid.store(0x1111_2222, Ordering::SeqCst);
@@ -659,6 +671,7 @@ pub fn test_offer_probe_and_decline_flow() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([7, 7, 7, 7, 7, 7]),
     );
     client.xid.store(0x3333_4444, Ordering::SeqCst);
@@ -722,6 +735,7 @@ pub fn test_offer_probe_and_decline_flow() {
 pub fn test_drive_init_sends_discover_and_enters_selecting() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
     assert_eq!(client.state(), DhcpState::Init);
@@ -734,6 +748,7 @@ pub fn test_drive_init_sends_discover_and_enters_selecting() {
 pub fn test_force_renew_or_restart_paths() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
     let lease = DhcpLease {
@@ -789,6 +804,7 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([1, 1, 1, 1, 1, 1]),
     );
     let lease = DhcpLease {
@@ -831,6 +847,7 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([2, 2, 2, 2, 2, 2]),
     );
     client.xid.store(0x4242_3535, Ordering::SeqCst);
@@ -917,6 +934,7 @@ pub fn test_inform_requires_active_lease() {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([3, 3, 3, 3, 3, 3]),
     );
     assert!(client.inform(100).is_err());

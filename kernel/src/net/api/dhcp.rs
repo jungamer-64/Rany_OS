@@ -706,9 +706,11 @@ mod tests {
         manager::init_network_manager_in(runtime_a);
         manager::init_network_manager_in(runtime_b);
 
-        manager::register_interface_in(runtime_a, "dhcp-a0").expect("runtime a interface");
+        manager::register_interface_in(runtime_a, "dhcp-a0", manager::PrimaryPreference::Auto)
+            .expect("runtime a interface");
         let if_b0 =
-            manager::register_interface_in(runtime_b, "dhcp-b0").expect("runtime b interface");
+            manager::register_interface_in(runtime_b, "dhcp-b0", manager::PrimaryPreference::Auto)
+                .expect("runtime b interface");
 
         let states = run_with_event_task_in(runtime_b, super::list_dhcp_states_in(runtime_b));
 

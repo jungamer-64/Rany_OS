@@ -830,6 +830,9 @@ fn runtime_submit_rx(
 ) -> Result<(), &'static str> {
     let context = runtime_context_from_cookie(cookie)?;
     let if_id = current_if_for_port(context, port_id)?;
+    if !manager::is_interface_operational_in(context.handle(), if_id) {
+        return Err("network interface is not operational");
+    }
     crate::net::runtime::bridge::process_received_packet_zero_copy_for_interface_in(
         context.handle(),
         if_id,
@@ -879,7 +882,7 @@ fn runtime_update_link(
 ) -> Result<(), &'static str> {
     let runtime = runtime_context_from_cookie(cookie)?.handle();
     let if_id = current_if_for_port(runtime_context_for(runtime), port_id)?;
-    let was_primary = manager::primary_interface_in(runtime) == Some(if_id);
+    let previous_primary = manager::primary_interface_in(runtime);
     let link_state = if up {
         manager::LinkState::Up
     } else {
@@ -896,7 +899,7 @@ fn runtime_update_link(
             }
         }
         let _ = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id);
-        let primary = elect_primary_if_absent_in(runtime, None);
+        let primary = manager::primary_interface_in(runtime);
         if primary == Some(if_id) {
             log::info!(
                 target: "net::device",
@@ -919,7 +922,7 @@ fn runtime_update_link(
             port_id.as_u64(),
             if_id.0
         );
-        handle_interface_departure_in(runtime, if_id, FailoverReason::LinkDown, was_primary);
+        handle_interface_departure_in(runtime, if_id, FailoverReason::LinkDown, previous_primary);
     }
 
     Ok(())
@@ -951,7 +954,6 @@ pub struct NetDeviceHandle {
     runtime: NetPortRuntimeHandle,
     tx_queue: NetTxQueue,
     event_sink: NetEventSink,
-    primary_policy: PrimaryPortPolicy,
     active: AtomicBool,
     tx_worker_started: AtomicBool,
     event_worker_started: AtomicBool,
@@ -962,7 +964,6 @@ impl NetDeviceHandle {
         driver: Box<dyn NetDevicePort>,
         binding: NetDeviceBinding,
         context: &'static NetRuntimeContext,
-        primary_policy: PrimaryPortPolicy,
     ) -> Self {
         Self {
             driver,
@@ -971,7 +972,6 @@ impl NetDeviceHandle {
             binding: PoisonLock::new(binding),
             tx_queue: NetTxQueue::new(),
             event_sink: NetEventSink::new(),
-            primary_policy,
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
@@ -987,10 +987,6 @@ impl NetDeviceHandle {
 
     pub fn driver(&self) -> &dyn NetDevicePort {
         self.driver.as_ref()
-    }
-
-    fn primary_policy(&self) -> PrimaryPortPolicy {
-        self.primary_policy
     }
 
     pub fn info(&self) -> NetDeviceInfo {
@@ -1315,47 +1311,11 @@ impl FailoverReason {
     }
 }
 
-fn automatic_primary_candidate_in(
-    runtime: NetRuntimeHandle,
-    excluding_if: Option<NetIfId>,
-) -> Option<NetIfId> {
-    let candidates: Vec<(NetIfId, PrimaryPortPolicy)> = device_manager_in(runtime)
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .handles
-        .iter()
-        .map(|(&if_id, handle)| (if_id, handle.primary_policy()))
-        .collect();
-    [PrimaryPortPolicy::Prefer, PrimaryPortPolicy::Auto]
-        .into_iter()
-        .find_map(|policy| {
-            candidates.iter().find_map(|&(if_id, candidate_policy)| {
-                (Some(if_id) != excluding_if
-                    && candidate_policy == policy
-                    && manager::is_interface_operational_in(runtime, if_id))
-                .then_some(if_id)
-            })
-        })
-}
-
-fn elect_primary_if_absent_in(
-    runtime: NetRuntimeHandle,
-    excluding_if: Option<NetIfId>,
-) -> Option<NetIfId> {
-    if manager::primary_interface_in(runtime).is_some() {
-        return manager::primary_interface_in(runtime);
-    }
-    let candidate = automatic_primary_candidate_in(runtime, excluding_if)?;
-    manager::set_primary_interface_in(runtime, candidate)
-        .ok()
-        .map(|()| candidate)
-}
-
 fn handle_interface_departure_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
     reason: FailoverReason,
-    was_primary: bool,
+    previous_primary: Option<NetIfId>,
 ) {
     let release_sent = crate::net::services::dhcp::release_interface_in(runtime, if_id);
     if release_sent {
@@ -1367,11 +1327,11 @@ fn handle_interface_departure_in(
         );
     }
 
-    if !was_primary {
+    if previous_primary != Some(if_id) {
         return;
     }
 
-    if let Some(new_if) = elect_primary_if_absent_in(runtime, Some(if_id)) {
+    if let Some(new_if) = manager::primary_interface_in(runtime) {
         log::info!(
             target: "net::device",
             "[NET] primary_failover: old=if{} new=if{} reason={}",
@@ -1459,13 +1419,16 @@ fn interface_for_port(
     port_id: NetPortId,
     config: NetworkConfig,
     port_name: &'static str,
+    primary_preference: manager::PrimaryPreference,
 ) -> Result<NetIfId, &'static str> {
     let if_id = if let Some(existing) = lookup_if_by_port_id_in(runtime, port_id) {
+        manager::set_primary_preference_in(runtime, existing, primary_preference)
+            .map_err(|_| "failed to update network interface preference")?;
         manager::set_interface_config_in(runtime, existing, config)
             .map_err(|_| "failed to configure existing network interface")?;
         existing
     } else {
-        let if_id = manager::register_interface_in(runtime, port_name)
+        let if_id = manager::register_interface_in(runtime, port_name, primary_preference)
             .map_err(|_| "failed to register network interface")?;
         if manager::set_interface_config_in(runtime, if_id, config).is_err() {
             let _ = manager::unregister_interface_in(runtime, if_id);
@@ -1496,7 +1459,14 @@ fn rollback_port_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId, port
         handle.stop();
     }
     rollback_interface_registration_in(runtime, if_id);
-    let _ = elect_primary_if_absent_in(runtime, Some(if_id));
+}
+
+const fn manager_primary_preference(policy: PrimaryPortPolicy) -> manager::PrimaryPreference {
+    match policy {
+        PrimaryPortPolicy::Prefer => manager::PrimaryPreference::Prefer,
+        PrimaryPortPolicy::Auto => manager::PrimaryPreference::Auto,
+        PrimaryPortPolicy::Never => manager::PrimaryPreference::Never,
+    }
 }
 
 fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
@@ -1526,29 +1496,26 @@ pub fn register_port_in(
     let config = default_config_for_port(info);
     ensure_stack_initialized_in(runtime)?;
 
+    let primary_preference = manager_primary_preference(registration.primary_policy);
     if let Some(existing) = lookup_if_by_port_id_in(runtime, info.port_id) {
-        if registration.primary_policy == PrimaryPortPolicy::Prefer
-            && manager::is_interface_operational_in(runtime, existing)
-        {
-            manager::set_primary_interface_in(runtime, existing)
-                .map_err(|_| "failed to select preferred network interface")?;
-        }
+        manager::set_primary_preference_in(runtime, existing, primary_preference)
+            .map_err(|_| "failed to update network interface preference")?;
         return Ok(existing);
     }
 
     let base = driver.info();
-    let if_id = interface_for_port(runtime, info.port_id, config, base.driver_name)?;
+    let if_id = interface_for_port(
+        runtime,
+        info.port_id,
+        config,
+        base.driver_name,
+        primary_preference,
+    )?;
     let binding = NetDeviceBinding {
         port_id: info.port_id,
         if_id,
     };
-    let primary_policy = registration.primary_policy;
-    let handle = NetDeviceHandle::new(
-        driver,
-        binding,
-        runtime_context_for(runtime),
-        primary_policy,
-    );
+    let handle = NetDeviceHandle::new(driver, binding, runtime_context_for(runtime));
     if let Err(err) = handle.driver.bind(if_id.0) {
         rollback_interface_registration_in(runtime, if_id);
         return Err(err);
@@ -1583,14 +1550,6 @@ pub fn register_port_in(
     manager::set_interface_link_state_in(runtime, if_id, initial_link_state)
         .map_err(|_| "failed to publish initial network link state")?;
 
-    if primary_policy == PrimaryPortPolicy::Prefer
-        && manager::is_interface_operational_in(runtime, if_id)
-    {
-        manager::set_primary_interface_in(runtime, if_id)
-            .map_err(|_| "failed to select preferred network interface")?;
-    } else {
-        let _ = elect_primary_if_absent_in(runtime, None);
-    }
     start_workers_for_port_in(runtime, if_id);
 
     if let Err(err) =
@@ -1608,7 +1567,7 @@ pub fn register_port_in(
 }
 
 pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    let was_primary = manager::primary_interface_in(runtime) == Some(if_id);
+    let previous_primary = manager::primary_interface_in(runtime);
     let handle = {
         let mut guard = device_manager_in(runtime)
             .write()
@@ -1622,7 +1581,7 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
 
     if let Some(handle) = handle {
         let _ = manager::set_interface_link_state_in(runtime, if_id, manager::LinkState::Down);
-        handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister, was_primary);
+        handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister, previous_primary);
         crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
         let _ = manager::unregister_interface_in(runtime, if_id);
         handle.stop();
@@ -1767,7 +1726,6 @@ pub fn enqueue_event_from_isr_in(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::l3::ipv4::Ipv4Address;
     use crate::net::runtime::context::default_runtime;
     use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
 
@@ -1780,6 +1738,7 @@ mod tests {
         tx_packets: AtomicU64,
         rx_packets: AtomicU64,
         initialized: AtomicBool,
+        runtime: PoisonLock<Option<NetPortRuntimeHandle>>,
     }
 
     impl FakeDriverState {
@@ -1793,6 +1752,7 @@ mod tests {
                 tx_packets: AtomicU64::new(0),
                 rx_packets: AtomicU64::new(0),
                 initialized: AtomicBool::new(false),
+                runtime: PoisonLock::new(None),
             }
         }
 
@@ -1800,6 +1760,24 @@ mod tests {
             self.tx_packets.store(tx_packets, Ordering::Release);
             self.rx_packets.store(rx_packets, Ordering::Release);
             self.initialized.store(initialized, Ordering::Release);
+        }
+
+        fn update_link(&self, up: bool) -> Result<(), &'static str> {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "fake runtime lock poisoned")?
+                .ok_or("fake runtime not installed")?;
+            runtime.update_link(up)
+        }
+
+        fn submit_rx(&self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
+            let runtime = self
+                .runtime
+                .lock()
+                .map_err(|_| "fake runtime lock poisoned")?
+                .ok_or("fake runtime not installed")?;
+            runtime.submit_rx(packet, meta)
         }
     }
 
@@ -1864,10 +1842,15 @@ mod tests {
             }
         }
 
-        fn start(&self, _runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
+        fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
             if let Some(error) = self.start_error {
                 Err(error)
             } else {
+                *self
+                    .state
+                    .runtime
+                    .lock()
+                    .map_err(|_| "fake runtime lock poisoned")? = Some(runtime);
                 Ok(())
             }
         }
@@ -1917,19 +1900,6 @@ mod tests {
         }
     }
 
-    fn sample_lease(host: u8) -> crate::net::services::dhcp::DhcpLease {
-        crate::net::services::dhcp::DhcpLease {
-            ip_address: Ipv4Address::new([10, 0, 0, host]),
-            subnet_mask: Ipv4Address::new([255, 255, 255, 0]),
-            gateway: Some(Ipv4Address::new([10, 0, 0, 1])),
-            server_ip: Ipv4Address::new([10, 0, 0, 254]),
-            lease_time: 3600,
-            t1: 1800,
-            t2: 3150,
-            obtained_at: 0,
-        }
-    }
-
     fn test_port_id(index: u16) -> NetPortId {
         NetPortId::new(0x9000 + u64::from(index))
     }
@@ -1945,7 +1915,7 @@ mod tests {
             queue_pairs: 1,
             mtu: stack::MTU as u32,
             mac: MacAddress::from_octets(0, 1, 2, 3, 4, index as u8),
-            flags: NETDEV_FLAG_HEALTHY,
+            flags: NETDEV_FLAG_HEALTHY | NETDEV_FLAG_ADMIN_UP | NETDEV_FLAG_LINK_UP,
             ..NetDeviceInfo::default()
         };
         register_port_in(
@@ -2249,30 +2219,25 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn bind_port_interface_rejects_if_id_already_bound_to_another_port() {
+    fn duplicate_port_registration_preserves_the_canonical_interface() {
         let (_, driver_a) = fake_driver();
-        let (_, driver_b) = fake_driver();
+        let (_, duplicate_driver) = fake_driver();
 
-        let if_a = register_test_port(86, driver_a, PrimaryPortPolicy::Never)
-            .expect("register first port");
-        let if_b = register_test_port(87, driver_b, PrimaryPortPolicy::Never)
-            .expect("register second port");
+        let if_id =
+            register_test_port(86, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
+        let duplicate = register_test_port(86, duplicate_driver, PrimaryPortPolicy::Prefer)
+            .expect("repeat registration");
 
-        assert_eq!(
-            bind_port_interface_in(default_runtime(), test_port_id(86), if_b),
-            Err("interface already bound to device port")
-        );
+        assert_eq!(duplicate, if_id);
         assert_eq!(
             lookup_if_by_port_id_in(default_runtime(), test_port_id(86)),
-            Some(if_a)
+            Some(if_id)
         );
         assert_eq!(
-            lookup_if_by_port_id_in(default_runtime(), test_port_id(87)),
-            Some(if_b)
+            manager::primary_interface_in(default_runtime()),
+            Some(if_id)
         );
-
-        assert!(unregister_port_in(default_runtime(), if_b));
-        assert!(unregister_port_in(default_runtime(), if_a));
+        assert!(unregister_port_in(default_runtime(), if_id));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2286,7 +2251,7 @@ mod tests {
         let if_b = register_test_port(92, driver_b, PrimaryPortPolicy::Prefer)
             .expect("register second port");
 
-        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_b));
         assert!(
             port_info_in(default_runtime(), test_port_id(92))
                 .expect("primary info")
@@ -2296,64 +2261,39 @@ mod tests {
         );
 
         assert!(unregister_port_in(default_runtime(), if_b));
-        assert_eq!(primary_if_in(default_runtime()), Some(if_a));
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_a));
         assert!(unregister_port_in(default_runtime(), if_a));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn primary_link_down_promotes_secondary_and_updates_runtime_config() {
-        let (_, driver_a) = fake_driver();
+    fn primary_link_callback_promotes_secondary() {
+        let (state_a, driver_a) = fake_driver();
         let (_, driver_b) = fake_driver();
 
         let if_a =
             register_test_port(93, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
         let if_b = register_test_port(94, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_a));
 
-        let lease_a = sample_lease(10);
-        let lease_b = sample_lease(20);
-        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
-            .expect("dhcp client a")
-            .set_lease_for_test(lease_a);
-        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_b)
-            .expect("dhcp client b")
-            .set_lease_for_test(lease_b);
+        state_a.update_link(false).expect("publish link down");
 
-        set_primary_interface_in(default_runtime(), if_a);
-        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
-            let stack = guard.as_mut().expect("stack");
-            stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
-        }
-
-        assert!(manager::set_interface_down_in(default_runtime(), if_a).is_ok());
-        handle_interface_departure_in(default_runtime(), if_a, FailoverReason::LinkDown);
-
-        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
-
-        let cfg = stack::stack_in(default_runtime())
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
-            .expect("stack config");
-        assert_eq!(cfg.ipv4.address, lease_b.ip_address);
-        assert_eq!(cfg.ipv4.gateway, lease_b.gateway.expect("gateway"));
-        assert_eq!(cfg.ipv4.dns, lease_b.dns_servers.first().copied());
-
-        let old_cfg = manager::get_interface_in(default_runtime(), if_a)
-            .expect("manager query")
-            .expect("interface a")
-            .config
-            .expect("config a");
-        assert!(old_cfg.ipv4.address.is_any());
-        assert!(old_cfg.ipv4.gateway.is_any());
-        assert!(old_cfg.ipv4.dns.is_none());
-
-        let route =
-            manager::lookup_ipv4_route_in(default_runtime(), Ipv4Address::new([8, 8, 8, 8]))
-                .expect("lookup route")
-                .expect("default route");
-        assert_eq!(route.if_id, if_b);
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_b));
+        assert!(!manager::is_interface_operational_in(
+            default_runtime(),
+            if_a
+        ));
+        assert!(manager::is_interface_operational_in(
+            default_runtime(),
+            if_b
+        ));
+        assert!(!transmit_packet_in(
+            default_runtime(),
+            if_a,
+            PacketPayload::default(),
+            NetTxMeta::default(),
+        ));
 
         assert!(unregister_port_in(default_runtime(), if_b));
         assert!(unregister_port_in(default_runtime(), if_a));
@@ -2364,30 +2304,21 @@ mod tests {
     fn unregister_primary_without_survivor_clears_primary_runtime() {
         let (_, driver) = fake_driver();
         let if_a = register_test_port(95, driver, PrimaryPortPolicy::Auto).expect("register port");
-
-        let lease_a = sample_lease(30);
-        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
-            .expect("dhcp client a")
-            .set_lease_for_test(lease_a);
-        set_primary_interface_in(default_runtime(), if_a);
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_a));
 
         assert!(unregister_port_in(default_runtime(), if_a));
-        assert_eq!(primary_if_in(default_runtime()), None);
-
-        let cfg = stack::stack_in(default_runtime())
-            .lock()
-            .ok()
-            .and_then(|guard| guard.as_ref().map(|stack| stack.config()))
-            .expect("stack config");
-        assert!(cfg.ipv4.address.is_any());
-        assert!(cfg.ipv4.gateway.is_any());
-        assert!(cfg.ipv4.dns.is_none());
+        assert_eq!(manager::primary_interface_in(default_runtime()), None);
+        assert!(
+            manager::get_interface_in(default_runtime(), if_a)
+                .expect("manager query")
+                .is_none()
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn recovered_interface_does_not_reclaim_primary_after_failover() {
-        let (_, driver_a) = fake_driver();
+        let (state_a, driver_a) = fake_driver();
         let (_, driver_b) = fake_driver();
 
         let if_a =
@@ -2395,28 +2326,12 @@ mod tests {
         let if_b = register_test_port(97, driver_b, PrimaryPortPolicy::Auto)
             .expect("register second port");
 
-        let lease_a = sample_lease(40);
-        let lease_b = sample_lease(50);
-        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_a)
-            .expect("dhcp client a")
-            .set_lease_for_test(lease_a);
-        crate::net::services::dhcp::interface_v4_client_in(default_runtime(), if_b)
-            .expect("dhcp client b")
-            .set_lease_for_test(lease_b);
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_a));
+        state_a.update_link(false).expect("publish link down");
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_b));
 
-        set_primary_interface_in(default_runtime(), if_a);
-        if let Ok(mut guard) = stack::stack_in(default_runtime()).lock() {
-            let stack = guard.as_mut().expect("stack");
-            stack.apply_dhcp_v4_lease_for_interface(&lease_b, if_b, false);
-        }
-
-        assert!(manager::set_interface_down_in(default_runtime(), if_a).is_ok());
-        handle_interface_departure_in(default_runtime(), if_a, FailoverReason::LinkDown);
-        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
-
-        assert!(manager::set_interface_up_in(default_runtime(), if_a).is_ok());
-        assert!(!claim_bound_primary_slot_in(default_runtime(), if_a));
-        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
+        state_a.update_link(true).expect("publish link recovery");
+        assert_eq!(manager::primary_interface_in(default_runtime()), Some(if_b));
 
         assert!(unregister_port_in(default_runtime(), if_b));
         assert!(unregister_port_in(default_runtime(), if_a));
@@ -2424,33 +2339,21 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn claim_bound_primary_interface_with_stack_state_updates_primary_without_global_lock() {
-        default_runtime_context()
-            .dhcp_bound_primary_selected
-            .store(false, Ordering::Release);
+    fn stopped_interface_rejects_rx_at_the_device_boundary() {
+        let (state, driver) = fake_driver();
+        let if_id = register_test_port(98, driver, PrimaryPortPolicy::Auto).expect("register port");
+        state.update_link(false).expect("publish link down");
 
-        let (_, driver_a) = fake_driver();
-        let (_, driver_b) = fake_driver();
+        let frame_len = PacketByteCount::new(14).expect("non-empty frame");
+        let layout = kernel_api::service::netdev::NetRxFrameLayout::whole_payload(frame_len)
+            .expect("valid frame layout");
+        let packet = test_packet_ref_with_device_addr(frame_len.get(), 0x3000);
+        assert_eq!(
+            state.submit_rx(packet, NetRxMeta::new(0, layout, 0)),
+            Err("network interface is not operational")
+        );
 
-        let if_a =
-            register_test_port(98, driver_a, PrimaryPortPolicy::Auto).expect("register first port");
-        let if_b = register_test_port(99, driver_b, PrimaryPortPolicy::Auto)
-            .expect("register second port");
-
-        let mut test_stack = stack::NetworkStack::new_in(default_runtime());
-        test_stack.register_interface_state(if_a, NetworkConfig::default());
-        test_stack.register_interface_state(if_b, NetworkConfig::default());
-
-        assert!(claim_bound_primary_interface_with_stack_state_in(
-            default_runtime(),
-            if_b,
-            &mut test_stack
-        ));
-        assert_eq!(primary_if_in(default_runtime()), Some(if_b));
-        assert_eq!(test_stack.resolve_ingress_if(None), if_b);
-
-        assert!(unregister_port_in(default_runtime(), if_b));
-        assert!(unregister_port_in(default_runtime(), if_a));
+        assert!(unregister_port_in(default_runtime(), if_id));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -109,48 +109,6 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
     )
 }
 
-pub(crate) fn enqueue_tcp_send_in(
-    runtime: NetRuntimeHandle,
-    src_ip: Ipv4Address,
-    dst_ip: Ipv4Address,
-    payload: kernel_api::resource::net::PacketPayload,
-    completion_id: Option<u64>,
-) -> bool {
-    enqueue_raw_send_in(
-        runtime,
-        RawSendCommand::Ipv4 {
-            scope: crate::net::types::InterfaceScope::Any,
-            dst: *dst_ip.as_bytes(),
-            transport: RawIpv4Transport::Tcp {
-                src: *src_ip.as_bytes(),
-            },
-            payload,
-            completion_id,
-        },
-    )
-}
-
-pub(crate) fn enqueue_tcp_v6_send_in(
-    runtime: NetRuntimeHandle,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    payload: kernel_api::resource::net::PacketPayload,
-    completion_id: Option<u64>,
-) -> bool {
-    enqueue_raw_send_in(
-        runtime,
-        RawSendCommand::Ipv6 {
-            scope: crate::net::types::InterfaceScope::Any,
-            dst: dst_ip.octets(),
-            transport: RawIpv6Transport::Tcp {
-                src: src_ip.octets(),
-            },
-            payload,
-            completion_id,
-        },
-    )
-}
-
 /// 非同期タイムアウト処理タスク
 ///
 /// 定期的に `RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ProcessTimeouts)` を投入する常駐タスク。
@@ -194,6 +152,7 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
 /// 非同期マルチキャスト参加 Future
 struct MulticastJoinFuture {
     runtime: NetRuntimeHandle,
+    if_id: super::NetIfId,
     reply: CommandReplyTicket<bool>,
     sent: bool,
     group: Ipv4Address,
@@ -211,6 +170,7 @@ impl core::future::Future for MulticastJoinFuture {
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::MulticastJoin {
+                        if_id: self.if_id,
                         group: *self.group.as_bytes(),
                         reply: self.reply,
                     },
@@ -232,6 +192,7 @@ impl core::future::Future for MulticastJoinFuture {
 /// 非同期マルチキャスト離脱 Future
 struct MulticastLeaveFuture {
     runtime: NetRuntimeHandle,
+    if_id: super::NetIfId,
     reply: CommandReplyTicket<bool>,
     sent: bool,
     group: Ipv4Address,
@@ -249,6 +210,7 @@ impl core::future::Future for MulticastLeaveFuture {
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::MulticastLeave {
+                        if_id: self.if_id,
                         group: *self.group.as_bytes(),
                         reply: self.reply,
                     },
@@ -269,10 +231,12 @@ impl core::future::Future for MulticastLeaveFuture {
 
 pub(crate) fn join_multicast_in(
     runtime: NetRuntimeHandle,
+    if_id: super::NetIfId,
     group: Ipv4Address,
 ) -> impl core::future::Future<Output = bool> {
     MulticastJoinFuture {
         runtime,
+        if_id,
         reply: new_detached_command_channel_in(runtime),
         sent: false,
         group,
@@ -281,10 +245,12 @@ pub(crate) fn join_multicast_in(
 
 pub(crate) fn leave_multicast_in(
     runtime: NetRuntimeHandle,
+    if_id: super::NetIfId,
     group: Ipv4Address,
 ) -> impl core::future::Future<Output = bool> {
     MulticastLeaveFuture {
         runtime,
+        if_id,
         reply: new_detached_command_channel_in(runtime),
         sent: false,
         group,

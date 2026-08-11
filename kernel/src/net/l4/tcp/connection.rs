@@ -45,31 +45,20 @@ fn tcp_error_from_socket(error: EndpointError) -> TcpError {
 
 fn socket_send_budget(
     runtime: NetRuntimeHandle,
-    local: Option<EndpointAddr>,
-    remote: Option<EndpointAddr>,
+    socket_id: SocketId,
     queued_bytes: usize,
 ) -> usize {
-    match (local, remote) {
-        (Some(local), Some(remote)) => tcp_table_in(runtime)
-            .read(local, remote, |tcb| tcb.effective_send_window() as usize)
-            .unwrap_or(0)
-            .saturating_sub(queued_bytes),
-        _ => 0,
-    }
+    tcp_table_in(runtime)
+        .read_by_socket_id(socket_id, |tcb| tcb.effective_send_window() as usize)
+        .unwrap_or(0)
+        .saturating_sub(queued_bytes)
 }
 
-fn on_recv_progress(
-    runtime: NetRuntimeHandle,
-    local: Option<EndpointAddr>,
-    remote: Option<EndpointAddr>,
-    len: usize,
-) {
+fn on_recv_progress(runtime: NetRuntimeHandle, socket_id: SocketId, len: usize) {
     if len == 0 {
         return;
     }
-    if let (Some(local), Some(remote)) = (local, remote) {
-        let _ = tcp_table_in(runtime).record_data_consumed(local, remote, len as u32);
-    }
+    let _ = tcp_table_in(runtime).record_data_consumed_by_socket_id(socket_id, len as u32);
 }
 
 fn close_socket_abortively_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
@@ -358,12 +347,7 @@ impl TcpConnection {
 
     pub fn poll_recv_payload(&self, cx: &mut Context<'_>) -> Poll<Option<PacketPayload>> {
         enum RecvOutcome {
-            Payload(
-                PacketPayload,
-                Option<EndpointAddr>,
-                Option<EndpointAddr>,
-                usize,
-            ),
+            Payload(PacketPayload, usize),
             Closed,
             Pending,
         }
@@ -379,8 +363,6 @@ impl TcpConnection {
                 }
 
                 if inner.has_recv_data() {
-                    let local = inner.local_addr;
-                    let remote = inner.remote_addr;
                     let Some(payload) = inner.recv_payload(None) else {
                         inner.recv_waker.register(cx.waker());
                         return RecvOutcome::Pending;
@@ -389,7 +371,7 @@ impl TcpConnection {
                     if let Some(tcp) = inner.tcp_mut() {
                         tcp.stats.record_rx_delivered(delivered_len);
                     }
-                    return RecvOutcome::Payload(payload, local, remote, delivered_len);
+                    return RecvOutcome::Payload(payload, delivered_len);
                 }
 
                 if inner.is_tcp_closing_or_closed() {
@@ -402,8 +384,8 @@ impl TcpConnection {
             .unwrap_or(RecvOutcome::Closed);
 
         match outcome {
-            RecvOutcome::Payload(payload, local, remote, delivered_len) => {
-                on_recv_progress(self.runtime, local, remote, delivered_len);
+            RecvOutcome::Payload(payload, delivered_len) => {
+                on_recv_progress(self.runtime, self.socket.socket_id(), delivered_len);
                 Poll::Ready(Some(payload))
             }
             RecvOutcome::Closed => Poll::Ready(None),
@@ -695,8 +677,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
                     let available = inner.send_buffer_limit.saturating_sub(queued_bytes).min(
                         socket_send_budget(
                             runtime,
-                            inner.local_addr,
-                            inner.remote_addr,
+                            this.connection.socket.socket_id(),
                             queued_bytes,
                         ),
                     );

@@ -29,8 +29,8 @@ impl DhcpInterfaceRuntime {
         Box::leak(Box::new(Self {
             if_id,
             config,
-            v4: DhcpClient::new(runtime, config.mac),
-            v6: DhcpV6Client::new(runtime, config.mac),
+            v4: DhcpClient::new(runtime, if_id, config.mac),
+            v6: DhcpV6Client::new(runtime, if_id, config.mac),
             active: AtomicBool::new(true),
             suspended: AtomicBool::new(false),
             drive_started: AtomicBool::new(false),
@@ -154,7 +154,7 @@ pub(crate) fn release_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) ->
         return false;
     };
     interface_runtime.suspended.store(true, Ordering::Release);
-    interface_runtime.v4.release_on(Some(if_id))
+    interface_runtime.v4.release()
 }
 
 pub(crate) fn restart_interface_runtime_in(
@@ -197,38 +197,6 @@ pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<&'static
     primary_interface_runtime_in(runtime).map(|runtime| &runtime.v4)
 }
 
-fn find_runtime_for_v4_payload_in(
-    runtime: NetRuntimeHandle,
-    packet: &kernel_api::resource::net::PacketPayload,
-) -> Option<&'static DhcpInterfaceRuntime> {
-    let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
-    for runtime in guard.values() {
-        if runtime.active.load(Ordering::Acquire)
-            && !runtime.suspended.load(Ordering::Acquire)
-            && runtime.v4.matches_response_payload(packet)
-        {
-            return Some(*runtime);
-        }
-    }
-    None
-}
-
-fn find_runtime_for_v6_payload_in(
-    runtime: NetRuntimeHandle,
-    packet: &kernel_api::resource::net::PacketPayload,
-) -> Option<&'static DhcpInterfaceRuntime> {
-    let guard = runtime_state_for(runtime).interface_runtimes.lock().ok()?;
-    for runtime in guard.values() {
-        if runtime.active.load(Ordering::Acquire)
-            && !runtime.suspended.load(Ordering::Acquire)
-            && runtime.v6.matches_response_payload(packet)
-        {
-            return Some(*runtime);
-        }
-    }
-    None
-}
-
 fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
     if runtime_state_for(runtime)
         .v4_dispatcher_started
@@ -263,11 +231,7 @@ async fn dhcp_v4_drive_task(runtime: &'static DhcpInterfaceRuntime) {
         }
 
         let now = crate::task::current_tick();
-        if let Err(err) = runtime
-            .v4
-            .drive_on_interface(runtime.if_id, now, 1000)
-            .await
-        {
+        if let Err(err) = runtime.v4.drive(now, 1000).await {
             log::warn!(
                 "[NET] DHCPv4 interface drive failed: if{} err={}",
                 runtime.if_id.0,
@@ -294,7 +258,7 @@ async fn dhcp_v6_drive_task(runtime: &'static DhcpInterfaceRuntime) {
         }
 
         let now = crate::task::current_tick();
-        if let Err(err) = runtime.v6.check_timeout(Some(runtime.if_id), now, 1000) {
+        if let Err(err) = runtime.v6.check_timeout(now, 1000) {
             log::warn!(
                 "[NET] DHCPv6 interface check failed: if{} err={}",
                 runtime.if_id.0,
@@ -328,10 +292,15 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
 
     loop {
         match socket.recv().await {
-            Some((_if_id, _src, _ttl, packet)) => {
+            Some((if_id, _src, _ttl, packet)) => {
                 let now = crate::task::current_tick();
-                let process =
-                    find_runtime_for_v4_payload_in(runtime, &packet).map(|interface_runtime| {
+                let process = interface_runtime_in(runtime, if_id)
+                    .filter(|interface_runtime| {
+                        interface_runtime.active.load(Ordering::Acquire)
+                            && !interface_runtime.suspended.load(Ordering::Acquire)
+                            && interface_runtime.v4.matches_response_payload(&packet)
+                    })
+                    .map(|interface_runtime| {
                         let result = interface_runtime.v4.process_response_payload(packet, now);
                         (interface_runtime, result)
                     });
@@ -416,19 +385,20 @@ async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
 
     loop {
         match socket.recv().await {
-            Some((_if_id, src, _ttl, packet)) => {
+            Some((if_id, src, _ttl, packet)) => {
                 let src_v6 = match src {
                     crate::net::l4::udp::UdpAddr::V6 { ip, .. } => ip,
                     _ => continue,
                 };
 
-                let process =
-                    find_runtime_for_v6_payload_in(runtime, &packet).map(|interface_runtime| {
-                        let handled = interface_runtime.v6.handle_packet_payload(
-                            Some(interface_runtime.if_id),
-                            packet,
-                            src_v6,
-                        );
+                let process = interface_runtime_in(runtime, if_id)
+                    .filter(|interface_runtime| {
+                        interface_runtime.active.load(Ordering::Acquire)
+                            && !interface_runtime.suspended.load(Ordering::Acquire)
+                            && interface_runtime.v6.matches_response_payload(&packet)
+                    })
+                    .map(|interface_runtime| {
+                        let handled = interface_runtime.v6.handle_packet_payload(packet, src_v6);
                         (interface_runtime, handled)
                     });
                 let Some((interface_runtime, handled)) = process else {

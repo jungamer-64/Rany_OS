@@ -14,6 +14,7 @@ const MAX_VIRTIO_RX_REFILLS_PER_PASS: usize = 128;
 pub struct VirtioNetDevice {
     pub config: VirtioNetConfig,
     pub stats: VirtioNetStats,
+    accepted_features: u64,
     /// TX inflight trackers (per queue)
     pub tx_trackers: alloc::vec::Vec<InflightTracker<TxInflight>>,
     /// RX inflight trackers (per queue)
@@ -37,7 +38,7 @@ impl VirtioNetDevice {
         transport.add_status(crate::defs::status::VIRTIO_STATUS_DRIVER);
 
         // 4. Negotiate features
-        self.negotiate_features(transport);
+        self.accepted_features = self.negotiate_features(transport);
 
         // 5. Features OK
         transport.add_status(crate::defs::status::VIRTIO_STATUS_FEATURES_OK);
@@ -75,6 +76,13 @@ impl VirtioNetDevice {
         self.config.mac = mac;
         self.config.max_queues = transport.read_config_u16(8);
         self.config.mtu = transport.read_config_u16(10);
+    }
+
+    pub fn link_up(&self, transport: &dyn VirtioTransport) -> bool {
+        if self.accepted_features & VIRTIO_NET_F_STATUS == 0 {
+            return true;
+        }
+        transport.read_config_u16(6) & VIRTIO_NET_S_LINK_UP != 0
     }
 
     /// Get the number of queue pairs to use.

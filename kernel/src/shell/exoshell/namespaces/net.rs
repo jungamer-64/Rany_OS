@@ -74,6 +74,7 @@ impl NetNamespace {
                 map.insert(String::from("if_id"), ExoValue::Int(cfg.if_id as i64));
                 map.insert(String::from("name"), ExoValue::String(Cow::Owned(cfg.name)));
                 map.insert(String::from("admin_up"), ExoValue::Bool(cfg.admin_up));
+                map.insert(String::from("link_up"), ExoValue::Bool(cfg.link_up));
                 map.insert(
                     String::from("ip"),
                     ExoValue::String(Cow::Owned(format!(
@@ -187,10 +188,13 @@ impl NetNamespace {
     ///
     /// イベントキュー経由でARP挿入を行い、NETWORK_STACKロックを回避する。
     pub async fn arp_insert(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        if args.len() != 2 {
-            return ExoValue::Error(String::from("usage: net.arp_insert(ip, mac)"));
+        if args.len() != 3 {
+            return ExoValue::Error(String::from("usage: net.arp_insert(if_id, ip, mac)"));
         }
-        let ip = match &args[0] {
+        let Some(if_id) = Self::parse_if_id_value(&args[0]) else {
+            return ExoValue::Error(String::from("if_id must be an unsigned 16-bit integer"));
+        };
+        let ip = match &args[1] {
             ExoValue::String(s) => {
                 let nums: Vec<_> = s.split('.').collect();
                 if nums.len() != 4 {
@@ -208,7 +212,7 @@ impl NetNamespace {
             }
             _ => return ExoValue::Error(String::from("ip must be string")),
         };
-        let mac = match &args[1] {
+        let mac = match &args[2] {
             ExoValue::String(s) => {
                 let parts: Vec<_> = s.split(':').collect();
                 if parts.len() != 6 {
@@ -230,6 +234,7 @@ impl NetNamespace {
         };
         crate::net::api::connections::enqueue_arp_cache_insert_in(
             crate::net::runtime::default_runtime(),
+            if_id,
             ip,
             mac,
         );
@@ -561,6 +566,7 @@ impl NetNamespace {
                         ExoValue::String(Cow::Owned(iface.name)),
                     );
                     map.insert(String::from("admin_up"), ExoValue::Bool(iface.admin_up));
+                    map.insert(String::from("link_up"), ExoValue::Bool(iface.link_up));
                     if let Some(ip) = iface.ip {
                         map.insert(
                             String::from("ip"),

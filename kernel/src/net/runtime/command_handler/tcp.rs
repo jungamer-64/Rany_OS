@@ -53,7 +53,7 @@ impl RuntimeCommandHandler {
 
         loop {
             let send_params = tcb_table
-                .read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+                .read_by_socket_id(fd, |entry| TcpControlBlockSnapshot::from(entry))
                 .and_then(|tcb| {
                     if tcb.state != TcpConnectionState::Established {
                         return None;
@@ -78,6 +78,7 @@ impl RuntimeCommandHandler {
 
                         let send_payload = inner.take_send_segment_window(len)?;
                         Some((
+                            tcb.if_id,
                             send_payload,
                             tcb.snd_nxt,
                             tcb.rcv_nxt,
@@ -87,7 +88,7 @@ impl RuntimeCommandHandler {
                     inner_result.flatten()
                 });
 
-            let Some((send_payload, seq, ack, advertised_wnd)) = send_params else {
+            let Some((if_id, send_payload, seq, ack, advertised_wnd)) = send_params else {
                 break;
             };
 
@@ -104,17 +105,17 @@ impl RuntimeCommandHandler {
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
             crate::net::l4::tcp::retransmit::retransmit_queue_push(
-                runtime, local, remote, seq, data_len, segment,
+                runtime, if_id, local, remote, seq, data_len, segment,
             );
 
             if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
-                runtime, local, remote, seq,
+                runtime, if_id, local, remote, seq,
             ) {
                 let _ = socket.with_inner_mut(|inner| {
                     inner.send_waker.wake();
                 });
 
-                let _ = tcb_table.mark_payload_sent(local, remote, data_len);
+                let _ = tcb_table.mark_payload_sent(if_id, local, remote, data_len);
             } else {
                 return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
             }
@@ -228,13 +229,9 @@ impl RuntimeCommandHandler {
         };
         let unresolved_local = local.with_port(local_port);
 
-        let Some((scope, preferred_if, nodelay)) = socket.with_inner(|inner| {
-            (
-                inner.scope,
-                inner.last_ingress_if_id,
-                inner.tcp().map_or(false, |t| t.nodelay),
-            )
-        }) else {
+        let Some((scope, nodelay)) =
+            socket.with_inner(|inner| (inner.scope, inner.tcp().map_or(false, |t| t.nodelay)))
+        else {
             return EventHandleResult::SocketNotFound(fd);
         };
 
@@ -245,12 +242,7 @@ impl RuntimeCommandHandler {
                 let src = Ipv4Address::new(local_v4);
                 if src.is_any() { None } else { Some(src) }
             };
-            match stack.resolve_ipv4_egress(
-                scope,
-                preferred_if,
-                explicit_src,
-                Ipv4Address::new(remote_v4),
-            ) {
+            match stack.resolve_ipv4_egress(scope, explicit_src, Ipv4Address::new(remote_v4)) {
                 Ok((resolved_if, _, src_ip)) => {
                     (EndpointAddr::new(src_ip.octets(), local_port), resolved_if)
                 }
@@ -268,7 +260,7 @@ impl RuntimeCommandHandler {
                 }
             };
             let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            match stack.resolve_ipv6_egress(scope, preferred_if, explicit_src, remote_v6) {
+            match stack.resolve_ipv6_egress(scope, explicit_src, remote_v6) {
                 Ok((resolved_if, _, src_ip)) => (
                     EndpointAddr::new_v6(src_ip.octets(), local_port),
                     resolved_if,
@@ -284,6 +276,7 @@ impl RuntimeCommandHandler {
         let configured = socket.with_inner_mut(|inner| {
             inner.local_addr = Some(local_addr);
             inner.remote_addr = Some(remote);
+            inner.scope = crate::net::types::InterfaceScope::Pinned(resolved_if);
             let _ = inner.set_tcp_state(TcpSocketState::Connecting);
         });
         if configured.is_none() {
@@ -292,15 +285,7 @@ impl RuntimeCommandHandler {
 
         let tcb_table = tcp_table_in(runtime);
         let isn = tcb_table.generate_isn(local_addr, remote);
-        let tcb = TcpControlBlock::start_connect(
-            fd,
-            local_addr,
-            remote,
-            isn,
-            nodelay,
-            scope,
-            Some(resolved_if),
-        );
+        let tcb = TcpControlBlock::start_connect(fd, local_addr, remote, isn, nodelay, resolved_if);
         let _ = tcb_table.insert(tcb);
 
         let syn_segment = TcpSegmentBuilder::new(local_port, remote.port())
@@ -322,7 +307,8 @@ impl RuntimeCommandHandler {
             Err(e) => return EventHandleResult::ProtocolError(e),
         };
 
-        if let Err(e) = self.send_tcp_segment(runtime, local_addr, remote, syn_segment) {
+        if let Err(e) = self.send_tcp_segment(runtime, resolved_if, local_addr, remote, syn_segment)
+        {
             log::info!("TCP: Failed to send SYN packet: {:?}", e);
             return EventHandleResult::ProtocolError(match e {
                 EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -331,7 +317,7 @@ impl RuntimeCommandHandler {
             });
         }
 
-        let _ = tcb_table.mark_syn_sent(local_addr, remote);
+        let _ = tcb_table.mark_syn_sent(resolved_if, local_addr, remote);
 
         log::info!("TCP: SYN sent {} -> {} (seq={})", local_addr, remote, isn);
         EventHandleResult::Success
@@ -341,6 +327,7 @@ impl RuntimeCommandHandler {
     fn send_tcp_segment(
         &self,
         runtime: NetRuntimeHandle,
+        if_id: crate::net::runtime::manager::NetIfId,
         src: EndpointAddr,
         dst: EndpointAddr,
         segment: PacketPayload,
@@ -350,7 +337,7 @@ impl RuntimeCommandHandler {
         }
         // Delegate to the packet-backed module-level TCP sender.
         // This centralizes IP family handling and ARP/NDP queuing logic.
-        if send_tcp_segment_payload_in(runtime, src, dst, segment) {
+        if send_tcp_segment_payload_in(runtime, if_id, src, dst, segment) {
             Ok(())
         } else {
             Err(EndpointError::ResourceExhausted)
@@ -389,11 +376,9 @@ impl RuntimeCommandHandler {
         }
 
         // TCBテーブルにリスナーエントリを作成
-        let tcb = TcpControlBlock::listen(fd, local);
         // backlog値を保存（接続要求キューの最大サイズ）
         // 注: 実際の接続要求キューはTCBテーブル側で管理
         let _ = backlog; // 現在のTCB構造体にはbacklogフィールドなし
-        let _ = tcp_table_in(runtime).insert(tcb);
 
         log::info!(
             "TCP: Listening on {} (fd={}, backlog={})",
@@ -440,14 +425,19 @@ impl RuntimeCommandHandler {
         };
 
         // TCBエントリの状態を取得
-        let state = tcb_table
-            .read(local, remote, |tcb| tcb.state())
-            .unwrap_or(TcpConnectionState::Closed);
+        let Some((if_id, state)) =
+            tcb_table.read_by_socket_id(fd, |tcb| (tcb.route_interface(), tcb.state()))
+        else {
+            self.close_socket_now_in(runtime, fd);
+            return EventHandleResult::Success;
+        };
 
         match state {
             TcpConnectionState::Established => {
                 // FINパケットを送信
-                let seq = tcb_table.begin_active_close(local, remote).unwrap_or(0);
+                let seq = tcb_table
+                    .begin_active_close(if_id, local, remote)
+                    .unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
                     .seq(seq)
@@ -461,7 +451,7 @@ impl RuntimeCommandHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) = self.send_tcp_segment(runtime, local, remote, fin_segment) {
+                if let Err(e) = self.send_tcp_segment(runtime, if_id, local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN: {:?}", e);
                     return EventHandleResult::ProtocolError(match e {
                         EndpointError::InvalidArgument => EndpointError::InvalidArgument,
@@ -474,7 +464,7 @@ impl RuntimeCommandHandler {
             TcpConnectionState::CloseWait => {
                 // 相手からFINを受信済み、自分からFINを送信
                 let seq = tcb_table
-                    .begin_passive_close_ack(local, remote)
+                    .begin_passive_close_ack(if_id, local, remote)
                     .unwrap_or(0);
 
                 let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
@@ -489,13 +479,13 @@ impl RuntimeCommandHandler {
                     Err(e) => return EventHandleResult::ProtocolError(e),
                 };
 
-                if let Err(e) = self.send_tcp_segment(runtime, local, remote, fin_segment) {
+                if let Err(e) = self.send_tcp_segment(runtime, if_id, local, remote, fin_segment) {
                     log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
                 }
             }
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
                 // まだ接続が確立していない場合は即座にクローズ
-                tcb_table.remove(local, remote);
+                tcb_table.remove(if_id, local, remote);
                 self.close_socket_now_in(runtime, fd);
             }
             _ => {

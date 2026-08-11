@@ -60,14 +60,6 @@ impl InterfaceScope {
     }
 
     #[inline]
-    pub const fn as_if_id(self) -> Option<NetIfId> {
-        match self {
-            Self::Any => None,
-            Self::Pinned(if_id) => Some(if_id),
-        }
-    }
-
-    #[inline]
     pub fn matches_if(self, if_id: NetIfId) -> bool {
         match self {
             Self::Any => true,

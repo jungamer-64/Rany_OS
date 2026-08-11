@@ -20,10 +20,11 @@ impl RuntimeCommandHandler {
     ) -> EventHandleResult {
         match event {
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpProbe {
+                if_id,
                 target_ip,
             }) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
-                stack.send_arp_probe(ip);
+                stack.send_arp_probe_on(if_id, ip);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
@@ -81,7 +82,7 @@ impl RuntimeCommandHandler {
                     dns_servers,
                     domain_search: _,
                 } = config;
-                stack.enqueue_apply_ipv6_global_address(ipv6_addr);
+                stack.apply_ipv6_global_address_on(if_id, ipv6_addr);
 
                 let is_primary =
                     crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
@@ -229,13 +230,14 @@ impl RuntimeCommandHandler {
                 finish_command(reply, entries)
             }
             RuntimeCommand::Control(crate::net::runtime::command::ControlCommand::ArpInsert {
+                if_id,
                 ip,
                 mac,
             }) => {
                 let now = crate::time::get_uptime_ms();
                 let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
                 let mac_addr = MacAddress::new(mac);
-                stack.arp_cache_insert(ipv4, mac_addr, now);
+                stack.arp_cache_insert_on(if_id, ipv4, mac_addr, now);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
@@ -254,9 +256,7 @@ impl RuntimeCommandHandler {
                 let now = crate::time::get_uptime_ms();
                 let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(ip);
                 stack.ndp_cache_insert_on(if_id, &ipv6, mac, now);
-                if let Some(if_id) = if_id {
-                    stack.drain_ndp_pending_on(if_id, &ipv6);
-                }
+                stack.drain_ndp_pending_on(if_id, &ipv6);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(

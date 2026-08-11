@@ -19,18 +19,22 @@ impl RuntimeCommandHandler {
     ) -> EventHandleResult {
         match event {
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ArpResolveRequest { target_ip },
+                crate::net::runtime::command::ControlCommand::ArpResolveRequest {
+                    if_id,
+                    target_ip,
+                },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(target_ip);
                 let current_time = stack.current_time();
-                if let Some(mac) = stack.arp_resolve(ip, current_time) {
+                if let Some(mac) = stack.arp_resolve_on(if_id, ip, current_time) {
                     crate::net::l2::arp::notify_arp_resolved_in(
                         runtime,
+                        if_id,
                         target_ip,
                         *mac.as_bytes(),
                     );
                 } else {
-                    stack.send_arp_request(ip);
+                    stack.send_arp_request_on(if_id, ip);
                 }
                 EventHandleResult::Success
             }
@@ -53,19 +57,13 @@ impl RuntimeCommandHandler {
                 }
 
                 let current_time = stack.current_time();
-                let if_scope = if_id.map(crate::net::runtime::manager::NetIfId);
-
-                match stack.resolve_ndp_for_send(if_scope, &ip, current_time, |_| {}) {
+                match stack.resolve_ndp_for_send(if_id, &ip, current_time, |_| {}) {
                     Some(Ok(mac)) => {
                         crate::net::l3::ndp::notify_ndp_resolved_in(runtime, if_id, target_ip, mac);
                     }
                     Some(Err((ns_if_id, our_ll, ns_msg))) => {
                         let sn_mcast = ip.solicited_node();
-                        if let Some(ns_if_id) = ns_if_id {
-                            stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
-                        } else {
-                            stack.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, ns_msg);
-                        }
+                        stack.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
                     }
                     None => {}
                 }
@@ -85,18 +83,26 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastJoin { group, reply },
+                crate::net::runtime::command::ControlCommand::MulticastJoin {
+                    if_id,
+                    group,
+                    reply,
+                },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = stack.join_multicast_group(ip).is_ok();
+                let success = stack.join_multicast_group_on(if_id, ip).is_ok();
                 complete_command(reply, success);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::MulticastLeave { group, reply },
+                crate::net::runtime::command::ControlCommand::MulticastLeave {
+                    if_id,
+                    group,
+                    reply,
+                },
             ) => {
                 let ip = crate::net::l3::ipv4::Ipv4Address::new(group);
-                let success = stack.leave_multicast_group(ip).is_ok();
+                let success = stack.leave_multicast_group_on(if_id, ip).is_ok();
                 complete_command(reply, success);
                 EventHandleResult::Success
             }

@@ -139,6 +139,8 @@ impl NetDevicePort for VirtioNetDriverAdapter {
 
     fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
         install_virtio_net_runtime(self.index, runtime);
+        with_virtio_net_at_index(self.index, VirtioNetDevice::publish_link_state)
+            .ok_or("VirtIO-Net device not initialized")?;
         Ok(())
     }
 
@@ -371,6 +373,7 @@ mod tests {
         }
         fn transmit_complete(&self, _queue_index: u16, _lease_id: kernel_api::netdev::TxLeaseId) {}
         fn schedule_wake(&self, _queue_index: u16) {}
+        fn update_link(&self, _up: bool) {}
         fn log(&self, _level: log::Level, _msg: core::fmt::Arguments) {}
     }
 

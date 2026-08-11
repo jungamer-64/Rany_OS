@@ -242,7 +242,10 @@ fn should_log_http_restart_warning(consecutive_failures: u32) -> bool {
 }
 
 fn http_config_usable(config: &crate::net::api::config::InterfaceConfigSnapshot) -> bool {
-    config.ip != [0, 0, 0, 0] && config.mac != [0, 0, 0, 0, 0, 0]
+    config.admin_up
+        && config.link_up
+        && config.ip != [0, 0, 0, 0]
+        && config.mac != [0, 0, 0, 0, 0, 0]
 }
 
 fn http_network_ready_in(runtime: NetRuntimeHandle) -> bool {
@@ -440,6 +443,7 @@ mod tests {
             if_id: 0,
             name: alloc::string::String::from("eth0"),
             admin_up: true,
+            link_up: true,
             ip: [0, 0, 0, 0],
             netmask: [0, 0, 0, 0],
             gateway: [0, 0, 0, 0],
@@ -449,6 +453,7 @@ mod tests {
             if_id: 0,
             name: alloc::string::String::from("eth0"),
             admin_up: true,
+            link_up: true,
             ip: [192, 168, 1, 10],
             netmask: [255, 255, 255, 0],
             gateway: [192, 168, 1, 1],

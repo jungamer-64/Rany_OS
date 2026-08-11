@@ -218,11 +218,12 @@ fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) 
     let Ok(ack) = builder.build_checked_packet(tcb.local, tcb.remote) else {
         return;
     };
-    send_tcp_segment_payload_in(runtime, tcb.local, tcb.remote, ack);
+    send_tcp_segment_payload_in(runtime, tcb.if_id, tcb.local, tcb.remote, ack);
 }
 
 fn send_control_segment(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     builder: TcpSegmentBuilder,
@@ -230,7 +231,7 @@ fn send_control_segment(
     let Ok(segment) = builder.build_checked_packet(local, remote) else {
         return;
     };
-    send_tcp_segment_payload_in(runtime, local, remote, segment);
+    send_tcp_segment_payload_in(runtime, if_id, local, remote, segment);
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）
@@ -381,12 +382,10 @@ fn process_parsed_tcp_segment(
     options: &[u8],
     data_payload: PacketPayload,
 ) {
-    let _ = tcp_table_in(runtime).record_ingress_interface(local, remote, ingress_if_id);
-
-    if let Some(tcb) =
-        tcp_table_in(runtime).read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
-    {
-        tcp_table_in(runtime).update_peer_window(local, remote, header.window);
+    if let Some(tcb) = tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
+        TcpControlBlockSnapshot::from(entry)
+    }) {
+        tcp_table_in(runtime).update_peer_window(ingress_if_id, local, remote, header.window);
 
         let mut data_payload = data_payload;
         let payload_len = data_payload.total_len();
@@ -477,6 +476,7 @@ fn process_parsed_tcp_segment(
                     header.ack_num,
                     header.seq_num,
                     mss,
+                    ingress_if_id,
                 );
 
                 if let Err(e) = tcp_table_in(runtime).insert(tcb) {
@@ -494,8 +494,10 @@ fn process_parsed_tcp_segment(
                 }
 
                 if !data_payload.is_empty() {
-                    if let Some(snapshot) = tcp_table_in(runtime)
-                        .read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
+                    if let Some(snapshot) =
+                        tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
+                            TcpControlBlockSnapshot::from(entry)
+                        })
                     {
                         process_tcp_with_tcb(
                             runtime,
@@ -532,7 +534,7 @@ fn try_fast_path(
         return Err(data_payload);
     }
 
-    if ooo_queue::has_ooo_segments(runtime, tcb.local, tcb.remote) {
+    if ooo_queue::has_ooo_segments(runtime, tcb.if_id, tcb.local, tcb.remote) {
         return Err(data_payload);
     }
 
@@ -541,6 +543,7 @@ fn try_fast_path(
     if ack_diff_una > 0 {
         let current_time_ms = tcp_table_in(runtime).get_current_tick();
         tcp_table_in(runtime).record_ack_received(
+            tcb.if_id,
             tcb.local,
             tcb.remote,
             ack_num,
@@ -548,7 +551,7 @@ fn try_fast_path(
             current_time_ms,
             0,
         );
-        retransmit_queue_ack(runtime, tcb.local, tcb.remote, ack_num);
+        retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
     }
 
     if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
@@ -581,6 +584,7 @@ fn try_fast_path(
     };
     let should_ack_now = tcp_table_in(runtime)
         .record_receive_progress_with_delayed_ack(
+            tcb.if_id,
             tcb.local,
             tcb.remote,
             new_rcv_nxt,
@@ -592,7 +596,7 @@ fn try_fast_path(
 
     if should_ack_now {
         send_ack_for_fast_path(runtime, tcb, new_rcv_nxt);
-        tcp_table_in(runtime).clear_delayed_ack(tcb.local, tcb.remote);
+        tcp_table_in(runtime).clear_delayed_ack(tcb.if_id, tcb.local, tcb.remote);
     }
 
     Ok(())
@@ -677,7 +681,7 @@ fn send_ack_for_fast_path(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapsh
             .timestamp(generate_tcp_timestamp_in(runtime), tcb.ts_ecr);
     }
 
-    send_control_segment(runtime, tcb.local, tcb.remote, builder);
+    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
 }
 
 /// Delayed ACK タイマー処理
@@ -688,11 +692,20 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
     let now = tcp_table_in(runtime).get_current_tick();
 
     // Step 1: 期限切れの保留ACKがある接続を収集（読み取りロック）
-    let mut pending: alloc::vec::Vec<(EndpointAddr, EndpointAddr, u32, u32, u16, bool, u32)> =
-        alloc::vec::Vec::new();
+    let mut pending: alloc::vec::Vec<(
+        NetIfId,
+        EndpointAddr,
+        EndpointAddr,
+        u32,
+        u32,
+        u16,
+        bool,
+        u32,
+    )> = alloc::vec::Vec::new();
     tcp_table_in(runtime).for_each_established(|entry| {
         if let Some(due) = entry.delayed_ack_due(now, DELAYED_ACK_TIMEOUT_MS) {
             pending.push((
+                due.if_id,
                 due.local,
                 due.remote,
                 due.rcv_nxt,
@@ -705,7 +718,7 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
     });
 
     // Step 2: 収集した接続にACKを送信（ロック解放後）
-    for (local, remote, rcv_nxt, snd_nxt, window, ts_enabled, ts_ecr) in pending {
+    for (if_id, local, remote, rcv_nxt, snd_nxt, window, ts_enabled, ts_ecr) in pending {
         let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
             .seq(snd_nxt)
             .ack(rcv_nxt)
@@ -719,9 +732,9 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
                 .timestamp(generate_tcp_timestamp_in(runtime), ts_ecr);
         }
 
-        send_control_segment(runtime, local, remote, builder);
+        send_control_segment(runtime, if_id, local, remote, builder);
 
-        tcp_table_in(runtime).clear_delayed_ack(local, remote);
+        tcp_table_in(runtime).clear_delayed_ack(if_id, local, remote);
     }
 }
 
@@ -768,6 +781,7 @@ fn handle_simultaneous_syn_received(
     };
 
     tcp_table_in(runtime).enter_simultaneous_syn_received(
+        tcb.if_id,
         tcb.local,
         tcb.remote,
         seq_num,
@@ -795,7 +809,7 @@ fn handle_simultaneous_syn_received(
             .timestamp(generate_tcp_timestamp_in(runtime), peer_ts_val);
     }
 
-    send_control_segment(runtime, tcb.local, tcb.remote, builder);
+    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
 }
 
 /// 予期しないACKに対するRST送信 (RFC 793)
@@ -807,7 +821,7 @@ fn send_rst_for_unexpected_ack(
     let builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
         .seq(ack_num)
         .rst();
-    send_control_segment(runtime, tcb.local, tcb.remote, builder);
+    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
 }
 
 /// 既存TCBに対するTCPセグメント処理（RFC 793 / 9293 / 5961 準拠）
@@ -837,7 +851,7 @@ fn handle_synchronized_segment(
             if let Some(blocks) = parser.find_sack_blocks() {
                 if !blocks.is_empty() {
                     crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
-                        runtime, tcb.local, tcb.remote, &blocks,
+                        runtime, tcb.if_id, tcb.local, tcb.remote, &blocks,
                     );
                 }
             }
@@ -856,6 +870,7 @@ fn handle_synchronized_segment(
 
                 if is_in_window || seq_num == tcb.rcv_nxt {
                     tcp_table_in(runtime).record_timestamp_echo(
+                        tcb.if_id,
                         tcb.local,
                         tcb.remote,
                         peer_ts_val,
@@ -976,7 +991,15 @@ fn handle_data_received_with_delayed_ack(
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
-        ooo_queue::insert_ooo_segment(runtime, tcb.local, tcb.remote, seq_num, data_payload, fin);
+        ooo_queue::insert_ooo_segment(
+            runtime,
+            tcb.if_id,
+            tcb.local,
+            tcb.remote,
+            seq_num,
+            data_payload,
+            fin,
+        );
         send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
         return;
     }
@@ -995,7 +1018,12 @@ fn handle_data_received_with_delayed_ack(
             if (pushed as u32) < payload_len {
                 // Buffer full, some data dropped.
                 // we don't process OOO or FIN if we couldn't take all data.
-                tcp_table_in(runtime).record_receive_progress(tcb.local, tcb.remote, new_rcv_nxt);
+                tcp_table_in(runtime).record_receive_progress(
+                    tcb.if_id,
+                    tcb.local,
+                    tcb.remote,
+                    new_rcv_nxt,
+                );
                 send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
                 return;
             }
@@ -1006,6 +1034,7 @@ fn handle_data_received_with_delayed_ack(
         // OOOキューから連続セグメントをドレインしてバッファに追加
         let (drained_nxt, ooo_fin) = ooo_queue::drain_ooo_contiguous(
             runtime,
+            tcb.if_id,
             tcb.local,
             tcb.remote,
             new_rcv_nxt,
@@ -1026,11 +1055,17 @@ fn handle_data_received_with_delayed_ack(
     // Delayed ACK 判定 (RFC 1122 / 5681)
     // TIME_WAIT 状態では常に即座にACKを返す (RFC 793)
     let should_ack_now = if tcb.state == TcpConnectionState::TimeWait {
-        tcp_table_in(runtime).record_receive_progress(tcb.local, tcb.remote, new_rcv_nxt);
+        tcp_table_in(runtime).record_receive_progress(
+            tcb.if_id,
+            tcb.local,
+            tcb.remote,
+            new_rcv_nxt,
+        );
         true
     } else {
         tcp_table_in(runtime)
             .record_receive_progress_with_delayed_ack(
+                tcb.if_id,
                 tcb.local,
                 tcb.remote,
                 new_rcv_nxt,
@@ -1043,7 +1078,7 @@ fn handle_data_received_with_delayed_ack(
 
     if should_ack_now {
         send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
-        tcp_table_in(runtime).clear_delayed_ack(tcb.local, tcb.remote);
+        tcp_table_in(runtime).clear_delayed_ack(tcb.if_id, tcb.local, tcb.remote);
     }
 }
 
@@ -1109,11 +1144,12 @@ fn process_tcp_with_tcb(
                 if ack_num.wrapping_sub(tcb.snd_una) as i32 > 0
                     && ack_num.wrapping_sub(tcb.snd_nxt) as i32 <= 0
                 {
-                    tcp_table_in(runtime).establish_syn_received(tcb.local, tcb.remote, ack_num);
+                    tcp_table_in(runtime)
+                        .establish_syn_received(tcb.if_id, tcb.local, tcb.remote, ack_num);
 
                     // Continue processing in Established state
                     if let Some(established_tcb) =
-                        tcp_table_in(runtime).read(tcb.local, tcb.remote, |entry| {
+                        tcp_table_in(runtime).read(tcb.if_id, tcb.local, tcb.remote, |entry| {
                             TcpControlBlockSnapshot::from(entry)
                         })
                     {
@@ -1158,13 +1194,19 @@ fn process_tcp_with_tcb(
 }
 
 /// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
-pub fn handle_source_quench(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
-    tcp_table_in(runtime).record_source_quench(local, remote);
+pub fn handle_source_quench(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) {
+    tcp_table_in(runtime).record_source_quench(if_id, local, remote);
 }
 
 /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
 pub fn handle_icmp_error(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     icmp_type: crate::net::l3::icmp::IcmpType,
@@ -1184,7 +1226,7 @@ pub fn handle_icmp_error(
         return;
     };
 
-    let socket_id = tcp_table_in(runtime).record_icmp_error(local, remote, error);
+    let socket_id = tcp_table_in(runtime).record_icmp_error(if_id, local, remote, error);
 
     if let Some(id) = socket_id {
         log::info!(
@@ -1203,6 +1245,7 @@ pub fn handle_icmp_error(
 /// Handle ICMPv6 Error (RFC 4443 Section 3)
 pub fn handle_icmpv6_error(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     icmp_type: crate::net::l3::icmpv6::Icmpv6Type,
@@ -1222,7 +1265,7 @@ pub fn handle_icmpv6_error(
         return; // Ignore other error types for now
     };
 
-    let socket_id = tcp_table_in(runtime).record_icmp_error(local, remote, error);
+    let socket_id = tcp_table_in(runtime).record_icmp_error(if_id, local, remote, error);
 
     if let Some(id) = socket_id {
         log::info!(
@@ -1269,6 +1312,7 @@ fn handle_syn_ack_received(
     };
 
     let updated = tcp_table_in(runtime).establish_from_syn_ack(
+        tcb.if_id,
         tcb.local,
         tcb.remote,
         seq_num,
@@ -1300,7 +1344,7 @@ fn handle_syn_ack_received(
     }
 
     // パケット送信
-    send_control_segment(runtime, tcb.local, tcb.remote, builder);
+    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
     log::info!(
         "TCP: Connection established {} <-> {}",
         tcb.local,
@@ -1383,7 +1427,7 @@ fn process_tcp_new_connection(
             builder = builder.seq(0).ack(ack).ack_flag();
         }
 
-        send_control_segment(runtime, local, remote, builder);
+        send_control_segment(runtime, ingress_if_id, local, remote, builder);
         return;
     }
 
@@ -1439,6 +1483,7 @@ fn process_tcp_new_connection(
         isn,
         seq_num,
         nodelay,
+        ingress_if_id,
         TcpHandshakeOptions {
             peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
             local_ts_val: None,
@@ -1494,7 +1539,7 @@ fn process_tcp_new_connection(
     }
 
     // パケット送信
-    send_control_segment(runtime, local, remote, builder);
+    send_control_segment(runtime, ingress_if_id, local, remote, builder);
     log::info!("TCP: SYN-ACK sent {} -> {}", local, remote);
 }
 
@@ -1506,7 +1551,7 @@ fn process_tcp_new_connection(
 fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, seq_num: u32) {
     if seq_num == tcb.rcv_nxt {
         // RFC 5961: 完全一致 → 接続をリセット
-        tcp_table_in(runtime).close_for_reset(tcb.local, tcb.remote);
+        tcp_table_in(runtime).close_for_reset(tcb.if_id, tcb.local, tcb.remote);
 
         // ソケットにエラー通知
         if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
@@ -1517,9 +1562,9 @@ fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
         }
 
         // リソースクリーンアップ
-        retransmit_queue_remove(runtime, tcb.local, tcb.remote);
-        ooo_queue::remove_ooo_queue(runtime, tcb.local, tcb.remote);
-        tcp_table_in(runtime).remove(tcb.local, tcb.remote);
+        retransmit_queue_remove(runtime, tcb.if_id, tcb.local, tcb.remote);
+        ooo_queue::remove_ooo_queue(runtime, tcb.if_id, tcb.local, tcb.remote);
+        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
     } else {
         // RFC 5961: ウィンドウ内ならChallenge ACKを送信
         let rcv_wnd = tcb.effective_recv_window();
@@ -1558,15 +1603,22 @@ fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
     let is_dup = ack_num == tcb.snd_una;
 
     let should_remove = tcp_table_in(runtime)
-        .record_ack_and_close_progress(tcb.local, tcb.remote, ack_num, is_dup, current_time_ms)
+        .record_ack_and_close_progress(
+            tcb.if_id,
+            tcb.local,
+            tcb.remote,
+            ack_num,
+            is_dup,
+            current_time_ms,
+        )
         .unwrap_or(false);
 
     if should_remove {
-        tcp_table_in(runtime).remove(tcb.local, tcb.remote);
+        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
     }
 
     // 再送キューからACK済みセグメントを削除（RTT測定も実行）
-    retransmit_queue_ack(runtime, tcb.local, tcb.remote, ack_num);
+    retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
 }
 
 /// Accept用の新規ソケットを作成
@@ -1580,10 +1632,10 @@ fn create_accepted_socket(
     let new_socket_id = generate_socket_id_in(runtime)?;
 
     // TCB情報を更新してFDを紐付け
-    tcp_table_in(runtime).set_socket_id(local, remote, new_socket_id);
+    tcp_table_in(runtime).set_socket_id(ingress_if_id, local, remote, new_socket_id);
 
     // 再送キューを作成
-    get_or_create_retransmit_queue(runtime, local, remote);
+    get_or_create_retransmit_queue(runtime, ingress_if_id, local, remote);
 
     Some(AcceptedConnection::new(
         new_socket_id,
@@ -1641,6 +1693,7 @@ fn handle_fin_in_order(
     rcv_nxt_at_fin: u32,
 ) {
     let Some((final_rcv_nxt, should_ack)) = tcp_table_in(runtime).record_fin_received(
+        tcb.if_id,
         tcb.local,
         tcb.remote,
         rcv_nxt_at_fin,
@@ -1682,8 +1735,8 @@ fn handle_urgent_received(
     seq_num: u32,
     urgent_ptr: u16,
 ) {
-    if let Some(socket_id) =
-        tcp_table_in(runtime).record_urgent_received(tcb.local, tcb.remote, seq_num, urgent_ptr)
+    if let Some(socket_id) = tcp_table_in(runtime)
+        .record_urgent_received(tcb.if_id, tcb.local, tcb.remote, seq_num, urgent_ptr)
     {
         notify_socket_urgent(runtime, socket_id);
     }

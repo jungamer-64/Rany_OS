@@ -17,7 +17,7 @@
 //! - G. Varghese & A. Lauck, "Hashed and Hierarchical Timing Wheels" (1997)
 //! - Linux kernel: `net/core/timer_defs.h`
 
-use crate::net::l4::types::EndpointAddr;
+use super::tcb::TcpFlowKey;
 use alloc::vec::Vec;
 
 /// ホイールのスロット数（2のべき乗）
@@ -31,8 +31,7 @@ const WHEEL_MASK: usize = WHEEL_SLOTS - 1;
 #[derive(Debug)]
 pub struct TimerEntry {
     /// 接続キー
-    pub local: EndpointAddr,
-    pub remote: EndpointAddr,
+    pub key: TcpFlowKey,
     /// タイマー満了tick
     pub deadline: u64,
 }
@@ -62,33 +61,29 @@ impl TimingWheel {
     /// タイマーを登録する
     ///
     /// `deadline`: タイマーが満了するtick値
-    pub fn schedule(&mut self, local: EndpointAddr, remote: EndpointAddr, deadline: u64) {
+    pub fn schedule(&mut self, key: TcpFlowKey, deadline: u64) {
         let slot = (deadline as usize) & WHEEL_MASK;
-        self.slots[slot].push(TimerEntry {
-            local,
-            remote,
-            deadline,
-        });
+        self.slots[slot].push(TimerEntry { key, deadline });
     }
 
     /// 指定された接続のタイマーをキャンセルする
-    pub fn cancel(&mut self, local: &EndpointAddr, remote: &EndpointAddr) {
+    pub fn cancel(&mut self, key: TcpFlowKey) {
         for slot in &mut self.slots {
-            slot.retain(|entry| &entry.local != local || &entry.remote != remote);
+            slot.retain(|entry| entry.key != key);
         }
     }
 
     /// 指定された接続のタイマーを再スケジュール（既存があれば差し替え）
-    pub fn reschedule(&mut self, local: EndpointAddr, remote: EndpointAddr, new_deadline: u64) {
-        self.cancel(&local, &remote);
-        self.schedule(local, remote, new_deadline);
+    pub fn reschedule(&mut self, key: TcpFlowKey, new_deadline: u64) {
+        self.cancel(key);
+        self.schedule(key, new_deadline);
     }
 
     /// ホイールを `current_tick` まで進め、満了したタイマーを収集して返す。
     ///
     /// 返されたタイマーの `deadline <= current_tick` であることが保証される。
     /// 同じスロットに配置されていても deadline が未来のものはスロットに残す。
-    pub fn advance(&mut self, current_tick: u64) -> Vec<(EndpointAddr, EndpointAddr)> {
+    pub fn advance(&mut self, current_tick: u64) -> Vec<TcpFlowKey> {
         let mut expired = Vec::new();
 
         // last_tick+1 から current_tick までの各スロットを検査
@@ -107,7 +102,7 @@ impl TimingWheel {
             let mut remaining = Vec::new();
             for entry in slot.drain(..) {
                 if entry.deadline <= current_tick {
-                    expired.push((entry.local, entry.remote));
+                    expired.push(entry.key);
                 } else {
                     remaining.push(entry);
                 }

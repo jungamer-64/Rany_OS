@@ -36,6 +36,7 @@ impl NetworkStack {
             } => {
                 crate::net::l2::arp::notify_arp_resolved_in(
                     runtime,
+                    if_id,
                     *resolved_ip.as_bytes(),
                     *resolved_mac.as_bytes(),
                 );
@@ -83,7 +84,7 @@ impl NetworkStack {
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     self.transmit_packet_on(
-                        Some(if_id),
+                        if_id,
                         kernel_api::resource::net::PacketPayload::single(packet),
                     );
                 }
@@ -121,20 +122,12 @@ impl NetworkStack {
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     self.transmit_packet_on(
-                        Some(if_id),
+                        if_id,
                         kernel_api::resource::net::PacketPayload::single(packet),
                     );
                 }
             }
         }
-    }
-
-    /// Send an ARP request
-    pub fn send_arp_request(&mut self, target_ip: Ipv4Address) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_arp_request_on(if_id, target_ip);
     }
 
     /// Send an ARP request via a specific interface.
@@ -166,7 +159,7 @@ impl NetworkStack {
 
         if set_packet_visible_len(&mut packet, packet_len).is_ok()
             && self.transmit_packet_on(
-                Some(if_id),
+                if_id,
                 kernel_api::resource::net::PacketPayload::single(packet),
             )
         {
@@ -218,10 +211,7 @@ impl NetworkStack {
     ///
     /// Probes are sent with sender_ip = 0.0.0.0 to detect address conflicts
     /// without polluting other hosts' ARP caches with unverified information.
-    pub fn send_arp_probe(&mut self, target_ip: Ipv4Address) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
+    pub fn send_arp_probe_on(&mut self, if_id: super::NetIfId, target_ip: Ipv4Address) {
         let mut packet = match self.alloc_ethernet_frame_packet(60) {
             Some(packet) => packet,
             None => return,
@@ -246,7 +236,7 @@ impl NetworkStack {
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok()
                     && self.transmit_packet_on(
-                        Some(if_id),
+                        if_id,
                         kernel_api::resource::net::PacketPayload::single(packet),
                     )
                 {
@@ -259,11 +249,16 @@ impl NetworkStack {
         }
     }
 
-    /// Resolve an IP address to a MAC from the ARP cache (public wrapper)
-    pub fn arp_resolve(&self, ip: Ipv4Address, current_time: u64) -> Option<MacAddress> {
+    /// Resolve an IP address in a specific interface's ARP cache.
+    pub fn arp_resolve_on(
+        &self,
+        if_id: super::NetIfId,
+        ip: Ipv4Address,
+        current_time: u64,
+    ) -> Option<MacAddress> {
         self.interfaces
-            .values()
-            .find_map(|state| state.arp.resolve(ip, current_time))
+            .get(&if_id)
+            .and_then(|state| state.arp.resolve(ip, current_time))
     }
 
     /// Insert an entry into a specific interface's ARP cache.
@@ -324,22 +319,13 @@ impl NetworkStack {
                 } => {
                     if let Some(config) = self.interface_config_or_runtime(if_id) {
                         let _ = self.send_udp_raw_with_config_and_if_ttl_payload(
-                            Some(if_id),
-                            &config,
-                            pkt.src,
-                            src_port,
-                            pkt.dst,
-                            dst_port,
-                            data,
-                            ttl,
+                            if_id, &config, pkt.src, src_port, pkt.dst, dst_port, data, ttl,
                         );
                     }
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Tcp { ttl, segment } => {
-                    let scope = crate::net::types::InterfaceScope::Pinned(if_id);
-                    let _ = self.send_tcp_raw_scoped_with_ttl_payload(
-                        scope, pkt.src, pkt.dst, segment, ttl,
-                    );
+                    let _ =
+                        self.send_tcp_payload_on_with_ttl(if_id, pkt.src, pkt.dst, segment, ttl);
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Raw {
                     protocol,
@@ -351,7 +337,7 @@ impl NetworkStack {
                         continue;
                     };
                     let _ = self.send_ipv4_l4_payload_with_pmtu(
-                        Some(if_id),
+                        if_id,
                         src_mac,
                         MacAddress::ZERO, // Will be resolved by send_ipv4_l4_payload_with_pmtu
                         pkt.src,

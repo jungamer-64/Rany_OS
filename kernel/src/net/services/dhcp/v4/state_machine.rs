@@ -15,7 +15,7 @@ use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 fn send_dhcpv4_packet_on(
     runtime: crate::net::runtime::NetRuntimeHandle,
-    if_id: Option<NetIfId>,
+    if_id: NetIfId,
     src_ip: Ipv4Address,
     src_port: u16,
     dst_ip: Ipv4Address,
@@ -23,21 +23,9 @@ fn send_dhcpv4_packet_on(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    match if_id {
-        Some(if_id) => crate::net::runtime::stack::enqueue_udp_send_on_with_src_in(
-            runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
-        ),
-        None => crate::net::runtime::stack::enqueue_udp_send_scoped_with_src_in(
-            runtime,
-            crate::net::types::InterfaceScope::Any,
-            src_ip,
-            src_port,
-            dst_ip,
-            dst_port,
-            payload,
-            ttl,
-        ),
-    }
+    crate::net::runtime::stack::enqueue_udp_send_on_with_src_in(
+        runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+    )
 }
 
 fn dhcpv4_generated_payload(bytes: &[u8]) -> Result<PacketPayload, &'static str> {
@@ -57,6 +45,7 @@ impl DhcpClient {
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {
+                    if_id: self.if_id,
                     target_ip: *lease.ip_address.as_bytes(),
                 },
             ),
@@ -263,12 +252,11 @@ impl DhcpClient {
     ///
     /// RFC 2131: DHCPDECLINE は src_ip = 0.0.0.0 で送信する。
     pub fn send_decline(&self, declined_ip: Ipv4Address, server_ip: Option<Ipv4Address>) -> bool {
-        self.send_decline_on(None, declined_ip, server_ip)
+        self.send_decline_packet(declined_ip, server_ip)
     }
 
-    pub fn send_decline_on(
+    fn send_decline_packet(
         &self,
-        if_id: Option<NetIfId>,
         declined_ip: Ipv4Address,
         server_ip: Option<Ipv4Address>,
     ) -> bool {
@@ -283,7 +271,7 @@ impl DhcpClient {
                 dhcpv4_generated_payload(&buf[..len]).is_ok_and(|payload| {
                     send_dhcpv4_packet_on(
                         self.runtime,
-                        if_id,
+                        self.if_id,
                         Ipv4Address::new([0, 0, 0, 0]),
                         DHCP_CLIENT_PORT,
                         dst,
@@ -358,12 +346,7 @@ impl DhcpClient {
         Ok(offset)
     }
 
-    /// Send DHCPRELEASE (best-effort)
-    pub fn send_release(&self) -> bool {
-        self.send_release_on(None)
-    }
-
-    pub fn send_release_on(&self, if_id: Option<NetIfId>) -> bool {
+    fn send_release_packet(&self) -> bool {
         // Acquire lease to get server
         let lease = match self.lease.lock() {
             Ok(g) => *g,
@@ -385,7 +368,7 @@ impl DhcpClient {
             Ok(len) => dhcpv4_generated_payload(&buf[..len]).is_ok_and(|payload| {
                 send_dhcpv4_packet_on(
                     self.runtime,
-                    if_id,
+                    self.if_id,
                     lease.ip_address,
                     DHCP_CLIENT_PORT,
                     lease.server_ip,
@@ -399,13 +382,13 @@ impl DhcpClient {
     }
 
     /// リースを解放
-    pub fn release(&self) {
-        let _ = self.release_on(None);
+    pub fn release(&self) -> bool {
+        self.release_bound()
     }
 
     /// リースを指定インターフェース上で解放
-    pub fn release_on(&self, if_id: Option<NetIfId>) -> bool {
-        let released = self.send_release_on(if_id);
+    fn release_bound(&self) -> bool {
+        let released = self.send_release_packet();
 
         match self.state.lock() {
             Ok(mut g) => *g = DhcpState::Init,
@@ -424,17 +407,13 @@ impl DhcpClient {
         released
     }
 
-    async fn send_discover_packet_on(
-        &self,
-        if_id: Option<NetIfId>,
-        current_tick: u64,
-    ) -> Result<bool, &'static str> {
+    async fn send_discover_packet_on(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_discover(&mut buf, current_tick)?;
         let payload = dhcpv4_generated_payload(&buf[..len])?;
         Ok(send_dhcpv4_packet_on(
             self.runtime,
-            if_id,
+            self.if_id,
             Ipv4Address::new([0, 0, 0, 0]),
             DHCP_CLIENT_PORT,
             Ipv4Address::new([255, 255, 255, 255]),
@@ -459,11 +438,7 @@ impl DhcpClient {
         }
     }
 
-    async fn send_request_packet_on(
-        &self,
-        if_id: Option<NetIfId>,
-        current_tick: u64,
-    ) -> Result<bool, &'static str> {
+    async fn send_request_packet_on(&self, current_tick: u64) -> Result<bool, &'static str> {
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_request(&mut buf, current_tick)?;
         let state = self.state();
@@ -484,7 +459,7 @@ impl DhcpClient {
         let payload = dhcpv4_generated_payload(&buf[..len])?;
         Ok(send_dhcpv4_packet_on(
             self.runtime,
-            if_id,
+            self.if_id,
             src_ip,
             DHCP_CLIENT_PORT,
             dst,
@@ -498,11 +473,7 @@ impl DhcpClient {
     ///
     /// RFC 2131: INFORM は既存IPを ciaddr/src_ip に設定し、
     /// 既知サーバーがあればユニキャスト、なければブロードキャストする。
-    fn send_inform_packet_on(
-        &self,
-        if_id: Option<NetIfId>,
-        current_tick: u64,
-    ) -> Result<bool, &'static str> {
+    fn send_inform_packet_on(&self, current_tick: u64) -> Result<bool, &'static str> {
         let lease = self.get_active_lease()?;
         let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
         let len = self.build_inform(&mut buf, current_tick)?;
@@ -516,7 +487,7 @@ impl DhcpClient {
         let payload = dhcpv4_generated_payload(&buf[..len])?;
         Ok(send_dhcpv4_packet_on(
             self.runtime,
-            if_id,
+            self.if_id,
             lease.ip_address,
             DHCP_CLIENT_PORT,
             dst,
@@ -528,14 +499,10 @@ impl DhcpClient {
 
     /// DHCPINFORM を開始する（即時送信 + Informing 遷移）
     pub fn inform(&self, current_tick: u64) -> Result<bool, &'static str> {
-        self.inform_on(None, current_tick)
+        self.inform_bound(current_tick)
     }
 
-    pub fn inform_on(
-        &self,
-        if_id: Option<NetIfId>,
-        current_tick: u64,
-    ) -> Result<bool, &'static str> {
+    fn inform_bound(&self, current_tick: u64) -> Result<bool, &'static str> {
         // INFORM は既存アドレスを前提にする
         let _ = self.get_active_lease()?;
 
@@ -543,35 +510,25 @@ impl DhcpClient {
         self.state_time.store(current_tick, Ordering::SeqCst);
         self.retry_count.store(0, Ordering::SeqCst);
 
-        self.send_inform_packet_on(if_id, current_tick)
+        self.send_inform_packet_on(current_tick)
     }
 
     /// Drive DHCP state machine and emit outbound packets when state changes
     /// or retransmission timers fire.
     pub async fn drive(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
-        self.drive_on(current_tick, tick_rate, None).await
+        self.drive_bound(current_tick, tick_rate).await
     }
 
-    pub async fn drive_on_interface(
-        &self,
-        if_id: NetIfId,
-        current_tick: u64,
-        tick_rate: u64,
-    ) -> Result<(), &'static str> {
-        self.drive_on(current_tick, tick_rate, Some(if_id)).await
+    async fn drive_bound(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
+        self.drive_state(current_tick, tick_rate).await
     }
 
-    async fn drive_on(
-        &self,
-        current_tick: u64,
-        tick_rate: u64,
-        if_id: Option<NetIfId>,
-    ) -> Result<(), &'static str> {
+    async fn drive_state(&self, current_tick: u64, tick_rate: u64) -> Result<(), &'static str> {
         let state_before = self.state();
 
         // Initial kick: INIT immediately sends DISCOVER.
         if state_before == DhcpState::Init {
-            let _ = self.send_discover_packet_on(if_id, current_tick).await?;
+            let _ = self.send_discover_packet_on(current_tick).await?;
             return Ok(());
         }
 
@@ -584,7 +541,7 @@ impl DhcpClient {
                 "[NET] DHCP drive: Selecting->Requesting, sending REQUEST (tick={})",
                 current_tick
             );
-            match self.send_request_packet_on(if_id, current_tick).await {
+            match self.send_request_packet_on(current_tick).await {
                 Ok(sent) => log::info!("[NET] DHCP REQUEST queued (sent={})", sent),
                 Err(e) => {
                     log::error!("[NET] DHCP REQUEST failed: {}", e);
@@ -603,20 +560,20 @@ impl DhcpClient {
             match state_after {
                 // Selecting retransmit / conflict recovery.
                 DhcpState::Selecting => {
-                    let _ = self.send_discover_packet_on(if_id, current_tick).await?;
+                    let _ = self.send_discover_packet_on(current_tick).await?;
                 }
                 // Requesting, Renewing, Rebinding retransmits.
                 DhcpState::Requesting | DhcpState::Renewing | DhcpState::Rebinding => {
-                    let _ = self.send_request_packet_on(if_id, current_tick).await?;
+                    let _ = self.send_request_packet_on(current_tick).await?;
                 }
                 // Informing retransmit
                 DhcpState::Informing => {
-                    let _ = self.send_inform_packet_on(if_id, current_tick)?;
+                    let _ = self.send_inform_packet_on(current_tick)?;
                 }
                 // Retry budget exhausted and reset to INIT -> restart discovery.
                 DhcpState::Init => {
                     log::warn!("[NET] DHCP retries exhausted, restarting discovery");
-                    let _ = self.send_discover_packet_on(if_id, current_tick).await?;
+                    let _ = self.send_discover_packet_on(current_tick).await?;
                 }
                 _ => {}
             }
@@ -710,6 +667,7 @@ impl DhcpClient {
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {
+                    if_id: self.if_id,
                     target_ip: *offered_ip.as_bytes(),
                 },
             ),
@@ -743,6 +701,7 @@ impl DhcpClient {
             self.runtime,
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ArpProbe {
+                    if_id: self.if_id,
                     target_ip: *offered_ip.as_bytes(),
                 },
             ),

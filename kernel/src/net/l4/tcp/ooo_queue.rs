@@ -14,8 +14,10 @@
 
 // Building block: Out-of-order queue implementation
 
+use crate::net::l4::tcp::tcb::TcpFlowKey;
 use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_before};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_runtime_in;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -242,17 +244,15 @@ impl ConnectionOooQueue {
 }
 
 /// 接続キー
-type ConnKey = (EndpointAddr, EndpointAddr);
-
 const OOO_SHARDS: usize = 16;
 
-fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
-    (conn_key_hash(local, remote) as usize) % OOO_SHARDS
+fn ooo_shard_index(key: TcpFlowKey) -> usize {
+    ((conn_key_hash(&key.local, &key.remote) ^ u32::from(key.if_id.0)) as usize) % OOO_SHARDS
 }
 
 pub(crate) struct OooRuntimeState {
     total_count: AtomicUsize,
-    queues: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARDS],
+    queues: [PoisonLock<Option<BTreeMap<TcpFlowKey, ConnectionOooQueue>>>; OOO_SHARDS],
 }
 
 impl OooRuntimeState {
@@ -281,6 +281,7 @@ pub fn init_ooo_queues_in(runtime: NetRuntimeHandle) {
 /// OOOセグメントを挿入
 pub fn insert_ooo_segment(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     seq: u32,
@@ -297,20 +298,19 @@ pub fn insert_ooo_segment(
         return;
     }
 
-    let idx = ooo_shard_index(&local, &remote);
+    let key = TcpFlowKey::new(if_id, local, remote);
+    let idx = ooo_shard_index(key);
     let Ok(mut guard) = state.queues[idx].lock() else {
         return;
     };
     let queues = guard.get_or_insert_with(BTreeMap::new);
 
     // 接続数制限チェック
-    if !queues.contains_key(&(local, remote)) && queues.len() >= MAX_OOO_CONNECTIONS {
+    if !queues.contains_key(&key) && queues.len() >= MAX_OOO_CONNECTIONS {
         return;
     }
 
-    let conn_queue = queues
-        .entry((local, remote))
-        .or_insert_with(ConnectionOooQueue::new);
+    let conn_queue = queues.entry(key).or_insert_with(ConnectionOooQueue::new);
 
     conn_queue.insert(&state.total_count, seq, data, fin);
 }
@@ -319,6 +319,7 @@ pub fn insert_ooo_segment(
 /// 戻り値: (新rcv_nxt, fin_encountered)
 pub fn drain_ooo_contiguous<F>(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     mut rcv_nxt: u32,
@@ -327,7 +328,8 @@ pub fn drain_ooo_contiguous<F>(
 where
     F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
 {
-    let idx = ooo_shard_index(&local, &remote);
+    let key = TcpFlowKey::new(if_id, local, remote);
+    let idx = ooo_shard_index(key);
     let state = tcp_runtime_in(runtime).ooo();
     let Ok(mut guard) = state.queues[idx].lock() else {
         return (rcv_nxt, false);
@@ -336,12 +338,12 @@ where
         return (rcv_nxt, false);
     };
 
-    if let Some(conn_queue) = queues.get_mut(&(local, remote)) {
+    if let Some(conn_queue) = queues.get_mut(&key) {
         let (new_rcv_nxt, fin) = conn_queue.drain_contiguous_with(&state.total_count, rcv_nxt, f);
         rcv_nxt = new_rcv_nxt;
         // 空になったキューを削除
         if conn_queue.is_empty() {
-            queues.remove(&(local, remote));
+            queues.remove(&key);
         }
         (rcv_nxt, fin)
     } else {
@@ -350,14 +352,20 @@ where
 }
 
 /// 接続のOOOキューを削除
-pub fn remove_ooo_queue(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
-    let idx = ooo_shard_index(&local, &remote);
+pub fn remove_ooo_queue(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) {
+    let key = TcpFlowKey::new(if_id, local, remote);
+    let idx = ooo_shard_index(key);
     let state = tcp_runtime_in(runtime).ooo();
     let Ok(mut guard) = state.queues[idx].lock() else {
         return;
     };
     if let Some(queues) = guard.as_mut() {
-        if let Some(mut conn_queue) = queues.remove(&(local, remote)) {
+        if let Some(mut conn_queue) = queues.remove(&key) {
             conn_queue.clear(&state.total_count);
         }
     }
@@ -371,17 +379,19 @@ pub fn remove_ooo_queue(runtime: NetRuntimeHandle, local: EndpointAddr, remote: 
 #[inline]
 pub fn has_ooo_segments(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
 ) -> bool {
-    let idx = ooo_shard_index(&local, &remote);
+    let key = TcpFlowKey::new(if_id, local, remote);
+    let idx = ooo_shard_index(key);
     let state = tcp_runtime_in(runtime).ooo();
     let Ok(guard) = state.queues[idx].lock() else {
         return false; // ロック取得失敗 → 安全側でfalse
     };
     guard
         .as_ref()
-        .and_then(|queues| queues.get(&(local, remote)))
+        .and_then(|queues| queues.get(&key))
         .map(|q| !q.is_empty())
         .unwrap_or(false)
 }

@@ -77,6 +77,7 @@ pub enum DhcpV6State {
 
 pub struct DhcpV6Client {
     pub(crate) runtime: NetRuntimeHandle,
+    pub(crate) if_id: crate::net::runtime::manager::NetIfId,
     pub(crate) mac: MacAddress,
     pub(crate) duid: [u8; 10],
     pub(crate) state: PoisonLock<DhcpV6State>,

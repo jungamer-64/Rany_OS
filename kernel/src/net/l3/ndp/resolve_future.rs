@@ -16,6 +16,7 @@ use super::Ipv6Address;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::try_enqueue_command_in;
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
@@ -24,7 +25,7 @@ use crate::sync::{AtomicWaker, PoisonLock};
 
 struct NdpWaiter {
     id: u64,
-    if_id: Option<u16>,
+    if_id: NetIfId,
     ip: [u8; 16],
     result: Option<MacAddress>,
     waker: AtomicWaker,
@@ -68,18 +69,18 @@ fn reset_ndp_waiters_for_tests(runtime: NetRuntimeHandle) {
 }
 
 #[inline]
-fn waiter_matches_resolution(waiter: &NdpWaiter, if_id: Option<u16>, ip: [u8; 16]) -> bool {
+fn waiter_matches_resolution(waiter: &NdpWaiter, if_id: NetIfId, ip: [u8; 16]) -> bool {
     if waiter.ip != ip {
         return false;
     }
 
     // if_id指定なしの待機者は「任意インターフェースでの解決」を受理する。
-    waiter.if_id.is_none() || waiter.if_id == if_id
+    waiter.if_id == if_id
 }
 
 pub fn notify_ndp_resolved_in(
     runtime: NetRuntimeHandle,
-    if_id: Option<u16>,
+    if_id: NetIfId,
     ip: [u8; 16],
     mac: [u8; 6],
 ) {
@@ -100,7 +101,7 @@ pub fn notify_ndp_resolved_in(
 
 fn register_ndp_waiter(
     runtime: NetRuntimeHandle,
-    if_id: Option<u16>,
+    if_id: NetIfId,
     ip: [u8; 16],
     waker: &Waker,
 ) -> Option<u64> {
@@ -177,29 +178,18 @@ fn waiter_exists(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
 pub struct NdpResolveFuture {
     runtime: NetRuntimeHandle,
     target_ip: Ipv6Address,
-    if_id: Option<u16>,
+    if_id: NetIfId,
     waiter_id: Option<u64>,
     request_sent: bool,
     poll_count: u32,
 }
 
 impl NdpResolveFuture {
-    pub fn new_in(runtime: NetRuntimeHandle, target_ip: Ipv6Address) -> Self {
+    pub fn new_on_in(runtime: NetRuntimeHandle, if_id: NetIfId, target_ip: Ipv6Address) -> Self {
         Self {
             runtime,
             target_ip,
-            if_id: None,
-            waiter_id: None,
-            request_sent: false,
-            poll_count: 0,
-        }
-    }
-
-    pub fn new_on_in(runtime: NetRuntimeHandle, if_id: u16, target_ip: Ipv6Address) -> Self {
-        Self {
-            runtime,
-            target_ip,
-            if_id: Some(if_id),
+            if_id,
             waiter_id: None,
             request_sent: false,
             poll_count: 0,
@@ -281,16 +271,9 @@ impl Drop for NdpResolveFuture {
     }
 }
 
-pub async fn resolve_neighbor_in(
-    runtime: NetRuntimeHandle,
-    target_ip: Ipv6Address,
-) -> Result<MacAddress, NdpResolveError> {
-    NdpResolveFuture::new_in(runtime, target_ip).await
-}
-
 pub async fn resolve_neighbor_on_in(
     runtime: NetRuntimeHandle,
-    if_id: u16,
+    if_id: NetIfId,
     target_ip: Ipv6Address,
 ) -> Result<MacAddress, NdpResolveError> {
     NdpResolveFuture::new_on_in(runtime, if_id, target_ip).await
@@ -342,26 +325,18 @@ mod tests {
         let ip = Ipv6Address::LOOPBACK.octets();
         let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x77];
 
-        let waiter_any = register_ndp_waiter(runtime, None, ip, &noop_waker())
-            .expect("failed to register any waiter");
-        let waiter_if1 = register_ndp_waiter(runtime, Some(1), ip, &noop_waker())
+        let waiter_if1 = register_ndp_waiter(runtime, NetIfId(1), ip, &noop_waker())
             .expect("failed to register if1 waiter");
-        let waiter_if2 = register_ndp_waiter(runtime, Some(2), ip, &noop_waker())
+        let waiter_if2 = register_ndp_waiter(runtime, NetIfId(2), ip, &noop_waker())
             .expect("failed to register if2 waiter");
 
-        notify_ndp_resolved_in(runtime, Some(1), ip, mac);
-
-        assert_eq!(
-            poll_ndp_result(runtime, waiter_any),
-            Some(MacAddress::new(mac))
-        );
+        notify_ndp_resolved_in(runtime, NetIfId(1), ip, mac);
         assert_eq!(
             poll_ndp_result(runtime, waiter_if1),
             Some(MacAddress::new(mac))
         );
         assert_eq!(poll_ndp_result(runtime, waiter_if2), None);
 
-        let _ = remove_ndp_waiter(runtime, waiter_any);
         let _ = remove_ndp_waiter(runtime, waiter_if1);
         let _ = remove_ndp_waiter(runtime, waiter_if2);
     }
@@ -377,12 +352,12 @@ mod tests {
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = NdpResolveFuture::new_in(runtime, target_ip);
+        let mut fut = NdpResolveFuture::new_on_in(runtime, NetIfId(1), target_ip);
         fut.request_sent = true;
 
         assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
 
-        notify_ndp_resolved_in(runtime, None, ip, *resolved_mac.as_bytes());
+        notify_ndp_resolved_in(runtime, NetIfId(1), ip, *resolved_mac.as_bytes());
 
         let poll = Pin::new(&mut fut).poll(&mut cx);
         assert!(matches!(poll, Poll::Ready(Ok(mac)) if mac == resolved_mac));
@@ -394,13 +369,13 @@ mod tests {
         reset_ndp_waiters_for_tests(runtime);
 
         let ip = [0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x02, 0, 0, 0, 0, 0, 0, 0x09];
-        let waiter_id = register_ndp_waiter(runtime, None, ip, &noop_waker())
+        let waiter_id = register_ndp_waiter(runtime, NetIfId(1), ip, &noop_waker())
             .expect("failed to register waiter");
         assert!(waiter_exists(runtime, waiter_id));
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = NdpResolveFuture::new_in(runtime, Ipv6Address::new(ip));
+        let mut fut = NdpResolveFuture::new_on_in(runtime, NetIfId(1), Ipv6Address::new(ip));
         fut.request_sent = true;
         fut.waiter_id = Some(waiter_id);
         fut.poll_count = 50;

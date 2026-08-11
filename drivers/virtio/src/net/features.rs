@@ -16,6 +16,9 @@ pub const VIRTIO_NET_F_CTRL_VQ: u64 = 1 << 17;
 pub const VIRTIO_NET_F_MAC: u64 = 1 << 5;
 /// Device reports link status.
 pub const VIRTIO_NET_F_STATUS: u64 = 1 << 16;
+
+/// Device configuration status bit indicating an active link.
+pub const VIRTIO_NET_S_LINK_UP: u16 = 1;
 /// Device supports MTU configuration.
 pub const VIRTIO_NET_F_MTU: u64 = 1 << 3;
 

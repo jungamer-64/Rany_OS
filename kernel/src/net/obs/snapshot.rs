@@ -163,7 +163,14 @@ mod tests {
     fn snapshot_contains_registered_interface_entries() {
         let runtime = create_runtime().expect("test runtime allocation");
         manager::init_network_manager_in(runtime);
-        assert!(manager::register_interface_in(runtime, "obs-snapshot-if").is_ok());
+        assert!(
+            manager::register_interface_in(
+                runtime,
+                "obs-snapshot-if",
+                manager::PrimaryPreference::Auto,
+            )
+            .is_ok()
+        );
 
         let snap = snapshot_in(runtime);
         assert!(

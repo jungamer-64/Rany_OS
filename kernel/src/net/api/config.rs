@@ -368,9 +368,12 @@ mod tests {
         manager::init_network_manager_in(runtime_a);
         manager::init_network_manager_in(runtime_b);
 
-        manager::register_interface_in(runtime_a, "rt-a0").expect("runtime a interface");
-        manager::register_interface_in(runtime_b, "rt-b0").expect("runtime b interface");
-        manager::register_interface_in(runtime_b, "rt-b1").expect("runtime b interface");
+        manager::register_interface_in(runtime_a, "rt-a0", manager::PrimaryPreference::Auto)
+            .expect("runtime a interface");
+        manager::register_interface_in(runtime_b, "rt-b0", manager::PrimaryPreference::Auto)
+            .expect("runtime b interface");
+        manager::register_interface_in(runtime_b, "rt-b1", manager::PrimaryPreference::Auto)
+            .expect("runtime b interface");
 
         let interfaces = run_with_event_task_in(runtime_b, super::list_interfaces_in(runtime_b));
 

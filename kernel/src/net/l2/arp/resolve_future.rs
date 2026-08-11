@@ -21,6 +21,7 @@ use core::task::{Context, Poll, Waker};
 use super::{Ipv4Address, MacAddress};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::try_enqueue_command_in;
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::{AtomicWaker, PoisonLock};
 
 // ============================================================================
@@ -31,6 +32,7 @@ use crate::sync::{AtomicWaker, PoisonLock};
 struct ArpWaiter {
     /// 待機ID
     id: u64,
+    if_id: NetIfId,
     /// 解決対象IPアドレス
     ip: [u8; 4],
     /// 結果格納スロット（解決成功時にMACアドレスが書き込まれる）
@@ -86,7 +88,12 @@ fn reset_arp_waiters_for_tests(runtime: NetRuntimeHandle) {
 /// ARP解決完了を通知する（ARPキャッシュ更新時にイベントハンドラから呼ばれる）
 ///
 /// 該当IPの全待機者にMACアドレスを通知してWakerを起こす。
-pub fn notify_arp_resolved_in(runtime: NetRuntimeHandle, ip: [u8; 4], mac: [u8; 6]) {
+pub fn notify_arp_resolved_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    ip: [u8; 4],
+    mac: [u8; 6],
+) {
     let now_ms = current_time_ms();
     let resolved_mac = MacAddress::new(mac);
     let Ok(mut waiters) = arp_waiters_in(runtime).waiters.lock() else {
@@ -94,7 +101,7 @@ pub fn notify_arp_resolved_in(runtime: NetRuntimeHandle, ip: [u8; 4], mac: [u8; 
     };
 
     for waiter in waiters.iter_mut() {
-        if waiter.ip == ip && waiter.result.is_none() {
+        if waiter.if_id == if_id && waiter.ip == ip && waiter.result.is_none() {
             waiter.result = Some(resolved_mac);
             waiter.completed_at_ms = Some(now_ms);
             waiter.waker.wake();
@@ -103,7 +110,12 @@ pub fn notify_arp_resolved_in(runtime: NetRuntimeHandle, ip: [u8; 4], mac: [u8; 
 }
 
 /// ARP解決待ちを登録し、ウェイターIDを返す
-fn register_arp_waiter(runtime: NetRuntimeHandle, ip: [u8; 4], waker: &Waker) -> Option<u64> {
+fn register_arp_waiter(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    ip: [u8; 4],
+    waker: &Waker,
+) -> Option<u64> {
     let registry = arp_waiters_in(runtime);
     let Ok(mut waiters) = registry.waiters.lock() else {
         return None;
@@ -116,6 +128,7 @@ fn register_arp_waiter(runtime: NetRuntimeHandle, ip: [u8; 4], waker: &Waker) ->
     let waiter_id = registry.next_id.fetch_add(1, Ordering::Relaxed);
     let waiter = ArpWaiter {
         id: waiter_id,
+        if_id,
         ip,
         result: None,
         waker: AtomicWaker::new(),
@@ -192,7 +205,7 @@ fn waiter_exists(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
 ///
 /// # 使用例
 /// ```ignore
-/// let mac = ArpResolveFuture::new_in(runtime, target_ip).await;
+/// let mac = ArpResolveFuture::new_in(runtime, if_id, target_ip).await;
 /// match mac {
 ///     Ok(mac) => log::info!("Resolved: {}", mac),
 ///     Err(e) => log::warn!("ARP resolve failed: {}", e),
@@ -200,6 +213,7 @@ fn waiter_exists(runtime: NetRuntimeHandle, waiter_id: u64) -> bool {
 /// ```
 pub struct ArpResolveFuture {
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     target_ip: Ipv4Address,
     /// 待機者ID（登録済みの場合）
     waiter_id: Option<u64>,
@@ -211,9 +225,10 @@ pub struct ArpResolveFuture {
 
 impl ArpResolveFuture {
     /// 新規作成
-    pub fn new_in(runtime: NetRuntimeHandle, target_ip: Ipv4Address) -> Self {
+    pub fn new_in(runtime: NetRuntimeHandle, if_id: NetIfId, target_ip: Ipv4Address) -> Self {
         Self {
             runtime,
+            if_id,
             target_ip,
             waiter_id: None,
             request_sent: false,
@@ -246,7 +261,7 @@ impl Future for ArpResolveFuture {
 
         // 初回ポーリング時にウェイター登録
         if self.waiter_id.is_none() {
-            self.waiter_id = register_arp_waiter(self.runtime, ip_bytes, cx.waker());
+            self.waiter_id = register_arp_waiter(self.runtime, self.if_id, ip_bytes, cx.waker());
             if self.waiter_id.is_none() {
                 return Poll::Ready(Err(ArpResolveError::ResourceExhausted));
             }
@@ -283,6 +298,7 @@ impl Future for ArpResolveFuture {
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
                     crate::net::runtime::command::ControlCommand::ArpResolveRequest {
+                        if_id: self.if_id,
                         target_ip: ip_bytes,
                     },
                 ),
@@ -307,9 +323,10 @@ impl Drop for ArpResolveFuture {
 /// `ArpResolveFuture` のショートカット。
 pub async fn resolve_mac_in(
     runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     target_ip: Ipv4Address,
 ) -> Result<MacAddress, ArpResolveError> {
-    ArpResolveFuture::new_in(runtime, target_ip).await
+    ArpResolveFuture::new_in(runtime, if_id, target_ip).await
 }
 
 /// 期限切れのARP待機エントリをクリーンアップ
@@ -363,13 +380,14 @@ mod tests {
 
         let ip = [10, 0, 0, 42];
         let mac = [0x02, 0x00, 0x00, 0x00, 0x00, 0x42];
+        let if_id = NetIfId(1);
 
-        let waiter_a =
-            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter A");
-        let waiter_b =
-            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter B");
+        let waiter_a = register_arp_waiter(runtime, if_id, ip, &noop_waker())
+            .expect("failed to register waiter A");
+        let waiter_b = register_arp_waiter(runtime, if_id, ip, &noop_waker())
+            .expect("failed to register waiter B");
 
-        notify_arp_resolved_in(runtime, ip, mac);
+        notify_arp_resolved_in(runtime, if_id, ip, mac);
 
         assert_eq!(
             poll_arp_result(runtime, waiter_a),
@@ -392,15 +410,16 @@ mod tests {
         let ip = [192, 168, 1, 77];
         let target_ip = Ipv4Address::new(ip);
         let resolved_mac = MacAddress::from_octets(0x02, 0x11, 0x22, 0x33, 0x44, 0x55);
+        let if_id = NetIfId(2);
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = ArpResolveFuture::new_in(runtime, target_ip);
+        let mut fut = ArpResolveFuture::new_in(runtime, if_id, target_ip);
         fut.request_sent = true;
 
         assert!(matches!(Pin::new(&mut fut).poll(&mut cx), Poll::Pending));
 
-        notify_arp_resolved_in(runtime, ip, *resolved_mac.as_bytes());
+        notify_arp_resolved_in(runtime, if_id, ip, *resolved_mac.as_bytes());
 
         let poll = Pin::new(&mut fut).poll(&mut cx);
         assert!(matches!(poll, Poll::Ready(Ok(mac)) if mac == resolved_mac));
@@ -412,13 +431,14 @@ mod tests {
         reset_arp_waiters_for_tests(runtime);
 
         let ip = [172, 16, 0, 9];
-        let waiter_id =
-            register_arp_waiter(runtime, ip, &noop_waker()).expect("failed to register waiter");
+        let if_id = NetIfId(3);
+        let waiter_id = register_arp_waiter(runtime, if_id, ip, &noop_waker())
+            .expect("failed to register waiter");
         assert!(waiter_exists(runtime, waiter_id));
 
         let waker = noop_waker();
         let mut cx = Context::from_waker(&waker);
-        let mut fut = ArpResolveFuture::new_in(runtime, Ipv4Address::new(ip));
+        let mut fut = ArpResolveFuture::new_in(runtime, if_id, Ipv4Address::new(ip));
         fut.request_sent = true;
         fut.waiter_id = Some(waiter_id);
         fut.poll_count = 50;

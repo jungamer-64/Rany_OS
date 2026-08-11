@@ -124,30 +124,26 @@ impl RuntimeCommandHandler {
                 RawIpv4Transport::Tcp { src } => {
                     let src = Ipv4Address::new(src);
                     let dst = Ipv4Address::new(dst);
-                    let if_id = scope.as_if_id();
+                    let resolved =
+                        stack.resolve_ipv4_egress(scope, (!src.is_any()).then_some(src), dst);
+                    let Ok((if_id, _, resolved_src)) = resolved else {
+                        complete_failed_tx(runtime, completion_id, "raw TCP route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
                     let mut payload = Some(payload);
-                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| match if_id {
-                        Some(if_id) => stack.send_tcp_payload_on(
+                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| {
+                        stack.send_tcp_payload_on(
                             if_id,
-                            src,
+                            resolved_src,
                             dst,
                             payload.take().expect("raw TCP payload already moved"),
-                        ),
-                        None => stack.send_tcp_payload(
-                            src,
-                            dst,
-                            payload.take().expect("raw TCP payload already moved"),
-                        ),
+                        )
                     });
                     let result = if sent {
                         Ok(())
                     } else {
                         complete_failed_tx(runtime, completion_id, "raw TCP send failed");
-                        Err(if if_id.is_some() {
-                            EndpointError::NetworkUnreachable
-                        } else {
-                            EndpointError::ResourceExhausted
-                        })
+                        Err(EndpointError::NetworkUnreachable)
                     };
                     finish_raw_send(reply, result)
                 }
@@ -190,31 +186,29 @@ impl RuntimeCommandHandler {
                 RawIpv6Transport::Tcp { src } => {
                     let src = Ipv6Address::new(src);
                     let dst = Ipv6Address::new(dst);
-                    let if_id = scope.as_if_id();
+                    let resolved = stack.resolve_ipv6_egress(
+                        scope,
+                        (!src.is_unspecified()).then_some(src),
+                        dst,
+                    );
+                    let Ok((if_id, _, resolved_src)) = resolved else {
+                        complete_failed_tx(runtime, completion_id, "raw TCPv6 route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
                     let mut payload = Some(payload);
-                    let sent =
-                        send_result_with_tx_meta(stack, completion_id, |stack| match if_id {
-                            Some(if_id) => stack.send_tcp_v6_payload_on(
-                                if_id,
-                                src,
-                                dst,
-                                payload.take().expect("raw TCPv6 payload already moved"),
-                            ),
-                            None => stack.send_tcp_v6_payload(
-                                src,
-                                dst,
-                                payload.take().expect("raw TCPv6 payload already moved"),
-                            ),
-                        });
+                    let sent = send_result_with_tx_meta(stack, completion_id, |stack| {
+                        stack.send_tcp_v6_payload_on(
+                            if_id,
+                            resolved_src,
+                            dst,
+                            payload.take().expect("raw TCPv6 payload already moved"),
+                        )
+                    });
                     let result = if sent {
                         Ok(())
                     } else {
                         complete_failed_tx(runtime, completion_id, "raw TCPv6 send failed");
-                        Err(if if_id.is_some() {
-                            EndpointError::NetworkUnreachable
-                        } else {
-                            EndpointError::ResourceExhausted
-                        })
+                        Err(EndpointError::NetworkUnreachable)
                     };
                     finish_raw_send(reply, result)
                 }

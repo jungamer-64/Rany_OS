@@ -70,13 +70,13 @@ impl NetworkStack {
 
     fn effective_ipv6_pmtu(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         dst: &Ipv6Address,
         current_time: u64,
     ) -> usize {
-        let selected_if_id = if_id.or_else(|| self.default_interface_id());
-        let pmtu = selected_if_id
-            .and_then(|if_id| self.interfaces.get_mut(&if_id))
+        let pmtu = self
+            .interfaces
+            .get_mut(&if_id)
             .map(|state| state.ipv6_pmtu_cache.get(dst, current_time))
             .unwrap_or(crate::net::runtime::stack::MTU as u32);
         pmtu.max(crate::net::l3::ipv6::Ipv6PmtuEntry::MIN_MTU)
@@ -85,7 +85,7 @@ impl NetworkStack {
 
     fn send_ipv6_l4_payload_with_pmtu(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         src_mac: MacAddress,
         dst_mac: MacAddress,
         src: Ipv6Address,
@@ -254,70 +254,19 @@ impl NetworkStack {
         );
     }
 
-    /// Send an ICMPv6 Packet Too Big error (RFC 4443 Section 3.2).
-    ///
-    /// Used for Path MTU Discovery to notify the sender that a packet exceeded the MTU.
-    pub fn send_icmpv6_packet_too_big(
-        &mut self,
-        dst_v6: Ipv6Address,
-        mtu: u32,
-        original_packet: PacketPayload,
-    ) -> bool {
-        let Some((if_id, our_addr)) = self.primary_interface_state().and_then(|(if_id, state)| {
-            state
-                .ipv6
-                .as_ref()
-                .map(|ipv6_proc| (if_id, ipv6_proc.config().link_local))
-        }) else {
-            return false;
-        };
-        {
-            let original_packet_view =
-                crate::net::payload::PacketPayloadView::new(&original_packet);
-            if !self.should_send_icmp_v6_error(
-                &original_packet_view,
-                dst_v6,
-                Icmpv6Type::PacketTooBig,
-                0,
-            ) {
-                return false;
-            }
-        }
-        let current_time = self.current_time();
-        if !self
-            .interfaces
-            .get(&if_id)
-            .and_then(|state| state.icmpv6.as_ref())
-            .is_some_and(|icmpv6| icmpv6.check_tx_rate_limit(current_time))
-        {
-            return false;
-        }
-
-        let Some(icmp_msg) = crate::net::l3::icmpv6::Icmpv6Builder::build_packet_too_big(
-            &our_addr,
-            &dst_v6,
-            mtu,
-            original_packet,
-        ) else {
-            self.stats().record_dropped();
-            return false;
-        };
-        self.send_ipv6_icmpv6_payload_on(if_id, &our_addr, &dst_v6, icmp_msg);
-        true
-    }
-
     /// Send an ICMPv6 Time Exceeded error (RFC 4443).
-    pub fn send_icmpv6_time_exceeded(
+    pub fn send_icmpv6_time_exceeded_on(
         &mut self,
+        if_id: super::NetIfId,
         dst_v6: Ipv6Address,
         code: u8,
         original_packet: PacketPayload,
     ) -> bool {
-        let Some((if_id, our_addr)) = self.primary_interface_state().and_then(|(if_id, state)| {
+        let Some(our_addr) = self.interfaces.get(&if_id).and_then(|state| {
             state
                 .ipv6
                 .as_ref()
-                .map(|ipv6_proc| (if_id, ipv6_proc.config().link_local))
+                .map(|ipv6_proc| ipv6_proc.config().link_local)
         }) else {
             return false;
         };
@@ -356,28 +305,6 @@ impl NetworkStack {
         true
     }
 
-    /// Send an IPv6 packet containing ICMPv6 payload
-    pub(crate) fn send_ipv6_icmpv6(
-        &mut self,
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        icmpv6_data: PacketPayload,
-    ) {
-        self.send_ipv6_icmpv6_payload(src, dst, icmpv6_data);
-    }
-
-    pub(crate) fn send_ipv6_icmpv6_payload(
-        &mut self,
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        icmpv6_payload: PacketPayload,
-    ) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_ipv6_icmpv6_payload_on(if_id, src, dst, icmpv6_payload);
-    }
-
     pub(crate) fn send_ipv6_icmpv6_on(
         &mut self,
         if_id: super::NetIfId,
@@ -397,7 +324,6 @@ impl NetworkStack {
     ) {
         let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv6_egress(
             crate::net::types::InterfaceScope::Pinned(if_id),
-            None,
             Some(*src),
             *dst,
         ) else {
@@ -411,7 +337,7 @@ impl NetworkStack {
             MacAddress::new(dst.multicast_mac())
         } else {
             let mut queued = false;
-            match self.resolve_ndp_for_send(Some(resolved_if), dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(resolved_if, dst, current_time, |pending| {
                 if let Some(payload) = pending_payload.take() {
                     pending.enqueue(resolved_src, *dst, payload, current_time);
                 }
@@ -424,11 +350,7 @@ impl NetworkStack {
                 }
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let sn_mcast = dst.solicited_node();
-                    if let Some(ns_if_id) = ns_if_id {
-                        self.send_ipv6_icmpv6_raw_on_payload(ns_if_id, &our_ll, &sn_mcast, ns_msg);
-                    } else {
-                        self.send_ipv6_icmpv6_raw_payload(&our_ll, &sn_mcast, ns_msg);
-                    }
+                    self.send_ipv6_icmpv6_raw_on_payload(ns_if_id, &our_ll, &sn_mcast, ns_msg);
                     return;
                 }
                 None => return,
@@ -469,7 +391,7 @@ impl NetworkStack {
                     } else {
                         icmpv6_payload.prepend(packet)
                     };
-                    let _ = self.transmit_packet_on(Some(resolved_if), payload);
+                    let _ = self.transmit_packet_on(resolved_if, payload);
                 }
             }
         }
@@ -479,27 +401,6 @@ impl NetworkStack {
     ///
     /// NDP NS送信など、NDP解決自体の送信パスで再帰を避けるために使用。
     /// 宛先はマルチキャストアドレスのみ想定。
-    pub(crate) fn send_ipv6_icmpv6_raw(
-        &mut self,
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        icmpv6_data: PacketPayload,
-    ) {
-        self.send_ipv6_icmpv6_raw_payload(src, dst, icmpv6_data);
-    }
-
-    fn send_ipv6_icmpv6_raw_payload(
-        &mut self,
-        src: &Ipv6Address,
-        dst: &Ipv6Address,
-        icmpv6_payload: PacketPayload,
-    ) {
-        let Some((if_id, _)) = self.primary_interface_state() else {
-            return;
-        };
-        self.send_ipv6_icmpv6_raw_on_payload(if_id, src, dst, icmpv6_payload);
-    }
-
     pub(crate) fn send_ipv6_icmpv6_raw_on(
         &mut self,
         if_id: super::NetIfId,
@@ -554,7 +455,7 @@ impl NetworkStack {
                     } else {
                         icmpv6_payload.prepend(packet)
                     };
-                    self.transmit_packet_on(Some(if_id), payload);
+                    self.transmit_packet_on(if_id, payload);
                 }
             }
         }
@@ -562,19 +463,15 @@ impl NetworkStack {
 
     pub(crate) fn resolve_ndp_for_send<F>(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         dst: &Ipv6Address,
         current_time: u64,
         queue_pending: F,
-    ) -> Option<Result<[u8; 6], (Option<super::NetIfId>, Ipv6Address, PacketPayload)>>
+    ) -> Option<Result<[u8; 6], (super::NetIfId, Ipv6Address, PacketPayload)>>
     where
         F: FnOnce(&mut NdpPendingQueue),
     {
-        let resolved_if_id = match if_id {
-            Some(if_id) => if_id,
-            None => self.default_interface_id()?,
-        };
-        let state = self.interfaces.get_mut(&resolved_if_id)?;
+        let state = self.interfaces.get_mut(&if_id)?;
         if let Some(mac) = state.ndp.as_ref().and_then(|ndp| ndp.resolve(dst)) {
             return Some(Ok(mac));
         }
@@ -582,7 +479,7 @@ impl NetworkStack {
         queue_pending(&mut state.ndp_pending_queue);
         let ndp = state.ndp.as_mut()?;
         let ns_msg = ndp.start_resolution(dst, current_time)?;
-        Some(Err((Some(resolved_if_id), ndp.our_link_local, ns_msg)))
+        Some(Err((if_id, ndp.our_link_local, ns_msg)))
     }
 
     pub fn send_udp_v6_payload_scoped_with_ttl(
@@ -597,7 +494,7 @@ impl NetworkStack {
     ) -> Result<(), crate::net::types::NetworkError> {
         let data_total_len = data.total_len();
         let (if_id, config, resolved_src) = self
-            .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+            .resolve_ipv6_egress(scope, Some(src_ip), dst)
             .map_err(|error| {
                 self.stats().record_dropped();
                 error
@@ -621,7 +518,7 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.resolve_ndp_for_send(Some(if_id), &dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
                 let payload = pending_data
                     .take()
                     .expect("IPv6 UDP pending payload already moved");
@@ -638,11 +535,7 @@ impl NetworkStack {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let sn_mcast = dst.solicited_node();
-                    if let Some(ns_if_id) = ns_if_id {
-                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
-                    } else {
-                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, ns_msg);
-                    }
+                    self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
                     return Err(crate::net::types::NetworkError::ArpResolutionPending);
                 }
                 None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
@@ -688,9 +581,9 @@ impl NetworkStack {
         if let Some(first) = udp_payload.segments_mut().first_mut() {
             first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
         }
-        let path_mtu = self.effective_ipv6_pmtu(Some(if_id), &dst, current_time);
+        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
         self.send_ipv6_l4_payload_with_pmtu(
-            Some(if_id),
+            if_id,
             config.mac,
             dst_mac,
             resolved_src,
@@ -702,16 +595,20 @@ impl NetworkStack {
         )
     }
 
-    fn send_tcp_v6_payload_scoped(
+    pub fn send_tcp_v6_payload_on(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: super::NetIfId,
         src_ip: Ipv6Address,
         dst: Ipv6Address,
         tcp_segment: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let tcp_segment_view = PacketPayloadView::new(&tcp_segment);
         let (if_id, config, resolved_src) = self
-            .resolve_ipv6_egress(scope, None, Some(src_ip), dst)
+            .resolve_ipv6_egress(
+                crate::net::types::InterfaceScope::Pinned(if_id),
+                Some(src_ip),
+                dst,
+            )
             .map_err(|error| {
                 self.stats().record_dropped();
                 error
@@ -741,7 +638,7 @@ impl NetworkStack {
         let dst_mac = if dst.is_multicast() {
             MacAddress::new(dst.multicast_mac())
         } else {
-            match self.resolve_ndp_for_send(Some(if_id), &dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(if_id, &dst, current_time, |pending| {
                 let segment = pending_segment
                     .take()
                     .expect("IPv6 TCP pending segment already moved");
@@ -750,20 +647,16 @@ impl NetworkStack {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let sn_mcast = dst.solicited_node();
-                    if let Some(ns_if_id) = ns_if_id {
-                        self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
-                    } else {
-                        self.send_ipv6_icmpv6_raw(&our_ll, &sn_mcast, ns_msg);
-                    }
+                    self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &sn_mcast, ns_msg);
                     return Err(crate::net::types::NetworkError::ArpResolutionPending);
                 }
                 None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
             }
         };
 
-        let path_mtu = self.effective_ipv6_pmtu(Some(if_id), &dst, current_time);
+        let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
         self.send_ipv6_l4_payload_with_pmtu(
-            Some(if_id),
+            if_id,
             config.mac,
             dst_mac,
             resolved_src,
@@ -777,42 +670,13 @@ impl NetworkStack {
         )
     }
 
-    pub fn send_tcp_v6_payload(
-        &mut self,
-        src_ip: Ipv6Address,
-        dst: Ipv6Address,
-        tcp_segment: PacketPayload,
-    ) -> Result<(), crate::net::types::NetworkError> {
-        self.send_tcp_v6_payload_scoped(
-            crate::net::types::InterfaceScope::Any,
-            src_ip,
-            dst,
-            tcp_segment,
-        )
-    }
-
-    pub fn send_tcp_v6_payload_on(
-        &mut self,
-        if_id: super::NetIfId,
-        src_ip: Ipv6Address,
-        dst: Ipv6Address,
-        tcp_segment: PacketPayload,
-    ) -> Result<(), crate::net::types::NetworkError> {
-        self.send_tcp_v6_payload_scoped(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            src_ip,
-            dst,
-            tcp_segment,
-        )
-    }
-
     /// Drain pending packets for a resolved neighbor
     ///
     /// NDP Neighbor Advertisementを受信してキャッシュが更新された際に呼び出す。
     /// 指定アドレス宛の保留パケットを全て送信する。
     fn drain_ndp_pending_queue(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         resolved_ip: &Ipv6Address,
         pending: Vec<PendingIpv6Packet>,
     ) {
@@ -830,11 +694,7 @@ impl NetworkStack {
         for pkt in pending {
             match pkt.payload {
                 PendingIpv6Payload::Icmpv6(data) => {
-                    if let Some(if_id) = if_id {
-                        self.send_ipv6_icmpv6_payload_on(if_id, &pkt.src, &pkt.dst, data);
-                    } else {
-                        self.send_ipv6_icmpv6_payload(&pkt.src, &pkt.dst, data);
-                    }
+                    self.send_ipv6_icmpv6_payload_on(if_id, &pkt.src, &pkt.dst, data);
                 }
                 PendingIpv6Payload::Udp {
                     src_port,
@@ -842,34 +702,18 @@ impl NetworkStack {
                     hop_limit,
                     data,
                 } => {
-                    if let Some(if_id) = if_id {
-                        let _ = self.send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Pinned(if_id),
-                            src_port,
-                            pkt.src,
-                            pkt.dst,
-                            dst_port,
-                            data,
-                            hop_limit,
-                        );
-                    } else {
-                        let _ = self.send_udp_v6_payload_scoped_with_ttl(
-                            crate::net::types::InterfaceScope::Any,
-                            src_port,
-                            pkt.src,
-                            pkt.dst,
-                            dst_port,
-                            data,
-                            hop_limit,
-                        );
-                    }
+                    let _ = self.send_udp_v6_payload_scoped_with_ttl(
+                        crate::net::types::InterfaceScope::Pinned(if_id),
+                        src_port,
+                        pkt.src,
+                        pkt.dst,
+                        dst_port,
+                        data,
+                        hop_limit,
+                    );
                 }
                 PendingIpv6Payload::Tcp { segment } => {
-                    if let Some(if_id) = if_id {
-                        let _ = self.send_tcp_v6_payload_on(if_id, pkt.src, pkt.dst, segment);
-                    } else {
-                        let _ = self.send_tcp_v6_payload(pkt.src, pkt.dst, segment);
-                    }
+                    let _ = self.send_tcp_v6_payload_on(if_id, pkt.src, pkt.dst, segment);
                 }
             }
         }
@@ -886,30 +730,21 @@ impl NetworkStack {
             Vec::new()
         };
 
-        self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
+        self.drain_ndp_pending_queue(if_id, resolved_ip, pending);
     }
 
-    /// Insert an entry into a specific interface's NDP neighbor cache, or all interfaces if None.
+    /// Insert an entry into a specific interface's NDP neighbor cache.
     /// Used by NeighborResolvedV6 broadcast handler for cross-core NDP cache synchronization.
     pub(crate) fn ndp_cache_insert_on(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         ip: &Ipv6Address,
         mac: [u8; 6],
         current_time: u64,
     ) {
-        if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                if let Some(ref mut ndp) = state.ndp {
-                    ndp.cache_mut().update_reachable(ip, mac, current_time);
-                }
-            }
-        } else {
-            // If no specific interface, update all interfaces
-            for state in self.interfaces.values_mut() {
-                if let Some(ref mut ndp) = state.ndp {
-                    ndp.cache_mut().update_reachable(ip, mac, current_time);
-                }
+        if let Some(state) = self.interfaces.get_mut(&if_id) {
+            if let Some(ref mut ndp) = state.ndp {
+                ndp.cache_mut().update_reachable(ip, mac, current_time);
             }
         }
     }
@@ -1007,7 +842,7 @@ impl NetworkStack {
                         drop(frame);
                         if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                             let _ = self.transmit_packet_on(
-                                Some(if_id),
+                                if_id,
                                 kernel_api::resource::net::PacketPayload::single(packet),
                             );
                         }
@@ -1095,7 +930,7 @@ impl NetworkStack {
                     drop(frame);
                     if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                         let _ = self.transmit_packet_on(
-                            Some(if_id),
+                            if_id,
                             kernel_api::resource::net::PacketPayload::single(packet),
                         );
                     }

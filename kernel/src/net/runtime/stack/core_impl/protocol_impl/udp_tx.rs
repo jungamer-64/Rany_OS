@@ -48,7 +48,7 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
 impl NetworkStack {
     pub(crate) fn resolve_ipv4_next_hop_on(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         dst_ip: Ipv4Address,
         config: &NetworkConfig,
         current_time: u64,
@@ -61,35 +61,31 @@ impl NetworkStack {
             return Some(dst_ip);
         }
 
-        if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                state.redirect_cache.set_time(current_time);
-                if let Some(redirected_gateway) = state.redirect_cache.get(dst_ip) {
-                    return Some(redirected_gateway);
-                }
+        if let Some(state) = self.interfaces.get_mut(&if_id) {
+            state.redirect_cache.set_time(current_time);
+            if let Some(redirected_gateway) = state.redirect_cache.get(dst_ip) {
+                return Some(redirected_gateway);
             }
-
-            if let Ok(Some(route)) =
-                crate::net::runtime::manager::lookup_ipv4_route_in(self.runtime, dst_ip)
-            {
-                if route.if_id == if_id {
-                    return Some(route.gateway.unwrap_or(dst_ip));
-                }
-            }
-
-            if !config.ipv4.gateway.is_any() {
-                return Some(config.ipv4.gateway);
-            }
-
-            return None;
         }
 
-        Some(self.resolve_ipv4_next_hop(dst_ip, current_time))
+        if let Ok(Some(route)) =
+            crate::net::runtime::manager::lookup_ipv4_route_in(self.runtime, dst_ip)
+        {
+            if route.if_id == if_id {
+                return Some(route.gateway.unwrap_or(dst_ip));
+            }
+        }
+
+        if !config.ipv4.gateway.is_any() {
+            return Some(config.ipv4.gateway);
+        }
+
+        None
     }
 
     pub(crate) fn send_udp_raw_with_config_and_if_ttl_payload(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         config: &NetworkConfig,
         src_ip: Ipv4Address,
         src_port: u16,
@@ -134,7 +130,7 @@ impl NetworkStack {
                 None => return false,
             }
         };
-        let path_mtu = self.effective_ipv4_pmtu(dst_ip, current_time);
+        let path_mtu = self.effective_ipv4_pmtu(if_id, dst_ip, current_time);
         let Some(total_len) = 8usize.checked_add(payload_len) else {
             return false;
         };
@@ -203,21 +199,13 @@ impl NetworkStack {
         payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, None, dst_ip)
-        else {
+        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, dst_ip) else {
             self.stats().record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl_payload(
-            Some(if_id),
-            &config,
-            src_ip,
-            src_port,
-            dst_ip,
-            dst_port,
-            payload,
-            ttl,
+            if_id, &config, src_ip, src_port, dst_ip, dst_port, payload, ttl,
         )
     }
 
@@ -232,14 +220,14 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         let Ok((if_id, config, resolved_src)) =
-            self.resolve_ipv4_egress(scope, None, Some(src_ip), dst_ip)
+            self.resolve_ipv4_egress(scope, Some(src_ip), dst_ip)
         else {
             self.stats().record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl_payload(
-            Some(if_id),
+            if_id,
             &config,
             resolved_src,
             src_port,
@@ -253,7 +241,7 @@ impl NetworkStack {
     /// Resolve IP to MAC address
     pub(crate) fn resolve_mac(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         dst_ip: Ipv4Address,
         _config: &NetworkConfig,
         current_time: u64,
@@ -264,7 +252,7 @@ impl NetworkStack {
     /// Resolve IP to MAC address with pending queue support
     pub(crate) fn resolve_arp_for_send<F>(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         dst_ip: Ipv4Address,
         current_time: u64,
         queue_pending: F,
@@ -287,13 +275,10 @@ impl NetworkStack {
             return Some(multicast_ip_to_mac(dst_ip));
         }
 
-        let Some(if_id) = if_id else {
-            return None;
-        };
         let config = self.interface_config_or_runtime(if_id)?;
 
         // Determine next hop, considering ICMP Redirect cache
-        let next_hop = self.resolve_ipv4_next_hop_on(Some(if_id), dst_ip, &config, current_time)?;
+        let next_hop = self.resolve_ipv4_next_hop_on(if_id, dst_ip, &config, current_time)?;
 
         // Look up in ARP cache
         let Some(state) = self.interfaces.get_mut(&if_id) else {

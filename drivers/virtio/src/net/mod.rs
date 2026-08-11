@@ -125,6 +125,9 @@ pub trait NetRuntime: Send + Sync {
     /// Schedule a waker for a queue event.
     fn schedule_wake(&self, queue_index: u16);
 
+    /// Publish a physical link-state transition to the registered port runtime.
+    fn update_link(&self, up: bool);
+
     /// Log a message from the driver core.
     fn log(&self, level: log::Level, msg: core::fmt::Arguments);
 }

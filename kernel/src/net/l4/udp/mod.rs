@@ -448,7 +448,6 @@ fn configure_udp_socket(
         .with_inner_mut(|inner| {
             inner.local_addr = Some(EndpointAddr::new_v6([0; 16], port));
             inner.scope = scope;
-            inner.last_ingress_if_id = None;
             let Some(udp) = inner.udp_mut() else {
                 return Err(NetworkError::InvalidAddress);
             };
@@ -549,11 +548,47 @@ impl UdpEndpoint {
     }
 
     pub fn join_multicast_group(&self, group: Ipv4Address) -> impl Future<Output = bool> {
-        crate::net::runtime::stack::join_multicast_in(self.runtime, group)
+        let runtime = self.runtime;
+        let scope = self.socket.with_inner(|inner| inner.scope);
+        async move {
+            let Some(if_id) = scope.and_then(|scope| match scope {
+                InterfaceScope::Pinned(if_id) => {
+                    crate::net::runtime::manager::is_interface_operational_in(runtime, if_id)
+                        .then_some(if_id)
+                }
+                InterfaceScope::Any => {
+                    crate::net::runtime::manager::lookup_ipv4_route_in(runtime, group)
+                        .ok()
+                        .flatten()
+                        .map(|route| route.if_id)
+                }
+            }) else {
+                return false;
+            };
+            crate::net::runtime::stack::join_multicast_in(runtime, if_id, group).await
+        }
     }
 
     pub fn leave_multicast_group(&self, group: Ipv4Address) -> impl Future<Output = bool> {
-        crate::net::runtime::stack::leave_multicast_in(self.runtime, group)
+        let runtime = self.runtime;
+        let scope = self.socket.with_inner(|inner| inner.scope);
+        async move {
+            let Some(if_id) = scope.and_then(|scope| match scope {
+                InterfaceScope::Pinned(if_id) => {
+                    crate::net::runtime::manager::is_interface_operational_in(runtime, if_id)
+                        .then_some(if_id)
+                }
+                InterfaceScope::Any => {
+                    crate::net::runtime::manager::lookup_ipv4_route_in(runtime, group)
+                        .ok()
+                        .flatten()
+                        .map(|route| route.if_id)
+                }
+            }) else {
+                return false;
+            };
+            crate::net::runtime::stack::leave_multicast_in(runtime, if_id, group).await
+        }
     }
 
     pub fn send(&self, payload: PacketPayload, dst: UdpAddr) -> UdpSendFuture {

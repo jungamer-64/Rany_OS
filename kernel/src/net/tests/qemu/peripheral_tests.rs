@@ -7,6 +7,7 @@ use crate::net::l4::socket::{Socket, SocketFamily, bind_udp_dual_stack_in, find_
 use crate::net::l4::udp::{UdpProcessor, UdpResult};
 use crate::net::payload::alloc_packet_with_headroom;
 use crate::net::runtime::create_runtime;
+use crate::net::runtime::manager::NetIfId;
 use crate::net::services::dhcp;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
@@ -79,6 +80,7 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
+        crate::net::runtime::manager::NetIfId(1),
         MacAddress::new([7, 7, 7, 7, 7, 7]),
     );
 
@@ -222,11 +224,11 @@ pub fn runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
 
     bind_udp_dual_stack_in(runtime_a, 80, InterfaceScope::Any, socket_a.socket_id()).is_ok()
         && bind_udp_dual_stack_in(runtime_b, 80, InterfaceScope::Any, socket_b.socket_id()).is_ok()
-        && find_udp_by_port_in(runtime_a, SocketFamily::Ipv4, 80, None).is_some()
-        && find_udp_by_port_in(runtime_b, SocketFamily::Ipv4, 80, None).is_some()
+        && find_udp_by_port_in(runtime_a, SocketFamily::Ipv4, 80, NetIfId(1)).is_some()
+        && find_udp_by_port_in(runtime_b, SocketFamily::Ipv4, 80, NetIfId(2)).is_some()
 }
 
-pub fn runtime_udp_missing_ingress_interface_is_explicit_smoke() -> bool {
+pub fn runtime_udp_concrete_ingress_interface_is_preserved_smoke() -> bool {
     let Ok(runtime) = create_runtime() else {
         return false;
     };
@@ -234,12 +236,12 @@ pub fn runtime_udp_missing_ingress_interface_is_explicit_smoke() -> bool {
 
     processor.process_payload_on(
         runtime,
-        None,
+        NetIfId(7),
         PacketPayload::default(),
         Ipv4Address::ANY,
         Ipv4Address::ANY,
         64,
-    ) == UdpResult::NoIngressInterface
+    ) == UdpResult::NoEndpoint
 }
 
 pub fn runtime_large_packet_headroom_preserves_request_smoke() -> bool {

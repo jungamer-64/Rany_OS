@@ -145,6 +145,7 @@ pub(crate) enum ControlCommand {
         rtt_us: u64,
     },
     ArpResolveRequest {
+        if_id: NetIfId,
         target_ip: [u8; 4],
     },
     NdpResolveRequest {
@@ -152,10 +153,12 @@ pub(crate) enum ControlCommand {
         target_ip: [u8; 16],
     },
     MulticastJoin {
+        if_id: NetIfId,
         group: [u8; 4],
         reply: CommandReplyTicket<bool>,
     },
     MulticastLeave {
+        if_id: NetIfId,
         group: [u8; 4],
         reply: CommandReplyTicket<bool>,
     },
@@ -165,6 +168,7 @@ pub(crate) enum ControlCommand {
         revision: crate::net::runtime::manager::InterfaceTopologyRevision,
     },
     ArpProbe {
+        if_id: NetIfId,
         target_ip: [u8; 4],
     },
     NeighborResolvedV4 {
@@ -216,6 +220,7 @@ pub(crate) enum ControlCommand {
         reply: CommandReplyTicket<Vec<crate::net::api::connections::ArpCacheEntry>>,
     },
     ArpInsert {
+        if_id: NetIfId,
         ip: [u8; 4],
         mac: [u8; 6],
     },

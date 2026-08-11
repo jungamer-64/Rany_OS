@@ -35,19 +35,12 @@ impl Socket {
         Self { socket_id, runtime }
     }
 
-    fn notify_tcb_data_received(
-        runtime: NetRuntimeHandle,
-        local: Option<EndpointAddr>,
-        remote: Option<EndpointAddr>,
-        pushed: usize,
-    ) {
+    fn notify_tcb_data_received(runtime: NetRuntimeHandle, socket_id: SocketId, pushed: usize) {
         if pushed == 0 {
             return;
         }
 
-        if let (Some(local), Some(remote)) = (local, remote) {
-            let _ = tcp_table_in(runtime).record_data_received(local, remote, pushed as u32);
-        }
+        let _ = tcp_table_in(runtime).record_data_received_by_socket_id(socket_id, pushed as u32);
     }
 
     fn split_and_queue_payload(
@@ -186,7 +179,6 @@ impl Socket {
                 new_inner.local_addr = Some(conn.local_addr);
                 new_inner.remote_addr = Some(conn.remote_addr);
                 new_inner.scope = crate::net::types::InterfaceScope::Pinned(conn.if_id);
-                new_inner.last_ingress_if_id = Some(conn.if_id);
                 if let Some(new_tcp) = new_inner.tcp_mut() {
                     new_tcp.nodelay = listener_nodelay;
                 }
@@ -214,10 +206,8 @@ impl Socket {
     }
 
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
-        let Some((pushed, local, remote)) = self.with_inner_mut(|inner| {
+        let Some(pushed) = self.with_inner_mut(|inner| {
             let pushed = inner.push_recv_payload(payload);
-            let local = inner.local_addr;
-            let remote = inner.remote_addr;
             if pushed > 0 {
                 if let Some(tcp) = inner.tcp_mut() {
                     tcp.stats.record_rx_segment(pushed);
@@ -226,12 +216,12 @@ impl Socket {
             if pushed > 0 {
                 inner.recv_waker.wake();
             }
-            (pushed, local, remote)
+            pushed
         }) else {
             return 0;
         };
 
-        Self::notify_tcb_data_received(self.runtime, local, remote, pushed);
+        Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
         pushed
     }
 
@@ -239,17 +229,17 @@ impl Socket {
         &self,
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
-        let Some((pushed, remainder, local, remote)) = self.with_inner_mut(|inner| {
+        let Some((pushed, remainder)) = self.with_inner_mut(|inner| {
             let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
             if pushed > 0 {
                 inner.recv_waker.wake();
             }
-            (pushed, remainder, inner.local_addr, inner.remote_addr)
+            (pushed, remainder)
         }) else {
             return (0, None);
         };
 
-        Self::notify_tcb_data_received(self.runtime, local, remote, pushed);
+        Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
 
         (pushed, remainder)
     }
@@ -265,7 +255,6 @@ impl Socket {
             if !inner.is_udp_bound() {
                 return Err(EndpointError::NotConnected);
             }
-            inner.last_ingress_if_id = Some(if_id);
             let Some(udp) = inner.udp_mut() else {
                 return Err(EndpointError::InvalidArgument);
             };
@@ -288,7 +277,6 @@ impl Socket {
                 .raw_mut()
                 .and_then(|raw| raw.pending_payloads.pop_front())
             {
-                inner.last_ingress_if_id = Some(if_id);
                 return Ok((payload, if_id));
             }
 
@@ -302,7 +290,6 @@ impl Socket {
             if !inner.is_raw_open() {
                 return Err(EndpointError::NotConnected);
             }
-            inner.last_ingress_if_id = Some(if_id);
             let Some(raw) = inner.raw_mut() else {
                 return Err(EndpointError::InvalidArgument);
             };
@@ -324,7 +311,6 @@ impl Socket {
                 .udp_mut()
                 .and_then(|udp| udp.pending_packets.pop_front())
             {
-                inner.last_ingress_if_id = Some(if_id);
                 return Ok((if_id, addr, ttl, payload));
             }
 

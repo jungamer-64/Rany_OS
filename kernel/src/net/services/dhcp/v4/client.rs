@@ -8,6 +8,7 @@ use super::{
 };
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
 use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
@@ -21,9 +22,14 @@ impl DhcpClient {
     pub(super) const PROBE_WAIT_SECS: u64 = 1;
 
     /// 指定runtimeに属するDHCPクライアントを作成
-    pub fn new(runtime: crate::net::runtime::NetRuntimeHandle, mac_address: MacAddress) -> Self {
+    pub fn new(
+        runtime: crate::net::runtime::NetRuntimeHandle,
+        if_id: NetIfId,
+        mac_address: MacAddress,
+    ) -> Self {
         Self {
             runtime,
+            if_id,
             mac_address,
             state: PoisonLock::new(DhcpState::Init),
             xid: AtomicU32::new(0),
@@ -44,7 +50,7 @@ impl DhcpClient {
         // DHCPクライアントポート(68)でバインド
         let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             self.runtime,
-            crate::net::types::InterfaceScope::Any,
+            crate::net::types::InterfaceScope::Pinned(self.if_id),
             DHCP_CLIENT_PORT,
             None,
         )
@@ -73,7 +79,7 @@ impl DhcpClient {
                                 self.runtime,
                                 crate::net::runtime::command::RuntimeCommand::Control(
                                     crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                        if_id: None,
+                                        if_id: self.if_id,
                                         config: applied,
                                     },
                                 ),
@@ -220,12 +226,6 @@ impl DhcpClient {
     ///
     /// 通常のランタイムでは使用しませんが、ユニット/スモーク
     /// テストが内部状態を操作するためのAPIとして公開しています。
-    pub fn set_lease_for_test(&self, lease: DhcpLease) {
-        if let Ok(mut guard) = self.lease.lock() {
-            *guard = Some(lease);
-        }
-    }
-
     /// Return last declined IP recorded (if any)
     pub fn last_declined_ip(&self) -> Option<Ipv4Address> {
         let v = self.last_declined.load(Ordering::SeqCst);

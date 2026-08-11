@@ -9,6 +9,7 @@ use alloc::vec::Vec;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::manager::NetIfId;
 
 extern crate alloc;
 
@@ -111,11 +112,17 @@ pub fn get_arp_cache_in(runtime: NetRuntimeHandle) -> GetArpCacheFuture {
     GetArpCacheFuture::new(runtime)
 }
 
-pub fn enqueue_arp_cache_insert_in(runtime: NetRuntimeHandle, ip: Ipv4Address, mac: MacAddress) {
+pub fn enqueue_arp_cache_insert_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    ip: Ipv4Address,
+    mac: MacAddress,
+) {
     let _ = crate::net::runtime::command::try_enqueue_command_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Control(
             crate::net::runtime::command::ControlCommand::ArpInsert {
+                if_id,
                 ip: *ip.as_bytes(),
                 mac: *mac.as_bytes(),
             },

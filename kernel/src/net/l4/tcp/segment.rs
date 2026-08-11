@@ -377,47 +377,36 @@ impl TcpSegmentBuilder {
 
 pub fn send_tcp_segment_payload_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
+    if_id: crate::net::runtime::manager::NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     segment: PacketPayload,
 ) -> bool {
-    send_tcp_segment_payload_with_completion_in(runtime, local, remote, segment, None)
+    send_tcp_segment_payload_with_completion_in(runtime, if_id, local, remote, segment, None)
 }
 
 pub fn send_tcp_segment_payload_with_completion_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
+    if_id: crate::net::runtime::manager::NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
     segment: PacketPayload,
     completion_id: Option<u64>,
 ) -> bool {
-    let (scope, ingress_if) = crate::net::runtime::transport::tcp_table_in(runtime)
-        .read(local, remote, |tcb| tcb.route_binding())
-        .unwrap_or((crate::net::types::InterfaceScope::Any, None));
-    let scoped_if = scope.as_if_id().or(ingress_if);
     let segment_len = segment.total_len();
     if let Some((src_v4, dst_v4)) = endpoint_ipv4_pair(local, remote) {
         let src_ip = crate::net::l3::ipv4::Ipv4Address::new(src_v4);
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
-        let ok = match scoped_if {
-            Some(if_id) => crate::net::runtime::stack::enqueue_tcp_send_on_in(
-                runtime,
-                if_id,
-                src_ip,
-                dst_ip,
-                segment,
-                completion_id,
-            ),
-            None => crate::net::runtime::stack::enqueue_tcp_send_in(
-                runtime,
-                src_ip,
-                dst_ip,
-                segment,
-                completion_id,
-            ),
-        };
+        let ok = crate::net::runtime::stack::enqueue_tcp_send_on_in(
+            runtime,
+            if_id,
+            src_ip,
+            dst_ip,
+            segment,
+            completion_id,
+        );
         if ok {
             log::debug!(
                 "TCP TX (async): {} -> {} ({} bytes)",
@@ -434,23 +423,14 @@ pub fn send_tcp_segment_payload_with_completion_in(
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let ok = match scoped_if {
-            Some(if_id) => crate::net::runtime::stack::enqueue_tcp_v6_send_on_in(
-                runtime,
-                if_id,
-                src_v6,
-                dst_v6,
-                segment,
-                completion_id,
-            ),
-            None => crate::net::runtime::stack::enqueue_tcp_v6_send_in(
-                runtime,
-                src_v6,
-                dst_v6,
-                segment,
-                completion_id,
-            ),
-        };
+        let ok = crate::net::runtime::stack::enqueue_tcp_v6_send_on_in(
+            runtime,
+            if_id,
+            src_v6,
+            dst_v6,
+            segment,
+            completion_id,
+        );
         if ok {
             log::debug!(
                 "TCP TX (v6 async): [{}]:{} -> [{}]:{} ({} bytes)",
@@ -509,7 +489,13 @@ pub mod tests {
         remote: EndpointAddr,
         segment: PacketPayload,
     ) -> bool {
-        send_tcp_segment_payload_in(runtime, local, remote, segment)
+        send_tcp_segment_payload_in(
+            runtime,
+            crate::net::runtime::manager::NetIfId(1),
+            local,
+            remote,
+            segment,
+        )
     }
 
     #[cfg_attr(test, test_case)]

@@ -16,8 +16,8 @@ use kernel_api::abi::driver::{
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::DriverType;
 use kernel_api::netdev::{
-    NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, NetDevicePort, NetTxMeta,
-    NetTxSegment, NonEmptyTxSegments, TxSubmission,
+    NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NetDevicePort, NetTxMeta, NetTxSegment,
+    NonEmptyTxSegments, TxSubmission,
 };
 use kernel_api::resource::net::PacketRef;
 use kernel_api::service::kernel;
@@ -343,6 +343,12 @@ impl NetRuntime for StandaloneNetRuntime {
         }
     }
 
+    fn update_link(&self, up: bool) {
+        if let Some(runtime) = self.runtime() {
+            let _ = (runtime.update_link)(runtime.runtime_cookie, up);
+        }
+    }
+
     fn log(&self, level: log::Level, msg: core::fmt::Arguments) {
         if let Some(runtime) = self.runtime() {
             let msg = alloc::format!("{}", msg);
@@ -369,6 +375,7 @@ extern "C" fn netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime) -> i
     };
     (*net_runtime).install_runtime(unsafe { *runtime });
     let _ = with_virtio_net_at_index(PORT_INDEX, |device| {
+        device.publish_link_state();
         device.refill_rx_queues();
     });
     AbiError::Success as i32
@@ -527,7 +534,7 @@ fn netdev_registration() -> AbiNetPortRegistration {
             queue_pairs: cmp::max(1, info.queue_pairs),
             reserved_queue: 0,
             mtu: info.mtu,
-            flags: info.flags | NETDEV_FLAG_ADMIN_UP | NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP,
+            flags: info.flags | NETDEV_FLAG_ADMIN_UP | NETDEV_FLAG_HEALTHY,
             mac: *info.mac.as_bytes(),
             reserved0: [0; 2],
             name_ptr: virtio_net_name().as_ptr(),

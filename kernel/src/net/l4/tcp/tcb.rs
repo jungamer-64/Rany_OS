@@ -15,7 +15,6 @@ use super::window_scale::WindowScaleOption;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, conn_key_hash, seq_after};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::types::InterfaceScope;
 
 /// TCPフラグ
 pub mod tcp_flags {
@@ -35,10 +34,9 @@ pub use crate::net::l4::tcp::TcpState as TcpConnectionState;
 #[derive(Debug)]
 pub struct TcpControlBlock {
     socket_id: SocketId,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
-    scope: InterfaceScope,
-    ingress_if_id: Option<NetIfId>,
     state: TcpTcbState,
     pending_error: Option<EndpointError>,
 }
@@ -193,6 +191,7 @@ impl TcpTcbState {
 #[derive(Debug, Clone, Copy)]
 pub struct TcpControlBlockSnapshot {
     pub socket_id: SocketId,
+    pub if_id: NetIfId,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub state: TcpConnectionState,
@@ -230,6 +229,7 @@ pub(in crate::net::l4::tcp) struct PassiveOpenSynAck {
 
 #[derive(Debug, Clone, Copy)]
 pub(in crate::net::l4::tcp) struct DelayedAckDue {
+    pub if_id: NetIfId,
     pub local: EndpointAddr,
     pub remote: EndpointAddr,
     pub rcv_nxt: u32,
@@ -410,6 +410,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
         };
         Self {
             socket_id: value.socket_id,
+            if_id: value.if_id,
             local: value.local,
             remote: value.remote,
             state,
@@ -468,13 +469,17 @@ impl TcpControlBlockSnapshot {
 }
 
 impl TcpControlBlock {
-    fn closed(socket_id: SocketId, local: EndpointAddr, remote: EndpointAddr) -> Self {
+    fn closed(
+        socket_id: SocketId,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Self {
         Self {
             socket_id,
+            if_id,
             local,
             remote,
-            scope: InterfaceScope::Any,
-            ingress_if_id: None,
             state: TcpTcbState::Closed,
             pending_error: None,
         }
@@ -486,19 +491,10 @@ impl TcpControlBlock {
         remote: EndpointAddr,
         isn: u32,
         nodelay: bool,
-        scope: InterfaceScope,
-        ingress_if_id: Option<NetIfId>,
+        if_id: NetIfId,
     ) -> Self {
-        let mut tcb = Self::closed(socket_id, local, remote);
-        tcb.scope = scope;
-        tcb.ingress_if_id = ingress_if_id;
+        let mut tcb = Self::closed(socket_id, if_id, local, remote);
         tcb.state = TcpTcbState::SynSent(TcpHandshakeData::new(isn, nodelay));
-        tcb
-    }
-
-    pub(crate) fn listen(socket_id: SocketId, local: EndpointAddr) -> Self {
-        let mut tcb = Self::closed(socket_id, local, EndpointAddr::new([0, 0, 0, 0], 0));
-        tcb.state = TcpTcbState::Listen;
         tcb
     }
 
@@ -524,8 +520,8 @@ impl TcpControlBlock {
         }
     }
 
-    pub(in crate::net::l4::tcp) fn route_binding(&self) -> (InterfaceScope, Option<NetIfId>) {
-        (self.scope, self.ingress_if_id)
+    pub(crate) fn route_interface(&self) -> NetIfId {
+        self.if_id
     }
 
     pub(in crate::net::l4::tcp) fn established_from_syncookie(
@@ -535,13 +531,14 @@ impl TcpControlBlock {
         ack_num: u32,
         seq_num: u32,
         mss: u32,
+        if_id: NetIfId,
     ) -> Self {
         let mut data = TcpConnectionData::new(ack_num, false);
         data.seq.snd_una = ack_num.wrapping_sub(1);
         data.seq.snd_nxt = ack_num;
         data.seq.rcv_nxt = seq_num;
         data.set_mss(mss);
-        let mut tcb = Self::closed(socket_id, local, remote);
+        let mut tcb = Self::closed(socket_id, if_id, local, remote);
         tcb.state = TcpTcbState::Established(data);
         tcb
     }
@@ -553,13 +550,14 @@ impl TcpControlBlock {
         isn: u32,
         seq_num: u32,
         nodelay: bool,
+        if_id: NetIfId,
         options: TcpHandshakeOptions,
     ) -> Self {
         let mut handshake = TcpHandshakeData::new(isn, nodelay);
         handshake.seq.rcv_nxt = seq_num.wrapping_add(1);
         handshake.apply_options(options);
         handshake.seq.snd_nxt = handshake.seq.snd_nxt.wrapping_add(1);
-        let mut tcb = Self::closed(socket_id, local, remote);
+        let mut tcb = Self::closed(socket_id, if_id, local, remote);
         tcb.state = TcpTcbState::SynReceived(handshake);
         tcb
     }
@@ -594,6 +592,7 @@ impl TcpControlBlock {
             return None;
         }
         Some(DelayedAckDue {
+            if_id: self.if_id,
             local: self.local,
             remote: self.remote,
             rcv_nxt: data.seq.rcv_nxt,
@@ -730,8 +729,25 @@ pub struct TcbTable {
 const MAX_TCB_ENTRIES: usize = 8192;
 const MAX_SYN_RECEIVED_ENTRIES: usize = 4096;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) struct TcpFlowKey {
+    pub(crate) if_id: NetIfId,
+    pub(crate) local: EndpointAddr,
+    pub(crate) remote: EndpointAddr,
+}
+
+impl TcpFlowKey {
+    pub(crate) const fn new(if_id: NetIfId, local: EndpointAddr, remote: EndpointAddr) -> Self {
+        Self {
+            if_id,
+            local,
+            remote,
+        }
+    }
+}
+
 struct TcbBucketEntry {
-    key: (EndpointAddr, EndpointAddr),
+    key: TcpFlowKey,
     entry: TcpControlBlock,
     next: Option<usize>,
 }
@@ -749,16 +765,17 @@ impl TcbStorage {
         }
     }
 
-    fn bucket_for(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
-        (conn_key_hash(local, remote) as usize) % TCB_BUCKET_COUNT
+    fn bucket_for(key: TcpFlowKey) -> usize {
+        (conn_key_hash(&key.local, &key.remote) ^ u32::from(key.if_id.0)) as usize
+            % TCB_BUCKET_COUNT
     }
 
-    fn find_index(&self, key: &(EndpointAddr, EndpointAddr)) -> Option<usize> {
-        let bucket = Self::bucket_for(&key.0, &key.1);
+    fn find_index(&self, key: TcpFlowKey) -> Option<usize> {
+        let bucket = Self::bucket_for(key);
         let mut cursor = self.buckets[bucket];
         while let Some(index) = cursor {
             let entry = &self.entries[index];
-            if &entry.key == key {
+            if entry.key == key {
                 return Some(index);
             }
             cursor = entry.next;
@@ -766,35 +783,35 @@ impl TcbStorage {
         None
     }
 
-    fn get(&self, key: &(EndpointAddr, EndpointAddr)) -> Option<&TcpControlBlock> {
+    fn get(&self, key: TcpFlowKey) -> Option<&TcpControlBlock> {
         self.find_index(key).map(|index| &self.entries[index].entry)
     }
 
-    fn get_mut(&mut self, key: &(EndpointAddr, EndpointAddr)) -> Option<&mut TcpControlBlock> {
+    fn get_mut(&mut self, key: TcpFlowKey) -> Option<&mut TcpControlBlock> {
         let index = self.find_index(key)?;
         Some(&mut self.entries[index].entry)
     }
 
     fn insert(
         &mut self,
-        key: (EndpointAddr, EndpointAddr),
+        key: TcpFlowKey,
         entry: TcpControlBlock,
     ) -> Result<Option<TcpControlBlock>, TcpControlBlock> {
-        if let Some(index) = self.find_index(&key) {
+        if let Some(index) = self.find_index(key) {
             let old = core::mem::replace(&mut self.entries[index].entry, entry);
             return Ok(Some(old));
         }
         if self.entries.len() >= MAX_TCB_ENTRIES {
             return Err(entry);
         }
-        let bucket = Self::bucket_for(&key.0, &key.1);
+        let bucket = Self::bucket_for(key);
         let next = self.buckets[bucket];
         self.entries.push(TcbBucketEntry { key, entry, next });
         self.buckets[bucket] = Some(self.entries.len() - 1);
         Ok(None)
     }
 
-    fn remove(&mut self, key: &(EndpointAddr, EndpointAddr)) -> Option<TcpControlBlock> {
+    fn remove(&mut self, key: TcpFlowKey) -> Option<TcpControlBlock> {
         let index = self.find_index(key)?;
         let removed = self.entries.swap_remove(index).entry;
         self.rebuild_index();
@@ -815,7 +832,7 @@ impl TcbStorage {
         self.buckets = [None; TCB_BUCKET_COUNT];
         for index in 0..self.entries.len() {
             let key = self.entries[index].key;
-            let bucket = Self::bucket_for(&key.0, &key.1);
+            let bucket = Self::bucket_for(key);
             self.entries[index].next = self.buckets[bucket];
             self.buckets[bucket] = Some(index);
         }
@@ -986,7 +1003,7 @@ impl TcbTable {
         let Some(entries) = guard.as_mut() else {
             return;
         };
-        let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
+        let mut to_remove: Vec<TcpFlowKey> = Vec::new();
         for bucket_entry in entries.entries.iter() {
             let entry = &bucket_entry.entry;
             if entry.is_state(TcpConnectionState::FinWait2)
@@ -999,7 +1016,7 @@ impl TcbTable {
             }
         }
         for key in to_remove {
-            entries.remove(&key);
+            entries.remove(key);
             self.total_count.fetch_sub(1, Ordering::Relaxed);
         }
     }
@@ -1033,7 +1050,7 @@ impl TcbTable {
                     .flatten()
                 {
                     let seq = data.seq.snd_nxt;
-                    let mut builder = TcpSegmentBuilder::new(key.0.port(), key.1.port())
+                    let mut builder = TcpSegmentBuilder::new(key.local.port(), key.remote.port())
                         .seq(seq)
                         .ack(data.seq.rcv_nxt)
                         .ack_flag()
@@ -1044,20 +1061,22 @@ impl TcbTable {
                         let ts_val = (current_tick / 10) as u32;
                         builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
                     }
-                    let Ok(segment) = builder.build_checked_packet(key.0, key.1) else {
+                    let Ok(segment) = builder.build_checked_packet(key.local, key.remote) else {
                         continue;
                     };
-                    retransmit_queue_push(runtime, key.0, key.1, seq, 1, segment);
+                    retransmit_queue_push(
+                        runtime, key.if_id, key.local, key.remote, seq, 1, segment,
+                    );
                     if super::retransmit::retransmit_queue_transmit_ready(
-                        runtime, key.0, key.1, seq,
+                        runtime, key.if_id, key.local, key.remote, seq,
                     ) {
                         data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
                         data.flow_control.on_probe_sent(current_tick);
                     } else {
                         log::warn!(
                             "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
-                            key.0,
-                            key.1
+                            key.local,
+                            key.remote
                         );
                     }
                 }
@@ -1072,7 +1091,7 @@ impl TcbTable {
         let Some(entries) = guard.as_mut() else {
             return;
         };
-        let mut to_remove: Vec<(EndpointAddr, EndpointAddr)> = Vec::new();
+        let mut to_remove: Vec<TcpFlowKey> = Vec::new();
         for bucket_entry in entries.entries.iter() {
             let entry = &bucket_entry.entry;
             if entry.is_state(TcpConnectionState::TimeWait)
@@ -1085,7 +1104,7 @@ impl TcbTable {
             }
         }
         for key in to_remove {
-            entries.remove(&key);
+            entries.remove(key);
         }
     }
 
@@ -1111,7 +1130,7 @@ impl TcbTable {
         let Some(entries) = guard.as_mut() else {
             return;
         };
-        let mut to_remove: alloc::vec::Vec<(EndpointAddr, EndpointAddr)> =
+        let mut to_remove: alloc::vec::Vec<TcpFlowKey> =
             alloc::vec::Vec::with_capacity(max_per_shard);
         for bucket_entry in entries.entries.iter() {
             let entry = &bucket_entry.entry;
@@ -1125,7 +1144,7 @@ impl TcbTable {
             }
         }
         for key in to_remove {
-            if let Some(entry) = entries.remove(&key) {
+            if let Some(entry) = entries.remove(key) {
                 self.total_count.fetch_sub(1, Ordering::Relaxed);
                 if entry.is_syn_received() {
                     self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
@@ -1152,7 +1171,7 @@ impl TcbTable {
                 return Err("Too many SYN-RECV connections");
             }
         }
-        let key = (entry.local, entry.remote);
+        let key = TcpFlowKey::new(entry.if_id, entry.local, entry.remote);
         let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let storage = shard.get_or_insert_with(TcbStorage::new);
         let is_syn_recv = entry.is_syn_received();
@@ -1175,15 +1194,43 @@ impl TcbTable {
         Ok(())
     }
 
-    pub fn read<R, F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> Option<R>
+    pub fn read<R, F>(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        f: F,
+    ) -> Option<R>
     where
         F: FnOnce(&TcpControlBlock) -> R,
     {
         let shard = self.storage.read().unwrap_or_else(|e| e.into_inner());
-        shard.as_ref()?.get(&(local, remote)).map(f)
+        shard
+            .as_ref()?
+            .get(TcpFlowKey::new(if_id, local, remote))
+            .map(f)
     }
 
-    fn mutate_entry<F>(&self, local: EndpointAddr, remote: EndpointAddr, f: F) -> bool
+    pub fn read_by_socket_id<R, F>(&self, socket_id: SocketId, f: F) -> Option<R>
+    where
+        F: FnOnce(&TcpControlBlock) -> R,
+    {
+        let shard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        shard
+            .as_ref()?
+            .entries
+            .iter()
+            .find(|bucket_entry| bucket_entry.entry.socket_id == socket_id)
+            .map(|bucket_entry| f(&bucket_entry.entry))
+    }
+
+    fn mutate_entry<F>(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        f: F,
+    ) -> bool
     where
         F: FnOnce(&mut TcpControlBlock),
     {
@@ -1191,7 +1238,7 @@ impl TcbTable {
         let Some(storage) = shard.as_mut() else {
             return false;
         };
-        if let Some(entry) = storage.get_mut(&(local, remote)) {
+        if let Some(entry) = storage.get_mut(TcpFlowKey::new(if_id, local, remote)) {
             let old_state = entry.state.kind();
             f(entry);
             let new_state = entry.state.kind();
@@ -1209,28 +1256,67 @@ impl TcbTable {
         }
     }
 
-    pub(in crate::net::l4::tcp) fn record_ingress_interface(
+    fn mutate_by_socket_id<F>(&self, socket_id: SocketId, f: F) -> bool
+    where
+        F: FnOnce(&mut TcpControlBlock),
+    {
+        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let Some(storage) = shard.as_mut() else {
+            return false;
+        };
+        let Some(entry) = storage
+            .entries
+            .iter_mut()
+            .find(|bucket_entry| bucket_entry.entry.socket_id == socket_id)
+            .map(|bucket_entry| &mut bucket_entry.entry)
+        else {
+            return false;
+        };
+        let old_state = entry.state.kind();
+        f(entry);
+        let new_state = entry.state.kind();
+        if old_state != new_state {
+            if old_state == TcpConnectionState::SynReceived {
+                self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
+            }
+            if new_state == TcpConnectionState::SynReceived {
+                self.syn_recv_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        true
+    }
+
+    pub(crate) fn record_data_received_by_socket_id(
         &self,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        ingress_if_id: NetIfId,
+        socket_id: SocketId,
+        bytes: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
-            entry.ingress_if_id = Some(ingress_if_id)
-        })
+        self.mutate_by_socket_id(socket_id, |entry| entry.on_data_received(bytes))
+    }
+
+    pub(crate) fn record_data_consumed_by_socket_id(
+        &self,
+        socket_id: SocketId,
+        bytes: u32,
+    ) -> bool {
+        self.mutate_by_socket_id(socket_id, |entry| entry.on_data_consumed(bytes))
     }
 
     pub(in crate::net::l4::tcp) fn update_peer_window(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         window: u16,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.update_peer_window(window))
+        self.mutate_entry(if_id, local, remote, |entry| {
+            entry.update_peer_window(window)
+        })
     }
 
     pub(in crate::net::l4::tcp) fn record_ack_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         ack_num: u32,
@@ -1238,18 +1324,19 @@ impl TcbTable {
         current_time_ms: u64,
         rtt_sample_ms: u64,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             entry.on_ack_received(ack_num, is_dup, current_time_ms, rtt_sample_ms);
         })
     }
 
     pub(in crate::net::l4::tcp) fn record_receive_progress(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         rcv_nxt: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if let Some(seq) = entry.state.sequence_mut() {
                 seq.rcv_nxt = rcv_nxt;
             }
@@ -1258,6 +1345,7 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn record_receive_progress_with_delayed_ack(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         rcv_nxt: u32,
@@ -1265,7 +1353,7 @@ impl TcbTable {
         timestamp_echo: Option<(u32, u32)>,
     ) -> Option<u8> {
         let mut pending = None;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let Some(data) = entry.state.connection_data_mut() else {
                 return;
             };
@@ -1289,10 +1377,11 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn clear_delayed_ack(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if let Some(data) = entry.state.connection_data_mut() {
                 data.delayed_ack_pending = 0;
             }
@@ -1301,12 +1390,13 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn record_timestamp_echo(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         peer_ts_val: u32,
         local_ts_val: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if let Some(data) = entry.state.connection_data_mut() {
                 data.ts_ecr = peer_ts_val;
                 data.ts_val = local_ts_val;
@@ -1319,13 +1409,14 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn enter_simultaneous_syn_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         seq_num: u32,
         options: TcpHandshakeOptions,
     ) -> bool {
         let mut accepted = false;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             match old {
                 TcpTcbState::SynSent(mut data) => {
@@ -1344,12 +1435,13 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn establish_syn_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         ack_num: u32,
     ) -> bool {
         let mut accepted = false;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             match old {
                 TcpTcbState::SynReceived(mut data) => {
@@ -1367,6 +1459,7 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn establish_from_syn_ack(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         seq_num: u32,
@@ -1374,7 +1467,7 @@ impl TcbTable {
         options: TcpHandshakeOptions,
     ) -> bool {
         let mut accepted = false;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             match old {
                 TcpTcbState::SynSent(mut data) => {
@@ -1394,20 +1487,22 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn record_source_quench(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.on_source_quench())
+        self.mutate_entry(if_id, local, remote, |entry| entry.on_source_quench())
     }
 
     pub(in crate::net::l4::tcp) fn record_icmp_error(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         error: EndpointError,
     ) -> Option<SocketId> {
         let mut failed_socket = None;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if entry.is_state(TcpConnectionState::SynSent) {
                 match error {
                     EndpointError::ConnectionRefused | EndpointError::ProtocolUnreachable => {
@@ -1424,16 +1519,18 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn close_for_reset(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             entry.state = TcpTcbState::Closed;
         })
     }
 
     pub(in crate::net::l4::tcp) fn record_ack_and_close_progress(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         ack_num: u32,
@@ -1441,7 +1538,7 @@ impl TcbTable {
         current_time_ms: u64,
     ) -> Option<bool> {
         let mut should_remove = false;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
 
             if !is_dup {
@@ -1497,17 +1594,19 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn set_socket_id(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         socket_id: SocketId,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             entry.socket_id = socket_id;
         })
     }
 
     pub(in crate::net::l4::tcp) fn record_fin_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         rcv_nxt_at_fin: u32,
@@ -1515,7 +1614,7 @@ impl TcbTable {
     ) -> Option<(u32, bool)> {
         let mut should_ack = false;
         let mut final_rcv_nxt = rcv_nxt_at_fin;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if let Some(seq) = entry.state.sequence_mut() {
                 seq.rcv_nxt = rcv_nxt_at_fin.wrapping_add(1);
                 final_rcv_nxt = seq.rcv_nxt;
@@ -1562,13 +1661,14 @@ impl TcbTable {
 
     pub(in crate::net::l4::tcp) fn record_urgent_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         seq_num: u32,
         urgent_ptr: u16,
     ) -> Option<SocketId> {
         let mut socket_id = None;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if entry.on_urgent_received(seq_num, urgent_ptr) {
                 socket_id = Some(entry.socket_id);
             }
@@ -1579,29 +1679,32 @@ impl TcbTable {
 
     pub(crate) fn record_data_received(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         bytes: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.on_data_received(bytes))
+        self.mutate_entry(if_id, local, remote, |entry| entry.on_data_received(bytes))
     }
 
     pub(crate) fn record_data_consumed(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         bytes: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| entry.on_data_consumed(bytes))
+        self.mutate_entry(if_id, local, remote, |entry| entry.on_data_consumed(bytes))
     }
 
     pub(crate) fn mark_payload_sent(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         bytes: u32,
     ) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             entry.on_send(bytes);
             if let Some(seq) = entry.state.sequence_mut() {
                 seq.snd_nxt = seq.snd_nxt.wrapping_add(bytes);
@@ -1609,8 +1712,13 @@ impl TcbTable {
         })
     }
 
-    pub(crate) fn mark_syn_sent(&self, local: EndpointAddr, remote: EndpointAddr) -> bool {
-        self.mutate_entry(local, remote, |entry| {
+    pub(crate) fn mark_syn_sent(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> bool {
+        self.mutate_entry(if_id, local, remote, |entry| {
             if let Some(seq) = entry.state.sequence_mut() {
                 seq.snd_nxt = seq.snd_nxt.wrapping_add(1);
             }
@@ -1619,11 +1727,12 @@ impl TcbTable {
 
     pub(crate) fn begin_active_close(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> Option<u32> {
         let mut seq = None;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             entry.state = match old {
                 TcpTcbState::Established(mut data) => {
@@ -1639,11 +1748,12 @@ impl TcbTable {
 
     pub(crate) fn begin_passive_close_ack(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> Option<u32> {
         let mut seq = None;
-        self.mutate_entry(local, remote, |entry| {
+        self.mutate_entry(if_id, local, remote, |entry| {
             let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
             entry.state = match old {
                 TcpTcbState::CloseWait(mut data) => {
@@ -1657,10 +1767,15 @@ impl TcbTable {
         seq
     }
 
-    pub fn remove(&self, local: EndpointAddr, remote: EndpointAddr) -> Option<TcpControlBlock> {
+    pub fn remove(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> Option<TcpControlBlock> {
         let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let storage = shard.as_mut()?;
-        if let Some(entry) = storage.remove(&(local, remote)) {
+        if let Some(entry) = storage.remove(TcpFlowKey::new(if_id, local, remote)) {
             self.total_count.fetch_sub(1, Ordering::Relaxed);
             if entry.is_syn_received() {
                 self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
@@ -1703,13 +1818,14 @@ impl TcbTable {
 
     pub fn validate_icmp_sequence(
         &self,
+        if_id: NetIfId,
         local: EndpointAddr,
         remote: EndpointAddr,
         seq: u32,
     ) -> bool {
-        if let Some(snapshot) =
-            self.read(local, remote, |entry| TcpControlBlockSnapshot::from(entry))
-        {
+        if let Some(snapshot) = self.read(if_id, local, remote, |entry| {
+            TcpControlBlockSnapshot::from(entry)
+        }) {
             if snapshot.state == TcpConnectionState::SynSent {
                 return seq == snapshot.snd_una;
             }
@@ -1753,6 +1869,8 @@ pub struct TcpConnectionSnapshot {
 pub mod tests {
     use super::*;
 
+    const TEST_IF: NetIfId = NetIfId(7);
+
     fn test_endpoints() -> (EndpointAddr, EndpointAddr) {
         (
             EndpointAddr::new([192, 168, 1, 1], 12345),
@@ -1773,7 +1891,7 @@ pub mod tests {
         let socket_id = SocketId::from_raw(1);
         let local = EndpointAddr::new([192, 168, 1, 1], 12345);
         let remote = EndpointAddr::new([192, 168, 1, 2], 80);
-        let tcb = TcpControlBlock::closed(socket_id, local, remote);
+        let tcb = TcpControlBlock::closed(socket_id, TEST_IF, local, remote);
         assert_eq!(tcb.state(), TcpConnectionState::Closed);
         let snapshot = TcpControlBlockSnapshot::from(&tcb);
         assert_eq!(snapshot.snd_nxt, 0);
@@ -1790,16 +1908,14 @@ pub mod tests {
             local,
             remote,
             1000,
-            None,
             false,
-            0,
-            InterfaceScope::Any,
-            None,
+            TEST_IF,
         );
         table.insert(tcb).expect("insert syn-sent tcb");
-        assert!(table.mark_syn_sent(local, remote));
+        assert!(table.mark_syn_sent(TEST_IF, local, remote));
 
         assert!(table.establish_from_syn_ack(
+            TEST_IF,
             local,
             remote,
             2000,
@@ -1808,7 +1924,7 @@ pub mod tests {
         ));
 
         let snapshot = table
-            .read(local, remote, TcpControlBlockSnapshot::from)
+            .read(TEST_IF, local, remote, TcpControlBlockSnapshot::from)
             .expect("established tcb snapshot");
         assert_eq!(snapshot.state, TcpConnectionState::Established);
         assert_eq!(snapshot.snd_una, 1001);
@@ -1826,17 +1942,17 @@ pub mod tests {
             7000,
             3000,
             false,
-            0,
+            TEST_IF,
             TcpHandshakeOptions::default(),
         );
         table.insert(tcb).expect("insert syn-received tcb");
 
         assert_eq!(table.syn_recv_count(), 1);
-        assert!(table.establish_syn_received(local, remote, 7001));
+        assert!(table.establish_syn_received(TEST_IF, local, remote, 7001));
         assert_eq!(table.syn_recv_count(), 0);
 
         let state = table
-            .read(local, remote, |entry| {
+            .read(TEST_IF, local, remote, |entry| {
                 TcpControlBlockSnapshot::from(entry).state
             })
             .expect("established tcb state");
@@ -1847,15 +1963,19 @@ pub mod tests {
     pub fn test_tcp_tcb_table_rejects_invalid_transition() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
-        let tcb = TcpControlBlock::closed(SocketId::from_raw(4), local, remote);
+        let tcb = TcpControlBlock::closed(SocketId::from_raw(4), TEST_IF, local, remote);
         table.insert(tcb).expect("insert closed tcb");
 
-        assert!(!table.establish_syn_received(local, remote, 1));
-        assert!(table.begin_active_close(local, remote).is_none());
-        assert!(table.begin_passive_close_ack(local, remote).is_none());
+        assert!(!table.establish_syn_received(TEST_IF, local, remote, 1));
+        assert!(table.begin_active_close(TEST_IF, local, remote).is_none());
+        assert!(
+            table
+                .begin_passive_close_ack(TEST_IF, local, remote)
+                .is_none()
+        );
 
         let state = table
-            .read(local, remote, |entry| {
+            .read(TEST_IF, local, remote, |entry| {
                 TcpControlBlockSnapshot::from(entry).state
             })
             .expect("closed tcb state");
@@ -1871,15 +1991,13 @@ pub mod tests {
             local,
             remote,
             9000,
-            None,
             false,
-            0,
-            InterfaceScope::Any,
-            None,
+            TEST_IF,
         );
         table.insert(tcb).expect("insert syn-sent tcb");
-        assert!(table.mark_syn_sent(local, remote));
+        assert!(table.mark_syn_sent(TEST_IF, local, remote));
         assert!(table.establish_from_syn_ack(
+            TEST_IF,
             local,
             remote,
             4000,
@@ -1887,24 +2005,57 @@ pub mod tests {
             TcpHandshakeOptions::default(),
         ));
 
-        assert_eq!(table.begin_active_close(local, remote), Some(9001));
+        assert_eq!(table.begin_active_close(TEST_IF, local, remote), Some(9001));
         let snapshot = table
-            .read(local, remote, TcpControlBlockSnapshot::from)
+            .read(TEST_IF, local, remote, TcpControlBlockSnapshot::from)
             .expect("fin-wait tcb snapshot");
         assert_eq!(snapshot.state, TcpConnectionState::FinWait1);
         assert_eq!(snapshot.snd_nxt, 9002);
 
         let (final_rcv_nxt, should_ack) = table
-            .record_fin_received(local, remote, snapshot.rcv_nxt, 123)
+            .record_fin_received(TEST_IF, local, remote, snapshot.rcv_nxt, 123)
             .expect("fin receive transition");
         assert!(should_ack);
         assert_eq!(final_rcv_nxt, snapshot.rcv_nxt.wrapping_add(1));
         let state = table
-            .read(local, remote, |entry| {
+            .read(TEST_IF, local, remote, |entry| {
                 TcpControlBlockSnapshot::from(entry).state
             })
             .expect("closing tcb state");
         assert_eq!(state, TcpConnectionState::Closing);
+    }
+
+    #[cfg_attr(test, test_case)]
+    pub fn test_tcp_tcb_table_separates_identical_five_tuple_by_interface() {
+        let table = TcbTable::new();
+        let (local, remote) = test_endpoints();
+        let other_if = NetIfId(8);
+        table
+            .insert(TcpControlBlock::closed(
+                SocketId::from_raw(10),
+                TEST_IF,
+                local,
+                remote,
+            ))
+            .expect("insert first interface flow");
+        table
+            .insert(TcpControlBlock::closed(
+                SocketId::from_raw(11),
+                other_if,
+                local,
+                remote,
+            ))
+            .expect("insert second interface flow");
+
+        assert_eq!(
+            table.read(TEST_IF, local, remote, |entry| entry.socket_id),
+            Some(SocketId::from_raw(10))
+        );
+        assert_eq!(
+            table.read(other_if, local, remote, |entry| entry.socket_id),
+            Some(SocketId::from_raw(11))
+        );
+        assert_eq!(table.total_count.load(Ordering::Relaxed), 2);
     }
 
     #[cfg_attr(test, test_case)]

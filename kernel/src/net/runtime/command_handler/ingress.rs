@@ -313,6 +313,7 @@ impl RuntimeCommandHandler {
                         };
                         stack.process_icmp_payload(
                             runtime,
+                            ingress_if_id,
                             transport_payload,
                             src_ip,
                             dst_ip,
@@ -333,7 +334,7 @@ impl RuntimeCommandHandler {
                         else {
                             return EventHandleResult::Success;
                         };
-                        stack.process_igmp_payload(&transport_payload, src_ip, ttl);
+                        stack.process_igmp_payload(ingress_if_id, &transport_payload, src_ip, ttl);
                     }
                 }
                 _ => {}
@@ -556,13 +557,21 @@ impl RuntimeCommandHandler {
                 let Ok(payload) = packet.into_payload() else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
-                stack.process_icmp_payload(runtime, payload, src_ip, dst_ip, ttl, current_time);
+                stack.process_icmp_payload(
+                    runtime,
+                    ingress_if_id,
+                    payload,
+                    src_ip,
+                    dst_ip,
+                    ttl,
+                    current_time,
+                );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Igmp(packet, src_ip, ttl) => {
                 let Ok(payload) = packet.into_payload() else {
                     return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
                 };
-                stack.process_igmp_payload(&payload, src_ip, ttl);
+                stack.process_igmp_payload(ingress_if_id, &payload, src_ip, ttl);
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::Udp(packet, src_ip, dst_ip, ttl) => {
                 let (src_port, dst_port, data_len) = {
@@ -621,6 +630,7 @@ impl RuntimeCommandHandler {
             crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
             crate::net::l3::ipv4::Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
                 stack.send_icmp_time_exceeded_payload(
+                    ingress_if_id,
                     src,
                     crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
                     header_data,
@@ -649,6 +659,7 @@ impl RuntimeCommandHandler {
                     src
                 );
                 stack.send_icmp_error_payload(
+                    ingress_if_id,
                     src,
                     crate::net::l3::icmp::DestUnreachCode::ProtocolUnreachable,
                     None,

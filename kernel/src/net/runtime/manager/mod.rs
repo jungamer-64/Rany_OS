@@ -28,6 +28,13 @@ pub enum LinkState {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PrimaryPreference {
+    Prefer,
+    Auto,
+    Never,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TopologyChange {
     Unchanged,
     Changed,
@@ -118,6 +125,8 @@ pub struct NetworkInterfaceInfo {
     pub administrative_state: AdministrativeState,
     pub link_state: LinkState,
     pub config: Option<NetworkConfig>,
+    primary_preference: PrimaryPreference,
+    was_operational: bool,
 }
 
 impl NetworkInterfaceInfo {
@@ -181,7 +190,11 @@ impl NetworkManager {
         }
     }
 
-    fn register_interface(&mut self, name: &'static str) -> Result<NetIfId, NetworkError> {
+    fn register_interface(
+        &mut self,
+        name: &'static str,
+        primary_preference: PrimaryPreference,
+    ) -> Result<NetIfId, NetworkError> {
         let raw_if_id = self.next_if_id.ok_or(NetworkError::ResourceExhausted)?;
         let if_id = NetIfId(raw_if_id);
         if self.interfaces.contains_key(&if_id) {
@@ -197,6 +210,8 @@ impl NetworkManager {
                 administrative_state: AdministrativeState::Enabled,
                 link_state: LinkState::Down,
                 config: None,
+                primary_preference,
+                was_operational: false,
             },
         );
         Ok(if_id)
@@ -231,11 +246,51 @@ impl NetworkManager {
         if removed {
             self.routes_v4.retain(|route| route.if_id != if_id);
             self.routes_v6.retain(|route| route.if_id != if_id);
-            if self.primary == Some(if_id) {
-                self.primary = None;
-            }
+            self.reconcile_primary(None);
         }
         removed
+    }
+
+    fn automatic_primary(&self) -> Option<NetIfId> {
+        [PrimaryPreference::Prefer, PrimaryPreference::Auto]
+            .into_iter()
+            .find_map(|preference| {
+                self.interfaces.iter().find_map(|(&if_id, interface)| {
+                    (interface.primary_preference == preference && interface.is_operational())
+                        .then_some(if_id)
+                })
+            })
+    }
+
+    fn reconcile_primary(&mut self, first_operational: Option<NetIfId>) {
+        if first_operational.is_some_and(|if_id| {
+            self.interfaces.get(&if_id).is_some_and(|interface| {
+                interface.primary_preference == PrimaryPreference::Prefer
+                    && interface.is_operational()
+            })
+        }) {
+            self.primary = first_operational;
+            return;
+        }
+
+        if self.primary.is_some_and(|if_id| {
+            self.interfaces
+                .get(&if_id)
+                .is_some_and(|interface| interface.is_operational())
+        }) {
+            return;
+        }
+        self.primary = self.automatic_primary();
+    }
+
+    fn note_first_operational(&mut self, if_id: NetIfId) -> Option<NetIfId> {
+        let interface = self.interfaces.get_mut(&if_id)?;
+        if interface.is_operational() && !interface.was_operational {
+            interface.was_operational = true;
+            Some(if_id)
+        } else {
+            None
+        }
     }
 
     fn set_interface_config(
@@ -252,6 +307,32 @@ impl NetworkManager {
         }
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
+        let first_operational = self.note_first_operational(if_id);
+        self.reconcile_primary(first_operational);
+        Ok(TopologyChange::Changed)
+    }
+
+    fn set_primary_preference(
+        &mut self,
+        if_id: NetIfId,
+        preference: PrimaryPreference,
+    ) -> Result<TopologyChange, NetworkError> {
+        let interface = self
+            .interfaces
+            .get_mut(&if_id)
+            .ok_or(NetworkError::InvalidAddress)?;
+        if interface.primary_preference == preference {
+            if preference == PrimaryPreference::Prefer && interface.is_operational() {
+                return self.set_primary_interface(if_id);
+            }
+            return Ok(TopologyChange::Unchanged);
+        }
+        interface.primary_preference = preference;
+        if preference == PrimaryPreference::Prefer && interface.is_operational() {
+            self.primary = Some(if_id);
+        } else {
+            self.reconcile_primary(None);
+        }
         Ok(TopologyChange::Changed)
     }
 
@@ -268,9 +349,8 @@ impl NetworkManager {
             return Ok(TopologyChange::Unchanged);
         }
         iface.administrative_state = state;
-        if matches!(state, AdministrativeState::Disabled) && self.primary == Some(if_id) {
-            self.primary = None;
-        }
+        let first_operational = self.note_first_operational(if_id);
+        self.reconcile_primary(first_operational);
         Ok(TopologyChange::Changed)
     }
 
@@ -287,9 +367,8 @@ impl NetworkManager {
             return Ok(TopologyChange::Unchanged);
         }
         iface.link_state = state;
-        if matches!(state, LinkState::Down) && self.primary == Some(if_id) {
-            self.primary = None;
-        }
+        let first_operational = self.note_first_operational(if_id);
+        self.reconcile_primary(first_operational);
         Ok(TopologyChange::Changed)
     }
 
@@ -306,15 +385,6 @@ impl NetworkManager {
         }
         self.primary = Some(if_id);
         Ok(TopologyChange::Changed)
-    }
-
-    fn clear_primary_interface(&mut self, expected: NetIfId) -> TopologyChange {
-        if self.primary == Some(expected) {
-            self.primary = None;
-            TopologyChange::Changed
-        } else {
-            TopologyChange::Unchanged
-        }
     }
 
     fn add_ipv4_route(&mut self, route: Ipv4Route) -> Result<(), NetworkError> {
@@ -653,9 +723,10 @@ where
 pub fn register_interface_in(
     runtime: NetRuntimeHandle,
     name: &'static str,
+    primary_preference: PrimaryPreference,
 ) -> Result<NetIfId, NetworkError> {
     mutate_topology_in(runtime, |manager| {
-        let if_id = manager.register_interface(name)?;
+        let if_id = manager.register_interface(name, primary_preference)?;
         Ok((if_id, TopologyChange::Changed))
     })
 }
@@ -779,6 +850,17 @@ pub fn set_interface_config_in(
     })
 }
 
+pub(crate) fn set_primary_preference_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    preference: PrimaryPreference,
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.set_primary_preference(if_id, preference)?;
+        Ok(((), change))
+    })
+}
+
 pub fn set_interface_up_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Result<(), NetworkError> {
     set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Enabled)
 }
@@ -824,16 +906,6 @@ pub fn set_primary_interface_in(
 ) -> Result<(), NetworkError> {
     mutate_topology_in(runtime, |manager| {
         let change = manager.set_primary_interface(if_id)?;
-        Ok(((), change))
-    })
-}
-
-pub fn clear_primary_interface_in(
-    runtime: NetRuntimeHandle,
-    expected: NetIfId,
-) -> Result<(), NetworkError> {
-    mutate_topology_in(runtime, |manager| {
-        let change = manager.clear_primary_interface(expected);
         Ok(((), change))
     })
 }
@@ -914,17 +986,34 @@ pub fn set_default_route_v6_in(
 mod tests {
     use super::*;
 
+    fn configured_manager_interface(
+        manager: &mut NetworkManager,
+        name: &'static str,
+        preference: PrimaryPreference,
+    ) -> NetIfId {
+        let if_id = manager
+            .register_interface(name, preference)
+            .expect("register interface");
+        manager
+            .set_interface_config(if_id, NetworkConfig::default())
+            .expect("configure interface");
+        manager
+            .set_link_state(if_id, LinkState::Up)
+            .expect("raise link");
+        if_id
+    }
+
     #[test]
     fn interface_ids_do_not_wrap_after_exhaustion() {
         let mut manager = NetworkManager::new();
         manager.next_if_id = Some(u16::MAX);
 
         let if_id = manager
-            .register_interface("last-if")
+            .register_interface("last-if", PrimaryPreference::Auto)
             .expect("last representable interface id");
         assert_eq!(if_id, NetIfId(u16::MAX));
         assert_eq!(
-            manager.register_interface("wrapped-if"),
+            manager.register_interface("wrapped-if", PrimaryPreference::Auto),
             Err(NetworkError::ResourceExhausted)
         );
         assert_eq!(manager.interfaces.len(), 1);
@@ -933,35 +1022,115 @@ mod tests {
     #[test]
     fn network_manager_rejects_interface_id_reuse() {
         let mut manager = NetworkManager::new();
-        let if_id = manager.register_interface("if0").expect("first interface");
+        let if_id = manager
+            .register_interface("if0", PrimaryPreference::Auto)
+            .expect("first interface");
         assert_eq!(if_id, NetIfId(0));
 
         manager.next_if_id = Some(0);
         assert_eq!(
-            manager.register_interface("if0-reused"),
+            manager.register_interface("if0-reused", PrimaryPreference::Auto),
             Err(NetworkError::ResourceExhausted)
         );
         assert_eq!(manager.interfaces.len(), 1);
     }
 
     #[test]
-    fn configured_interfaces_preserve_ids_above_fixed_array_ranges() {
+    fn active_interfaces_preserve_ids_above_fixed_array_ranges() {
         let mut manager = NetworkManager::new();
         manager.next_if_id = Some(31);
-        let if_31 = manager.register_interface("if31").expect("interface 31");
-        let if_32 = manager.register_interface("if32").expect("interface 32");
-        manager
-            .set_interface_config(if_31, NetworkConfig::default())
-            .expect("configure interface 31");
-        manager
-            .set_interface_config(if_32, NetworkConfig::default())
-            .expect("configure interface 32");
+        let if_31 = configured_manager_interface(&mut manager, "if31", PrimaryPreference::Auto);
+        let if_32 = configured_manager_interface(&mut manager, "if32", PrimaryPreference::Auto);
 
-        let configured = manager
-            .try_configured_interfaces()
-            .expect("configured interface snapshot allocation");
-        assert_eq!(configured.len(), 2);
-        assert!(configured.iter().any(|(if_id, _)| *if_id == NetIfId(31)));
-        assert!(configured.iter().any(|(if_id, _)| *if_id == NetIfId(32)));
+        let active = manager
+            .try_active_interfaces()
+            .expect("active interface snapshot allocation");
+        assert_eq!(active.len(), 2);
+        assert!(active.iter().any(|entry| entry.if_id == if_31));
+        assert!(active.iter().any(|entry| entry.if_id == if_32));
+    }
+
+    #[test]
+    fn topology_revision_changes_once_per_real_mutation() {
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
+        init_network_manager_in(runtime);
+
+        let initial = current_interface_topology_revision_in(runtime);
+        let if_id = register_interface_in(runtime, "if0", PrimaryPreference::Auto)
+            .expect("register interface");
+        let registered = current_interface_topology_revision_in(runtime);
+        assert_ne!(registered, initial);
+
+        set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Enabled)
+            .expect("repeat enabled state");
+        assert_eq!(current_interface_topology_revision_in(runtime), registered);
+
+        set_interface_config_in(runtime, if_id, NetworkConfig::default())
+            .expect("configure interface");
+        let configured = current_interface_topology_revision_in(runtime);
+        assert_ne!(configured, registered);
+        set_interface_config_in(runtime, if_id, NetworkConfig::default())
+            .expect("repeat configuration");
+        assert_eq!(current_interface_topology_revision_in(runtime), configured);
+
+        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise link");
+        let linked = current_interface_topology_revision_in(runtime);
+        assert_ne!(linked, configured);
+        assert_eq!(primary_interface_in(runtime), Some(if_id));
+        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("repeat link state");
+        set_primary_interface_in(runtime, if_id).expect("repeat primary");
+        assert_eq!(current_interface_topology_revision_in(runtime), linked);
+    }
+
+    #[test]
+    fn primary_rejects_unknown_and_non_operational_interfaces() {
+        let mut manager = NetworkManager::new();
+        let if_id = manager
+            .register_interface("down", PrimaryPreference::Never)
+            .expect("register interface");
+
+        assert_eq!(
+            manager.set_primary_interface(NetIfId(99)),
+            Err(NetworkError::InvalidAddress)
+        );
+        assert_eq!(
+            manager.set_primary_interface(if_id),
+            Err(NetworkError::NetworkUnreachable)
+        );
+    }
+
+    #[test]
+    fn primary_failover_is_deterministic_and_recovery_does_not_preempt() {
+        let mut manager = NetworkManager::new();
+        let auto_low =
+            configured_manager_interface(&mut manager, "auto-low", PrimaryPreference::Auto);
+        let prefer =
+            configured_manager_interface(&mut manager, "prefer", PrimaryPreference::Prefer);
+        let auto_high =
+            configured_manager_interface(&mut manager, "auto-high", PrimaryPreference::Auto);
+        let never = configured_manager_interface(&mut manager, "never", PrimaryPreference::Never);
+
+        assert_eq!(manager.primary, Some(prefer));
+        manager
+            .set_link_state(prefer, LinkState::Down)
+            .expect("lower preferred link");
+        assert_eq!(manager.primary, Some(auto_low));
+        manager
+            .set_administrative_state(auto_low, AdministrativeState::Disabled)
+            .expect("disable lower auto interface");
+        assert_eq!(manager.primary, Some(auto_high));
+
+        manager
+            .set_link_state(prefer, LinkState::Up)
+            .expect("recover preferred link");
+        assert_eq!(manager.primary, Some(auto_high));
+
+        assert!(manager.unregister_interface(auto_high));
+        assert_eq!(manager.primary, Some(prefer));
+        manager
+            .set_link_state(prefer, LinkState::Down)
+            .expect("lower preferred link again");
+        assert_eq!(manager.primary, None);
+        assert!(manager.get_interface(never).is_some());
     }
 }

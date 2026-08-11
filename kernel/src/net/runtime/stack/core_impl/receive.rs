@@ -18,25 +18,29 @@ impl NetworkStack {
     pub fn process_icmp_payload(
         &mut self,
         runtime: NetRuntimeHandle,
+        ingress_if_id: NetIfId,
         payload: kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         _ttl: u8,
         current_time: u64,
     ) {
-        if !self.icmp_echo_enabled() {
+        let Some(ingress_config) = self.interface_config(ingress_if_id) else {
+            return;
+        };
+        if !ingress_config.icmp_echo_enabled {
             return;
         }
 
         if dst_ip.is_broadcast()
             || dst_ip.is_multicast()
-            || dst_ip == self.config().ipv4.broadcast_address()
+            || dst_ip == ingress_config.ipv4.broadcast_address()
         {
             return;
         }
 
         let result = {
-            let Some((_, state)) = self.primary_interface_state_mut() else {
+            let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
                 return;
             };
             state
@@ -57,17 +61,18 @@ impl NetworkStack {
                     data_offset,
                     data_len,
                 ) else {
-                    self.stats().record_rx_error();
+                    self.record_rx_error_on(ingress_if_id);
                     return;
                 };
                 let Some(echo_data) = bounds
                     .take_from(payload)
                     .and_then(|window| window.into_payload().ok())
                 else {
-                    self.stats().record_rx_error();
+                    self.record_rx_error_on(ingress_if_id);
                     return;
                 };
                 self.send_icmp_echo_reply_payload(
+                    ingress_if_id,
                     src_ip,
                     identifier,
                     sequence,
@@ -98,14 +103,21 @@ impl NetworkStack {
                 );
             }
             IcmpResult::Error { icmp_type, code } => {
-                self.handle_icmp_error_payload(runtime, &payload, icmp_type, code, current_time);
+                self.handle_icmp_error_payload(
+                    runtime,
+                    ingress_if_id,
+                    &payload,
+                    icmp_type,
+                    code,
+                    current_time,
+                );
             }
             IcmpResult::Redirect {
                 code,
                 gateway,
                 destination,
             } => {
-                self.handle_icmp_redirect(code, gateway, destination, src_ip);
+                self.handle_icmp_redirect(ingress_if_id, code, gateway, destination, src_ip);
             }
             IcmpResult::SendTimestampReply {
                 src_ip,
@@ -116,6 +128,7 @@ impl NetworkStack {
                 transmit_ts,
             } => {
                 self.send_icmp_timestamp_reply(
+                    ingress_if_id,
                     src_ip,
                     identifier,
                     sequence,
@@ -125,7 +138,7 @@ impl NetworkStack {
                     current_time,
                 );
             }
-            IcmpResult::Invalid => self.stats().record_rx_error(),
+            IcmpResult::Invalid => self.record_rx_error_on(ingress_if_id),
             IcmpResult::Ignored => {}
         }
     }
@@ -154,7 +167,7 @@ impl NetworkStack {
         }
 
         let Some(packet_ref) = ip_packet.take() else {
-            self.stats().record_rx_error();
+            self.record_rx_error_on(ingress_if_id);
             return;
         };
         let result = {
@@ -172,7 +185,7 @@ impl NetworkStack {
         match result {
             Ipv6ProcessResult::Icmpv6(packet, src, dst, hop_limit) => {
                 let Ok(icmpv6_payload) = packet.into_payload() else {
-                    self.stats().record_rx_error();
+                    self.record_rx_error_on(ingress_if_id);
                     return;
                 };
                 self.process_icmpv6_data(
@@ -188,7 +201,7 @@ impl NetworkStack {
             }
             Ipv6ProcessResult::Tcp(packet, src, dst, _hop_limit) => {
                 let Ok(tcp_segment_payload) = packet.into_payload() else {
-                    self.stats().record_rx_error();
+                    self.record_rx_error_on(ingress_if_id);
                     return;
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
@@ -232,21 +245,21 @@ impl NetworkStack {
                         fh.len(),
                         kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
                     ) else {
-                        self.stats().record_rx_error();
+                        self.record_rx_error_on(ingress_if_id);
                         return;
                     };
                     if writer.write_generated_bytes(&fh).is_none() {
-                        self.stats().record_rx_error();
+                        self.record_rx_error_on(ingress_if_id);
                         return;
                     }
                     if let Some(fragment_header) = writer.finish() {
                         crate::net::payload::append_payload(&mut quoted, fragment_header);
                     } else {
-                        self.stats().record_rx_error();
+                        self.record_rx_error_on(ingress_if_id);
                         return;
                     }
                 }
-                self.send_icmpv6_time_exceeded(src, 1, quoted);
+                self.send_icmpv6_time_exceeded_on(ingress_if_id, src, 1, quoted);
             }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => match err {
                 crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
@@ -259,13 +272,20 @@ impl NetworkStack {
                 crate::net::l3::ipv6::Ipv6ReassemblyError::InvalidSize
                 | crate::net::l3::ipv6::Ipv6ReassemblyError::PacketTooLarge => {
                     // RFC 8200: Parameter Problem, pointer to Payload Length field.
-                    self.send_icmpv6_parameter_problem_payload(src, 0, 4, quoted_packet);
+                    self.send_icmpv6_parameter_problem_payload(
+                        ingress_if_id,
+                        src,
+                        0,
+                        4,
+                        quoted_packet,
+                    );
                 }
                 crate::net::l3::ipv6::Ipv6ReassemblyError::IncompleteHeaderChain => {
                     // RFC 7112: pointer targets first byte of Fragment Header.
                     let fragment_header_pointer =
                         (quoted_packet.total_len() as u32).saturating_sub(8);
                     self.send_icmpv6_parameter_problem_payload(
+                        ingress_if_id,
                         src,
                         0,
                         fragment_header_pointer,
@@ -275,14 +295,20 @@ impl NetworkStack {
             },
             Ipv6ProcessResult::UnknownNextHeader(_proto, pointer, src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.4: Parameter Problem (Code 1).
-                self.send_icmpv6_parameter_problem_payload(src, 1, pointer, orig_packet);
+                self.send_icmpv6_parameter_problem_payload(
+                    ingress_if_id,
+                    src,
+                    1,
+                    pointer,
+                    orig_packet,
+                );
             }
             Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.3: Time Exceeded (Code 0).
-                self.send_icmpv6_time_exceeded(src, 0, orig_packet);
+                self.send_icmpv6_time_exceeded_on(ingress_if_id, src, 0, orig_packet);
             }
-            Ipv6ProcessResult::Dropped => self.stats().record_dropped(),
-            Ipv6ProcessResult::Error => self.stats().record_rx_error(),
+            Ipv6ProcessResult::Dropped => self.record_dropped_on(ingress_if_id),
+            Ipv6ProcessResult::Error => self.record_rx_error_on(ingress_if_id),
         }
     }
 
@@ -421,6 +447,7 @@ impl NetworkStack {
                                         TcpEndpointAddr::new_v6(dst.octets(), dst_port);
 
                                     if !tcp_table_in(runtime).validate_icmp_sequence(
+                                        ingress_if_id,
                                         local_addr,
                                         remote_addr,
                                         seq_num,
@@ -481,6 +508,7 @@ impl NetworkStack {
                 );
                 self.handle_icmpv6_error_transport_notification(
                     runtime,
+                    ingress_if_id,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::DestinationUnreachable,
@@ -502,6 +530,7 @@ impl NetworkStack {
                 );
                 self.handle_icmpv6_error_transport_notification(
                     runtime,
+                    ingress_if_id,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::TimeExceeded,
@@ -525,6 +554,7 @@ impl NetworkStack {
                 );
                 self.handle_icmpv6_error_transport_notification(
                     runtime,
+                    ingress_if_id,
                     quoted_src,
                     quoted_dst,
                     Icmpv6Type::ParameterProblem,
@@ -590,7 +620,7 @@ impl NetworkStack {
                     let Some(na_msg) =
                         NdpProcessor::build_na(&our_addr, &na_dst, &target, &our_mac, solicited)
                     else {
-                        self.stats().record_dropped();
+                        self.record_dropped_on(ingress_if_id);
                         return;
                     };
                     self.send_ipv6_icmpv6_on(ingress_if_id, &our_addr, &na_dst, na_msg);
@@ -609,7 +639,7 @@ impl NetworkStack {
                         &our_addr, &mcast_dst, &target, &our_mac,
                         false, // solicited = false for multicast defense
                     ) else {
-                        self.stats().record_dropped();
+                        self.record_dropped_on(ingress_if_id);
                         return;
                     };
                     self.send_ipv6_icmpv6_on(ingress_if_id, &our_addr, &mcast_dst, na_msg);
@@ -627,7 +657,7 @@ impl NetworkStack {
                     return;
                 };
                 let Some(ns_msg) = NdpProcessor::build_ns(&src, &dst, &target, &src_mac) else {
-                    self.stats().record_dropped();
+                    self.record_dropped_on(ingress_if_id);
                     return;
                 };
                 self.send_ipv6_icmpv6_on(ingress_if_id, &src, &dst, ns_msg);
@@ -648,7 +678,7 @@ impl NetworkStack {
                 // NDP解決完了をウェイターレジストリへ通知（非同期NdpResolveFuture向け）
                 crate::net::l3::ndp::notify_ndp_resolved_in(
                     runtime,
-                    Some(ingress_if_id.0),
+                    ingress_if_id,
                     ip.octets(),
                     mac,
                 );
@@ -782,7 +812,10 @@ impl NetworkStack {
                 destination,
             } => {
                 // SECURITY: check 0: Redirect handling が global に有効か確認する。
-                if !self.config().icmpv6_redirect_enabled {
+                let redirects_enabled = self
+                    .interface_config(if_id)
+                    .is_some_and(|config| config.icmpv6_redirect_enabled);
+                if !redirects_enabled {
                     log::warn!(
                         "NDP: Ignoring Redirect for {} to target router {} (Security: disabled by default)",
                         destination,
@@ -805,6 +838,7 @@ impl NetworkStack {
 
     pub fn process_igmp_payload(
         &mut self,
+        if_id: NetIfId,
         payload: &kernel_api::resource::net::PacketPayload,
         src_ip: Ipv4Address,
         ttl: u8,
@@ -814,10 +848,7 @@ impl NetworkStack {
             return;
         }
 
-        let Some((_, config)) = self
-            .primary_interface_state()
-            .map(|(if_id, state)| (if_id, state.config))
-        else {
+        let Some(config) = self.interface_config(if_id) else {
             return;
         };
         let local_ip = config.ipv4.address;
@@ -829,7 +860,7 @@ impl NetworkStack {
 
         let current_time = self.current_time();
         let result = {
-            let Some((_, state)) = self.primary_interface_state_mut() else {
+            let Some(state) = self.interfaces.get_mut(&if_id) else {
                 return;
             };
             state.igmp.update_time(current_time);
@@ -845,10 +876,14 @@ impl NetworkStack {
             IgmpResult::ReportReceived { group: _ } => {}
             IgmpResult::Ignored => {}
             IgmpResult::InvalidPacket | IgmpResult::InvalidChecksum => {
-                self.stats().record_rx_error();
+                if let Some(stats) = self.interface_stats(if_id) {
+                    stats.record_rx_error();
+                }
             }
             IgmpResult::UnknownType(_) => {
-                self.stats().record_dropped();
+                if let Some(stats) = self.interface_stats(if_id) {
+                    stats.record_dropped();
+                }
             }
         }
 

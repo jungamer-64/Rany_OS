@@ -83,7 +83,7 @@ impl NetworkStack {
                         drop(frame);
                         if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                             let _ = self.transmit_packet_on(
-                                Some(if_id),
+                                if_id,
                                 kernel_api::resource::net::PacketPayload::single(packet),
                             );
                         }
@@ -177,6 +177,7 @@ impl NetworkStack {
                 }
                 if !dst_ip.is_broadcast() && !dst_ip.is_multicast() {
                     self.send_icmp_error_payload(
+                        resolved_if_id,
                         src_ip,
                         DestUnreachCode::PortUnreachable,
                         None,
@@ -222,7 +223,7 @@ impl NetworkStack {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {
                     stats.record_dropped();
                 }
-                self.send_icmpv6_error_payload(src, 4, original_packet);
+                self.send_icmpv6_error_payload(resolved_if_id, src, 4, original_packet);
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {

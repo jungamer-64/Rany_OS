@@ -330,6 +330,7 @@ pub enum DhcpState {
 
 pub struct DhcpClient {
     pub(crate) runtime: NetRuntimeHandle,
+    pub(crate) if_id: crate::net::runtime::manager::NetIfId,
     pub(crate) mac_address: MacAddress,
     pub(crate) state: PoisonLock<DhcpState>,
     pub(crate) xid: AtomicU32,
