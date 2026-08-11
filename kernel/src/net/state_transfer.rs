@@ -66,7 +66,7 @@ impl StateTransfer for NetworkCellState {
 
         let source_id = crate::net::runtime::context::NetRuntimeId(state.metadata.source_cell_id);
         let runtime = crate::net::runtime::context::runtime(source_id)
-            .unwrap_or_else(crate::net::runtime::default_runtime);
+            .ok_or(StateImportError::RestoreFailed)?;
         let present = state.data[0];
         if present == 1 && state.data.len() >= 3 {
             let mut id_bytes = [0u8; 2];

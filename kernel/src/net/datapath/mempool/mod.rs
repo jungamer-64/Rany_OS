@@ -853,6 +853,7 @@ impl Mempool {
             if !refilled {
                 // Global list is empty. Attempt work stealing from remote CPU local caches.
                 let max_cpus = crate::per_cpu::MAX_CPUS;
+                // Pass 1: Look for remote caches with multiple buffers (steal half to maintain locality)
                 for offset in 1..max_cpus {
                     let remote_cpu = (cpu_id + offset) % max_cpus;
                     let remote_lock = &self.local_caches[remote_cpu];
@@ -864,6 +865,20 @@ impl Mempool {
                             cache.extend(stolen);
                             refilled = true;
                             break;
+                        }
+                    }
+                }
+                // Pass 2: Emergency fallback — steal single buffer if any remote cache has one
+                if !refilled {
+                    for offset in 1..max_cpus {
+                        let remote_cpu = (cpu_id + offset) % max_cpus;
+                        let remote_lock = &self.local_caches[remote_cpu];
+                        if let Ok(mut remote_cache) = remote_lock.try_lock() {
+                            if let Some(buf) = remote_cache.pop() {
+                                cache.push(buf);
+                                refilled = true;
+                                break;
+                            }
                         }
                     }
                 }
