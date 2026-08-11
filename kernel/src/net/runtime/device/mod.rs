@@ -860,8 +860,6 @@ fn runtime_schedule_event(
     event: NetDriverEvent,
 ) -> Result<(), &'static str> {
     let runtime = runtime_context_from_cookie(cookie)?.handle();
-    let _ = crate::net::event_queue::NET_EVENT_QUEUE
-        .push(crate::net::event_queue::NetworkEvent::PacketReceived);
     let queued = if in_interrupt_context() {
         enqueue_event_from_isr_in(runtime, port_id, event)
     } else {

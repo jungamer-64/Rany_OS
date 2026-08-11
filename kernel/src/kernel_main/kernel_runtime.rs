@@ -906,14 +906,18 @@ pub(crate) fn spawn_core_runtime_tasks() {
     // [PR-COMPLIANCE] ICMP Responder activation log
     info!(target: "init", "ICMP responder server active");
 
-    // Initialize network event handler and spawn background tasks for multi-core async networking
+    // Initialize network event handler and spawn per-core command consumer workers across all active CPU cores
     let net_runtime = crate::net::runtime::default_runtime();
     crate::net::runtime::command_handler::init_network_event_handler();
-    spawn_early_network_task(
-        "network event task",
-        crate::task::Priority::High,
-        crate::net::runtime::command_loop::runtime_command_task_in(net_runtime),
-    );
+
+    let num_cpus = crate::task::executor_slot_count().max(1);
+    for cpu_id in 0..num_cpus {
+        crate::task::spawn_on_cpu_with_priority(
+            cpu_id,
+            crate::task::Priority::High,
+            crate::net::runtime::command_loop::runtime_command_task_in(net_runtime),
+        );
+    }
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)
     spawn_early_network_task(
