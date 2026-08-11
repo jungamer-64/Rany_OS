@@ -305,6 +305,7 @@ pub struct InterfaceStackState {
     arp_pending_queue: ArpPendingQueue,
     ndp_pending_queue: NdpPendingQueue,
     ipv6_pmtu_cache: Ipv6PmtuCache,
+    pub(crate) config_generation: u64,
 }
 
 impl InterfaceStackState {
@@ -338,6 +339,7 @@ impl InterfaceStackState {
             arp_pending_queue: ArpPendingQueue::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
             ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
+            config_generation: 0,
         }
     }
 

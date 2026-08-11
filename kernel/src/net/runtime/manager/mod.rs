@@ -543,7 +543,12 @@ pub fn set_interface_config_in(
     if_id: NetIfId,
     config: NetworkConfig,
 ) -> Result<(), NetworkError> {
-    with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r)
+    let result = with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r);
+    if result.is_ok() {
+        let idx = (if_id.0 as usize).min(31);
+        runtime.context().config_generations[idx].fetch_add(1, core::sync::atomic::Ordering::Release);
+    }
+    result
 }
 
 pub fn set_interface_up_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Result<(), NetworkError> {

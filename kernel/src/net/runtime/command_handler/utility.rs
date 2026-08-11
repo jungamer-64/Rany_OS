@@ -292,6 +292,28 @@ impl RuntimeCommandHandler {
                 stack.register_interface_state(if_id, config);
                 EventHandleResult::Success
             }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync { if_id },
+            ) => {
+                // Best-effort non-blocking sync. If the lock is held, we just skip it
+                // and the next timeout will try again.
+                if let Ok(guard) = runtime.context().manager.try_lock() {
+                    if let Some(manager) = &*guard {
+                        if let Some(iface) = manager.get_interface(if_id) {
+                            if let Some(config) = iface.config {
+                                stack.register_interface_state(if_id, config);
+                            }
+                        }
+                    }
+                }
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::InterfaceRemoved { if_id },
+            ) => {
+                stack.unregister_interface_state(if_id);
+                EventHandleResult::Success
+            }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),
         }
     }

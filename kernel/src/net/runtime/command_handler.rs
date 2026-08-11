@@ -421,6 +421,12 @@ impl RuntimeCommandHandler {
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::InterfaceConfigChanged { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::InterfaceRemoved { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
 
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）

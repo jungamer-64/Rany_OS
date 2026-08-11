@@ -165,6 +165,12 @@ pub(crate) enum ControlCommand {
         if_id: crate::net::runtime::manager::NetIfId,
         config: crate::net::runtime::stack::NetworkConfig,
     },
+    RequestInterfaceConfigSync {
+        if_id: crate::net::runtime::manager::NetIfId,
+    },
+    InterfaceRemoved {
+        if_id: crate::net::runtime::manager::NetIfId,
+    },
     ArpProbe {
         target_ip: [u8; 4],
     },
@@ -654,12 +660,29 @@ impl RuntimeCommandQueue {
         }
     }
 
-    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
+    /// イベント送信（ISR コンテキスト用・非同期・フェイルファスト）
+    /// 既存のプッシュ操作（先行の予約コミットなど）で競合した場合はspinせず即座に破棄する
+    fn try_send_owned_from_isr(&self, command: RuntimeCommand) -> Result<(), RuntimeCommand> {
+        match self.queue.try_push(command) {
+            Ok(()) => {
+                self.consumer_waiters.wake_all_from_isr();
+                Ok(())
+            }
+            Err(command) => Err(command),
+        }
+    }
+
+    /// イベント送信（プロデューサー側 — 通常コンテキストから安全に呼び出し可能）
     ///
     /// CAS ベースでスロットを確保し、ロック取得なしでイベントを書き込む。
     /// キュー満杯時は `false` を返す（バックプレッシャー）。
     pub(crate) fn send(&self, command: RuntimeCommand) -> bool {
         self.send_owned(command).is_ok()
+    }
+
+    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
+    pub(crate) fn try_send_from_isr(&self, command: RuntimeCommand) -> bool {
+        self.try_send_owned_from_isr(command).is_ok()
     }
 
     /// イベント受信（コンシューマー側 — マルチコンシューマー安全）
@@ -749,6 +772,22 @@ pub(crate) fn try_enqueue_command_in(
     };
 
     command_queue_for_core_in(runtime, target_cpu).send_owned(command)
+}
+
+#[inline]
+pub(crate) fn try_enqueue_command_from_isr_in(
+    runtime: NetRuntimeHandle,
+    command: RuntimeCommand,
+) -> Result<(), RuntimeCommand> {
+    let num_cpus = crate::task::executor_slot_count().max(1);
+    let target_cpu = match &command {
+        RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
+            let flow_hash = packet.meta().flow_hash;
+            (flow_hash as usize) % num_cpus
+        }
+        _ => crate::cpu::try_current_id().unwrap_or(0) % num_cpus,
+    };
+    command_queue_for_core_in(runtime, target_cpu).try_send_owned_from_isr(command)
 }
 
 pub(crate) fn broadcast_command_in(

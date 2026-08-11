@@ -93,26 +93,24 @@ fn unregister_interface_with_optional_current_stack_in(
     id: NetIfId,
     current_stack: Option<&mut NetworkStack>,
 ) {
-    let current_core = crate::cpu::try_current_id().unwrap_or(0);
     if let Some(stack) = current_stack {
         stack.unregister_interface_state(id);
-        for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
-            if i != current_core {
-                if let Ok(mut guard) = stack_lock.try_lock() {
-                    if let Some(stack) = &mut *guard {
-                        stack.unregister_interface_state(id);
-                    }
+    } else {
+        let current_core = crate::cpu::try_current_id().unwrap_or(0);
+        if let Some(stack_lock) = runtime.context().stacks.get(current_core) {
+            if let Ok(mut guard) = stack_lock.try_lock() {
+                if let Some(stack) = &mut *guard {
+                    stack.unregister_interface_state(id);
                 }
             }
         }
-    } else {
-        for stack_lock in &runtime.context().stacks {
-            let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(stack) = &mut *guard {
-                stack.unregister_interface_state(id);
-            }
-        }
     }
+
+    crate::net::runtime::command::broadcast_command_in(runtime, move || {
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::InterfaceRemoved { if_id: id },
+        )
+    });
 }
 
 /// Get the runtime-local network stack
@@ -130,7 +128,7 @@ pub(crate) fn receive_batch_on_in(
     // Offload each packet in the batch to the async event queue to avoid
     // taking the global stack lock in interrupt/polling contexts.
     for pkt in batch.into_iter() {
-        let _ = crate::net::runtime::command::try_enqueue_command_in(
+        let _ = crate::net::runtime::command::try_enqueue_command_from_isr_in(
             runtime,
             crate::net::runtime::command::RuntimeCommand::Ingress(
                 crate::net::runtime::command::IngressCommand::Packet { if_id, packet: pkt },

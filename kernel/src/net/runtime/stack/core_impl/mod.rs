@@ -504,11 +504,19 @@ impl NetworkStack {
 
     /// Register or refresh per-interface state.
     pub fn register_interface_state(&mut self, if_id: NetIfId, config: NetworkConfig) {
+        let global_gen = {
+            let idx = (if_id.0 as usize).min(31);
+            self.runtime.context().config_generations[idx].load(core::sync::atomic::Ordering::Acquire)
+        };
         match self.interfaces.get_mut(&if_id) {
-            Some(state) => state.set_config(config),
+            Some(state) => {
+                state.set_config(config);
+                state.config_generation = global_gen;
+            }
             None => {
-                self.interfaces
-                    .insert(if_id, InterfaceStackState::new(config));
+                let mut state = InterfaceStackState::new(config);
+                state.config_generation = global_gen;
+                self.interfaces.insert(if_id, state);
             }
         }
         if self.primary_interface.is_none() {
@@ -1044,8 +1052,22 @@ impl NetworkStack {
 
         // IGMPタイマー進行とpending送信を周期処理に接続する。
         // これにより受信イベントが無い期間でもMembership Report/Leaveを排出できる。
-        for state in self.interfaces.values_mut() {
+        for (&if_id, state) in self.interfaces.iter_mut() {
             state.igmp.update_time(now);
+
+            // Generational configuration synchronization check
+            let idx = (if_id.0 as usize).min(31);
+            let global_gen = self.runtime.context().config_generations[idx].load(Ordering::Acquire);
+            if state.config_generation < global_gen {
+                let _ = crate::net::runtime::command::try_enqueue_command_in(
+                    self.runtime,
+                    crate::net::runtime::command::RuntimeCommand::Control(
+                        crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync {
+                            if_id,
+                        },
+                    ),
+                );
+            }
         }
         self.send_pending_igmp_reports();
 
