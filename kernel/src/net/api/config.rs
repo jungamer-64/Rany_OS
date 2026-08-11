@@ -61,7 +61,7 @@ pub(crate) fn interface_config_snapshot(
 pub(crate) fn interface_stats_snapshot_with_stack_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
-    stack: Option<&stack::NetworkStack>,
+    current_stack: Option<&stack::NetworkStack>,
 ) -> Option<InterfaceStatsSnapshot> {
     let mut stack_snapshot = InterfaceStatsSnapshot {
         if_id: if_id.0,
@@ -74,17 +74,49 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
         rx_dropped: 0,
     };
 
-    if let Some(stack) = stack {
-        if let Some(stats) = stack.interface_stats(if_id) {
-            stack_snapshot.rx_packets =
-                stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.tx_packets =
-                stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.rx_bytes = stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.tx_bytes = stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.rx_errors = stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
-            stack_snapshot.rx_dropped =
-                stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+    let current_core = crate::cpu::try_current_id().unwrap_or(0);
+    let mut found_any = false;
+
+    for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
+        if let Some(stack) = current_stack {
+            if i == current_core {
+                if let Some(stats) = stack.interface_stats(if_id) {
+                    stack_snapshot.rx_packets +=
+                        stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.tx_packets +=
+                        stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_bytes +=
+                        stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.tx_bytes +=
+                        stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_errors +=
+                        stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_dropped +=
+                        stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+                    found_any = true;
+                }
+                continue;
+            }
+        }
+
+        if let Ok(guard) = stack_lock.lock() {
+            if let Some(stack) = guard.as_ref() {
+                if let Some(stats) = stack.interface_stats(if_id) {
+                    stack_snapshot.rx_packets +=
+                        stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.tx_packets +=
+                        stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_bytes +=
+                        stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.tx_bytes +=
+                        stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_errors +=
+                        stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+                    stack_snapshot.rx_dropped +=
+                        stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+                    found_any = true;
+                }
+            }
         }
     }
 
@@ -96,7 +128,8 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
         return Some(stack_snapshot);
     }
 
-    if stack_snapshot.rx_packets != 0
+    if found_any
+        || stack_snapshot.rx_packets != 0
         || stack_snapshot.tx_packets != 0
         || stack_snapshot.rx_bytes != 0
         || stack_snapshot.tx_bytes != 0

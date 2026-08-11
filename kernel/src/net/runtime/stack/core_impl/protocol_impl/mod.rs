@@ -143,7 +143,12 @@ impl NetworkStack {
             self.set_config(iface_config);
         }
 
-        crate::net::runtime::stack::register_interface_in(runtime, if_id, iface_config);
+        crate::net::runtime::stack::register_interface_with_current_stack_in(
+            runtime,
+            if_id,
+            iface_config,
+            self,
+        );
         let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 
@@ -172,7 +177,12 @@ impl NetworkStack {
             self.set_config(iface_config);
         }
 
-        crate::net::runtime::stack::register_interface_in(runtime, if_id, iface_config);
+        crate::net::runtime::stack::register_interface_with_current_stack_in(
+            runtime,
+            if_id,
+            iface_config,
+            self,
+        );
         let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 

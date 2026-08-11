@@ -712,8 +712,7 @@ impl TcpControlBlock {
     }
 }
 
-const TCB_BUCKETS_PER_SHARD: usize = 64;
-// TCB_SLOTS_PER_SHARD is removed
+const TCB_BUCKET_COUNT: usize = 1024;
 
 pub struct TcbTable {
     storage: PoisonRwLock<Option<TcbStorage>>,
@@ -739,19 +738,19 @@ struct TcbBucketEntry {
 
 struct TcbStorage {
     entries: Vec<TcbBucketEntry>,
-    buckets: [Option<usize>; TCB_BUCKETS_PER_SHARD],
+    buckets: [Option<usize>; TCB_BUCKET_COUNT],
 }
 
 impl TcbStorage {
     fn new() -> Self {
         Self {
             entries: Vec::with_capacity(MAX_TCB_ENTRIES),
-            buckets: [None; TCB_BUCKETS_PER_SHARD],
+            buckets: [None; TCB_BUCKET_COUNT],
         }
     }
 
     fn bucket_for(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
-        (conn_key_hash(local, remote) as usize) % TCB_BUCKETS_PER_SHARD
+        (conn_key_hash(local, remote) as usize) % TCB_BUCKET_COUNT
     }
 
     fn find_index(&self, key: &(EndpointAddr, EndpointAddr)) -> Option<usize> {
@@ -813,7 +812,7 @@ impl TcbStorage {
     }
 
     fn rebuild_index(&mut self) {
-        self.buckets = [None; TCB_BUCKETS_PER_SHARD];
+        self.buckets = [None; TCB_BUCKET_COUNT];
         for index in 0..self.entries.len() {
             let key = self.entries[index].key;
             let bucket = Self::bucket_for(&key.0, &key.1);
@@ -982,7 +981,7 @@ impl TcbTable {
 
     fn scavenge_fin_wait_2(&self, current_tick: u64) {
         const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
-        const MAX_SCAVENGE_PER_SHARD: usize = 8;
+        const MAX_SCAVENGE_FIN_WAIT_2: usize = 128;
         let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
@@ -994,7 +993,7 @@ impl TcbTable {
                 && current_tick.saturating_sub(entry.last_send_tick()) > FIN_WAIT_2_TIMEOUT_TICKS
             {
                 to_remove.push(bucket_entry.key);
-                if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                if to_remove.len() >= MAX_SCAVENGE_FIN_WAIT_2 {
                     break;
                 }
             }
@@ -1068,7 +1067,7 @@ impl TcbTable {
 
     fn scavenge_time_wait(&self, current_tick: u64) {
         const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
-        const MAX_SCAVENGE_PER_SHARD: usize = 16;
+        const MAX_SCAVENGE_TIME_WAIT: usize = 256;
         let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
@@ -1080,7 +1079,7 @@ impl TcbTable {
                 && current_tick.saturating_sub(entry.last_send_tick()) > TIME_WAIT_TIMEOUT_TICKS
             {
                 to_remove.push(bucket_entry.key);
-                if to_remove.len() >= MAX_SCAVENGE_PER_SHARD {
+                if to_remove.len() >= MAX_SCAVENGE_TIME_WAIT {
                     break;
                 }
             }

@@ -24,22 +24,85 @@ pub(crate) fn register_interface_in(
     id: NetIfId,
     config: NetworkConfig,
 ) -> bool {
+    register_interface_with_optional_current_stack_in(runtime, id, config, None)
+}
+
+pub(crate) fn register_interface_with_current_stack_in(
+    runtime: NetRuntimeHandle,
+    id: NetIfId,
+    config: NetworkConfig,
+    current_stack: &mut NetworkStack,
+) -> bool {
+    register_interface_with_optional_current_stack_in(runtime, id, config, Some(current_stack))
+}
+
+fn register_interface_with_optional_current_stack_in(
+    runtime: NetRuntimeHandle,
+    id: NetIfId,
+    config: NetworkConfig,
+    current_stack: Option<&mut NetworkStack>,
+) -> bool {
     let mut success = false;
-    for stack_lock in &runtime.context().stacks {
-        let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(stack) = &mut *guard {
-            stack.register_interface_state(id, config);
-            success = true;
+    let current_core = crate::cpu::try_current_id().unwrap_or(0);
+
+    if let Some(stack) = current_stack {
+        stack.register_interface_state(id, config);
+        success = true;
+
+        for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
+            if i != current_core {
+                let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(stack) = &mut *guard {
+                    stack.register_interface_state(id, config);
+                }
+            }
+        }
+    } else {
+        for stack_lock in &runtime.context().stacks {
+            let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(stack) = &mut *guard {
+                stack.register_interface_state(id, config);
+                success = true;
+            }
         }
     }
     success
 }
 
 pub(crate) fn unregister_interface_in(runtime: NetRuntimeHandle, id: NetIfId) {
-    for stack_lock in &runtime.context().stacks {
-        let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(stack) = &mut *guard {
-            stack.unregister_interface_state(id);
+    unregister_interface_with_optional_current_stack_in(runtime, id, None);
+}
+
+pub(crate) fn unregister_interface_with_current_stack_in(
+    runtime: NetRuntimeHandle,
+    id: NetIfId,
+    current_stack: &mut NetworkStack,
+) {
+    unregister_interface_with_optional_current_stack_in(runtime, id, Some(current_stack));
+}
+
+fn unregister_interface_with_optional_current_stack_in(
+    runtime: NetRuntimeHandle,
+    id: NetIfId,
+    current_stack: Option<&mut NetworkStack>,
+) {
+    let current_core = crate::cpu::try_current_id().unwrap_or(0);
+    if let Some(stack) = current_stack {
+        stack.unregister_interface_state(id);
+        for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
+            if i != current_core {
+                let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+                if let Some(stack) = &mut *guard {
+                    stack.unregister_interface_state(id);
+                }
+            }
+        }
+    } else {
+        for stack_lock in &runtime.context().stacks {
+            let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
+            if let Some(stack) = &mut *guard {
+                stack.unregister_interface_state(id);
+            }
         }
     }
 }
