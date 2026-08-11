@@ -43,7 +43,8 @@ impl NetworkCellState {
             let mut id_bytes = [0u8; 2];
             id_bytes.copy_from_slice(&state.data[offset..offset + 2]);
             let if_id = crate::net::runtime::manager::NetIfId(u16::from_le_bytes(id_bytes));
-            crate::net::runtime::device::set_primary_interface_in(self.runtime, if_id);
+            crate::net::runtime::manager::set_primary_interface_in(self.runtime, if_id)
+                .map_err(|_| StateImportError::RestoreFailed)?;
         }
         offset += 2;
 
@@ -71,7 +72,8 @@ impl StateTransfer for NetworkCellState {
         let mut data = Vec::new();
 
         // 1. primary interface
-        let primary_id = crate::net::runtime::device::primary_if_in(self.runtime).map(|id| id.0);
+        let primary_id =
+            crate::net::runtime::manager::primary_interface_in(self.runtime).map(|id| id.0);
         if let Some(id) = primary_id {
             data.push(1u8); // Present flag
             data.extend_from_slice(&id.to_le_bytes());

@@ -368,12 +368,15 @@ fn find_socket_by_port(
     sockets: &PoisonRwLock<SocketRecordTable>,
     family: SocketFamily,
     port: u16,
-    ingress_if_id: Option<NetIfId>,
+    ingress_if_id: NetIfId,
 ) -> Option<Socket> {
     let guard = ports.read().unwrap_or_else(|e| e.into_inner());
-    let socket_id = ingress_if_id
-        .map(|if_id| PortBindingKey::new(family, port, InterfaceScope::Pinned(if_id)))
-        .and_then(|key| guard.get(key))
+    let socket_id = guard
+        .get(PortBindingKey::new(
+            family,
+            port,
+            InterfaceScope::Pinned(ingress_if_id),
+        ))
         .or_else(|| guard.get(PortBindingKey::new(family, port, InterfaceScope::Any)))?;
     drop(guard);
     sockets
@@ -539,7 +542,7 @@ impl SocketRegistry {
         &self,
         family: SocketFamily,
         port: u16,
-        ingress_if_id: Option<NetIfId>,
+        ingress_if_id: NetIfId,
     ) -> Option<Socket> {
         find_socket_by_port(&self.tcp_ports, &self.sockets, family, port, ingress_if_id)
     }
@@ -548,7 +551,7 @@ impl SocketRegistry {
         &self,
         family: SocketFamily,
         port: u16,
-        ingress_if_id: Option<NetIfId>,
+        ingress_if_id: NetIfId,
     ) -> Option<Socket> {
         find_socket_by_port(&self.udp_ports, &self.sockets, family, port, ingress_if_id)
     }
@@ -607,7 +610,7 @@ impl Default for SocketRegistry {
 pub(crate) fn find_listening_tcp_socket_in(
     runtime: NetRuntimeHandle,
     local: EndpointAddr,
-    ingress_if_id: Option<NetIfId>,
+    ingress_if_id: NetIfId,
 ) -> Option<Socket> {
     let socket = runtime.context().sockets.find_tcp_by_port(
         SocketFamily::from_addr(local),

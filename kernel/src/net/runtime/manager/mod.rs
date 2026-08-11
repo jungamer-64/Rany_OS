@@ -15,6 +15,67 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NetIfId(pub u16);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AdministrativeState {
+    Enabled,
+    Disabled,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LinkState {
+    Up,
+    Down,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TopologyChange {
+    Unchanged,
+    Changed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct InterfaceTopologyRevision(u64);
+
+impl InterfaceTopologyRevision {
+    pub(crate) const INITIAL: Self = Self(0);
+
+    fn next_from(previous: u64) -> Self {
+        Self(previous.wrapping_add(1))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct ActiveInterfaceConfig {
+    pub(crate) if_id: NetIfId,
+    pub(crate) config: NetworkConfig,
+}
+
+pub(crate) struct InterfaceTopologySnapshot {
+    revision: InterfaceTopologyRevision,
+    primary: Option<NetIfId>,
+    entries: Vec<ActiveInterfaceConfig>,
+}
+
+impl InterfaceTopologySnapshot {
+    pub(crate) fn revision(&self) -> InterfaceTopologyRevision {
+        self.revision
+    }
+
+    pub(crate) fn primary(&self) -> Option<NetIfId> {
+        self.primary
+    }
+
+    pub(crate) fn contains(&self, if_id: NetIfId) -> bool {
+        self.entries
+            .binary_search_by_key(&if_id, |entry| entry.if_id)
+            .is_ok()
+    }
+
+    pub(crate) fn into_entries(self) -> alloc::vec::IntoIter<ActiveInterfaceConfig> {
+        self.entries.into_iter()
+    }
+}
+
 /// Route flags for static/connected/default routes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RouteFlags {
@@ -54,8 +115,17 @@ impl RouteFlags {
 pub struct NetworkInterfaceInfo {
     pub if_id: NetIfId,
     pub name: &'static str,
-    pub admin_up: bool,
+    pub administrative_state: AdministrativeState,
+    pub link_state: LinkState,
     pub config: Option<NetworkConfig>,
+}
+
+impl NetworkInterfaceInfo {
+    pub const fn is_operational(self) -> bool {
+        matches!(self.administrative_state, AdministrativeState::Enabled)
+            && matches!(self.link_state, LinkState::Up)
+            && self.config.is_some()
+    }
 }
 
 /// IPv4 route entry.
@@ -97,6 +167,7 @@ pub(crate) struct NetworkManager {
     routes_v4: Vec<Ipv4Route>,
     routes_v6: Vec<Ipv6Route>,
     next_if_id: Option<u16>,
+    primary: Option<NetIfId>,
 }
 
 impl NetworkManager {
@@ -106,6 +177,7 @@ impl NetworkManager {
             routes_v4: Vec::new(),
             routes_v6: Vec::new(),
             next_if_id: Some(0),
+            primary: None,
         }
     }
 
@@ -122,7 +194,8 @@ impl NetworkManager {
             NetworkInterfaceInfo {
                 if_id,
                 name,
-                admin_up: true,
+                administrative_state: AdministrativeState::Enabled,
+                link_state: LinkState::Down,
                 config: None,
             },
         );
@@ -137,15 +210,20 @@ impl NetworkManager {
         self.interfaces.get(&if_id)
     }
 
-    fn try_configured_interfaces(&self) -> Option<Vec<(NetIfId, NetworkConfig)>> {
-        let mut configured = Vec::new();
-        configured.try_reserve_exact(self.interfaces.len()).ok()?;
-        configured.extend(
+    fn try_active_interfaces(&self) -> Option<Vec<ActiveInterfaceConfig>> {
+        let mut active = Vec::new();
+        active.try_reserve_exact(self.interfaces.len()).ok()?;
+        active.extend(
             self.interfaces
                 .iter()
-                .filter_map(|(&if_id, interface)| interface.config.map(|config| (if_id, config))),
+                .filter(|(_, interface)| interface.is_operational())
+                .filter_map(|(&if_id, interface)| {
+                    interface
+                        .config
+                        .map(|config| ActiveInterfaceConfig { if_id, config })
+                }),
         );
-        Some(configured)
+        Some(active)
     }
 
     fn unregister_interface(&mut self, if_id: NetIfId) -> bool {
@@ -153,6 +231,9 @@ impl NetworkManager {
         if removed {
             self.routes_v4.retain(|route| route.if_id != if_id);
             self.routes_v6.retain(|route| route.if_id != if_id);
+            if self.primary == Some(if_id) {
+                self.primary = None;
+            }
         }
         removed
     }
@@ -161,32 +242,79 @@ impl NetworkManager {
         &mut self,
         if_id: NetIfId,
         config: NetworkConfig,
-    ) -> Result<(), NetworkError> {
+    ) -> Result<TopologyChange, NetworkError> {
         let iface = self
             .interfaces
             .get_mut(&if_id)
             .ok_or(NetworkError::InvalidAddress)?;
+        if iface.config == Some(config) {
+            return Ok(TopologyChange::Unchanged);
+        }
         iface.config = Some(config);
         self.refresh_managed_routes_for_interface(if_id, config);
-        Ok(())
+        Ok(TopologyChange::Changed)
     }
 
-    fn set_interface_up(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
+    fn set_administrative_state(
+        &mut self,
+        if_id: NetIfId,
+        state: AdministrativeState,
+    ) -> Result<TopologyChange, NetworkError> {
         let iface = self
             .interfaces
             .get_mut(&if_id)
             .ok_or(NetworkError::InvalidAddress)?;
-        iface.admin_up = true;
-        Ok(())
+        if iface.administrative_state == state {
+            return Ok(TopologyChange::Unchanged);
+        }
+        iface.administrative_state = state;
+        if matches!(state, AdministrativeState::Disabled) && self.primary == Some(if_id) {
+            self.primary = None;
+        }
+        Ok(TopologyChange::Changed)
     }
 
-    fn set_interface_down(&mut self, if_id: NetIfId) -> Result<(), NetworkError> {
+    fn set_link_state(
+        &mut self,
+        if_id: NetIfId,
+        state: LinkState,
+    ) -> Result<TopologyChange, NetworkError> {
         let iface = self
             .interfaces
             .get_mut(&if_id)
             .ok_or(NetworkError::InvalidAddress)?;
-        iface.admin_up = false;
-        Ok(())
+        if iface.link_state == state {
+            return Ok(TopologyChange::Unchanged);
+        }
+        iface.link_state = state;
+        if matches!(state, LinkState::Down) && self.primary == Some(if_id) {
+            self.primary = None;
+        }
+        Ok(TopologyChange::Changed)
+    }
+
+    fn set_primary_interface(&mut self, if_id: NetIfId) -> Result<TopologyChange, NetworkError> {
+        let interface = self
+            .interfaces
+            .get(&if_id)
+            .ok_or(NetworkError::InvalidAddress)?;
+        if !interface.is_operational() {
+            return Err(NetworkError::NetworkUnreachable);
+        }
+        if self.primary == Some(if_id) {
+            return Ok(TopologyChange::Unchanged);
+        }
+        self.primary = Some(if_id);
+        Ok(TopologyChange::Changed)
+    }
+
+    fn clear_primary_interface(&mut self, expected: NetIfId) -> TopologyChange {
+        if self.primary == Some(expected) {
+            self.primary = None;
+            TopologyChange::Changed
+        } else {
+            TopologyChange::Unchanged
+        }
     }
 
     fn add_ipv4_route(&mut self, route: Ipv4Route) -> Result<(), NetworkError> {
@@ -222,7 +350,7 @@ impl NetworkManager {
                 continue;
             }
             if let Some(iface) = self.interfaces.get(&route.if_id) {
-                if !iface.admin_up {
+                if !iface.is_operational() {
                     continue;
                 }
             } else {
@@ -268,7 +396,7 @@ impl NetworkManager {
                 continue;
             }
             if let Some(iface) = self.interfaces.get(&route.if_id) {
-                if !iface.admin_up {
+                if !iface.is_operational() {
                     continue;
                 }
             } else {
@@ -526,7 +654,10 @@ pub fn register_interface_in(
     runtime: NetRuntimeHandle,
     name: &'static str,
 ) -> Result<NetIfId, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.register_interface(name)).and_then(|r| r)
+    mutate_topology_in(runtime, |manager| {
+        let if_id = manager.register_interface(name)?;
+        Ok((if_id, TopologyChange::Changed))
+    })
 }
 
 pub fn list_interfaces_in(
@@ -542,53 +673,99 @@ pub fn get_interface_in(
     with_manager_in(runtime, |m| m.get_interface(if_id).copied())
 }
 
-pub(crate) fn current_interface_config_revision_in(
+pub(crate) fn current_interface_topology_revision_in(
     runtime: NetRuntimeHandle,
-) -> InterfaceConfigRevision {
-    InterfaceConfigRevision(
+) -> InterfaceTopologyRevision {
+    InterfaceTopologyRevision(
         runtime
             .context()
-            .interface_config_revision
+            .interface_topology_revision
             .load(core::sync::atomic::Ordering::Acquire),
     )
 }
 
-pub(crate) fn try_interface_configurations_in(
+pub(crate) fn try_interface_topology_in(
     runtime: NetRuntimeHandle,
-) -> Option<InterfaceConfigurations> {
+) -> Option<InterfaceTopologySnapshot> {
     let guard = match manager_slot_in(runtime).try_lock() {
         Ok(guard) => guard,
         Err(crate::sync::poison_lock::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
         Err(crate::sync::poison_lock::TryLockError::WouldBlock) => return None,
     };
     let manager = guard.as_ref()?;
-    let entries = manager.try_configured_interfaces()?;
-    let revision = current_interface_config_revision_in(runtime);
-    Some(InterfaceConfigurations { revision, entries })
+    let entries = manager.try_active_interfaces()?;
+    let revision = current_interface_topology_revision_in(runtime);
+    debug_assert!(manager.primary.is_none_or(|if_id| {
+        entries
+            .binary_search_by_key(&if_id, |entry| entry.if_id)
+            .is_ok()
+    }));
+    Some(InterfaceTopologySnapshot {
+        revision,
+        primary: manager.primary,
+        entries,
+    })
 }
 
-fn publish_interface_config_change(runtime: NetRuntimeHandle) {
-    let previous = runtime
-        .context()
-        .interface_config_revision
-        .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
-    let revision = InterfaceConfigRevision::next_from(previous);
+fn publish_interface_topology_change(
+    runtime: NetRuntimeHandle,
+    revision: InterfaceTopologyRevision,
+) {
     crate::net::runtime::command::broadcast_command_in(runtime, move || {
         crate::net::runtime::command::RuntimeCommand::Control(
-            crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
+            crate::net::runtime::command::ControlCommand::InterfaceTopologyDirty { revision },
         )
     });
+}
+
+fn record_interface_topology_change(runtime: NetRuntimeHandle) -> InterfaceTopologyRevision {
+    let previous = runtime
+        .context()
+        .interface_topology_revision
+        .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    InterfaceTopologyRevision::next_from(previous)
+}
+
+fn mutate_topology_in<F, R>(runtime: NetRuntimeHandle, f: F) -> Result<R, NetworkError>
+where
+    F: FnOnce(&mut NetworkManager) -> Result<(R, TopologyChange), NetworkError>,
+{
+    let (result, revision) = match manager_slot_in(runtime).lock() {
+        Ok(mut guard) => {
+            let manager = guard.as_mut().ok_or(NetworkError::Unknown)?;
+            let (result, change) = f(manager)?;
+            let revision = matches!(change, TopologyChange::Changed)
+                .then(|| record_interface_topology_change(runtime));
+            (result, revision)
+        }
+        Err(poisoned) => {
+            let mut manager_opt = poisoned.into_inner();
+            let manager = manager_opt.as_mut().ok_or(NetworkError::Unknown)?;
+            let (result, change) = f(manager)?;
+            let revision = matches!(change, TopologyChange::Changed)
+                .then(|| record_interface_topology_change(runtime));
+            (result, revision)
+        }
+    };
+    if let Some(revision) = revision {
+        publish_interface_topology_change(runtime, revision);
+    }
+    Ok(result)
 }
 
 pub fn unregister_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<bool, NetworkError> {
-    let removed = with_manager_mut_in(runtime, |m| m.unregister_interface(if_id))?;
-    if removed {
-        publish_interface_config_change(runtime);
-    }
-    Ok(removed)
+    mutate_topology_in(runtime, |manager| {
+        let removed = manager.unregister_interface(if_id);
+        let change = if removed {
+            TopologyChange::Changed
+        } else {
+            TopologyChange::Unchanged
+        };
+        Ok((removed, change))
+    })
 }
 
 pub fn set_interface_config_in(
@@ -596,23 +773,79 @@ pub fn set_interface_config_in(
     if_id: NetIfId,
     config: NetworkConfig,
 ) -> Result<(), NetworkError> {
-    let result =
-        with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r);
-    if result.is_ok() {
-        publish_interface_config_change(runtime);
-    }
-    result
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.set_interface_config(if_id, config)?;
+        Ok(((), change))
+    })
 }
 
 pub fn set_interface_up_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Result<(), NetworkError> {
-    with_manager_mut_in(runtime, |m| m.set_interface_up(if_id)).and_then(|r| r)
+    set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Enabled)
 }
 
 pub fn set_interface_down_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<(), NetworkError> {
-    with_manager_mut_in(runtime, |m| m.set_interface_down(if_id)).and_then(|r| r)
+    set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Disabled)
+}
+
+pub fn set_interface_administrative_state_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    state: AdministrativeState,
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.set_administrative_state(if_id, state)?;
+        Ok(((), change))
+    })
+}
+
+pub fn set_interface_link_state_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    state: LinkState,
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.set_link_state(if_id, state)?;
+        Ok(((), change))
+    })
+}
+
+pub fn primary_interface_in(runtime: NetRuntimeHandle) -> Option<NetIfId> {
+    with_manager_in(runtime, |manager| manager.primary)
+        .ok()
+        .flatten()
+}
+
+pub fn set_primary_interface_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.set_primary_interface(if_id)?;
+        Ok(((), change))
+    })
+}
+
+pub fn clear_primary_interface_in(
+    runtime: NetRuntimeHandle,
+    expected: NetIfId,
+) -> Result<(), NetworkError> {
+    mutate_topology_in(runtime, |manager| {
+        let change = manager.clear_primary_interface(expected);
+        Ok(((), change))
+    })
+}
+
+pub fn is_interface_operational_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
+    with_manager_in(runtime, |manager| {
+        manager
+            .get_interface(if_id)
+            .copied()
+            .is_some_and(NetworkInterfaceInfo::is_operational)
+    })
+    .unwrap_or(false)
 }
 
 pub fn add_ipv4_route_in(runtime: NetRuntimeHandle, route: Ipv4Route) -> Result<(), NetworkError> {

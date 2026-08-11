@@ -148,7 +148,7 @@ pub(crate) enum ControlCommand {
         target_ip: [u8; 4],
     },
     NdpResolveRequest {
-        if_id: Option<u16>,
+        if_id: NetIfId,
         target_ip: [u8; 16],
     },
     MulticastJoin {
@@ -161,28 +161,28 @@ pub(crate) enum ControlCommand {
     },
     ProcessLocalTimeouts,
     ProcessGlobalTimeouts,
-    InterfaceConfigDirty {
-        revision: crate::net::runtime::manager::InterfaceConfigRevision,
+    InterfaceTopologyDirty {
+        revision: crate::net::runtime::manager::InterfaceTopologyRevision,
     },
     ArpProbe {
         target_ip: [u8; 4],
     },
     NeighborResolvedV4 {
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         ip: [u8; 4],
         mac: [u8; 6],
     },
     NeighborResolvedV6 {
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         ip: [u8; 16],
         mac: [u8; 6],
     },
     DhcpApplyLease {
-        if_id: Option<u16>,
+        if_id: NetIfId,
         config: crate::net::services::dhcp::DhcpV4AppliedConfig,
     },
     DhcpV6ApplyLease {
-        if_id: Option<u16>,
+        if_id: NetIfId,
         config: crate::net::services::dhcp::DhcpV6AppliedConfig,
     },
     GetPrimaryInterfaceConfig {

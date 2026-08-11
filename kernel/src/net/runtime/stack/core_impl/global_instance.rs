@@ -28,7 +28,7 @@ pub(crate) fn stack_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<
 /// Process a batch of received packets on a specific runtime.
 pub(crate) fn receive_batch_on_in(
     runtime: NetRuntimeHandle,
-    if_id: Option<super::NetIfId>,
+    if_id: super::NetIfId,
     batch: PacketBatch,
 ) {
     // Offload each packet in the batch to the async event queue to avoid

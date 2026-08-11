@@ -879,12 +879,14 @@ fn runtime_update_link(
 ) -> Result<(), &'static str> {
     let runtime = runtime_context_from_cookie(cookie)?.handle();
     let if_id = current_if_for_port(runtime_context_for(runtime), port_id)?;
-    let result = if up {
-        manager::set_interface_up_in(runtime, if_id)
+    let was_primary = manager::primary_interface_in(runtime) == Some(if_id);
+    let link_state = if up {
+        manager::LinkState::Up
     } else {
-        manager::set_interface_down_in(runtime, if_id)
+        manager::LinkState::Down
     };
-    result.map_err(|_| "failed to update interface link state")?;
+    manager::set_interface_link_state_in(runtime, if_id, link_state)
+        .map_err(|_| "failed to update interface link state")?;
 
     if up {
         if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
@@ -894,7 +896,8 @@ fn runtime_update_link(
             }
         }
         let _ = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id);
-        if primary_if_in(runtime) == Some(if_id) {
+        let primary = elect_primary_if_absent_in(runtime, None);
+        if primary == Some(if_id) {
             log::info!(
                 target: "net::device",
                 "[NET] link_up: port={} if{} role=primary",
@@ -916,7 +919,7 @@ fn runtime_update_link(
             port_id.as_u64(),
             if_id.0
         );
-        handle_interface_departure_in(runtime, if_id, FailoverReason::LinkDown);
+        handle_interface_departure_in(runtime, if_id, FailoverReason::LinkDown, was_primary);
     }
 
     Ok(())
@@ -948,6 +951,7 @@ pub struct NetDeviceHandle {
     runtime: NetPortRuntimeHandle,
     tx_queue: NetTxQueue,
     event_sink: NetEventSink,
+    primary_policy: PrimaryPortPolicy,
     active: AtomicBool,
     tx_worker_started: AtomicBool,
     event_worker_started: AtomicBool,
@@ -958,6 +962,7 @@ impl NetDeviceHandle {
         driver: Box<dyn NetDevicePort>,
         binding: NetDeviceBinding,
         context: &'static NetRuntimeContext,
+        primary_policy: PrimaryPortPolicy,
     ) -> Self {
         Self {
             driver,
@@ -966,6 +971,7 @@ impl NetDeviceHandle {
             binding: PoisonLock::new(binding),
             tx_queue: NetTxQueue::new(),
             event_sink: NetEventSink::new(),
+            primary_policy,
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
@@ -981,6 +987,10 @@ impl NetDeviceHandle {
 
     pub fn driver(&self) -> &dyn NetDevicePort {
         self.driver.as_ref()
+    }
+
+    fn primary_policy(&self) -> PrimaryPortPolicy {
+        self.primary_policy
     }
 
     pub fn info(&self) -> NetDeviceInfo {
@@ -1000,11 +1010,14 @@ impl NetDeviceHandle {
         if stats.initialized || stats.rx_packets > 0 || stats.tx_packets > 0 {
             info.flags |= NETDEV_FLAG_HEALTHY;
         }
-        if primary_if_in(runtime) == Some(binding.if_id) {
+        if manager::primary_interface_in(runtime) == Some(binding.if_id) {
             info.flags |= NETDEV_FLAG_PRIMARY;
         }
         if let Ok(Some(interface)) = manager::get_interface_in(runtime, binding.if_id) {
-            if interface.admin_up {
+            if matches!(
+                interface.administrative_state,
+                manager::AdministrativeState::Enabled
+            ) {
                 info.flags |= NETDEV_FLAG_ADMIN_UP;
             } else {
                 info.flags &= !NETDEV_FLAG_ADMIN_UP;
@@ -1302,142 +1315,48 @@ impl FailoverReason {
     }
 }
 
-fn apply_runtime_network_config_in(runtime: NetRuntimeHandle, config: &NetworkConfig) {
-    if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-        if let Some(stack) = guard.as_mut() {
-            stack.set_config(*config);
-        }
-    }
-
-    crate::net::services::dhcp::update_runtime_mac(config.mac);
-}
-
-fn sync_runtime_config_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    let config = match manager::get_interface_in(runtime, if_id) {
-        Ok(Some(iface)) => iface.config,
-        _ => None,
-    };
-    if let Some(config) = config {
-        apply_runtime_network_config_in(runtime, &config);
-    }
-}
-
-fn clear_runtime_network_config_in(runtime: NetRuntimeHandle) {
-    if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-        if let Some(stack) = guard.as_mut() {
-            let Some(mut config) = stack.primary_interface_config() else {
-                return;
-            };
-            config.ipv4 = Ipv4Config::default();
-            stack.set_config(config);
-            crate::net::services::dhcp::update_runtime_mac(config.mac);
-        }
-    }
-}
-
-fn config_supports_failover(config: &NetworkConfig) -> bool {
-    !config.ipv4.address.is_any()
-        || !config.ipv4.gateway.is_any()
-        || config.ipv4.dns.is_some()
-        || config
-            .ipv6
-            .is_some_and(|ipv6| ipv6.global.is_some() || ipv6.gateway.is_some())
-}
-
-fn interface_supports_failover_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    if crate::net::services::dhcp::has_bound_lease_in(runtime, if_id) {
-        return true;
-    }
-
-    manager::get_interface_in(runtime, if_id)
-        .ok()
-        .flatten()
-        .and_then(|iface| iface.config)
-        .is_some_and(|config| config_supports_failover(&config))
-}
-
-fn select_surviving_primary_in(
+fn automatic_primary_candidate_in(
     runtime: NetRuntimeHandle,
-    excluding_if: NetIfId,
+    excluding_if: Option<NetIfId>,
 ) -> Option<NetIfId> {
-    let candidates: Vec<NetIfId> = device_manager_in(runtime)
+    let candidates: Vec<(NetIfId, PrimaryPortPolicy)> = device_manager_in(runtime)
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .handles
-        .keys()
-        .copied()
-        .filter(|if_id| *if_id != excluding_if)
+        .iter()
+        .map(|(&if_id, handle)| (if_id, handle.primary_policy()))
         .collect();
-
-    candidates.into_iter().find(|if_id| {
-        manager::get_interface_in(runtime, *if_id)
-            .ok()
-            .flatten()
-            .is_some_and(|iface| iface.admin_up && interface_supports_failover_in(runtime, *if_id))
-    })
+    [PrimaryPortPolicy::Prefer, PrimaryPortPolicy::Auto]
+        .into_iter()
+        .find_map(|policy| {
+            candidates.iter().find_map(|&(if_id, candidate_policy)| {
+                (Some(if_id) != excluding_if
+                    && candidate_policy == policy
+                    && manager::is_interface_operational_in(runtime, if_id))
+                .then_some(if_id)
+            })
+        })
 }
 
-fn apply_primary_runtime_for_interface_in(
+fn elect_primary_if_absent_in(
     runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-) -> Result<(), &'static str> {
-    if let Some(lease) = crate::net::services::dhcp::lease_for_interface_in(runtime, if_id) {
-        let dns_server = manager::get_interface_in(runtime, if_id)
-            .ok()
-            .flatten()
-            .and_then(|iface| iface.config)
-            .and_then(|config| config.ipv4.dns);
-        let mut guard = stack::stack_in(runtime)
-            .lock()
-            .map_err(|_| "network stack poisoned")?;
-        let stack = guard.as_mut().ok_or("network stack unavailable")?;
-        stack.apply_dhcp_v4_lease_for_interface(&lease, if_id, true, dns_server);
-        if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
-            if let Some(config) = iface.config {
-                crate::net::services::dhcp::update_runtime_mac(config.mac);
-            }
-        }
-        return Ok(());
+    excluding_if: Option<NetIfId>,
+) -> Option<NetIfId> {
+    if manager::primary_interface_in(runtime).is_some() {
+        return manager::primary_interface_in(runtime);
     }
-
-    sync_runtime_config_for_interface_in(runtime, if_id);
-    Ok(())
-}
-
-fn clear_interface_runtime_for_failover_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    clear_primary_runtime: bool,
-) {
-    if let Ok(mut guard) = stack::stack_in(runtime).lock() {
-        if let Some(stack) = guard.as_mut() {
-            stack.clear_dhcp_v4_lease_for_interface(if_id, clear_primary_runtime);
-            if clear_primary_runtime {
-                if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
-                    if let Some(config) = iface.config {
-                        crate::net::services::dhcp::update_runtime_mac(config.mac);
-                    }
-                }
-            }
-            return;
-        }
-    }
-
-    if clear_primary_runtime {
-        clear_runtime_network_config_in(runtime);
-    }
+    let candidate = automatic_primary_candidate_in(runtime, excluding_if)?;
+    manager::set_primary_interface_in(runtime, candidate)
+        .ok()
+        .map(|()| candidate)
 }
 
 fn handle_interface_departure_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
     reason: FailoverReason,
+    was_primary: bool,
 ) {
-    let was_primary = primary_if_in(runtime) == Some(if_id);
-    let candidate = was_primary
-        .then(|| select_surviving_primary_in(runtime, if_id))
-        .flatten();
-
     let release_sent = crate::net::services::dhcp::release_interface_in(runtime, if_id);
     if release_sent {
         log::info!(
@@ -1448,28 +1367,11 @@ fn handle_interface_departure_in(
         );
     }
 
-    clear_interface_runtime_for_failover_in(runtime, if_id, was_primary && candidate.is_none());
-
     if !was_primary {
         return;
     }
 
-    crate::net::services::dhcp::clear_primary_interface_in(runtime, if_id);
-
-    if let Some(new_if) = candidate {
-        set_primary_slot_in(runtime, Some(new_if));
-        runtime_context_for(runtime)
-            .dhcp_bound_primary_selected
-            .store(true, Ordering::Release);
-        crate::net::services::dhcp::mark_primary_interface_in(runtime, new_if);
-        if let Err(err) = apply_primary_runtime_for_interface_in(runtime, new_if) {
-            log::warn!(
-                target: "net::device",
-                "failed to synchronize promoted primary if{}: {}",
-                new_if.0,
-                err
-            );
-        }
+    if let Some(new_if) = elect_primary_if_absent_in(runtime, Some(if_id)) {
         log::info!(
             target: "net::device",
             "[NET] primary_failover: old=if{} new=if{} reason={}",
@@ -1478,10 +1380,6 @@ fn handle_interface_departure_in(
             reason.as_str()
         );
     } else {
-        set_primary_slot_in(runtime, None);
-        runtime_context_for(runtime)
-            .dhcp_bound_primary_selected
-            .store(false, Ordering::Release);
         log::warn!(
             target: "net::device",
             "[NET] primary_cleared: old=if{} reason={}",
@@ -1584,12 +1482,7 @@ fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId)
     let _ = manager::unregister_interface_in(runtime, if_id);
 }
 
-fn rollback_port_registration_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    port_id: NetPortId,
-    previous_primary: Option<NetIfId>,
-) {
+fn rollback_port_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId, port_id: NetPortId) {
     let removed = {
         let mut guard = device_manager_in(runtime)
             .write()
@@ -1597,15 +1490,13 @@ fn rollback_port_registration_in(
         if guard.port_map.get(&port_id) == Some(&if_id) {
             guard.port_map.remove(&port_id);
         }
-        if guard.primary == Some(if_id) {
-            guard.primary = previous_primary;
-        }
         guard.handles.remove(&if_id)
     };
     if let Some(handle) = removed {
         handle.stop();
     }
     rollback_interface_registration_in(runtime, if_id);
+    let _ = elect_primary_if_absent_in(runtime, Some(if_id));
 }
 
 fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
@@ -1626,20 +1517,6 @@ fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
     }
 }
 
-fn should_select_as_primary(
-    current_primary: Option<NetIfId>,
-    policy: PrimaryPortPolicy,
-    info: NetDeviceInfo,
-) -> bool {
-    match policy {
-        PrimaryPortPolicy::Prefer => true,
-        PrimaryPortPolicy::Auto => {
-            current_primary.is_none() && info.flags & NETDEV_FLAG_HEALTHY != 0
-        }
-        PrimaryPortPolicy::Never => false,
-    }
-}
-
 pub fn register_port_in(
     runtime: NetRuntimeHandle,
     registration: NetPortRegistration,
@@ -1650,8 +1527,11 @@ pub fn register_port_in(
     ensure_stack_initialized_in(runtime)?;
 
     if let Some(existing) = lookup_if_by_port_id_in(runtime, info.port_id) {
-        if registration.primary_policy == PrimaryPortPolicy::Prefer {
-            set_primary_interface_in(runtime, existing);
+        if registration.primary_policy == PrimaryPortPolicy::Prefer
+            && manager::is_interface_operational_in(runtime, existing)
+        {
+            manager::set_primary_interface_in(runtime, existing)
+                .map_err(|_| "failed to select preferred network interface")?;
         }
         return Ok(existing);
     }
@@ -1662,51 +1542,56 @@ pub fn register_port_in(
         port_id: info.port_id,
         if_id,
     };
-    let handle = NetDeviceHandle::new(driver, binding, runtime_context_for(runtime));
+    let primary_policy = registration.primary_policy;
+    let handle = NetDeviceHandle::new(
+        driver,
+        binding,
+        runtime_context_for(runtime),
+        primary_policy,
+    );
     if let Err(err) = handle.driver.bind(if_id.0) {
         rollback_interface_registration_in(runtime, if_id);
         return Err(err);
     }
     let runtime_handle = handle.runtime;
 
-    let (selected_as_primary, previous_primary) = {
+    {
         let mut guard = device_manager_in(runtime)
             .write()
             .unwrap_or_else(|e| e.into_inner());
-        let previous_primary = guard.primary;
-        let selected_as_primary =
-            should_select_as_primary(guard.primary, registration.primary_policy, info);
         guard.port_map.insert(info.port_id, if_id);
         guard.handles.insert(if_id, handle);
-        if selected_as_primary {
-            guard.primary = Some(if_id);
-        }
-        (selected_as_primary, previous_primary)
-    };
+    }
 
     if let Some(start_result) =
         with_port_handle_in(runtime, if_id, |handle| handle.driver.start(runtime_handle))
     {
         if let Err(err) = start_result {
-            rollback_port_registration_in(runtime, if_id, info.port_id, previous_primary);
+            rollback_port_registration_in(runtime, if_id, info.port_id);
             return Err(err);
         }
     } else {
-        rollback_port_registration_in(runtime, if_id, info.port_id, previous_primary);
+        rollback_port_registration_in(runtime, if_id, info.port_id);
         return Err("device handle missing after registration");
     }
-    start_workers_for_port_in(runtime, if_id);
 
-    if selected_as_primary {
-        apply_runtime_network_config_in(runtime, &config);
-        for stack_lock in &runtime_context_for(runtime).stacks {
-            if let Ok(mut guard) = stack_lock.lock() {
-                if let Some(stack) = guard.as_mut() {
-                    stack.set_primary_interface_state(Some(if_id));
-                }
-            }
-        }
+    let initial_link_state = if info.flags & NETDEV_FLAG_LINK_UP != 0 {
+        manager::LinkState::Up
+    } else {
+        manager::LinkState::Down
+    };
+    manager::set_interface_link_state_in(runtime, if_id, initial_link_state)
+        .map_err(|_| "failed to publish initial network link state")?;
+
+    if primary_policy == PrimaryPortPolicy::Prefer
+        && manager::is_interface_operational_in(runtime, if_id)
+    {
+        manager::set_primary_interface_in(runtime, if_id)
+            .map_err(|_| "failed to select preferred network interface")?;
+    } else {
+        let _ = elect_primary_if_absent_in(runtime, None);
     }
+    start_workers_for_port_in(runtime, if_id);
 
     if let Err(err) =
         crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
@@ -1722,59 +1607,8 @@ pub fn register_port_in(
     Ok(if_id)
 }
 
-pub fn bind_port_interface_in(
-    runtime: NetRuntimeHandle,
-    port_id: NetPortId,
-    if_id: NetIfId,
-) -> Result<(), &'static str> {
-    let (bound_if_id, handle) = {
-        let mut guard = device_manager_in(runtime)
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        let Some(bound_if_id) = guard.port_map.get(&port_id).copied() else {
-            return Err("device port not registered");
-        };
-        if if_id != bound_if_id
-            && (guard.handles.contains_key(&if_id)
-                || guard
-                    .port_map
-                    .iter()
-                    .any(|(mapped_port, mapped_if)| *mapped_port != port_id && *mapped_if == if_id))
-        {
-            return Err("interface already bound to device port");
-        }
-
-        (
-            bound_if_id,
-            guard
-                .handles
-                .remove(&bound_if_id)
-                .ok_or("device handle missing")?,
-        )
-    };
-
-    let binding = NetDeviceBinding { port_id, if_id };
-    if let Err(err) = handle.rebind(binding) {
-        device_manager_in(runtime)
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .handles
-            .insert(bound_if_id, handle);
-        return Err(err);
-    }
-
-    let mut guard = device_manager_in(runtime)
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    guard.port_map.insert(port_id, if_id);
-    if guard.primary == Some(bound_if_id) {
-        guard.primary = Some(if_id);
-    }
-    guard.handles.insert(if_id, handle);
-    Ok(())
-}
-
 pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
+    let was_primary = manager::primary_interface_in(runtime) == Some(if_id);
     let handle = {
         let mut guard = device_manager_in(runtime)
             .write()
@@ -1787,8 +1621,8 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     };
 
     if let Some(handle) = handle {
-        let _ = manager::set_interface_down_in(runtime, if_id);
-        handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister);
+        let _ = manager::set_interface_link_state_in(runtime, if_id, manager::LinkState::Down);
+        handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister, was_primary);
         crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
         let _ = manager::unregister_interface_in(runtime, if_id);
         handle.stop();
@@ -1850,6 +1684,16 @@ pub fn transmit_packet_in(
     payload: PacketPayload,
     meta: NetTxMeta,
 ) -> bool {
+    if !manager::is_interface_operational_in(runtime, if_id) {
+        if let Some(completion_id) = meta.device_completion_ticket().map(|ticket| ticket.get()) {
+            let _ = complete_tx_request_in(
+                runtime,
+                completion_id,
+                Err("network interface is not operational"),
+            );
+        }
+        return false;
+    }
     let queued = with_port_handle_in(runtime, if_id, |handle| {
         handle.enqueue_tx_in(runtime, payload, meta)
     });
@@ -1873,9 +1717,15 @@ pub(crate) fn transmit_registered_tx_request_in(
     request: TxRequest,
 ) -> bool {
     let lease_id = request.lease_id;
-    let queued = with_port_handle_in(runtime, if_id, |handle| {
-        handle.enqueue_tx_request(request)
-    });
+    if !manager::is_interface_operational_in(runtime, if_id) {
+        let _ = complete_tx_lease_in(
+            runtime,
+            lease_id,
+            Err("network interface is not operational"),
+        );
+        return false;
+    }
+    let queued = with_port_handle_in(runtime, if_id, |handle| handle.enqueue_tx_request(request));
     match queued {
         Some(Ok(())) => true,
         Some(Err(request)) => {

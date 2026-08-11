@@ -998,7 +998,7 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
 // =====================================================
 
 /// IPv6 interface configuration
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Config {
     /// Link-local address (fe80::/10, auto-generated from MAC)
     pub link_local: Ipv6Address,

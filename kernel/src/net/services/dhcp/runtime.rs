@@ -118,7 +118,6 @@ pub(crate) fn unregister_interface_runtime_in(runtime: NetRuntimeHandle, if_id: 
     if let Some(interface_runtime) = removed {
         interface_runtime.active.store(false, Ordering::Release);
     }
-    clear_primary_interface_in(runtime, if_id);
 }
 
 fn interface_runtime_in(
@@ -187,19 +186,11 @@ fn primary_interface_runtime_in(
     runtime: NetRuntimeHandle,
 ) -> Option<&'static DhcpInterfaceRuntime> {
     let state = runtime_state_for(runtime);
-    let primary_if = state.primary_if_id.load(Ordering::Acquire);
+    let primary_if = crate::net::runtime::manager::primary_interface_in(runtime)?;
     let guard = state.interface_runtimes.lock().ok()?;
-    if primary_if != INVALID_IF_ID {
-        if let Some(runtime) = guard.get(&NetIfId(primary_if)) {
-            return Some(*runtime);
-        }
-    }
-    guard
-        .values()
-        .find(|runtime| {
-            runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
-        })
-        .copied()
+    guard.get(&primary_if).copied().filter(|runtime| {
+        runtime.active.load(Ordering::Acquire) && !runtime.suspended.load(Ordering::Acquire)
+    })
 }
 
 pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<&'static DhcpClient> {
@@ -361,7 +352,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
                             runtime,
                             crate::net::runtime::command::RuntimeCommand::Control(
                                 crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                    if_id: Some(interface_runtime.if_id.0),
+                                    if_id: interface_runtime.if_id,
                                     config: applied,
                                 },
                             ),

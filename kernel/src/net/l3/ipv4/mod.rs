@@ -103,7 +103,7 @@ pub struct Ipv4PacketMut<'a> {
 ///
 /// 全フィールドが Copy 型のため、Copy を実装。
 /// clone() のコストが実質的にゼロになる。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv4Config {
     /// Local IP address
     pub address: Ipv4Address,

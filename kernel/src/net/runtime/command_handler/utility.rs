@@ -48,22 +48,10 @@ impl RuntimeCommandHandler {
                     t2: 0,
                     obtained_at: crate::task::current_tick(),
                 };
-                let target_if = if_id.map(NetIfId);
-                let selected_primary = target_if
-                    .map(|if_id| {
-                        crate::net::runtime::device::claim_bound_primary_interface_with_stack_state_in(
-                            runtime,
-                            if_id,
-                            stack,
-                        )
-                    })
-                    .unwrap_or(false);
-                if let Some(if_id) = target_if {
-                    let is_primary = selected_primary
-                        || crate::net::runtime::device::primary_if_in(runtime) == Some(if_id);
+                let is_primary =
+                    crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
+                {
                     if is_primary {
-                        crate::net::services::dhcp::mark_primary_interface_in(runtime, if_id);
-
                         // DNSサーバーを更新
                         if !dns_servers.is_empty() {
                             crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
@@ -74,7 +62,6 @@ impl RuntimeCommandHandler {
                     stack.apply_dhcp_v4_lease_for_interface(
                         &lease,
                         if_id,
-                        is_primary,
                         dns_servers.first().copied(),
                     );
                     log::info!(
@@ -83,8 +70,6 @@ impl RuntimeCommandHandler {
                         is_primary,
                         lease.ip_address
                     );
-                } else {
-                    stack.apply_dhcp_v4_lease(&lease, dns_servers.first().copied());
                 }
                 EventHandleResult::Success
             }
@@ -98,11 +83,8 @@ impl RuntimeCommandHandler {
                 } = config;
                 stack.enqueue_apply_ipv6_global_address(ipv6_addr);
 
-                let is_primary = if_id
-                    .map(|id| {
-                        crate::net::runtime::device::primary_if_in(runtime) == Some(NetIfId(id))
-                    })
-                    .unwrap_or(true);
+                let is_primary =
+                    crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_id);
 
                 if is_primary {
                     // DNSサーバーを更新
@@ -112,8 +94,8 @@ impl RuntimeCommandHandler {
                 }
 
                 log::info!(
-                    "[NET] DHCPv6 lease applied: if{:?} addr={}",
-                    if_id,
+                    "[NET] DHCPv6 lease applied: if{} addr={}",
+                    if_id.0,
                     ipv6_addr
                 );
                 EventHandleResult::Success
@@ -284,16 +266,16 @@ impl RuntimeCommandHandler {
                 crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
+                crate::net::runtime::command::ControlCommand::InterfaceTopologyDirty { revision },
             ) => {
-                if !stack.needs_interface_config_revision(revision) {
+                if !stack.needs_interface_topology_revision(revision) {
                     return EventHandleResult::Success;
                 }
 
-                if let Some(configurations) =
-                    crate::net::runtime::manager::try_interface_configurations_in(runtime)
+                if let Some(topology) =
+                    crate::net::runtime::manager::try_interface_topology_in(runtime)
                 {
-                    stack.reconcile_interface_configurations(configurations);
+                    stack.reconcile_interface_topology(topology);
                 }
                 EventHandleResult::Success
             }

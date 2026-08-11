@@ -6,17 +6,6 @@ use super::*;
 use crate::net::l4::socket::{SocketFamily, find_udp_by_port_in};
 use crate::net::runtime::NetRuntimeHandle;
 
-fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> Option<NetIfId> {
-    if let Some(if_id) = if_id {
-        return Some(if_id);
-    }
-    crate::net::runtime::device::primary_if_in(runtime).or_else(|| {
-        crate::net::runtime::manager::list_interfaces_in(runtime)
-            .ok()
-            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-    })
-}
-
 /// UDP processor for handling UDP packets
 
 pub struct UdpProcessor {
@@ -29,8 +18,6 @@ pub struct UdpProcessor {
 pub enum UdpResult {
     /// Delivered to socket
     Delivered,
-    /// No ingress interface exists for this packet
-    NoIngressInterface,
     /// No socket for this port
     NoEndpoint,
     /// Checksum error
@@ -66,7 +53,7 @@ impl UdpProcessor {
             SocketFamily::Ipv4
         };
 
-        let Some(endpoint) = find_udp_by_port_in(runtime, family, dst_port, Some(if_id)) else {
+        let Some(endpoint) = find_udp_by_port_in(runtime, family, dst_port, if_id) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
@@ -90,7 +77,7 @@ impl UdpProcessor {
         family: SocketFamily,
         dst_port: u16,
     ) -> Option<Socket> {
-        let endpoint = find_udp_by_port_in(runtime, family, dst_port, Some(if_id));
+        let endpoint = find_udp_by_port_in(runtime, family, dst_port, if_id);
         if endpoint.is_none() {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -139,19 +126,13 @@ impl UdpProcessor {
     pub fn process_window_on(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         packet: OwnedPayloadWindow,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return Err((
-                UdpResult::NoIngressInterface,
-                packet.into_original_payload(),
-            ));
-        };
-        self.process_window_impl(runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
+        self.process_window_impl(runtime, if_id, packet, src_ip, dst_ip, ttl)
     }
 
     fn process_window_impl(
@@ -233,19 +214,13 @@ impl UdpProcessor {
     pub fn process_window_v6_on(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         packet: OwnedPayloadWindow,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> Result<(), (UdpResult, PacketPayload)> {
-        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return Err((
-                UdpResult::NoIngressInterface,
-                packet.into_original_payload(),
-            ));
-        };
-        self.process_window_v6_impl(runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
+        self.process_window_v6_impl(runtime, if_id, packet, src_ip, dst_ip, ttl)
     }
 
     fn process_window_v6_impl(
@@ -331,16 +306,13 @@ impl UdpProcessor {
     pub fn process_payload_on(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         payload: PacketPayload,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
     ) -> UdpResult {
-        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return UdpResult::NoIngressInterface;
-        };
-        self.process_payload_impl(runtime, resolved_if_id, payload, src_ip, dst_ip, ttl)
+        self.process_payload_impl(runtime, if_id, payload, src_ip, dst_ip, ttl)
     }
 
     fn process_payload_impl(
@@ -402,16 +374,13 @@ impl UdpProcessor {
     pub fn process_payload_v6_on(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         payload: PacketPayload,
         src_ip: Ipv6Address,
         dst_ip: Ipv6Address,
         ttl: u8,
     ) -> UdpResult {
-        let Some(resolved_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-            return UdpResult::NoIngressInterface;
-        };
-        self.process_payload_v6_impl(runtime, resolved_if_id, payload, src_ip, dst_ip, ttl)
+        self.process_payload_v6_impl(runtime, if_id, payload, src_ip, dst_ip, ttl)
     }
 
     fn process_payload_v6_impl(

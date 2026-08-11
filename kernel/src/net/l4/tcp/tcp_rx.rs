@@ -59,17 +59,6 @@ pub(crate) fn generate_tcp_timestamp_in(runtime: NetRuntimeHandle) -> u32 {
     (ms / 10) as u32
 }
 
-fn resolve_ingress_if_id_in(runtime: NetRuntimeHandle, if_id: Option<NetIfId>) -> Option<NetIfId> {
-    if let Some(if_id) = if_id {
-        return Some(if_id);
-    }
-    crate::net::runtime::device::primary_if_in(runtime).or_else(|| {
-        crate::net::runtime::manager::list_interfaces_in(runtime)
-            .ok()
-            .and_then(|ifaces| ifaces.first().map(|iface| iface.if_id))
-    })
-}
-
 // seq_before は types モジュールの統一実装を使用
 
 /// RFC 793 Step 1: 受信セグメントのシーケンス番号妥当性を検証
@@ -474,8 +463,7 @@ fn process_parsed_tcp_segment(
                 remote
             );
 
-            if let Some(socket) = find_listening_tcp_socket_in(runtime, local, Some(ingress_if_id))
-            {
+            if let Some(socket) = find_listening_tcp_socket_in(runtime, local, ingress_if_id) {
                 let mss = match mss_idx {
                     2 => 1460,
                     1 => 536,
@@ -502,8 +490,7 @@ fn process_parsed_tcp_segment(
                 if let Some(accepted) =
                     create_accepted_socket(runtime, local, remote, ingress_if_id)
                 {
-                    let _ =
-                        push_to_accept_queue(runtime, local.port(), Some(ingress_if_id), accepted);
+                    let _ = push_to_accept_queue(runtime, local.port(), ingress_if_id, accepted);
                 }
 
                 if !data_payload.is_empty() {
@@ -613,7 +600,7 @@ fn try_fast_path(
 
 pub fn process_tcp_segment_v6_payload_on(
     runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
+    if_id: NetIfId,
     src_ip: crate::net::l3::ipv6::Ipv6Address,
     dst_ip: crate::net::l3::ipv6::Ipv6Address,
     segment: PacketPayload,
@@ -629,9 +616,7 @@ pub fn process_tcp_segment_v6_payload_on(
 
     let remote = EndpointAddr::new_v6(src_ip.octets(), header.src_port);
     let local = EndpointAddr::new_v6(dst_ip.octets(), header.dst_port);
-    let Some(ingress_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-        return;
-    };
+    let ingress_if_id = if_id;
     process_parsed_tcp_segment(
         runtime,
         local,
@@ -645,7 +630,7 @@ pub fn process_tcp_segment_v6_payload_on(
 
 pub fn process_tcp_segment_payload_on(
     runtime: NetRuntimeHandle,
-    if_id: Option<NetIfId>,
+    if_id: NetIfId,
     src_ip: [u8; 4],
     dst_ip: [u8; 4],
     segment: PacketPayload,
@@ -661,9 +646,7 @@ pub fn process_tcp_segment_payload_on(
 
     let remote = EndpointAddr::new(src_ip, header.src_port);
     let local = EndpointAddr::new(dst_ip, header.dst_port);
-    let Some(ingress_if_id) = resolve_ingress_if_id_in(runtime, if_id) else {
-        return;
-    };
+    let ingress_if_id = if_id;
     process_parsed_tcp_segment(
         runtime,
         local,
@@ -1354,7 +1337,7 @@ fn process_tcp_new_connection(
     }
 
     // リッスン中のソケットを探す
-    let socket = find_listening_tcp_socket_in(runtime, local, Some(ingress_if_id));
+    let socket = find_listening_tcp_socket_in(runtime, local, ingress_if_id);
 
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
@@ -1614,7 +1597,7 @@ fn create_accepted_socket(
 fn push_to_accept_queue(
     runtime: NetRuntimeHandle,
     local_port: u16,
-    ingress_if_id: Option<NetIfId>,
+    ingress_if_id: NetIfId,
     conn: AcceptedConnection,
 ) -> bool {
     // ローカルポートでリッスン中のソケットを検索

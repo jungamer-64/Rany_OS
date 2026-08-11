@@ -419,7 +419,7 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { .. },
+                crate::net::runtime::command::ControlCommand::InterfaceTopologyDirty { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::NeighborResolvedV4 { .. },

@@ -11,14 +11,11 @@ impl NetworkStack {
     pub fn process_arp(
         &mut self,
         runtime: NetRuntimeHandle,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         data: &[u8],
         current_time: u64,
         src_mac: MacAddress,
     ) {
-        let Some(if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
         let result = {
             let Some(state) = self.interfaces.get_mut(&if_id) else {
                 return;
@@ -42,13 +39,13 @@ impl NetworkStack {
                     *resolved_ip.as_bytes(),
                     *resolved_mac.as_bytes(),
                 );
-                self.drain_arp_pending_on(Some(if_id), &resolved_ip);
+                self.drain_arp_pending_on(if_id, &resolved_ip);
                 let ip_bytes = *resolved_ip.as_bytes();
                 let mac_bytes = *resolved_mac.as_bytes();
                 crate::net::runtime::command::broadcast_command_in(runtime, move || {
                     crate::net::runtime::command::RuntimeCommand::Control(
                         crate::net::runtime::command::ControlCommand::NeighborResolvedV4 {
-                            if_id: Some(if_id),
+                            if_id,
                             ip: ip_bytes,
                             mac: mac_bytes,
                         },
@@ -269,29 +266,17 @@ impl NetworkStack {
             .find_map(|state| state.arp.resolve(ip, current_time))
     }
 
-    /// Insert an entry into the ARP cache (public wrapper for tests/diagnostics)
-    pub fn arp_cache_insert(&mut self, ip: Ipv4Address, mac: MacAddress, current_time: u64) {
-        if let Some((_, state)) = self.primary_interface_state_mut() {
-            state.arp.cache().insert(ip, mac, current_time);
-        }
-    }
-
-    /// Insert an entry into a specific interface's ARP cache, or primary if None
+    /// Insert an entry into a specific interface's ARP cache.
     pub fn arp_cache_insert_on(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         ip: Ipv4Address,
         mac: MacAddress,
         current_time: u64,
     ) {
-        if let Some(if_id) = if_id {
-            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                state.arp.cache().insert(ip, mac, current_time);
-                return;
-            }
+        if let Some(state) = self.interfaces.get_mut(&if_id) {
+            state.arp.cache().insert(ip, mac, current_time);
         }
-        // Fallback to primary
-        self.arp_cache_insert(ip, mac, current_time);
     }
 
     /// Get ARP cache entries (for debugging)
@@ -314,7 +299,7 @@ impl NetworkStack {
     /// Drain pending IPv4 packets for a resolved IP
     fn drain_arp_pending_queue(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         resolved_ip: &Ipv4Address,
         pending: Vec<crate::net::runtime::stack::PendingIpv4Packet>,
     ) {
@@ -337,9 +322,6 @@ impl NetworkStack {
                     ttl,
                     data,
                 } => {
-                    let Some(if_id) = if_id else {
-                        continue;
-                    };
                     if let Some(config) = self.interface_config_or_runtime(if_id) {
                         let _ = self.send_udp_raw_with_config_and_if_ttl_payload(
                             Some(if_id),
@@ -354,9 +336,6 @@ impl NetworkStack {
                     }
                 }
                 crate::net::runtime::stack::PendingIpv4Payload::Tcp { ttl, segment } => {
-                    let Some(if_id) = if_id else {
-                        continue;
-                    };
                     let scope = crate::net::types::InterfaceScope::Pinned(if_id);
                     let _ = self.send_tcp_raw_scoped_with_ttl_payload(
                         scope, pkt.src, pkt.dst, segment, ttl,
@@ -367,9 +346,6 @@ impl NetworkStack {
                     ttl,
                     payload,
                 } => {
-                    let Some(if_id) = if_id else {
-                        continue;
-                    };
                     let Some(src_mac) = self.interface_config_or_runtime(if_id).map(|c| c.mac)
                     else {
                         continue;
@@ -399,26 +375,21 @@ impl NetworkStack {
             }
         }
         for (if_id, pending) in drained {
-            self.drain_arp_pending_queue(Some(if_id), resolved_ip, pending);
+            self.drain_arp_pending_queue(if_id, resolved_ip, pending);
         }
     }
 
     pub(crate) fn drain_arp_pending_on(
         &mut self,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         resolved_ip: &Ipv4Address,
     ) {
-        let Some(if_id) = if_id else {
-            self.drain_arp_pending(resolved_ip);
-            return;
-        };
-
         let pending = if let Some(state) = self.interfaces.get_mut(&if_id) {
             state.arp_pending_queue.drain_for(resolved_ip)
         } else {
             Vec::new()
         };
 
-        self.drain_arp_pending_queue(Some(if_id), resolved_ip, pending);
+        self.drain_arp_pending_queue(if_id, resolved_ip, pending);
     }
 }

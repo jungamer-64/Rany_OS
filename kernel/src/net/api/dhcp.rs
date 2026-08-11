@@ -228,7 +228,7 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
     }
 
-    if crate::net::runtime::device::primary_if_in(runtime) == Some(if_id) {
+    if manager::primary_interface_in(runtime) == Some(if_id) {
         if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
             out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
             if let Some(lease6) = client6.lease() {

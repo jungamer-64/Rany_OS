@@ -41,35 +41,22 @@ impl NetworkStack {
     }
 
     fn default_interface_id(&self) -> Option<NetIfId> {
-        self.primary_interface
+        self.reconciled_primary
             .filter(|if_id| self.interfaces.contains_key(if_id))
-            .or_else(|| self.interfaces.keys().next().copied())
     }
 
     pub(crate) fn interface_state_for_ingress(
         &self,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
     ) -> Option<(NetIfId, &InterfaceStackState)> {
-        match if_id {
-            Some(if_id) => self.interfaces.get(&if_id).map(|state| (if_id, state)),
-            None => self
-                .default_interface_id()
-                .and_then(|if_id| self.interfaces.get(&if_id).map(|state| (if_id, state))),
-        }
+        self.interfaces.get(&if_id).map(|state| (if_id, state))
     }
 
     pub(crate) fn interface_state_for_ingress_mut(
         &mut self,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
     ) -> Option<(NetIfId, &mut InterfaceStackState)> {
-        let selected_if_id = match if_id {
-            Some(if_id) if self.interfaces.contains_key(&if_id) => if_id,
-            Some(_) => return None,
-            None => self.default_interface_id()?,
-        };
-        self.interfaces
-            .get_mut(&selected_if_id)
-            .map(|state| (selected_if_id, state))
+        self.interfaces.get_mut(&if_id).map(|state| (if_id, state))
     }
 
     pub(crate) fn primary_interface_state(&self) -> Option<(NetIfId, &InterfaceStackState)> {
@@ -460,9 +447,9 @@ impl NetworkStack {
         NetworkStack {
             runtime,
             interfaces: BTreeMap::new(),
-            applied_interface_config_revision:
-                crate::net::runtime::manager::InterfaceConfigRevision::INITIAL,
-            primary_interface: None,
+            applied_topology_revision:
+                crate::net::runtime::manager::InterfaceTopologyRevision::INITIAL,
+            reconciled_primary: None,
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             transmit_fn: None,
             transmit_awaits_device_completion: false,
@@ -498,31 +485,26 @@ impl NetworkStack {
         }
     }
 
-    pub(crate) fn needs_interface_config_revision(
+    pub(crate) fn needs_interface_topology_revision(
         &self,
-        revision: crate::net::runtime::manager::InterfaceConfigRevision,
+        revision: crate::net::runtime::manager::InterfaceTopologyRevision,
     ) -> bool {
-        self.applied_interface_config_revision != revision
+        self.applied_topology_revision != revision
     }
 
-    pub(crate) fn reconcile_interface_configurations(
+    pub(crate) fn reconcile_interface_topology(
         &mut self,
-        configurations: crate::net::runtime::manager::InterfaceConfigurations,
+        topology: crate::net::runtime::manager::InterfaceTopologySnapshot,
     ) {
-        let revision = configurations.revision();
-        self.interfaces
-            .retain(|if_id, _| configurations.contains(*if_id));
-        if self
-            .primary_interface
-            .is_some_and(|if_id| !configurations.contains(if_id))
-        {
-            self.primary_interface = None;
-        }
+        let revision = topology.revision();
+        let primary = topology.primary();
+        self.interfaces.retain(|if_id, _| topology.contains(*if_id));
 
-        for (if_id, config) in configurations.into_entries() {
-            self.register_interface_state(if_id, config);
+        for entry in topology.into_entries() {
+            self.register_interface_state(entry.if_id, entry.config);
         }
-        self.applied_interface_config_revision = revision;
+        self.reconciled_primary = primary;
+        self.applied_topology_revision = revision;
     }
 
     pub fn interface_config(&self, if_id: NetIfId) -> Option<NetworkConfig> {
@@ -1045,12 +1027,14 @@ impl NetworkStack {
         }
 
         let revision =
-            crate::net::runtime::manager::current_interface_config_revision_in(self.runtime);
-        if self.needs_interface_config_revision(revision) {
+            crate::net::runtime::manager::current_interface_topology_revision_in(self.runtime);
+        if self.needs_interface_topology_revision(revision) {
             let _ = crate::net::runtime::command::try_enqueue_command_in(
                 self.runtime,
                 crate::net::runtime::command::RuntimeCommand::Control(
-                    crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
+                    crate::net::runtime::command::ControlCommand::InterfaceTopologyDirty {
+                        revision,
+                    },
                 ),
             );
         }

@@ -93,28 +93,10 @@ impl NetworkStack {
         }
     }
 
-    /// Apply DHCPv4 lease to live stack configuration and synchronize manager state.
-    pub fn apply_dhcp_v4_lease(
-        &mut self,
-        lease: &crate::net::services::dhcp::DhcpLease,
-        dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
-    ) {
-        if let Some(primary_if) = crate::net::runtime::device::primary_if_in(self.runtime) {
-            self.apply_dhcp_v4_lease_for_interface(lease, primary_if, true, dns_server);
-            return;
-        }
-
-        log::warn!(
-            target: "net::dhcp",
-            "DHCPv4 lease ignored because no primary runtime interface is registered"
-        );
-    }
-
     pub fn apply_dhcp_v4_lease_for_interface(
         &mut self,
         lease: &crate::net::services::dhcp::DhcpLease,
         if_id: crate::net::runtime::manager::NetIfId,
-        update_primary_runtime: bool,
         dns_server: Option<crate::net::l3::ipv4::Ipv4Address>,
     ) {
         let runtime = self.runtime;
@@ -130,13 +112,9 @@ impl NetworkStack {
         let mut iface_config = base_config;
         iface_config.ipv4.address = lease.ip_address;
         iface_config.ipv4.subnet_mask = lease.subnet_mask;
-        iface_config.ipv4.gateway = if update_primary_runtime {
-            lease
-                .gateway
-                .unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY)
-        } else {
-            crate::net::l3::ipv4::Ipv4Address::ANY
-        };
+        iface_config.ipv4.gateway = lease
+            .gateway
+            .unwrap_or(crate::net::l3::ipv4::Ipv4Address::ANY);
         iface_config.ipv4.dns = dns_server;
 
         if crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config)
@@ -144,16 +122,11 @@ impl NetworkStack {
         {
             return;
         }
-        self.register_interface_state(if_id, iface_config);
-        if update_primary_runtime {
-            self.set_config(iface_config);
-        }
     }
 
     pub fn clear_dhcp_v4_lease_for_interface(
         &mut self,
         if_id: crate::net::runtime::manager::NetIfId,
-        clear_primary_runtime: bool,
     ) {
         let runtime = self.runtime;
         let Some(base_config) = crate::net::runtime::manager::get_interface_in(runtime, if_id)
@@ -176,36 +149,25 @@ impl NetworkStack {
         {
             return;
         }
-        self.register_interface_state(if_id, iface_config);
-        if clear_primary_runtime {
-            self.set_config(iface_config);
-        }
     }
 
     pub fn process_udp_payload(
         &mut self,
-        if_id: Option<crate::net::runtime::manager::NetIfId>,
+        if_id: crate::net::runtime::manager::NetIfId,
         packet: crate::net::payload::OwnedPayloadWindow,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
         ttl: u8,
         current_time: u64,
     ) {
-        let Some(resolved_if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
+        let resolved_if_id = if_id;
         let result = {
             let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
                 return;
             };
-            state.udp.process_window_on(
-                self.runtime,
-                Some(resolved_if_id),
-                packet,
-                src_ip,
-                dst_ip,
-                ttl,
-            )
+            state
+                .udp
+                .process_window_on(self.runtime, resolved_if_id, packet, src_ip, dst_ip, ttl)
         };
         match result {
             Ok(()) => {}
@@ -223,11 +185,6 @@ impl NetworkStack {
                     );
                 }
             }
-            Err((UdpResult::NoIngressInterface, _)) => {
-                if let Some(stats) = self.interface_stats(resolved_if_id) {
-                    stats.record_dropped();
-                }
-            }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {
                     stats.record_rx_error();
@@ -239,22 +196,20 @@ impl NetworkStack {
 
     pub(crate) fn process_udp_payload_v6(
         &mut self,
-        if_id: Option<crate::net::runtime::manager::NetIfId>,
+        if_id: crate::net::runtime::manager::NetIfId,
         packet: crate::net::payload::OwnedPayloadWindow,
         src: crate::net::l3::ipv6::Ipv6Address,
         dst: crate::net::l3::ipv6::Ipv6Address,
         hop_limit: u8,
     ) {
-        let Some(resolved_if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
+        let resolved_if_id = if_id;
         let result = {
             let Some(state) = self.interfaces.get_mut(&resolved_if_id) else {
                 return;
             };
             state.udp.process_window_v6_on(
                 self.runtime,
-                Some(resolved_if_id),
+                resolved_if_id,
                 packet,
                 src,
                 dst,
@@ -268,11 +223,6 @@ impl NetworkStack {
                     stats.record_dropped();
                 }
                 self.send_icmpv6_error_payload(src, 4, original_packet);
-            }
-            Err((UdpResult::NoIngressInterface, _)) => {
-                if let Some(stats) = self.interface_stats(resolved_if_id) {
-                    stats.record_dropped();
-                }
             }
             Err((UdpResult::ChecksumError | UdpResult::Invalid, _)) => {
                 if let Some(stats) = self.interface_stats(resolved_if_id) {

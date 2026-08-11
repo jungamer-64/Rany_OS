@@ -12,19 +12,19 @@ impl RuntimeCommandHandler {
     pub(super) fn handle_ingress_packet_with_stack(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         packet: PacketRef,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let pkt_len = packet.len();
         let current_time = stack.current_time();
-        let Some(selected_if_id) = stack.resolve_ingress_if(if_id) else {
+        if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
             return EventHandleResult::Success;
-        };
+        }
+        let selected_if_id = if_id;
 
         let ethernet_result = {
-            let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(selected_if_id))
-            else {
+            let Some((_, state)) = stack.interface_state_for_ingress_mut(selected_if_id) else {
                 return EventHandleResult::Success;
             };
             state.process_ethernet(packet)
@@ -37,7 +37,7 @@ impl RuntimeCommandHandler {
             } => {
                 self.handle_ipv4_ingress_with_stack(
                     runtime,
-                    Some(selected_if_id),
+                    selected_if_id,
                     ip_packet,
                     src_mac,
                     current_time,
@@ -51,7 +51,7 @@ impl RuntimeCommandHandler {
             crate::net::l2::ethernet::EthernetIngress::Arp { packet, src_mac } => {
                 stack.process_arp(
                     runtime,
-                    Some(selected_if_id),
+                    selected_if_id,
                     packet.data(),
                     current_time,
                     src_mac,
@@ -66,7 +66,7 @@ impl RuntimeCommandHandler {
                 src_mac,
             } => {
                 let ipv6_enabled = stack
-                    .interface_state_for_ingress(Some(selected_if_id))
+                    .interface_state_for_ingress(selected_if_id)
                     .is_some_and(|(_, state)| state.has_ipv6());
                 if ipv6_enabled {
                     let ip_data = ip_packet.data();
@@ -154,7 +154,7 @@ impl RuntimeCommandHandler {
 
                     stack.process_ipv6_data(
                         runtime,
-                        Some(selected_if_id),
+                        selected_if_id,
                         current_time,
                         src_mac,
                         false,
@@ -177,14 +177,15 @@ impl RuntimeCommandHandler {
     pub(super) fn handle_reassembled_packet_with_stack(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         payload: PacketPayload,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let current_time = stack.current_time();
-        let Some(ingress_if_id) = stack.resolve_ingress_if(if_id) else {
+        if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
             return EventHandleResult::Success;
-        };
+        }
+        let ingress_if_id = if_id;
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         let view = crate::net::payload::PacketPayloadView::new(&payload);
 
@@ -271,7 +272,7 @@ impl RuntimeCommandHandler {
                         };
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                             runtime,
-                            Some(ingress_if_id),
+                            ingress_if_id,
                             src_ip.octets(),
                             dst_ip.octets(),
                             transport_payload,
@@ -290,7 +291,7 @@ impl RuntimeCommandHandler {
                         return EventHandleResult::Success;
                     };
                     stack.process_udp_payload(
-                        Some(ingress_if_id),
+                        ingress_if_id,
                         packet,
                         src_ip,
                         dst_ip,
@@ -423,7 +424,7 @@ impl RuntimeCommandHandler {
                         };
                         crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                             runtime,
-                            Some(ingress_if_id),
+                            ingress_if_id,
                             src,
                             dst,
                             transport_payload,
@@ -441,7 +442,7 @@ impl RuntimeCommandHandler {
                     let Some(packet) = bounds.take_from(payload) else {
                         return EventHandleResult::Success;
                     };
-                    stack.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
+                    stack.process_udp_payload_v6(ingress_if_id, packet, src, dst, hop_limit);
                 }
                 crate::net::l3::ipv4::IpProtocol::Icmpv6 => {
                     if let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
@@ -457,7 +458,7 @@ impl RuntimeCommandHandler {
                         };
                         stack.process_icmpv6_data(
                             runtime,
-                            Some(ingress_if_id),
+                            ingress_if_id,
                             transport_payload,
                             src,
                             dst,
@@ -477,16 +478,17 @@ impl RuntimeCommandHandler {
     pub(super) fn handle_ipv4_ingress_with_stack(
         &self,
         runtime: NetRuntimeHandle,
-        if_id: Option<NetIfId>,
+        if_id: NetIfId,
         ip_packet: PacketRef,
         src_mac: MacAddress,
         current_time: u64,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
         let mut ip_packet = Some(ip_packet);
-        let Some(ingress_if_id) = stack.resolve_ingress_if(if_id) else {
+        if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
             return EventHandleResult::Success;
-        };
+        }
+        let ingress_if_id = if_id;
         {
             let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
             if data.len() >= 20 {
@@ -544,7 +546,7 @@ impl RuntimeCommandHandler {
         let Some(packet_ref) = ip_packet.take() else {
             return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
         };
-        let Some((_, state)) = stack.interface_state_for_ingress_mut(Some(ingress_if_id)) else {
+        let Some((_, state)) = stack.interface_state_for_ingress_mut(ingress_if_id) else {
             return EventHandleResult::Success;
         };
         let result = state.process_ipv4_owned_packet(packet_ref, current_time);
@@ -579,7 +581,7 @@ impl RuntimeCommandHandler {
                 };
                 self.handle_udp_ingress_with_stack(
                     runtime,
-                    Some(ingress_if_id),
+                    ingress_if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
                     src_port,
@@ -597,7 +599,7 @@ impl RuntimeCommandHandler {
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on(
                     runtime,
-                    Some(ingress_if_id),
+                    ingress_if_id,
                     src_ip.octets(),
                     dst_ip.octets(),
                     tcp_segment_payload,
@@ -609,7 +611,7 @@ impl RuntimeCommandHandler {
                     runtime,
                     RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {
-                            if_id: Some(ingress_if_id),
+                            if_id: ingress_if_id,
                             payload,
                         },
                     ),

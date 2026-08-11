@@ -52,7 +52,7 @@ pub const MTU: usize = 1500;
 ///
 /// 全フィールドが Copy 型のため、Copy を実装。
 /// clone() 呼び出しが単純なビットコピーに最適化される。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkConfig {
     /// MAC address
     pub mac: MacAddress,
@@ -270,6 +270,10 @@ pub struct NetworkStack {
     runtime: NetRuntimeHandle,
     /// Per-core protocol state derived from the manager-owned configurations.
     interfaces: BTreeMap<NetIfId, InterfaceStackState>,
+    /// Manager topology revision fully reconciled into this core-local replica.
+    applied_topology_revision: crate::net::runtime::manager::InterfaceTopologyRevision,
+    /// Primary interface copied only as part of an atomic topology reconciliation.
+    reconciled_primary: Option<NetIfId>,
     /// Manager revision fully applied to this per-core stack.
     /// Timeout wheel for periodic tasks
     timeout_wheel: TimeoutWheel,

@@ -134,16 +134,14 @@ impl NetworkStack {
     pub fn process_ipv6_data(
         &mut self,
         runtime: NetRuntimeHandle,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         current_time: u64,
         src_mac: MacAddress,
         _reassembled: bool,
         ip_packet: PacketRef,
     ) {
         let mut ip_packet = Some(ip_packet);
-        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
+        let ingress_if_id = if_id;
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
@@ -179,7 +177,7 @@ impl NetworkStack {
                 };
                 self.process_icmpv6_data(
                     runtime,
-                    Some(ingress_if_id),
+                    ingress_if_id,
                     icmpv6_payload,
                     src,
                     dst,
@@ -195,14 +193,14 @@ impl NetworkStack {
                 };
                 crate::net::l4::tcp::tcp_rx::process_tcp_segment_v6_payload_on(
                     runtime,
-                    Some(ingress_if_id),
+                    ingress_if_id,
                     src,
                     dst,
                     tcp_segment_payload,
                 );
             }
             Ipv6ProcessResult::Udp(packet, src, dst, hop_limit) => {
-                self.process_udp_payload_v6(Some(ingress_if_id), packet, src, dst, hop_limit);
+                self.process_udp_payload_v6(ingress_if_id, packet, src, dst, hop_limit);
             }
             Ipv6ProcessResult::Reassembled(payload) => {
                 // Reassembled IPv6 payload is offloaded to endpoint async path.
@@ -210,7 +208,7 @@ impl NetworkStack {
                     self.runtime,
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Reassembled {
-                            if_id: Some(ingress_if_id),
+                            if_id: ingress_if_id,
                             payload,
                         },
                     ),
@@ -296,7 +294,7 @@ impl NetworkStack {
     pub(crate) fn process_icmpv6_data(
         &mut self,
         runtime: NetRuntimeHandle,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
         dst: Ipv6Address,
@@ -304,9 +302,7 @@ impl NetworkStack {
         hop_limit: u8,
         current_time: u64,
     ) {
-        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
+        let ingress_if_id = if_id;
         let Some(state) = self.interfaces.get(&ingress_if_id) else {
             return;
         };
@@ -376,7 +372,7 @@ impl NetworkStack {
             } => {
                 self.process_ndp_message(
                     runtime,
-                    Some(ingress_if_id),
+                    ingress_if_id,
                     msg_type,
                     ndp_data,
                     ndp_src,
@@ -544,7 +540,7 @@ impl NetworkStack {
     pub(crate) fn process_ndp_message(
         &mut self,
         runtime: NetRuntimeHandle,
-        if_id: Option<super::NetIfId>,
+        if_id: super::NetIfId,
         msg_type: crate::net::l3::icmpv6::Icmpv6Type,
         payload: kernel_api::resource::net::PacketPayload,
         src: Ipv6Address,
@@ -560,9 +556,7 @@ impl NetworkStack {
             return;
         }
 
-        let Some(ingress_if_id) = self.resolve_ingress_if(if_id) else {
-            return;
-        };
+        let ingress_if_id = if_id;
         let result = {
             let Some(state) = self.interfaces.get_mut(&ingress_if_id) else {
                 return;
@@ -668,7 +662,7 @@ impl NetworkStack {
                 crate::net::runtime::command::broadcast_command_in(runtime, move || {
                     crate::net::runtime::command::RuntimeCommand::Control(
                         crate::net::runtime::command::ControlCommand::NeighborResolvedV6 {
-                            if_id: Some(ingress_if_id),
+                            if_id: ingress_if_id,
                             ip: ip_bytes,
                             mac: mac_bytes,
                         },

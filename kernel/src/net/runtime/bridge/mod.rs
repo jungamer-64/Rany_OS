@@ -145,9 +145,14 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     header_size: usize,
     payload_len: usize,
 ) {
+    if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
+        observability_in(runtime).counters().record_drop();
+        return;
+    }
     let state = runtime_state_for(runtime);
 
     ensure_stack_glue_if_state_in(runtime, if_id);
+    state.stack_glue_initialized.store(true, Ordering::Release);
     state.rx_packets.fetch_add(1, Ordering::Relaxed);
     let observability = observability_in(runtime);
     observability.counters().record_rx(payload_len);
@@ -185,10 +190,7 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     let _ = crate::net::runtime::command::try_enqueue_command_from_isr_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Ingress(
-            crate::net::runtime::command::IngressCommand::Packet {
-                if_id,
-                packet,
-            },
+            crate::net::runtime::command::IngressCommand::Packet { if_id, packet },
         ),
     );
 }
