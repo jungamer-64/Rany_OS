@@ -837,17 +837,40 @@ impl Mempool {
         })?;
 
         if cache.is_empty() {
-            let mut global_free = self.free_list.lock().map_err(|_| {
-                self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList))
-            })?;
-            if global_free.is_empty() {
-                return Err(self.record_alloc_failure(MempoolError::OutOfBuffers));
-            }
-            let count_to_refill = BATCH_SIZE.min(global_free.len());
-            for _ in 0..count_to_refill {
-                if let Some(buf) = global_free.pop() {
-                    cache.push(buf);
+            let mut refilled = false;
+            if let Ok(mut global_free) = self.free_list.lock() {
+                if !global_free.is_empty() {
+                    let count_to_refill = BATCH_SIZE.min(global_free.len());
+                    for _ in 0..count_to_refill {
+                        if let Some(buf) = global_free.pop() {
+                            cache.push(buf);
+                        }
+                    }
+                    refilled = true;
                 }
+            }
+
+            if !refilled {
+                // Global list is empty. Attempt work stealing from remote CPU local caches.
+                let max_cpus = crate::per_cpu::MAX_CPUS;
+                for offset in 1..max_cpus {
+                    let remote_cpu = (cpu_id + offset) % max_cpus;
+                    let remote_lock = &self.local_caches[remote_cpu];
+                    if let Ok(mut remote_cache) = remote_lock.try_lock() {
+                        if remote_cache.len() > 1 {
+                            let steal_count = (remote_cache.len() / 2).min(BATCH_SIZE);
+                            let split_idx = remote_cache.len() - steal_count;
+                            let stolen = remote_cache.split_off(split_idx);
+                            cache.extend(stolen);
+                            refilled = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if !refilled && cache.is_empty() {
+                return Err(self.record_alloc_failure(MempoolError::OutOfBuffers));
             }
         }
 

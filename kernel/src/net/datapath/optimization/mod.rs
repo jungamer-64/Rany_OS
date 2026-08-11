@@ -524,10 +524,14 @@ impl NumaMempool {
     }
 }
 
-/// NUMAノードアフィニティを考慮したメモリ割り当てヘルパー
+/// NUMAノードアフィニティを考慮したメモリ割り当てヘルパー（スカフォールド）
 ///
-/// ExoRustガイドライン 2（メモリ管理）に準拠。
-pub fn alloc_on_numa_node(node_id: usize, layout: core::alloc::Layout) -> Result<*mut u8, &'static str> {
+/// 現時点では物理NUMAバインディング（SRAT解析）統合までの代替として
+/// システムヒープアロケータを使用します。
+pub fn alloc_on_numa_node(
+    node_id: usize,
+    layout: core::alloc::Layout,
+) -> Result<*mut u8, &'static str> {
     let ptr = unsafe { alloc::alloc::alloc(layout) };
     if ptr.is_null() {
         Err("NUMA memory allocation failed")

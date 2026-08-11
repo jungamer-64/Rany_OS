@@ -7,11 +7,11 @@
 //! ノード間・セル間・ライブアップデート時のインターフェース設定やTCPコネクション状態の
 //! シリアライズ / デシリアライズを提供します。
 
-use alloc::vec::Vec;
 use crate::loader::live_update::{
     ExportedState, StateExportError, StateImportError, StateTransfer,
 };
 use crate::net::runtime::NetRuntimeHandle;
+use alloc::vec::Vec;
 
 /// ネットワークスタック全体の移行可能状態データ構造
 #[derive(Debug, Clone)]
@@ -52,7 +52,11 @@ impl StateTransfer for NetworkCellState {
         data.extend_from_slice(&stats.rx_packets.to_le_bytes());
         data.extend_from_slice(&stats.tx_packets.to_le_bytes());
 
-        Ok(ExportedState::new(Self::STATE_VERSION, self.cell_id(), data))
+        Ok(ExportedState::new(
+            Self::STATE_VERSION,
+            self.cell_id(),
+            data,
+        ))
     }
 
     fn import_state(state: ExportedState) -> Result<Self, StateImportError> {
@@ -60,7 +64,9 @@ impl StateTransfer for NetworkCellState {
             return Err(StateImportError::DeserializationFailed);
         }
 
-        let runtime = crate::net::runtime::default_runtime();
+        let source_id = crate::net::runtime::context::NetRuntimeId(state.metadata.source_cell_id);
+        let runtime = crate::net::runtime::context::runtime(source_id)
+            .unwrap_or_else(crate::net::runtime::default_runtime);
         let present = state.data[0];
         if present == 1 && state.data.len() >= 3 {
             let mut id_bytes = [0u8; 2];
