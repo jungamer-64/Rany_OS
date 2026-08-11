@@ -263,15 +263,12 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
         // 100msごとにタイムアウトを処理
         crate::task::sleep_ms(100).await;
 
-        // イベントキュー経由でタイムアウト処理をリクエスト
-        // イベントハンドラ側でNETWORK_STACKロックを取得して処理するため、
-        // asyncタスク内での同期ロック取得を回避
-        let _ = crate::net::runtime::command::try_enqueue_command_in(
-            runtime,
+        // 全 CPU コアのキューへタイムアウト処理（100ms）をブロードキャスト
+        crate::net::runtime::command::broadcast_command_in(runtime, || {
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessTimeouts,
-            ),
-        );
+            )
+        });
     }
 }
 

@@ -257,6 +257,29 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV4 {
+                    if_id: _,
+                    ip,
+                    mac,
+                },
+            ) => {
+                let now = crate::time::get_uptime_ms();
+                let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
+                let mac_addr = crate::net::l2::ethernet::MacAddress::new(mac);
+                stack.arp_cache_insert(ipv4, mac_addr, now);
+                stack.drain_arp_pending(&ipv4);
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 {
+                    if_id: _,
+                    ip: _,
+                    mac: _,
+                },
+            ) => {
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { reply },
             ) => finish_command(
                 reply,

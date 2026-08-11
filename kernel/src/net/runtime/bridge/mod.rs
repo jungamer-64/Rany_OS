@@ -348,11 +348,42 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     );
 }
 
-fn compute_and_set_flow_hash(_packet: &mut crate::net::datapath::mempool::PacketRef) {
-    // 解析ロジック...
-    // 以前はここで一律に csum_verified をセットしていましたが、
-    // 現在はドライバの RX completion path が
-    // パケット毎のフラグを確認してセットするため、ここでは何もしません。
+fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketRef) {
+    let data = packet.data();
+    if data.len() < 14 {
+        return;
+    }
+    // Check EtherType (IPv4 = 0x0800, IPv6 = 0x86DD)
+    let ethertype = u16::from_be_bytes([data[12], data[13]]);
+    let flow_hash = if ethertype == 0x0800 && data.len() >= 34 {
+        let ihl = (data[14] & 0x0F) as usize * 4;
+        let proto = data[23];
+        let frag_id = u16::from_be_bytes([data[18], data[19]]);
+        let src_ip = u32::from_be_bytes([data[26], data[27], data[28], data[29]]);
+        let dst_ip = u32::from_be_bytes([data[30], data[31], data[32], data[33]]);
+        let frag_off = u16::from_be_bytes([data[20], data[21]]) & 0x3FFF;
+        let is_frag = frag_off != 0 || (data[20] & 0x20 != 0);
+
+        if is_frag {
+            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                src_ip, dst_ip, frag_id, frag_id, proto,
+            )
+        } else if (proto == 6 || proto == 17) && data.len() >= 14 + ihl + 4 {
+            let l4_offset = 14 + ihl;
+            let src_port = u16::from_be_bytes([data[l4_offset], data[l4_offset + 1]]);
+            let dst_port = u16::from_be_bytes([data[l4_offset + 2], data[l4_offset + 3]]);
+            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                src_ip, dst_ip, src_port, dst_port, proto,
+            )
+        } else {
+            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                src_ip, dst_ip, 0, 0, proto,
+            )
+        }
+    } else {
+        0
+    };
+    packet.meta_mut().flow_hash = flow_hash;
 }
 
 pub fn check_batch_timeout_in(runtime: NetRuntimeHandle, current_tsc: u64, tsc_freq: u64) {

@@ -163,6 +163,16 @@ pub(crate) enum ControlCommand {
     ArpProbe {
         target_ip: [u8; 4],
     },
+    NeighborResolvedV4 {
+        if_id: Option<NetIfId>,
+        ip: [u8; 4],
+        mac: [u8; 6],
+    },
+    NeighborResolvedV6 {
+        if_id: Option<NetIfId>,
+        ip: [u8; 16],
+        mac: [u8; 6],
+    },
     DhcpApplyLease {
         if_id: Option<u16>,
         config: crate::net::services::dhcp::DhcpV4AppliedConfig,
@@ -703,8 +713,17 @@ fn runtime_context_for(
     runtime.context()
 }
 
+pub(crate) fn command_queue_for_core_in(
+    runtime: NetRuntimeHandle,
+    cpu_id: usize,
+) -> &'static RuntimeCommandQueue {
+    let index = cpu_id % crate::per_cpu::MAX_CPUS;
+    &runtime_context_for(runtime).command_queues[index]
+}
+
 pub(crate) fn command_queue_in(runtime: NetRuntimeHandle) -> &'static RuntimeCommandQueue {
-    &runtime_context_for(runtime).command_queue
+    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
+    command_queue_for_core_in(runtime, cpu_id)
 }
 
 #[inline]
@@ -712,7 +731,31 @@ pub(crate) fn try_enqueue_command_in(
     runtime: NetRuntimeHandle,
     command: RuntimeCommand,
 ) -> Result<(), RuntimeCommand> {
-    command_queue_in(runtime).send_owned(command)
+    let num_cpus = crate::task::executor_slot_count().max(1);
+
+    // Ingress パケットは flow_hash を使用して owner CPU queue へディスパッチ
+    let target_cpu = match &command {
+        RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
+            let flow_hash = packet.meta().flow_hash;
+            let cpus: alloc::vec::Vec<usize> = (0..num_cpus).collect();
+            let available_cpus = crate::net::datapath::optimization::CpuAffinity::from_cpus(&cpus);
+            let flow_affinity = crate::net::datapath::optimization::FlowAffinity::new(available_cpus);
+            flow_affinity.cpu_for_flow(flow_hash) % num_cpus
+        }
+        _ => crate::cpu::try_current_id().unwrap_or(0) % num_cpus,
+    };
+
+    command_queue_for_core_in(runtime, target_cpu).send_owned(command)
+}
+
+pub(crate) fn broadcast_command_in(
+    runtime: NetRuntimeHandle,
+    command_factory: impl Fn() -> RuntimeCommand,
+) {
+    let num_cpus = crate::task::executor_slot_count().max(1);
+    for cpu_id in 0..num_cpus {
+        let _ = command_queue_for_core_in(runtime, cpu_id).send(command_factory());
+    }
 }
 
 pub(crate) fn mark_command_task_running_in(runtime: NetRuntimeHandle) {
