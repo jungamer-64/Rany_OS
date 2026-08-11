@@ -159,7 +159,12 @@ pub(crate) enum ControlCommand {
         group: [u8; 4],
         reply: CommandReplyTicket<bool>,
     },
-    ProcessTimeouts,
+    ProcessLocalTimeouts,
+    ProcessGlobalTimeouts,
+    InterfaceConfigChanged {
+        if_id: crate::net::runtime::manager::NetIfId,
+        config: crate::net::runtime::stack::NetworkConfig,
+    },
     ArpProbe {
         target_ip: [u8; 4],
     },
@@ -617,10 +622,9 @@ const NETWORK_EVENT_QUEUE_BACKING_CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY
 /// - shared `MpscRingBuffer` による順序保証付き配信
 /// - `AtomicWaker` による ISR-safe タスク起床
 /// - 全操作がロック取得なしで完了（ISR コンテキストから安全に呼び出し可能）
-use crate::sync::lockfree::MpmcRingBuffer;
 
 pub(crate) struct RuntimeCommandQueue {
-    queue: MpmcRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
+    queue: MpscRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
     /// マルチコンシューマー向け ISR-safe Waker Queue
     consumer_waiters: WakerQueue,
     /// タスクコンテキストのプロデューサー向け空き待ち通知
@@ -633,7 +637,7 @@ impl RuntimeCommandQueue {
     /// 新規作成
     pub const fn new() -> Self {
         Self {
-            queue: MpmcRingBuffer::new(),
+            queue: MpscRingBuffer::new(),
             consumer_waiters: WakerQueue::new(),
             space_waiters: WakerQueue::new(),
         }
@@ -733,14 +737,13 @@ pub(crate) fn try_enqueue_command_in(
 ) -> Result<(), RuntimeCommand> {
     let num_cpus = crate::task::executor_slot_count().max(1);
 
-    // Ingress パケットは flow_hash を使用して owner CPU queue へディスパッチ
+    // Ingress パケットは flow_hash を使用して owner CPU queue へディスパッチ。
+    // CPU IDは0..num_cpusの連番なので、Toeplitz hash結果の直接 modulo で
+    // FlowAffinity テーブルと同一の分散を達成する（ゼロアロケーション）。
     let target_cpu = match &command {
         RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
             let flow_hash = packet.meta().flow_hash;
-            let cpus: alloc::vec::Vec<usize> = (0..num_cpus).collect();
-            let available_cpus = crate::net::datapath::optimization::CpuAffinity::from_cpus(&cpus);
-            let flow_affinity = crate::net::datapath::optimization::FlowAffinity::new(available_cpus);
-            flow_affinity.cpu_for_flow(flow_hash) % num_cpus
+            (flow_hash as usize) % num_cpus
         }
         _ => crate::cpu::try_current_id().unwrap_or(0) % num_cpus,
     };
@@ -907,7 +910,7 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let mut future = send_command_in(
             runtime,
-            RuntimeCommand::Control(ControlCommand::ProcessTimeouts),
+            RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts),
         );
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
@@ -919,7 +922,9 @@ mod tests {
         ));
         assert!(matches!(
             command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Control(ControlCommand::ProcessTimeouts))
+            Some(RuntimeCommand::Control(
+                ControlCommand::ProcessLocalTimeouts
+            ))
         ));
 
         reset_command_system_for_tests_in(runtime);
@@ -936,7 +941,7 @@ mod tests {
             assert!(
                 enqueue_command_in(
                     runtime,
-                    RuntimeCommand::Control(ControlCommand::ProcessTimeouts)
+                    RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts)
                 )
                 .is_ok()
             );
@@ -946,13 +951,15 @@ mod tests {
         let mut cx = Context::from_waker(&waker);
         let mut future = send_command_in(
             runtime,
-            RuntimeCommand::Control(ControlCommand::ProcessTimeouts),
+            RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts),
         );
 
         assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
         assert!(matches!(
             command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Control(ControlCommand::ProcessTimeouts))
+            Some(RuntimeCommand::Control(
+                ControlCommand::ProcessLocalTimeouts
+            ))
         ));
         assert!(matches!(
             Pin::new(&mut future).poll(&mut cx),

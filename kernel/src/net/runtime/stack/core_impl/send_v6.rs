@@ -889,6 +889,31 @@ impl NetworkStack {
         self.drain_ndp_pending_queue(Some(if_id), resolved_ip, pending);
     }
 
+    /// Insert an entry into a specific interface's NDP neighbor cache, or all interfaces if None.
+    /// Used by NeighborResolvedV6 broadcast handler for cross-core NDP cache synchronization.
+    pub(crate) fn ndp_cache_insert_on(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        ip: &Ipv6Address,
+        mac: [u8; 6],
+        current_time: u64,
+    ) {
+        if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                if let Some(ref mut ndp) = state.ndp {
+                    ndp.cache_mut().update_reachable(ip, mac, current_time);
+                }
+            }
+        } else {
+            // If no specific interface, update all interfaces
+            for state in self.interfaces.values_mut() {
+                if let Some(ref mut ndp) = state.ndp {
+                    ndp.cache_mut().update_reachable(ip, mac, current_time);
+                }
+            }
+        }
+    }
+
     /// Send pending IGMP reports
     pub(crate) fn send_pending_igmp_reports(&mut self) {
         let mut pending_by_interface = Vec::new();

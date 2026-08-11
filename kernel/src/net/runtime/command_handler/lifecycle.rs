@@ -113,21 +113,12 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+                crate::net::runtime::command::ControlCommand::ProcessLocalTimeouts,
             ) => {
                 // NetworkStack内部タイマーの基準時刻を同期する。
-                // IGMP/ARP/NDP等が `NetworkStack::current_time()` を参照するため、
-                // timeoutイベントごとに必ず更新しておく。
                 let now = crate::task::current_tick();
                 stack.update_time(now);
-
                 stack.process_timeouts();
-
-                // --- RFC Compliance: Process TCP periodic tasks ---
-                // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
-                tcp_table_in(runtime).tick(runtime);
-                // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
-                crate::net::l4::tcp::tcp_rx::flush_delayed_acks_in(runtime);
 
                 // ICMP Echo待ちの期限切れエントリをクリーンアップ
                 crate::net::api::icmp::cleanup_icmp_echo_waiters_in(runtime);
@@ -135,6 +126,16 @@ impl RuntimeCommandHandler {
                 crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
                 // NDP非同期解決待ちのタイムアウト済みウェイターをクリーンアップ
                 crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
+            ) => {
+                // --- RFC Compliance: Process TCP periodic tasks ---
+                // 1. TCB table maintenance (RTO, TimeWait, FinWait2, etc.)
+                tcp_table_in(runtime).tick(runtime);
+                // 2. Delayed ACK flushing (RFC 1122 Section 4.2.3.2)
+                crate::net::l4::tcp::tcp_rx::flush_delayed_acks_in(runtime);
                 EventHandleResult::Success
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),

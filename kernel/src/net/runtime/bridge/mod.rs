@@ -380,6 +380,94 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
                 src_ip, dst_ip, 0, 0, proto,
             )
         }
+    } else if ethertype == 0x86DD && data.len() >= 54 {
+        // IPv6: 14 (Ethernet) + 40 (IPv6 header) = 54 bytes minimum
+        // XOR-fold 128-bit addresses into u32 for Toeplitz hash
+        let src_folded = u32::from_be_bytes([data[22], data[23], data[24], data[25]])
+            ^ u32::from_be_bytes([data[26], data[27], data[28], data[29]])
+            ^ u32::from_be_bytes([data[30], data[31], data[32], data[33]])
+            ^ u32::from_be_bytes([data[34], data[35], data[36], data[37]]);
+        let dst_folded = u32::from_be_bytes([data[38], data[39], data[40], data[41]])
+            ^ u32::from_be_bytes([data[42], data[43], data[44], data[45]])
+            ^ u32::from_be_bytes([data[46], data[47], data[48], data[49]])
+            ^ u32::from_be_bytes([data[50], data[51], data[52], data[53]]);
+        let mut next_header = data[20];
+        let mut offset = 54usize; // past IPv6 base header
+
+        // Walk extension headers to find Fragment Header or L4 header
+        // Extension headers: Hop-by-Hop(0), Routing(43), Destination(60)
+        // Fragment Header: 44
+        // LOOP_PROOF: mode=bounded; bound=6; reason=IPv6 extension header chain is limited (Hop-by-Hop, Routing, Fragment, Destination, AH, ESP);
+        for _ in 0..6 {
+            match next_header {
+                0 | 43 | 60 => {
+                    // Extension header: next_header at offset, length at offset+1 (in 8-byte units excl. first 8)
+                    if offset + 2 > data.len() {
+                        break;
+                    }
+                    next_header = data[offset];
+                    let ext_len = (data[offset + 1] as usize + 1) * 8;
+                    offset += ext_len;
+                }
+                44 => {
+                    // Fragment Header (8 bytes): next_header, reserved, frag_off+M, identification
+                    if offset + 8 > data.len() {
+                        let frag_id = 0u32;
+                        return {
+                            packet.meta_mut().flow_hash =
+                                crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                                    src_folded,
+                                    dst_folded,
+                                    0,
+                                    0,
+                                    next_header,
+                                );
+                        };
+                    }
+                    let frag_proto = data[offset]; // next header after fragment
+                    let frag_id = u32::from_be_bytes([
+                        data[offset + 4],
+                        data[offset + 5],
+                        data[offset + 6],
+                        data[offset + 7],
+                    ]);
+                    // Use (src, dst, frag_id_hi16, frag_id_lo16, proto) for fragment affinity
+                    let frag_id_hi = (frag_id >> 16) as u16;
+                    let frag_id_lo = (frag_id & 0xFFFF) as u16;
+                    packet.meta_mut().flow_hash =
+                        crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                            src_folded,
+                            dst_folded,
+                            frag_id_hi ^ frag_id_lo,
+                            frag_id_lo,
+                            frag_proto,
+                        );
+                    return;
+                }
+                _ => break, // L4 or unknown — stop walking
+            }
+        }
+
+        // No Fragment Header found; hash by L4 ports if TCP/UDP
+        if (next_header == 6 || next_header == 17) && offset + 4 <= data.len() {
+            let src_port = u16::from_be_bytes([data[offset], data[offset + 1]]);
+            let dst_port = u16::from_be_bytes([data[offset + 2], data[offset + 3]]);
+            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                src_folded,
+                dst_folded,
+                src_port,
+                dst_port,
+                next_header,
+            )
+        } else {
+            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                src_folded,
+                dst_folded,
+                0,
+                0,
+                next_header,
+            )
+        }
     } else {
         0
     };

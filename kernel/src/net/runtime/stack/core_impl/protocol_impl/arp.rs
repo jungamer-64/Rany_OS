@@ -276,6 +276,24 @@ impl NetworkStack {
         }
     }
 
+    /// Insert an entry into a specific interface's ARP cache, or primary if None
+    pub fn arp_cache_insert_on(
+        &mut self,
+        if_id: Option<super::NetIfId>,
+        ip: Ipv4Address,
+        mac: MacAddress,
+        current_time: u64,
+    ) {
+        if let Some(if_id) = if_id {
+            if let Some(state) = self.interfaces.get_mut(&if_id) {
+                state.arp.cache().insert(ip, mac, current_time);
+                return;
+            }
+        }
+        // Fallback to primary
+        self.arp_cache_insert(ip, mac, current_time);
+    }
+
     /// Get ARP cache entries (for debugging)
     pub fn arp_cache(&self) -> Vec<(Ipv4Address, MacAddress)> {
         let mut entries = Vec::new();

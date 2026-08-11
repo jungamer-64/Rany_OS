@@ -257,26 +257,24 @@ impl RuntimeCommandHandler {
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NeighborResolvedV4 {
-                    if_id: _,
-                    ip,
-                    mac,
-                },
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV4 { if_id, ip, mac },
             ) => {
                 let now = crate::time::get_uptime_ms();
                 let ipv4 = crate::net::l3::ipv4::Ipv4Address::new(ip);
                 let mac_addr = crate::net::l2::ethernet::MacAddress::new(mac);
-                stack.arp_cache_insert(ipv4, mac_addr, now);
-                stack.drain_arp_pending(&ipv4);
+                stack.arp_cache_insert_on(if_id, ipv4, mac_addr, now);
+                stack.drain_arp_pending_on(if_id, &ipv4);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 {
-                    if_id: _,
-                    ip: _,
-                    mac: _,
-                },
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 { if_id, ip, mac },
             ) => {
+                let now = crate::time::get_uptime_ms();
+                let ipv6 = crate::net::l3::ipv6::Ipv6Address::new(ip);
+                stack.ndp_cache_insert_on(if_id, &ipv6, mac, now);
+                if let Some(if_id) = if_id {
+                    stack.drain_ndp_pending_on(if_id, &ipv6);
+                }
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(
@@ -285,6 +283,15 @@ impl RuntimeCommandHandler {
                 reply,
                 crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
             ),
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::InterfaceConfigChanged {
+                    if_id,
+                    config,
+                },
+            ) => {
+                stack.register_interface_state(if_id, config);
+                EventHandleResult::Success
+            }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),
         }
     }

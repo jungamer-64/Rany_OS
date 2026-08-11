@@ -659,8 +659,21 @@ impl NetworkStack {
                     mac,
                 );
 
-                // Drain any pending packets for this now-resolved neighbor
+                // Drain any pending packets for this now-resolved neighbor (local core)
                 self.drain_ndp_pending_on(ingress_if_id, &ip);
+
+                // Broadcast NeighborResolvedV6 to all Per-Core queues for cross-core NDP cache update + pending drain
+                let ip_bytes = ip.octets();
+                let mac_bytes = mac;
+                crate::net::runtime::command::broadcast_command_in(runtime, move || {
+                    crate::net::runtime::command::RuntimeCommand::Control(
+                        crate::net::runtime::command::ControlCommand::NeighborResolvedV6 {
+                            if_id: Some(ingress_if_id),
+                            ip: ip_bytes,
+                            mac: mac_bytes,
+                        },
+                    )
+                });
             }
             NdpResult::RouterAdvertisement {
                 router,

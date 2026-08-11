@@ -43,32 +43,36 @@ fn register_interface_with_optional_current_stack_in(
     current_stack: Option<&mut NetworkStack>,
 ) -> bool {
     let mut success = false;
-    let current_core = crate::cpu::try_current_id().unwrap_or(0);
 
     if let Some(stack) = current_stack {
         stack.register_interface_state(id, config);
         success = true;
-
-        for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
-            if i != current_core {
-                // try_lock を使用し、別コアがハンドラ実行中であってもブロッキングによる ABBA デッドロックを絶対発生させない。
-                // 構成情報は NetworkManager にも保持されるため、ピアコアは必要時に authoritative state を参照する。
-                if let Ok(mut guard) = stack_lock.try_lock() {
-                    if let Some(stack) = &mut *guard {
-                        stack.register_interface_state(id, config);
-                    }
+    } else {
+        // No current stack provided — we're in an early init path; try lock for
+        // a best-effort synchronous update on the current core only.
+        let current_core = crate::cpu::try_current_id().unwrap_or(0);
+        if let Some(stack_lock) = runtime.context().stacks.get(current_core) {
+            if let Ok(mut guard) = stack_lock.try_lock() {
+                if let Some(stack) = &mut *guard {
+                    stack.register_interface_state(id, config);
+                    success = true;
                 }
             }
         }
-    } else {
-        for stack_lock in &runtime.context().stacks {
-            let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(stack) = &mut *guard {
-                stack.register_interface_state(id, config);
-                success = true;
-            }
-        }
     }
+
+    // Broadcast InterfaceConfigChanged to all Per-Core queues.
+    // Each worker will deterministically call stack.register_interface_state()
+    // without any cross-core lock acquisition.
+    crate::net::runtime::command::broadcast_command_in(runtime, move || {
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::InterfaceConfigChanged {
+                if_id: id,
+                config,
+            },
+        )
+    });
+
     success
 }
 
@@ -263,12 +267,19 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
         // 100msごとにタイムアウトを処理
         crate::task::sleep_ms(100).await;
 
-        // 全 CPU コアのキューへタイムアウト処理（100ms）をブロードキャスト
+        // 全 CPU コアのキューへローカルタイムアウト処理（100ms）をブロードキャスト
         crate::net::runtime::command::broadcast_command_in(runtime, || {
             crate::net::runtime::command::RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+                crate::net::runtime::command::ControlCommand::ProcessLocalTimeouts,
             )
         });
+
+        // CPU 0 にのみグローバルタイムアウト処理を要求
+        if let Some(queue) = runtime.context().command_queues.first() {
+            let _ = queue.send(crate::net::runtime::command::RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
+            ));
+        }
     }
 }
 

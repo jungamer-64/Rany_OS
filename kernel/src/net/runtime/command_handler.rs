@@ -204,15 +204,19 @@ impl RuntimeCommandHandler {
                 crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+                crate::net::runtime::command::ControlCommand::ProcessLocalTimeouts,
+            ) => {
+                crate::net::api::icmp::cleanup_icmp_echo_waiters_in(runtime);
+                crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
+                crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
             ) => {
                 // タイムアウト処理（スタック依存部分はスキップ）
                 // しかし、runtime-owned TCB テーブルのメンテナンスは実行する
                 tcp_table_in(runtime).tick(runtime);
-
-                crate::net::api::icmp::cleanup_icmp_echo_waiters_in(runtime);
-                crate::net::l2::arp::cleanup_arp_waiters_in(runtime);
-                crate::net::l3::ndp::cleanup_ndp_waiters_in(runtime);
                 EventHandleResult::Success
             }
 
@@ -340,7 +344,7 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::TransportCommand::TcpBind { .. },
             )
             | lifecycle_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ProcessTimeouts,
+                crate::net::runtime::command::ControlCommand::ProcessLocalTimeouts,
             ) => self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack),
             // ================================================================
             // Async utility events (with stack)
@@ -413,6 +417,9 @@ impl RuntimeCommandHandler {
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { .. },
+            ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            utility_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::InterfaceConfigChanged { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
 
             // ============================================================
