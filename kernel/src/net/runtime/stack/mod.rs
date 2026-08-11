@@ -272,8 +272,10 @@ impl RedirectCache {
 pub struct NetworkStack {
     /// Runtime that owns this stack instance.
     runtime: NetRuntimeHandle,
-    /// Per-interface L2/L3 state and snapshots.
+    /// Per-core protocol state derived from the manager-owned configurations.
     interfaces: BTreeMap<NetIfId, InterfaceStackState>,
+    /// Manager revision fully applied to this per-core stack.
+    applied_interface_config_revision: crate::net::runtime::manager::InterfaceConfigRevision,
     /// Preferred interface for scope-less runtime resolution.
     primary_interface: Option<NetIfId>,
     /// Timeout wheel for periodic tasks
@@ -305,7 +307,6 @@ pub struct InterfaceStackState {
     arp_pending_queue: ArpPendingQueue,
     ndp_pending_queue: NdpPendingQueue,
     ipv6_pmtu_cache: Ipv6PmtuCache,
-    pub(crate) config_generation: u64,
 }
 
 impl InterfaceStackState {
@@ -339,7 +340,6 @@ impl InterfaceStackState {
             arp_pending_queue: ArpPendingQueue::new(),
             ndp_pending_queue: NdpPendingQueue::new(),
             ipv6_pmtu_cache: Ipv6PmtuCache::new(Ipv6PmtuCache::DEFAULT_MAX_ENTRIES),
-            config_generation: 0,
         }
     }
 

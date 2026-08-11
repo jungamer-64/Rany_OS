@@ -479,6 +479,8 @@ impl NetworkStack {
         NetworkStack {
             runtime,
             interfaces: BTreeMap::new(),
+            applied_interface_config_revision:
+                crate::net::runtime::manager::InterfaceConfigRevision::INITIAL,
             primary_interface: None,
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             transmit_fn: None,
@@ -504,18 +506,12 @@ impl NetworkStack {
 
     /// Register or refresh per-interface state.
     pub fn register_interface_state(&mut self, if_id: NetIfId, config: NetworkConfig) {
-        let global_gen = {
-            let idx = (if_id.0 as usize).min(31);
-            self.runtime.context().config_generations[idx].load(core::sync::atomic::Ordering::Acquire)
-        };
         match self.interfaces.get_mut(&if_id) {
             Some(state) => {
                 state.set_config(config);
-                state.config_generation = global_gen;
             }
             None => {
-                let mut state = InterfaceStackState::new(config);
-                state.config_generation = global_gen;
+                let state = InterfaceStackState::new(config);
                 self.interfaces.insert(if_id, state);
             }
         }
@@ -524,12 +520,31 @@ impl NetworkStack {
         }
     }
 
-    /// Remove per-interface state.
-    pub fn unregister_interface_state(&mut self, if_id: NetIfId) {
-        self.interfaces.remove(&if_id);
-        if self.primary_interface == Some(if_id) {
-            self.primary_interface = self.interfaces.keys().next().copied();
+    pub(crate) fn needs_interface_config_revision(
+        &self,
+        revision: crate::net::runtime::manager::InterfaceConfigRevision,
+    ) -> bool {
+        self.applied_interface_config_revision != revision
+    }
+
+    pub(crate) fn reconcile_interface_configurations(
+        &mut self,
+        configurations: crate::net::runtime::manager::InterfaceConfigurations,
+    ) {
+        let revision = configurations.revision();
+        self.interfaces
+            .retain(|if_id, _| configurations.contains(*if_id));
+        if self
+            .primary_interface
+            .is_some_and(|if_id| !configurations.contains(if_id))
+        {
+            self.primary_interface = None;
         }
+
+        for (if_id, config) in configurations.into_entries() {
+            self.register_interface_state(if_id, config);
+        }
+        self.applied_interface_config_revision = revision;
     }
 
     /// Select the preferred interface used for scope-less runtime resolution.
@@ -1052,22 +1067,19 @@ impl NetworkStack {
 
         // IGMPタイマー進行とpending送信を周期処理に接続する。
         // これにより受信イベントが無い期間でもMembership Report/Leaveを排出できる。
-        for (&if_id, state) in self.interfaces.iter_mut() {
+        for state in self.interfaces.values_mut() {
             state.igmp.update_time(now);
+        }
 
-            // Generational configuration synchronization check
-            let idx = (if_id.0 as usize).min(31);
-            let global_gen = self.runtime.context().config_generations[idx].load(Ordering::Acquire);
-            if state.config_generation < global_gen {
-                let _ = crate::net::runtime::command::try_enqueue_command_in(
-                    self.runtime,
-                    crate::net::runtime::command::RuntimeCommand::Control(
-                        crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync {
-                            if_id,
-                        },
-                    ),
-                );
-            }
+        let revision =
+            crate::net::runtime::manager::current_interface_config_revision_in(self.runtime);
+        if self.needs_interface_config_revision(revision) {
+            let _ = crate::net::runtime::command::try_enqueue_command_in(
+                self.runtime,
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
+                ),
+            );
         }
         self.send_pending_igmp_reports();
 
@@ -1192,5 +1204,50 @@ impl NetworkStack {
         for state in self.interfaces.values_mut() {
             state.arp_pending_queue.expire(current_time);
         }
+    }
+}
+
+#[cfg(test)]
+mod interface_configuration_tests {
+    use super::*;
+
+    #[test]
+    fn reconciliation_retries_after_manager_contention_and_removes_departed_interfaces() {
+        let runtime = crate::net::runtime::create_runtime().expect("isolated network runtime");
+        crate::net::runtime::manager::init_network_manager_in(runtime);
+        let if_id = crate::net::runtime::manager::register_interface_in(runtime, "if-sync")
+            .expect("register interface");
+        crate::net::runtime::manager::set_interface_config_in(
+            runtime,
+            if_id,
+            NetworkConfig::default(),
+        )
+        .expect("configure interface");
+
+        let revision = crate::net::runtime::manager::current_interface_config_revision_in(runtime);
+        let mut stack = NetworkStack::new_in(runtime);
+        assert!(stack.needs_interface_config_revision(revision));
+
+        let manager_guard = runtime.context().manager.lock().expect("lock manager");
+        assert!(crate::net::runtime::manager::try_interface_configurations_in(runtime).is_none());
+        assert!(stack.needs_interface_config_revision(revision));
+        drop(manager_guard);
+
+        let configurations = crate::net::runtime::manager::try_interface_configurations_in(runtime)
+            .expect("configuration snapshot");
+        stack.reconcile_interface_configurations(configurations);
+        assert!(!stack.needs_interface_config_revision(revision));
+        assert!(stack.interfaces.contains_key(&if_id));
+
+        assert!(
+            crate::net::runtime::manager::unregister_interface_in(runtime, if_id)
+                .expect("unregister interface")
+        );
+        let configurations = crate::net::runtime::manager::try_interface_configurations_in(runtime)
+            .expect("post-removal configuration snapshot");
+        let removal_revision = configurations.revision();
+        stack.reconcile_interface_configurations(configurations);
+        assert!(!stack.needs_interface_config_revision(removal_revision));
+        assert!(!stack.interfaces.contains_key(&if_id));
     }
 }

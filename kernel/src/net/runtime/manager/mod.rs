@@ -15,6 +15,40 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NetIfId(pub u16);
 
+/// Version token for the runtime's complete configured-interface set.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct InterfaceConfigRevision(u64);
+
+impl InterfaceConfigRevision {
+    pub(crate) const INITIAL: Self = Self(0);
+
+    fn next_from(previous: u64) -> Self {
+        Self(previous.wrapping_add(1))
+    }
+}
+
+/// Complete manager-owned input used to reconcile one per-core stack.
+pub(crate) struct InterfaceConfigurations {
+    revision: InterfaceConfigRevision,
+    entries: Vec<(NetIfId, NetworkConfig)>,
+}
+
+impl InterfaceConfigurations {
+    pub(crate) fn revision(&self) -> InterfaceConfigRevision {
+        self.revision
+    }
+
+    pub(crate) fn contains(&self, if_id: NetIfId) -> bool {
+        self.entries
+            .binary_search_by_key(&if_id, |(entry_if_id, _)| *entry_if_id)
+            .is_ok()
+    }
+
+    pub(crate) fn into_entries(self) -> alloc::vec::IntoIter<(NetIfId, NetworkConfig)> {
+        self.entries.into_iter()
+    }
+}
+
 /// Route flags for static/connected/default routes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct RouteFlags {
@@ -135,6 +169,17 @@ impl NetworkManager {
 
     fn get_interface(&self, if_id: NetIfId) -> Option<&NetworkInterfaceInfo> {
         self.interfaces.get(&if_id)
+    }
+
+    fn try_configured_interfaces(&self) -> Option<Vec<(NetIfId, NetworkConfig)>> {
+        let mut configured = Vec::new();
+        configured.try_reserve_exact(self.interfaces.len()).ok()?;
+        configured.extend(
+            self.interfaces
+                .iter()
+                .filter_map(|(&if_id, interface)| interface.config.map(|config| (if_id, config))),
+        );
+        Some(configured)
     }
 
     fn unregister_interface(&mut self, if_id: NetIfId) -> bool {
@@ -531,11 +576,53 @@ pub fn get_interface_in(
     with_manager_in(runtime, |m| m.get_interface(if_id).copied())
 }
 
+pub(crate) fn current_interface_config_revision_in(
+    runtime: NetRuntimeHandle,
+) -> InterfaceConfigRevision {
+    InterfaceConfigRevision(
+        runtime
+            .context()
+            .interface_config_revision
+            .load(core::sync::atomic::Ordering::Acquire),
+    )
+}
+
+pub(crate) fn try_interface_configurations_in(
+    runtime: NetRuntimeHandle,
+) -> Option<InterfaceConfigurations> {
+    let guard = match manager_slot_in(runtime).try_lock() {
+        Ok(guard) => guard,
+        Err(crate::sync::poison_lock::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(crate::sync::poison_lock::TryLockError::WouldBlock) => return None,
+    };
+    let manager = guard.as_ref()?;
+    let entries = manager.try_configured_interfaces()?;
+    let revision = current_interface_config_revision_in(runtime);
+    Some(InterfaceConfigurations { revision, entries })
+}
+
+fn publish_interface_config_change(runtime: NetRuntimeHandle) {
+    let previous = runtime
+        .context()
+        .interface_config_revision
+        .fetch_add(1, core::sync::atomic::Ordering::AcqRel);
+    let revision = InterfaceConfigRevision::next_from(previous);
+    crate::net::runtime::command::broadcast_command_in(runtime, move || {
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
+        )
+    });
+}
+
 pub fn unregister_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<bool, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.unregister_interface(if_id))
+    let removed = with_manager_mut_in(runtime, |m| m.unregister_interface(if_id))?;
+    if removed {
+        publish_interface_config_change(runtime);
+    }
+    Ok(removed)
 }
 
 pub fn set_interface_config_in(
@@ -543,10 +630,10 @@ pub fn set_interface_config_in(
     if_id: NetIfId,
     config: NetworkConfig,
 ) -> Result<(), NetworkError> {
-    let result = with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r);
+    let result =
+        with_manager_mut_in(runtime, |m| m.set_interface_config(if_id, config)).and_then(|r| r);
     if result.is_ok() {
-        let idx = (if_id.0 as usize).min(31);
-        runtime.context().config_generations[idx].fetch_add(1, core::sync::atomic::Ordering::Release);
+        publish_interface_config_change(runtime);
     }
     result
 }
@@ -656,5 +743,26 @@ mod tests {
             Err(NetworkError::ResourceExhausted)
         );
         assert_eq!(manager.interfaces.len(), 1);
+    }
+
+    #[test]
+    fn configured_interfaces_preserve_ids_above_fixed_array_ranges() {
+        let mut manager = NetworkManager::new();
+        manager.next_if_id = Some(31);
+        let if_31 = manager.register_interface("if31").expect("interface 31");
+        let if_32 = manager.register_interface("if32").expect("interface 32");
+        manager
+            .set_interface_config(if_31, NetworkConfig::default())
+            .expect("configure interface 31");
+        manager
+            .set_interface_config(if_32, NetworkConfig::default())
+            .expect("configure interface 32");
+
+        let configured = manager
+            .try_configured_interfaces()
+            .expect("configured interface snapshot allocation");
+        assert_eq!(configured.len(), 2);
+        assert!(configured.iter().any(|(if_id, _)| *if_id == NetIfId(31)));
+        assert!(configured.iter().any(|(if_id, _)| *if_id == NetIfId(32)));
     }
 }

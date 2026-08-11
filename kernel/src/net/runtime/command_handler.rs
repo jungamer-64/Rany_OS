@@ -419,14 +419,17 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::GetUdpEndpoints { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceConfigChanged { .. },
+                crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync { .. },
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV4 { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
             utility_event @ RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceRemoved { .. },
+                crate::net::runtime::command::ControlCommand::NeighborResolvedV6 { .. },
             ) => self.handle_utility_event_with_stack(runtime, utility_event, stack),
+            lifecycle_event @ RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
+            ) => self.handle_lifecycle_event_with_stack(runtime, lifecycle_event, stack),
 
             // ============================================================
             // 非同期DHCP/TCP クエリ（スタックロック保持中に処理）

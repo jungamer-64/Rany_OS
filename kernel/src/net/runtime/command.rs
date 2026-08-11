@@ -162,8 +162,7 @@ pub(crate) enum ControlCommand {
     ProcessLocalTimeouts,
     ProcessGlobalTimeouts,
     InterfaceConfigDirty {
-        if_id: crate::net::runtime::manager::NetIfId,
-        generation: u64,
+        revision: crate::net::runtime::manager::InterfaceConfigRevision,
     },
     ArpProbe {
         target_ip: [u8; 4],

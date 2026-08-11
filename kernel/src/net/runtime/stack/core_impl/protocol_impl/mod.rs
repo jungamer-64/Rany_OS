@@ -139,17 +139,15 @@ impl NetworkStack {
         };
         iface_config.ipv4.dns = dns_server;
 
+        if crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config)
+            .is_err()
+        {
+            return;
+        }
+        self.register_interface_state(if_id, iface_config);
         if update_primary_runtime {
             self.set_config(iface_config);
         }
-
-        crate::net::runtime::stack::register_interface_with_current_stack_in(
-            runtime,
-            if_id,
-            iface_config,
-            self,
-        );
-        let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 
     pub fn clear_dhcp_v4_lease_for_interface(
@@ -173,17 +171,15 @@ impl NetworkStack {
         iface_config.ipv4.gateway = crate::net::l3::ipv4::Ipv4Address::ANY;
         iface_config.ipv4.dns = None;
 
+        if crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config)
+            .is_err()
+        {
+            return;
+        }
+        self.register_interface_state(if_id, iface_config);
         if clear_primary_runtime {
             self.set_config(iface_config);
         }
-
-        crate::net::runtime::stack::register_interface_with_current_stack_in(
-            runtime,
-            if_id,
-            iface_config,
-            self,
-        );
-        let _ = crate::net::runtime::manager::set_interface_config_in(runtime, if_id, iface_config);
     }
 
     pub fn process_udp_payload(

@@ -284,34 +284,17 @@ impl RuntimeCommandHandler {
                 crate::net::api::connections::udp_endpoint_infos_from_runtime_in(runtime),
             ),
             RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceConfigChanged {
-                    if_id,
-                    config,
-                },
+                crate::net::runtime::command::ControlCommand::InterfaceConfigDirty { revision },
             ) => {
-                stack.register_interface_state(if_id, config);
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::RequestInterfaceConfigSync { if_id },
-            ) => {
-                // Best-effort non-blocking sync. If the lock is held, we just skip it
-                // and the next timeout will try again.
-                if let Ok(guard) = runtime.context().manager.try_lock() {
-                    if let Some(manager) = &*guard {
-                        if let Some(iface) = manager.get_interface(if_id) {
-                            if let Some(config) = iface.config {
-                                stack.register_interface_state(if_id, config);
-                            }
-                        }
-                    }
+                if !stack.needs_interface_config_revision(revision) {
+                    return EventHandleResult::Success;
                 }
-                EventHandleResult::Success
-            }
-            RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::InterfaceRemoved { if_id },
-            ) => {
-                stack.unregister_interface_state(if_id);
+
+                if let Some(configurations) =
+                    crate::net::runtime::manager::try_interface_configurations_in(runtime)
+                {
+                    stack.reconcile_interface_configurations(configurations);
+                }
                 EventHandleResult::Success
             }
             _ => EventHandleResult::ProtocolError(EndpointError::InvalidStateTransition),

@@ -1572,23 +1572,24 @@ fn interface_for_port(
     port_name: &'static str,
 ) -> Result<NetIfId, &'static str> {
     let if_id = if let Some(existing) = lookup_if_by_port_id_in(runtime, port_id) {
-        let _ = manager::set_interface_config_in(runtime, existing, config);
+        manager::set_interface_config_in(runtime, existing, config)
+            .map_err(|_| "failed to configure existing network interface")?;
         existing
     } else {
         let if_id = manager::register_interface_in(runtime, port_name)
             .map_err(|_| "failed to register network interface")?;
-        let _ = manager::set_interface_config_in(runtime, if_id, config);
+        if manager::set_interface_config_in(runtime, if_id, config).is_err() {
+            let _ = manager::unregister_interface_in(runtime, if_id);
+            return Err("failed to configure new network interface");
+        }
         if_id
     };
-
-    stack::register_interface_in(runtime, if_id, config);
 
     Ok(if_id)
 }
 
 fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
-    stack::unregister_interface_in(runtime, if_id);
     let _ = manager::unregister_interface_in(runtime, if_id);
 }
 
@@ -1798,7 +1799,6 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
         let _ = manager::set_interface_down_in(runtime, if_id);
         handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister);
         crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
-        stack::unregister_interface_in(runtime, if_id);
         let _ = manager::unregister_interface_in(runtime, if_id);
         handle.stop();
         true
