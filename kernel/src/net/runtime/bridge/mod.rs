@@ -408,3 +408,9 @@ pub fn get_stack_glue_stats_in(runtime: NetRuntimeHandle) -> StackGlueStats {
         tx_packets: state.tx_packets.load(Ordering::Relaxed),
     }
 }
+
+pub fn restore_stack_glue_stats_in(runtime: NetRuntimeHandle, rx_packets: u64, tx_packets: u64) {
+    let state = runtime_state_for(runtime);
+    state.rx_packets.store(rx_packets, Ordering::Relaxed);
+    state.tx_packets.store(tx_packets, Ordering::Relaxed);
+}

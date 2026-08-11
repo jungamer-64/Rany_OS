@@ -244,23 +244,31 @@ impl ConnectionOooQueue {
 /// 接続キー
 type ConnKey = (EndpointAddr, EndpointAddr);
 
+const OOO_SHARDS: usize = 16;
+
+fn ooo_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
+    (conn_key_hash(local, remote) as usize) % OOO_SHARDS
+}
+
 pub(crate) struct OooRuntimeState {
     total_count: AtomicUsize,
-    queues: PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>,
+    queues: [PoisonLock<Option<BTreeMap<ConnKey, ConnectionOooQueue>>>; OOO_SHARDS],
 }
 
 impl OooRuntimeState {
     pub(crate) const fn new() -> Self {
         Self {
             total_count: AtomicUsize::new(0),
-            queues: PoisonLock::new(None),
+            queues: [const { PoisonLock::new(None) }; OOO_SHARDS],
         }
     }
 
     pub(crate) fn reset(&self) {
         self.total_count.store(0, Ordering::SeqCst);
-        if let Ok(mut guard) = self.queues.lock() {
-            *guard = Some(BTreeMap::new());
+        for i in 0..OOO_SHARDS {
+            if let Ok(mut guard) = self.queues[i].lock() {
+                *guard = Some(BTreeMap::new());
+            }
         }
     }
 }
@@ -289,7 +297,8 @@ pub fn insert_ooo_segment(
         return;
     }
 
-    let Ok(mut guard) = state.queues.lock() else {
+    let idx = ooo_shard_index(&local, &remote);
+    let Ok(mut guard) = state.queues[idx].lock() else {
         return;
     };
     let queues = guard.get_or_insert_with(BTreeMap::new);
@@ -318,8 +327,9 @@ pub fn drain_ooo_contiguous<F>(
 where
     F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
 {
+    let idx = ooo_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).ooo();
-    let Ok(mut guard) = state.queues.lock() else {
+    let Ok(mut guard) = state.queues[idx].lock() else {
         return (rcv_nxt, false);
     };
     let Some(queues) = guard.as_mut() else {
@@ -341,8 +351,9 @@ where
 
 /// 接続のOOOキューを削除
 pub fn remove_ooo_queue(runtime: NetRuntimeHandle, local: EndpointAddr, remote: EndpointAddr) {
+    let idx = ooo_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).ooo();
-    let Ok(mut guard) = state.queues.lock() else {
+    let Ok(mut guard) = state.queues[idx].lock() else {
         return;
     };
     if let Some(queues) = guard.as_mut() {
@@ -363,8 +374,9 @@ pub fn has_ooo_segments(
     local: EndpointAddr,
     remote: EndpointAddr,
 ) -> bool {
+    let idx = ooo_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).ooo();
-    let Ok(guard) = state.queues.lock() else {
+    let Ok(guard) = state.queues[idx].lock() else {
         return false; // ロック取得失敗 → 安全側でfalse
     };
     guard

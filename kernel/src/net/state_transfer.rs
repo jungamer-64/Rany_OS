@@ -30,6 +30,38 @@ impl NetworkCellState {
     pub fn new(runtime: NetRuntimeHandle) -> Self {
         Self { runtime }
     }
+
+    /// 移行先インスタンスの runtime に対する状態復元
+    pub fn import_state_into(&self, state: &ExportedState) -> Result<(), StateImportError> {
+        if state.data.len() < 1 + 2 + 8 + 8 {
+            return Err(StateImportError::DeserializationFailed);
+        }
+
+        let present = state.data[0];
+        let mut offset = 1;
+        if present == 1 {
+            let mut id_bytes = [0u8; 2];
+            id_bytes.copy_from_slice(&state.data[offset..offset + 2]);
+            let if_id = crate::net::runtime::manager::NetIfId(u16::from_le_bytes(id_bytes));
+            crate::net::runtime::device::set_primary_interface_in(self.runtime, if_id);
+        }
+        offset += 2;
+
+        // rx_packets / tx_packets の復元
+        let mut rx_bytes = [0u8; 8];
+        rx_bytes.copy_from_slice(&state.data[offset..offset + 8]);
+        offset += 8;
+        let mut tx_bytes = [0u8; 8];
+        tx_bytes.copy_from_slice(&state.data[offset..offset + 8]);
+
+        crate::net::runtime::bridge::restore_stack_glue_stats_in(
+            self.runtime,
+            u64::from_le_bytes(rx_bytes),
+            u64::from_le_bytes(tx_bytes),
+        );
+
+        Ok(())
+    }
 }
 
 impl StateTransfer for NetworkCellState {
@@ -45,6 +77,7 @@ impl StateTransfer for NetworkCellState {
             data.extend_from_slice(&id.to_le_bytes());
         } else {
             data.push(0u8);
+            data.extend_from_slice(&[0u8; 2]);
         }
 
         // 2. Active stats / counters summary
@@ -60,22 +93,10 @@ impl StateTransfer for NetworkCellState {
     }
 
     fn import_state(state: ExportedState) -> Result<Self, StateImportError> {
-        if state.data.len() < 1 + 16 {
-            return Err(StateImportError::DeserializationFailed);
-        }
-
-        let source_id = crate::net::runtime::context::NetRuntimeId(state.metadata.source_cell_id);
-        let runtime = crate::net::runtime::context::runtime(source_id)
-            .ok_or(StateImportError::RestoreFailed)?;
-        let present = state.data[0];
-        if present == 1 && state.data.len() >= 3 {
-            let mut id_bytes = [0u8; 2];
-            id_bytes.copy_from_slice(&state.data[1..3]);
-            let if_id = crate::net::runtime::manager::NetIfId(u16::from_le_bytes(id_bytes));
-            crate::net::runtime::device::set_primary_interface_in(runtime, if_id);
-        }
-
-        Ok(Self::new(runtime))
+        let target_runtime = crate::net::runtime::default_runtime();
+        let instance = Self::new(target_runtime);
+        instance.import_state_into(&state)?;
+        Ok(instance)
     }
 
     fn cell_id(&self) -> u64 {

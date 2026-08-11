@@ -899,19 +899,13 @@ impl Mempool {
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
         let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
         let cache_lock = &self.local_caches[cpu_id % crate::per_cpu::MAX_CPUS];
-        if let Ok(mut cache) = cache_lock.lock() {
-            cache.push(buffer);
-            if cache.len() >= PER_CORE_CACHE_CAPACITY {
-                let mid = cache.len() / 2;
-                let to_flush = cache.split_off(mid);
-                if let Ok(mut global_free) = self.free_list.lock() {
-                    global_free.extend(to_flush);
-                } else {
-                    cache.extend(to_flush);
-                }
-            }
-        } else if let Ok(mut global_free) = self.free_list.lock() {
-            global_free.push(buffer);
+        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
+        cache.push(buffer);
+        if cache.len() >= PER_CORE_CACHE_CAPACITY {
+            let mid = cache.len() / 2;
+            let to_flush = cache.split_off(mid);
+            let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
+            global_free.extend(to_flush);
         }
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }

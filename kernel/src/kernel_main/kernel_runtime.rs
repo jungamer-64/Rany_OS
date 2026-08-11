@@ -861,19 +861,23 @@ where
 {
     info!(
         target: "net_boot",
-        "Scheduling {} on bootstrap CPU0 with priority {:?}",
+        "Scheduling {} on executor with priority {:?}",
         label,
         priority
     );
-    crate::task::spawn_on_cpu_with_priority(0, priority, async move {
-        info!(
-            target: "net_boot",
-            "{} running on CPU {}",
-            label,
-            crate::cpu::try_current_id().unwrap_or(0)
-        );
-        future.await;
-    });
+    crate::task::spawn_with_priority(
+        async move {
+            info!(
+                target: "net_boot",
+                "{} running on CPU {}",
+                label,
+                crate::cpu::try_current_id().unwrap_or(0)
+            );
+            future.await;
+        },
+        priority,
+        None,
+    );
 }
 
 pub(crate) fn spawn_core_runtime_tasks() {
@@ -897,12 +901,12 @@ pub(crate) fn spawn_core_runtime_tasks() {
         crate::task::Priority::High,
         network_bootstrap_task(),
     );
-    info!(target: "init", "Network bootstrap task queued on CPU0");
+    info!(target: "init", "Network bootstrap task queued");
 
     // [PR-COMPLIANCE] ICMP Responder activation log
     info!(target: "init", "ICMP responder server active");
 
-    // Initialize network event handler and spawn the background task for async networking
+    // Initialize network event handler and spawn background tasks for multi-core async networking
     let net_runtime = crate::net::runtime::default_runtime();
     crate::net::runtime::command_handler::init_network_event_handler();
     spawn_early_network_task(

@@ -339,11 +339,16 @@ impl Default for RetransmitQueue {
 }
 
 /// シャード数
+const RETRANSMIT_SHARDS: usize = 16;
 
 /// シャードインデックスを算出
+fn retransmit_shard_index(local: &EndpointAddr, remote: &EndpointAddr) -> usize {
+    (conn_key_hash(local, remote) as usize) % RETRANSMIT_SHARDS
+}
 
 pub(crate) struct RetransmitRuntimeState {
-    queues: PoisonLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>,
+    queues:
+        [PoisonLock<BTreeMap<(EndpointAddr, EndpointAddr), RetransmitQueue>>; RETRANSMIT_SHARDS],
     return_targets: PoisonLock<BTreeMap<u64, (EndpointAddr, EndpointAddr)>>,
     timer_wheel: PoisonLock<Option<TimingWheel>>,
 }
@@ -351,7 +356,7 @@ pub(crate) struct RetransmitRuntimeState {
 impl RetransmitRuntimeState {
     pub(crate) const fn new() -> Self {
         Self {
-            queues: PoisonLock::new(BTreeMap::new()),
+            queues: [const { PoisonLock::new(BTreeMap::new()) }; RETRANSMIT_SHARDS],
             return_targets: PoisonLock::new(BTreeMap::new()),
             timer_wheel: PoisonLock::new(None),
         }
@@ -437,8 +442,9 @@ pub fn get_or_create_retransmit_queue(
     local: EndpointAddr,
     remote: EndpointAddr,
 ) -> bool {
+    let idx = retransmit_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if !queues.contains_key(&(local, remote)) {
         queues.insert((local, remote), RetransmitQueue::new());
         true
@@ -456,9 +462,10 @@ pub fn retransmit_queue_push(
     seq_len: u32,
     data: PacketPayload,
 ) {
+    let idx = retransmit_shard_index(&local, &remote);
     let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         let was_empty = queue.is_empty();
         queue.push(seq, seq_len, data, current_tick);
@@ -475,8 +482,9 @@ pub fn retransmit_queue_transmit_ready(
     remote: EndpointAddr,
     seq: u32,
 ) -> bool {
+    let idx = retransmit_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     queues
         .get_mut(&(local, remote))
         .is_some_and(|queue| queue.transmit_ready(runtime, local, remote, seq))
@@ -491,10 +499,11 @@ pub(crate) fn complete_tx_owner(
     let Some((local, remote)) = unregister_tcp_tx_return_target(runtime, completion_id) else {
         return false;
     };
+    let idx = retransmit_shard_index(&local, &remote);
     let payload = build_payload_from_segments(keepalive);
     let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.complete_inflight(completion_id, payload, result, current_tick);
         if queue.is_empty() {
@@ -516,9 +525,10 @@ pub fn retransmit_queue_ack(
     remote: EndpointAddr,
     ack_num: u32,
 ) {
+    let idx = retransmit_shard_index(&local, &remote);
     let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         queue.ack_received(ack_num, current_tick);
         if queue.is_empty() {
@@ -537,8 +547,9 @@ pub fn retransmit_queue_process_sack(
     remote: EndpointAddr,
     blocks: &[(u32, u32)],
 ) {
+    let idx = retransmit_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&(local, remote)) {
         for seg in queue.unacked.iter_mut() {
             let seg_end = seg.seq.wrapping_add(seg.seq_len);
@@ -560,9 +571,9 @@ pub fn retransmit_queue_remove(
     local: EndpointAddr,
     remote: EndpointAddr,
 ) {
+    let idx = retransmit_shard_index(&local, &remote);
     let state = tcp_runtime_in(runtime).retransmit();
-    state
-        .queues
+    state.queues[idx]
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .remove(&(local, remote));
@@ -580,10 +591,12 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
             tw.advance(current_tick)
         } else {
             let mut result = Vec::new();
-            let queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
-            for ((local, remote), queue) in queues.iter() {
-                if queue.check_timeout(current_tick).is_some() {
-                    result.push((*local, *remote));
+            for i in 0..RETRANSMIT_SHARDS {
+                let queues = state.queues[i].lock().unwrap_or_else(|e| e.into_inner());
+                for ((local, remote), queue) in queues.iter() {
+                    if queue.check_timeout(current_tick).is_some() {
+                        result.push((*local, *remote));
+                    }
                 }
             }
             result
@@ -591,8 +604,9 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
     };
 
     for (local, remote) in expired {
+        let idx = retransmit_shard_index(&local, &remote);
         let state = tcp_runtime_in(runtime).retransmit();
-        let mut queues = state.queues.lock().unwrap_or_else(|e| e.into_inner());
+        let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
 
         if let Some(queue) = queues.get_mut(&(local, remote)) {
             if queue.check_timeout(current_tick).is_some() {
