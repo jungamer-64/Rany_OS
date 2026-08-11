@@ -607,10 +607,12 @@ const NETWORK_EVENT_QUEUE_BACKING_CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY
 /// - shared `MpscRingBuffer` による順序保証付き配信
 /// - `AtomicWaker` による ISR-safe タスク起床
 /// - 全操作がロック取得なしで完了（ISR コンテキストから安全に呼び出し可能）
+use crate::sync::lockfree::MpmcRingBuffer;
+
 pub(crate) struct RuntimeCommandQueue {
-    queue: MpscRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
-    /// ISR-safe Waker（ロックフリー状態機械ベース）
-    waker: crate::sync::atomic_waker::AtomicWaker,
+    queue: MpmcRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
+    /// マルチコンシューマー向け ISR-safe Waker Queue
+    consumer_waiters: WakerQueue,
     /// タスクコンテキストのプロデューサー向け空き待ち通知
     space_waiters: WakerQueue,
 }
@@ -621,8 +623,8 @@ impl RuntimeCommandQueue {
     /// 新規作成
     pub const fn new() -> Self {
         Self {
-            queue: MpscRingBuffer::new(),
-            waker: crate::sync::atomic_waker::AtomicWaker::new(),
+            queue: MpmcRingBuffer::new(),
+            consumer_waiters: WakerQueue::new(),
             space_waiters: WakerQueue::new(),
         }
     }
@@ -631,7 +633,7 @@ impl RuntimeCommandQueue {
     fn send_owned(&self, command: RuntimeCommand) -> Result<(), RuntimeCommand> {
         match self.queue.push(command) {
             Ok(()) => {
-                self.waker.wake();
+                self.consumer_waiters.wake_all();
                 Ok(())
             }
             Err(command) => Err(command),
@@ -646,9 +648,9 @@ impl RuntimeCommandQueue {
         self.send_owned(command).is_ok()
     }
 
-    /// イベント受信（コンシューマー側 — runtime_command_task 専用）
+    /// イベント受信（コンシューマー側 — マルチコンシューマー安全）
     ///
-    /// 単一コンシューマー前提。ロック取得なしで次のイベントを読み出す。
+    /// MPMC ロックフリーキューからアトミックに次のイベントを読み出す。
     pub(crate) fn recv(&self) -> Option<RuntimeCommand> {
         let command = self.queue.pop()?;
         self.space_waiters.wake_all();
@@ -664,7 +666,7 @@ impl RuntimeCommandQueue {
     pub fn reset_for_tests(&self) {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self.recv().is_some() {}
-        self.waker.clear();
+        self.consumer_waiters.clear();
         self.space_waiters.clear();
     }
 }
@@ -683,8 +685,8 @@ impl<'a> Future for CommandWaitFuture<'a> {
             return Poll::Ready(command);
         }
 
-        // AtomicWaker に Waker を登録（ロックフリー）
-        self.queue.waker.register(cx.waker());
+        // Multi-consumer WakerQueue に Waker を登録
+        self.queue.consumer_waiters.register(cx.waker());
 
         // 再度チェック（Waker 登録中にイベントが来た可能性）
         if let Some(command) = self.queue.recv() {

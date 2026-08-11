@@ -51,9 +51,12 @@ fn register_interface_with_optional_current_stack_in(
 
         for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
             if i != current_core {
-                let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(stack) = &mut *guard {
-                    stack.register_interface_state(id, config);
+                // try_lock を使用し、別コアがハンドラ実行中であってもブロッキングによる ABBA デッドロックを絶対発生させない。
+                // 構成情報は NetworkManager にも保持されるため、ピアコアは必要時に authoritative state を参照する。
+                if let Ok(mut guard) = stack_lock.try_lock() {
+                    if let Some(stack) = &mut *guard {
+                        stack.register_interface_state(id, config);
+                    }
                 }
             }
         }
@@ -91,9 +94,10 @@ fn unregister_interface_with_optional_current_stack_in(
         stack.unregister_interface_state(id);
         for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
             if i != current_core {
-                let mut guard = stack_lock.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(stack) = &mut *guard {
-                    stack.unregister_interface_state(id);
+                if let Ok(mut guard) = stack_lock.try_lock() {
+                    if let Some(stack) = &mut *guard {
+                        stack.unregister_interface_state(id);
+                    }
                 }
             }
         }

@@ -43,6 +43,7 @@ impl NetworkStack {
                     *resolved_mac.as_bytes(),
                 );
                 self.drain_arp_pending_on(Some(if_id), &resolved_ip);
+                drain_arp_pending_peer_stacks_in(runtime, &resolved_ip);
             }
             ArpResult::SendGratuitous => {
                 self.send_gratuitous_arp_on(if_id);
@@ -391,5 +392,21 @@ impl NetworkStack {
         };
 
         self.drain_arp_pending_queue(Some(if_id), resolved_ip, pending);
+    }
+}
+
+pub(crate) fn drain_arp_pending_peer_stacks_in(
+    runtime: NetRuntimeHandle,
+    resolved_ip: &Ipv4Address,
+) {
+    let current_core = crate::cpu::try_current_id().unwrap_or(0);
+    for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
+        if i != current_core {
+            if let Ok(mut guard) = stack_lock.try_lock() {
+                if let Some(stack) = guard.as_mut() {
+                    stack.drain_arp_pending(resolved_ip);
+                }
+            }
+        }
     }
 }
