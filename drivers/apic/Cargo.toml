@@ -18,4 +18,3 @@ log = "0.4"
 exorust_sync = { path = "../../libs/sync" }
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
-acpi_driver = { path = "../acpi" }

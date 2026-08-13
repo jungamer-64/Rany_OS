@@ -16,7 +16,6 @@
 // ============================================================================
 
 // Driver/bus implementation modules. Prefer `crate::drivers::*`.
-pub(crate) mod acpi;
 pub(crate) mod ahci;
 pub(crate) mod apic;
 // Kernel-owned infrastructure.

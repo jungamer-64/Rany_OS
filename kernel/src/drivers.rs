@@ -12,9 +12,6 @@
 //! - external `*_driver` crates: device-family implementations outside kernel
 //! - `crate::io::*`: shared I/O runtime owned by the kernel framework
 
-pub mod acpi {
-    pub use crate::io::acpi::*;
-}
 pub mod ahci {
     pub use crate::io::ahci::*;
 }

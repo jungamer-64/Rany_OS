@@ -146,16 +146,3 @@ pub mod mmio {
         }
     }
 }
-
-// Expose a minimal ACPI module in tests so IOMMU init can call into
-// `crate::drivers::acpi::dmar::parse_dmar` without pulling the full ACPI
-// runtime dependencies into every unit test. This delegates only the
-// DMAR parsing API to the acpi driver crate.
-pub mod acpi {
-    pub mod dmar {
-        pub use acpi_driver::dmar::*;
-    }
-    pub mod ivrs {
-        pub use acpi_driver::ivrs::*;
-    }
-}

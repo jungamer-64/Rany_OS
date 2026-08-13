@@ -755,60 +755,6 @@ pub fn is_apic_enabled() -> bool {
     APIC_ENABLED.load(Ordering::SeqCst)
 }
 
-pub fn map_gsi_to_ioapic(gsi: u32) -> Option<(usize, u8)> {
-    let io_apics = acpi_driver::io_apics();
-    if io_apics.is_empty() {
-        return Some((0, gsi as u8));
-    }
-    io_apics.iter().enumerate().find_map(|(index, ioapic)| {
-        let gsi_end = io_apics
-            .get(index + 1)
-            .map(|next| next.gsi_base)
-            .unwrap_or(u32::MAX);
-        (ioapic.gsi_base..gsi_end)
-            .contains(&gsi)
-            .then(|| (index, (gsi - ioapic.gsi_base) as u8))
-    })
-}
-
-pub fn isa_irq_to_gsi(irq: u8) -> (u32, TriggerMode, Polarity) {
-    let overrides = acpi_driver::interrupt_overrides();
-    overrides
-        .iter()
-        .find(|ov| ov.source == irq && ov.bus == 0)
-        .map(|ov| {
-            let trigger = if ov.trigger_mode == 3 {
-                TriggerMode::Level
-            } else {
-                TriggerMode::Edge
-            };
-            let polarity = if ov.polarity == 3 {
-                Polarity::LowActive
-            } else {
-                Polarity::HighActive
-            };
-            (ov.gsi, trigger, polarity)
-        })
-        .unwrap_or((irq as u32, TriggerMode::Edge, Polarity::HighActive))
-}
-
-pub fn route_gsi(gsi: u32, vector: u8, apic_id: u8) {
-    if let Some((ioapic_index, local_irq)) = map_gsi_to_ioapic(gsi) {
-        if ioapic_index == 0 {
-            let (_, trigger_mode, polarity) = isa_irq_to_gsi(local_irq);
-            io_apic().route_irq_typed(local_irq, vector, apic_id, trigger_mode, polarity);
-        }
-    }
-}
-
-pub fn set_gsi_mask(gsi: u32, masked: bool) {
-    if let Some((ioapic_index, local_irq)) = map_gsi_to_ioapic(gsi) {
-        if ioapic_index == 0 {
-            io_apic().set_irq_mask(local_irq, masked);
-        }
-    }
-}
-
 pub fn check_apic_support() -> bool {
     unsafe {
         let edx: u32;
@@ -817,41 +763,6 @@ pub fn check_apic_support() -> bool {
         let _ = rbx_save;
         (edx & (1 << 9)) != 0
     }
-}
-
-pub fn init() {
-    if !check_apic_support() {
-        return;
-    }
-    disable_pic();
-    let mut local_apic_addr: Option<u64> = None;
-    let mut io_apic_config: Option<(u64, u32)> = None;
-    if let Some(lapic_addr) = acpi_driver::local_apic_address() {
-        local_apic_addr = Some(lapic_addr);
-    }
-    let io_apics_list = acpi_driver::io_apics();
-    if !io_apics_list.is_empty() {
-        let first_io_apic = &io_apics_list[0];
-        io_apic_config = Some((first_io_apic.address, first_io_apic.gsi_base));
-    }
-    {
-        let mut lapic = local_apic();
-        if let Some(addr) = local_apic_addr {
-            lapic.set_base_address(addr);
-        }
-        lapic.init();
-    }
-    {
-        let mut ioapic = io_apic();
-        if let Some((addr, gsi_base)) = io_apic_config {
-            ioapic.set_base_address(addr, gsi_base);
-        }
-        ioapic.init();
-    }
-    local_apic().calibrate_timer();
-    io_apic().route_irq(1, 0x21, local_apic().id(), false, false);
-    io_apic().set_irq_mask(1, false);
-    APIC_ENABLED.store(true, Ordering::SeqCst);
 }
 
 fn disable_pic() {
