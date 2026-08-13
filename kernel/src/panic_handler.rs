@@ -435,7 +435,7 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
     unsafe {
         match crate::mm::virt::higher_half::global_unmap_page(guard_page_addr) {
             Ok(_phys) => {
-                // 成功: global_unmap_page は invalidate_page → flush_tlb_immediate で
+                // 成功: global_unmap_page は invalidate_page → TLB shootdown で
                 // マルチコア TLB シュートダウン済み。追加の invlpg は不要。
             }
             Err(e) => {

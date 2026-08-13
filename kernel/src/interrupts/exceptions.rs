@@ -353,7 +353,7 @@ define_interrupt!(
         early_print("\n");
         dump_idt_gate("com1", crate::interrupts::InterruptVector::Com1 as u8);
         dump_idt_gate("wake", crate::interrupts::EXECUTOR_WAKE_VECTOR);
-        dump_idt_gate("tlb", crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR);
+        dump_idt_gate("tlb", crate::mm::sync::tlb::TLB_FLUSH_VECTOR);
         dump_idt_gate("timer", crate::interrupts::InterruptVector::Timer as u8);
         dump_local_apic_in_service();
         dump_saved_rsp_words(&stack_frame);

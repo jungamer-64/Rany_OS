@@ -157,14 +157,14 @@ pub fn invalidate_page(addr: VirtAddr) {
     // 従来のローカル無効化から、マルチコア対応のシュートダウンへアップグレード
     // Note: これにより、他CPUの古いTLBエントリによるUse-After-Freeや
     // 情報漏洩（古い読み込み専用エントリ経由の書き込み等）を防止する。
-    // `flush_tlb_immediate` expects an `x86_64::VirtAddr`, convert from our wrapper.
-    crate::mm::sync::tlb_batch::flush_tlb_immediate(x86_64::VirtAddr::new(addr.as_u64()));
+    // The shootdown boundary uses `x86_64::VirtAddr`; convert from our wrapper.
+    crate::mm::sync::tlb::flush_immediate(x86_64::VirtAddr::new(addr.as_u64()));
 }
 
 /// TLBを全無効化
 #[inline]
 pub fn flush_tlb() {
-    crate::mm::sync::tlb_batch::flush_tlb_all();
+    crate::mm::sync::tlb::flush_all();
 }
 
 /// CR3を設定
@@ -663,8 +663,8 @@ impl PageTableManager {
     /// 新しいページテーブル用のフレームを割り当て
     pub(super) fn alloc_page_table(&self) -> Result<PhysAddr, MapError> {
         // まず現在のCPUのローカルNUMAノードから割り当てを試みる（優先）
-        let phys = if let Some(cpu_id) = crate::cpu::try_current_id() {
-            if let Some(frame) = crate::mm::phys::frame_allocator::alloc_frame_local(cpu_id as u8) {
+        let phys = if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            if let Some(frame) = crate::mm::phys::frame_allocator::alloc_frame_local(current.id()) {
                 Some(PhysAddr::new(frame.start_address().as_u64()))
             } else {
                 None
@@ -804,7 +804,7 @@ pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
 #[inline]
 fn flush_range_tlb(virt: VirtAddr, size: u64) {
     if size > 4096 * 8 {
-        crate::mm::sync::tlb_batch::flush_tlb_all();
+        crate::mm::sync::tlb::flush_all();
     } else {
         let mut addr = virt.as_u64();
         let end = addr + size;

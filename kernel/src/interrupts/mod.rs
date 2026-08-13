@@ -271,7 +271,7 @@ fn init_idt() {
     // TLB Flush IPI Vector (0xF1 = 241)
     // マルチコア環境でのTLBシュートダウンに使用
     unsafe {
-        idt[crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR]
+        idt[crate::mm::sync::tlb::TLB_FLUSH_VECTOR]
             .set_handler_fn(handler_to_x86!(
                 tlb_flush_ipi_handler as extern "x86-interrupt" fn(InterruptStackFrame)
             ))
@@ -862,17 +862,16 @@ define_interrupt!(
 
 define_interrupt!(
     fn tlb_flush_ipi_handler(_stack_frame: InterruptStackFrame) {
-        record_interrupt_frame(crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR, &_stack_frame);
+        record_interrupt_frame(crate::mm::sync::tlb::TLB_FLUSH_VECTOR, &_stack_frame);
         // TLBフラッシュ処理を実行
         // Safety: 割り込みハンドラとして呼び出されている
         unsafe {
-            crate::mm::sync::tlb_batch::tlb_flush_ipi_handler();
+            crate::mm::sync::tlb::handle_shootdown_ipi();
         }
 
         // Local APICにEOIを送信
         // IPIはLocal APICから来るのでLocal APICにEOIを送る
         crate::io::interrupt_manager::send_eoi();
-        crate::mm::sync::tlb_batch::tlb_flush_ipi_ack();
     }
 );
 

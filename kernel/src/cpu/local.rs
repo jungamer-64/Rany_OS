@@ -14,20 +14,19 @@ use super::CpuId;
 const CONTROL_QUEUE_SLOTS: usize = 32;
 const IA32_FS_BASE: u32 = 0xc000_0100;
 const IA32_GS_BASE: u32 = 0xc000_0101;
+const TLB_ACTIVE: u8 = 0;
+const TLB_LAZY: u8 = 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuControlMessage {
     WakeExecutor,
     Start,
     Park,
-    TlbShootdown { generation: u64 },
-    RcuQuiesce { epoch: u64 },
 }
 
 pub struct CpuRemoteAccess {
     control: MpscRingBuffer<CpuControlMessage, CONTROL_QUEUE_SLOTS>,
     wake_pending: AtomicBool,
-    observed_epoch: AtomicU64,
     numa_node: AtomicU8,
     interrupt_depth: AtomicU32,
     interrupt_record_revision: AtomicU64,
@@ -38,6 +37,9 @@ pub struct CpuRemoteAccess {
     runtime_timer_armed: AtomicBool,
     rcu_read_depth: AtomicU32,
     rcu_quiescent_count: AtomicU64,
+    tlb_mode: AtomicU8,
+    tlb_requested_generation: AtomicU64,
+    tlb_observed_generation: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -52,7 +54,6 @@ impl CpuRemoteAccess {
         Self {
             control: MpscRingBuffer::new(),
             wake_pending: AtomicBool::new(false),
-            observed_epoch: AtomicU64::new(0),
             numa_node: AtomicU8::new(u8::MAX),
             interrupt_depth: AtomicU32::new(0),
             interrupt_record_revision: AtomicU64::new(0),
@@ -63,6 +64,9 @@ impl CpuRemoteAccess {
             runtime_timer_armed: AtomicBool::new(false),
             rcu_read_depth: AtomicU32::new(0),
             rcu_quiescent_count: AtomicU64::new(0),
+            tlb_mode: AtomicU8::new(TLB_ACTIVE),
+            tlb_requested_generation: AtomicU64::new(0),
+            tlb_observed_generation: AtomicU64::new(0),
         }
     }
 
@@ -72,10 +76,6 @@ impl CpuRemoteAccess {
 
     pub fn request_wake(&self) -> bool {
         !self.wake_pending.swap(true, Ordering::AcqRel)
-    }
-
-    pub fn observed_epoch(&self) -> u64 {
-        self.observed_epoch.load(Ordering::Acquire)
     }
 
     pub fn numa_node(&self) -> Option<u8> {
@@ -154,6 +154,29 @@ impl CpuRemoteAccess {
 
     pub(crate) fn rcu_quiescent_count(&self) -> u64 {
         self.rcu_quiescent_count.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn request_tlb_generation(&self, generation: u64) {
+        self.tlb_requested_generation
+            .fetch_max(generation, Ordering::SeqCst);
+    }
+
+    pub(crate) fn observed_tlb_generation(&self) -> u64 {
+        self.tlb_observed_generation.load(Ordering::SeqCst)
+    }
+
+    pub(crate) fn tlb_is_lazy(&self) -> bool {
+        self.tlb_mode.load(Ordering::SeqCst) == TLB_LAZY
+    }
+
+    fn pending_tlb_generation(&self) -> Option<u64> {
+        let requested = self.tlb_requested_generation.load(Ordering::SeqCst);
+        (requested > self.observed_tlb_generation()).then_some(requested)
+    }
+
+    fn complete_tlb_generation(&self, generation: u64) {
+        self.tlb_observed_generation
+            .fetch_max(generation, Ordering::SeqCst);
     }
 }
 
@@ -316,10 +339,6 @@ impl CpuLocal {
         message
     }
 
-    fn record_epoch(&self, epoch: u64) {
-        self.remote.observed_epoch.store(epoch, Ordering::Release);
-    }
-
     fn enter_interrupt(&self) {
         self.remote.interrupt_depth.fetch_add(1, Ordering::AcqRel);
     }
@@ -363,6 +382,15 @@ impl CpuLocal {
             .rcu_quiescent_count
             .fetch_add(1, Ordering::Release);
         true
+    }
+
+    fn enter_lazy_tlb(&self) {
+        self.remote.tlb_mode.store(TLB_LAZY, Ordering::SeqCst);
+    }
+
+    fn activate_tlb(&self) -> Option<u64> {
+        self.remote.tlb_mode.store(TLB_ACTIVE, Ordering::SeqCst);
+        self.remote.pending_tlb_generation()
     }
 }
 
@@ -419,10 +447,6 @@ impl CurrentCpu {
         self.local.take_control()
     }
 
-    pub fn record_epoch(&self, epoch: u64) {
-        self.local.record_epoch(epoch);
-    }
-
     pub fn in_interrupt(&self) -> bool {
         self.local.remote.in_interrupt()
     }
@@ -474,6 +498,22 @@ impl CurrentCpu {
 
     pub(crate) fn note_rcu_quiescent(&self) -> bool {
         self.local.note_rcu_quiescent()
+    }
+
+    pub(crate) fn enter_lazy_tlb(&self) {
+        self.local.enter_lazy_tlb();
+    }
+
+    pub(crate) fn activate_tlb(&self) -> Option<u64> {
+        self.local.activate_tlb()
+    }
+
+    pub(crate) fn pending_tlb_generation(&self) -> Option<u64> {
+        self.local.remote.pending_tlb_generation()
+    }
+
+    pub(crate) fn complete_tlb_generation(&self, generation: u64) {
+        self.local.remote.complete_tlb_generation(generation);
     }
 
     pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {

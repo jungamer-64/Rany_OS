@@ -8,8 +8,7 @@ mod state;
 
 pub use identity::{ApicId, CpuId, CpuIdOutOfRange, CpuRole, FirmwareCpuUid, MAX_POSSIBLE_CPUS};
 pub(crate) use ipi::{
-    CpuIpiError, IpiKind, broadcast_ipi, current_apic_id, send_eoi_current_cpu, send_ipi,
-    send_ipi_to_apic,
+    CpuIpiError, IpiKind, current_apic_id, send_eoi_current_cpu, send_ipi, send_ipi_to_apic,
 };
 pub use local::{CpuControlMessage, CpuRemoteAccess, CurrentCpu, InterruptContext};
 pub(crate) use local::{

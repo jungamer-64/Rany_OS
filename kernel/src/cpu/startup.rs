@@ -576,7 +576,7 @@ fn ap_entry(id: CpuId) -> ! {
     }
 
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(id.as_usize());
-    crate::mm::sync::tlb_batch::enter_lazy_tlb_mode(id.as_usize());
+    crate::mm::sync::tlb::enter_lazy_mode();
     crate::mm::numa::topology::apply_current_cpu_locality();
     local_apic.set_task_priority(0xe0);
     crate::interrupts::enable_interrupts();
@@ -590,15 +590,11 @@ fn ap_entry(id: CpuId) -> ! {
                 super::CpuControlMessage::Start => {
                     crate::interrupts::disable_interrupts();
                     local_apic.set_task_priority(0);
-                    let _ = crate::mm::sync::tlb_batch::exit_lazy_tlb_mode(id.as_usize());
+                    let _ = crate::mm::sync::tlb::exit_lazy_mode();
                     crate::mm::numa::topology::apply_current_cpu_locality();
                     crate::interrupts::enable_interrupts();
                     crate::task::run_forever();
                 }
-                super::CpuControlMessage::TlbShootdown { .. } => unsafe {
-                    crate::mm::sync::tlb_batch::tlb_flush_ipi_handler();
-                },
-                super::CpuControlMessage::RcuQuiesce { epoch } => current.record_epoch(epoch),
                 super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
             }
         }

@@ -34,13 +34,6 @@ pub(crate) fn send_ipi_to_apic(apic_id: ApicId, kind: IpiKind) -> Result<(), Cpu
         .map_err(CpuIpiError::LocalApic)
 }
 
-pub(crate) fn broadcast_ipi(kind: IpiKind) -> Result<(), CpuIpiError> {
-    crate::drivers::apic::local_apic()
-        .map_err(CpuIpiError::LocalApic)?
-        .broadcast_excluding_self(vector_for(kind))
-        .map_err(CpuIpiError::LocalApic)
-}
-
 pub(crate) fn send_eoi_current_cpu() -> Result<(), CpuIpiError> {
     crate::drivers::apic::end_of_interrupt().map_err(CpuIpiError::LocalApic)
 }
@@ -54,6 +47,6 @@ pub(crate) fn current_apic_id() -> Result<ApicId, CpuIpiError> {
 const fn vector_for(kind: IpiKind) -> u8 {
     match kind {
         IpiKind::ExecutorWake => crate::interrupts::EXECUTOR_WAKE_VECTOR,
-        IpiKind::TlbFlush => crate::mm::sync::tlb_batch::TLB_FLUSH_VECTOR,
+        IpiKind::TlbFlush => crate::mm::sync::tlb::TLB_FLUSH_VECTOR,
     }
 }
