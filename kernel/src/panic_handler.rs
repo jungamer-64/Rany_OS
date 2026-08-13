@@ -51,17 +51,10 @@ static PANIC_COUNT: AtomicU64 = AtomicU64::new(0);
 
 /// 現在実行中のドメインID（Thread Local相当）
 /// 実際のマルチコア環境ではCPUごとに保持する必要がある
-static CURRENT_DOMAIN_ID: AtomicU64 = AtomicU64::new(0);
 
 /// 現在のドメインIDを設定
-pub fn set_current_domain(domain_id: u64) {
-    CURRENT_DOMAIN_ID.store(domain_id, Ordering::Release);
-}
 
 /// 現在のドメインIDを取得
-pub fn get_current_domain() -> u64 {
-    CURRENT_DOMAIN_ID.load(Ordering::Acquire)
-}
 
 /// 固定長バッファへの書き込み用ヘルパー
 struct PanicBufferWriter<'a> {

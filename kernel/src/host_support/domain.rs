@@ -309,7 +309,6 @@ pub struct DomainRecord {
 
 static DOMAINS: Mutex<Vec<DomainRecord>> = Mutex::new(Vec::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-static CURRENT_DOMAIN: AtomicU64 = AtomicU64::new(0);
 
 fn kernel_security_handle() -> Arc<DomainSecurity> {
     static SECURITY: Once<Arc<DomainSecurity>> = Once::new();
@@ -552,15 +551,3 @@ pub fn get_stats() -> DomainStats {
 }
 
 pub fn print_domain_list() {}
-
-pub fn set_current_domain(id: DomainId) {
-    CURRENT_DOMAIN.store(id.as_u64(), Ordering::SeqCst);
-}
-
-pub fn current_domain() -> DomainId {
-    DomainId::new(CURRENT_DOMAIN.load(Ordering::SeqCst))
-}
-
-pub fn is_kernel_domain() -> bool {
-    current_domain() == DomainId::KERNEL
-}

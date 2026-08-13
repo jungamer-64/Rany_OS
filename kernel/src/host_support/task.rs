@@ -354,37 +354,6 @@ pub mod interrupts {
     }
 }
 
-// Task context counters used by legacy management tests
-pub mod context {
-    use alloc::sync::Arc;
-    use core::sync::atomic::AtomicU64;
-
-    pub static CONTEXT_SWITCH_COUNT: AtomicU64 = AtomicU64::new(0);
-
-    #[derive(Debug)]
-    pub struct TaskControlBlock {
-        pub domain_id: crate::domain::DomainId,
-        pub security: Arc<crate::domain::DomainSecurity>,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct Subject {
-        pub domain: crate::domain::DomainId,
-        pub cred: crate::domain::DomainCredentials,
-    }
-
-    pub fn get_current_task(_cpu_id: usize) -> Option<*mut TaskControlBlock> {
-        None
-    }
-
-    pub fn current_subject() -> Subject {
-        Subject {
-            domain: crate::domain::current_domain(),
-            cred: crate::domain::DomainCredentials::ROOT,
-        }
-    }
-}
-
 // Minimal IO shims for tests
 pub mod io {
     pub mod log {

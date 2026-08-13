@@ -1,7 +1,6 @@
 use super::{DomainId, DomainState, DomainStats};
 use crate::domain::registry::REGISTRY;
 use core::alloc::Layout;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 pub use super::registry::{
     add_task_to_domain, create_domain, domain_security_handle, get_domain_numa,
@@ -191,23 +190,4 @@ pub fn print_domain_list() {
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (print_domain_list) - skipping"),
     }
-}
-
-pub(crate) static CURRENT_DOMAIN: AtomicU64 = AtomicU64::new(0);
-
-pub fn set_current_domain(id: DomainId) {
-    CURRENT_DOMAIN.store(id.as_u64(), Ordering::SeqCst);
-}
-
-pub fn current_domain() -> DomainId {
-    let cpu_id = crate::cpu::current_id();
-    if let Some(tcb_ptr) = crate::task::context::get_current_task(cpu_id) {
-        unsafe { (*tcb_ptr).domain_id }
-    } else {
-        DomainId::new(CURRENT_DOMAIN.load(Ordering::SeqCst))
-    }
-}
-
-pub fn is_kernel_domain() -> bool {
-    current_domain() == DomainId::KERNEL
 }
