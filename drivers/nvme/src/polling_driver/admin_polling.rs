@@ -92,6 +92,9 @@ impl NvmePollingDriver {
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// prp1/prp2は有効な物理アドレスである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn submit_read(
         &self,
         core_id: u32,
@@ -112,6 +115,9 @@ impl NvmePollingDriver {
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn submit_read_sgl(
         &self,
         core_id: u32,
@@ -131,6 +137,9 @@ impl NvmePollingDriver {
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// prp1/prp2は有効な物理アドレスである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_write(
         &self,
         core_id: u32,
@@ -151,6 +160,9 @@ impl NvmePollingDriver {
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_write_sgl(
         &self,
         core_id: u32,
@@ -171,6 +183,9 @@ impl NvmePollingDriver {
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// prp1は有効な物理アドレスである必要がある (DSM Range Buffer)。
     /// prp2は現在未使用 (バッファサイズが1ページ以下を想定)。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_dsm(
         &self,
         core_id: u32,
@@ -207,6 +222,9 @@ impl NvmePollingDriver {
     ///
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_flush(&self, core_id: u32, nsid: u32) -> Result<u16, &'static str> {
         let queue = self.get_queue(core_id).ok_or("Queue not found")?;
         let cid = unsafe { queue.flush(nsid) }?;
@@ -219,6 +237,9 @@ impl NvmePollingDriver {
     /// # Safety
     /// 現在のコアIDが正しいことを呼び出し側が保証。
     /// prp1は有効な物理アドレスである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_dataset_management(
         &self,
         core_id: u32,

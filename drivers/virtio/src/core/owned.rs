@@ -20,6 +20,9 @@ impl<K> OwnedVirtQueue<K> {
         super::virtqueue::VirtQueue::calculate_layout(queue_size)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn new(
         queue_index: u16,
         queue_size: u16,

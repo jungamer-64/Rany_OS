@@ -92,6 +92,9 @@ pub enum NetDmaDirection {
 
 /// Kernel-owned allocation hooks used by the portable virtio-net core.
 pub trait NetRuntime: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn alloc_dma(
         &self,
         size: usize,
@@ -101,6 +104,9 @@ pub trait NetRuntime: Send + Sync {
     fn alloc_packet(&self) -> Option<PacketRef>;
 
     /// Map a packet for DMA access by the device (IOMMU support).
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     fn map_packet(
         &self,
         packet: &PacketRef,
@@ -160,6 +166,9 @@ impl NetVirtQueue {
     }
 
     /// Add a TX buffer to the queue.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_tx_buffer(
         &self,
         header: &VirtioNetHeader,
@@ -204,6 +213,9 @@ impl NetVirtQueue {
     }
 
     /// Add a TX buffer chain backed by caller-retained packet segments.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_tx_buffer_chain(
         &self,
         header: &VirtioNetHeader,
@@ -258,6 +270,9 @@ impl NetVirtQueue {
     }
 
     /// Add an RX buffer to the queue.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_rx_buffer(&self, phys_addr: u64, len: usize) -> Result<u16, VirtioNetError> {
         let desc_idx = self.vq.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 

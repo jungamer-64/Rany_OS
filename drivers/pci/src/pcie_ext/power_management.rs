@@ -56,6 +56,9 @@ impl PciePowerManager {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_state(&self, state: PciePowerState) -> PcieResult<()> {
         let offset = self.pm_offset.ok_or(PcieError::CapabilityNotFound)?;
         let pmcap = self
@@ -89,6 +92,9 @@ impl PciePowerManager {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn enable_pme(&self) -> PcieResult<()> {
         let offset = self.pm_offset.ok_or(PcieError::CapabilityNotFound)?;
         let pmcsr = self
@@ -100,6 +106,9 @@ impl PciePowerManager {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn clear_pme_status(&self) -> PcieResult<()> {
         let offset = self.pm_offset.ok_or(PcieError::CapabilityNotFound)?;
         let pmcsr = self
@@ -136,6 +145,9 @@ pub struct PcieMsixController {
 }
 
 impl PcieMsixController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let offset = config
             .find_capability(bdf, cap_id::MSIX)
@@ -166,6 +178,9 @@ impl PcieMsixController {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn enable(&self) -> PcieResult<()> {
         let offset = self.msix_offset.ok_or(PcieError::CapabilityNotFound)?;
         let msg_ctrl = self
@@ -177,6 +192,9 @@ impl PcieMsixController {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn disable(&self) -> PcieResult<()> {
         let offset = self.msix_offset.ok_or(PcieError::CapabilityNotFound)?;
         let msg_ctrl = self
@@ -221,6 +239,9 @@ pub struct HotPlugController {
 }
 
 impl HotPlugController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let offset = config
             .find_capability(bdf, cap_id::PCIE)
@@ -254,6 +275,9 @@ impl HotPlugController {
         (slot_caps & (1 << 6)) != 0
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn slot_status(&self) -> PcieResult<u16> {
         if !self.slot_implemented {
             return Err(PcieError::NotSupported);
@@ -264,6 +288,9 @@ impl HotPlugController {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn power_on(&self) -> PcieResult<()> {
         if !self.slot_implemented {
             return Err(PcieError::NotSupported);

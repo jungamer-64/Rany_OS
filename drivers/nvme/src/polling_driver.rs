@@ -288,6 +288,9 @@ impl NvmePollingDriver {
     }
 
     /// コントローラを初期化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), &'static str> {
         // CAP レジスタを読む
         let cap_raw = self.read_reg64(0x00);
@@ -597,6 +600,9 @@ impl NvmePollingDriver {
     }
 
     /// CMBを使用してI/Oキューを作成（高速版）
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_io_queue_with_cmb(
         &mut self,
         core_id: u32,
@@ -705,6 +711,9 @@ impl NvmePollingDriver {
     }
 
     /// I/Oキューペアを作成（公開API）
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_io_queue_pair(
         &mut self,
         core_id: u32,

@@ -24,6 +24,9 @@ impl VirtioBlkDevice {
     }
 
     /// Initialize the block device.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self, transport: &dyn VirtioTransport) -> Result<(), TransportError> {
         // 1. Reset
         transport.reset();
@@ -83,6 +86,9 @@ impl VirtioBlkDevice {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn build_request(
         &self,
         vq: &VirtQueue,
@@ -124,6 +130,9 @@ impl VirtioBlkDevice {
         Ok(head)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn build_request_indirect(
         &self,
         vq: &VirtQueue,

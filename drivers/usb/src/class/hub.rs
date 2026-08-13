@@ -267,6 +267,9 @@ impl HubDevice {
     }
 
     /// ハブディスクリプタを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_hub_descriptor(&self) -> Result<HubDescriptor, ClassDriverError> {
         let device = self
             .device
@@ -343,6 +346,9 @@ impl HubDevice {
     }
 
     /// ポートステータスを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_port_status(&self, port: u8) -> Result<HubPortStatus, ClassDriverError> {
         let device = self
             .device
@@ -374,6 +380,9 @@ impl HubDevice {
     }
 
     /// ポート機能を設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn set_port_feature(&self, port: u8, feature: u16) -> Result<(), ClassDriverError> {
         let device = self
             .device
@@ -400,6 +409,9 @@ impl HubDevice {
     }
 
     /// ポート機能をクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn clear_port_feature(&self, port: u8, feature: u16) -> Result<(), ClassDriverError> {
         let device = self
             .device
@@ -426,6 +438,9 @@ impl HubDevice {
     }
 
     /// ポート電源を投入
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn power_on_port(&self, port: u8) -> Result<(), ClassDriverError> {
         self.set_port_feature(port, PORT_POWER).await
     }

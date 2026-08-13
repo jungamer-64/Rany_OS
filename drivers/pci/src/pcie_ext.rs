@@ -598,6 +598,9 @@ impl AerController {
     }
 
     /// 訂正不能エラーをクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn clear_uncorrectable_errors(&self) -> PcieResult<()> {
         let cap = self
             .capability
@@ -631,6 +634,9 @@ impl AerController {
     }
 
     /// ヘッダーログを読み取り
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_header_log(&self) -> PcieResult<[u32; 4]> {
         let cap = self
             .capability
@@ -649,6 +655,9 @@ impl AerController {
     }
 
     /// エラーマスクを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_correctable_mask(&self, mask: u32) -> PcieResult<()> {
         let cap = self
             .capability
@@ -659,6 +668,9 @@ impl AerController {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_uncorrectable_mask(&self, mask: u32) -> PcieResult<()> {
         let cap = self
             .capability

@@ -85,6 +85,9 @@ impl ManagedNetVirtQueue {
         self.with_core(|inner| inner.set_interrupts_enabled(enabled));
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn add_tx_buffer_zero_copy_with_header(
         &self,
         phys_addr: u64,
@@ -94,6 +97,9 @@ impl ManagedNetVirtQueue {
         self.with_core(|inner| unsafe { inner.add_tx_buffer(&header, phys_addr, data_len) })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn add_tx_buffer_zero_copy(
         &self,
         phys_addr: u64,
@@ -102,6 +108,9 @@ impl ManagedNetVirtQueue {
         self.add_tx_buffer_zero_copy_with_header(phys_addr, data_len, VirtioNetHeader::new_tx())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn add_tx_submission(
         &self,
         submission: TxSubmission<'_>,
@@ -110,6 +119,9 @@ impl ManagedNetVirtQueue {
         self.with_core(|inner| unsafe { inner.add_tx_buffer_chain(&header, submission.segments()) })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn add_rx_buffer_zero_copy(
         &self,
         phys_addr: u64,
@@ -200,6 +212,9 @@ impl VirtioNetDevice {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
         self.core.init(self.transport.as_ref())?;
         self.setup_queues()?;
@@ -287,6 +302,9 @@ impl VirtioNetDevice {
             .unwrap_or_else(|e| e.into_inner()) = handler;
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn enqueue_send_submission(
         &self,
         submission: TxSubmission<'_>,

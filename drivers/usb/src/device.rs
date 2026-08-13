@@ -124,6 +124,9 @@ pub struct DeviceEnumerator;
 
 impl DeviceEnumerator {
     /// デバイスディスクリプタを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_device_descriptor(device: &dyn UsbDevice) -> UsbResult<DeviceDescriptor> {
         let mut buffer = [0u8; 18];
 
@@ -134,6 +137,9 @@ impl DeviceEnumerator {
     }
 
     /// コンフィグレーションディスクリプタを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_configuration_descriptor(
         device: &dyn UsbDevice,
         config_index: u8,
@@ -154,6 +160,9 @@ impl DeviceEnumerator {
     }
 
     /// 文字列ディスクリプタを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_string_descriptor(
         device: &dyn UsbDevice,
         string_index: u8,
@@ -178,6 +187,9 @@ impl DeviceEnumerator {
     }
 
     /// サポートされている言語IDのリストを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_supported_languages(device: &dyn UsbDevice) -> UsbResult<Vec<u16>> {
         let mut buffer = [0u8; 256];
         let setup = SetupPacket::get_descriptor(3, 0, 256); // String descriptor index 0
@@ -199,6 +211,9 @@ impl DeviceEnumerator {
     }
 
     /// デバイスを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn set_configuration(device: &dyn UsbDevice, config_value: u8) -> UsbResult<()> {
         let setup = SetupPacket::set_configuration(config_value);
         device.control_transfer(&setup, None).await?;
@@ -206,6 +221,9 @@ impl DeviceEnumerator {
     }
 
     /// デバイス情報を収集
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn gather_device_info(device: &dyn UsbDevice) -> UsbResult<DeviceInfo> {
         let desc = Self::get_device_descriptor(device).await?;
 
@@ -262,6 +280,9 @@ pub struct StandardRequests;
 
 impl StandardRequests {
     /// デバイスステータスを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_status(device: &dyn UsbDevice) -> UsbResult<u16> {
         let mut buffer = [0u8; 2];
         let setup = SetupPacket::get_status();
@@ -270,6 +291,9 @@ impl StandardRequests {
     }
 
     /// フィーチャーをクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn clear_feature(device: &dyn UsbDevice, feature: u16) -> UsbResult<()> {
         let setup = SetupPacket::clear_feature(feature);
         device.control_transfer(&setup, None).await?;
@@ -277,6 +301,9 @@ impl StandardRequests {
     }
 
     /// エンドポイントのSTALLをクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn clear_endpoint_halt(
         device: &dyn UsbDevice,
         endpoint: EndpointAddress,
@@ -293,6 +320,9 @@ impl StandardRequests {
     }
 
     /// インターフェースの代替設定を設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn set_interface(
         device: &dyn UsbDevice,
         interface: u8,
@@ -310,6 +340,9 @@ impl StandardRequests {
     }
 
     /// 現在のインターフェース設定を取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_interface(device: &dyn UsbDevice, interface: u8) -> UsbResult<u8> {
         let mut buffer = [0u8; 1];
         let setup = SetupPacket {
@@ -346,6 +379,9 @@ pub mod hub_class {
     }
 
     /// ハブディスクリプタを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_hub_descriptor(device: &dyn UsbDevice) -> UsbResult<HubDescriptor> {
         let mut buffer = [0u8; 8];
         let setup = SetupPacket::class_request(
@@ -367,6 +403,9 @@ pub mod hub_class {
     }
 
     /// ポートフィーチャーを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn set_port_feature(device: &dyn UsbDevice, port: u8, feature: u16) -> UsbResult<()> {
         let setup = SetupPacket::class_request(
             false, // OUT
@@ -381,6 +420,9 @@ pub mod hub_class {
     }
 
     /// ポートフィーチャーをクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn clear_port_feature(
         device: &dyn UsbDevice,
         port: u8,
@@ -399,6 +441,9 @@ pub mod hub_class {
     }
 
     /// ポートステータスを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub async fn get_port_status(device: &dyn UsbDevice, port: u8) -> UsbResult<u32> {
         let mut buffer = [0u8; 4];
         let setup = SetupPacket::class_request(

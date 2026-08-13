@@ -411,6 +411,9 @@ impl XhciPortManager {
     // ========================================================================
 
     /// ポートをリセット
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn reset_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
@@ -440,6 +443,9 @@ impl XhciPortManager {
     }
 
     /// ポートリセット完了を待機（ポーリング版）
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub fn wait_reset_complete(&self, port: u8, timeout_ms: u32) -> Result<PortSpeed, PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
@@ -495,6 +501,9 @@ impl XhciPortManager {
     }
 
     /// ポートをサスペンド
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn suspend_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);
@@ -516,6 +525,9 @@ impl XhciPortManager {
     }
 
     /// ポートをレジューム
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn resume_port(&self, port: u8) -> Result<(), PortError> {
         if port < 1 || port > self.num_ports {
             return Err(PortError::InvalidPort);

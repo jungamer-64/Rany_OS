@@ -103,6 +103,9 @@ impl core::fmt::Display for BlockError {
 
 /// Runtime hooks required by a portable VirtIO block implementation.
 pub trait BlkRuntime: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn alloc_dma(&self, size: usize) -> Result<DmaSlice<CpuOwned>, BlockError>;
     fn schedule_wake(&self, queue_index: u16);
     fn log(&self, level: log::Level, msg: core::fmt::Arguments);
@@ -302,6 +305,9 @@ impl VirtioBlkDevice {
             .unwrap_or_else(|e| e.into_inner()) = handler;
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), BlockError> {
         self.core
             .init(self.transport.as_ref())
@@ -386,6 +392,9 @@ impl VirtioBlkDevice {
         self.queues.len()
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn submit_read(
         &self,
         sector: u64,
@@ -465,6 +474,9 @@ impl VirtioBlkDevice {
             .ok_or(BlockError::NotReady)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit_write(
         &self,
         sector: u64,
@@ -508,6 +520,9 @@ impl VirtioBlkDevice {
         Ok(desc_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit_flush(&self, queue_idx: usize) -> Result<u16, BlockError> {
         if !self.is_ready() {
             return Err(BlockError::NotReady);

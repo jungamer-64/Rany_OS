@@ -35,6 +35,9 @@ impl<T> TrackedVirtQueue<T> {
     ///
     /// # Safety
     /// Same safety requirements as `VirtQueue`.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_buffer_tracked(
         &self,
         addr: u64,

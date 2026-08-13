@@ -489,6 +489,11 @@ impl TrbRing {
     /// # Security Note
     /// ヒープ割り当てによるフォールバックは、IOMMU環境下で物理アドレスを
     /// 取得できないため、セキュリティ上の理由から削除されました。
+    ///
+    /// # Panics
+    ///
+    /// Panics if the TRB byte size overflows or device-scoped DMA allocation
+    /// fails.
     pub fn new(size: usize, pci_locator: PackedPciLocation) -> Self {
         let byte_size = size * core::mem::size_of::<Trb>();
         match kernel_api::service::kernel::instance().alloc_dma_for_device(byte_size, pci_locator) {

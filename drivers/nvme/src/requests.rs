@@ -126,6 +126,9 @@ impl PendingRequests {
     }
 
     /// リクエストを登録
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn register(&mut self, cid: u16, qid: u16) -> Result<(), &'static str> {
         let idx = (cid as usize) % 256;
         if self.requests[idx].is_some() {

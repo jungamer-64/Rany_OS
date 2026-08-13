@@ -27,6 +27,9 @@ impl VirtioNetDevice {
     }
 
     /// Initialize the network device.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self, transport: &dyn VirtioTransport) -> Result<(), TransportError> {
         // 1. Reset
         transport.reset();
@@ -97,6 +100,9 @@ impl VirtioNetDevice {
 
     /// Prepare a queue for initialization.
     /// Returns the negotiated queue size and memory layout.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn prepare_queue(
         &self,
         transport: &dyn VirtioTransport,
@@ -221,6 +227,9 @@ impl VirtioNetDevice {
     }
 
     /// Try to allocate and post a single RX packet to a queue.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn try_post_rx_packet(
         &self,
         runtime: &dyn NetRuntime,

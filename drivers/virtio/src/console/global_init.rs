@@ -72,6 +72,9 @@ pub unsafe fn init_virtio_console_at_index(index: u8, mmio_base: u64) -> Result<
 }
 
 /// Initialize the global VirtIO console device with an IOMMU device ID at a specific index.
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_console_for_device_at_index(
     index: u8,
     mmio_base: u64,
@@ -97,6 +100,9 @@ pub unsafe fn init_virtio_console_for_device_at_index(
 }
 
 /// Initialize the global VirtIO console device from an existing VirtioTransport (MMIO or PCI) at a specific index.
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_console_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,

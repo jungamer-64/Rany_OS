@@ -61,6 +61,9 @@ pub type GpuResult<T> = Result<T, GpuError>;
 
 /// Runtime hooks required by a portable VirtIO GPU implementation.
 pub trait GpuRuntime: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn alloc_dma(&self, size: usize) -> Result<DmaSlice<CpuOwned>, GpuError>;
     fn log(&self, level: log::Level, msg: core::fmt::Arguments);
 }
@@ -233,6 +236,9 @@ impl VirtioGpu {
     }
 
     /// Caller must ensure the transport mapping is valid.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn init(&mut self) -> GpuResult<()> {
         self.transport.reset();
         self.transport.add_status(status::VIRTIO_STATUS_ACKNOWLEDGE);
@@ -515,6 +521,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn get_display_info(&self) -> GpuResult<defs::DisplayInfo> {
         if let Some(info) = self.display_info.read().clone() {
             return Ok(info);
@@ -526,6 +535,9 @@ impl VirtioGpu {
             .ok_or(GpuError::DeviceError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_resource_2d(
         &self,
         width: u32,
@@ -544,6 +556,9 @@ impl VirtioGpu {
         Ok(resource_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn unref_resource(&self, resource_id: u32) -> GpuResult<()> {
         let req = ResourceUnref {
             hdr: GpuCtrlHdr::new(GpuCmd::ResourceUnref),
@@ -554,6 +569,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn attach_backing(&self, resource_id: u32, device_addr: u64, size: u32) -> GpuResult<()> {
         let req = ResourceAttachBacking {
             hdr: GpuCtrlHdr::new(GpuCmd::ResourceAttachBacking),
@@ -592,6 +610,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn transfer_to_host_2d(&self, resource_id: u32, rect: &Rect, offset: u64) -> GpuResult<()> {
         let req = TransferToHost2D {
             hdr: GpuCtrlHdr::new(GpuCmd::TransferToHost2D),
@@ -604,6 +625,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn set_scanout(&self, scanout_id: u32, resource_id: u32, rect: &Rect) -> GpuResult<()> {
         let req = SetScanout {
             hdr: GpuCtrlHdr::new(GpuCmd::SetScanout),
@@ -616,6 +640,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub fn flush(&self, resource_id: u32, rect: &Rect) -> GpuResult<()> {
         let req = ResourceFlush {
             hdr: GpuCtrlHdr::new(GpuCmd::ResourceFlush),
@@ -627,6 +654,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_framebuffer(&self, width: u32, height: u32) -> GpuResult<u32> {
         let format = PixelFormat::B8G8R8A8Unorm;
         let resource_id = self.create_resource_2d(width, height, format)?;
@@ -638,6 +668,9 @@ impl VirtioGpu {
         Ok(resource_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn present(&self, resource_id: u32) -> GpuResult<()> {
         let fbs = self.framebuffers.read();
         let fb = fbs
@@ -652,6 +685,9 @@ impl VirtioGpu {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn update_cursor(
         &self,
         resource_id: u32,
@@ -677,6 +713,9 @@ impl VirtioGpu {
         self.send_cursor_command(&req)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot complete the operation.
     pub fn move_cursor(&self, scanout_id: u32, x: u32, y: u32) -> GpuResult<()> {
         let req = UpdateCursor {
             hdr: GpuCtrlHdr::new(GpuCmd::MoveCursor),
@@ -723,6 +762,9 @@ impl GraphicsManager {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub fn init(
         &self,
         transport: Box<dyn VirtioTransport>,
@@ -743,6 +785,9 @@ impl GraphicsManager {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot complete the operation.
     pub fn clear(&self, color: u32) -> GpuResult<()> {
         let mut gpu_guard = self.gpu.lock();
         let gpu = gpu_guard.as_mut().ok_or(GpuError::DeviceNotFound)?;
@@ -759,6 +804,9 @@ impl GraphicsManager {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot complete the operation.
     pub fn present(&self) -> GpuResult<()> {
         let gpu_guard = self.gpu.lock();
         let gpu = gpu_guard.as_ref().ok_or(GpuError::DeviceNotFound)?;
@@ -773,6 +821,9 @@ pub fn graphics_manager() -> &'static GraphicsManager {
     GRAPHICS_MANAGER.call_once(GraphicsManager::new)
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
 pub fn init(transport: Box<dyn VirtioTransport>, pci_locator: PackedPciLocation) -> GpuResult<()> {
     graphics_manager().init(transport, pci_locator)
 }

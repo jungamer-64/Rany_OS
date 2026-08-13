@@ -21,6 +21,9 @@ static NVME_DRIVER: PoisonLock<Option<NvmePollingDriver>> = PoisonLock::new(None
 ///
 /// `device_id` にIOMMU対応のパック済みデバイスIDを指定すると、
 /// DMAバッファがデバイス固有のIOMMUドメインにマッピングされる。
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn init(bar0: u64, num_cores: u32, device_id: PackedPciLocation) -> Result<(), &'static str> {
     let mut driver = NvmePollingDriver::new(bar0, num_cores, device_id);
     driver.init()?;

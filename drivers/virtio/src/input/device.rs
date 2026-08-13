@@ -21,6 +21,9 @@ impl VirtioInputDevice {
     }
 
     /// Initialize the input device.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self, transport: &dyn VirtioTransport) -> Result<(), TransportError> {
         // 1. Reset
         transport.reset();

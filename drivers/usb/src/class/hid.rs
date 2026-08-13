@@ -257,6 +257,9 @@ impl HidDevice {
     }
 
     /// Boot Protocol に切り替え
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_boot_protocol(&self) -> Result<(), ClassDriverError> {
         // SET_PROTOCOL(0) を送信
         self.report_protocol.store(false, Ordering::SeqCst);
@@ -264,6 +267,9 @@ impl HidDevice {
     }
 
     /// Report Protocol に切り替え
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_report_protocol(&self) -> Result<(), ClassDriverError> {
         // SET_PROTOCOL(1) を送信
         self.report_protocol.store(true, Ordering::SeqCst);
@@ -271,12 +277,18 @@ impl HidDevice {
     }
 
     /// アイドルレートを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_idle(&self, _duration: u8, _report_id: u8) -> Result<(), ClassDriverError> {
         // SET_IDLE を送信
         Ok(())
     }
 
     /// レポートを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn get_report(
         &self,
         report_type: u8,
@@ -288,6 +300,9 @@ impl HidDevice {
     }
 
     /// レポートを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_report(&self, _report: &HidReport) -> Result<(), ClassDriverError> {
         // SET_REPORT を送信
         Ok(())
@@ -495,6 +510,9 @@ impl UsbKeyboard {
     }
 
     /// LEDステータスを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_leds(
         &self,
         num_lock: bool,

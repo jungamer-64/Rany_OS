@@ -183,6 +183,9 @@ pub trait VirtioTransport: Send + Sync + core::fmt::Debug {
     }
 
     /// MSI-Xを設定（PCI transport用）
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     fn configure_msix(&self, _queue_index: u16, _vector: u16) -> TransportResult<()> {
         Err(TransportError::UnsupportedVersion)
     }
@@ -245,6 +248,9 @@ impl VirtioMmioTransport {
     ///
     /// # Safety
     /// - `base` は有効なMMIOアドレスを指す必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn new(base: usize) -> TransportResult<Self> {
         let magic = Self::read32_raw(base, mmio_regs::MAGIC_VALUE);
         if magic != Self::MAGIC {
@@ -474,6 +480,9 @@ impl VirtioPciTransport {
     ///
     /// # Safety
     /// - 各BARアドレスは有効なMMIOアドレスを指す必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn new(
         common_cfg_addr: usize,
         notify_addr: usize,
@@ -721,6 +730,9 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
     }
 
     /// 標準的な初期化シーケンスを実行
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn initialize(&self, required_features: u64) -> TransportResult<u64> {
         // 1. デバイスをリセット
         self.transport.reset();
@@ -754,6 +766,9 @@ impl<'a, T: VirtioTransport> VirtioDeviceInit<'a, T> {
     }
 
     /// DRIVER_OK を設定してデバイスを使用可能にする
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn finish_init(&self) -> TransportResult<()> {
         let mut current_status = self.transport.get_status();
         current_status |= status::VIRTIO_STATUS_DRIVER_OK;

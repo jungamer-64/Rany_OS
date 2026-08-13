@@ -216,6 +216,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn read(
         &self,
         nsid: u32,
@@ -259,6 +262,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn read_sgl(
         &self,
         nsid: u32,
@@ -296,6 +302,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn read_immediate(
         &self,
         nsid: u32,
@@ -327,6 +336,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn write(
         &self,
         nsid: u32,
@@ -370,6 +382,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn write_sgl(
         &self,
         nsid: u32,
@@ -407,6 +422,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub unsafe fn flush(&self, nsid: u32) -> Result<u16, &'static str> {
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
@@ -436,6 +454,9 @@ impl PerCoreNvmeQueue {
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
     /// prp1は有効な物理アドレスである必要がある。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn dataset_management(
         &self,
         nsid: u32,
@@ -469,6 +490,9 @@ impl PerCoreNvmeQueue {
     ///
     /// # Safety
     /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn write_immediate(
         &self,
         nsid: u32,

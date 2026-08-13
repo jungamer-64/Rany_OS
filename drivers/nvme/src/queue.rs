@@ -48,6 +48,9 @@ impl SubmissionQueue {
     }
 
     /// コマンドを送信（ドアベル書き込みあり）
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
         let cid = self.submit_no_doorbell(cmd)?;
         self.ring_doorbell();
@@ -58,6 +61,9 @@ impl SubmissionQueue {
     ///
     /// 複数のコマンドをキューに投入してから一度だけドアベルを
     /// 書き込むことで、MMIOオーバーヘッドを削減。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit_no_doorbell(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
         let tail = self.tail.load(Ordering::Acquire);
         let next_tail = (tail + 1) % self.depth;
@@ -221,6 +227,9 @@ impl QueuePair {
     }
 
     /// コマンドを送信
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
         let cid = self.submit_no_doorbell(cmd)?;
         self.sq.ring_doorbell();
@@ -228,6 +237,9 @@ impl QueuePair {
     }
 
     /// コマンドを送信（ドアベル書き込みなし）
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit_no_doorbell(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
         let max_outstanding = self.sq.depth().saturating_sub(1) as u32;
         let outstanding = self.outstanding.load(Ordering::Acquire);

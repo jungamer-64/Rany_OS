@@ -157,6 +157,9 @@ pub(crate) struct TransferCompletionResult {
 
 impl XhciController {
     /// 新しいxHCIコントローラを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(base_addr: u64, pci_locator: PackedPciLocation) -> UsbResult<Self> {
         // Capability Registers を読み取り
         let caplength = hal::mmio::mmio_read_u8((base_addr + CAPLENGTH as u64) as usize);
@@ -258,6 +261,9 @@ impl XhciController {
     }
 
     /// コントローラを初期化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> UsbResult<()> {
         // コントローラを停止
         self.stop()?;
@@ -383,6 +389,9 @@ impl XhciController {
     }
 
     /// ポートをリセット
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn reset_port(&self, port: PortNumber) -> UsbResult<UsbSpeed> {
         let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
 
@@ -407,6 +416,9 @@ impl XhciController {
     }
 
     /// ポートをサスペンド
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn suspend_port(&self, port: PortNumber) -> UsbResult<()> {
         let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
         let portsc = self.read_op(offset);
@@ -425,6 +437,9 @@ impl XhciController {
     }
 
     /// ポートをレジューム
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn resume_port(&self, port: PortNumber) -> UsbResult<()> {
         let offset = PORTSC_BASE + port.as_usize() * PORT_REGISTER_SIZE;
         let portsc = self.read_op(offset);
@@ -450,12 +465,18 @@ impl XhciController {
     }
 
     /// デバイスをサスペンド
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn suspend_device(&self, slot_id: SlotId) -> UsbResult<()> {
         let port = self.get_root_port_for_slot(slot_id).await?;
         self.suspend_port(port).await
     }
 
     /// デバイスをレジューム
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn resume_device(&self, slot_id: SlotId) -> UsbResult<()> {
         let port = self.get_root_port_for_slot(slot_id).await?;
         self.resume_port(port).await
@@ -482,6 +503,9 @@ impl XhciController {
     }
 
     /// スロットを有効化
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn enable_slot(&self) -> UsbResult<SlotId> {
         let trb = Trb::enable_slot(self.command_ring.lock().cycle_bit());
         let trb_addr = self.send_command(trb)?;

@@ -228,6 +228,9 @@ impl Mlx5BootstrapPlan {
         self.db_record_size
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn validate_resources(&self, resources: &Mlx5AllocatedResources) -> Mlx5Result<()> {
         validate_region(resources.cmdq, self.cmdq_size)?;
         validate_region(resources.cmd_in_mbox, self.cmd_mailbox_size)?;

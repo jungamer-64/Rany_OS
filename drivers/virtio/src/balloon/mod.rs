@@ -112,6 +112,9 @@ impl VirtioBalloonDevice {
     }
 
     /// Initialize the device
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), BalloonError> {
         self.core
             .init(self.transport.as_ref())
@@ -237,11 +240,17 @@ impl VirtioBalloonDevice {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn inflate_pages(&self, pfns: &[u32]) -> Result<(), BalloonError> {
         let queue = self.inflate_queue.as_ref().ok_or(BalloonError::NotReady)?;
         self.submit_pfns(queue, pfns)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn deflate_pages(&self, pfns: &[u32]) -> Result<(), BalloonError> {
         let queue = self.deflate_queue.as_ref().ok_or(BalloonError::NotReady)?;
         self.submit_pfns(queue, pfns)
@@ -371,6 +380,9 @@ pub unsafe fn init_virtio_balloon_at_index(index: u8, mmio_base: u64) -> Result<
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_balloon_for_device_at_index(
     index: u8,
     mmio_base: u64,
@@ -394,6 +406,9 @@ pub unsafe fn init_virtio_balloon_for_device_at_index(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_balloon_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,

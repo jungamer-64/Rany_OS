@@ -147,6 +147,9 @@ impl Mlx5Device {
     }
 
     /// 単一または少数 segment の packet を送信
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn transmit_segments(
         &mut self,
         sq_index: usize,
@@ -171,6 +174,9 @@ impl Mlx5Device {
     }
 
     /// パケットを送信
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn transmit(
         &mut self,
         sq_index: usize,
@@ -192,6 +198,9 @@ impl Mlx5Device {
     }
 
     /// 受信バッファを投入
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn post_receive(
         &mut self,
         rq_index: usize,
@@ -341,6 +350,9 @@ impl Mlx5Device {
             .and_then(|rq| rq.complete_rx(wqe_counter, l3_ok, l4_ok))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_vhca_state(&mut self, function_id: u16) -> Mlx5Result<VhcaStateContext> {
         let is_vf = self.is_vf();
         let in_mbox_phys = self.cmd_in_mbox_device;
@@ -367,6 +379,9 @@ impl Mlx5Device {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn activate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
         if self.is_vf() {
             return Err(Mlx5Error::NotSupported);
@@ -392,6 +407,9 @@ impl Mlx5Device {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn deactivate_vfs(&mut self, num_vfs: u16) -> Mlx5Result<()> {
         if self.is_vf() {
             return Err(Mlx5Error::NotSupported);
@@ -407,6 +425,9 @@ impl Mlx5Device {
         Self::deactivate_vfs_with_transport(cmd, in_mbox, in_mbox_phys, out_mbox_phys, num_vfs)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_port_state(&mut self, port_index: usize) -> Mlx5Result<PortLinkState> {
         self.ports
             .get(port_index)
@@ -439,6 +460,9 @@ impl Mlx5Device {
     }
 
     /// EQエントリを処理 (MSI-X 割り込みハンドラ等から呼び出し)
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub unsafe fn process_events(&mut self) -> Mlx5Result<u32> {
         enum DeferredEvent {
             RefreshPort(usize),
@@ -491,6 +515,9 @@ impl Mlx5Device {
         Ok(processed)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_port_mac(&mut self, port_index: usize) -> Mlx5Result<MacAddr> {
         self.ports
             .get(port_index)
@@ -568,6 +595,9 @@ impl Mlx5Device {
     }
 
     /// VPort カウンタをクエリして統計情報を取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_vport_stats(
         &mut self,
         port_index: usize,

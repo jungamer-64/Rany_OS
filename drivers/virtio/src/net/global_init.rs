@@ -201,6 +201,9 @@ pub fn virtio_net_driver_adapter(index: u8) -> Arc<dyn NetDevicePort> {
     Arc::new(VirtioNetDriverAdapter::new(index))
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_net_for_device_at_index(
     index: u8,
     base_addr: usize,
@@ -214,6 +217,9 @@ pub unsafe fn init_virtio_net_for_device_at_index(
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_net_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,

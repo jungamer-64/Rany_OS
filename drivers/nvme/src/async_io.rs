@@ -172,6 +172,9 @@ impl<'a> Future for WriteFuture<'a> {
 ///
 /// # Safety
 /// 現在のコアIDが正しいことを呼び出し側が保証。
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required device state cannot be read.
 pub async unsafe fn async_read(
     driver: &NvmePollingDriver,
     core_id: u32,
@@ -194,6 +197,9 @@ pub async unsafe fn async_read(
 ///
 /// # Safety
 /// 現在のコアIDが正しいことを呼び出し側が保証。
+/// # Errors
+///
+/// Returns an error if the request is invalid or the device cannot accept the operation.
 pub async unsafe fn async_write(
     driver: &NvmePollingDriver,
     core_id: u32,

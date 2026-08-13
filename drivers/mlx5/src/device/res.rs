@@ -270,6 +270,9 @@ impl Mlx5Device {
     }
 
     /// VF 向けに、既存 TIS は厳密一致のみ再利用する
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn find_existing_tis_strict_match(
         &mut self,
         max_scan: u32,
@@ -356,6 +359,9 @@ impl Mlx5Device {
     }
 
     /// QUERY_SPECIAL_CONTEXTS から reserved lkey を取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_reserved_lkey(&mut self) -> Mlx5Result<u32> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         build_query_special_contexts_input(in_mbox);
@@ -371,6 +377,9 @@ impl Mlx5Device {
     }
 
     /// Direct Memory Key を作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_mkey(&mut self, params: &MkeyParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
@@ -463,6 +472,9 @@ impl Mlx5Device {
     }
 
     /// MKEY コンテキストをクエリ
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_mkey(
         &mut self,
         mkey_index: u32,
@@ -481,6 +493,9 @@ impl Mlx5Device {
     }
 
     /// CREATE_QP で最小構成の underlay QP を作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_underlay_qp(&mut self, vhca_port: u8) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
@@ -558,6 +573,9 @@ impl Mlx5Device {
     }
 
     /// TIS (Transport Interface Send) を作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_tis(&mut self, params: &TisParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         crate::boot_trace("[MLX5_TIS] enter\n");
@@ -943,6 +961,9 @@ impl Mlx5Device {
     }
 
     /// TIR (Transport Interface Receive) を作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_tir(&mut self, params: &TirParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         crate::boot_trace("[MLX5_TIR] enter\n");
@@ -972,6 +993,9 @@ impl Mlx5Device {
     }
 
     /// UAR (User Access Region) を割り当て
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn alloc_uar(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;

@@ -126,12 +126,21 @@ pub trait UsbClassDriver: Send + Sync {
     fn probe(&self, class: u8, subclass: u8, protocol: u8) -> bool;
 
     /// デバイスを初期化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn init(&mut self, slot_id: u8) -> Result<(), ClassDriverError>;
 
     /// デバイスを解放
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn release(&mut self) -> Result<(), ClassDriverError>;
 
     /// ポーリング処理（非割り込みモード用）
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     fn poll(&mut self) -> Result<(), ClassDriverError>;
 
     /// イベント通知を受信

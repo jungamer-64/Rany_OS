@@ -67,6 +67,9 @@ impl core::fmt::Display for InputError {
 }
 
 pub trait InputRuntime: Send + Sync {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn alloc_dma(&self, size: usize) -> Result<DmaSlice<CpuOwned>, InputError>;
     fn schedule_wake(&self, queue_index: u16);
     fn log(&self, level: log::Level, msg: core::fmt::Arguments);
@@ -152,6 +155,9 @@ impl VirtioInputDevice {
     }
 
     /// Initialize the device
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), InputError> {
         self.core
             .init(self.transport.as_ref())
@@ -450,6 +456,9 @@ pub unsafe fn init_virtio_input_at_index(index: u8, mmio_base: u64) -> Result<()
     Ok(())
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub unsafe fn init_virtio_input_for_device_at_index(
     index: u8,
     mmio_base: u64,

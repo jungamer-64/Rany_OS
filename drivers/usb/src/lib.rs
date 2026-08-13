@@ -463,6 +463,9 @@ pub trait UsbClassDriver: Send + Sync {
     fn supports(&self, device: &dyn UsbDevice) -> bool;
 
     /// デバイスを初期化
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     fn probe(&self, device: Arc<dyn UsbDevice>) -> UsbResult<()>;
 
     /// デバイスを切断
@@ -525,6 +528,9 @@ impl UsbManager {
     }
 
     /// デバイスを登録
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn register_device(&self, device: Arc<dyn UsbDevice>) -> UsbResult<()> {
         // マッチするクラスドライバを探す
         let drivers = self.class_drivers.read();

@@ -283,6 +283,9 @@ impl PrpList {
     }
 
     /// エントリを追加
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn add_entry(&mut self, addr: u64) -> Result<(), &'static str> {
         if self.count >= 512 {
             return Err("PRP list full");

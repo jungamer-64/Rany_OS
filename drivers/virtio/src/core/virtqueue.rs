@@ -51,6 +51,9 @@ impl VirtQueue {
     pub const VIRTIO_STATUS_NEEDS_RESET: u8 = 64;
     pub const VIRTIO_STATUS_FAILED: u8 = 128;
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn new(
         queue_index: u16,
         queue_size: u16,

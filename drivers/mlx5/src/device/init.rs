@@ -320,6 +320,9 @@ impl Mlx5Device {
     }
 
     /// 起動待機 (ConnectX-4 Lx 等)
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub unsafe fn wait_firmware(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Waiting for firmware to be ready...");
         match crate::fw::wait_fw_ready(self.bar0_base, 30000) {
@@ -350,6 +353,9 @@ impl Mlx5Device {
     }
 
     /// コマンドインタフェースの初期化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn init_command_interface(
         &mut self,
         cmdq_virt: u64,
@@ -438,6 +444,9 @@ impl Mlx5Device {
     }
 
     /// HCA の有効化と ISSI セットアップ
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn enable_hca_and_setup(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
@@ -510,6 +519,9 @@ impl Mlx5Device {
     }
 
     /// HCA の初期化 (INIT_HCA)
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let caps = self.hca_caps.as_ref();
@@ -710,6 +722,9 @@ impl Mlx5Device {
         self.provide_pages(func_id, selected)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn bootstrap(
         &mut self,
         config: &Mlx5BootstrapConfig,
@@ -1764,6 +1779,9 @@ impl Mlx5Device {
     }
 
     /// ソフトウェアリセットのトリガー
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn trigger_sw_reset(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Triggering software reset via SW_RESET register...");
         crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::SW_RESET, 1);
@@ -1789,6 +1807,9 @@ impl Mlx5Device {
     }
 
     /// デバイスのリカバリ試行
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn recover(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Attempting device recovery...");
 

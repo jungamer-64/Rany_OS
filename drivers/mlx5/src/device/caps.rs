@@ -150,6 +150,9 @@ impl Mlx5Device {
     }
 
     /// HCA Capabilities の照会と設定
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_and_set_hca_cap(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Querying HCA Capabilities...");
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
@@ -300,6 +303,9 @@ impl Mlx5Device {
     }
 
     /// ETHERNET_OFFLOADS ケーパビリティの照会
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_hca_cap_ethernet(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -345,6 +351,9 @@ impl Mlx5Device {
     }
 
     /// HCA Capabilities (MAX) の照会
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_hca_cap_max(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Querying HCA Capabilities (MAX)...");
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, true)?;
@@ -366,6 +375,9 @@ impl Mlx5Device {
     }
 
     /// ドライバの起動時に必要な全 HCA Capability を一気に取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_all_caps(&mut self) -> Mlx5Result<()> {
         self.query_and_set_hca_cap()?;
         if let Err(err) = self.query_hca_cap_max() {
@@ -380,6 +392,9 @@ impl Mlx5Device {
     }
 
     /// HCA Capabilities を設定 (SET_HCA_CAP)
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_general(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Querying current HCA Capabilities for modification...");
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
@@ -421,6 +436,9 @@ impl Mlx5Device {
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, &caps_payload)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_roce(&mut self) -> Mlx5Result<()> {
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
         let general_max = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, true)?;
@@ -459,6 +477,9 @@ impl Mlx5Device {
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ROCE, &caps_payload)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_atomic(&mut self) -> Mlx5Result<()> {
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
         let general_view = crate::structs::caps::HcaCapLayout::new(&general);
@@ -490,6 +511,9 @@ impl Mlx5Device {
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ATOMIC, &caps_payload)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_odp(&mut self) -> Mlx5Result<()> {
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
         let general_view = crate::structs::caps::HcaCapLayout::new(&general);
@@ -585,6 +609,9 @@ impl Mlx5Device {
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_ODP, &caps_payload)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_port_selection(&mut self) -> Mlx5Result<()> {
         let general = self.query_hca_cap_page(crate::cmd::hca::MLX5_CAP_GENERAL, false)?;
         let general_view = crate::structs::caps::HcaCapLayout::new(&general);
@@ -621,6 +648,9 @@ impl Mlx5Device {
         self.set_hca_cap_page(crate::cmd::hca::MLX5_CAP_PORT_SELECTION, &caps_payload)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_hca_cap_general_2(&mut self) -> Mlx5Result<()> {
         let caps = self.hca_caps.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         if !caps.hca_cap_2 || !caps.sw_vhca_id_valid_cap || self.sw_vhca_id == 0 {
@@ -645,6 +675,9 @@ impl Mlx5Device {
     }
 
     /// FLOW_TABLE ケーパビリティの照会
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_hca_cap_flow_table(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);

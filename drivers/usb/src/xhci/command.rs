@@ -213,6 +213,9 @@ impl CommandExecutor {
     }
 
     /// コマンドを送信
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot complete the operation.
     pub fn send_command<'a>(
         &'a self,
         ring: &mut TrbRing,
@@ -331,6 +334,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// スロットを有効化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub async fn enable_slot(&self) -> UsbResult<SlotId> {
         let cycle = self.command_ring.lock().cycle_bit();
         let trb = CommandBuilder::enable_slot(cycle);
@@ -344,6 +350,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// スロットを無効化
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn disable_slot(&self, slot_id: SlotId) -> UsbResult<()> {
         let cycle = self.command_ring.lock().cycle_bit();
         let trb = CommandBuilder::disable_slot(slot_id, cycle);
@@ -357,6 +366,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// デバイスにアドレスを割り当て
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub async fn address_device(
         &self,
         input_context_ptr: u64,
@@ -376,6 +388,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// エンドポイントを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn configure_endpoint(
         &self,
         input_context_ptr: u64,
@@ -395,6 +410,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// エンドポイントをリセット
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn reset_endpoint(&self, slot_id: SlotId, endpoint_id: u8) -> UsbResult<()> {
         let cycle = self.command_ring.lock().cycle_bit();
         let trb = CommandBuilder::reset_endpoint(slot_id, endpoint_id, false, cycle);
@@ -408,6 +426,9 @@ impl<'a> CommandApi<'a> {
     }
 
     /// デバイスをリセット
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn reset_device(&self, slot_id: SlotId) -> UsbResult<()> {
         let cycle = self.command_ring.lock().cycle_bit();
         let trb = CommandBuilder::reset_device(slot_id, cycle);

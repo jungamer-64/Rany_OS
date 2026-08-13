@@ -114,6 +114,9 @@ impl XhciInitContext {
     }
 
     /// コントローラを停止
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn stop_controller(&self) -> UsbResult<()> {
         let mut cmd = self.read_op(USBCMD);
         cmd &= !USBCMD_RUN;
@@ -133,6 +136,9 @@ impl XhciInitContext {
     }
 
     /// コントローラをリセット
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn reset_controller(&self) -> UsbResult<()> {
         let mut cmd = self.read_op(USBCMD);
         cmd |= USBCMD_HCRST;
@@ -187,6 +193,9 @@ impl XhciInitContext {
     }
 
     /// コントローラを開始
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn start_controller(&self) -> UsbResult<()> {
         let mut cmd = self.read_op(USBCMD);
         cmd |= USBCMD_RUN | USBCMD_INTE;
@@ -205,6 +214,9 @@ impl XhciInitContext {
     }
 
     /// 完全な初期化シーケンス
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn full_initialization(
         &self,
         max_slots: u8,

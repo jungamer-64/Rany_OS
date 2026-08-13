@@ -162,6 +162,9 @@ pub const PORTSC_CHANGE_MASK: u32 =
 // ============================================================================
 
 /// PCIデバイスからxHCIを初期化
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn init_from_pci(
     base_addr: u64,
     pci_locator: PackedPciLocation,

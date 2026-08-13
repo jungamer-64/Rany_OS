@@ -17,6 +17,9 @@ pub trait UsbBlockDevice: Send + Sync {
     fn total_blocks(&self) -> u64;
 
     /// ブロックを読み取り
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     fn read_blocks(
         &self,
         start_lba: u64,
@@ -25,6 +28,9 @@ pub trait UsbBlockDevice: Send + Sync {
     ) -> Result<(), ClassDriverError>;
 
     /// ブロックを書き込み
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     fn write_blocks(
         &self,
         start_lba: u64,
@@ -33,5 +39,8 @@ pub trait UsbBlockDevice: Send + Sync {
     ) -> Result<(), ClassDriverError>;
 
     /// キャッシュをフラッシュ
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     fn flush(&self) -> Result<(), ClassDriverError>;
 }

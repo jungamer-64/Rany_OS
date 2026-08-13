@@ -68,6 +68,9 @@ impl XhciController {
     /// デバイスコンテキストを割り当て
     ///
     /// DCBAAエントリを設定し、デバイスコンテキストを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub fn allocate_device_context(&self, slot_id: SlotId) -> UsbResult<()> {
         if !slot_id.is_valid() || slot_id.as_usize() > self.max_slots as usize {
             return Err(UsbError::InvalidDevice);
@@ -108,6 +111,9 @@ impl XhciController {
     /// 転送リングを割り当て
     ///
     /// 指定されたスロット/エンドポイントに転送リングを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub fn allocate_transfer_ring(&self, slot_id: SlotId, dci: u8) -> UsbResult<u64> {
         if !slot_id.is_valid() || dci == 0 || dci > 31 {
             return Err(UsbError::InvalidDevice);
@@ -129,6 +135,9 @@ impl XhciController {
     /// デバイスにアドレスを割り当て
     ///
     /// Address Device コマンドを発行してデバイスにアドレスを設定
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub async fn address_device(
         &self,
         slot_id: SlotId,
@@ -192,6 +201,9 @@ impl XhciController {
     /// 3. デバイスにアドレスを割り当て
     ///
     /// 成功時はスロットIDを返す
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub async fn enumerate_device(&self, port: PortNumber) -> UsbResult<SlotId> {
         // ポートの状態を確認
         let status = self.port_status(port);
@@ -221,6 +233,9 @@ impl XhciController {
     /// エンドポイントを設定
     ///
     /// Configure Endpoint コマンドを発行してエンドポイントを有効化
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub async fn configure_endpoints(
         &self,
         slot_id: SlotId,

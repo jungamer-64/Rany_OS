@@ -177,6 +177,9 @@ impl CmdEntry {
 /// コマンド転送抽象
 pub trait CommandTransport {
     /// Safety: メールボックスポインタが有効なDMAメモリであること
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     unsafe fn execute(
         &mut self,
         opcode: CmdOpcode,
@@ -188,12 +191,18 @@ pub trait CommandTransport {
 
     /// Snapshot the logical command input before a UID retry loop starts.
     /// Default no-op for transports that don't rewrite input buffers.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     unsafe fn snapshot_input(&mut self, _in_len: u32) -> Mlx5Result<()> {
         Ok(())
     }
 
     /// Restore the logical command input before each UID retry attempt.
     /// Default no-op for transports that don't rewrite input buffers.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     unsafe fn restore_input(&mut self) -> Mlx5Result<()> {
         Ok(())
     }
@@ -297,6 +306,9 @@ impl CmdQueueTransport {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(
         bar0_base: u64,
         cmdq_phys: u64,

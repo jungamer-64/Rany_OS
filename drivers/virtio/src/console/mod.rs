@@ -138,6 +138,9 @@ impl VirtioConsoleDevice {
     }
 
     /// Initialize the device following the VirtIO initialization sequence.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), ConsoleError> {
         // Step 1-6: Perform common VirtIO initialization using shared core
         self.core
@@ -270,6 +273,9 @@ impl VirtioConsoleDevice {
     ///
     /// Allocates a DMA buffer, copies the data, submits to the TX queue,
     /// and notifies the device.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn write_bytes(&self, data: &[u8]) -> Result<(), ConsoleError> {
         if !self.is_ready() {
             return Err(ConsoleError::NotReady);
