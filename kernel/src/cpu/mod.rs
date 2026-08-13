@@ -1,4 +1,3 @@
-mod boot;
 mod identity;
 mod ipi;
 mod local;

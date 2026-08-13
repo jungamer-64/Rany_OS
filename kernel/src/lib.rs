@@ -563,7 +563,6 @@ pub mod shell;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-mod smp;
 #[cfg(any(
     not(any(test, feature = "bench")),
     feature = "full_mm_tests",
@@ -642,16 +641,6 @@ pub mod mm;
 #[cfg(not(feature = "qemu-test-export"))]
 #[path = "host_support/per_cpu.rs"]
 pub mod per_cpu;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-#[path = "host_support/smp.rs"]
-pub mod smp;
 #[cfg(any(
     all(
         test,
@@ -755,8 +744,7 @@ pub mod nvme {
     pub use crate::task::io::nvme::*;
 }
 
-// Re-export task-scoped shims at crate root so modules that reference
-// `crate::smp` and `crate::interrupts` compile in lightweight test builds.
+// Re-export the lightweight interrupt surface used by host task tests.
 #[cfg(any(
     all(
         test,
