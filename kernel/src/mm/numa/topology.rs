@@ -269,27 +269,6 @@ pub fn apply_current_cpu_locality() {
     let Some(local_node) = node_for_cpu(cpu_id) else {
         return;
     };
-    let node_count = with_cpu_locality(|topology| topology.node_cpus.len());
-    let mut sorted_nodes = [NumaNodeId::new(0); MAX_NUMA_NODES];
-    let mut count = 0usize;
-
-    sorted_nodes[count] = local_node;
-    count += 1;
-
-    for node_idx in 0..node_count {
-        let node = NumaNodeId::new(node_idx as u8);
-        if node == local_node || count >= sorted_nodes.len() {
-            continue;
-        }
-        sorted_nodes[count] = node;
-        count += 1;
-    }
-
-    let _ = crate::per_cpu::with_current_cold_mut(|cold| {
-        cold.setup_numa_zonelist(local_node, &sorted_nodes, count);
-        cold.pt_magazine.set_preferred_node(local_node.as_u8());
-    });
-
     set_cpu_to_node(cpu_id, local_node.as_u8());
 }
 

@@ -16,7 +16,6 @@ use crate::net::runtime::context::default_runtime_context;
 use crate::net::runtime::context::{self, NetRuntimeContext, NetRuntimeGeneration, NetRuntimeId};
 use crate::net::runtime::manager::{self, NetIfId};
 use crate::net::runtime::stack::{self, NetworkConfig};
-use crate::per_cpu::in_interrupt_context;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::sync::lockfree::MpmcRingBuffer;
 use crate::sync::{PoisonLock, PoisonRwLock};
@@ -482,6 +481,12 @@ pub struct NetEventSink {
     waker: AtomicWaker,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventWakeContext {
+    Task,
+    Interrupt,
+}
+
 impl NetEventSink {
     pub const CAPACITY: usize = NET_DEVICE_EVENT_QUEUE_CAPACITY;
 
@@ -492,13 +497,12 @@ impl NetEventSink {
         }
     }
 
-    pub fn push(&self, event: NetDriverEvent) -> bool {
+    fn push(&self, event: NetDriverEvent, context: EventWakeContext) -> bool {
         match self.queue.push(event) {
             Ok(()) => {
-                if in_interrupt_context() {
-                    self.waker.wake_from_isr();
-                } else {
-                    self.waker.wake();
+                match context {
+                    EventWakeContext::Task => self.waker.wake(),
+                    EventWakeContext::Interrupt => self.waker.wake_from_isr(),
                 }
                 true
             }
@@ -863,10 +867,12 @@ fn runtime_schedule_event(
     event: NetDriverEvent,
 ) -> Result<(), &'static str> {
     let runtime = runtime_context_from_cookie(cookie)?.handle();
-    let queued = if in_interrupt_context() {
-        enqueue_event_from_isr_in(runtime, port_id, event)
-    } else {
-        enqueue_event_in(runtime, port_id, event)
+    let queued = match crate::cpu::CurrentCpu::acquire() {
+        Some(current_cpu) if current_cpu.in_interrupt() => {
+            enqueue_event_from_isr_in(runtime, port_id, event)
+        }
+        Some(_) => enqueue_event_in(runtime, port_id, event),
+        None => return Err("CPU-local execution context unavailable"),
     };
     if queued {
         Ok(())
@@ -1041,11 +1047,11 @@ impl NetDeviceHandle {
     }
 
     pub fn enqueue_event(&self, event: NetDriverEvent) -> bool {
-        self.event_sink.push(event)
+        self.event_sink.push(event, EventWakeContext::Task)
     }
 
     pub fn enqueue_event_from_isr(&self, event: NetDriverEvent) -> bool {
-        self.event_sink.push(event)
+        self.event_sink.push(event, EventWakeContext::Interrupt)
     }
 
     fn rebind(&self, binding: NetDeviceBinding) -> Result<(), &'static str> {
@@ -1090,7 +1096,10 @@ fn pop_driver_event_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<NetD
     with_port_handle_in(runtime, if_id, |handle| handle.event_sink.pop()).flatten()
 }
 
-fn start_workers_for_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+fn start_workers_for_port_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Result<(), &'static str> {
     let start = with_port_handle_in(runtime, if_id, |handle| {
         (
             !handle.tx_worker_started.swap(true, Ordering::AcqRel),
@@ -1098,14 +1107,20 @@ fn start_workers_for_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
         )
     });
     let Some((start_tx, start_event)) = start else {
-        return;
+        return Err("device handle missing before worker startup");
     };
     if start_tx {
-        crate::task::spawn_task(crate::task::Task::new(tx_worker(runtime, if_id)));
+        crate::task::spawn(tx_worker(runtime, if_id), crate::task::TaskPlacement::Any)
+            .map_err(|_| "failed to spawn network TX worker")?;
     }
     if start_event {
-        crate::task::spawn_task(crate::task::Task::new(event_worker(runtime, if_id)));
+        crate::task::spawn(
+            event_worker(runtime, if_id),
+            crate::task::TaskPlacement::Any,
+        )
+        .map_err(|_| "failed to spawn network event worker")?;
     }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
@@ -1530,7 +1545,10 @@ pub fn register_port_in(
     manager::set_interface_link_state_in(runtime, if_id, initial_link_state)
         .map_err(|_| "failed to publish initial network link state")?;
 
-    start_workers_for_port_in(runtime, if_id);
+    if let Err(error) = start_workers_for_port_in(runtime, if_id) {
+        rollback_port_registration_in(runtime, if_id, info.port_id);
+        return Err(error);
+    }
 
     if let Err(err) =
         crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
@@ -2085,7 +2103,10 @@ mod tests {
         let sink = NetEventSink::new();
         assert_eq!(sink.capacity(), NetEventSink::CAPACITY);
         assert_eq!(sink.len(), 0);
-        assert!(sink.push(NetDriverEvent::QueueWake { queue_index: 7 }));
+        assert!(sink.push(
+            NetDriverEvent::QueueWake { queue_index: 7 },
+            EventWakeContext::Task,
+        ));
         assert_eq!(sink.len(), 1);
         assert_eq!(
             sink.pop(),
@@ -2098,24 +2119,16 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn schedule_event_from_interrupt_context_enqueues_successfully() {
-        unsafe {
-            crate::per_cpu::init_per_cpu(1);
-        }
-
         let (_, driver) = fake_driver();
         let if_id =
             register_test_port(89, driver, PrimaryPortPolicy::Never).expect("register port");
 
-        crate::per_cpu::enter_interrupt();
         let result = with_port_handle_in(default_runtime(), if_id, |handle| {
-            handle
-                .runtime
-                .schedule_event(NetDriverEvent::QueueWake { queue_index: 3 })
+            handle.enqueue_event_from_isr(NetDriverEvent::QueueWake { queue_index: 3 })
         })
         .expect("handle");
-        crate::per_cpu::exit_interrupt();
 
-        assert_eq!(result, Ok(()));
+        assert!(result);
         assert_eq!(
             with_port_handle_in(default_runtime(), if_id, |handle| handle.event_sink.pop())
                 .flatten(),

@@ -143,6 +143,8 @@ pub enum UnmapErrorKind {
     /// which is not allowed in interrupt handlers. Use `unmap()` with
     /// `async_unmap_default` feature or `unmap_async()` instead.
     CalledFromIsr,
+    /// Blocking safety cannot be established without validated CPU-local state.
+    CpuLocalUnavailable,
 }
 
 /// Unmap operation error (returns ownership on failure)
@@ -490,7 +492,9 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
                     self.iova,
                     self.size
                 );
-            } else if !crate::per_cpu::in_interrupt_context() {
+            } else if crate::cpu::CurrentCpu::acquire()
+                .is_some_and(|current_cpu| !current_cpu.in_interrupt())
+            {
                 // Queue full, but we're in a thread context - try SYNC unmap as fallback.
                 log::warn!(
                     "[IOMMU][SECURITY] Zombie queue full - performing synchronous unmap fallback for IOVA=0x{:x}",
@@ -500,9 +504,9 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
                 // Perform synchronous unmap by taking ownership
                 let _ = self.unmap_sync_internal_in_drop();
             } else {
-                // Queue full AND in ISR - leak to preserve safety
+                // Without a validated non-ISR CPU context, blocking is unsafe.
                 log::error!(
-                    "[IOMMU][CRITICAL] Zombie queue full in ISR! Leaking DMA handle to preserve safety (IOVA=0x{:x}, size={})",
+                    "[IOMMU][CRITICAL] Zombie queue full without a safe task context; leaking DMA handle to preserve safety (IOVA=0x{:x}, size={})",
                     self.iova,
                     self.size
                 );
@@ -595,8 +599,10 @@ impl<T: ?Sized + 'static> DmaHandle<T> {
     /// blocking. Use `unmap()` with `async_unmap_default` feature or
     /// `unmap_async()` for ISR-safe unmapping.
     pub fn unmap_sync(self) -> Result<RRef<T>, UnmapError<T>> {
-        // Check if we're in interrupt context - blocking waits are forbidden
-        if crate::per_cpu::in_interrupt_context() {
+        let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() else {
+            return Err(UnmapError::new(self, UnmapErrorKind::CpuLocalUnavailable));
+        };
+        if current_cpu.in_interrupt() {
             log::warn!(
                 "[DmaHandle] unmap_sync() called from ISR context at IOVA {:#x} - \
                  blocking operations forbidden in ISR, returning error",

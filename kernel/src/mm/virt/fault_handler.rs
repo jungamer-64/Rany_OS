@@ -6,7 +6,6 @@ use crate::mm::numa::autonuma::{
     MIGRATION_ENGINE, MigrationRequest, NumaFaultAction, get_page_numa_stats, handle_numa_fault,
 };
 use crate::mm::types::FrameIndex;
-use crate::per_cpu::PerCpuHot;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FaultResult {
@@ -48,17 +47,18 @@ pub fn fault_stats() -> FaultStatSnapshot {
 pub fn handle_page_fault(_error_code: u64, _current_rsp: VirtAddr) -> FaultResult {
     FAULT_STATS.total.fetch_add(1, Ordering::Relaxed);
 
-    let recursive = crate::per_cpu::with_current_hot(PerCpuHot::enter_page_fault).unwrap_or(false);
-    if recursive {
+    let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() else {
         return FaultResult::KernelBug;
-    }
+    };
+    let Ok(_fault_guard) = current_cpu.try_enter_page_fault() else {
+        return FaultResult::KernelBug;
+    };
 
     let result = match Cr2::read() {
         Ok(addr) => handle_fault_addr(VirtAddr::new(addr.as_u64())),
         Err(_) => FaultResult::KernelBug,
     };
 
-    let _ = crate::per_cpu::with_current_hot(PerCpuHot::exit_page_fault);
     match result {
         FaultResult::Resolved => {
             FAULT_STATS.resolved.fetch_add(1, Ordering::Relaxed);
@@ -91,8 +91,9 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
 
         let frame = FrameIndex::from_phys_addr(pte.phys_addr().as_u64());
         let stats = get_page_numa_stats(frame);
-        let node_id = crate::per_cpu::with_current_cold(|cold| cold.get_local_numa_node().as_u8())
-            .unwrap_or(0);
+        let Some(node_id) = crate::mm::numa::topology::current_numa_node_fast() else {
+            return Some(FaultResult::Resolved);
+        };
         let action = handle_numa_fault(&stats, node_id, crate::time::current_time_ns());
         if let NumaFaultAction::Migrate {
             from_node: _,
