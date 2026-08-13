@@ -23,6 +23,7 @@ use crate::net::{l2::arp::ArpWaiterRegistry, l3::ndp::NdpWaiterRegistry};
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
@@ -96,10 +97,11 @@ impl Eq for NetRuntimeHandle {}
 pub struct NetRuntimeContext {
     id: NetRuntimeId,
     generation: NetRuntimeGeneration,
-    pub(crate) stacks: [PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS],
+    pub(crate) stacks:
+        Box<[PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS]>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) interface_topology_revision: AtomicU64,
-    pub(crate) command_queues: [RuntimeCommandQueue; crate::per_cpu::MAX_CPUS],
+    pub(crate) command_queues: Box<[RuntimeCommandQueue; crate::per_cpu::MAX_CPUS]>,
     pub(crate) command_replies: CommandReplyRegistry,
     pub(crate) command_task_running: AtomicBool,
     pub(crate) command_task_ready_waiters: WakerQueue,
@@ -129,13 +131,15 @@ pub struct NetRuntimeContext {
 
 impl NetRuntimeContext {
     fn new(id: NetRuntimeId, generation: NetRuntimeGeneration) -> Self {
+        let stacks = allocate_per_cpu_array(|| PoisonLock::new(None));
+        let command_queues = allocate_per_cpu_array(RuntimeCommandQueue::new);
         Self {
             id,
             generation,
-            stacks: [const { PoisonLock::new(None) }; crate::per_cpu::MAX_CPUS],
+            stacks,
             manager: PoisonLock::new(None),
             interface_topology_revision: AtomicU64::new(0),
-            command_queues: [const { RuntimeCommandQueue::new() }; crate::per_cpu::MAX_CPUS],
+            command_queues,
             command_replies: CommandReplyRegistry::new(),
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
@@ -174,6 +178,17 @@ impl NetRuntimeContext {
 
     pub const fn handle(&'static self) -> NetRuntimeHandle {
         NetRuntimeHandle::new(self)
+    }
+}
+
+fn allocate_per_cpu_array<T>(mut create: impl FnMut() -> T) -> Box<[T; crate::per_cpu::MAX_CPUS]> {
+    let slots = (0..crate::per_cpu::MAX_CPUS)
+        .map(|_| create())
+        .collect::<Vec<_>>()
+        .into_boxed_slice();
+    match slots.try_into() {
+        Ok(slots) => slots,
+        Err(_) => unreachable!("per-core array length changed during allocation"),
     }
 }
 
