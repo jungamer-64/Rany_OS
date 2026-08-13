@@ -65,7 +65,6 @@ impl LockFreeWakeQueue {
         }
     }
 
-    #[cfg(test)]
     /// Dequeue a task ID (single consumer)
     fn pop(&self) -> Option<TaskId> {
         self.queue.pop()
@@ -130,9 +129,7 @@ pub fn create_waker(task_id: TaskId) -> Waker {
     Waker::from(Arc::new(TaskWaker { task_id }))
 }
 
-#[cfg(test)]
-/// Wake queueからタスクIDを取り出す（ロックフリー）
-pub fn pop_woken_task() -> Option<TaskId> {
+pub(crate) fn pop_woken_task() -> Option<TaskId> {
     WAKE_QUEUE.pop()
 }
 

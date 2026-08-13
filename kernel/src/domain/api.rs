@@ -191,3 +191,11 @@ pub fn print_domain_list() {
         Err(_) => log::error!("[DOMAIN] Registry poisoned (print_domain_list) - skipping"),
     }
 }
+
+pub fn current_domain() -> DomainId {
+    crate::task::current_subject().domain
+}
+
+pub fn is_kernel_domain() -> bool {
+    current_domain() == DomainId::KERNEL
+}

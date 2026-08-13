@@ -29,11 +29,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 
 pub mod environ;
+mod execution;
 pub mod fuel;
 pub mod interrupt_waker;
 pub mod io;
+mod scheduler;
 pub mod timeout;
 mod waker;
+mod yielding;
 pub use crate::drivers::time::{
     PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
     pending_waker_stats, process_pending_timer_wakers, sleep_ms,
@@ -42,13 +45,23 @@ pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
     kernel_env, set_pwd,
 };
+pub(crate) use execution::enter_domain;
+pub use execution::{
+    ExecutionContext, ExecutionContextUnavailable, Subject, current_execution_context,
+    current_subject, current_task_id,
+};
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
     handle_timer_interrupt_waker, interrupt_waker_registry, register_interrupt_waker,
     wait_for_interrupt, wake_from_interrupt,
 };
-    // 新規追加: タイマー割り込み統合用
+pub use scheduler::{
+    SpawnError, TaskPlacement, initialize_scheduler, run_forever, spawn, spawn_task,
+};
+pub(crate) use scheduler::{prepare_cpu_offline, publish_cpu_online};
+// 新規追加: タイマー割り込み統合用
 pub use waker::create_waker;
+pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};
 
 // Timeout/block_on utilities re-exported from timeout.rs
 pub use timeout::{TimeoutFuture, TimeoutResult, block_on, spawn_with_timeout, with_timeout};
@@ -81,40 +94,36 @@ impl Default for TaskId {
 pub struct Task {
     pub id: TaskId,
     pub domain_id: crate::domain::DomainId,
-    pub future: Pin<Box<dyn Future<Output = ()> + Send>>,
+    pub placement: TaskPlacement,
+    future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl Task {
-    pub fn new(future: impl Future<Output = ()> + Send + 'static) -> Task {
+    pub fn new(
+        future: impl Future<Output = ()> + Send + 'static,
+        placement: TaskPlacement,
+    ) -> Task {
         Task {
             id: TaskId::new(),
             domain_id: crate::domain::current_domain(),
+            placement,
             future: Box::pin(future),
         }
     }
 
-    pub fn poll(&mut self, context: &mut Context) -> Poll<()> {
-        self.future.as_mut().poll(context)
+    pub fn in_domain(
+        future: impl Future<Output = ()> + Send + 'static,
+        placement: TaskPlacement,
+        domain_id: crate::domain::DomainId,
+    ) -> Task {
+        Task {
+            id: TaskId::new(),
+            domain_id,
+            placement,
+            future: Box::pin(future),
+        }
     }
 }
 
 /// Waker実装用の構造体
 mod raw;
-
-/// Spawn a detached task onto the primary phase-2 executor path.
-///
-/// This is the canonical runtime spawn helper for normal boot and background
-/// workers. Experimental per-core executors are intentionally excluded here.
-pub fn spawn_detached(future: impl Future<Output = ()> + Send + 'static) -> TaskId {
-    spawn_detached_in_domain(future, crate::domain::current_domain())
-}
-
-/// Spawn a detached task while explicitly preserving the owning domain.
-pub fn spawn_detached_in_domain(
-    future: impl Future<Output = ()> + Send + 'static,
-    domain_id: crate::domain::DomainId,
-) -> TaskId {
-    let mut task = Task::new(future);
-    task.domain_id = domain_id;
-    spawn_task(task)
-}
