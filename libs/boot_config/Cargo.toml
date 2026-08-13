@@ -10,4 +10,7 @@ keywords.workspace = true
 categories.workspace = true
 description = "Bootloader config parser shared by exoloader and host tests"
 
+[lints]
+workspace = true
+
 [dependencies]

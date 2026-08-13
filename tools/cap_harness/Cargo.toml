@@ -10,6 +10,9 @@ keywords = ["os", "kernel", "rust"]
 categories = ["os"]
 description = "Capability Test Harness for RanyOS"
 
+[lints]
+workspace = true
+
 [dependencies]
 
 [features]

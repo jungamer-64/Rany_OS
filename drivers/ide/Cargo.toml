@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "IDE Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [dependencies]
 spin = "0.10"
 hal = { path = "../../hal" }

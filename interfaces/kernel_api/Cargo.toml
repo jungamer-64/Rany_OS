@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Kernel API Interface - Shared types and traits for ExoRust OS"
 
+[lints]
+workspace = true
+
 [lib]
 name = "kernel_api"
 path = "src/lib.rs"

@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "ACPI Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [features]
 default = []
 

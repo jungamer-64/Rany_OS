@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Boot protocol types for RanyOS"
 
+[lints]
+workspace = true
+
 [dependencies]
 ap_trampoline = { path = "../ap_trampoline" }
 boot_config = { path = "../boot_config", default-features = false }

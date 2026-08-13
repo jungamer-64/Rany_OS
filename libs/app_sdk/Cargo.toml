@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Application SDK for ExoRust OS - the 'std' library for SPL applications"
 
+[lints]
+workspace = true
+
 [lib]
 name = "app_sdk"
 path = "src/lib.rs"

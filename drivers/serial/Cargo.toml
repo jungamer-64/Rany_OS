@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Serial Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [dependencies]
 spin = "0.10"
 exorust_sync = { path = "../../libs/sync" }

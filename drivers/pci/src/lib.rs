@@ -26,7 +26,6 @@
 #![allow(clippy::map_unwrap_or)] // Kept for readability
 #![allow(clippy::collapsible_if)] // Kept for readability
 #![allow(clippy::elidable_lifetime_names)] // Explicit lifetimes for clarity
-#![allow(clippy::missing_errors_doc)] // PCIe ext functions have many Result returns
 #![allow(clippy::missing_safety_doc)] // DMA and MMIO functions
 #![allow(clippy::needless_range_loop)] // Index loops for buffer processing
 #![allow(clippy::struct_excessive_bools)] // PCIe capability structs reflect hardware

@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Security Primitives for RanyOS"
 
+[lints]
+workspace = true
+
 [dependencies]
 spin = "0.10"
 log = "0.4"

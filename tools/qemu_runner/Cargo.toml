@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "QEMU full-boot build/runner for 2-layer test orchestration"
 
+[lints]
+workspace = true
+
 [lib]
 name = "qemu_runner"
 path = "src/lib.rs"

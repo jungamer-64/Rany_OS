@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "AHCI Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [lib]
 path = "src/lib.rs"
 # Note: `standalone` enables the kernel-backed cell runtime plus the exported

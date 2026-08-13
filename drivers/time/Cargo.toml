@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Time Management Driver (Cell) for RanyOS - high-level timer services"
 
+[lints]
+workspace = true
+
 [dependencies]
 spin = "0.10"
 exorust_sync = { path = "../../libs/sync" }

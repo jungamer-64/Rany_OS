@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "NVIDIA/Mellanox ConnectX Family (mlx5) Ethernet Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [lib]
 path = "src/lib.rs"
 crate-type = ["rlib"]

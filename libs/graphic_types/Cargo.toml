@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 authors.workspace = true
 
+[lints]
+workspace = true
+
 [lib]
 name = "graphic_types"
 path = "src/lib.rs"

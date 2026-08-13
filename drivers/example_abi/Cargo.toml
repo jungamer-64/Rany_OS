@@ -10,6 +10,9 @@ keywords.workspace = true
 categories.workspace = true
 description = "Example ABI Driver for RanyOS"
 
+[lints]
+workspace = true
+
 [lib]
 name = "example_abi"
 path = "src/lib.rs"

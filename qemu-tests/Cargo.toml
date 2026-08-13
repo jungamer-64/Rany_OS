@@ -10,5 +10,8 @@ keywords.workspace = true
 categories.workspace = true
 description = "Host-side full-boot QEMU orchestrator"
 
+[lints]
+workspace = true
+
 [dependencies]
 qemu_runner = { path = "../tools/qemu_runner" }

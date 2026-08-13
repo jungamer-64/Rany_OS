@@ -9,6 +9,9 @@ readme = "../README.md"
 categories = ["os", "bootloader"]
 keywords = ["uefi", "boot"]
 
+[lints]
+workspace = true
+
 [dependencies]
 acpi_driver = { path = "../drivers/acpi" }
 ap_trampoline = { path = "../libs/ap_trampoline" }

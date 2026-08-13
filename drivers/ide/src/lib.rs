@@ -10,7 +10,6 @@
 #![allow(clippy::ptr_as_ptr)] // Pointer casts for buffer operations
 #![allow(clippy::bool_to_int_with_if)] // Drive index from DriveSel comparison
 #![allow(clippy::missing_safety_doc)] // Unsafe fn docs
-#![allow(clippy::missing_errors_doc)] // Error documentation for driver functions
 
 extern crate alloc;
 

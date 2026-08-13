@@ -74,6 +74,10 @@ readme = "README.md"
 keywords = ["os", "kernel", "rust"]
 categories = ["os"]
 
+[workspace.lints.clippy]
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
 # ============================================================================
 # ブートイメージ設定（Workspace全体）
 # ============================================================================
