@@ -519,12 +519,6 @@ pub mod panic_handler;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub mod per_cpu;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod platform;
 #[cfg(any(
     not(any(test, feature = "bench")),
@@ -636,11 +630,6 @@ pub mod ipc;
 #[cfg(not(feature = "qemu-test-export"))]
 #[path = "host_support/mm.rs"]
 pub mod mm;
-#[cfg(not(feature = "full_mm_tests"))]
-#[cfg(any(test, feature = "bench"))]
-#[cfg(not(feature = "qemu-test-export"))]
-#[path = "host_support/per_cpu.rs"]
-pub mod per_cpu;
 #[cfg(any(
     all(
         test,
