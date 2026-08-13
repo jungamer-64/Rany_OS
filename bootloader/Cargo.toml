@@ -13,7 +13,6 @@ keywords = ["uefi", "boot"]
 workspace = true
 
 [dependencies]
-acpi_driver = { path = "../drivers/acpi" }
 ap_trampoline = { path = "../libs/ap_trampoline" }
 uefi = { version = "0.36", features = ["alloc", "global_allocator", "panic_handler", "logger"] }
 uefi-raw = "0.13"

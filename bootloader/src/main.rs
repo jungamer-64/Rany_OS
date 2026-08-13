@@ -16,6 +16,7 @@ use uefi::{CStr16, Identify, boot};
 // Ed25519 signature verification for secure boot
 use ed25519_compact::{PublicKey, Signature};
 
+mod ap_trampoline_handoff;
 mod boot_log;
 mod config;
 #[path = "main/elf_relocations.rs"]

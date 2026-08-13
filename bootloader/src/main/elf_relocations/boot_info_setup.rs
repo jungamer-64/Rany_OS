@@ -5,13 +5,7 @@
 
 #![allow(clippy::wildcard_imports)]
 use super::*;
-use acpi_driver::info::AcpiInfo;
-use acpi_driver::parser::AcpiParser;
-use acpi_driver::tables::signature;
-use boot_proto::{
-    BootInterruptOverrideRecord, BootIoApicRecord, BootLocalApicRecord, BootPcieEcamRecord,
-    UsableMemoryRegion, acpi_local_apic_flags, acpi_snapshot_flags,
-};
+use boot_proto::UsableMemoryRegion;
 
 const MIN_USABLE_PHYS_ADDR: u64 = 0x0100_0000;
 const BOOTSTRAP_HEAP_BASE: u64 = MIN_USABLE_PHYS_ADDR;
@@ -136,46 +130,6 @@ pub(crate) fn populate_smbios_info(boot_info: &mut boot_proto::ExoBootInfo) {
     smbios::log_smbios_info(&smbios_info);
 }
 
-fn populate_acpi_handoff(boot_info: &mut boot_proto::ExoBootInfo) {
-    boot_info.acpi_snapshot = boot_proto::AcpiBootSnapshot::default();
-    boot_info.numa_info = boot_proto::NumaInfo::default();
-
-    if boot_info.rsdp_addr == 0 {
-        return;
-    }
-
-    acpi_driver::set_hhdm_offset(0);
-    let mut parser = AcpiParser::new(boot_info.rsdp_addr);
-    let parsed_info = match unsafe { parser.parse() } {
-        Ok(info) => info.clone(),
-        Err(err) => {
-            info!("ACPI snapshot unavailable: {:?}", err);
-            return;
-        }
-    };
-
-    boot_info.numa_info = build_numa_info(&parsed_info);
-    if boot_info.numa_info.node_count > 0 {
-        info!("NUMA: {} node(s) detected", boot_info.numa_info.node_count);
-    }
-
-    let dmar_addr = parser
-        .find_table(&signature::DMAR)
-        .map_or(0, |addr| addr as u64);
-    let ivrs_addr = parser.find_table(b"IVRS").map_or(0, |addr| addr as u64);
-    boot_info.acpi_snapshot = snapshot_or_default(&parsed_info, dmar_addr, ivrs_addr);
-
-    if boot_info.acpi_snapshot.is_valid() {
-        info!(
-            "ACPI snapshot ready: lapics={} ioapics={} overrides={} ecam={}",
-            boot_info.acpi_snapshot.local_apic_count,
-            boot_info.acpi_snapshot.io_apic_count,
-            boot_info.acpi_snapshot.interrupt_override_count,
-            boot_info.acpi_snapshot.pcie_ecam_count
-        );
-    }
-}
-
 /// 全ハードウェア検出結果を boot_info に統合設定
 pub(crate) fn populate_boot_info_detections(
     boot_info: &mut boot_proto::ExoBootInfo,
@@ -183,14 +137,13 @@ pub(crate) fn populate_boot_info_detections(
 ) {
     // RSDP
     boot_info.rsdp_addr = find_rsdp_address();
-    populate_acpi_handoff(boot_info);
+    boot_info.ap_trampoline = crate::ap_trampoline_handoff::install();
 
     // AP (Application Processor) ブートリソース
-    boot_info.ap_boot = ap_boot::prepare_ap_boot(0);
-    if boot_info.ap_boot.ap_count > 0 {
+    if boot_info.ap_trampoline.is_present() {
         info!(
-            "AP Boot: {} AP(s) prepared, trampoline at 0x{:x}",
-            boot_info.ap_boot.ap_count, boot_info.ap_boot.trampoline_addr
+            "AP trampoline installed at 0x{:x}",
+            boot_info.ap_trampoline.physical_address
         );
     }
 
@@ -521,173 +474,6 @@ pub(crate) fn build_memory_map_from_uefi(
             .expect("boot memory map span invalid");
 }
 
-fn snapshot_or_default(
-    info: &AcpiInfo,
-    dmar_addr: u64,
-    ivrs_addr: u64,
-) -> boot_proto::AcpiBootSnapshot {
-    match build_acpi_snapshot(info, dmar_addr, ivrs_addr) {
-        Ok(snapshot) => snapshot,
-        Err(err) => {
-            info!("ACPI snapshot disabled: {}", err);
-            boot_proto::AcpiBootSnapshot::default()
-        }
-    }
-}
-
-fn build_acpi_snapshot(
-    info: &AcpiInfo,
-    dmar_addr: u64,
-    ivrs_addr: u64,
-) -> Result<boot_proto::AcpiBootSnapshot, &'static str> {
-    if info.local_apics.len() > boot_proto::MAX_ACPI_LOCAL_APICS
-        || info.io_apics.len() > boot_proto::MAX_ACPI_IO_APICS
-        || info.interrupt_overrides.len() > boot_proto::MAX_ACPI_INTERRUPT_OVERRIDES
-        || info.pcie_ecam.len() > boot_proto::MAX_ACPI_PCIE_ECAM
-    {
-        return Err("ACPI snapshot capacity exceeded");
-    }
-
-    let mut snapshot = boot_proto::AcpiBootSnapshot {
-        flags: acpi_snapshot_flags::VALID,
-        revision: info.revision,
-        _reserved: [0; 3],
-        local_apic_address: info.local_apic_address,
-        dmar_addr,
-        ivrs_addr,
-        local_apic_count: info.local_apics.len() as u16,
-        io_apic_count: info.io_apics.len() as u16,
-        interrupt_override_count: info.interrupt_overrides.len() as u16,
-        pcie_ecam_count: info.pcie_ecam.len() as u16,
-        ..boot_proto::AcpiBootSnapshot::default()
-    };
-
-    if info.has_legacy_pics {
-        snapshot.flags |= acpi_snapshot_flags::HAS_LEGACY_PICS;
-    }
-
-    for (dst, src) in snapshot.local_apics.iter_mut().zip(info.local_apics.iter()) {
-        let mut flags = 0u8;
-        if src.enabled {
-            flags |= acpi_local_apic_flags::ENABLED;
-        }
-        if src.online_capable {
-            flags |= acpi_local_apic_flags::ONLINE_CAPABLE;
-        }
-        *dst = BootLocalApicRecord {
-            processor_id: src.processor_id,
-            apic_id: src.apic_id,
-            flags,
-            _reserved: 0,
-        };
-    }
-
-    for (dst, src) in snapshot.io_apics.iter_mut().zip(info.io_apics.iter()) {
-        *dst = BootIoApicRecord {
-            address: src.address,
-            gsi_base: src.gsi_base,
-            id: src.id,
-            _reserved: [0; 3],
-        };
-    }
-
-    for (dst, src) in snapshot
-        .interrupt_overrides
-        .iter_mut()
-        .zip(info.interrupt_overrides.iter())
-    {
-        *dst = BootInterruptOverrideRecord {
-            gsi: src.gsi,
-            bus: src.bus,
-            source: src.source,
-            polarity: src.polarity,
-            trigger_mode: src.trigger_mode,
-        };
-    }
-
-    for (dst, src) in snapshot.pcie_ecam.iter_mut().zip(info.pcie_ecam.iter()) {
-        *dst = BootPcieEcamRecord {
-            base_address: src.base_address,
-            segment: src.segment,
-            start_bus: src.start_bus,
-            end_bus: src.end_bus,
-        };
-    }
-
-    Ok(snapshot)
-}
-
-fn build_numa_info(info: &AcpiInfo) -> boot_proto::NumaInfo {
-    let mut numa = boot_proto::NumaInfo::default();
-
-    for &(base, length, proximity_domain) in &info.numa_memory {
-        if length == 0 {
-            continue;
-        }
-        if let Some(node) = get_or_create_numa_node(&mut numa, proximity_domain) {
-            add_memory_range(node, base, length);
-        }
-    }
-
-    for &(apic_id, proximity_domain) in &info.cpu_proximity {
-        if let Some(node) = get_or_create_numa_node(&mut numa, proximity_domain) {
-            add_apic_id(node, apic_id);
-        }
-    }
-
-    numa
-}
-
-fn get_or_create_numa_node(
-    numa: &mut boot_proto::NumaInfo,
-    proximity_domain: u32,
-) -> Option<&mut boot_proto::NumaNodeInfo> {
-    let node_count = usize::from(numa.node_count).min(numa.nodes.len());
-    for idx in 0..node_count {
-        if numa.nodes[idx].proximity_domain == proximity_domain {
-            return Some(&mut numa.nodes[idx]);
-        }
-    }
-
-    if node_count >= boot_proto::MAX_NUMA_NODES {
-        return None;
-    }
-
-    let idx = node_count;
-    numa.node_count += 1;
-    numa.nodes[idx] = boot_proto::NumaNodeInfo {
-        proximity_domain,
-        ..boot_proto::NumaNodeInfo::default()
-    };
-    Some(&mut numa.nodes[idx])
-}
-
-fn add_memory_range(node: &mut boot_proto::NumaNodeInfo, base: u64, length: u64) {
-    let count = usize::from(node.memory_range_count).min(node.memory_ranges.len());
-    if count >= node.memory_ranges.len() {
-        return;
-    }
-
-    node.memory_ranges[count] = boot_proto::NumaMemoryRange { base, length };
-    node.memory_range_count += 1;
-}
-
-fn add_apic_id(node: &mut boot_proto::NumaNodeInfo, apic_id: u8) {
-    let mask = if apic_id < 64 {
-        &mut node.cpu_apic_mask_low
-    } else if apic_id < 128 {
-        &mut node.cpu_apic_mask_high
-    } else {
-        return;
-    };
-    let bit = if apic_id < 64 { apic_id } else { apic_id - 64 };
-    let bit_mask = 1u64 << bit;
-    if (*mask & bit_mask) == 0 {
-        *mask |= bit_mask;
-        node.cpu_count = node.cpu_count.saturating_add(1);
-    }
-}
-
 fn is_usable_efi_memory_type(memory_type: u32) -> bool {
     matches!(
         memory_type,
@@ -925,10 +711,14 @@ fn build_usable_memory_regions(
             addr_to_phys(boot_info.framebuffer.address, hhdm_start),
             boot_info.framebuffer.size() as u64,
         )?;
-        let (trampoline_start, trampoline_size) = boot_info
-            .ap_boot
-            .trampoline_range()
-            .map_or((None, 0), |(start, size)| (Some(start), size));
+        let (trampoline_start, trampoline_size) = if boot_info.ap_trampoline.is_present() {
+            (
+                Some(boot_info.ap_trampoline.physical_address),
+                u64::from(boot_info.ap_trampoline.byte_len),
+            )
+        } else {
+            (None, 0)
+        };
         current_count = apply_reserved_range(
             &mut current,
             &mut next,
@@ -936,18 +726,6 @@ fn build_usable_memory_regions(
             trampoline_start,
             trampoline_size,
         )?;
-        let (stack_start, stack_size) = boot_info
-            .ap_boot
-            .stack_region_range()
-            .map_or((None, 0), |(start, size)| (Some(start), size));
-        current_count = apply_reserved_range(
-            &mut current,
-            &mut next,
-            current_count,
-            stack_start,
-            stack_size,
-        )?;
-
         let runtime_count = usize::try_from(boot_info.uefi_runtime.runtime_mmap_count)
             .unwrap_or(usize::MAX)
             .min(boot_info.uefi_runtime.runtime_mmap.len());
@@ -1101,6 +879,7 @@ mod tests {
             version: boot_proto::EXO_BOOT_INFO_VERSION,
             phys_mem_offset: hhdm_start,
             rsdp_addr: 0,
+            ap_trampoline: boot_proto::ApTrampolineDescriptor::new(0x8000).unwrap(),
             cmdline_ptr: 0,
             cmdline_len: 0,
             boot_policy: boot_proto::BootPolicy::default(),
@@ -1121,21 +900,6 @@ mod tests {
                 1,
             )
             .unwrap(),
-            numa_info: boot_proto::NumaInfo::default(),
-            acpi_snapshot: boot_proto::AcpiBootSnapshot::default(),
-            ap_boot: boot_proto::ApBootInfo {
-                ap_count: 1,
-                stack_count: 1,
-                _reserved: [0; 4],
-                flags: 0,
-                trampoline_layout_version: 0,
-                trampoline_mailbox_offset: 0,
-                _reserved2: [0; 4],
-                trampoline_addr: 0x1400_6000,
-                trampoline_size: 0x1000,
-                stack_base: 0x1400_7000,
-                stack_size: 0x4000,
-            },
             uefi_runtime: boot_proto::UefiRuntimeInfo {
                 runtime_mmap_count: 1,
                 runtime_mmap: [boot_proto::RuntimeMemoryRegion {
@@ -1212,8 +976,6 @@ mod tests {
             (0x1400_3000, 0x1400_3010),
             (0x1400_4000, 0x1400_4004),
             (0x1400_5000, 0x1400_5004),
-            (0x1400_6000, 0x1400_7000),
-            (0x1400_7000, 0x1400_b000),
             (0x1400_b000, 0x1400_c000),
             (0x1400_c000, 0x1400_d000),
             (0x1400_d000, 0x1400_f000),
@@ -1272,35 +1034,5 @@ mod tests {
         assert!(regions.iter().any(|region| {
             region.base <= 0x1400_4000 && region.base + region.length >= 0x1400_4000 + 0x1000
         }));
-    }
-
-    #[test]
-    fn snapshot_overflow_falls_back_to_default() {
-        let mut info = AcpiInfo::new(2);
-        for apic_id in 0..=boot_proto::MAX_ACPI_LOCAL_APICS {
-            info.local_apics.push(acpi_driver::info::LocalApicInfo {
-                processor_id: apic_id as u8,
-                apic_id: apic_id as u8,
-                enabled: true,
-                online_capable: true,
-            });
-        }
-
-        let snapshot = snapshot_or_default(&info, 0, 0);
-        assert_eq!(snapshot.flags, 0);
-        assert!(!snapshot.is_valid());
-    }
-
-    #[test]
-    fn build_numa_info_maps_memory_and_cpu_affinity() {
-        let mut info = AcpiInfo::new(2);
-        info.numa_memory.push((0x2000_0000, 0x1000_0000, 1));
-        info.cpu_proximity.push((4, 1));
-
-        let numa = build_numa_info(&info);
-        assert_eq!(numa.node_count, 1);
-        assert_eq!(numa.nodes[0].proximity_domain, 1);
-        assert_eq!(numa.nodes[0].memory_range_count, 1);
-        assert_eq!(numa.nodes[0].cpu_count, 1);
     }
 }

@@ -10,7 +10,62 @@ use graphic_types::FramebufferInfo;
 
 pub use boot_config::{BootPolicy, BootPolicyError, BootShellMode};
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 6;
+pub const EXO_BOOT_INFO_VERSION: u64 = 7;
+
+/// Shared low-memory AP trampoline handed from the bootloader to the kernel.
+/// CPU discovery and per-CPU stacks are deliberately not part of this ABI.
+#[repr(C)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ApTrampolineDescriptor {
+    pub physical_address: u64,
+    pub byte_len: u32,
+    pub layout_version: u32,
+    pub mailbox_offset: u32,
+    pub _reserved: u32,
+}
+
+impl ApTrampolineDescriptor {
+    /// Constructs a descriptor for the linked trampoline image.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when `physical_address` violates the real-mode AP
+    /// startup address contract.
+    pub fn new(physical_address: u64) -> Result<Self, &'static str> {
+        let physical_address = ap_trampoline::TrampolinePhysAddr::new(physical_address)?;
+        Ok(Self {
+            physical_address: physical_address.as_u64(),
+            byte_len: ap_trampoline::TRAMPOLINE_SIZE as u32,
+            layout_version: ap_trampoline::LAYOUT_VERSION,
+            mailbox_offset: ap_trampoline::MAILBOX_OFFSET as u32,
+            _reserved: 0,
+        })
+    }
+
+    /// Resolves the typed trampoline address after validating the wire data.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the descriptor is absent or does not match the
+    /// trampoline image linked into the kernel.
+    pub fn address(self) -> Result<ap_trampoline::TrampolinePhysAddr, &'static str> {
+        if self.byte_len as usize != ap_trampoline::TRAMPOLINE_SIZE {
+            return Err("shared AP trampoline size mismatch");
+        }
+        if self.layout_version != ap_trampoline::LAYOUT_VERSION {
+            return Err("shared AP trampoline layout version mismatch");
+        }
+        if self.mailbox_offset as usize != ap_trampoline::MAILBOX_OFFSET {
+            return Err("shared AP trampoline mailbox offset mismatch");
+        }
+        ap_trampoline::TrampolinePhysAddr::new(self.physical_address)
+    }
+
+    #[must_use]
+    pub const fn is_present(self) -> bool {
+        self.physical_address != 0
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BootHhdmSpan {
@@ -308,6 +363,9 @@ pub struct ExoBootInfo {
 
     /// Physical address of the RSDP (Root System Description Pointer) for ACPI.
     pub rsdp_addr: u64,
+
+    /// One shared AP trampoline page. The kernel owns all AP-local resources.
+    pub ap_trampoline: ApTrampolineDescriptor,
 
     /// HHDM virtual address of the command line string (if any).
     pub cmdline_ptr: u64,
@@ -1101,8 +1159,6 @@ mod tests {
     use core::mem::{align_of, size_of};
 
     use super::*;
-    use ap_trampoline::{LAYOUT_VERSION, MAILBOX_OFFSET, TRAMPOLINE_SIZE, TrampolinePhysAddr};
-
     static DRIVER_PATH: &[u8] = b"drivers/demo.cell";
     static DRIVER_DATA: &[u8] = b"\x01\x02demo";
     static FIXTURE_PATH: &[u8] = b"cells/fixture.cell";
@@ -1113,6 +1169,7 @@ mod tests {
             version: EXO_BOOT_INFO_VERSION,
             phys_mem_offset: 0xffff_8000_0000_0000,
             rsdp_addr: 0,
+            ap_trampoline: ApTrampolineDescriptor::default(),
             cmdline_ptr: 0,
             cmdline_len: 0,
             boot_policy: BootPolicy::default(),
@@ -1129,9 +1186,6 @@ mod tests {
                 bpp: 32,
             },
             boot_artifacts: BootArtifactTable::default(),
-            numa_info: NumaInfo::default(),
-            acpi_snapshot: AcpiBootSnapshot::default(),
-            ap_boot: ApBootInfo::default(),
             uefi_runtime: UefiRuntimeInfo::default(),
             mem_encryption: MemoryEncryptionInfo::default(),
             secure_boot: SecureBootInfo::default(),
@@ -1434,176 +1488,27 @@ mod tests {
     }
 
     #[test]
-    fn acpi_snapshot_default_is_invalid_and_empty() {
-        let snapshot = AcpiBootSnapshot::default();
-        assert!(!snapshot.is_valid());
-        assert!(!snapshot.has_legacy_pics());
-        assert!(snapshot.local_apics().is_empty());
-        assert!(snapshot.io_apics().is_empty());
-        assert!(snapshot.interrupt_overrides().is_empty());
-        assert!(snapshot.pcie_ecam().is_empty());
-    }
-
-    #[test]
-    fn boot_policy_and_acpi_snapshot_wire_layout_is_stable() {
+    fn boot_policy_and_trampoline_wire_layout_is_stable() {
         assert_eq!(size_of::<BootPolicy>(), 8);
         assert_eq!(align_of::<BootPolicy>(), 1);
-        assert_eq!(align_of::<AcpiBootSnapshot>(), 8);
+        assert_eq!(size_of::<ApTrampolineDescriptor>(), 24);
         assert_eq!(size_of::<UsableMemoryTable>(), 16);
     }
 
-    fn valid_ap_boot_layout() -> ApBootLayout {
-        ApBootLayout::new(
-            2,
-            2,
-            TrampolinePhysAddr::new(0x8000).unwrap(),
-            TRAMPOLINE_SIZE as u64,
-            0x20_0000,
-            0x10_000,
-        )
-        .unwrap()
+    #[test]
+    fn trampoline_descriptor_carries_no_cpu_or_stack_topology() {
+        let descriptor = ApTrampolineDescriptor::new(0x8000).unwrap();
+        assert_eq!(descriptor.address().unwrap().as_u64(), 0x8000);
+        assert_eq!(descriptor.byte_len as usize, ap_trampoline::TRAMPOLINE_SIZE);
     }
 
     #[test]
-    fn ap_boot_layout_round_trips_through_wire_format() {
-        let layout = valid_ap_boot_layout();
-        let boot_info = layout.into_boot_info();
-
-        assert_eq!(boot_info.layout().unwrap(), layout);
+    fn trampoline_descriptor_rejects_layout_drift() {
+        let mut descriptor = ApTrampolineDescriptor::new(0x8000).unwrap();
+        descriptor.layout_version += 1;
         assert_eq!(
-            boot_info.flags,
-            ap_trampoline::ApBootFlags::TRAMPOLINE_READY
-        );
-        assert_eq!(boot_info.trampoline_layout_version, LAYOUT_VERSION);
-        assert_eq!(boot_info.trampoline_mailbox_offset, MAILBOX_OFFSET as u32);
-    }
-
-    #[test]
-    fn ap_boot_layout_rejects_invalid_values() {
-        let trampoline_base = TrampolinePhysAddr::new(0x8000).unwrap();
-        let overflowing_stack_size = ((u64::MAX / u64::from(u16::MAX)) + 4096) & !((4096_u64) - 1);
-
-        assert_eq!(
-            ApBootLayout::new(
-                1,
-                1,
-                trampoline_base,
-                (TRAMPOLINE_SIZE - 1) as u64,
-                0x20_0000,
-                0x10_000
-            ),
-            Err("shared AP trampoline allocation is smaller than expected")
-        );
-        assert_eq!(
-            ApBootLayout::new(
-                2,
-                1,
-                trampoline_base,
-                TRAMPOLINE_SIZE as u64,
-                0x20_0000,
-                0x10_000
-            ),
-            Err("shared AP stack allocation count is smaller than AP count")
-        );
-        assert_eq!(
-            ApBootLayout::new(1, 1, trampoline_base, TRAMPOLINE_SIZE as u64, 0, 0x10_000),
-            Err("missing AP stack allocation")
-        );
-        assert_eq!(
-            ApBootLayout::new(
-                1,
-                1,
-                trampoline_base,
-                TRAMPOLINE_SIZE as u64,
-                0x20_0001,
-                0x10_000
-            ),
-            Err("AP stack base must be page aligned")
-        );
-        assert_eq!(
-            ApBootLayout::new(
-                1,
-                1,
-                trampoline_base,
-                TRAMPOLINE_SIZE as u64,
-                0x20_0000,
-                0x10_001
-            ),
-            Err("AP stack size must be page aligned")
-        );
-        assert_eq!(
-            ApBootLayout::new(
-                1,
-                1,
-                trampoline_base,
-                TRAMPOLINE_SIZE as u64,
-                0x20_0000,
-                0x1000
-            ),
-            Err("AP stack size must include one mapped page above the guard")
-        );
-        assert_eq!(
-            ApBootLayout::new(
-                1,
-                u16::MAX,
-                trampoline_base,
-                TRAMPOLINE_SIZE as u64,
-                0x20_0000,
-                overflowing_stack_size,
-            ),
-            Err("AP stack allocation size overflowed")
-        );
-    }
-
-    #[test]
-    fn ap_boot_info_layout_preserves_existing_error_strings() {
-        let mut ap_boot = valid_ap_boot_layout().into_boot_info();
-
-        ap_boot.flags = 0;
-        assert_eq!(
-            ap_boot.layout(),
-            Err("shared AP trampoline is not marked ready")
-        );
-
-        let mut ap_boot = valid_ap_boot_layout().into_boot_info();
-        ap_boot.trampoline_layout_version = LAYOUT_VERSION + 1;
-        assert_eq!(
-            ap_boot.layout(),
+            descriptor.address(),
             Err("shared AP trampoline layout version mismatch")
         );
-
-        let mut ap_boot = valid_ap_boot_layout().into_boot_info();
-        ap_boot.trampoline_mailbox_offset = (MAILBOX_OFFSET + 8) as u32;
-        assert_eq!(
-            ap_boot.layout(),
-            Err("shared AP trampoline mailbox offset mismatch")
-        );
-    }
-
-    #[test]
-    fn ap_boot_helpers_compute_ranges_and_stack_slots() {
-        let layout = valid_ap_boot_layout();
-        let boot_info = layout.into_boot_info();
-
-        assert_eq!(layout.boot_capacity(), 2);
-        assert_eq!(boot_info.boot_capacity(), 2);
-        assert_eq!(
-            layout.trampoline_range(),
-            Some((0x8000, TRAMPOLINE_SIZE as u64))
-        );
-        assert_eq!(
-            boot_info.trampoline_range(),
-            Some((0x8000, TRAMPOLINE_SIZE as u64))
-        );
-        assert_eq!(layout.stack_region_bytes(), Some(0x20_000));
-        assert_eq!(boot_info.stack_region_bytes(), Some(0x20_000));
-        assert_eq!(layout.stack_region_range(), Some((0x20_0000, 0x20_000)));
-        assert_eq!(boot_info.stack_region_range(), Some((0x20_0000, 0x20_000)));
-        assert_eq!(layout.stack_base_for(0), Some(0x20_0000));
-        assert_eq!(layout.stack_top_for(0), Some(0x21_0000));
-        assert_eq!(layout.stack_base_for(1), Some(0x21_0000));
-        assert_eq!(layout.stack_top_for(1), Some(0x22_0000));
-        assert_eq!(layout.stack_base_for(2), None);
-        assert_eq!(boot_info.stack_top_for(1), Some(0x22_0000));
     }
 }
