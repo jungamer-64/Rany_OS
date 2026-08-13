@@ -3,7 +3,7 @@
 //
 // RCUは読み取り側が非常に軽量で、書き込み側が遅延解放を待つ同期プリミティブ。
 // VMAの検索、ルーティングテーブルの参照など、読み取り優位なデータ構造に最適。
-use crate::per_cpu;
+use crate::cpu::CurrentCpu;
 use crate::sync::IrqPoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::VecDeque;
@@ -32,21 +32,20 @@ pub const RCU_GRACE_PERIOD_SWITCHES: usize = 2;
 ///
 /// このガードが生存している間、RCU保護されたデータの参照は有効
 pub struct RcuReadGuard {
-    _marker: core::marker::PhantomData<*const ()>,
+    current: CurrentCpu,
 }
 
 impl RcuReadGuard {
     /// 新しいRCU読み取りガードを作成
-    fn new() -> Self {
-        Self {
-            _marker: core::marker::PhantomData,
-        }
+    fn new(current: CurrentCpu) -> Self {
+        Self { current }
     }
 }
 
 impl Drop for RcuReadGuard {
     fn drop(&mut self) {
-        rcu_read_unlock_internal();
+        self.current.exit_rcu_read();
+        core::sync::atomic::compiler_fence(Ordering::Release);
     }
 }
 
@@ -57,35 +56,29 @@ impl Drop for RcuReadGuard {
 ///
 /// # Returns
 /// RcuReadGuard - スコープを抜けると自動的にunlock
+///
+/// # Panics
+/// Panics if CPU-local state is not installed on the executing CPU.
 #[inline]
 pub fn rcu_read_lock() -> RcuReadGuard {
     // 読み取り開始を記録（compiler fence のみ、実際のロックなし）
     core::sync::atomic::compiler_fence(Ordering::Acquire);
 
-    // Increment local read depth and disable preemption
-    let _ = per_cpu::with_current_cold(|cold| {
-        cold.rcu_state.read_depth.fetch_add(1, Ordering::Relaxed);
-    });
-    let _ = per_cpu::with_current_hot(|hot| hot.preempt_disable());
-
-    RcuReadGuard::new()
-}
-
-/// RCU読み取りセクションを終了（内部用）
-#[inline]
-fn rcu_read_unlock_internal() {
-    let _ = per_cpu::with_current_cold(|cold| {
-        cold.rcu_state.read_depth.fetch_sub(1, Ordering::Relaxed);
-    });
-    let _ = per_cpu::with_current_hot(|hot| hot.preempt_enable());
-    core::sync::atomic::compiler_fence(Ordering::Release);
+    let current = CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("RCU read-side section entered without CPU-local state"));
+    current.enter_rcu_read();
+    RcuReadGuard::new(current)
 }
 
 /// 現在RCU読み取りセクション内かどうか
+///
+/// # Panics
+/// Panics if CPU-local state is not installed on the executing CPU.
 #[inline]
 pub fn rcu_read_active() -> bool {
-    per_cpu::with_current_cold(|cold| cold.rcu_state.read_depth.load(Ordering::Relaxed) > 0)
-        .unwrap_or(false)
+    CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("RCU read state queried without CPU-local state"))
+        .rcu_read_active()
 }
 
 // ============================================================================
@@ -109,11 +102,12 @@ pub fn rcu_advance_epoch() {
 /// スケジューラのコンテキストスイッチ処理から呼び出す
 #[inline]
 pub fn rcu_note_context_switch() {
-    let _ = per_cpu::with_current_cold(|cold| {
-        if cold.rcu_state.read_depth.load(Ordering::Relaxed) == 0 {
-            cold.rcu_state.qs_count.fetch_add(1, Ordering::Release);
-        }
-    });
+    let Some(current) = CurrentCpu::acquire() else {
+        return;
+    };
+    if current.note_rcu_quiescent() {
+        RCU_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 /// 現在のコンテキストスイッチカウントを取得
@@ -128,40 +122,59 @@ pub fn rcu_context_switch_count() -> usize {
 ///
 /// # Warning
 /// これはビジーウェイトなので、割り込みコンテキストでは使用しないこと
+///
+/// # Panics
+/// Panics if the calling CPU is itself inside an RCU read-side section, if an
+/// online CPU has no CPU-local state, or if a quiescence wake IPI cannot be
+/// delivered.
 pub fn synchronize_rcu() {
-    // 1. Snapshot QS counts for all online CPUs
+    let topology = crate::cpu::snapshot();
+    let runtime = crate::cpu::runtime();
     let mut snapshots = Vec::new();
-    for i in 0..per_cpu::MAX_CPUS {
-        if per_cpu::is_cpu_online(i) {
-            if let Some(qs_count) =
-                per_cpu::with_cpu_cold(i, |cold| cold.rcu_state.qs_count.load(Ordering::Acquire))
-            {
-                snapshots.push((i, qs_count));
-            }
+    for cpu_id in topology.online() {
+        let local = runtime
+            .cpu_local(cpu_id)
+            .unwrap_or_else(|| panic!("online CPU {} has no CPU-local RCU state", cpu_id));
+        snapshots.push((cpu_id, local.remote().rcu_quiescent_count()));
+    }
+    drop(topology);
+
+    let current_id = CurrentCpu::acquire().map(|current| {
+        assert!(
+            !current.rcu_read_active(),
+            "synchronize_rcu called from an RCU read-side section"
+        );
+        current.note_rcu_quiescent();
+        current.id()
+    });
+    for &(cpu_id, _) in &snapshots {
+        if Some(cpu_id) == current_id {
+            continue;
         }
+        crate::cpu::send_ipi(cpu_id, crate::cpu::IpiKind::ExecutorWake).unwrap_or_else(|error| {
+            panic!(
+                "failed to request an RCU quiescent state from CPU {}: {:?}",
+                cpu_id, error
+            )
+        });
     }
 
-    // 2. Wait for each active CPU to pass through a quiescent state
-    // (switch context or go offline)
     for (cpu_id, snap_val) in snapshots {
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
-            if !per_cpu::is_cpu_online(cpu_id) {
-                // CPU went offline -> Quiescent State
+            if !crate::cpu::snapshot().online().contains(cpu_id) {
                 break;
             }
-            if let Some(current_val) = per_cpu::with_cpu_cold(cpu_id, |cold| {
-                cold.rcu_state.qs_count.load(Ordering::Acquire)
-            }) {
-                if current_val != snap_val {
-                    break;
-                }
+            let local = runtime
+                .cpu_local(cpu_id)
+                .unwrap_or_else(|| panic!("online CPU {} lost its CPU-local RCU state", cpu_id));
+            if local.remote().rcu_quiescent_count() != snap_val {
+                break;
             }
             core::hint::spin_loop();
         }
     }
 
-    // 3. Advance epoch to release callbacks
     rcu_advance_epoch();
 }
 
@@ -197,80 +210,53 @@ static RCU_CALLBACK_QUEUE: IrqPoisonLock<VecDeque<RcuCallbackEntry>> =
 /// * `ptr` - 解放対象のポインタ
 /// * `callback` - グレース期間後に呼び出されるコールバック
 pub fn call_rcu(ptr: *mut u8, callback: RcuCallback) {
-    let mut entry = Some(RcuCallbackEntry {
+    let entry = RcuCallbackEntry {
         ptr,
         callback,
         epoch: rcu_current_epoch(),
-    });
-
-    // Try per-CPU queue first
-    if per_cpu::with_current_cold(|cold| {
-        cold.rcu_state
-            .batch_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(entry.take().expect("RCU callback entry already moved"));
-    })
-    .is_none()
-    {
-        RCU_CALLBACK_QUEUE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(entry.expect("RCU callback entry missing"));
-    }
+    };
+    RCU_CALLBACK_QUEUE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .push_back(entry);
 }
 
-/// 期限切れのRCUコールバックを処理 (Per-CPU)
+/// 期限切れのRCUコールバックを処理
 ///
 /// 定期的に呼び出す（スケジューラのアイドルループやタイマー割り込みから）
 pub fn rcu_process_callbacks() {
     let current_epoch = rcu_current_epoch();
-    let _ = per_cpu::with_current_cold(|cold| {
-        let mut queue = cold
-            .rcu_state
-            .batch_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
+    let mut queue = RCU_CALLBACK_QUEUE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
 
-        // グレース期間が経過したコールバックを処理
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(entry) = queue.front() {
-            // エポックが2以上離れていればグレース期間経過
-            if current_epoch.wrapping_sub(entry.epoch) >= 2 {
-                let entry = queue.pop_front().unwrap();
-                drop(queue); // ロックを解放してからコールバック実行
+    // グレース期間が経過したコールバックを処理
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+    while let Some(entry) = queue.front() {
+        // エポックが2以上離れていればグレース期間経過
+        if current_epoch.wrapping_sub(entry.epoch) >= RCU_GRACE_PERIOD_SWITCHES {
+            let entry = queue.pop_front().unwrap();
+            drop(queue); // ロックを解放してからコールバック実行
 
-                // コールバック呼び出し
-                (entry.callback)(entry.ptr);
+            // コールバック呼び出し
+            (entry.callback)(entry.ptr);
 
-                // ロック再取得
-                queue = cold
-                    .rcu_state
-                    .batch_queue
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner());
-            } else {
-                break;
-            }
+            // ロック再取得
+            queue = RCU_CALLBACK_QUEUE
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+        } else {
+            break;
         }
-    });
+    }
 }
 
-/// ペンディング中のRCUコールバック数を取得 (Current CPU)
+/// ペンディング中のRCUコールバック数を取得
 pub fn rcu_pending_callbacks() -> usize {
-    per_cpu::with_current_cold(|cold| {
-        cold.rcu_state
-            .batch_queue
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
-    })
-    .unwrap_or_else(|| {
-        RCU_CALLBACK_QUEUE
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len()
-    })
+    RCU_CALLBACK_QUEUE
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .len()
 }
 
 // ============================================================================
@@ -361,55 +347,6 @@ unsafe impl<T: Send + Sync> Send for RcuPointer<T> {}
 unsafe impl<T: Send + Sync> Sync for RcuPointer<T> {}
 
 // ============================================================================
-// Per-CPU RCU state (simplified version)
-// ============================================================================
-
-/// Per-CPU RCU状態
-#[derive(Debug)]
-pub struct PerCpuRcuState {
-    /// このCPUがquiescent state（静止状態）に入った回数
-    pub qs_count: AtomicUsize,
-    /// 最後に報告したグレース期間番号
-    pub last_gp: AtomicUsize,
-    /// このCPUでの読み取りセクションネスト深度
-    pub read_depth: AtomicUsize,
-    /// Callbacks buffered on this CPU (to be moved to global/batch list)
-    pub batch_queue: IrqPoisonLock<VecDeque<RcuCallbackEntry>>,
-}
-
-impl PerCpuRcuState {
-    /// 新しいPer-CPU RCU状態を作成
-    pub const fn new() -> Self {
-        Self {
-            qs_count: AtomicUsize::new(0),
-            last_gp: AtomicUsize::new(0),
-            read_depth: AtomicUsize::new(0),
-            batch_queue: IrqPoisonLock::new(VecDeque::new()),
-        }
-    }
-
-    /// Quiescent stateを報告
-    pub fn report_qs(&self) {
-        self.qs_count.fetch_add(1, Ordering::Release);
-    }
-
-    /// 読み取りセクション開始
-    pub fn enter_read_section(&self) {
-        self.read_depth.fetch_add(1, Ordering::Acquire);
-    }
-
-    /// 読み取りセクション終了
-    pub fn exit_read_section(&self) {
-        self.read_depth.fetch_sub(1, Ordering::Release);
-    }
-
-    /// 現在読み取りセクション内かどうか
-    pub fn in_read_section(&self) -> bool {
-        self.read_depth.load(Ordering::Acquire) > 0
-    }
-}
-
-// ============================================================================
 // Statistics
 // ============================================================================
 
@@ -439,35 +376,10 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_rcu_read_guard() {
-        {
-            let _guard = rcu_read_lock();
-            assert!(rcu_read_active());
-        }
-        // ガードがdropされたので非アクティブ
-        assert!(!rcu_read_active());
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_rcu_epoch() {
         let epoch1 = rcu_current_epoch();
         rcu_advance_epoch();
         let epoch2 = rcu_current_epoch();
         assert_eq!(epoch2, epoch1 + 1);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_per_cpu_rcu_state() {
-        let state = PerCpuRcuState::new();
-
-        assert!(!state.in_read_section());
-
-        state.enter_read_section();
-        assert!(state.in_read_section());
-
-        state.exit_read_section();
-        assert!(!state.in_read_section());
     }
 }

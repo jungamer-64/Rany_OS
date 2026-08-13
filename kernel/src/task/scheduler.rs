@@ -439,8 +439,14 @@ pub(crate) fn publish_cpu_online(cpu: CpuId) {
 }
 
 pub fn run_forever() -> ! {
+    let processes_rcu_callbacks =
+        CurrentCpu::acquire().is_some_and(|current| current.id() == CpuId::BOOTSTRAP);
     loop {
         let made_progress = runtime().is_ok_and(TaskRuntime::poll_one);
+        crate::mm::sync::rcu::rcu_note_context_switch();
+        if processes_rcu_callbacks {
+            crate::mm::sync::rcu::rcu_process_callbacks();
+        }
         if !made_progress {
             idle_once();
         }

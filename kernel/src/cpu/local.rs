@@ -36,6 +36,8 @@ pub struct CpuRemoteAccess {
     last_interrupt_rsp: AtomicU64,
     timer_event_pending: AtomicBool,
     runtime_timer_armed: AtomicBool,
+    rcu_read_depth: AtomicU32,
+    rcu_quiescent_count: AtomicU64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,6 +61,8 @@ impl CpuRemoteAccess {
             last_interrupt_rsp: AtomicU64::new(0),
             timer_event_pending: AtomicBool::new(false),
             runtime_timer_armed: AtomicBool::new(false),
+            rcu_read_depth: AtomicU32::new(0),
+            rcu_quiescent_count: AtomicU64::new(0),
         }
     }
 
@@ -142,6 +146,14 @@ impl CpuRemoteAccess {
 
     pub fn runtime_timer_armed(&self) -> bool {
         self.runtime_timer_armed.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn rcu_read_depth(&self) -> u32 {
+        self.rcu_read_depth.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn rcu_quiescent_count(&self) -> u64 {
+        self.rcu_quiescent_count.load(Ordering::Acquire)
     }
 }
 
@@ -332,6 +344,26 @@ impl CpuLocal {
     fn exit_page_fault(&self) {
         with_owner_access(|| unsafe { (*self.owned.get()).page_fault_active = false });
     }
+
+    fn enter_rcu_read(&self) {
+        let previous = self.remote.rcu_read_depth.fetch_add(1, Ordering::Acquire);
+        assert!(previous != u32::MAX, "RCU read nesting depth overflow");
+    }
+
+    fn exit_rcu_read(&self) {
+        let previous = self.remote.rcu_read_depth.fetch_sub(1, Ordering::Release);
+        assert!(previous != 0, "RCU read nesting depth underflow");
+    }
+
+    fn note_rcu_quiescent(&self) -> bool {
+        if self.remote.rcu_read_depth.load(Ordering::Acquire) != 0 {
+            return false;
+        }
+        self.remote
+            .rcu_quiescent_count
+            .fetch_add(1, Ordering::Release);
+        true
+    }
 }
 
 pub struct CurrentCpu {
@@ -426,6 +458,22 @@ impl CurrentCpu {
 
     pub(crate) fn disarm_runtime_timer(&self) {
         self.local.remote.disarm_runtime_timer();
+    }
+
+    pub(crate) fn enter_rcu_read(&self) {
+        self.local.enter_rcu_read();
+    }
+
+    pub(crate) fn exit_rcu_read(&self) {
+        self.local.exit_rcu_read();
+    }
+
+    pub(crate) fn rcu_read_active(&self) -> bool {
+        self.local.remote.rcu_read_depth() != 0
+    }
+
+    pub(crate) fn note_rcu_quiescent(&self) -> bool {
+        self.local.note_rcu_quiescent()
     }
 
     pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {
