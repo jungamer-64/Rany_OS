@@ -1099,7 +1099,7 @@ pub mod qemu_tests {
         let generalized_trailing = der_payload(b"20250101000000Z0");
         let feb_31 = der_payload(b"250231000000Z");
         let non_leap_feb_29 = der_payload(b"230229000000Z");
-        let pre_unix = der_payload(b"491231235959Z");
+        let pre_unix = der_payload(b"691231235959Z");
 
         parse_time_value(0x17, PayloadSpanRef::from_payload(&utc_trailing)).is_none()
             && parse_time_value(0x18, PayloadSpanRef::from_payload(&generalized_trailing)).is_none()
