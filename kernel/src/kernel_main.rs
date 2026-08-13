@@ -452,19 +452,6 @@ fn for_each_runtime_registration_step(mut visit: impl FnMut(RuntimeRegistrationS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ExecutorOnlineMilestone {
-    ConfigureBootRunMode,
-    ReleaseWorkers,
-    StartExecutorRun,
-}
-
-fn for_each_executor_online_milestone(mut visit: impl FnMut(ExecutorOnlineMilestone)) {
-    visit(ExecutorOnlineMilestone::ConfigureBootRunMode);
-    visit(ExecutorOnlineMilestone::ReleaseWorkers);
-    visit(ExecutorOnlineMilestone::StartExecutorRun);
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AsyncBootCompletionMilestone {
     ResolveShellMode,
     SpawnKernelTasks,
@@ -475,27 +462,6 @@ fn for_each_async_boot_completion_milestone(mut visit: impl FnMut(AsyncBootCompl
     visit(AsyncBootCompletionMilestone::ResolveShellMode);
     visit(AsyncBootCompletionMilestone::SpawnKernelTasks);
     visit(AsyncBootCompletionMilestone::BootComplete);
-}
-
-#[cfg(test)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BootLifecycleMilestone {
-    ConfigureBootRunMode,
-    ReleaseWorkers,
-    StartExecutorRun,
-    ResolveShellMode,
-    SpawnKernelTasks,
-    BootComplete,
-}
-
-#[cfg(test)]
-fn for_each_boot_lifecycle_milestone(mut visit: impl FnMut(BootLifecycleMilestone)) {
-    visit(BootLifecycleMilestone::ConfigureBootRunMode);
-    visit(BootLifecycleMilestone::ReleaseWorkers);
-    visit(BootLifecycleMilestone::StartExecutorRun);
-    visit(BootLifecycleMilestone::ResolveShellMode);
-    visit(BootLifecycleMilestone::SpawnKernelTasks);
-    visit(BootLifecycleMilestone::BootComplete);
 }
 
 #[cfg(test)]
@@ -526,28 +492,6 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn executor_online_milestone_order_is_canonical() {
-        let mut seen = [ExecutorOnlineMilestone::ConfigureBootRunMode; 3];
-        let mut idx = 0usize;
-
-        for_each_executor_online_milestone(|step| {
-            seen[idx] = step;
-            idx += 1;
-        });
-
-        assert_eq!(idx, seen.len());
-        assert_eq!(
-            seen,
-            [
-                ExecutorOnlineMilestone::ConfigureBootRunMode,
-                ExecutorOnlineMilestone::ReleaseWorkers,
-                ExecutorOnlineMilestone::StartExecutorRun,
-            ]
-        );
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn async_boot_completion_milestone_order_places_boot_complete_last() {
         let mut seen = [AsyncBootCompletionMilestone::ResolveShellMode; 3];
         let mut idx = 0usize;
@@ -564,31 +508,6 @@ mod tests {
                 AsyncBootCompletionMilestone::ResolveShellMode,
                 AsyncBootCompletionMilestone::SpawnKernelTasks,
                 AsyncBootCompletionMilestone::BootComplete,
-            ]
-        );
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn boot_lifecycle_starts_executor_before_boot_complete() {
-        let mut seen = [BootLifecycleMilestone::ConfigureBootRunMode; 6];
-        let mut idx = 0usize;
-
-        for_each_boot_lifecycle_milestone(|step| {
-            seen[idx] = step;
-            idx += 1;
-        });
-
-        assert_eq!(idx, seen.len());
-        assert_eq!(
-            seen,
-            [
-                BootLifecycleMilestone::ConfigureBootRunMode,
-                BootLifecycleMilestone::ReleaseWorkers,
-                BootLifecycleMilestone::StartExecutorRun,
-                BootLifecycleMilestone::ResolveShellMode,
-                BootLifecycleMilestone::SpawnKernelTasks,
-                BootLifecycleMilestone::BootComplete,
             ]
         );
     }
@@ -922,7 +841,7 @@ fn phase_core_services_base(context: &KernelBootContext) {
     loader::init_kernel_cell();
     register_kernel_symbols();
     loader::live_update::init();
-    loader::live_update::set_active_cores(crate::cpu::count() as u64);
+    loader::live_update::set_active_cores(crate::cpu::snapshot().online().len() as u64);
     crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverDomain initialized");
 
@@ -1027,44 +946,30 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
         ),
     }
 
-    #[cfg(feature = "qemu-test-export")]
-    let target_cpu = {
-        let cpu_count = crate::cpu::count() as usize;
-        if cpu_count > 2 {
-            cpu_count - 1
-        } else {
-            cpu_count.saturating_sub(1)
-        }
+    let online = crate::cpu::snapshot().online().clone();
+    let Some(target_cpu) = online.member_at(online.len().saturating_sub(1)) else {
+        panic!("runtime tests requested without an online CPU");
     };
 
-    #[cfg(feature = "qemu-test-export")]
-    crate::task::spawn_on_cpu_with_priority(target_cpu, crate::task::Priority::High, async move {
-        info!(
-            target: "init",
-            "Runtime test task starting on cpu={} profile='{}'",
-            target_cpu,
-            request.profile
-        );
-        crate::task::yield_now().await;
-        let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
-        exit_with_runtime_summary(summary);
-    });
-
-    #[cfg(not(feature = "qemu-test-export"))]
-    crate::task::spawn_with_priority(
+    if let Err(error) = crate::task::spawn(
         async move {
             info!(
                 target: "init",
-                "Runtime test task starting profile='{}'",
+                "Runtime test task starting on cpu={} profile='{}'",
+                target_cpu,
                 request.profile
             );
             crate::task::yield_now().await;
             let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
             exit_with_runtime_summary(summary);
         },
-        crate::task::Priority::High,
-        None,
-    );
+        crate::task::TaskPlacement::Pinned(target_cpu),
+    ) {
+        panic!(
+            "failed to schedule runtime tests on CPU {}: {:?}",
+            target_cpu, error
+        );
+    }
 }
 
 fn resolve_shell_mode(
