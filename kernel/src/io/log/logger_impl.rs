@@ -53,17 +53,6 @@ impl Log for KernelLogger {
 
 impl KernelLogger {
     pub(super) fn try_log_async(&self, record: &Record) -> bool {
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
-            if cpu_id < PER_CPU_COUNT {
-                if let Some(mut guard) = PER_CORE_LOG_BUFFERS[cpu_id].try_lock() {
-                    self.write_into_async_buffer::<{ PER_CORE_BUFFER_CAPACITY }>(
-                        &mut guard, record,
-                    );
-                    return true;
-                }
-            }
-        }
-
         if let Some(mut guard) = LOG_BUFFER.try_lock() {
             self.write_into_async_buffer::<{ LOG_BUFFER_CAPACITY }>(&mut guard, record);
             return true;
@@ -157,10 +146,6 @@ impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
 pub(crate) fn start_serial_tx() {
     if !serial_output_enabled() {
         return;
-    }
-
-    if !IN_PANIC.load(Ordering::Relaxed) {
-        let _ = aggregate_per_core_to_global(AGGREGATE_MAX_PER_CALL);
     }
 
     if IN_PANIC.load(Ordering::Relaxed) {
@@ -272,28 +257,11 @@ pub fn has_char() -> bool {
 #[cfg(feature = "bench")]
 pub fn bench_clear_buffers() {
     LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).clear();
-    for i in 0..PER_CPU_COUNT {
-        PER_CORE_LOG_BUFFERS[i]
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear();
-    }
     INPUT_BUFFER
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
     DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
-}
-
-#[cfg(feature = "bench")]
-pub fn bench_push_per_core(core: usize, data: &[u8]) -> usize {
-    if core >= PER_CPU_COUNT {
-        return 0;
-    }
-    PER_CORE_LOG_BUFFERS[core]
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .push_bytes(data)
 }
 
 #[cfg(feature = "bench")]
@@ -313,80 +281,8 @@ pub fn bench_pop_global_buf(dst: &mut [u8]) -> usize {
 }
 
 #[cfg(feature = "bench")]
-pub fn bench_pop_per_core_buf(core: usize, dst: &mut [u8]) -> usize {
-    if core >= PER_CPU_COUNT {
-        return 0;
-    }
-    PER_CORE_LOG_BUFFERS[core]
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .pop_bulk(dst)
-}
-
-#[cfg(feature = "bench")]
 pub fn bench_total_pending_bytes() -> usize {
-    let mut total = 0usize;
-    total += LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).len();
-    for i in 0..PER_CPU_COUNT {
-        total += PER_CORE_LOG_BUFFERS[i]
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .len();
-    }
-    total
-}
-
-pub fn aggregate_per_core_to_global(max_bytes: usize) -> usize {
-    let mut moved = 0usize;
-    let mut tmp = [0u8; PER_CORE_BUFFER_CAPACITY];
-
-    loop {
-        if moved >= max_bytes {
-            break;
-        }
-
-        let mut made_progress = false;
-        for i in 0..PER_CPU_COUNT {
-            if moved >= max_bytes {
-                break;
-            }
-            if let Some(mut per_guard) = PER_CORE_LOG_BUFFERS[i].try_lock() {
-                let available = per_guard.len();
-                if available == 0 {
-                    continue;
-                }
-
-                // Preserve record boundaries so long log lines from one CPU cannot be
-                // interleaved mid-line with another CPU's output during aggregation.
-                let n = per_guard.peek_until_including(b'\n', &mut tmp);
-                if n == 0 {
-                    continue;
-                }
-
-                let wrote = {
-                    let mut global_guard = LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
-                    let free = global_guard.capacity().saturating_sub(global_guard.len());
-                    if free < n {
-                        0
-                    } else {
-                        global_guard.push_bytes(&tmp[..n])
-                    }
-                };
-
-                if wrote == n {
-                    per_guard.advance_head(wrote);
-                    moved += wrote;
-                    made_progress = true;
-                }
-            }
-        }
-
-        if !made_progress {
-            break;
-        }
-    }
-
-    moved
+    LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner()).len()
 }
 
 pub fn kick_serial_tx() {

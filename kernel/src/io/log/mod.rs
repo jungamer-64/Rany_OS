@@ -64,10 +64,6 @@ const TX_TIMEOUT_US: u64 = 100;
 /// 割り込みハンドラが一度に送信する最大バーストサイズ（ISR内のローカルバッファ長）
 const LSR_TX_BURST: usize = 64;
 
-/// Maximum bytes to pull from per-core buffers into the global buffer in one
-/// non-ISR aggregation call.
-const AGGREGATE_MAX_PER_CALL: usize = 4096;
-
 // ============================================================================
 // ログレベル定義
 // ============================================================================
@@ -364,45 +360,6 @@ impl<const N: usize> RingBuffer<N> {
         to_read
     }
 
-    pub fn peek_until_including(&self, needle: u8, dst: &mut [u8]) -> usize {
-        if N == 0 {
-            return 0;
-        }
-
-        let (head, tail, full) = self.normalized_snapshot();
-        let available = if full {
-            N
-        } else if tail >= head {
-            tail - head
-        } else {
-            N - head + tail
-        };
-        if available == 0 || dst.is_empty() {
-            return 0;
-        }
-
-        let to_scan = core::cmp::min(available, dst.len());
-        let mut idx = head;
-        let mut copied = 0usize;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while copied < to_scan {
-            let byte = self.buf[idx];
-            dst[copied] = byte;
-            copied += 1;
-
-            if byte == needle {
-                break;
-            }
-
-            idx += 1;
-            if idx == N {
-                idx = 0;
-            }
-        }
-
-        copied
-    }
-
     pub fn advance_head(&mut self, n: usize) {
         if N == 0 || n == 0 {
             return;
@@ -451,21 +408,6 @@ pub fn enable_async_logging() {
 pub fn async_logging_enabled() -> bool {
     ASYNC_LOG_ENABLED.load(Ordering::Relaxed)
 }
-
-/// Per-core log buffer capacity
-const PER_CORE_BUFFER_CAPACITY: usize = 4 * 1024;
-
-#[cfg(not(feature = "bench"))]
-const PER_CPU_COUNT: usize = crate::per_cpu::MAX_CPUS;
-
-#[cfg(feature = "bench")]
-const PER_CPU_COUNT: usize = 8;
-
-/// Per-core log buffers (lock-protected, IRQ-safe)
-const PER_CORE_INIT: IrqPoisonLock<RingBuffer<PER_CORE_BUFFER_CAPACITY>> =
-    IrqPoisonLock::new(RingBuffer::new());
-static PER_CORE_LOG_BUFFERS: [IrqPoisonLock<RingBuffer<PER_CORE_BUFFER_CAPACITY>>; PER_CPU_COUNT] =
-    [PER_CORE_INIT; PER_CPU_COUNT];
 
 /// 非同期入力バッファ（受信）
 static INPUT_BUFFER: IrqPoisonLock<RingBuffer<INPUT_BUFFER_CAPACITY>> =
@@ -602,7 +544,7 @@ pub fn set_in_panic(in_panic: bool) {
 
 #[inline]
 fn current_log_cpu_id() -> Option<usize> {
-    crate::cpu::try_current_id()
+    crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
 }
 
 #[inline]
