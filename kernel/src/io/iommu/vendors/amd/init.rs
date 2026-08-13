@@ -12,7 +12,6 @@ use x86_64::PhysAddr;
 
 use hashbrown::HashMap;
 
-use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::config::IommuConfig;
 use crate::io::iommu::types::IommuError;
@@ -20,6 +19,7 @@ use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
 use crate::sync::PoisonLock;
+use acpi_driver::ivrs::IvhdDeviceEntry;
 
 use super::cmd;
 use super::device_table::AmdDeviceTable;
@@ -72,7 +72,7 @@ async fn command_queue_worker() {
 
 #[cfg(not(test))]
 pub(super) fn spawn_command_queue_worker() {
-    let _ = crate::task::spawn_detached(command_queue_worker());
+    let _ = crate::task::spawn(command_queue_worker(), crate::task::TaskPlacement::Any);
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +257,7 @@ pub(super) fn init_device_tables(
 /// Initialize AMD-Vi using ACPI IVRS table at `ivrs_addr`.
 
 /// Collect AmdIommuUnit entries from parsed IVRS IVHD structures.
-fn collect_ivhd_units(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIommuUnit> {
+fn collect_ivhd_units(ivrs_info: &acpi_driver::ivrs::IvrsInfo) -> Vec<AmdIommuUnit> {
     ivrs_info
         .ivhds
         .iter()
@@ -281,7 +281,7 @@ fn collect_ivhd_units(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIom
 }
 
 /// Collect IVMD ranges from parsed IVRS.
-fn collect_ivmd_ranges(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIvmdRange> {
+fn collect_ivmd_ranges(ivrs_info: &acpi_driver::ivrs::IvrsInfo) -> Vec<AmdIvmdRange> {
     ivrs_info
         .ivmds
         .iter()
@@ -289,17 +289,14 @@ fn collect_ivmd_ranges(ivrs_info: &crate::io::acpi::ivrs::IvrsInfo) -> Vec<AmdIv
         .collect()
 }
 
-pub unsafe fn init_iommu_from_ivrs(
-    ivrs_addr: usize,
-    _config: IommuConfig,
-) -> Result<(), IommuError> {
+pub fn init_iommu_from_ivrs(ivrs: &[u8], _config: IommuConfig) -> Result<(), IommuError> {
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();
 
-    let ivrs_info = match unsafe { crate::io::acpi::ivrs::parse_ivrs(ivrs_addr) } {
+    let ivrs_info = match acpi_driver::ivrs::parse(ivrs) {
         Ok(info) => info,
         Err(e) => {
-            log::error!("Failed to parse IVRS: {}", e);
+            log::error!("Failed to parse IVRS: {:?}", e);
             return Err(IommuError::HardwareError);
         }
     };

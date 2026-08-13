@@ -30,7 +30,6 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use crate::io::acpi::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::command::queue::CommandQueue;
@@ -38,6 +37,7 @@ use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::sync::PoisonLock;
+use acpi_driver::ivrs::{IvhdDeviceEntry, IvmdInfo};
 use hashbrown::HashMap;
 
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;

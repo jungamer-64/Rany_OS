@@ -14,11 +14,14 @@ pub struct TableSignature([u8; 4]);
 
 impl TableSignature {
     pub const APIC: Self = Self(*b"APIC");
+    pub const DMAR: Self = Self(*b"DMAR");
     pub const DSDT: Self = Self(*b"DSDT");
     pub const FACP: Self = Self(*b"FACP");
     pub const MCFG: Self = Self(*b"MCFG");
+    pub const NFIT: Self = Self(*b"NFIT");
     pub const SRAT: Self = Self(*b"SRAT");
     pub const SSDT: Self = Self(*b"SSDT");
+    pub const IVRS: Self = Self(*b"IVRS");
 
     pub const fn new(bytes: [u8; 4]) -> Self {
         Self(bytes)
@@ -75,6 +78,10 @@ impl AcpiTable {
 
     pub fn bytes(&self) -> &[u8] {
         &self.bytes
+    }
+
+    pub fn owned_bytes(&self) -> Arc<[u8]> {
+        self.bytes.clone()
     }
 
     pub fn body(&self) -> &[u8] {

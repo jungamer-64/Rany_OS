@@ -18,6 +18,9 @@ pub mod ahci {
 pub mod apic {
     pub use crate::io::apic::*;
 }
+pub mod acpi {
+    pub use acpi_driver::*;
+}
 pub mod hid {
     pub use crate::io::hid::*;
 }

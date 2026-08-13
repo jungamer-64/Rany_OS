@@ -7,11 +7,11 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::common::domain::IommuDomain as DomainState;
 use crate::io::iommu::common::tables::virt_ptr_to_phys;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
+use acpi_driver::ivrs::IvhdDeviceEntry;
 
 use super::device_table::{AmdDeviceTable, AmdDeviceTableEntry, apply_ivhd_flags};
 use super::registers::*;

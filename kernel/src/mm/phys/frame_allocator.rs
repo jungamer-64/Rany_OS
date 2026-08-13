@@ -12,7 +12,6 @@ use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
 use crate::sync::IrqPoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use boot_proto::NumaInfo;
 use core::ptr;
 use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
 use x86_64::PhysAddr;
@@ -568,19 +567,10 @@ pub struct NumaFrameAllocator {
 
 impl NumaFrameAllocator {
     /// 新しいNUMA対応アロケータを作成
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Self {
-            node_allocators: [
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-                BitmapFrameAllocator::new(),
-            ],
-            topology: NumaTopology::new(),
+            node_allocators: core::array::from_fn(|_| BitmapFrameAllocator::new()),
+            topology: NumaTopology::new(1),
         }
     }
 
@@ -630,7 +620,10 @@ impl NumaFrameAllocator {
     /// 優先順位:
     /// 1. 現在のCPUが属するNUMAノード
     /// 2. 距離の近いNUMAノード（順番にフォールバック）
-    pub fn allocate_4k_local(&mut self, current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+    pub fn allocate_4k_local(
+        &mut self,
+        current_cpu: crate::cpu::CpuId,
+    ) -> Option<PhysFrame<Size4KiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -656,7 +649,10 @@ impl NumaFrameAllocator {
     }
 
     /// 現在のCPUに近いノードから2MiBフレームを割り当て
-    pub fn allocate_2m_local(&mut self, current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+    pub fn allocate_2m_local(
+        &mut self,
+        current_cpu: crate::cpu::CpuId,
+    ) -> Option<PhysFrame<Size2MiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 

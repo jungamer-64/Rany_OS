@@ -258,11 +258,6 @@ impl KernelBootContext {
         &self.boot_info_view
     }
 
-    fn numa_info(&self) -> Option<&boot_proto::NumaInfo> {
-        let boot_info = self.boot_info();
-        (boot_info.numa_info.node_count > 0).then_some(&boot_info.numa_info)
-    }
-
     fn should_skip_text_console_init(&self) -> bool {
         #[cfg(feature = "qemu-test-export")]
         {
@@ -302,8 +297,6 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     init_early_serial();
     phase_bootloader_handoff(context);
     verify_boot_protocol_version(boot_info);
-    crate::platform::acpi::install_boot_snapshot(&boot_info.acpi_snapshot);
-
     // SSE/SSE2を有効化（x86_64ではABIで必須）
     init_sse();
 
@@ -325,6 +318,22 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
 
     unsafe {
         crate::per_cpu::bootstrap_bsp_per_cpu_early();
+    }
+
+    if boot_info.rsdp_addr != 0 {
+        match unsafe {
+            crate::platform::firmware::initialize_tables(
+                boot_info.rsdp_addr,
+                context.phys_mem_offset,
+            )
+        } {
+            Ok(catalog) => info!(
+                target: "init",
+                "ACPI static catalog owns {} table(s)",
+                catalog.tables().len()
+            ),
+            Err(error) => warn!(target: "init", "ACPI static catalog unavailable: {:?}", error),
+        }
     }
 
     // ロギングシステムの初期化（最優先、ヒープ不要）
@@ -388,7 +397,7 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    heap::init(context.numa_info(), Some(context.boot_info_view()));
+    heap::init(Some(context.boot_info_view()));
     heap::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
@@ -740,11 +749,14 @@ fn phase_platform_and_security_base(context: &KernelBootContext) {
     // BSP handles the heavier platform discovery and security setup.
     info!(target: "init", "Initializing ACPI...");
 
-    // Configure ACPI driver with HHDM offset for physical-to-virtual translation
-    io::acpi::set_hhdm_offset(context.phys_mem_offset);
     init_acpi_and_iommu(context.boot_info_view());
 
-    crate::mm::numa::topology::configure_from_boot_info(&context.boot_info().numa_info);
+    if let Err(error) = crate::mm::numa::topology::configure_from_firmware(
+        crate::platform::firmware::tables(),
+        &crate::cpu::snapshot(),
+    ) {
+        warn!(target: "init", "NUMA CPU affinity rejected: {:?}", error);
+    }
     crate::mm::numa::topology::apply_current_cpu_locality();
 
     // ヒープが使用可能になったことを通知

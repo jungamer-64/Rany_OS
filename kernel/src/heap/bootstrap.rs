@@ -1,5 +1,5 @@
 use super::*;
-use boot_proto::{ExoBootInfo, ExoBootInfoView, NumaInfo, UsableMemoryRegion};
+use boot_proto::{ExoBootInfo, ExoBootInfoView, UsableMemoryRegion};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0xFFFF_8000_0000_0000);
@@ -11,20 +11,6 @@ pub(crate) fn physical_memory_offset() -> u64 {
 
 pub(crate) fn set_physical_memory_offset(offset: u64) {
     PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::SeqCst);
-}
-
-/// Reserve AP boot trampoline and stack ranges.
-pub(crate) fn reserve_ap_boot_ranges(
-    mut regions: Vec<(PhysAddr, u64)>,
-    ap_boot: &boot_proto::ApBootInfo,
-) -> Vec<(PhysAddr, u64)> {
-    if let Some((trampoline_start, trampoline_size)) = ap_boot.trampoline_range() {
-        regions = subtract_reserved_range(regions, trampoline_start, trampoline_size);
-    }
-    if let Some((stack_start, stack_size)) = ap_boot.stack_region_range() {
-        regions = subtract_reserved_range(regions, stack_start, stack_size);
-    }
-    regions
 }
 
 /// Reserve UEFI runtime memory map ranges.
@@ -101,7 +87,13 @@ pub(crate) fn reserve_boot_info_ranges(
         raw.framebuffer.size() as u64,
     );
 
-    regions = reserve_ap_boot_ranges(regions, &raw.ap_boot);
+    if let Ok(trampoline_start) = raw.ap_trampoline.address() {
+        regions = subtract_reserved_range(
+            regions,
+            trampoline_start.as_u64(),
+            u64::from(raw.ap_trampoline.byte_len),
+        );
+    }
     regions = reserve_uefi_runtime_ranges(regions, &raw.uefi_runtime);
 
     regions
@@ -162,19 +154,22 @@ pub(crate) fn init_buddy_from_boot_info(
 
 /// NUMA情報を使ってPMM (Physical Memory Manager) を初期化する
 pub(crate) fn init_numa_pmm(
-    numa_info: Option<&NumaInfo>,
+    firmware: Option<&acpi_driver::TableCatalog>,
     usable_regions: &[(x86_64::PhysAddr, u64)],
 ) {
-    let mut pmm_initialized = false;
-    if let Some(info) = numa_info {
-        if info.node_count > 0 {
-            unsafe {
-                if crate::mm::phys::frame_allocator::init_numa_frame_allocator_from_info(info) {
-                    pmm_initialized = true;
-                }
-            }
-        }
-    }
+    let pmm_initialized = firmware
+        .map(|catalog| {
+            crate::mm::phys::frame_allocator::init_numa_frame_allocator_from_firmware(
+                catalog,
+                usable_regions,
+            )
+        })
+        .transpose()
+        .map(|initialized| initialized.unwrap_or(false))
+        .unwrap_or_else(|error| {
+            log::warn!("[PMM] SRAT topology rejected: {:?}", error);
+            false
+        });
 
     if !pmm_initialized {
         unsafe {
@@ -210,7 +205,7 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfoView<'_>>) {
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init(numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfoView<'_>>) {
+pub fn init(boot_info: Option<&ExoBootInfoView<'_>>) {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
@@ -230,7 +225,7 @@ pub fn init(numa_info: Option<&NumaInfo>, boot_info: Option<&ExoBootInfoView<'_>
     let usable_regions = init_buddy_from_boot_info(boot_info);
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
-    init_numa_pmm(numa_info, &usable_regions);
+    init_numa_pmm(crate::platform::firmware::tables(), &usable_regions);
 
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
     init_post_buddy(boot_info);

@@ -8,19 +8,19 @@ use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::{KapiError, KapiResult};
 
 use crate::io::iommu::runtime::config::IommuConfig;
-use crate::io::iommu::vendors::intel::controller::init_global::init_iommu_from_acpi;
+use crate::io::iommu::vendors::intel::controller::init_global::init_iommu_from_dmar;
 
 /// Intel VT-d Driver Wrapper
 pub struct IntelVtDDriver {
-    dmar_addr: usize,
+    dmar: Arc<[u8]>,
     config: IommuConfig,
     initialized: bool,
 }
 
 impl IntelVtDDriver {
-    pub fn new(dmar_addr: usize, config: IommuConfig) -> Self {
+    pub fn new(dmar: Arc<[u8]>, config: IommuConfig) -> Self {
         Self {
-            dmar_addr,
+            dmar,
             config,
             initialized: false,
         }
@@ -41,10 +41,10 @@ impl Driver for IntelVtDDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        log::info!(target: "vtd", "Probing Intel VT-d IOMMU at {:#x}", self.dmar_addr);
+        log::info!(target: "vtd", "Probing Intel VT-d from owned DMAR catalog bytes");
 
         // Call existing unsafe initialization
-        match unsafe { init_iommu_from_acpi(self.dmar_addr, self.config.clone()) } {
+        match init_iommu_from_dmar(&self.dmar, self.config.clone()) {
             Ok(_) => {
                 self.initialized = true;
                 log::info!(target: "vtd", "Intel VT-d initialized successfully");
@@ -64,3 +64,4 @@ impl Driver for IntelVtDDriver {
         &[]
     }
 }
+use alloc::sync::Arc;

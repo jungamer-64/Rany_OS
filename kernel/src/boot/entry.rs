@@ -259,20 +259,15 @@ pub(super) fn init_acpi_and_iommu(boot_info: &boot_proto::ExoBootInfoView<'_>) {
         );
     }
 
-    let rsdp_addr = raw.rsdp_addr as usize;
-    let parser = match unsafe { drivers::acpi::init(rsdp_addr as u64) } {
-        Ok(p) => p,
-        Err(e) => {
-            panic!(
-                "[SECURITY] IOMMU is mandatory but ACPI initialization failed: {:?}",
-                e
-            );
-        }
-    };
-    info!(target: "init", "ACPI initialized via RSDP at {:#x}", rsdp_addr);
+    let catalog = crate::platform::firmware::tables().unwrap_or_else(|| {
+        panic!("[SECURITY] IOMMU is mandatory but the ACPI table catalog is unavailable")
+    });
+    let runtime = crate::platform::firmware::initialize_runtime()
+        .unwrap_or_else(|error| panic!("ACPI runtime initialization order failed: {error}"));
+    info!(target: "init", "ACPI runtime state: {:?}", runtime.state());
 
     let iommu_config = iommu_config_from_boot_policy(&raw.boot_policy);
-    init_iommu_driver(&parser, &iommu_config);
+    init_iommu_driver(catalog, &iommu_config);
     io::iommu::api::enforce_iommu_requirement();
 
     debug_assert!(
@@ -290,9 +285,9 @@ pub(super) fn init_acpi_and_iommu(boot_info: &boot_proto::ExoBootInfoView<'_>) {
         info!(target: "init", "IOMMU panic DMA pool initialized");
     }
 
-    match parser.find_table(b"MCFG") {
-        Ok(addr) => info!(target: "init", "MCFG table found at {:#x}", addr),
-        Err(_) => warn!(target: "init", "No MCFG table found."),
+    match catalog.first(drivers::acpi::TableSignature::MCFG) {
+        Some(table) => info!(target: "init", "MCFG table found at {:#x}", table.physical_address()),
+        None => warn!(target: "init", "No MCFG table found."),
     }
 
     drivers::pci::init();
@@ -338,14 +333,15 @@ mod iommu_policy_tests {
 
 /// Try to register and start an IOMMU driver (Intel VT-d or AMD-Vi).
 fn init_iommu_driver(
-    parser: &io::acpi::AcpiParser,
+    catalog: &drivers::acpi::TableCatalog,
     iommu_config: &io::iommu::runtime::config::IommuConfig,
 ) {
     use crate::driver_registry::{driver_registry, register_driver};
 
-    match parser.find_table(b"DMAR") {
-        Ok(dmar_addr) => {
-            let drv = io::iommu::api::create_intel_vtd_driver(dmar_addr, iommu_config.clone());
+    match catalog.first(drivers::acpi::TableSignature::DMAR) {
+        Some(dmar) => {
+            let drv =
+                io::iommu::api::create_intel_vtd_driver(dmar.owned_bytes(), iommu_config.clone());
             match register_driver(drv) {
                 Ok(handle) => {
                     info!(target: "init", "Registered Intel VT-d driver");
@@ -374,9 +370,10 @@ fn init_iommu_driver(
                 }
             }
         }
-        Err(_) => match parser.find_table(b"IVRS") {
-            Ok(ivrs_addr) => {
-                let drv = io::iommu::api::create_amd_vi_driver(ivrs_addr, iommu_config.clone());
+        None => match catalog.first(drivers::acpi::TableSignature::IVRS) {
+            Some(ivrs) => {
+                let drv =
+                    io::iommu::api::create_amd_vi_driver(ivrs.owned_bytes(), iommu_config.clone());
                 match register_driver(drv) {
                     Ok(handle) => {
                         info!(target: "init", "Registered AMD-Vi driver");
@@ -405,7 +402,7 @@ fn init_iommu_driver(
                     }
                 }
             }
-            Err(_) => {
+            None => {
                 panic!("[SECURITY] IOMMU is mandatory but no ACPI DMAR or IVRS table was found.");
             }
         },
@@ -486,7 +483,7 @@ fn init_single_nvme_controller(
         crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
     }
 
-    let num_cores = crate::cpu::count() as u32;
+    let num_cores = crate::cpu::snapshot().online().len() as u32;
     let packed_device_id = dev.packed_locator();
     match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
         Ok(()) => {

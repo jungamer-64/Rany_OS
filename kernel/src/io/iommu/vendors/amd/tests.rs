@@ -12,7 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicU64};
 use hashbrown::HashMap;
 use x86_64::PhysAddr;
 
-use crate::io::acpi::ivrs::IvhdDeviceEntry;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain as DomainState;
@@ -21,6 +20,7 @@ use crate::io::iommu::runtime::security::SecurityNotifier;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::sync::PoisonLock;
+use acpi_driver::ivrs::IvhdDeviceEntry;
 
 use super::map_ivmd_ranges;
 use super::registers::AMD_DEFAULT_MAX_ADDR_BITS;

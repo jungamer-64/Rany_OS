@@ -9,8 +9,10 @@
 extern crate alloc;
 
 pub mod aml;
+pub mod dmar;
 mod error;
 mod events;
+pub mod ivrs;
 mod runtime;
 mod tables;
 

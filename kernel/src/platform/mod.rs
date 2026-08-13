@@ -1,6 +1,7 @@
 //! Provider-backed platform boundary.
 
 pub mod apic;
+pub mod firmware;
 pub mod pci;
 
 pub fn register_builtin_services() {

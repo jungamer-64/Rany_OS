@@ -1,7 +1,7 @@
 // ALLOW: host-support heap shims mirror the production heap API for lib-test builds;
 // some hooks are intentionally present only to keep the test-time surface compatible.
 use alloc::vec::Vec;
-use boot_proto::{ExoBootInfoView, NumaInfo};
+use boot_proto::ExoBootInfoView;
 use core::alloc::{GlobalAlloc, Layout};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::PhysAddr;
@@ -75,7 +75,7 @@ pub fn set_heap_deallocation_enabled(enabled: bool) {
     HEAP_DEALLOC_ENABLED.store(enabled, Ordering::Release);
 }
 
-pub fn init(_numa_info: Option<&NumaInfo>, _boot_info: Option<&ExoBootInfoView<'_>>) {}
+pub fn init(_boot_info: Option<&ExoBootInfoView<'_>>) {}
 
 pub fn ensure_global_heap_ready() {}
 

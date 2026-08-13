@@ -24,7 +24,6 @@ use super::init::CapabilityManager;
 use super::iova::IovaManager;
 use super::qi_init::QIManager;
 use super::qi_ops::InvalidationOps;
-// use crate::io::acpi::dmar; // For parse_dmar - verified this path exists in kernel/src/io/acpi/dmar.rs
 
 fn align_down(value: u64, align: usize) -> u64 {
     crate::util::align_down_u64(value, align as u64)
@@ -79,7 +78,7 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 #[cfg(not(test))]
 fn spawn_command_queue_worker(controller: Arc<IommuController>) {
     let future = command_queue_worker(controller);
-    let _ = crate::task::spawn_detached(future);
+    let _ = crate::task::spawn(future, crate::task::TaskPlacement::Any);
 }
 
 fn activate_runtime_services_for_controller(
@@ -122,19 +121,16 @@ pub(crate) fn start_runtime_services() -> Result<usize, IommuError> {
     Ok(started)
 }
 
-/// Initialize IOMMU using ACPI DMAR table at `dmar_addr`
-pub unsafe fn init_iommu_from_acpi(
-    dmar_addr: usize,
-    config: IommuConfig,
-) -> Result<(), IommuError> {
+/// Initializes IOMMU controllers from owned ACPI DMAR bytes.
+pub fn init_iommu_from_dmar(dmar: &[u8], config: IommuConfig) -> Result<(), IommuError> {
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();
 
     // Parse DMAR using canonical ACPI parser from drivers/acpi
-    let dmar_info = match unsafe { crate::io::acpi::dmar::parse_dmar(dmar_addr) } {
+    let dmar_info = match acpi_driver::dmar::parse(dmar) {
         Ok(info) => info,
         Err(e) => {
-            log::error!("Failed to parse DMAR: {}", e);
+            log::error!("Failed to parse DMAR: {:?}", e);
             return Err(IommuError::HardwareError);
         }
     };
@@ -168,7 +164,7 @@ pub unsafe fn init_iommu_from_acpi(
 
 /// Initialize IOMMU controllers from DRHD units parsed from the DMAR table.
 unsafe fn init_controllers_from_drhd(
-    dmar_info: &crate::io::acpi::dmar::DmarInfo,
+    dmar_info: &acpi_driver::dmar::DmarInfo,
     config: &IommuConfig,
 ) -> Result<(Vec<Arc<IommuController>>, Option<usize>), IommuError> {
     let mut controllers = Vec::new();
@@ -248,7 +244,7 @@ unsafe fn init_controller_qi(controller: &mut IommuController) {
 }
 
 /// Build reserved memory regions from the DMAR RMRR entries.
-fn build_rmrr_regions(dmar_info: &crate::io::acpi::dmar::DmarInfo) -> Vec<ReservedMemoryRegion> {
+fn build_rmrr_regions(dmar_info: &acpi_driver::dmar::DmarInfo) -> Vec<ReservedMemoryRegion> {
     let mut reserved_regions = Vec::new();
 
     for region in &dmar_info.rmrr_regions {

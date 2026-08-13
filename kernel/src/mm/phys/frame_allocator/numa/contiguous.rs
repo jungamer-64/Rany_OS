@@ -76,8 +76,8 @@ pub fn reset_frame2m_local_alloc_metrics() {
 /// 1GiB フレームを割り当て（設計書5.1: TLBエントリの消費を最小限に）
 pub fn alloc_frame_1g() -> Option<PhysFrame<Size1GiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
-            if let Some(frame) = numa.allocate_1g_local(cpu_id as u8) {
+        if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) {
+            if let Some(frame) = numa.allocate_1g_local(cpu_id) {
                 return Some(frame);
             }
         }
@@ -173,15 +173,18 @@ pub fn numa_frame_allocator_stats() -> NumaAllocatorStats {
     if let Some(numa) = pmm_numa() {
         return numa.stats();
     }
-    NUMA_FRAME_ALLOCATOR.lock().expect("lock poisoned").stats()
+    legacy_numa_frame_allocator()
+        .lock()
+        .expect("lock poisoned")
+        .stats()
 }
 
 /// 現在のCPUが属するNUMAノードを取得
-pub fn get_cpu_numa_node(cpu_id: u8) -> NumaNodeId {
+pub fn get_cpu_numa_node(cpu_id: crate::cpu::CpuId) -> NumaNodeId {
     if let Some(numa) = pmm_numa() {
         return numa.topology().cpu_to_node(cpu_id);
     }
-    NUMA_FRAME_ALLOCATOR
+    legacy_numa_frame_allocator()
         .lock()
         .expect("lock poisoned")
         .topology()
@@ -196,8 +199,7 @@ pub(crate) fn is_range_in_numa_topology(
 ) -> bool {
     for node_idx in 0..topo.node_count() {
         let node = &topo.nodes[node_idx];
-        for i in 0..node.range_count {
-            let (range_start, range_size) = node.memory_ranges[i];
+        for &(range_start, range_size) in &node.memory_ranges {
             let range_end = range_start.saturating_add(range_size);
             if start >= range_start && end <= range_end {
                 return true;
@@ -236,8 +238,7 @@ pub fn pmm_managed_end() -> Option<u64> {
         let mut max_end = 0u64;
         for node_idx in 0..topo.node_count() {
             let node = &topo.nodes[node_idx];
-            for i in 0..node.range_count {
-                let (start, size) = node.memory_ranges[i];
+            for &(start, size) in &node.memory_ranges {
                 max_end = max_end.max(start.saturating_add(size));
             }
         }
@@ -256,12 +257,12 @@ pub fn pmm_managed_end() -> Option<u64> {
 ///
 /// 非ISRコンテキストから呼び出すこと。
 pub fn pmm_maintenance_tick(tick: u64) {
-    let Some(cpu_id) = crate::cpu::try_current_id() else {
+    let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) else {
         return;
     };
 
     if let Some(numa) = pmm_numa() {
-        if let Some(pmm) = numa.allocator_for_cpu(cpu_id as u8) {
+        if let Some(pmm) = numa.allocator_for_cpu(cpu_id) {
             let _ = pmm.drain_remote_frees();
             if should_sync_single_writer(tick) {
                 pmm.sync_single_writer_arenas();
@@ -291,8 +292,7 @@ pub(crate) fn release_range_from_numa(numa: &NumaPmmAllocator, start: u64, end: 
         else {
             continue;
         };
-        for i in 0..node.range_count {
-            let (range_start, range_size) = node.memory_ranges[i];
+        for &(range_start, range_size) in &node.memory_ranges {
             let range_end = range_start.saturating_add(range_size);
             let rel_start = start.max(range_start);
             let rel_end = end.min(range_end);
@@ -305,29 +305,6 @@ pub(crate) fn release_range_from_numa(numa: &NumaPmmAllocator, start: u64, end: 
 }
 
 /// NUMA情報からメモリ領域を収集
-pub(crate) fn collect_numa_memory_regions(
-    numa_info: &NumaInfo,
-    node_count: usize,
-) -> Vec<(PhysAddr, u64, NumaNodeId)> {
-    let mut regions: Vec<(PhysAddr, u64, NumaNodeId)> = Vec::new();
-    for node_idx in 0..node_count {
-        let node = &numa_info.nodes[node_idx];
-        let range_count = (node.memory_range_count as usize).min(node.memory_ranges.len());
-        for i in 0..range_count {
-            let range = node.memory_ranges[i];
-            if range.length == 0 {
-                continue;
-            }
-            regions.push((
-                PhysAddr::new(range.base),
-                range.length,
-                NumaNodeId::new(node_idx as u8),
-            ));
-        }
-    }
-    regions
-}
-
 /// 予約済みだった物理範囲をPMMに戻す（ACPI reclaimなど向け）
 pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     if size == 0 {
@@ -336,7 +313,11 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     let start = start.as_u64();
     let end = start.saturating_add(size);
-    let cpu_ids = crate::cpu::active_ids();
+    let cpu_ids = crate::cpu::snapshot()
+        .online()
+        .iter()
+        .map(crate::cpu::CpuId::as_usize)
+        .collect::<Vec<_>>();
 
     if let Some(numa) = unsafe { pmm_numa_mut() } {
         for allocator in numa.node_allocators.iter_mut() {

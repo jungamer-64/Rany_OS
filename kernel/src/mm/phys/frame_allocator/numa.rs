@@ -1,4 +1,5 @@
 use super::*;
+use alloc::collections::{BTreeMap, BTreeSet};
 
 /// NUMA統計情報
 mod contiguous;
@@ -27,24 +28,19 @@ impl NumaPmmAllocator {
         }
         Self {
             node_allocators,
-            topology: NumaTopology::new(),
+            topology: NumaTopology::new(1),
         }
     }
 
     pub(super) fn cpu_ids_for_node(&self, node_idx: usize) -> Vec<usize> {
-        let mut ids = Vec::new();
-        if node_idx < MAX_NUMA_NODES {
-            let mask = self.topology.nodes[node_idx].cpu_mask;
-            for cpu_id in 0..crate::per_cpu::MAX_CPUS {
-                if (mask & (1u64 << cpu_id)) != 0 {
-                    ids.push(cpu_id);
-                }
-            }
-        }
+        let mut ids: Vec<usize> = self
+            .topology
+            .nodes
+            .get(node_idx)
+            .map(|node| node.cpus.iter().map(crate::cpu::CpuId::as_usize).collect())
+            .unwrap_or_default();
         if ids.is_empty() {
-            for cpu_id in 0..crate::per_cpu::MAX_CPUS {
-                ids.push(cpu_id);
-            }
+            ids.push(crate::cpu::CpuId::BOOTSTRAP.as_usize());
         }
         ids
     }
@@ -98,7 +94,10 @@ impl NumaPmmAllocator {
         self.node_allocators.get(idx)?.as_ref()?.alloc_4k()
     }
 
-    pub(super) fn allocate_4k_local(&self, current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+    pub(super) fn allocate_4k_local(
+        &self,
+        current_cpu: crate::cpu::CpuId,
+    ) -> Option<PhysFrame<Size4KiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -117,7 +116,10 @@ impl NumaPmmAllocator {
         self.node_allocators.get(idx)?.as_ref()?.alloc_2m()
     }
 
-    pub(super) fn allocate_2m_local(&self, current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+    pub(super) fn allocate_2m_local(
+        &self,
+        current_cpu: crate::cpu::CpuId,
+    ) -> Option<PhysFrame<Size2MiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -136,7 +138,10 @@ impl NumaPmmAllocator {
         self.node_allocators.get(idx)?.as_ref()?.alloc_1g()
     }
 
-    pub(super) fn allocate_1g_local(&self, current_cpu: u8) -> Option<PhysFrame<Size1GiB>> {
+    pub(super) fn allocate_1g_local(
+        &self,
+        current_cpu: crate::cpu::CpuId,
+    ) -> Option<PhysFrame<Size1GiB>> {
         let preferred_node = self.topology.cpu_to_node(current_cpu);
         let fallback_order = self.topology.nodes_by_distance(preferred_node);
 
@@ -165,7 +170,7 @@ impl NumaPmmAllocator {
 
     pub(super) fn alloc_contiguous_local_aligned(
         &self,
-        current_cpu: u8,
+        current_cpu: crate::cpu::CpuId,
         frames: usize,
         align_bytes: u64,
     ) -> Option<PhysAddr> {
@@ -232,7 +237,7 @@ impl NumaPmmAllocator {
         &self.topology
     }
 
-    pub(super) fn allocator_for_cpu(&self, cpu_id: u8) -> Option<&PmmAllocatorFast> {
+    pub(super) fn allocator_for_cpu(&self, cpu_id: crate::cpu::CpuId) -> Option<&PmmAllocatorFast> {
         let node = self.topology.cpu_to_node(cpu_id);
         let idx = node.as_usize();
         self.node_allocators.get(idx)?.as_ref()
@@ -250,8 +255,11 @@ pub(crate) static FRAME_ALLOCATOR: IrqPoisonLock<BitmapFrameAllocator> =
 
 /// NUMA対応グローバルフレームアロケータ
 /// 設計書 5.3: NUMAアーキテクチャへの対応
-pub(crate) static NUMA_FRAME_ALLOCATOR: IrqPoisonLock<NumaFrameAllocator> =
-    IrqPoisonLock::new(NumaFrameAllocator::new());
+static NUMA_FRAME_ALLOCATOR: spin::Once<IrqPoisonLock<NumaFrameAllocator>> = spin::Once::new();
+
+pub(crate) fn legacy_numa_frame_allocator() -> &'static IrqPoisonLock<NumaFrameAllocator> {
+    NUMA_FRAME_ALLOCATOR.call_once(|| IrqPoisonLock::new(NumaFrameAllocator::new()))
+}
 
 /// PMM fast allocator (global)
 pub(crate) static PMM_GLOBAL_PTR: AtomicPtr<PmmAllocatorFast> = AtomicPtr::new(ptr::null_mut());
@@ -340,62 +348,118 @@ pub unsafe fn init_numa_frame_allocator(regions: &[(PhysAddr, u64, NumaNodeId)])
 ///
 /// # Safety
 /// カーネル初期化時に一度だけ呼ばれる必要がある
-pub unsafe fn init_numa_frame_allocator_from_info(numa_info: &NumaInfo) -> bool {
+#[derive(Debug)]
+pub enum FirmwareNumaError {
+    Acpi(acpi_driver::AcpiError),
+    TooManyNodes { discovered: usize, supported: usize },
+    AddressOverflow,
+}
+
+impl From<acpi_driver::AcpiError> for FirmwareNumaError {
+    fn from(error: acpi_driver::AcpiError) -> Self {
+        Self::Acpi(error)
+    }
+}
+
+/// Initializes the NUMA PMM directly from the kernel-owned SRAT catalog.
+///
+/// CPU affinity is attached after MADT discovery; at this early phase the BSP
+/// is the only allocator arena owner. Memory ranges are intersected with the
+/// bootloader's authoritative usable-memory set before publication.
+///
+/// # Errors
+///
+/// Returns an error for malformed SRAT data, overflowing address ranges, or a
+/// firmware node count that exceeds the allocator's supported topology.
+pub fn init_numa_frame_allocator_from_firmware(
+    catalog: &acpi_driver::TableCatalog,
+    usable_regions: &[(PhysAddr, u64)],
+) -> Result<bool, FirmwareNumaError> {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     if pmm_numa().is_some() {
-        return true;
+        return Ok(true);
     }
     if pmm_global().is_some() {
-        return false;
+        return Ok(false);
     }
 
-    let node_count = (numa_info.node_count as usize).min(MAX_NUMA_NODES);
-    if node_count == 0 {
-        return false;
+    let affinities = catalog.numa_memory_affinity()?;
+    let enabled = affinities
+        .iter()
+        .filter(|affinity| affinity.enabled && affinity.length != 0)
+        .collect::<Vec<_>>();
+    if enabled.is_empty() {
+        return Ok(false);
     }
 
-    let regions = collect_numa_memory_regions(numa_info, node_count);
+    let domains = enabled
+        .iter()
+        .map(|affinity| affinity.proximity_domain)
+        .collect::<BTreeSet<_>>();
+    if domains.len() > MAX_NUMA_NODES {
+        return Err(FirmwareNumaError::TooManyNodes {
+            discovered: domains.len(),
+            supported: MAX_NUMA_NODES,
+        });
+    }
+    let domain_to_node = domains
+        .into_iter()
+        .enumerate()
+        .map(|(index, domain)| (domain, NumaNodeId::new(index as u8)))
+        .collect::<BTreeMap<_, _>>();
+
+    let mut regions = Vec::new();
+    for affinity in enabled {
+        let affinity_end = affinity
+            .base
+            .checked_add(affinity.length)
+            .ok_or(FirmwareNumaError::AddressOverflow)?;
+        let node = domain_to_node[&affinity.proximity_domain];
+        for &(usable_start, usable_length) in usable_regions {
+            let usable_base = usable_start.as_u64();
+            let usable_end = usable_base
+                .checked_add(usable_length)
+                .ok_or(FirmwareNumaError::AddressOverflow)?;
+            let start = affinity.base.max(usable_base);
+            let end = affinity_end.min(usable_end);
+            if start < end {
+                regions.push((PhysAddr::new(start), end - start, node));
+            }
+        }
+    }
 
     if regions.is_empty() {
-        return false;
+        return Ok(false);
     }
 
     let mut numa = NumaPmmAllocator::new();
-    for node_idx in 0..node_count {
-        let node = &numa_info.nodes[node_idx];
-        if node.cpu_apic_mask_high != 0 {
-            log::warn!(
-                "[PMM] NUMA node {} has APIC IDs >= 64; truncating CPU mask",
-                node_idx
-            );
-        }
-        numa.topology.nodes[node_idx].cpu_mask = node.cpu_apic_mask_low;
-    }
-
     numa.init_numa(&regions);
-    if node_count > numa.topology.node_count {
-        numa.topology.node_count = node_count;
+    if domain_to_node.len() > numa.topology.node_count {
+        numa.topology.node_count = domain_to_node.len();
     }
 
     let boxed = Box::new(numa);
     PMM_NUMA_PTR.store(Box::into_raw(boxed), Ordering::Release);
-    true
+    Ok(true)
 }
 
 /// NUMAノード単位でアリーナを再構成
 pub(crate) fn reconfigure_numa_node(
     numa: &mut NumaPmmAllocator,
     node_idx: usize,
-    allowed: &[bool; crate::per_cpu::MAX_CPUS],
-    cpu_ids: &[usize],
+    online: &crate::cpu::CpuSet,
 ) {
     let node_cpu_ids = numa.cpu_ids_for_node(node_idx);
-    let mut filtered = Vec::new();
-    for cpu_id in node_cpu_ids {
-        if cpu_id < allowed.len() && allowed[cpu_id] {
-            filtered.push(cpu_id);
-        }
-    }
+    let filtered = node_cpu_ids
+        .into_iter()
+        .filter_map(|raw_id| crate::cpu::CpuId::try_from(raw_id).ok())
+        .filter(|cpu_id| online.contains(*cpu_id))
+        .map(crate::cpu::CpuId::as_usize)
+        .collect::<Vec<_>>();
+    let online_ids = online
+        .iter()
+        .map(crate::cpu::CpuId::as_usize)
+        .collect::<Vec<_>>();
     if let Some(pmm) = numa
         .node_allocators
         .get_mut(node_idx)
@@ -403,7 +467,7 @@ pub(crate) fn reconfigure_numa_node(
     {
         pmm.sync_single_writer_arenas();
         if filtered.is_empty() {
-            pmm.configure_arenas_for_cpu_ids(cpu_ids);
+            pmm.configure_arenas_for_cpu_ids(&online_ids);
         } else {
             pmm.configure_arenas_for_cpu_ids(&filtered);
         }
@@ -411,30 +475,24 @@ pub(crate) fn reconfigure_numa_node(
     }
 }
 
-/// Reconfigure PMM arena ownership for a CPU ID list.
-///
-/// # Safety
-/// Call during early boot while no concurrent allocations are running.
-pub unsafe fn pmm_reconfigure_for_cpu_ids(cpu_ids: &[usize]) {
+fn pmm_reconfigure_for_online_set(online: &crate::cpu::CpuSet) {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
-    let mut allowed = [false; crate::per_cpu::MAX_CPUS];
-    for &cpu_id in cpu_ids {
-        if cpu_id < allowed.len() {
-            allowed[cpu_id] = true;
-        }
-    }
 
     if let Some(numa) = unsafe { pmm_numa_mut() } {
         let node_count = numa.node_allocators.len();
         for node_idx in 0..node_count {
-            reconfigure_numa_node(numa, node_idx, &allowed, cpu_ids);
+            reconfigure_numa_node(numa, node_idx, online);
         }
         return;
     }
 
     if let Some(pmm) = unsafe { pmm_global_mut() } {
+        let cpu_ids = online
+            .iter()
+            .map(crate::cpu::CpuId::as_usize)
+            .collect::<Vec<_>>();
         pmm.sync_single_writer_arenas();
-        pmm.configure_arenas_for_cpu_ids(cpu_ids);
+        pmm.configure_arenas_for_cpu_ids(&cpu_ids);
         pmm.enable_single_writer();
     }
 }
@@ -444,10 +502,31 @@ pub unsafe fn pmm_reconfigure_for_cpu_ids(cpu_ids: &[usize]) {
 /// # Safety
 /// Call during early boot while no concurrent allocations are running.
 pub unsafe fn pmm_reconfigure_for_online_cpus() {
-    let cpu_ids = crate::cpu::active_ids();
-    unsafe {
-        pmm_reconfigure_for_cpu_ids(&cpu_ids);
+    let snapshot = crate::cpu::snapshot();
+    pmm_reconfigure_for_online_set(snapshot.online());
+}
+
+pub(crate) fn configure_numa_cpu_affinity(
+    cpu_capacity: usize,
+    assignments: &[(crate::cpu::CpuId, NumaNodeId)],
+) -> Result<(), crate::cpu::CpuSetError> {
+    let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
+    let Some(numa) = (unsafe { pmm_numa_mut() }) else {
+        return Ok(());
+    };
+
+    for node in &mut numa.topology.nodes {
+        node.cpus = crate::cpu::CpuSet::new(cpu_capacity)?;
     }
+    for &(cpu_id, node_id) in assignments {
+        let node = numa.topology.nodes.get_mut(node_id.as_usize()).ok_or(
+            crate::cpu::CpuSetError::CapacityOutOfRange {
+                capacity: node_id.as_usize() + 1,
+            },
+        )?;
+        node.cpus.insert(cpu_id)?;
+    }
+    Ok(())
 }
 
 // 簡易的な計測: ローカル優先割当の試行回数と成功回数
@@ -458,9 +537,9 @@ pub(crate) static FRAME_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 /// 現在のCPUのローカルNUMAノードからの割当を優先して試みる
 pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
+        if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) {
             FRAME_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-            if let Some(frame) = numa.allocate_4k_local(cpu_id as u8) {
+            if let Some(frame) = numa.allocate_4k_local(cpu_id) {
                 FRAME_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                 return Some(frame);
             }
@@ -528,7 +607,7 @@ pub fn alloc_frame_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>>
 
 /// 現在のCPUのローカルNUMAノードから4KiBフレームを割り当て
 /// 設計書 5.3.2: First-Touch Policy
-pub fn alloc_frame_local(current_cpu: u8) -> Option<PhysFrame<Size4KiB>> {
+pub fn alloc_frame_local(current_cpu: crate::cpu::CpuId) -> Option<PhysFrame<Size4KiB>> {
     if let Some(numa) = pmm_numa() {
         if let Some(frame) = numa.allocate_4k_local(current_cpu) {
             return Some(frame);
@@ -566,9 +645,9 @@ pub(crate) static FRAME2M_LOCAL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
 /// NUMAローカル優先で割当を試みる
 pub fn alloc_frame_2m() -> Option<PhysFrame<Size2MiB>> {
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
+        if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) {
             FRAME2M_LOCAL_ATTEMPTS.fetch_add(1, Ordering::Relaxed);
-            if let Some(frame) = numa.allocate_2m_local(cpu_id as u8) {
+            if let Some(frame) = numa.allocate_2m_local(cpu_id) {
                 FRAME2M_LOCAL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                 return Some(frame);
             }
@@ -608,7 +687,7 @@ pub fn alloc_frame_2m_on_numa_node(node: NumaNodeId) -> Option<PhysFrame<Size2Mi
 }
 
 /// 現在のCPUのローカルNUMAノードから2MiBフレームを割り当て
-pub fn alloc_frame_2m_local(current_cpu: u8) -> Option<PhysFrame<Size2MiB>> {
+pub fn alloc_frame_2m_local(current_cpu: crate::cpu::CpuId) -> Option<PhysFrame<Size2MiB>> {
     if let Some(numa) = pmm_numa() {
         if let Some(frame) = numa.allocate_2m_local(current_cpu) {
             return Some(frame);
@@ -649,9 +728,9 @@ pub fn alloc_contiguous_frames_aligned(
     let align = align_size_to_page(align_bytes);
 
     if let Some(numa) = pmm_numa() {
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
+        if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) {
             if let Some(addr) =
-                numa.alloc_contiguous_local_aligned(cpu_id as u8, frames_needed, align as u64)
+                numa.alloc_contiguous_local_aligned(cpu_id, frames_needed, align as u64)
             {
                 return Some(addr);
             }

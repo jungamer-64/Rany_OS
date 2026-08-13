@@ -257,7 +257,11 @@ impl AsyncBootCoordinator {
 }
 
 fn async_boot_stage_target_cpu(stage: AsyncBootStage, active_cpus: usize) -> usize {
-    let topology_candidates = crate::mm::numa::topology::steal_candidates_for_cpu(0);
+    let topology_candidates =
+        crate::mm::numa::topology::steal_candidates_for_cpu(crate::cpu::CpuId::BOOTSTRAP)
+            .into_iter()
+            .map(crate::cpu::CpuId::as_usize)
+            .collect::<alloc::vec::Vec<_>>();
     async_boot_stage_target_cpu_with_candidates(stage, active_cpus, &topology_candidates)
 }
 

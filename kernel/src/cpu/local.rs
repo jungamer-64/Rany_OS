@@ -3,7 +3,7 @@ use alloc::rc::Rc;
 use core::cell::UnsafeCell;
 use core::marker::{PhantomData, PhantomPinned};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 use crate::sync::MpscRingBuffer;
 
@@ -24,6 +24,7 @@ pub struct CpuRemoteAccess {
     control: MpscRingBuffer<CpuControlMessage, CONTROL_QUEUE_SLOTS>,
     wake_pending: AtomicBool,
     observed_epoch: AtomicU64,
+    numa_node: AtomicU8,
 }
 
 impl CpuRemoteAccess {
@@ -32,6 +33,7 @@ impl CpuRemoteAccess {
             control: MpscRingBuffer::new(),
             wake_pending: AtomicBool::new(false),
             observed_epoch: AtomicU64::new(0),
+            numa_node: AtomicU8::new(u8::MAX),
         }
     }
 
@@ -45,6 +47,16 @@ impl CpuRemoteAccess {
 
     pub fn observed_epoch(&self) -> u64 {
         self.observed_epoch.load(Ordering::Acquire)
+    }
+
+    pub fn numa_node(&self) -> Option<u8> {
+        let node = self.numa_node.load(Ordering::Acquire);
+        (node != u8::MAX).then_some(node)
+    }
+
+    pub(crate) fn set_numa_node(&self, node: Option<u8>) {
+        self.numa_node
+            .store(node.unwrap_or(u8::MAX), Ordering::Release);
     }
 }
 

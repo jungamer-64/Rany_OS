@@ -12,15 +12,15 @@ use crate::io::iommu::vendors::amd::init_iommu_from_ivrs;
 
 /// AMD-Vi Driver Wrapper
 pub struct AmdViDriver {
-    ivrs_addr: usize,
+    ivrs: Arc<[u8]>,
     config: IommuConfig,
     initialized: bool,
 }
 
 impl AmdViDriver {
-    pub fn new(ivrs_addr: usize, config: IommuConfig) -> Self {
+    pub fn new(ivrs: Arc<[u8]>, config: IommuConfig) -> Self {
         Self {
-            ivrs_addr,
+            ivrs,
             config,
             initialized: false,
         }
@@ -41,10 +41,10 @@ impl Driver for AmdViDriver {
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        log::info!(target: "amdvi", "Probing AMD-Vi IOMMU at {:#x}", self.ivrs_addr);
+        log::info!(target: "amdvi", "Probing AMD-Vi from owned IVRS catalog bytes");
 
         // Call existing unsafe initialization
-        match unsafe { init_iommu_from_ivrs(self.ivrs_addr, self.config.clone()) } {
+        match init_iommu_from_ivrs(&self.ivrs, self.config.clone()) {
             Ok(_) => {
                 self.initialized = true;
                 log::info!(target: "amdvi", "AMD-Vi initialized successfully");
@@ -61,3 +61,4 @@ impl Driver for AmdViDriver {
         &[]
     }
 }
+use alloc::sync::Arc;
