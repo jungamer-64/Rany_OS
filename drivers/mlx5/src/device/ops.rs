@@ -607,6 +607,9 @@ impl Mlx5Device {
         Ok(counters)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_nic_vport_promisc(&mut self) -> Mlx5Result<(bool, bool, bool)> {
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -703,6 +706,9 @@ impl Mlx5Device {
         Ok(parse_query_vnic_env_output(out_mbox))
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn refresh_port_runtime_state(&mut self, port_index: usize) -> Mlx5Result<()> {
         let _ = self.query_port_mac(port_index)?;
         let _ = self.query_port_state(port_index)?;
@@ -718,6 +724,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn update_port_stats(&mut self, port_index: usize) -> Mlx5Result<()> {
         let port_num = self
             .ports
@@ -753,6 +762,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_port_mac(&mut self, port_index: usize, mac: MacAddr) -> Mlx5Result<()> {
         self.ports
             .get(port_index)
@@ -777,6 +789,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_vport_counters(
         &mut self,
         port_num: u8,
@@ -824,6 +839,9 @@ impl Mlx5Device {
         Ok(counters)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_port_mtu(&mut self, port_index: usize, mtu: u32) -> Mlx5Result<()> {
         self.ports
             .get(port_index)
@@ -851,6 +869,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_nic_vport_promisc(
         &mut self,
         promisc_uc: bool,
@@ -895,6 +916,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_port_admin_up(&mut self, port_index: usize) -> Mlx5Result<()> {
         self.ports
             .get(port_index)
@@ -927,6 +951,9 @@ impl Mlx5Device {
     }
 
     /// プロミスキャスモードを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_promiscuous_mode(&mut self, enable: bool) -> Mlx5Result<()> {
         if self.flow_tables.is_empty() {
             return Err(Mlx5Error::NotSupported);

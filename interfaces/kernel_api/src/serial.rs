@@ -17,6 +17,9 @@ pub struct SerialPortInfo {
 
 pub trait SerialServices: Send + Sync {
     fn ports(&self) -> Vec<SerialPortInfo>;
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn write(&self, port_id: u32, bytes: &[u8]) -> KapiResult<usize>;
 }
 
@@ -30,6 +33,9 @@ pub fn try_instance() -> Option<&'static dyn SerialServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if serial services have not been installed.
 pub fn instance() -> &'static dyn SerialServices {
     try_instance().expect("SerialServices not installed")
 }

@@ -59,6 +59,9 @@ impl AhciPort {
     }
 
     /// Initialize the port
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> AhciResult<()> {
         self.stop()?;
 
@@ -138,6 +141,9 @@ impl AhciPort {
     }
 
     /// Execute IDENTIFY command
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn identify(&mut self) -> AhciResult<IdentifyData> {
         let slot = self.find_slot().ok_or(AhciError::NoFreeSlot)?;
         let identify_buf = {
@@ -198,6 +204,9 @@ impl AhciPort {
     }
 
     /// Synchronous read (existing)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_sectors(&mut self, lba: Lba, count: SectorCount, buf: &mut [u8]) -> AhciResult<()> {
         if buf.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
@@ -263,6 +272,9 @@ impl AhciPort {
     }
 
     /// Write sectors
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn write_sectors(&mut self, lba: Lba, count: SectorCount, buf: &[u8]) -> AhciResult<()> {
         if buf.len() < count.to_bytes() as usize {
             return Err(AhciError::InvalidParameter);
@@ -324,6 +336,9 @@ impl AhciPort {
     }
 
     /// Start a read transfer using a device-visible DMA address (non-blocking)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn start_read_dma(
         &mut self,
         lba: Lba,
@@ -368,6 +383,9 @@ impl AhciPort {
     }
 
     /// Start a write transfer using a device-visible DMA address (non-blocking)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn start_write_dma(
         &mut self,
         lba: Lba,
@@ -412,6 +430,9 @@ impl AhciPort {
     }
 
     /// Finish and clean up a completed transfer for the given slot. Returns transferred bytes.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn finish_transfer(&mut self, slot: SlotNumber) -> AhciResult<usize> {
         // Check for task file errors
         let tfd = self.read_port(PX_TFD);
@@ -452,6 +473,9 @@ impl AhciPort {
         Ok(unsafe { &mut *(cmd_table_buf.as_ptr() as *mut CommandTable) })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub fn wait_completion(&self, slot: SlotNumber) -> AhciResult<()> {
         let slot_mask = 1u32 << slot.as_u8();
 

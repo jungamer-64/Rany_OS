@@ -21,6 +21,9 @@ pub struct AcsController {
 }
 
 impl AcsController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let offset = config
             .find_ext_capability(bdf, ext_cap_id::ACS)
@@ -47,6 +50,9 @@ impl AcsController {
     }
 
     /// Enable ACS P2P Isolation (Source Validation, Translation Blocking, P2P Redirect, Upstream Forwarding)
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn enable_isolation(&self) -> PcieResult<()> {
         let cap = self
             .capability

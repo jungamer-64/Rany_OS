@@ -11,6 +11,9 @@ const LOW_MEM_LIMIT: u64 = 0x10_0000;
 pub struct TrampolinePhysAddr(u32);
 
 impl TrampolinePhysAddr {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(addr: u64) -> Result<Self, &'static str> {
         let addr32 = u32::try_from(addr).map_err(|_| "AP trampoline address exceeds u32")?;
         if addr32 == 0 {
@@ -59,6 +62,9 @@ impl TryFrom<usize> for TrampolinePhysAddr {
 pub struct TrampolineVirtAddr(NonZeroUsize);
 
 impl TrampolineVirtAddr {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(addr: usize) -> Result<Self, &'static str> {
         let addr = NonZeroUsize::new(addr).ok_or("AP trampoline virtual address is null")?;
         if !addr.get().is_multiple_of(TRAMPOLINE_SIZE) {
@@ -85,6 +91,9 @@ impl TryFrom<usize> for TrampolineVirtAddr {
 pub struct PageTable32Addr(u32);
 
 impl PageTable32Addr {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(addr: u64) -> Result<Self, &'static str> {
         let addr32 = u32::try_from(addr).map_err(|_| "AP page table base exceeds u32")?;
         if addr32 == 0 {

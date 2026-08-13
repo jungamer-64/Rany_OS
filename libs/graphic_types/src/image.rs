@@ -314,6 +314,9 @@ impl Image {
     /// Returns `Err(ImageError::DimensionsTooLarge)` if:
     /// - The dimensions would cause integer overflow
     /// - The total size exceeds `MAX_IMAGE_SIZE`
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn try_new(width: u32, height: u32) -> ImageResult<Self> {
         let size = (width as usize)
             .checked_mul(height as usize)
@@ -332,12 +335,19 @@ impl Image {
     }
 
     /// Create an empty image (panics on overflow, prefer `try_new`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the RGBA byte size overflows or exceeds [`MAX_IMAGE_SIZE`].
     #[must_use]
     pub fn new(width: u32, height: u32) -> Self {
         Self::try_new(width, height).expect("Image dimensions too large")
     }
 
     /// Try to create a solid-color filled image with checked arithmetic
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn try_filled(width: u32, height: u32, color: Color) -> ImageResult<Self> {
         let pixel_count = (width as usize)
             .checked_mul(height as usize)
@@ -366,6 +376,10 @@ impl Image {
     }
 
     /// Create a solid-color filled image (panics on overflow, prefer `try_filled`)
+    ///
+    /// # Panics
+    ///
+    /// Panics if the RGBA byte size overflows or exceeds [`MAX_IMAGE_SIZE`].
     #[must_use]
     pub fn filled(width: u32, height: u32, color: Color) -> Self {
         Self::try_filled(width, height, color).expect("Image dimensions too large")

@@ -267,6 +267,9 @@ impl KeyboardDriver {
     /// Take keyboard stream with Arc<dyn Keymap>
     ///
     /// For dynamic keymap switching or non-'static keymaps.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn take_stream_with_arc_keymap(
         &'static self,
         keymap: Arc<dyn Keymap>,

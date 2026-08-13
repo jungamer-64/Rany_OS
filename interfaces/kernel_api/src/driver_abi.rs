@@ -438,6 +438,9 @@ pub struct DriverVTableFns {
 
 impl DriverVTable {
     /// Validate that this vtable is compatible with the current ABI version.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn validate(&self) -> Result<(), AbiError> {
         if self.abi_version != DRIVER_ABI_VERSION {
             return Err(AbiError::NotSupported);
@@ -829,6 +832,10 @@ impl<'a> AbiNetTxSegments<'a> {
         }
     }
 
+    /// # Panics
+    ///
+    /// Panics only if the non-empty, fully validated segment invariant created
+    /// by [`Self::new`] has been violated internally.
     pub fn first(self) -> CheckedAbiNetTxSegment<'a> {
         CheckedAbiNetTxSegment::new(&self.segments[0])
             .expect("AbiNetTxSegments validates every TX segment")
@@ -1018,6 +1025,11 @@ impl AbiPacketRefStorage {
 
     /// # Safety
     /// `T` must fit into the inline storage and not require stronger alignment.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T` is larger than the inline storage or requires stricter
+    /// alignment than the storage provides.
     pub unsafe fn from_state<T>(state: T) -> Self {
         assert!(size_of::<T>() <= size_of::<Self>());
         assert!(align_of::<T>() <= align_of::<Self>());

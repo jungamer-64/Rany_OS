@@ -85,11 +85,17 @@ impl Mlx5Device {
     }
 
     /// ローカルTISの存在確認
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_tis_exists(&mut self, tisn: u32) -> Mlx5Result<()> {
         self.query_tis(tisn).map(|_| ())
     }
 
     /// ローカル TIS コンテキストを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_tis(&mut self, tisn: u32) -> Mlx5Result<crate::cmd::res::QueryTisInfo> {
         self.query_tis_with_snapshot(tisn).map(|(info, _)| info)
     }
@@ -115,11 +121,17 @@ impl Mlx5Device {
     }
 
     /// PF passthrough 向けの既存TISを探索
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn find_existing_tis(&mut self, max_scan: u32) -> Mlx5Result<u32> {
         self.find_existing_tis_matching(max_scan, self.td, 0)
     }
 
     /// default-only PF profile 向けに、all-zero send object を優先して探索
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn find_existing_tis_default_profile(&mut self, max_scan: u32) -> Mlx5Result<u32> {
         let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
         let mut first_any = None;
@@ -185,6 +197,9 @@ impl Mlx5Device {
     }
 
     /// PF passthrough 向けの既存 TIS を優先条件付きで探索
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn find_existing_tis_matching(
         &mut self,
         max_scan: u32,
@@ -1012,6 +1027,9 @@ impl Mlx5Device {
     }
 
     /// Protection Domain を割り当て
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn alloc_pd(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
@@ -1060,6 +1078,9 @@ impl Mlx5Device {
     }
 
     /// Transport Domain を割り当て
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn alloc_td(&mut self) -> Mlx5Result<u32> {
         let is_vf = self.is_vf();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
@@ -1107,6 +1128,9 @@ impl Mlx5Device {
         last_err
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_driver_version(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         if !self
@@ -1137,6 +1161,9 @@ impl Mlx5Device {
     }
 
     /// フローテーブルに特定のMACアドレスフィルタを追加
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_mac_filter(
         &mut self,
         table_id: u32,
@@ -1159,6 +1186,9 @@ impl Mlx5Device {
     }
 
     /// フローテーブルに特定のIPv4アドレスフィルタを追加
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn add_ip_filter(
         &mut self,
         table_id: u32,
@@ -1180,6 +1210,9 @@ impl Mlx5Device {
         )
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn setup_rx_flow_table_advanced(&mut self, tirn: u32) -> Mlx5Result<()> {
         let ft_config = FlowTableConfig {
             table_type: crate::flow::FlowTableType::NicRx,
@@ -1213,6 +1246,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -1235,6 +1271,9 @@ impl Mlx5Device {
         Ok(table_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_flow_group(
         &mut self,
         table_id: u32,
@@ -1270,6 +1309,9 @@ impl Mlx5Device {
         Ok(group_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn set_flow_table_entry(
         &mut self,
         table_id: u32,

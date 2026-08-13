@@ -68,6 +68,10 @@ impl<T> PoisonRwLock<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns a poison error containing the acquired guard if a writer
+    /// previously panicked while holding the lock.
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
         let guard = self.inner.read();
         let p_guard = PoisonRwLockReadGuard { guard };
@@ -78,6 +82,10 @@ impl<T> PoisonRwLock<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns a poison error containing the acquired guard if a writer
+    /// previously panicked while holding the lock.
     pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
         let guard = self.inner.write();
         let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
@@ -177,6 +185,9 @@ impl<T> PoisonLock<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         let mut backoff = Backoff::new();
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
@@ -273,6 +284,9 @@ impl<T> IrqPoisonLock<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
         let mut flags: usize = 0;
         unsafe {

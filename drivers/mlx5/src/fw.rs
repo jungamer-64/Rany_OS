@@ -56,6 +56,9 @@ impl FwInfo {
 /// # Returns
 /// - `Ok(FwInfo)`: FW準備完了
 /// - `Err(Mlx5Error)`: タイムアウト
+/// # Errors
+///
+/// Returns an error if the device is not ready, times out, or reports a failed completion.
 pub unsafe fn wait_fw_ready(bar0_base: u64, timeout_ms: u32) -> Mlx5Result<FwInfo> {
     let base = bar0_base as usize;
     let start_ms = kernel_api::service::kernel::instance().current_tick();

@@ -307,9 +307,23 @@ pub trait AcpiServices: Send + Sync {
 pub trait PciServices: Send + Sync {
     fn scan_all_devices(&self) -> Vec<PciDeviceInfo>;
     fn find_by_class(&self, class: u8, subclass: u8) -> Vec<PciDeviceInfo>;
+    /// # Errors
+    ///
+    /// Returns an error if the device is absent or its command register cannot
+    /// be updated.
     fn set_bus_master(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn set_memory_space(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
+    /// # Errors
+    ///
+    /// Returns an error if the device is absent or its command register cannot
+    /// be updated.
     fn set_io_space(&self, bdf: BdfAddress, enabled: bool) -> KapiResult<()>;
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn disable_intx(&self, bdf: BdfAddress) -> KapiResult<()>;
 }
 
@@ -331,6 +345,9 @@ pub fn try_acpi() -> Option<&'static dyn AcpiServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if ACPI services have not been installed.
 pub fn acpi() -> &'static dyn AcpiServices {
     try_acpi().expect("AcpiServices not installed")
 }
@@ -345,6 +362,9 @@ pub fn try_pci() -> Option<&'static dyn PciServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if PCI services have not been installed.
 pub fn pci() -> &'static dyn PciServices {
     try_pci().expect("PciServices not installed")
 }
@@ -359,6 +379,9 @@ pub fn try_apic() -> Option<&'static dyn ApicServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if APIC services have not been installed.
 pub fn apic() -> &'static dyn ApicServices {
     try_apic().expect("ApicServices not installed")
 }

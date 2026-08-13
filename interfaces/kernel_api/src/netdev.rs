@@ -411,10 +411,16 @@ impl NetPortRuntimeHandle {
         (self.ops.alloc_packet)(self.context, self.port_id)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     pub fn submit_rx(self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
         (self.ops.submit_rx)(self.context, self.port_id, packet, meta)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn complete_tx_lease(
         self,
         lease_id: TxLeaseId,
@@ -423,10 +429,16 @@ impl NetPortRuntimeHandle {
         (self.ops.complete_tx_lease)(self.context, self.port_id, lease_id, result)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn schedule_event(self, event: NetDriverEvent) -> Result<(), &'static str> {
         (self.ops.schedule_event)(self.context, self.port_id, event)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     pub fn update_link(self, up: bool) -> Result<(), &'static str> {
         (self.ops.update_link)(self.context, self.port_id, up)
     }
@@ -447,26 +459,44 @@ impl core::fmt::Debug for NetPortRuntimeHandle {
 pub trait NetDevicePort: Send + Sync {
     fn info(&self) -> NetDeviceInfo;
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str>;
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn bind(&self, _if_id: u16) -> Result<(), &'static str> {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn submit_tx_chain(
         &self,
         submission: TxSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str>;
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn set_interrupts_enabled(&self, _enabled: bool) -> Result<(), &'static str> {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the service is not ready, times out, or reports a failed completion.
     fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the service is not ready, times out, or reports a failed completion.
     fn handle_event(&self, if_id: u16, event: NetDriverEvent) -> Result<(), &'static str>;
 
     fn stats(&self) -> NetPortStats;
@@ -521,6 +551,9 @@ pub fn try_instance() -> Option<&'static dyn NetDeviceServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if network-device services have not been installed.
 pub fn instance() -> &'static dyn NetDeviceServices {
     try_instance().expect("NetDeviceServices not installed")
 }

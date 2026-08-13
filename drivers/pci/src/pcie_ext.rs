@@ -276,6 +276,9 @@ pub struct SriovController {
 }
 
 impl SriovController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, pf_bdf: PcieBdf) -> PcieResult<Self> {
         // SR-IOV拡張ケイパビリティを検索
         let offset = config
@@ -334,6 +337,9 @@ impl SriovController {
     }
 
     /// VFを有効化
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn enable_vfs(&self, num_vfs: u16) -> PcieResult<()> {
         let cap = self
             .capability
@@ -372,6 +378,9 @@ impl SriovController {
     }
 
     /// VFを無効化
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn disable_vfs(&self) -> PcieResult<()> {
         let cap = self
             .capability
@@ -400,6 +409,9 @@ impl SriovController {
     }
 
     /// VFのBDFを取得
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn get_vf_bdf(&self, vf_index: u16) -> PcieResult<PcieBdf> {
         let cap = self
             .capability
@@ -483,6 +495,9 @@ pub struct AerController {
 }
 
 impl AerController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let offset = config
             .find_ext_capability(bdf, ext_cap_id::AER)
@@ -499,6 +514,9 @@ impl AerController {
     }
 
     /// 訂正可能エラーを読み取り
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_correctable_errors(&self) -> PcieResult<CorrectableErrors> {
         let cap = self
             .capability
@@ -522,6 +540,9 @@ impl AerController {
     }
 
     /// 訂正不能エラーを読み取り
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_uncorrectable_errors(&self) -> PcieResult<UncorrectableErrors> {
         let cap = self
             .capability
@@ -553,6 +574,9 @@ impl AerController {
     }
 
     /// 訂正可能エラーをクリア
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn clear_correctable_errors(&self) -> PcieResult<()> {
         let cap = self
             .capability

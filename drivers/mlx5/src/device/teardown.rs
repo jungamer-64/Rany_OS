@@ -15,6 +15,9 @@ use crate::error::Mlx5Result;
 use alloc::vec::Vec; // bring execute() method into scope
 
 impl Mlx5Device {
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn teardown_full(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "=== Starting full teardown sequence ===");
 
@@ -124,6 +127,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_sq_hw(&mut self, sqn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -139,6 +145,9 @@ impl Mlx5Device {
     }
 
     // ... added more destroy helpers as needed
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_rq_hw(&mut self, rqn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -153,6 +162,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_rmp_hw(&mut self, rmpn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -167,6 +179,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_cq_hw(&mut self, cqn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -181,6 +196,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_eq_hw(&mut self, eqn: u32) -> Mlx5Result<()> {
         let cmd = self
             .cmd
@@ -198,6 +216,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_tir_hw(&mut self, tirn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -213,6 +234,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_tis_hw(&mut self, tisn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -228,6 +252,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_qp_hw(&mut self, qpn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -242,6 +269,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_rqt_hw(&mut self, rqtn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -256,6 +286,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_flow_table_hw(&mut self, table_id: u32) -> Mlx5Result<()> {
         let cmd = self
             .cmd
@@ -273,6 +306,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_flow_group_hw(&mut self, table_id: u32, group_id: u32) -> Mlx5Result<()> {
         let cmd = self
             .cmd
@@ -290,6 +326,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn delete_flow_table_entry_hw(
         &mut self,
         table_id: u32,
@@ -311,6 +350,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn destroy_mkey_hw(&mut self, mkey_index: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -326,6 +368,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn dealloc_pd_hw(&mut self, pd: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -340,6 +385,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn dealloc_td_hw(&mut self, td: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -354,6 +402,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn dealloc_uar_hw(&mut self, uar_page: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -368,6 +419,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn teardown_hca_hw(&mut self, graceful: bool) -> Mlx5Result<()> {
         let cmd = self
             .cmd
@@ -385,6 +439,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub unsafe fn disable_hca_hw(&mut self) -> Mlx5Result<()> {
         let cmd = self
             .cmd
@@ -402,6 +459,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn transition_sq_to_error(&mut self, sqn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()
@@ -417,6 +477,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn transition_rq_to_error(&mut self, rqn: u32) -> Mlx5Result<()> {
         self.cmd
             .as_ref()

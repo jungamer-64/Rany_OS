@@ -132,6 +132,9 @@ impl Mouse {
     }
 
     /// マウスの初期化
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), MouseInitError> {
         // 1. Auxiliary Device (マウス) を有効化
         self.write_controller_command(CMD_ENABLE_AUX);

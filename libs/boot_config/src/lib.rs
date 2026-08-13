@@ -74,6 +74,9 @@ fn get_cmdline_option<'a>(cmdline: &'a str, key: &str) -> Option<&'a str> {
 }
 
 /// Parse boot-critical policy from a merged kernel command line.
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required state cannot be read.
 pub fn parse_boot_policy(cmdline: &str) -> Result<BootPolicy, BootPolicyError> {
     let mut policy = BootPolicy::default();
 
@@ -253,6 +256,9 @@ fn process_config_line(
 ///
 /// # Returns
 /// Parsed BootConfig, or an error for deprecated/invalid breaking config keys.
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required state cannot be read.
 pub fn parse_config(text: &str) -> Result<BootConfig, BootConfigError> {
     let mut config = BootConfig::default();
     let mut current_entry: Option<BootEntry> = None;

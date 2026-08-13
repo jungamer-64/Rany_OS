@@ -133,12 +133,18 @@ pub trait GuiServices: Send + Sync {
     ///
     /// # Arguments
     /// * `access_token` - Proof of capability to access hardware/DMA
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn request_framebuffer(&self, access_token: &DomainCapabilities)
     -> KapiResult<FramebufferInfo>;
 
     /// Get a handle to the input event stream
     ///
     /// The stream can be polled asynchronously by the client logic.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     fn get_input_stream_handle(&self) -> KapiResult<InputStreamHandle>;
 
     /// Get the current system tick count

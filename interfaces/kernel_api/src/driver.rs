@@ -93,12 +93,18 @@ pub trait Driver: Send + Sync {
     /// # Returns
     /// - `Ok(())` - プローブ成功、ドライバ使用可能
     /// - `Err(KapiError)` - プローブ失敗、ドライバは使用不可
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn probe(&mut self) -> KapiResult<()>;
 
     /// ドライバを開始
     ///
     /// probe() 成功後に呼ばれる。
     /// 割り込みハンドラの登録やポーリング開始など。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn start(&mut self) -> KapiResult<()> {
         // デフォルト実装: 何もしない
         Ok(())
@@ -108,6 +114,9 @@ pub trait Driver: Send + Sync {
     ///
     /// ホットスワップやシャットダウン時に呼ばれる。
     /// リソースの解放、割り込みの無効化など。
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn stop(&mut self) -> KapiResult<()> {
         // デフォルト実装: 何もしない
         Ok(())
@@ -117,6 +126,9 @@ pub trait Driver: Send + Sync {
     ///
     /// ドライバのリソース解放や、ホットアンロード時のクリーンアップを行う。
     /// デフォルトでは何もしない（`Ok(())` を返す）。
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn remove(&mut self) -> KapiResult<()> {
         Ok(())
     }
@@ -152,11 +164,17 @@ pub trait Driver: Send + Sync {
     }
 
     /// Export driver-managed state for live update.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn export_live_state(&self) -> KapiResult<Option<DriverStateBlob>> {
         Ok(None)
     }
 
     /// Import previously exported state into a freshly loaded driver.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn import_live_state(&mut self, _state: DriverStateBlob) -> KapiResult<()> {
         Ok(())
     }

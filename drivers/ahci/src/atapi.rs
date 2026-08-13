@@ -422,6 +422,9 @@ impl AtapiPort {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub fn packet_command(
         &mut self,
         cdb: &ScsiCdb12,
@@ -482,6 +485,9 @@ impl AtapiPort {
         Ok(transferred as usize)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn test_unit_ready(&mut self) -> AhciResult<bool> {
         let cdb = ScsiCdb12::test_unit_ready();
         let mut buffer = [];
@@ -492,6 +498,9 @@ impl AtapiPort {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn inquiry(&mut self) -> AhciResult<InquiryResponse> {
         if let Some(cached) = &self.inquiry_cache {
             return Ok(*cached);
@@ -504,6 +513,9 @@ impl AtapiPort {
         Ok(response)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn request_sense(&mut self) -> AhciResult<SenseData> {
         let cdb = ScsiCdb12::request_sense(18);
         let mut buffer = [0u8; 18];
@@ -511,6 +523,9 @@ impl AtapiPort {
         Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const SenseData) })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_capacity(&mut self) -> AhciResult<ReadCapacityResponse> {
         let cdb = ScsiCdb12::read_capacity();
         let mut buffer = [0u8; 8];
@@ -518,6 +533,9 @@ impl AtapiPort {
         Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const ReadCapacityResponse) })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_sectors(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> {
         let expected = count as usize * CD_SECTOR_SIZE as usize;
         if buffer.len() < expected {
@@ -527,6 +545,9 @@ impl AtapiPort {
         self.packet_command(&cdb, &mut buffer[..expected], false)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_sectors_large(
         &mut self,
         lba: u32,
@@ -541,6 +562,9 @@ impl AtapiPort {
         self.packet_command(&cdb, &mut buffer[..expected], false)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_toc(&mut self) -> AhciResult<TableOfContents> {
         let cdb = ScsiCdb12::read_toc(TocFormat::FormattedToc, 0, 4);
         let mut header_buf = [0u8; 4];
@@ -569,6 +593,9 @@ impl AtapiPort {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn eject(&mut self) -> AhciResult<()> {
         let cdb = ScsiCdb12::start_stop_unit(false, true);
         let mut buffer = [];
@@ -576,6 +603,9 @@ impl AtapiPort {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn load(&mut self) -> AhciResult<()> {
         let cdb = ScsiCdb12::start_stop_unit(true, true);
         let mut buffer = [];
@@ -583,6 +613,9 @@ impl AtapiPort {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn spin_up(&mut self) -> AhciResult<()> {
         let cdb = ScsiCdb12::start_stop_unit(true, false);
         let mut buffer = [];
@@ -655,6 +688,9 @@ impl CdDvdDrive {
             info: None,
         }
     }
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> AhciResult<()> {
         let inquiry = self.port.inquiry()?;
         self.info = Some(CdDvdDriveInfo {
@@ -672,22 +708,40 @@ impl CdDvdDrive {
     pub fn is_media_present(&mut self) -> bool {
         self.port.test_unit_ready().unwrap_or(false)
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn media_capacity(&mut self) -> AhciResult<(u64, u32)> {
         let cap = self.port.read_capacity()?;
         Ok((cap.total_blocks(), cap.block_length()))
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> {
         self.port.read_sectors(lba, count, buffer)
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn read_toc(&mut self) -> AhciResult<TableOfContents> {
         self.port.read_toc()
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn eject(&mut self) -> AhciResult<()> {
         self.port.eject()
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn load(&mut self) -> AhciResult<()> {
         self.port.load()
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub fn last_error(&mut self) -> AhciResult<SenseData> {
         self.port.request_sense()
     }

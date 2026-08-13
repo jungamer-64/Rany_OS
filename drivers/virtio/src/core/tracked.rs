@@ -66,6 +66,11 @@ impl<T> TrackedVirtQueue<T> {
     }
 
     /// Poll for a completed request and recover the tracked buffer.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the device completes a descriptor that has no corresponding
+    /// tracked buffer, which violates the queue submission invariant.
     pub fn poll_complete_tracked(&self) -> Option<(u16, T, u32)> {
         let (idx, len) = self.inner.poll_complete()?;
 

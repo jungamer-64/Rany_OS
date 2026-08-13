@@ -211,6 +211,9 @@ fn resolve_rmp_backed_rq_layout(
 
 impl Mlx5Device {
     /// Event Queueを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_eq_hw(
         &mut self,
         eq_buf_virt: u64,
@@ -296,6 +299,9 @@ impl Mlx5Device {
     }
 
     /// Completion Queueを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_cq_hw(
         &mut self,
         cq_buf_virt: u64,
@@ -398,6 +404,9 @@ impl Mlx5Device {
     }
 
     /// CQモデレーション（割り込み抑制）を設定
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn modify_cq_moderation(
         &mut self,
         cqn: u32,
@@ -417,6 +426,9 @@ impl Mlx5Device {
     }
 
     /// Send Queueを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_sq_hw(
         &mut self,
         sq_buf_virt: u64,
@@ -632,6 +644,9 @@ impl Mlx5Device {
     }
 
     /// Receive Queueを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_rq_hw(
         &mut self,
         rq_buf_virt: u64,
@@ -1150,6 +1165,9 @@ impl Mlx5Device {
     }
 
     /// RQTを作成
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_rqt(&mut self, rq_numbers: &[u32], log_rqt_size: u8) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);

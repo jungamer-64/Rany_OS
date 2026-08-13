@@ -188,8 +188,14 @@ pub trait ZeroCopyBlockDevice: Send + Sync {
 
     fn info(&self) -> BlockDeviceInfo;
 
+    /// # Errors
+    ///
+    /// Returns an error if the service is not ready, times out, or reports a failed completion.
     fn flush(&self) -> BlockResult<()>;
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer>;
 
     fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>>;

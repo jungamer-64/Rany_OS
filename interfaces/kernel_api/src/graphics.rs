@@ -31,6 +31,9 @@ pub fn try_instance() -> Option<&'static dyn GraphicsServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if graphics services have not been installed.
 pub fn instance() -> &'static dyn GraphicsServices {
     try_instance().expect("GraphicsServices not installed")
 }

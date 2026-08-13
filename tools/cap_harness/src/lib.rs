@@ -71,6 +71,9 @@ impl CapabilitySet {
     }
 
     /// Raise the effective capability if permitted
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn raise(&mut self, bit: Capability) -> Result<(), &'static str> {
         if self.is_permitted(bit) {
             self.effective |= bit;
@@ -125,6 +128,9 @@ fn resource_to_capability(resource: &str) -> Capability {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub fn grant(
     manager: &mut Manager,
     caller_pid: u64,

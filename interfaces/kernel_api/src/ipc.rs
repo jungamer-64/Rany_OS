@@ -108,6 +108,9 @@ pub const fn compute_simple_type_hash(type_name: &str, size: usize, align: usize
     TypeHash::new(name_hash ^ mix_u64(size as u64) ^ mix_u64((align as u64) << 1))
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied representation violates the required invariants.
 pub fn verify_type_hash<T: TypeIdHash + ?Sized>(expected: TypeHash) -> Result<(), TypeHashError> {
     let actual = T::TYPE_HASH;
     if expected.is_compatible(actual) {
@@ -276,6 +279,9 @@ impl RRefRawParts {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_abi(raw: AbiRRefRaw) -> Result<Self, RawPartsError> {
         let ptr = NonNull::new(raw.ptr).ok_or(RawPartsError::NullPointer)?;
         let drop_fn = raw.drop_fn.ok_or(RawPartsError::MissingDropFn)?;
@@ -322,6 +328,9 @@ impl<T: ?Sized> RRef<T> {
         self.owner
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     pub fn move_to(mut self, new_owner: DomainId) -> Result<Self, RRefError> {
         kernel::instance().exchange_transfer_raw(self.data, self.owner, new_owner)?;
         self.owner = new_owner;
@@ -343,6 +352,9 @@ impl<T: ?Sized> RRef<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     pub fn send(self, channel: ChannelHandle) -> Result<(), RRefError> {
         let raw = self.into_raw_parts();
         kernel::instance().ipc_send_raw(channel, raw.into_abi())?;
@@ -413,6 +425,9 @@ unsafe extern "C" fn drop_slice<T>(
 }
 
 impl<T: TypeIdHash + 'static> RRef<T> {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(value: T) -> Result<Self, RRefError> {
         let layout = Layout::new::<T>();
         let (data, owner) = alloc_exchange(layout.size(), layout.align())?;
@@ -431,6 +446,9 @@ impl<T: TypeIdHash + 'static> RRef<T> {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_raw_parts(raw: RRefRawParts) -> Result<Self, RRefError> {
         verify_type_hash::<T>(raw.type_hash())?;
         if raw.size() != mem::size_of::<T>() || raw.align() != mem::align_of::<T>() {
@@ -452,6 +470,9 @@ impl<T: TypeIdHash + 'static> RRef<T> {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn recv(channel: ChannelHandle) -> Result<Self, RRefError> {
         let raw = kernel::instance().ipc_recv_raw(channel)?;
         let parts = RRefRawParts::from_abi(raw)?;
@@ -464,6 +485,9 @@ impl<T: TypeIdHash + 'static> RRef<T> {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn into_inner(self) -> Result<T, RRefError> {
         let this = ManuallyDrop::new(self);
         let value = unsafe { this.ptr.as_ptr().read() };
@@ -473,6 +497,9 @@ impl<T: TypeIdHash + 'static> RRef<T> {
 }
 
 impl<T: TypeIdHash + Copy + 'static> RRef<[T]> {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_slice_copy(values: &[T]) -> Result<Self, RRefError> {
         let size = mem::size_of_val(values);
         let align = mem::align_of::<T>();
@@ -495,10 +522,16 @@ impl<T: TypeIdHash + Copy + 'static> RRef<[T]> {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_vec(values: Vec<T>) -> Result<Self, RRefError> {
         Self::from_slice_copy(&values)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_raw_parts(raw: RRefRawParts) -> Result<Self, RRefError> {
         verify_type_hash::<[T]>(raw.type_hash())?;
         if raw.align() != mem::align_of::<T>() {
@@ -523,6 +556,9 @@ impl<T: TypeIdHash + Copy + 'static> RRef<[T]> {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn recv(channel: ChannelHandle) -> Result<Self, RRefError> {
         let raw = kernel::instance().ipc_recv_raw(channel)?;
         let parts = RRefRawParts::from_abi(raw)?;
@@ -550,10 +586,16 @@ pub fn current_domain() -> DomainId {
     kernel::instance().ipc_current_domain()
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn create_channel() -> KapiResult<(ChannelHandle, ChannelHandle)> {
     kernel::instance().ipc_create_channel()
 }
 
+/// # Errors
+///
+/// Returns an error if the resource is invalid, still in use, or cannot be released.
 pub fn close_channel(channel: ChannelHandle) -> KapiResult<()> {
     kernel::instance().ipc_close(channel)
 }

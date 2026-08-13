@@ -375,6 +375,9 @@ impl Mlx5Device {
         self.cqs.iter().position(|cq| cq.cqn == cqn)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn teardown(&mut self) -> Mlx5Result<()> {
         self.teardown_full()
     }

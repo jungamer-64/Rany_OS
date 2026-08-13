@@ -126,6 +126,9 @@ impl SerialPort {
     {
         IoPort::new(self.base + offset)
     }
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(
         &self,
         baud_rate: BaudRate,
@@ -181,6 +184,9 @@ impl SerialPort {
             self.send(byte);
         }
     }
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn try_receive(&self) -> Result<u8, SerialError> {
         if self.can_receive() {
             Ok(self.port_at(reg::DATA).read())
@@ -261,6 +267,9 @@ impl AsyncSerialPort {
             waker: IrqPoisonLock::new(None),
         }
     }
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
         self.port
             .init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None)

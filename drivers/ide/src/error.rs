@@ -63,6 +63,9 @@ pub fn init() {
 }
 
 /// セクタを読み取り
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required state cannot be read.
 pub fn read_sectors(
     controller: IdeController,
     drive: DriveSel,

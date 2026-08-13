@@ -223,12 +223,21 @@ pub trait ShellServices: Send + Sync {
     fn get_domain(&self, id: u64) -> Option<DomainInfo>;
 
     /// Terminate a domain (requires appropriate capability)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn terminate_domain(&self, id: u64) -> Result<(), &'static str>;
 
     /// Stop a domain (requires appropriate capability)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn stop_domain(&self, id: u64) -> Result<(), &'static str>;
 
     /// Resume a domain (requires appropriate capability)
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn resume_domain(&self, id: u64) -> Result<(), &'static str>;
 
     /// Get current domain ID
@@ -265,9 +274,15 @@ pub trait ShellServices: Send + Sync {
     // --- Filesystem ---
 
     /// List directory entries
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn list_directory(&self, path: &str) -> Result<Vec<DirEntry>, &'static str>;
 
     /// Read file contents
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     fn read_file(&self, path: &str) -> Result<Vec<u8>, &'static str>;
 
     /// Read file contents with zero-copy semantics
@@ -275,23 +290,41 @@ pub trait ShellServices: Send + Sync {
     /// Returns an Arc-wrapped buffer that can be shared without copying.
     /// This is preferred for large files or when the content will be
     /// passed to multiple consumers.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     fn read_file_zero_copy(&self, path: &str) -> Result<alloc::sync::Arc<Vec<u8>>, &'static str> {
         // Default implementation wraps standard read
         self.read_file(path).map(alloc::sync::Arc::new)
     }
 
     /// Write file contents
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str>;
 
     /// Get file attributes
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn stat_file(&self, path: &str) -> Result<FileAttributes, &'static str>;
 
     /// Create a directory
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn make_directory(&self, path: &str) -> Result<(), &'static str>;
 
     /// Remove a file
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn remove_file(&self, path: &str) -> Result<(), &'static str>;
 
     /// Remove a directory
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn remove_directory(&self, path: &str) -> Result<(), &'static str>;
 }

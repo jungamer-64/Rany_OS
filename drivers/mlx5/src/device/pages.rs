@@ -12,6 +12,9 @@ use alloc::vec::Vec; // manage/query page commands
 
 impl Mlx5Device {
     /// FW ページを提供
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn provide_pages(&mut self, function_id: u16, pas: &[u64]) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -55,6 +58,9 @@ impl Mlx5Device {
     }
 
     /// QUERY_PAGES で必要ページ数を確認し、要求に応じて提供/回収を行う
+    /// # Errors
+    ///
+    /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub unsafe fn handle_page_requests(&mut self, op_mod: u16) -> Mlx5Result<()> {
         let (func_id, num_pages) = self.query_required_pages(op_mod)?;
         if num_pages == 0 {
@@ -104,6 +110,9 @@ impl Mlx5Device {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_required_pages(&mut self, op_mod: u16) -> Mlx5Result<(u16, i32)> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
@@ -121,6 +130,9 @@ impl Mlx5Device {
         Ok(res)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub unsafe fn reclaim_pages(&mut self, function_id: u16, num_pages: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 

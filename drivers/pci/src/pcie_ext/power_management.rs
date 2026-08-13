@@ -26,6 +26,9 @@ pub struct PciePowerManager {
 }
 
 impl PciePowerManager {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let pm_offset = config.find_capability(bdf, cap_id::PM);
         Ok(Self {
@@ -35,6 +38,9 @@ impl PciePowerManager {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn current_state(&self) -> PcieResult<PciePowerState> {
         let offset = self.pm_offset.ok_or(PcieError::CapabilityNotFound)?;
         let pmcsr = self
@@ -272,6 +278,9 @@ impl HotPlugController {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn power_off(&self) -> PcieResult<()> {
         if !self.slot_implemented {
             return Err(PcieError::NotSupported);
@@ -286,6 +295,9 @@ impl HotPlugController {
             .ok_or(PcieError::ConfigError)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn clear_events(&self) -> PcieResult<()> {
         if !self.slot_implemented {
             return Err(PcieError::NotSupported);
@@ -428,6 +440,9 @@ impl PcieExtManager {
 pub static PCIE_EXT_CONFIG: spin::Once<PcieConfig> = spin::Once::new();
 pub static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn init_pcie_ext(base_addr: u64) -> PcieResult<()> {
     let config = PCIE_EXT_CONFIG.call_once(|| PcieConfig::new(base_addr, 0, 0, 255));
     PCIE_EXT_MANAGER.call_once(|| {
@@ -472,6 +487,9 @@ pub struct AtsController {
 }
 
 impl AtsController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(config: &'static PcieConfig, bdf: PcieBdf) -> PcieResult<Self> {
         let offset = config
             .find_ext_capability(bdf, ext_cap_id::ATS)
@@ -511,6 +529,9 @@ impl AtsController {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn enable_ats(&self, stu: u8) -> PcieResult<()> {
         let cap = self
             .capability
@@ -530,6 +551,9 @@ impl AtsController {
         Ok(())
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn disable_ats(&self) -> PcieResult<()> {
         let cap = self
             .capability

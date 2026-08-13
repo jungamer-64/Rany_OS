@@ -87,6 +87,9 @@ pub trait KernelServices: Send + Sync {
     ) -> KapiResult<DmaSlice<CpuOwned>>;
 
     /// Enable MSI-X for a PCI device and return the configured table slots.
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn enable_msix(
         &self,
         device_id: PackedPciLocation,
@@ -94,9 +97,15 @@ pub trait KernelServices: Send + Sync {
     ) -> KapiResult<alloc::vec::Vec<MsixVectorInfo>>;
 
     /// Disable MSI-X for a PCI device owned by the caller.
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()>;
 
     /// Allocate a packet-backed network buffer owned by the kernel datapath.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn net_alloc_packet(
         &self,
         len: usize,
@@ -125,24 +134,43 @@ pub trait KernelServices: Send + Sync {
     // ========================================================================
 
     /// Register a block device bridge owned by the current driver domain.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn register_block_device(&self, registration: &AbiBlockDeviceRegistration) -> KapiResult<u64>;
 
     /// Unregister a previously registered block device bridge.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn unregister_block_device(&self, handle: u64) -> KapiResult<()>;
 
     /// Register NVMe namespace metadata for the current driver domain.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn register_nvme_namespace(
         &self,
         registration: &AbiNvmeNamespaceRegistration,
     ) -> KapiResult<u64>;
 
     /// Unregister a previously registered NVMe namespace bridge.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()>;
 
     /// Register a network port bridge owned by the current driver domain.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64>;
 
     /// Unregister a previously registered network port bridge.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error if `handle` is invalid or the port cannot be removed.
     fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()>;
 
     // ========================================================================
@@ -171,9 +199,15 @@ pub trait KernelServices: Send + Sync {
     ) -> Pin<Box<dyn Future<Output = KapiResult<TcpConnection>> + Send>>;
 
     /// Close a connected TCP connection.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn net_tcp_connection_close(&self, connection: TcpConnection) -> KapiResult<()>;
 
     /// Close a bound TCP acceptor.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn net_tcp_acceptor_close(&self, acceptor: TcpAcceptor) -> KapiResult<()>;
 
     /// Receive a packet-backed payload from a TCP connection.
@@ -189,9 +223,15 @@ pub trait KernelServices: Send + Sync {
         payload: PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
     /// Create a raw (packet-oriented) endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn net_raw_endpoint_open(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint>;
 
     /// Close a raw endpoint.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn net_raw_endpoint_close(&self, endpoint: RawEndpoint) -> KapiResult<()>;
 
     /// Receive a raw payload (async).
@@ -213,6 +253,9 @@ pub trait KernelServices: Send + Sync {
     /// Open a file and associate with an optional token.
     /// If `token` is Some(id) then the token must validate for `CAP_FOWNER`
     /// and the manager's in-flight counter will be incremented until `fs_close`.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn fs_open_with_token(
         &self,
         path: &str,
@@ -233,6 +276,9 @@ pub trait KernelServices: Send + Sync {
     /// Open a direct NVMe block handle and associate it with an optional token.
     /// If `token` is Some(id) the token must validate for `CAP_DMA` and the manager's
     /// in-flight counter will be incremented until `nvme_close_direct` is called.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn nvme_open_direct_with_token(
         &self,
         device_id: u64,
@@ -242,6 +288,9 @@ pub trait KernelServices: Send + Sync {
     ) -> KapiResult<DirectBlockHandle>;
 
     /// Close a kernel-registered direct NVMe open.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn nvme_close_direct(&self, handle: DirectBlockHandle) -> KapiResult<()>;
 
     /// Read blocks into a DMA buffer (buffer returned on completion)
@@ -291,6 +340,9 @@ pub trait KernelServices: Send + Sync {
     ///
     /// This abstracts the io_scheduler submit and completion handling.
     /// Returns a handle that can be used to wait for completion.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn nvme_submit_rw(
         &self,
         request: NvmeRwRequest,
@@ -334,9 +386,15 @@ pub trait KernelServices: Send + Sync {
     fn ipc_current_domain(&self) -> DomainId;
 
     /// Allocate a raw Exchange Heap region owned by the current domain.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     fn exchange_alloc_raw(&self, size: usize, align: usize) -> KapiResult<(NonNull<u8>, DomainId)>;
 
     /// Deallocate a raw Exchange Heap region on behalf of `owner`.
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn exchange_dealloc_raw(
         &self,
         ptr: NonNull<u8>,
@@ -346,6 +404,9 @@ pub trait KernelServices: Send + Sync {
     ) -> KapiResult<()>;
 
     /// Transfer Exchange Heap ownership between domains.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     fn exchange_transfer_raw(
         &self,
         ptr: NonNull<u8>,
@@ -354,9 +415,15 @@ pub trait KernelServices: Send + Sync {
     ) -> KapiResult<()>;
 
     /// Send a raw zero-copy payload through an IPC channel.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn ipc_send_raw(&self, channel: ChannelHandle, raw: AbiRRefRaw) -> KapiResult<()>;
 
     /// Receive a raw zero-copy payload from an IPC channel.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     fn ipc_recv_raw(&self, channel: ChannelHandle) -> KapiResult<AbiRRefRaw>;
 
     /// Access time management services

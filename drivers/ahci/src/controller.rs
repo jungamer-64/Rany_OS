@@ -25,6 +25,9 @@ pub struct AhciController {
 }
 
 impl AhciController {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(base: u64, device_id: PackedPciLocation) -> AhciResult<Self> {
         let cap = hal::mmio::mmio_read_u32((base + GHC_CAP as u64) as usize);
         let pi = hal::mmio::mmio_read_u32((base + GHC_PI as u64) as usize);
@@ -67,6 +70,9 @@ impl AhciController {
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> AhciResult<()> {
         let mut ghc = self.read_ghc(GHC_GHC);
         ghc |= GHC_AE;
@@ -140,6 +146,9 @@ impl AhciController {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn init_from_pci(
     base_addr: u64,
     device_id: PackedPciLocation,

@@ -173,6 +173,9 @@ impl TrampolineMailboxHandle {
     ///
     /// `ptr` must point to a valid, mapped writable AP trampoline mailbox for the
     /// lifetime of the handle.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_ptr(ptr: *mut u8) -> Result<Self, &'static str> {
         Ok(Self {
             ptr: validate_mailbox_ptr(ptr)?,
@@ -183,6 +186,9 @@ impl TrampolineMailboxHandle {
     ///
     /// `trampoline_virt` must refer to a valid mapped trampoline page whose
     /// mailbox region is readable and writable for the lifetime of the handle.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_trampoline_virt(
         trampoline_virt: TrampolineVirtAddr,
     ) -> Result<Self, &'static str> {
@@ -205,6 +211,9 @@ impl TrampolineMailboxHandle {
         fence(Ordering::SeqCst);
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn read_verified(&self) -> Result<ApTrampolineLaunchInfo, &'static str> {
         self.read_handle().read_verified()
     }
@@ -221,12 +230,18 @@ impl TrampolineMailboxReadHandle {
     ///
     /// `ptr` must point to a valid, mapped readable AP trampoline mailbox for
     /// the lifetime of the handle.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_const_ptr(ptr: *const u8) -> Result<Self, &'static str> {
         Ok(Self {
             ptr: validate_mailbox_const_ptr(ptr)?,
         })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn read_verified(&self) -> Result<ApTrampolineLaunchInfo, &'static str> {
         // Safety: the read handle constructor validates the mailbox address and
         // ties further reads to that checked location.

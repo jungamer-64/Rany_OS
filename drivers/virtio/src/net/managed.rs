@@ -36,6 +36,10 @@ unsafe impl Sync for ManagedNetVirtQueue {}
 
 impl ManagedNetVirtQueue {
     #[allow(clippy::too_many_arguments)]
+    /// # Panics
+    ///
+    /// Panics if `size` is not a supported power of two or any required vring
+    /// pointer is null.
     pub unsafe fn new(
         index: u16,
         size: u16,

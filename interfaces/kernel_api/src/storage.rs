@@ -44,6 +44,9 @@ pub fn try_instance() -> Option<&'static dyn StorageServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if storage services have not been installed.
 pub fn instance() -> &'static dyn StorageServices {
     try_instance().expect("StorageServices not installed")
 }

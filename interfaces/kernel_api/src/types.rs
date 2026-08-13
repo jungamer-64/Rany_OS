@@ -196,6 +196,11 @@ impl PacketRefStorage {
     /// # Safety
     /// `T` must fit into `PacketRefStorage` and must not require stronger
     /// alignment than `PacketRefStorage`.
+    ///
+    /// # Panics
+    ///
+    /// Panics if `T` is larger than the inline storage or requires stricter
+    /// alignment than the storage provides.
     pub unsafe fn from_state<T>(state: T) -> Self {
         assert!(size_of::<T>() <= size_of::<Self>());
         assert!(align_of::<T>() <= align_of::<Self>());
@@ -354,6 +359,9 @@ impl PacketRef {
         unsafe { (self.vtable.retreat)(&mut self.storage, size) }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn take_front(self, len: PacketByteCount) -> Result<PacketFront, PacketWindowError> {
         let take = len.get();
         let total_len = self.len();
@@ -537,6 +545,9 @@ impl PacketPayload {
         }
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn take_front(self, len: PacketByteCount) -> Result<PacketPayloadFront, PacketWindowError> {
         let take = len.get();
         let total_len = self.total_len();

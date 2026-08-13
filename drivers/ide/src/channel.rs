@@ -181,6 +181,9 @@ impl IdeChannel {
     }
 
     /// セクタを読み取り（PIO）
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the required state cannot be read.
     pub fn read_sectors(
         &self,
         drive: DriveSel,
@@ -306,6 +309,9 @@ impl IdeChannel {
     }
 
     /// セクタを書き込み（PIO）
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     pub fn write_sectors(
         &self,
         drive: DriveSel,

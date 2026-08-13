@@ -381,6 +381,9 @@ impl Rtc {
         self.set_alarm(hour, minute, second);
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_frequency(&mut self, hz: u32) -> Result<(), &'static str> {
         let rate = match hz {
             8192 => 3,

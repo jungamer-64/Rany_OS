@@ -32,6 +32,9 @@ struct TrampolineImage {
 }
 
 impl<'a> TrampolinePageMut<'a> {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn try_from_slice(page: &'a mut [u8]) -> Result<Self, &'static str> {
         match page.len().cmp(&TRAMPOLINE_SIZE) {
             core::cmp::Ordering::Less => {
@@ -43,8 +46,9 @@ impl<'a> TrampolinePageMut<'a> {
             core::cmp::Ordering::Equal => {}
         }
 
-        // Safety: the length check above guarantees the conversion succeeds.
-        let page: &mut [u8; TRAMPOLINE_SIZE] = page.try_into().unwrap();
+        let page: &mut [u8; TRAMPOLINE_SIZE] = page
+            .try_into()
+            .map_err(|_| "AP trampoline page must be exactly one page")?;
 
         Ok(Self { page })
     }
@@ -55,6 +59,9 @@ impl<'a> TrampolinePageMut<'a> {
     /// for at least the lifetime `'a` of the returned [`TrampolinePageMut`].
     /// The caller must also ensure no other references to that page exist for
     /// the duration of `'a`.
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub unsafe fn from_raw_ptr(ptr: *mut u8) -> Result<TrampolinePageMut<'a>, &'static str> {
         let ptr = NonNull::new(ptr).ok_or("AP trampoline page pointer is null")?;
         if !(ptr.as_ptr() as usize).is_multiple_of(TRAMPOLINE_SIZE) {
@@ -64,6 +71,9 @@ impl<'a> TrampolinePageMut<'a> {
         Ok(TrampolinePageMut { page })
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn install(&mut self, trampoline_addr: TrampolinePhysAddr) -> Result<(), &'static str> {
         let image = resolve_trampoline_image()?;
         let layout = image.layout;
@@ -107,6 +117,9 @@ unsafe extern "C" {
     static __ap_mailbox: u8;
 }
 
+/// # Panics
+///
+/// Panics if the linked trampoline symbols do not describe a valid image.
 pub fn trampoline_bytes() -> &'static [u8] {
     match trampoline_bytes_checked() {
         Ok(bytes) => bytes,
@@ -114,6 +127,9 @@ pub fn trampoline_bytes() -> &'static [u8] {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub fn trampoline_bytes_checked() -> Result<&'static [u8], &'static str> {
     let image = resolve_trampoline_image()?;
     Ok(unsafe { trampoline_template(image) })

@@ -19,6 +19,9 @@ pub struct BootHhdmSpan {
 }
 
 impl BootHhdmSpan {
+    /// # Errors
+    ///
+    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn new(start: u64, len: u64) -> Result<Self, &'static str> {
         if start == 0 {
             return Err("boot handoff span start is zero");
@@ -265,6 +268,10 @@ impl<'a> BootArtifactView<'a> {
         self.data
     }
 
+    /// # Panics
+    ///
+    /// Panics only if the path span validated when this artifact view was
+    /// constructed is no longer present in the backing entry.
     pub fn path_span(&self) -> BootHhdmSpan {
         self.raw
             .path_span()
@@ -389,6 +396,9 @@ impl ExoBootInfo {
     ///
     /// The caller must guarantee that the bootloader handoff remains valid,
     /// immutable, and readable for the lifetime of the returned view.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn view(&self) -> Result<ExoBootInfoView<'_>, &'static str> {
         if !self.is_version_compatible() {
             return Err("boot info version mismatch");
@@ -514,6 +524,9 @@ impl BootArtifactTable {
         table_span::<BootArtifactEntry>(self.entries_ptr, self.count)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_hhdm_addr(entries_addr: u64, count: usize) -> Result<Self, &'static str> {
         if count == 0 {
             return Ok(Self::default());
@@ -531,6 +544,9 @@ impl BootArtifactTable {
     ///
     /// The caller must guarantee that the handoff backing this table remains
     /// valid, immutable, and readable for the lifetime of the returned view.
+    /// # Errors
+    ///
+    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
     pub unsafe fn view(&self) -> Result<BootArtifactTableView<'_>, &'static str> {
         let entries = boot_artifact_entries_slice(self)?;
         for entry in entries {
@@ -582,6 +598,9 @@ impl MemoryMap {
         table_span::<MemoryDescriptor>(self.entries as u64, self.count)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_hhdm_addr(entries_addr: u64, count: usize) -> Result<Self, &'static str> {
         if count == 0 {
             return Ok(Self::default());
@@ -631,6 +650,9 @@ impl UsableMemoryTable {
         table_span::<UsableMemoryRegion>(self.entries_ptr, self.count)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the supplied representation violates the required invariants.
     pub fn from_hhdm_addr(entries_addr: u64, count: usize) -> Result<Self, &'static str> {
         if count == 0 {
             return Ok(Self::default());

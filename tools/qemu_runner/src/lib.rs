@@ -450,6 +450,9 @@ fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
     Ok(disk_path)
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     run_cargo(
@@ -484,6 +487,9 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     run_cargo(
@@ -522,6 +528,9 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_signer() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     run_cargo(
@@ -552,6 +561,13 @@ pub fn build_signer() -> Result<PathBuf, BuildError> {
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
+///
+/// # Panics
+///
+/// Panics if a generated artifact or signing-key path is not valid Unicode.
 pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, BuildError> {
     let root = workspace_root();
     let exoloader_path = build_exoloader_efi()?;
@@ -874,6 +890,9 @@ fn poll_qemu(
     }
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     ensure_qemu_available()?;
     let accel = resolve_fullboot_accel()?;

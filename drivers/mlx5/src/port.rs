@@ -215,6 +215,9 @@ impl Mlx5Port {
     }
 
     /// MTUを設定
+    /// # Errors
+    ///
+    /// Returns an error if the requested state transition is invalid or rejected by the device.
     pub fn set_mtu(&mut self, mtu: u32) -> Result<(), &'static str> {
         if mtu > MLX5_MAX_MTU {
             return Err("MTU exceeds maximum");

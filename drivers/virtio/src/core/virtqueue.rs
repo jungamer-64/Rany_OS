@@ -115,9 +115,9 @@ impl VirtQueue {
         Ok(Self {
             queue_index,
             queue_size,
-            desc_table: NonNull::new(desc_table).expect("desc_table is null"),
-            avail_ring: NonNull::new(avail_ring).expect("avail_ring is null"),
-            used_ring: NonNull::new(used_ring).expect("used_ring is null"),
+            desc_table: NonNull::new(desc_table).ok_or("desc_table is null")?,
+            avail_ring: NonNull::new(avail_ring).ok_or("avail_ring is null")?,
+            used_ring: NonNull::new(used_ring).ok_or("used_ring is null")?,
             free_bitmap: [
                 AtomicU64::new(b0),
                 AtomicU64::new(b1),

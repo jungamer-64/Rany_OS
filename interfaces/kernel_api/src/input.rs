@@ -37,6 +37,9 @@ pub fn try_instance() -> Option<&'static dyn InputServices> {
 }
 
 #[inline]
+/// # Panics
+///
+/// Panics if input services have not been installed.
 pub fn instance() -> &'static dyn InputServices {
     try_instance().expect("InputServices not installed")
 }

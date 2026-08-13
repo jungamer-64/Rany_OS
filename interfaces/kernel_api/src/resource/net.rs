@@ -11,6 +11,9 @@ pub use crate::types_impl::{
     PacketRefVTable, PacketType, PacketWindowError, PhysicalAddress,
 };
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub async fn tcp_connection_dial(
     remote: NetSocketAddr,
     scope: InterfaceScope,
@@ -20,6 +23,9 @@ pub async fn tcp_connection_dial(
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub async fn tcp_acceptor_bind(
     local: NetSocketAddr,
     scope: InterfaceScope,
@@ -30,6 +36,9 @@ pub async fn tcp_acceptor_bind(
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub async fn tcp_acceptor_next_connection(acceptor: &TcpAcceptor) -> KapiResult<TcpConnection> {
     kernel::instance()
         .net_tcp_acceptor_next_connection(TcpAcceptor::from_raw_parts(
@@ -39,6 +48,9 @@ pub async fn tcp_acceptor_next_connection(acceptor: &TcpAcceptor) -> KapiResult<
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required state cannot be read.
 pub async fn tcp_connection_recv_payload(connection: &TcpConnection) -> KapiResult<PacketPayload> {
     kernel::instance()
         .net_tcp_connection_recv_payload(TcpConnection::from_raw_parts(
@@ -48,6 +60,9 @@ pub async fn tcp_connection_recv_payload(connection: &TcpConnection) -> KapiResu
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid or the receiver cannot accept the operation.
 pub async fn tcp_connection_send_payload(
     connection: &TcpConnection,
     payload: PacketPayload,
@@ -60,10 +75,16 @@ pub async fn tcp_connection_send_payload(
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn raw_endpoint_open(scope: InterfaceScope) -> KapiResult<RawEndpoint> {
     kernel::instance().net_raw_endpoint_open(scope)
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid or the required state cannot be read.
 pub async fn raw_endpoint_recv_payload(endpoint: &RawEndpoint) -> KapiResult<PacketPayload> {
     kernel::instance()
         .net_raw_endpoint_recv_payload(RawEndpoint::from_raw_parts(
@@ -73,6 +94,9 @@ pub async fn raw_endpoint_recv_payload(endpoint: &RawEndpoint) -> KapiResult<Pac
         .await
 }
 
+/// # Errors
+///
+/// Returns an error if the request is invalid or the receiver cannot accept the operation.
 pub async fn raw_endpoint_send_payload(
     endpoint: &RawEndpoint,
     payload: PacketPayload,
@@ -113,6 +137,9 @@ impl TcpConnection {
         self.default_scope
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub fn close(self) -> KapiResult<()> {
         kernel::instance().net_tcp_connection_close(self)
     }
@@ -146,6 +173,9 @@ impl TcpAcceptor {
         self.default_scope
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub fn close(self) -> KapiResult<()> {
         kernel::instance().net_tcp_acceptor_close(self)
     }
@@ -170,6 +200,9 @@ impl RawEndpoint {
         self.default_scope
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if the resource is invalid, still in use, or cannot be released.
     pub fn close(self) -> KapiResult<()> {
         kernel::instance().net_raw_endpoint_close(self)
     }
