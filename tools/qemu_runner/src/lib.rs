@@ -24,7 +24,7 @@ impl RunConfig {
             timeout_secs: 120,
             memory_mb: 1024,
             smp: 2,
-            cpu: String::from("qemu64,+rdtscp"),
+            cpu: String::from("qemu64,+rdtscp,+rdrand"),
             extra_args: Vec::new(),
         }
     }
@@ -329,7 +329,7 @@ fn profile_needs_storage_disk(profile: &str) -> bool {
 fn profile_needs_boot_artifacts(profile: &str) -> bool {
     matches!(
         profile,
-        "storage" | "driver_domain" | "network" | "iommu" | "pr-required" | "nightly-required"
+        "storage" | "driver_domain" | "iommu" | "pr-required" | "nightly-required"
     )
 }
 
@@ -1007,6 +1007,13 @@ mod tests {
 
         assert!(cmdline.contains("run_integration=driver_domain"));
         assert!(cmdline.contains("qemu_no_if=1"));
+    }
+
+    #[test]
+    fn network_profile_uses_kernel_fake_ports_without_driver_artifacts() {
+        assert!(!profile_needs_boot_artifacts("network"));
+        assert!(profile_needs_boot_artifacts("driver_domain"));
+        assert!(profile_needs_boot_artifacts("pr-required"));
     }
 
     #[test]

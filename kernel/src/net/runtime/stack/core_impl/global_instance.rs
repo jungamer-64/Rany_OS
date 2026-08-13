@@ -10,7 +10,7 @@ use crate::net::runtime::command::{
 
 /// Initialize a runtime-local network stack.
 pub(crate) fn init_in(runtime: NetRuntimeHandle) {
-    for stack_lock in &runtime.context().stacks {
+    for stack_lock in runtime.context().stacks.iter() {
         let mut stack = stack_lock.lock_for_init("[NET] Global Stack init");
         if stack.is_none() {
             *stack = Some(NetworkStack::new_in(runtime));

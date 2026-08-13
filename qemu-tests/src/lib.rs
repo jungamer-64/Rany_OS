@@ -42,7 +42,8 @@ fn base_config(profile: &str) -> RunConfig {
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
     cfg.smp = env_u8("QEMU_TEST_SMP", 4);
-    cfg.cpu = std::env::var("QEMU_TEST_CPU").unwrap_or_else(|_| String::from("qemu64,+rdtscp"));
+    cfg.cpu =
+        std::env::var("QEMU_TEST_CPU").unwrap_or_else(|_| String::from("qemu64,+rdtscp,+rdrand"));
     cfg.case_filter = std::env::var("QEMU_TEST_CASE_FILTER").ok();
     cfg
 }

@@ -100,7 +100,10 @@ impl NetworkStack {
 
         let echo_data_len = echo_data.total_len();
         let header_len = EthernetHeader::SIZE + 20 + crate::net::l3::icmp::IcmpEchoHeader::SIZE;
-        let mut packet = match self.alloc_ethernet_frame_packet(header_len) {
+        let Some(frame_len) = header_len.checked_add(echo_data_len) else {
+            return false;
+        };
+        let mut packet = match self.alloc_ethernet_frame_packet(frame_len) {
             Some(packet) => packet,
             None => return false,
         };
@@ -131,9 +134,8 @@ impl NetworkStack {
                     let ip_len = ip_packet.total_len();
                     drop(ip_packet);
                     frame.set_payload_len(ip_len);
-                    let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    if set_packet_visible_len(&mut packet, frame_len).is_err() {
+                    if set_packet_visible_len(&mut packet, header_len).is_err() {
                         return false;
                     }
 

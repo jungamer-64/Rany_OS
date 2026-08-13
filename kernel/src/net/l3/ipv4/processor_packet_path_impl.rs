@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
+use crate::net::payload::GeneratedPacketWriter;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 impl Ipv4Processor {
@@ -13,39 +13,18 @@ impl Ipv4Processor {
         packet_ref: PacketRef,
         current_time: u64,
     ) -> Ipv4ProcessResult {
-        let original = PacketPayload::single(packet_ref);
         let (total_len, header_len, header_copy, header, protocol) = {
-            let view = PacketPayloadView::new(&original);
-            let total_len = view.total_len();
-            if total_len < 20 {
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Error;
-            }
-
-            let Some(fixed) = view.read_array::<20>(0) else {
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Error;
-            };
-
-            let ihl_words = (fixed[0] & 0x0f) as usize;
-            let header_len = ihl_words.saturating_mul(4);
-            if header_len < 20 || total_len < header_len {
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Error;
-            }
-            let Some(header_prefix) = view.read_fixed_bytes::<60>(0, header_len) else {
-                self.stats.rx_errors += 1;
-                return Ipv4ProcessResult::Error;
-            };
-            let header_bytes = header_prefix.as_slice();
-
-            let packet = match Ipv4Packet::parse(header_bytes) {
+            let data = packet_ref.data();
+            let packet = match Ipv4Packet::parse(data) {
                 Some(packet) => packet,
                 None => {
                     self.stats.rx_errors += 1;
                     return Ipv4ProcessResult::Error;
                 }
             };
+            let total_len = packet.header().total_length() as usize;
+            let header_len = packet.header().header_len();
+            let header_bytes = &data[..header_len];
 
             if !packet.verify_checksum() {
                 self.stats.checksum_errors += 1;
@@ -80,6 +59,7 @@ impl Ipv4Processor {
                 packet.protocol(),
             )
         };
+        let original = PacketPayload::single(packet_ref);
         if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
             let fragment_offset = header.fragment_offset();
             let payload_len = total_len.saturating_sub(header_len);

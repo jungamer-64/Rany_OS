@@ -42,7 +42,7 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }
 
-    sum as u16
+    !(sum as u16)
 }
 
 impl IcmpProcessor {

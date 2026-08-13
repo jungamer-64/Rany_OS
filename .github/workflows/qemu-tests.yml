@@ -94,7 +94,7 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
           QEMU_TEST_ACCEL: tcg
-          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 240
@@ -150,7 +150,7 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
           QEMU_TEST_ACCEL: tcg
-          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_PROFILE_ONLY: network
           QEMU_TEST_SMP: 4
@@ -250,7 +250,7 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
           QEMU_TEST_ACCEL: tcg
-          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
           QEMU_TEST_MEMORY_MB: 512
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 180
@@ -306,7 +306,7 @@ jobs:
         env:
           RUST_TEST_THREADS: 1
           QEMU_TEST_ACCEL: tcg
-          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
           QEMU_TEST_MEMORY_MB: 1024
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 480

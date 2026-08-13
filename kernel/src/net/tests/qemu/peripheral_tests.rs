@@ -244,16 +244,45 @@ pub fn runtime_udp_concrete_ingress_interface_is_preserved_smoke() -> bool {
     let Ok(runtime) = create_runtime() else {
         return false;
     };
-    let processor = UdpProcessor::new();
-
-    processor.process_payload_on(
+    let if_id = NetIfId(7);
+    let destination_port = 42_425;
+    let socket = Socket::new_udp_in(runtime);
+    if bind_udp_dual_stack_in(
         runtime,
-        NetIfId(7),
-        PacketPayload::default(),
-        Ipv4Address::ANY,
-        Ipv4Address::ANY,
+        destination_port,
+        InterfaceScope::Pinned(if_id),
+        socket.socket_id(),
+    )
+    .is_err()
+    {
+        return false;
+    }
+
+    let Some(datagram) = udp_datagram(40_001, destination_port, b"ingress-if") else {
+        return false;
+    };
+    let Some(mut packet) = alloc_packet_with_headroom(datagram.len(), 0) else {
+        return false;
+    };
+    packet.data_mut().copy_from_slice(&datagram);
+    let processor = UdpProcessor::new();
+    if processor.process_payload_on(
+        runtime,
+        if_id,
+        PacketPayload::single(packet),
+        Ipv4Address::new([10, 23, 0, 1]),
+        Ipv4Address::new([10, 23, 0, 2]),
         64,
-    ) == UdpResult::NoEndpoint
+    ) != UdpResult::Delivered
+    {
+        return false;
+    }
+
+    matches!(
+        socket.try_recv_udp_payload(),
+        Ok((received_if, _, 64, payload))
+            if received_if == if_id && packet_payload_eq(&payload, b"ingress-if")
+    )
 }
 
 pub fn runtime_large_packet_headroom_preserves_request_smoke() -> bool {
@@ -358,11 +387,27 @@ fn register_qemu_fake_port(
         ..NetDeviceInfo::default()
     };
     let driver: Box<dyn NetDevicePort> = Box::new(QemuFakePort { state, info });
-    let if_id = crate::net::runtime::device::register_port_in(
+    let if_id = match crate::net::runtime::device::register_port_in(
         runtime,
         NetPortRegistration::new(info, driver, PrimaryPortPolicy::Auto),
-    )
-    .ok()?;
+    ) {
+        Ok(if_id) => if_id,
+        Err(error) => {
+            log::error!(
+                target: "qemu::net",
+                "fake port registration failed: port={} error={}",
+                port_id,
+                error
+            );
+            return None;
+        }
+    };
+    log::info!(
+        target: "qemu::net",
+        "fake port registered: port={} if{}",
+        port_id,
+        if_id.0
+    );
     Some((state, if_id))
 }
 
@@ -467,11 +512,17 @@ fn process_runtime_commands(
                     ) if packet.data().len() >= 24 => Some((*if_id, packet.data()[23])),
                     _ => None,
                 };
-                matches!(
-                    handler.handle_event_with_stack_in(runtime, command, core_stack),
+                let result = handler.handle_event_with_stack_in(runtime, command, core_stack);
+                if !matches!(
+                    result,
                     crate::net::runtime::command_handler::EventHandleResult::Success
-                )
-                .then_some(())?;
+                ) {
+                    log::error!(
+                        target: "qemu::net",
+                        "runtime command failed: cpu={cpu_id} result={result:?}"
+                    );
+                    return None;
+                }
                 if let Some((if_id, protocol)) = observed {
                     observe_packet(cpu_id, if_id, protocol);
                 }
@@ -518,17 +569,27 @@ fn configure_test_address(
 
 fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let runtime = create_runtime().ok()?;
+    crate::net::security::firewall::set_default_policy_in(
+        runtime,
+        crate::net::security::firewall::FirewallDirection::Ingress,
+        crate::net::security::firewall::FirewallAction::Allow,
+    )
+    .ok()?;
+    log::info!(target: "qemu::net", "fake-port case runtime allocated");
     let _ = crate::net::datapath::mempool::init_net_mempool(128);
     let mac_a = [0x02, 0, 0, 0, 1, 1];
     let mac_b = [0x02, 0, 0, 0, 1, 2];
     let source_mac = [0x02, 0, 0, 0, 2, 1];
     let (state_a, if_a) = register_qemu_fake_port(runtime, 0xf001, mac_a)?;
     let (state_b, if_b) = register_qemu_fake_port(runtime, 0xf002, mac_b)?;
+    log::info!(target: "qemu::net", "fake-port pair registered");
     let local_ip = Ipv4Address::new([10, 23, 0, 2]);
     let remote_ip = Ipv4Address::new([10, 23, 0, 1]);
     configure_test_address(runtime, if_a, local_ip)?;
     configure_test_address(runtime, if_b, local_ip)?;
+    log::info!(target: "qemu::net", "fake-port addresses configured");
     (crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_a)).then_some(())?;
+    log::info!(target: "qemu::net", "initial primary verified");
 
     let cpu_count = (crate::cpu::count() as usize).clamp(1, 4);
     let executor_count = crate::task::executor_slot_count().max(1);
@@ -542,6 +603,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         core_stack.interface_config(if_b)?;
         (core_stack.primary_interface_state()?.0 == if_a).then_some(())?;
     }
+    log::info!(target: "qemu::net", "all stacks reconciled to initial topology");
 
     let socket_a = Socket::new_udp_in(runtime);
     let socket_b = Socket::new_udp_in(runtime);
@@ -560,6 +622,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         socket_b.socket_id(),
     )
     .ok()?;
+    log::info!(target: "qemu::net", "interface-scoped sockets bound");
 
     let udp_header = udp_datagram(40_000, destination_port, &[0; 8])?;
     let first_fragment = &udp_header[..8];
@@ -606,7 +669,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let mut fragments_a = 0usize;
     let mut fragments_b = 0usize;
     let mut fragment_cpu = None;
-    process_runtime_commands(
+    let processed_fragments = process_runtime_commands(
         runtime,
         &handler,
         executor_count,
@@ -626,11 +689,24 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             }
         },
     )?;
+    log::info!(
+        target: "qemu::net",
+        "fragment commands processed: total={processed_fragments} if_a={fragments_a} if_b={fragments_b} cpu={fragment_cpu:?}"
+    );
     (fragments_a == 2 && fragments_b == 2).then_some(())?;
-    let (rx_if_a, _, _, received_a) = socket_a.try_recv_udp_payload().ok()?;
-    let (rx_if_b, _, _, received_b) = socket_b.try_recv_udp_payload().ok()?;
+    let received_a = socket_a.try_recv_udp_payload();
+    let received_b = socket_b.try_recv_udp_payload();
+    log::info!(
+        target: "qemu::net",
+        "fragment socket delivery: if_a={:?} if_b={:?}",
+        received_a.as_ref().map(|(if_id, _, _, payload)| (*if_id, payload.total_len())),
+        received_b.as_ref().map(|(if_id, _, _, payload)| (*if_id, payload.total_len()))
+    );
+    let (rx_if_a, _, _, received_a) = received_a.ok()?;
+    let (rx_if_b, _, _, received_b) = received_b.ok()?;
     (rx_if_a == if_a && packet_payload_eq(&received_a, payload_a)).then_some(())?;
     (rx_if_b == if_b && packet_payload_eq(&received_b, payload_b)).then_some(())?;
+    log::info!(target: "qemu::net", "fragment interface isolation verified");
 
     let src_ip_u32 = u32::from_be_bytes(remote_ip.octets());
     let dst_ip_u32 = u32::from_be_bytes(local_ip.octets());
@@ -667,15 +743,15 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             )?)
             .ok()?;
 
-        let source_octet = (1u8..=254).find(|octet| {
-            let source = u32::from_be_bytes([10, 24, target_cpu as u8, *octet]);
+        let source_octet = (3u8..=254).find(|octet| {
+            let source = u32::from_be_bytes([10, 23, 0, *octet]);
             crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
                 source, dst_ip_u32, 0, 0, 1,
             ) as usize
                 % executor_count
                 == target_cpu
         })?;
-        let icmp_source = Ipv4Address::new([10, 24, target_cpu as u8, source_octet]);
+        let icmp_source = Ipv4Address::new([10, 23, 0, source_octet]);
         {
             let mut stack_guard = runtime.context().stacks[target_cpu].lock().ok()?;
             stack_guard.as_mut()?.arp_cache_insert_on(
@@ -703,9 +779,13 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             )?)
             .ok()?;
     }
+    log::info!(
+        target: "qemu::net",
+        "per-core packets submitted: cpu_count={cpu_count} executor_count={executor_count}"
+    );
     let mut saw_udp = [false; 4];
     let mut saw_icmp = [false; 4];
-    process_runtime_commands(
+    let processed_per_core = process_runtime_commands(
         runtime,
         &handler,
         executor_count,
@@ -716,17 +796,32 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             }
         },
     )?;
+    log::info!(
+        target: "qemu::net",
+        "per-core commands processed: total={processed_per_core} udp={saw_udp:?} icmp={saw_icmp:?}"
+    );
     for cpu_id in 0..cpu_count {
         (saw_udp[cpu_id] && saw_icmp[cpu_id]).then_some(())?;
     }
     for _ in 0..cpu_count {
-        let (rx_if, _, _, received) = socket_b.try_recv_udp_payload().ok()?;
+        let received = socket_b.try_recv_udp_payload();
+        log::info!(
+            target: "qemu::net",
+            "per-core UDP socket delivery: {:?}",
+            received.as_ref().map(|(if_id, _, _, payload)| (*if_id, payload.total_len()))
+        );
+        let (rx_if, _, _, received) = received.ok()?;
         (rx_if == if_b && packet_payload_eq(&received, b"rss-udp")).then_some(())?;
     }
     let rss_tx_after =
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_b)?
             .tx_packets;
+    log::info!(
+        target: "qemu::net",
+        "per-core reply TX count: before={rss_tx_before} after={rss_tx_after} expected_delta={cpu_count}"
+    );
     (rss_tx_after >= rss_tx_before.saturating_add(cpu_count as u64)).then_some(())?;
+    log::info!(target: "qemu::net", "per-core UDP and ICMP dispatch verified");
 
     for cpu_id in 0..executor_count {
         let mut stack_guard = runtime.context().stacks[cpu_id].lock().ok()?;
@@ -767,6 +862,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_a)?
             .tx_packets;
     (tx_a_after > tx_a_before).then_some(())?;
+    log::info!(target: "qemu::net", "primary reply TX verified");
 
     state_a.update_link(false).ok()?;
     (crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_b)).then_some(())?;
@@ -813,6 +909,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         NetTxMeta::default(),
     ))
     .then_some(())?;
+    log::info!(target: "qemu::net", "stopped interface RX and TX rejection verified");
 
     process_runtime_commands(runtime, &handler, executor_count, |_, _, _| {})?;
     for cpu_id in 0..executor_count {
@@ -828,6 +925,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             20,
         );
     }
+    log::info!(target: "qemu::net", "all stacks reconciled after failover");
     let tx_b_before =
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_b)
             .map_or(0, |stats| stats.tx_packets);
@@ -857,6 +955,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_b)?
             .tx_packets;
     (tx_b_after > tx_b_before).then_some(())?;
+    log::info!(target: "qemu::net", "secondary reply TX verified");
 
     crate::net::runtime::device::unregister_port_in(runtime, if_b).then_some(())?;
     crate::net::runtime::device::unregister_port_in(runtime, if_a).then_some(())?;

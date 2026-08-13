@@ -97,8 +97,7 @@ impl Eq for NetRuntimeHandle {}
 pub struct NetRuntimeContext {
     id: NetRuntimeId,
     generation: NetRuntimeGeneration,
-    pub(crate) stacks:
-        Box<[PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS]>,
+    pub(crate) stacks: Box<[PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS]>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) interface_topology_revision: AtomicU64,
     pub(crate) command_queues: Box<[RuntimeCommandQueue; crate::per_cpu::MAX_CPUS]>,
