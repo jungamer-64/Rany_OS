@@ -3,7 +3,7 @@
 // ============================================================================
 //!
 //! ネットワークドライバと NetworkStack を接続する stack glue モジュール。
-//! deferred RX、batch/NAT、PacketRef の stack 受け渡しを担当します。
+//! 具体的な interface を伴う RX/TX と interface 別統計を担当します。
 
 use crate::net::obs::{
     observability_in,
@@ -16,7 +16,6 @@ use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel_api::resource::net::PacketByteCount;
 
 extern crate alloc;
@@ -34,18 +33,12 @@ pub struct StackGlueInterfaceStats {
 }
 
 pub(crate) struct NetBridgeRuntimeState {
-    stack_glue_initialized: AtomicBool,
-    tx_packets: AtomicU64,
-    rx_packets: AtomicU64,
     if_stats: PoisonRwLock<BTreeMap<NetIfId, StackGlueInterfaceStats>>,
 }
 
 impl NetBridgeRuntimeState {
     pub const fn new() -> Self {
         Self {
-            stack_glue_initialized: AtomicBool::new(false),
-            tx_packets: AtomicU64::new(0),
-            rx_packets: AtomicU64::new(0),
             if_stats: PoisonRwLock::new(BTreeMap::new()),
         }
     }
@@ -115,9 +108,6 @@ pub fn transmit_from_stack_in(
 
     if sent {
         record_stack_glue_if_tx_in(runtime, if_id);
-        runtime_state_for(runtime)
-            .tx_packets
-            .fetch_add(1, Ordering::Relaxed);
         observability.counters().record_tx(packet_len);
         observability
             .trace()
@@ -149,11 +139,7 @@ pub fn process_received_packet_zero_copy_for_interface_in(
         observability_in(runtime).counters().record_drop();
         return;
     }
-    let state = runtime_state_for(runtime);
-
     ensure_stack_glue_if_state_in(runtime, if_id);
-    state.stack_glue_initialized.store(true, Ordering::Release);
-    state.rx_packets.fetch_add(1, Ordering::Relaxed);
     let observability = observability_in(runtime);
     observability.counters().record_rx(payload_len);
     observability
@@ -259,7 +245,6 @@ fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketR
                 44 => {
                     // Fragment Header (8 bytes): next_header, reserved, frag_off+M, identification
                     if offset + 8 > data.len() {
-                        let frag_id = 0u32;
                         return {
                             packet.meta_mut().flow_hash =
                                 crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
@@ -343,25 +328,22 @@ pub fn list_stack_glue_stats_in(runtime: NetRuntimeHandle) -> Vec<StackGlueInter
         .collect()
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct StackGlueStats {
-    pub initialized: bool,
-    pub rx_packets: u64,
-    pub tx_packets: u64,
+pub(crate) fn replace_stack_glue_interface_stats_in(
+    runtime: NetRuntimeHandle,
+    restored: Vec<StackGlueInterfaceStats>,
+) {
+    let mut stats = runtime_state_for(runtime)
+        .if_stats
+        .write()
+        .unwrap_or_else(|e| e.into_inner());
+    stats.clear();
+    stats.extend(restored.into_iter().map(|entry| (entry.if_id, entry)));
 }
 
-pub fn get_stack_glue_stats_in(runtime: NetRuntimeHandle) -> StackGlueStats {
-    let state = runtime_state_for(runtime);
-    StackGlueStats {
-        initialized: state.stack_glue_initialized.load(Ordering::Acquire)
-            || device::is_initialized_in(runtime),
-        rx_packets: state.rx_packets.load(Ordering::Relaxed),
-        tx_packets: state.tx_packets.load(Ordering::Relaxed),
-    }
-}
-
-pub fn restore_stack_glue_stats_in(runtime: NetRuntimeHandle, rx_packets: u64, tx_packets: u64) {
-    let state = runtime_state_for(runtime);
-    state.rx_packets.store(rx_packets, Ordering::Relaxed);
-    state.tx_packets.store(tx_packets, Ordering::Relaxed);
+pub(crate) fn remove_stack_glue_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    runtime_state_for(runtime)
+        .if_stats
+        .write()
+        .unwrap_or_else(|e| e.into_inner())
+        .remove(&if_id);
 }

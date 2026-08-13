@@ -249,7 +249,7 @@ fn http_config_usable(config: &crate::net::api::config::InterfaceConfigSnapshot)
 }
 
 fn http_network_ready_in(runtime: NetRuntimeHandle) -> bool {
-    if !crate::net::runtime::bridge::get_stack_glue_stats_in(runtime).initialized {
+    if !crate::net::runtime::device::is_initialized_in(runtime) {
         return false;
     }
 

@@ -826,16 +826,15 @@ impl NetworkStack {
     }
 
     /// Send ICMP echo request (ping)
-    pub fn send_icmp_echo_request(
+    pub fn send_icmp_echo_request_on(
         &mut self,
+        if_id: super::NetIfId,
         target: Ipv4Address,
         sequence: u16,
     ) -> Result<u64, ()> {
         let identifier = 0x1234u16; // Fixed identifier for now
 
-        let (if_id, config, local_ip) = self
-            .resolve_ipv4_egress(crate::net::types::InterfaceScope::Any, None, target)
-            .map_err(|_| ())?;
+        let (config, local_ip) = self.resolve_ipv4_egress_on(if_id, None).map_err(|_| ())?;
         let current_time = self.current_time();
         let dst_mac = match self.resolve_mac(if_id, target, &config, current_time) {
             Some(mac) => mac,

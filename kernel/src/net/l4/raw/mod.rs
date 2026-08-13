@@ -14,6 +14,41 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::types::{InterfaceScope, NetworkError};
 use kernel_api::resource::net::PacketPayload;
 
+fn resolve_raw_interface(
+    runtime: NetRuntimeHandle,
+    scope: InterfaceScope,
+    payload: &PacketPayload,
+) -> Result<NetIfId, NetworkError> {
+    let view = crate::net::payload::PacketPayloadView::new(payload);
+    let version = view
+        .first_byte()
+        .map(|byte| byte >> 4)
+        .ok_or(NetworkError::BufferTooSmall)?;
+    match version {
+        4 => {
+            let header = view
+                .read_array::<20>(0)
+                .ok_or(NetworkError::BufferTooSmall)?;
+            let dst = crate::net::l3::ipv4::Ipv4Address::new([
+                header[16], header[17], header[18], header[19],
+            ]);
+            crate::net::runtime::manager::resolve_ipv4_interface_in(runtime, scope, dst)
+        }
+        6 => {
+            let header = view
+                .read_array::<40>(0)
+                .ok_or(NetworkError::BufferTooSmall)?;
+            let dst = crate::net::l3::ipv6::Ipv6Address::new([
+                header[24], header[25], header[26], header[27], header[28], header[29], header[30],
+                header[31], header[32], header[33], header[34], header[35], header[36], header[37],
+                header[38], header[39],
+            ]);
+            crate::net::runtime::manager::resolve_ipv6_interface_in(runtime, scope, dst)
+        }
+        _ => Err(NetworkError::InvalidAddress),
+    }
+}
+
 fn network_error_to_socket(error: NetworkError) -> EndpointError {
     match error {
         NetworkError::PermissionDenied => EndpointError::PermissionDenied,
@@ -113,12 +148,14 @@ impl RawEndpoint {
             .with_inner(|inner| inner.scope)
             .ok_or(EndpointError::Internal)?;
         let runtime = self.socket.runtime();
+        let if_id =
+            resolve_raw_interface(runtime, scope, &payload).map_err(network_error_to_socket)?;
         let mut guard = crate::net::runtime::stack::stack_in(runtime)
             .lock()
             .map_err(|_| EndpointError::Internal)?;
         let stack = guard.as_mut().ok_or(EndpointError::NotFound)?;
         stack
-            .send_raw_ip_payload_scoped(scope, payload)
+            .send_raw_ip_payload_on(if_id, payload)
             .map_err(network_error_to_socket)
     }
 

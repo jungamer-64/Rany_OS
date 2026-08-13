@@ -152,3 +152,7 @@ pub fn net_peripheral_runtime_udp_concrete_ingress_interface_is_preserved_smoke(
 pub fn net_peripheral_runtime_large_packet_headroom_preserves_request_smoke() -> bool {
     crate::net::qemu_tests::runtime_large_packet_headroom_preserves_request_smoke()
 }
+
+pub fn net_peripheral_runtime_fake_ports_smp_flow_failover_smoke() -> bool {
+    crate::net::qemu_tests::runtime_fake_ports_smp_flow_failover_smoke()
+}

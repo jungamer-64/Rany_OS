@@ -85,33 +85,31 @@ impl RuntimeCommandHandler {
                 payload,
                 completion_id,
             } => match transport {
-                RawIpv4Transport::Udp {
-                    src,
-                    src_port,
-                    dst_port,
-                    ttl,
-                } => {
+                RawIpv4Transport::Udp { src, ports, ttl } => {
                     let dst = Ipv4Address::new(dst);
+                    let Ok(if_id) = crate::net::runtime::manager::resolve_ipv4_interface_in(
+                        runtime, scope, dst,
+                    ) else {
+                        complete_failed_tx(runtime, completion_id, "raw UDP route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
                     let mut payload = Some(payload);
                     let sent = send_bool_with_tx_meta(stack, completion_id, |stack| match src {
-                        RawIpv4Source::Auto => stack.send_udp_raw_payload_scoped_auto_ttl(
-                            scope,
-                            src_port,
+                        RawIpv4Source::Auto => stack.send_udp_raw_payload_on_auto_ttl(
+                            if_id,
                             dst,
-                            dst_port,
+                            ports,
                             payload.take().expect("raw UDP payload already moved"),
                             ttl,
                         ),
-                        RawIpv4Source::Addr(src_ip) => stack
-                            .send_udp_raw_payload_scoped_with_src_ttl(
-                                scope,
-                                Ipv4Address::new(src_ip),
-                                src_port,
-                                dst,
-                                dst_port,
-                                payload.take().expect("raw UDP payload already moved"),
-                                ttl,
-                            ),
+                        RawIpv4Source::Addr(src_ip) => stack.send_udp_raw_payload_on_with_src_ttl(
+                            if_id,
+                            Ipv4Address::new(src_ip),
+                            dst,
+                            ports,
+                            payload.take().expect("raw UDP payload already moved"),
+                            ttl,
+                        ),
                     });
                     let result = if sent {
                         Ok(())
@@ -124,10 +122,16 @@ impl RuntimeCommandHandler {
                 RawIpv4Transport::Tcp { src } => {
                     let src = Ipv4Address::new(src);
                     let dst = Ipv4Address::new(dst);
-                    let resolved =
-                        stack.resolve_ipv4_egress(scope, (!src.is_any()).then_some(src), dst);
-                    let Ok((if_id, _, resolved_src)) = resolved else {
+                    let Ok(if_id) = crate::net::runtime::manager::resolve_ipv4_interface_in(
+                        runtime, scope, dst,
+                    ) else {
                         complete_failed_tx(runtime, completion_id, "raw TCP route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
+                    let Ok((_, resolved_src)) =
+                        stack.resolve_ipv4_egress_on(if_id, (!src.is_any()).then_some(src))
+                    else {
+                        complete_failed_tx(runtime, completion_id, "raw TCP source unavailable");
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);
@@ -155,22 +159,22 @@ impl RuntimeCommandHandler {
                 payload,
                 completion_id,
             } => match transport {
-                RawIpv6Transport::Udp {
-                    src,
-                    src_port,
-                    dst_port,
-                    ttl,
-                } => {
+                RawIpv6Transport::Udp { src, ports, ttl } => {
                     let src = Ipv6Address::new(src);
                     let dst = Ipv6Address::new(dst);
+                    let Ok(if_id) = crate::net::runtime::manager::resolve_ipv6_interface_in(
+                        runtime, scope, dst,
+                    ) else {
+                        complete_failed_tx(runtime, completion_id, "raw UDPv6 route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
                     let mut payload = Some(payload);
                     let sent = send_result_with_tx_meta(stack, completion_id, |stack| {
-                        stack.send_udp_v6_payload_scoped_with_ttl(
-                            scope,
-                            src_port,
+                        stack.send_udp_v6_payload_on_with_ttl(
+                            if_id,
                             src,
                             dst,
-                            dst_port,
+                            ports,
                             payload.take().expect("raw UDPv6 payload already moved"),
                             ttl,
                         )
@@ -186,13 +190,18 @@ impl RuntimeCommandHandler {
                 RawIpv6Transport::Tcp { src } => {
                     let src = Ipv6Address::new(src);
                     let dst = Ipv6Address::new(dst);
-                    let resolved = stack.resolve_ipv6_egress(
-                        scope,
+                    let Ok(if_id) = crate::net::runtime::manager::resolve_ipv6_interface_in(
+                        runtime, scope, dst,
+                    ) else {
+                        complete_failed_tx(runtime, completion_id, "raw TCPv6 route unavailable");
+                        return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
+                    };
+                    let Ok((_, resolved_src)) = stack.resolve_ipv6_egress_on(
+                        if_id,
                         (!src.is_unspecified()).then_some(src),
                         dst,
-                    );
-                    let Ok((if_id, _, resolved_src)) = resolved else {
-                        complete_failed_tx(runtime, completion_id, "raw TCPv6 route unavailable");
+                    ) else {
+                        complete_failed_tx(runtime, completion_id, "raw TCPv6 source unavailable");
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);

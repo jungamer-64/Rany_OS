@@ -190,38 +190,41 @@ impl NetworkStack {
         .is_ok()
     }
 
-    pub fn send_udp_raw_payload_scoped_auto_ttl(
+    pub fn send_udp_raw_payload_on_auto_ttl(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
-        src_port: u16,
+        if_id: super::NetIfId,
         dst_ip: Ipv4Address,
-        dst_port: u16,
+        ports: crate::net::l4::udp::UdpPorts,
         payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, src_ip)) = self.resolve_ipv4_egress(scope, None, dst_ip) else {
+        let Ok((config, src_ip)) = self.resolve_ipv4_egress_on(if_id, None) else {
             self.stats().record_dropped();
             return false;
         };
 
         self.send_udp_raw_with_config_and_if_ttl_payload(
-            if_id, &config, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+            if_id,
+            &config,
+            src_ip,
+            ports.source(),
+            dst_ip,
+            ports.destination(),
+            payload,
+            ttl,
         )
     }
 
-    pub fn send_udp_raw_payload_scoped_with_src_ttl(
+    pub fn send_udp_raw_payload_on_with_src_ttl(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: super::NetIfId,
         src_ip: Ipv4Address,
-        src_port: u16,
         dst_ip: Ipv4Address,
-        dst_port: u16,
+        ports: crate::net::l4::udp::UdpPorts,
         payload: kernel_api::resource::net::PacketPayload,
         ttl: u8,
     ) -> bool {
-        let Ok((if_id, config, resolved_src)) =
-            self.resolve_ipv4_egress(scope, Some(src_ip), dst_ip)
-        else {
+        let Ok((config, resolved_src)) = self.resolve_ipv4_egress_on(if_id, Some(src_ip)) else {
             self.stats().record_dropped();
             return false;
         };
@@ -230,9 +233,9 @@ impl NetworkStack {
             if_id,
             &config,
             resolved_src,
-            src_port,
+            ports.source(),
             dst_ip,
-            dst_port,
+            ports.destination(),
             payload,
             ttl,
         )

@@ -399,7 +399,7 @@ pub fn send_tcp_segment_payload_with_completion_in(
         let dst_ip = crate::net::l3::ipv4::Ipv4Address::new(dst_v4);
 
         // 非同期イベントキュー経由で送信（ロック競合回避）
-        let ok = crate::net::runtime::stack::enqueue_tcp_send_on_in(
+        let ok = crate::net::runtime::command::enqueue_tcp_send_on_in(
             runtime,
             if_id,
             src_ip,
@@ -423,7 +423,7 @@ pub fn send_tcp_segment_payload_with_completion_in(
     if endpoint_is_native_v6_pair(local, remote) {
         let src_v6 = crate::net::l3::ipv6::Ipv6Address::new(local.as_ipv6());
         let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-        let ok = crate::net::runtime::stack::enqueue_tcp_v6_send_on_in(
+        let ok = crate::net::runtime::command::enqueue_tcp_v6_send_on_in(
             runtime,
             if_id,
             src_v6,

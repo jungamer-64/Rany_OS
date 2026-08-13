@@ -12,13 +12,33 @@ target_env_key() {
     printf '%s' "$value"
 }
 
-select_host_cc_or_die() {
+select_host_linker_or_die() {
+    if [[ -n "${EXORUST_HOST_LINKER:-}" ]]; then
+        if command -v "$EXORUST_HOST_LINKER" >/dev/null 2>&1; then
+            printf '%s' "$EXORUST_HOST_LINKER"
+            return 0
+        fi
+        echo "ERROR: EXORUST_HOST_LINKER points to an unavailable linker: $EXORUST_HOST_LINKER" >&2
+        return 1
+    fi
+
     if [[ -n "${EXORUST_HOST_CC:-}" ]]; then
         if command -v "$EXORUST_HOST_CC" >/dev/null 2>&1; then
             printf '%s' "$EXORUST_HOST_CC"
             return 0
         fi
         echo "ERROR: EXORUST_HOST_CC points to an unavailable compiler: $EXORUST_HOST_CC" >&2
+        return 1
+    fi
+
+    local host_target
+    host_target="$(host_target_triple)"
+    if [[ "$host_target" == *-pc-windows-msvc ]]; then
+        if command -v lld-link.exe >/dev/null 2>&1; then
+            printf '%s' "lld-link.exe"
+            return 0
+        fi
+        echo "ERROR: missing MSVC-compatible host linker. Install 'lld-link.exe' to build runtime boot artifacts." >&2
         return 1
     fi
 
@@ -82,7 +102,7 @@ configure_host_linker_env() {
     local linker_var
 
     if [[ -z "$host_linker" ]]; then
-        host_linker="$(select_host_cc_or_die)" || return 1
+        host_linker="$(select_host_linker_or_die)" || return 1
     fi
 
     host_target="$(host_target_triple)"

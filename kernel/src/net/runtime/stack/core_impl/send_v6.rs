@@ -322,11 +322,8 @@ impl NetworkStack {
         dst: &Ipv6Address,
         icmpv6_payload: PacketPayload,
     ) {
-        let Ok((resolved_if, config, resolved_src)) = self.resolve_ipv6_egress(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            Some(*src),
-            *dst,
-        ) else {
+        let Ok((config, resolved_src)) = self.resolve_ipv6_egress_on(if_id, Some(*src), *dst)
+        else {
             self.stats().record_dropped();
             return;
         };
@@ -337,7 +334,7 @@ impl NetworkStack {
             MacAddress::new(dst.multicast_mac())
         } else {
             let mut queued = false;
-            match self.resolve_ndp_for_send(resolved_if, dst, current_time, |pending| {
+            match self.resolve_ndp_for_send(if_id, dst, current_time, |pending| {
                 if let Some(payload) = pending_payload.take() {
                     pending.enqueue(resolved_src, *dst, payload, current_time);
                 }
@@ -391,7 +388,7 @@ impl NetworkStack {
                     } else {
                         icmpv6_payload.prepend(packet)
                     };
-                    let _ = self.transmit_packet_on(resolved_if, payload);
+                    let _ = self.transmit_packet_on(if_id, payload);
                 }
             }
         }
@@ -482,19 +479,18 @@ impl NetworkStack {
         Some(Err((if_id, ndp.our_link_local, ns_msg)))
     }
 
-    pub fn send_udp_v6_payload_scoped_with_ttl(
+    pub fn send_udp_v6_payload_on_with_ttl(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
-        src_port: u16,
+        if_id: super::NetIfId,
         src_ip: Ipv6Address,
         dst: Ipv6Address,
-        dst_port: u16,
+        ports: crate::net::l4::udp::UdpPorts,
         data: PacketPayload,
         ttl: u8,
     ) -> Result<(), crate::net::types::NetworkError> {
         let data_total_len = data.total_len();
-        let (if_id, config, resolved_src) = self
-            .resolve_ipv6_egress(scope, Some(src_ip), dst)
+        let (config, resolved_src) = self
+            .resolve_ipv6_egress_on(if_id, Some(src_ip), dst)
             .map_err(|error| {
                 self.stats().record_dropped();
                 error
@@ -505,8 +501,8 @@ impl NetworkStack {
             crate::net::security::firewall::IpAddress::V6(resolved_src.octets()),
             crate::net::security::firewall::IpAddress::V6(dst.octets()),
             17,
-            src_port,
-            dst_port,
+            ports.source(),
+            ports.destination(),
             0,
         ) {
             self.stats().record_dropped();
@@ -525,8 +521,8 @@ impl NetworkStack {
                 pending.enqueue_udp(
                     resolved_src,
                     dst,
-                    src_port,
-                    dst_port,
+                    ports.source(),
+                    ports.destination(),
                     ttl,
                     payload,
                     current_time,
@@ -559,8 +555,8 @@ impl NetworkStack {
         else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
-        header.set_src_port(src_port);
-        header.set_dst_port(dst_port);
+        header.set_src_port(ports.source());
+        header.set_dst_port(ports.destination());
         header.set_length(total_len_u16);
         header.set_checksum(0);
 
@@ -603,12 +599,8 @@ impl NetworkStack {
         tcp_segment: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let tcp_segment_view = PacketPayloadView::new(&tcp_segment);
-        let (if_id, config, resolved_src) = self
-            .resolve_ipv6_egress(
-                crate::net::types::InterfaceScope::Pinned(if_id),
-                Some(src_ip),
-                dst,
-            )
+        let (config, resolved_src) = self
+            .resolve_ipv6_egress_on(if_id, Some(src_ip), dst)
             .map_err(|error| {
                 self.stats().record_dropped();
                 error
@@ -702,12 +694,11 @@ impl NetworkStack {
                     hop_limit,
                     data,
                 } => {
-                    let _ = self.send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Pinned(if_id),
-                        src_port,
+                    let _ = self.send_udp_v6_payload_on_with_ttl(
+                        if_id,
                         pkt.src,
                         pkt.dst,
-                        dst_port,
+                        crate::net::l4::udp::UdpPorts::new(src_port, dst_port),
                         data,
                         hop_limit,
                     );

@@ -49,6 +49,7 @@ pub static NETWORK_RUNTIME_CASES: &[(&str, fn() -> bool)] = &[
     ("net_peripheral_igmp_report_suppression_smoke", crate::qemu_tests::net_peripheral_igmp_report_suppression_smoke),
     ("net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke", crate::qemu_tests::net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke),
     ("net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke", crate::qemu_tests::net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke),
+    ("net_peripheral_runtime_fake_ports_smp_flow_failover_smoke", crate::qemu_tests::net_peripheral_runtime_fake_ports_smp_flow_failover_smoke),
     ("net_peripheral_runtime_large_packet_headroom_preserves_request_smoke", crate::qemu_tests::net_peripheral_runtime_large_packet_headroom_preserves_request_smoke),
     ("net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke", crate::qemu_tests::net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke),
     ("net_peripheral_runtime_udp_concrete_ingress_interface_is_preserved_smoke", crate::qemu_tests::net_peripheral_runtime_udp_concrete_ingress_interface_is_preserved_smoke),

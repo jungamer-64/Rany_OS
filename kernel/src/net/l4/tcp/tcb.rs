@@ -1677,26 +1677,6 @@ impl TcbTable {
         socket_id
     }
 
-    pub(crate) fn record_data_received(
-        &self,
-        if_id: NetIfId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        bytes: u32,
-    ) -> bool {
-        self.mutate_entry(if_id, local, remote, |entry| entry.on_data_received(bytes))
-    }
-
-    pub(crate) fn record_data_consumed(
-        &self,
-        if_id: NetIfId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-        bytes: u32,
-    ) -> bool {
-        self.mutate_entry(if_id, local, remote, |entry| entry.on_data_consumed(bytes))
-    }
-
     pub(crate) fn mark_payload_sent(
         &self,
         if_id: NetIfId,

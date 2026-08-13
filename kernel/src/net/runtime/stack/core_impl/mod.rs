@@ -133,69 +133,42 @@ impl NetworkStack {
         }
     }
 
-    pub(crate) fn resolve_ipv4_egress(
+    pub(crate) fn resolve_ipv4_egress_on(
         &self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: NetIfId,
         explicit_src: Option<Ipv4Address>,
-        dst_ip: Ipv4Address,
-    ) -> Result<(NetIfId, NetworkConfig, Ipv4Address), crate::net::types::NetworkError> {
-        let resolved = match scope {
-            crate::net::types::InterfaceScope::Pinned(if_id) => {
-                if !crate::net::runtime::manager::is_interface_operational_in(self.runtime, if_id) {
-                    return Err(crate::net::types::NetworkError::NetworkUnreachable);
-                }
-                self.interface_config_or_runtime(if_id)
-                    .map(|cfg| (if_id, cfg))
-            }
-            crate::net::types::InterfaceScope::Any => {
-                crate::net::runtime::manager::lookup_ipv4_route_in(self.runtime, dst_ip)
-                    .ok()
-                    .flatten()
-                    .and_then(|route| {
-                        self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (route.if_id, cfg))
-                    })
-            }
+    ) -> Result<(NetworkConfig, Ipv4Address), crate::net::types::NetworkError> {
+        if !crate::net::runtime::manager::is_interface_operational_in(self.runtime, if_id) {
+            return Err(crate::net::types::NetworkError::NetworkUnreachable);
         }
-        .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
+        let config = self
+            .interface_config_or_runtime(if_id)
+            .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
-        let src_ip = self.select_ipv4_source(resolved.1, explicit_src)?;
-        Ok((resolved.0, resolved.1, src_ip))
+        let src_ip = self.select_ipv4_source(config, explicit_src)?;
+        Ok((config, src_ip))
     }
 
-    pub(crate) fn resolve_ipv6_egress(
+    pub(crate) fn resolve_ipv6_egress_on(
         &self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: NetIfId,
         explicit_src: Option<Ipv6Address>,
         dst_ip: Ipv6Address,
-    ) -> Result<(NetIfId, NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
-        let resolved = match scope {
-            crate::net::types::InterfaceScope::Pinned(if_id) => {
-                if !crate::net::runtime::manager::is_interface_operational_in(self.runtime, if_id) {
-                    return Err(crate::net::types::NetworkError::NetworkUnreachable);
-                }
-                self.interface_config_or_runtime(if_id)
-                    .map(|cfg| (if_id, cfg))
-            }
-            crate::net::types::InterfaceScope::Any => {
-                crate::net::runtime::manager::lookup_ipv6_route_in(self.runtime, dst_ip)
-                    .ok()
-                    .flatten()
-                    .and_then(|route| {
-                        self.interface_config_or_runtime(route.if_id)
-                            .map(|cfg| (route.if_id, cfg))
-                    })
-            }
+    ) -> Result<(NetworkConfig, Ipv6Address), crate::net::types::NetworkError> {
+        if !crate::net::runtime::manager::is_interface_operational_in(self.runtime, if_id) {
+            return Err(crate::net::types::NetworkError::NetworkUnreachable);
         }
-        .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
+        let config = self
+            .interface_config_or_runtime(if_id)
+            .ok_or(crate::net::types::NetworkError::NetworkUnreachable)?;
 
-        let src_ip = self.select_ipv6_source(resolved.1, explicit_src, dst_ip)?;
-        Ok((resolved.0, resolved.1, src_ip))
+        let src_ip = self.select_ipv6_source(config, explicit_src, dst_ip)?;
+        Ok((config, src_ip))
     }
 
-    pub fn send_raw_ip_payload_scoped(
+    pub fn send_raw_ip_payload_on(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: NetIfId,
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let view = PacketPayloadView::new(&payload);
@@ -204,15 +177,15 @@ impl NetworkStack {
         };
 
         match version {
-            4 => self.send_raw_ipv4_payload_scoped(scope, payload),
-            6 => self.send_raw_ipv6_payload_scoped(scope, payload),
+            4 => self.send_raw_ipv4_payload_on(if_id, payload),
+            6 => self.send_raw_ipv6_payload_on(if_id, payload),
             _ => Err(crate::net::types::NetworkError::InvalidAddress),
         }
     }
 
-    fn send_raw_ipv4_payload_scoped(
+    fn send_raw_ipv4_payload_on(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: NetIfId,
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let payload_view = PacketPayloadView::new(&payload);
@@ -289,7 +262,7 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
-        let (if_id, config, _) = self.resolve_ipv4_egress(scope, Some(src_ip), dst_ip)?;
+        let (config, _) = self.resolve_ipv4_egress_on(if_id, Some(src_ip))?;
         let current_time = self.current_time();
         let mut pending_payload = Some(payload);
         let dst_mac = if dst_ip.is_loopback() {
@@ -327,9 +300,9 @@ impl NetworkStack {
         }
     }
 
-    fn send_raw_ipv6_payload_scoped(
+    fn send_raw_ipv6_payload_on(
         &mut self,
-        scope: crate::net::types::InterfaceScope,
+        if_id: NetIfId,
         payload: PacketPayload,
     ) -> Result<(), crate::net::types::NetworkError> {
         let payload_view = PacketPayloadView::new(&payload);
@@ -357,7 +330,7 @@ impl NetworkStack {
         ]);
         let next_header = header[6];
 
-        let (if_id, config, _) = self.resolve_ipv6_egress(scope, Some(src_ip), dst_ip)?;
+        let (config, _) = self.resolve_ipv6_egress_on(if_id, Some(src_ip), dst_ip)?;
         let dst_mac = if dst_ip.is_multicast() {
             MacAddress::new(dst_ip.multicast_mac())
         } else {
@@ -437,25 +410,10 @@ impl NetworkStack {
                 crate::net::runtime::manager::InterfaceTopologyRevision::INITIAL,
             reconciled_primary: None,
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
-            transmit_fn: None,
-            transmit_awaits_device_completion: false,
+            transmit_fn: crate::net::runtime::bridge::transmit_from_stack_in,
             pending_tx_meta: None,
             current_time: AtomicU64::new(0),
         }
-    }
-
-    /// Set transmit callback
-    pub fn set_transmit_fn(&mut self, f: TransmitFn) {
-        self.set_transmit_fn_with_completion(f, false);
-    }
-
-    pub fn set_transmit_fn_with_completion(
-        &mut self,
-        f: TransmitFn,
-        waits_for_device_completion: bool,
-    ) {
-        self.transmit_fn = Some(f);
-        self.transmit_awaits_device_completion = waits_for_device_completion;
     }
 
     /// Register or refresh per-interface state.
@@ -537,29 +495,14 @@ impl NetworkStack {
         if_id: NetIfId,
         payload: kernel_api::resource::net::PacketPayload,
     ) -> bool {
-        if let Some(f) = self.transmit_fn {
-            let meta = self.pending_tx_meta.unwrap_or_default();
-            let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
-            if f(self.runtime, if_id, payload, meta) {
-                if !self.transmit_awaits_device_completion {
-                    if let Some(completion_id) =
-                        meta.device_completion_ticket().map(|ticket| ticket.get())
-                    {
-                        let _ = crate::net::runtime::device::complete_tx_request_in(
-                            self.runtime,
-                            completion_id,
-                            Ok(()),
-                        );
-                    }
-                }
-                self.record_tx_success_on(if_id, packet_len);
-                return true;
-            }
-
-            self.record_tx_error_on(if_id);
-            return false;
+        let meta = self.pending_tx_meta.unwrap_or_default();
+        let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
+        if (self.transmit_fn)(self.runtime, if_id, payload, meta) {
+            self.record_tx_success_on(if_id, packet_len);
+            return true;
         }
 
+        self.record_tx_error_on(if_id);
         false
     }
 
@@ -886,11 +829,7 @@ impl NetworkStack {
             return false;
         }
 
-        let Ok((if_id, config, resolved_src)) = self.resolve_ipv4_egress(
-            crate::net::types::InterfaceScope::Pinned(if_id),
-            Some(src_ip),
-            dst_ip,
-        ) else {
+        let Ok((config, resolved_src)) = self.resolve_ipv4_egress_on(if_id, Some(src_ip)) else {
             self.stats().record_dropped();
             return false;
         };

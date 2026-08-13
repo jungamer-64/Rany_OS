@@ -678,10 +678,16 @@ fn aggregate_port_runtime_stats() -> (usize, u64, u64, u64, u64) {
 
 fn log_network_port_snapshot(stage: &str) {
     let runtime = crate::net::runtime::default_runtime();
-    let stack_stats = crate::net::runtime::bridge::get_stack_glue_stats_in(runtime);
     for info in crate::net::runtime::device::list_port_infos_in(runtime) {
         let runtime_stats =
             crate::net::runtime::device::port_stats_in(runtime, info.port_id).unwrap_or_default();
+        let stack_stats = crate::net::runtime::device::lookup_if_by_port_id_in(
+            runtime,
+            info.port_id,
+        )
+        .and_then(|if_id| {
+            crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_id)
+        });
         let link_up = info.flags & kernel_api::service::netdev::NETDEV_FLAG_LINK_UP != 0;
         let healthy = info.flags & kernel_api::service::netdev::NETDEV_FLAG_HEALTHY != 0;
         let mac = info.mac.as_bytes();
@@ -700,9 +706,9 @@ fn log_network_port_snapshot(stage: &str) {
             mac[3],
             mac[4],
             mac[5],
-            stack_stats.initialized,
-            stack_stats.rx_packets,
-            stack_stats.tx_packets,
+            stack_stats.is_some_and(|stats| stats.initialized),
+            stack_stats.map_or(0, |stats| stats.rx_packets),
+            stack_stats.map_or(0, |stats| stats.tx_packets),
             runtime_stats.rx_packets,
             runtime_stats.tx_packets,
             runtime_stats.tx_errors,

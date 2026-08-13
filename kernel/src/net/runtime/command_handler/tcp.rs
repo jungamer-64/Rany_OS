@@ -242,10 +242,17 @@ impl RuntimeCommandHandler {
                 let src = Ipv4Address::new(local_v4);
                 if src.is_any() { None } else { Some(src) }
             };
-            match stack.resolve_ipv4_egress(scope, explicit_src, Ipv4Address::new(remote_v4)) {
-                Ok((resolved_if, _, src_ip)) => {
-                    (EndpointAddr::new(src_ip.octets(), local_port), resolved_if)
+            let remote_ip = Ipv4Address::new(remote_v4);
+            let resolved_if = match crate::net::runtime::manager::resolve_ipv4_interface_in(
+                runtime, scope, remote_ip,
+            ) {
+                Ok(if_id) => if_id,
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
+            };
+            match stack.resolve_ipv4_egress_on(resolved_if, explicit_src) {
+                Ok((_, src_ip)) => (EndpointAddr::new(src_ip.octets(), local_port), resolved_if),
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
@@ -260,8 +267,16 @@ impl RuntimeCommandHandler {
                 }
             };
             let remote_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
-            match stack.resolve_ipv6_egress(scope, explicit_src, remote_v6) {
-                Ok((resolved_if, _, src_ip)) => (
+            let resolved_if = match crate::net::runtime::manager::resolve_ipv6_interface_in(
+                runtime, scope, remote_v6,
+            ) {
+                Ok(if_id) => if_id,
+                Err(error) => {
+                    return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
+                }
+            };
+            match stack.resolve_ipv6_egress_on(resolved_if, explicit_src, remote_v6) {
+                Ok((_, src_ip)) => (
                     EndpointAddr::new_v6(src_ip.octets(), local_port),
                     resolved_if,
                 ),

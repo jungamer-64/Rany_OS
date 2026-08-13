@@ -109,6 +109,63 @@ jobs:
             target/qemu-logs
           if-no-files-found: ignore
 
+  fullboot-network-smp4-pr-required:
+    name: Full-boot QEMU network SMP=4 (PR required)
+    if: github.event_name != 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+        with:
+          toolchain: nightly-2026-03-11
+          components: rust-src, llvm-tools-preview
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y nasm qemu-system-x86
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-qemu-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-qemu-
+
+      - name: Generate signing keys
+        run: |
+          if [ ! -f keys/kernel.key ] || [ ! -f keys/kernel_pub.key ]; then
+            cargo run --quiet --manifest-path tools/signer/Cargo.toml -- keygen --output-dir keys
+          fi
+
+      - name: Run network profile with four cores
+        env:
+          RUST_TEST_THREADS: 1
+          QEMU_TEST_ACCEL: tcg
+          QEMU_TEST_CPU: qemu64,+rdtscp
+          QEMU_TEST_MEMORY_MB: 512
+          QEMU_TEST_PROFILE_ONLY: network
+          QEMU_TEST_SMP: 4
+          QEMU_TEST_TIMEOUT_SECS: 240
+        run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
+      - name: Upload network SMP=4 logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: qemu-logs-network-smp4-pr-required
+          path: |
+            target/qemu-logs
+          if-no-files-found: ignore
+
   pure-nightly-required:
     name: Pure tests (nightly required)
     if: github.event_name == 'schedule'

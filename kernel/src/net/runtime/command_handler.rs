@@ -309,7 +309,14 @@ impl RuntimeCommandHandler {
                 crate::net::runtime::command::ControlCommand::IcmpEchoRequest { target, sequence },
             ) => {
                 let target_ip = crate::net::l3::ipv4::Ipv4Address::new(target);
-                match stack.send_icmp_echo_request(target_ip, sequence) {
+                let Ok(if_id) = crate::net::runtime::manager::resolve_ipv4_interface_in(
+                    runtime,
+                    crate::net::types::InterfaceScope::Any,
+                    target_ip,
+                ) else {
+                    return EventHandleResult::ProtocolError(EndpointError::NetworkUnreachable);
+                };
+                match stack.send_icmp_echo_request_on(if_id, target_ip, sequence) {
                     Ok(_send_time) => EventHandleResult::Success,
                     Err(_) => EventHandleResult::ProtocolError(EndpointError::ResourceExhausted),
                 }

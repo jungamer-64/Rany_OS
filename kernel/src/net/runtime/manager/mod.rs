@@ -6,7 +6,7 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::stack::NetworkConfig;
-use crate::net::types::NetworkError;
+use crate::net::types::{InterfaceScope, NetworkError};
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
@@ -938,6 +938,25 @@ pub fn lookup_ipv4_route_in(
     with_manager_in(runtime, |m| m.lookup_ipv4_route(dst))
 }
 
+pub(crate) fn resolve_ipv4_interface_in(
+    runtime: NetRuntimeHandle,
+    scope: InterfaceScope,
+    dst: Ipv4Address,
+) -> Result<NetIfId, NetworkError> {
+    with_manager_in(runtime, |manager| match scope {
+        InterfaceScope::Pinned(if_id) => manager
+            .get_interface(if_id)
+            .copied()
+            .filter(|interface| interface.is_operational())
+            .map(|_| if_id)
+            .ok_or(NetworkError::NetworkUnreachable),
+        InterfaceScope::Any => manager
+            .lookup_ipv4_route(dst)
+            .map(|route| route.if_id)
+            .ok_or(NetworkError::NetworkUnreachable),
+    })?
+}
+
 pub fn list_ipv4_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv4Route>, NetworkError> {
     with_manager_in(runtime, |m| m.list_ipv4_routes())
 }
@@ -958,6 +977,25 @@ pub fn lookup_ipv6_route_in(
     dst: Ipv6Address,
 ) -> Result<RouteLookupResultV6, NetworkError> {
     with_manager_in(runtime, |m| m.lookup_ipv6_route(dst))
+}
+
+pub(crate) fn resolve_ipv6_interface_in(
+    runtime: NetRuntimeHandle,
+    scope: InterfaceScope,
+    dst: Ipv6Address,
+) -> Result<NetIfId, NetworkError> {
+    with_manager_in(runtime, |manager| match scope {
+        InterfaceScope::Pinned(if_id) => manager
+            .get_interface(if_id)
+            .copied()
+            .filter(|interface| interface.is_operational())
+            .map(|_| if_id)
+            .ok_or(NetworkError::NetworkUnreachable),
+        InterfaceScope::Any => manager
+            .lookup_ipv6_route(dst)
+            .map(|route| route.if_id)
+            .ok_or(NetworkError::NetworkUnreachable),
+    })?
 }
 
 pub fn list_ipv6_routes_in(runtime: NetRuntimeHandle) -> Result<Vec<Ipv6Route>, NetworkError> {
@@ -1132,5 +1170,53 @@ mod tests {
             .expect("lower preferred link again");
         assert_eq!(manager.primary, None);
         assert!(manager.get_interface(never).is_some());
+    }
+
+    #[test]
+    fn egress_scope_requires_an_operational_interface_or_route() {
+        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
+        init_network_manager_in(runtime);
+        let if_id = register_interface_in(runtime, "route-if", PrimaryPreference::Auto)
+            .expect("register route interface");
+        let destination = Ipv4Address::new([192, 0, 2, 99]);
+
+        assert_eq!(
+            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+            Err(NetworkError::NetworkUnreachable)
+        );
+
+        let mut config = NetworkConfig::default();
+        config.ipv4.address = Ipv4Address::new([192, 0, 2, 10]);
+        config.ipv4.subnet_mask = Ipv4Address::new([255, 255, 255, 0]);
+        set_interface_config_in(runtime, if_id, config).expect("configure route interface");
+        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise route interface");
+
+        assert_eq!(
+            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+            Ok(if_id)
+        );
+        assert_eq!(
+            resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
+            Ok(if_id)
+        );
+        assert_eq!(
+            resolve_ipv4_interface_in(
+                runtime,
+                InterfaceScope::Any,
+                Ipv4Address::new([198, 51, 100, 1]),
+            ),
+            Err(NetworkError::NetworkUnreachable)
+        );
+
+        set_interface_link_state_in(runtime, if_id, LinkState::Down)
+            .expect("lower route interface");
+        assert_eq!(
+            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+            Err(NetworkError::NetworkUnreachable)
+        );
+        assert_eq!(
+            resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
+            Err(NetworkError::NetworkUnreachable)
+        );
     }
 }

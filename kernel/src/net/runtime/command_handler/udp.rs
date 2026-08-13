@@ -5,6 +5,7 @@
 
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l4::udp::UdpPorts;
 use crate::net::runtime::command_handler::common::endpoint_error_from_network;
 
 impl RuntimeCommandHandler {
@@ -73,33 +74,31 @@ impl RuntimeCommandHandler {
                 .filter(|ip| !ip.is_any());
             let mut outbound_payload = Some(payload);
 
-            match stack.resolve_ipv4_egress(scope, explicit_src, dst_ip) {
-                Ok((if_id, _, _)) => {
-                    let pinned = crate::net::types::InterfaceScope::Pinned(if_id);
-                    if let Some(src_ip) = explicit_src {
-                        stack.send_udp_raw_payload_scoped_with_src_ttl(
-                            pinned,
-                            src_ip,
-                            local_port,
-                            dst_ip,
-                            remote.port(),
-                            outbound_payload.take().expect("UDP payload must exist"),
-                            64,
-                        )
-                    } else {
-                        stack.send_udp_raw_payload_scoped_auto_ttl(
-                            pinned,
-                            local_port,
-                            dst_ip,
-                            remote.port(),
-                            outbound_payload.take().expect("UDP payload must exist"),
-                            64,
-                        )
-                    }
-                }
+            let if_id = match crate::net::runtime::manager::resolve_ipv4_interface_in(
+                runtime, scope, dst_ip,
+            ) {
+                Ok(if_id) => if_id,
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
+            };
+            if let Some(src_ip) = explicit_src {
+                stack.send_udp_raw_payload_on_with_src_ttl(
+                    if_id,
+                    src_ip,
+                    dst_ip,
+                    UdpPorts::new(local_port, remote.port()),
+                    outbound_payload.take().expect("UDP payload must exist"),
+                    64,
+                )
+            } else {
+                stack.send_udp_raw_payload_on_auto_ttl(
+                    if_id,
+                    dst_ip,
+                    UdpPorts::new(local_port, remote.port()),
+                    outbound_payload.take().expect("UDP payload must exist"),
+                    64,
+                )
             }
         } else if remote.is_ipv6() && local_addr.map_or(false, |a| a.is_ipv6()) {
             let src_v6 = local_addr
@@ -107,22 +106,24 @@ impl RuntimeCommandHandler {
                 .unwrap_or(crate::net::l3::ipv6::Ipv6Address::UNSPECIFIED);
             let dst_v6 = crate::net::l3::ipv6::Ipv6Address::new(remote.as_ipv6());
 
-            match stack.resolve_ipv6_egress(scope, Some(src_v6), dst_v6) {
-                Ok((if_id, _, _)) => stack
-                    .send_udp_v6_payload_scoped_with_ttl(
-                        crate::net::types::InterfaceScope::Pinned(if_id),
-                        local_port,
-                        src_v6,
-                        dst_v6,
-                        remote.port(),
-                        payload,
-                        64,
-                    )
-                    .is_ok(),
+            let if_id = match crate::net::runtime::manager::resolve_ipv6_interface_in(
+                runtime, scope, dst_v6,
+            ) {
+                Ok(if_id) => if_id,
                 Err(error) => {
                     return EventHandleResult::ProtocolError(endpoint_error_from_network(error));
                 }
-            }
+            };
+            stack
+                .send_udp_v6_payload_on_with_ttl(
+                    if_id,
+                    src_v6,
+                    dst_v6,
+                    UdpPorts::new(local_port, remote.port()),
+                    payload,
+                    64,
+                )
+                .is_ok()
         } else {
             false
         };

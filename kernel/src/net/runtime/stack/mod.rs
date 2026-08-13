@@ -6,7 +6,6 @@
 //! This module integrates all network protocol layers into
 //! a unified zero-copy network stack as specified in Section 6.2.
 
-use crate::net::datapath::optimization::PacketBatch;
 use crate::net::l2::arp::{ArpProcessor, ArpResult};
 use crate::net::l2::ethernet::{
     EtherType, EthernetFrameMut, EthernetHeader, EthernetProcessor, MacAddress,
@@ -277,10 +276,8 @@ pub struct NetworkStack {
     /// Manager revision fully applied to this per-core stack.
     /// Timeout wheel for periodic tasks
     timeout_wheel: TimeoutWheel,
-    /// Transmit callback
-    transmit_fn: Option<TransmitFn>,
-    /// Whether the active transmit callback resolves raw-send completions on device TX completion.
-    transmit_awaits_device_completion: bool,
+    /// Canonical device transmit boundary shared by every core-local stack.
+    transmit_fn: TransmitFn,
     /// One-shot TX metadata applied to the next frame emitted by raw/global commands.
     pending_tx_meta: Option<NetTxMeta>,
     /// Current timestamp (ticks)

@@ -5,6 +5,7 @@
 use super::*;
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv6::Ipv6Address;
+use crate::net::l4::udp::UdpPorts;
 use crate::net::payload::GeneratedPacketWriter;
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
@@ -78,13 +79,12 @@ impl DhcpV6Client {
         dst: Ipv6Address,
         payload: kernel_api::resource::net::PacketPayload,
     ) -> bool {
-        crate::net::runtime::stack::enqueue_udp_v6_send_scoped_in(
+        crate::net::runtime::command::enqueue_udp_v6_send_scoped_in(
             self.runtime,
             crate::net::types::InterfaceScope::Pinned(self.if_id),
-            DHCPV6_CLIENT_PORT,
             src,
             dst,
-            DHCPV6_SERVER_PORT,
+            UdpPorts::new(DHCPV6_CLIENT_PORT, DHCPV6_SERVER_PORT),
             payload,
             64,
         )

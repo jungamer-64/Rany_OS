@@ -137,6 +137,29 @@ impl UdpHeader {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct UdpPorts {
+    source: u16,
+    destination: u16,
+}
+
+impl UdpPorts {
+    pub(crate) const fn new(source: u16, destination: u16) -> Self {
+        Self {
+            source,
+            destination,
+        }
+    }
+
+    pub(crate) const fn source(self) -> u16 {
+        self.source
+    }
+
+    pub(crate) const fn destination(self) -> u16 {
+        self.destination
+    }
+}
+
 /// Zero-copy UDP packet view
 pub struct UdpPacket<'a> {
     header: &'a UdpHeader,

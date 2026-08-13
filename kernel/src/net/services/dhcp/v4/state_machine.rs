@@ -8,6 +8,7 @@ use super::{
     DhcpState,
 };
 use crate::net::l3::ipv4::Ipv4Address;
+use crate::net::l4::udp::UdpPorts;
 use crate::net::payload::GeneratedPacketWriter;
 use crate::net::runtime::manager::NetIfId;
 use core::sync::atomic::Ordering;
@@ -23,8 +24,14 @@ fn send_dhcpv4_packet_on(
     payload: kernel_api::resource::net::PacketPayload,
     ttl: u8,
 ) -> bool {
-    crate::net::runtime::stack::enqueue_udp_send_on_with_src_in(
-        runtime, if_id, src_ip, src_port, dst_ip, dst_port, payload, ttl,
+    crate::net::runtime::command::enqueue_udp_send_on_with_src_in(
+        runtime,
+        if_id,
+        src_ip,
+        dst_ip,
+        UdpPorts::new(src_port, dst_port),
+        payload,
+        ttl,
     )
 }
 

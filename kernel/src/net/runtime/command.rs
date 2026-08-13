@@ -17,6 +17,7 @@ use core::task::{Context, Poll};
 
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
+use crate::net::l4::udp::UdpPorts;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -111,8 +112,7 @@ pub(crate) enum RawIpv4Source {
 pub(crate) enum RawIpv4Transport {
     Udp {
         src: RawIpv4Source,
-        src_port: u16,
-        dst_port: u16,
+        ports: UdpPorts,
         ttl: u8,
     },
     Tcp {
@@ -124,13 +124,115 @@ pub(crate) enum RawIpv4Transport {
 pub(crate) enum RawIpv6Transport {
     Udp {
         src: [u8; 16],
-        src_port: u16,
-        dst_port: u16,
+        ports: UdpPorts,
         ttl: u8,
     },
     Tcp {
         src: [u8; 16],
     },
+}
+
+fn enqueue_raw_send_in(runtime: NetRuntimeHandle, command: RawSendCommand) -> bool {
+    let reply = new_detached_command_channel_in(runtime);
+    try_enqueue_command_in(
+        runtime,
+        RuntimeCommand::Transport(TransportCommand::RawSend { command, reply }),
+    )
+    .is_ok()
+}
+
+pub(crate) fn enqueue_udp_v6_send_scoped_in(
+    runtime: NetRuntimeHandle,
+    scope: InterfaceScope,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    ports: UdpPorts,
+    payload: PacketPayload,
+    ttl: u8,
+) -> bool {
+    enqueue_raw_send_in(
+        runtime,
+        RawSendCommand::Ipv6 {
+            scope,
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Udp {
+                src: src_ip.octets(),
+                ports,
+                ttl,
+            },
+            payload,
+            completion_id: None,
+        },
+    )
+}
+
+pub(crate) fn enqueue_udp_send_on_with_src_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    src_ip: crate::net::l3::ipv4::Ipv4Address,
+    dst_ip: crate::net::l3::ipv4::Ipv4Address,
+    ports: UdpPorts,
+    payload: PacketPayload,
+    ttl: u8,
+) -> bool {
+    enqueue_raw_send_in(
+        runtime,
+        RawSendCommand::Ipv4 {
+            scope: InterfaceScope::Pinned(if_id),
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Udp {
+                src: RawIpv4Source::Addr(*src_ip.as_bytes()),
+                ports,
+                ttl,
+            },
+            payload,
+            completion_id: None,
+        },
+    )
+}
+
+pub(crate) fn enqueue_tcp_send_on_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    src_ip: crate::net::l3::ipv4::Ipv4Address,
+    dst_ip: crate::net::l3::ipv4::Ipv4Address,
+    payload: PacketPayload,
+    completion_id: Option<u64>,
+) -> bool {
+    enqueue_raw_send_in(
+        runtime,
+        RawSendCommand::Ipv4 {
+            scope: InterfaceScope::Pinned(if_id),
+            dst: *dst_ip.as_bytes(),
+            transport: RawIpv4Transport::Tcp {
+                src: *src_ip.as_bytes(),
+            },
+            payload,
+            completion_id,
+        },
+    )
+}
+
+pub(crate) fn enqueue_tcp_v6_send_on_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    src_ip: crate::net::l3::ipv6::Ipv6Address,
+    dst_ip: crate::net::l3::ipv6::Ipv6Address,
+    payload: PacketPayload,
+    completion_id: Option<u64>,
+) -> bool {
+    enqueue_raw_send_in(
+        runtime,
+        RawSendCommand::Ipv6 {
+            scope: InterfaceScope::Pinned(if_id),
+            dst: dst_ip.octets(),
+            transport: RawIpv6Transport::Tcp {
+                src: src_ip.octets(),
+            },
+            payload,
+            completion_id,
+        },
+    )
 }
 
 #[derive(Debug)]
@@ -626,7 +728,6 @@ const NETWORK_EVENT_QUEUE_BACKING_CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY
 /// - shared `MpscRingBuffer` による順序保証付き配信
 /// - `AtomicWaker` による ISR-safe タスク起床
 /// - 全操作がロック取得なしで完了（ISR コンテキストから安全に呼び出し可能）
-
 pub(crate) struct RuntimeCommandQueue {
     queue: MpscRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
     /// マルチコンシューマー向け ISR-safe Waker Queue

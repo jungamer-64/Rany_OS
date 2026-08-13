@@ -1380,27 +1380,6 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
     manager::init_network_manager_in(runtime);
     stack::init_in(runtime);
 
-    match stack::stack_in(runtime).lock() {
-        Ok(mut guard) => {
-            let Some(stack) = guard.as_mut() else {
-                runtime_context_for(runtime)
-                    .stack_initialized
-                    .store(false, Ordering::Release);
-                return Err("network stack unavailable");
-            };
-            stack.set_transmit_fn_with_completion(
-                crate::net::runtime::bridge::transmit_from_stack_in,
-                true,
-            );
-        }
-        Err(_) => {
-            runtime_context_for(runtime)
-                .stack_initialized
-                .store(false, Ordering::Release);
-            return Err("network stack poisoned");
-        }
-    }
-
     if let Err(err) = crate::net::api::dhcp::init_dhcp_runtime_in(runtime) {
         log::warn!(target: "net::device", "DHCP runtime init failed: {}", err);
     }
@@ -1443,6 +1422,7 @@ fn interface_for_port(
 fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
     crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
     let _ = manager::unregister_interface_in(runtime, if_id);
+    crate::net::runtime::bridge::remove_stack_glue_interface_in(runtime, if_id);
 }
 
 fn rollback_port_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId, port_id: NetPortId) {
@@ -1584,6 +1564,7 @@ pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
         handle_interface_departure_in(runtime, if_id, FailoverReason::Unregister, previous_primary);
         crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
         let _ = manager::unregister_interface_in(runtime, if_id);
+        crate::net::runtime::bridge::remove_stack_glue_interface_in(runtime, if_id);
         handle.stop();
         true
     } else {

@@ -540,7 +540,7 @@ pub fn build_signer() -> Result<PathBuf, BuildError> {
         .join("signer")
         .join("target")
         .join("release")
-        .join("kernel-signer");
+        .join(format!("kernel-signer{}", std::env::consts::EXE_SUFFIX));
 
     if path.exists() {
         Ok(path)
