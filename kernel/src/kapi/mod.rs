@@ -19,7 +19,7 @@ pub(crate) use kernel_api::resource::task::TaskHandle;
 pub(crate) use kernel_api::service::kernel::KernelServices;
 
 pub(crate) use crate::io::dma;
-pub(crate) use crate::task::context;
+pub(crate) use crate::task::{current_subject, current_task_id};
 
 pub(crate) type DmaBuffer = DmaSlice<KapiCpuOwned>;
 

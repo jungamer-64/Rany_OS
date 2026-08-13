@@ -15,7 +15,7 @@ pub(crate) fn release_dma_buffer_checked(dma_handle_id: u64) -> Result<(), KapiE
         return Err(KapiError::InvalidHandle);
     }
 
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
 
     match crate::resource_registry::dma::release_owned(dma_handle_id, caller) {
         Ok(()) => Ok(()),

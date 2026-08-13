@@ -689,7 +689,7 @@ pub fn memcg_for_domain(_domain: crate::domain::DomainId) -> MemcgId {
 
 /// Get current subject's memcg id.
 pub fn current_memcg_id() -> MemcgId {
-    memcg_for_domain(crate::task::context::current_subject().domain)
+    memcg_for_domain(crate::task::current_subject().domain)
 }
 
 // ============================================================================

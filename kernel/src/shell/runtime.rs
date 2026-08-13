@@ -141,9 +141,9 @@ pub fn monitor_info() -> MonitorInfo {
             stopped: snap.domains.stopped,
         },
         tasks: TaskMonitorInfo {
-            context_switches: snap.tasks.context_switches,
-            voluntary_yields: snap.tasks.voluntary_yields,
-            forced_preemptions: snap.tasks.forced_preemptions,
+            task_count: snap.tasks.task_count,
+            ready_tasks: snap.tasks.ready_tasks,
+            poll_count: snap.tasks.poll_count,
         },
         network: NetworkMonitorInfo {
             rx_packets: snap.network.rx_packets,

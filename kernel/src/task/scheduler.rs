@@ -3,6 +3,7 @@ use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
+use core::sync::atomic::{AtomicU64, Ordering};
 use core::task::{Context, Poll};
 
 use spin::Once;
@@ -26,6 +27,19 @@ pub enum SpawnError {
     CpuNotPresent(CpuId),
     CpuOffline(CpuId),
     DuplicateTaskId(TaskId),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CpuRunQueueSnapshot {
+    pub cpu: CpuId,
+    pub ready_tasks: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchedulerSnapshot {
+    pub task_count: usize,
+    pub poll_count: u64,
+    pub run_queues: Arc<[CpuRunQueueSnapshot]>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -253,12 +267,14 @@ impl SchedulerState {
 
 pub(crate) struct TaskRuntime {
     state: PoisonLock<SchedulerState>,
+    poll_count: AtomicU64,
 }
 
 impl TaskRuntime {
     fn new(snapshot: &crate::cpu::CpuSnapshot) -> Self {
         Self {
             state: PoisonLock::new(SchedulerState::from_snapshot(snapshot)),
+            poll_count: AtomicU64::new(0),
         }
     }
 
@@ -318,6 +334,7 @@ impl TaskRuntime {
             .unwrap_or_else(|error| error.into_inner())
             .as_mut()
             .poll(&mut context);
+        self.poll_count.fetch_add(1, Ordering::Relaxed);
         drop(execution_guard);
 
         let completed_domain = self
@@ -329,6 +346,24 @@ impl TaskRuntime {
             crate::domain::remove_task_from_domain(domain, record.id.as_u64());
         }
         true
+    }
+
+    fn snapshot(&self) -> SchedulerSnapshot {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let run_queues = state
+            .queues
+            .iter()
+            .map(|(&cpu, queue)| CpuRunQueueSnapshot {
+                cpu,
+                ready_tasks: queue.len(),
+            })
+            .collect::<alloc::vec::Vec<_>>()
+            .into();
+        SchedulerSnapshot {
+            task_count: state.tasks.len(),
+            poll_count: self.poll_count.load(Ordering::Relaxed),
+            run_queues,
+        }
     }
 
     fn remove_online_cpu(&self, cpu: CpuId) -> Result<(), Arc<[CpuBlocker]>> {
@@ -376,6 +411,10 @@ pub fn spawn(
 
 pub fn spawn_task(task: Task) -> Result<TaskId, SpawnError> {
     runtime()?.spawn_task(task)
+}
+
+pub fn scheduler_snapshot() -> Option<SchedulerSnapshot> {
+    TASK_RUNTIME.get().map(TaskRuntime::snapshot)
 }
 
 pub(crate) fn prepare_cpu_offline(cpu: CpuId) -> Result<(), Arc<[CpuBlocker]>> {

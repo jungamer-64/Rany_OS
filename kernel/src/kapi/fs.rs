@@ -24,7 +24,7 @@ pub(crate) fn open_with_token(
         }
     }
 
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     if let Some(t) = token {
         if !crate::security::capability::manager().validate_token(
             caller,
@@ -54,7 +54,7 @@ pub(crate) fn open_with_token(
 
 pub(crate) fn close(handle: FileHandle) -> Result<(), KapiError> {
     let handle_id = handle.id();
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     match crate::resource_registry::fs::unregister_handle_owned(handle_id, caller) {
         Ok(entry) => {
             if let Some(t) = entry.token {

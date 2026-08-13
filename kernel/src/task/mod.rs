@@ -26,7 +26,6 @@ use alloc::boxed::Box;
 use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::{Context, Poll};
 
 pub mod environ;
 mod execution;
@@ -56,11 +55,13 @@ pub use interrupt_waker::{
     wait_for_interrupt, wake_from_interrupt,
 };
 pub use scheduler::{
-    SpawnError, TaskPlacement, initialize_scheduler, run_forever, spawn, spawn_task,
+    CpuRunQueueSnapshot, SchedulerSnapshot, SpawnError, TaskPlacement, initialize_scheduler,
+    run_forever, scheduler_snapshot, spawn, spawn_task,
 };
 pub(crate) use scheduler::{prepare_cpu_offline, prepare_cpu_online, publish_cpu_online};
 // 新規追加: タイマー割り込み統合用
 pub use waker::create_waker;
+pub use waker::{WakeQueueStats, wake_queue_stats};
 pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};
 
 // Timeout/block_on utilities re-exported from timeout.rs

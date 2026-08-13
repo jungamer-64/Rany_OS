@@ -55,7 +55,7 @@ pub(crate) fn authorize_pci_locator_for_domain(
 pub(crate) fn authorize_dma_device_for_current_subject(
     device_id: PackedPciLocation,
 ) -> Result<IommuDeviceId, KapiError> {
-    let caller = crate::task::context::current_subject().domain;
+    let caller = crate::task::current_subject().domain;
     let bound_locator = if caller == DomainId::KERNEL {
         None
     } else {
@@ -85,7 +85,7 @@ pub(crate) fn authorize_dma_device_for_current_subject(
 }
 
 pub(crate) fn current_driver_domain() -> Result<DomainId, KapiError> {
-    let domain = crate::task::context::current_subject().domain;
+    let domain = crate::task::current_subject().domain;
     if domain == DomainId::KERNEL {
         return Err(KapiError::PermissionDenied);
     }

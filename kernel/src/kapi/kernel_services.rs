@@ -48,7 +48,7 @@ impl KernelServices for ExoKernel {
         size: usize,
         device_id: PackedPciLocation,
     ) -> Result<DmaBuffer, KapiError> {
-        let caller = context::current_subject().domain.as_u64();
+        let caller = current_subject().domain.as_u64();
         let dev_id = authorize_dma_device_for_current_subject(device_id)?;
         let ctx = dma::DeviceDmaContext::for_attached_device(dev_id);
         match ctx.alloc_region(size, dma::DmaMemoryAttributes::MMIO) {
@@ -85,15 +85,11 @@ impl KernelServices for ExoKernel {
         device_id: PackedPciLocation,
         requested_count: u16,
     ) -> Result<alloc::vec::Vec<MsixVectorInfo>, KapiError> {
-        crate::io::msix::enable_for_owner(
-            context::current_subject().domain,
-            device_id,
-            requested_count,
-        )
+        crate::io::msix::enable_for_owner(current_subject().domain, device_id, requested_count)
     }
 
     fn disable_msix(&self, device_id: PackedPciLocation) -> Result<(), KapiError> {
-        let owner = context::current_subject().domain;
+        let owner = current_subject().domain;
         let vectors = crate::io::msix::owned_vectors(owner, device_id)?;
         crate::driver_registry::unbind_irqs_for_owner(owner, &vectors);
         crate::io::msix::disable_for_owner(owner, device_id)
@@ -287,7 +283,7 @@ impl KernelServices for ExoKernel {
         scope: kernel_api::resource::net::InterfaceScope,
     ) -> Result<kernel_api::resource::net::RawEndpoint, KapiError> {
         // Security: Check for CAP_NET_RAW capability (Design Doc 8.2)
-        let caller = context::current_subject().domain.as_u64();
+        let caller = current_subject().domain.as_u64();
         if !crate::security::capability::manager()
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {
@@ -328,7 +324,7 @@ impl KernelServices for ExoKernel {
     ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
     {
         // Security: Check for CAP_NET_RAW capability
-        let caller = context::current_subject().domain.as_u64();
+        let caller = current_subject().domain.as_u64();
         if !crate::security::capability::manager()
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {
@@ -356,7 +352,7 @@ impl KernelServices for ExoKernel {
         payload: kernel_api::resource::net::PacketPayload,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
         // Security: Check for CAP_NET_RAW capability
-        let caller = context::current_subject().domain.as_u64();
+        let caller = current_subject().domain.as_u64();
         if !crate::security::capability::manager()
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {

@@ -51,7 +51,7 @@ impl TaskNamespace {
             return e;
         }
         let wake_stats = crate::task::wake_queue_stats();
-        let global_stats = crate::task::global_queue_stats();
+        let scheduler = crate::task::scheduler_snapshot();
         let timer_stats = crate::task::pending_waker_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
@@ -71,26 +71,16 @@ impl TaskNamespace {
             s("wake_queue_dropped"),
             ExoValue::Int(wake_stats.dropped as i64),
         );
-        map.insert(
-            s("global_queue_len"),
-            ExoValue::Int(global_stats.len as i64),
-        );
-        map.insert(
-            s("global_queue_capacity"),
-            ExoValue::Int(global_stats.capacity as i64),
-        );
-        map.insert(
-            s("global_queue_enqueued"),
-            ExoValue::Int(global_stats.enqueued as i64),
-        );
-        map.insert(
-            s("global_queue_dequeued"),
-            ExoValue::Int(global_stats.dequeued as i64),
-        );
-        map.insert(
-            s("global_queue_dropped"),
-            ExoValue::Int(global_stats.dropped as i64),
-        );
+        let task_count = scheduler.as_ref().map_or(0, |state| state.task_count);
+        let poll_count = scheduler.as_ref().map_or(0, |state| state.poll_count);
+        let ready_tasks = scheduler.as_ref().map_or(0, |state| {
+            state.run_queues.iter().map(|queue| queue.ready_tasks).sum()
+        });
+        let online_queues = scheduler.as_ref().map_or(0, |state| state.run_queues.len());
+        map.insert(s("task_count"), ExoValue::Int(task_count as i64));
+        map.insert(s("task_polls"), ExoValue::Int(poll_count as i64));
+        map.insert(s("ready_tasks"), ExoValue::Int(ready_tasks as i64));
+        map.insert(s("online_queues"), ExoValue::Int(online_queues as i64));
         map.insert(
             s("timer_pending"),
             ExoValue::Int(timer_stats.pending as i64),
@@ -116,29 +106,6 @@ impl TaskNamespace {
         let mut map = BTreeMap::new();
         map.insert(s("remaining"), ExoValue::Int(remaining as i64));
         map.insert(s("is_active"), ExoValue::Bool(active));
-        ExoValue::Map(map)
-    }
-
-    /// プリエンプション統計
-    pub fn preemption(caps: &CapabilitySet) -> ExoValue<'static> {
-        if let Err(e) = Self::require_sys_admin(caps, "task.preemption") {
-            return e;
-        }
-        let stats = crate::task::aggregate_preemption_stats();
-        let mut map = BTreeMap::new();
-        map.insert(
-            s("forced_preemptions"),
-            ExoValue::Int(stats.forced_preemptions as i64),
-        );
-        map.insert(
-            s("voluntary_yields"),
-            ExoValue::Int(stats.voluntary_yields as i64),
-        );
-        map.insert(
-            s("current_time_slice"),
-            ExoValue::Int(stats.current_time_slice as i64),
-        );
-        map.insert(s("enabled"), ExoValue::Bool(stats.enabled));
         ExoValue::Map(map)
     }
 
@@ -169,11 +136,10 @@ impl ShellNamespace for TaskNamespace {
             match method {
                 "stats" => Self::stats(caps),
                 "fuel" => Self::fuel(caps),
-                "preemption" => Self::preemption(caps),
                 "tick" => Self::tick(),
                 "yield" => Self::do_yield().await,
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'task.{}'\nValid methods: stats, fuel, preemption, tick, yield",
+                    "Unknown method 'task.{}'\nValid methods: stats, fuel, tick, yield",
                     method
                 )),
             }

@@ -60,7 +60,7 @@ pub fn uptime_ticks() -> u64 {
 
 /// CPU数
 pub fn cpu_count() -> usize {
-    crate::cpu::count() as usize
+    crate::cpu::snapshot().online().len()
 }
 
 /// CPUベンダー文字列
@@ -78,9 +78,11 @@ pub fn timer_ticks() -> u64 {
     crate::interrupts::get_timer_ticks()
 }
 
-/// コンテキストスイッチ回数
-pub fn context_switch_count() -> u64 {
-    crate::task::context::CONTEXT_SWITCH_COUNT.load(core::sync::atomic::Ordering::Relaxed)
+/// スタックレス task の poll 回数
+pub fn task_poll_count() -> u64 {
+    crate::task::scheduler_snapshot()
+        .map(|snapshot| snapshot.poll_count)
+        .unwrap_or(0)
 }
 
 /// ブート時刻 (秒)

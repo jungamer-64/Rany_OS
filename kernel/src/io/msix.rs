@@ -274,7 +274,7 @@ pub fn enable_for_current_owner(
     requested_count: u16,
 ) -> KapiResult<Vec<MsixVectorInfo>> {
     enable_for_owner(
-        crate::task::context::current_subject().domain,
+        crate::task::current_subject().domain,
         device,
         requested_count,
     )
@@ -373,7 +373,7 @@ pub fn owner_for_vector(vector: u8) -> Option<MsixVectorOwner> {
 }
 
 pub fn disable_for_current_owner(device: PackedPciLocation) -> KapiResult<()> {
-    disable_for_owner(crate::task::context::current_subject().domain, device)
+    disable_for_owner(crate::task::current_subject().domain, device)
 }
 
 pub fn disable_for_owner(owner: DomainId, device: PackedPciLocation) -> KapiResult<()> {

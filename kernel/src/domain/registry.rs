@@ -358,7 +358,7 @@ pub fn spawn_domain_with_caps(
     name: String,
     requested: &[RequestedCap],
 ) -> Result<(DomainId, Vec<u64>), KernelError> {
-    let parent = crate::task::context::current_subject().domain.as_u64();
+    let parent = crate::task::current_subject().domain.as_u64();
     let cap_mgr = crate::security::capability::manager();
 
     for req in requested {

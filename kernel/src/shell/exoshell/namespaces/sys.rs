@@ -155,10 +155,7 @@ impl SysNamespace {
         use crate::system_info as si;
         let mut map = BTreeMap::new();
         map.insert(s("timer_ticks"), ExoValue::Int(si::timer_ticks() as i64));
-        map.insert(
-            s("context_switches"),
-            ExoValue::Int(si::context_switch_count() as i64),
-        );
+        map.insert(s("task_polls"), ExoValue::Int(si::task_poll_count() as i64));
         map.insert(s("boot_time"), ExoValue::Int(si::boot_time_secs() as i64));
         map.insert(
             s("domains"),
@@ -359,16 +356,16 @@ impl SysNamespace {
         // Tasks
         let mut tasks = BTreeMap::new();
         tasks.insert(
-            String::from("context_switches"),
-            ExoValue::Int(info.tasks.context_switches as i64),
+            String::from("task_count"),
+            ExoValue::Int(info.tasks.task_count as i64),
         );
         tasks.insert(
-            String::from("voluntary_yields"),
-            ExoValue::Int(info.tasks.voluntary_yields as i64),
+            String::from("ready_tasks"),
+            ExoValue::Int(info.tasks.ready_tasks as i64),
         );
         tasks.insert(
-            String::from("forced_preemptions"),
-            ExoValue::Int(info.tasks.forced_preemptions as i64),
+            String::from("task_polls"),
+            ExoValue::Int(info.tasks.poll_count as i64),
         );
         map.insert(String::from("tasks"), ExoValue::Map(tasks));
 

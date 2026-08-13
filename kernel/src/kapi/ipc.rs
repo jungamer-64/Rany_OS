@@ -1,18 +1,18 @@
 use super::*;
 
 pub(crate) fn create_channel() -> Result<(ChannelHandle, ChannelHandle), KapiError> {
-    let owner = context::current_subject().domain.as_u64();
+    let owner = current_subject().domain.as_u64();
     let (writer_id, reader_id) = crate::resource_registry::ipc::create_channel(owner);
     Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id)))
 }
 
 pub(crate) fn close(channel: ChannelHandle) -> Result<(), KapiError> {
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     crate::resource_registry::ipc::unregister_channel_owned(channel.id(), caller)
 }
 
 pub(crate) fn current_domain() -> kernel_api::ipc::DomainId {
-    kernel_api::ipc::DomainId::new(context::current_subject().domain.as_u64())
+    kernel_api::ipc::DomainId::new(current_subject().domain.as_u64())
 }
 
 pub(crate) fn exchange_alloc_raw(
@@ -21,7 +21,7 @@ pub(crate) fn exchange_alloc_raw(
 ) -> Result<(NonNull<u8>, kernel_api::ipc::DomainId), KapiError> {
     let layout = core::alloc::Layout::from_size_align(size.max(1), align.max(1))
         .map_err(|_| KapiError::InvalidHandle)?;
-    let owner = context::current_subject().domain;
+    let owner = current_subject().domain;
     let ptr =
         crate::mm::cache::exchange_heap::allocate_raw(layout).ok_or(KapiError::OutOfMemory)?;
     crate::sas::register_object(ptr.as_ptr() as usize, layout.size(), owner);
@@ -34,7 +34,7 @@ pub(crate) fn exchange_dealloc_raw(
     size: usize,
     align: usize,
 ) -> Result<(), KapiError> {
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     if owner != kernel_api::ipc::DomainId::KERNEL && caller != owner.as_u64() {
         return Err(KapiError::PermissionDenied);
     }
@@ -59,7 +59,7 @@ pub(crate) fn exchange_transfer_raw(
     from: kernel_api::ipc::DomainId,
     to: kernel_api::ipc::DomainId,
 ) -> Result<(), KapiError> {
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     if from != kernel_api::ipc::DomainId::KERNEL && caller != from.as_u64() {
         return Err(KapiError::PermissionDenied);
     }
@@ -75,7 +75,7 @@ pub(crate) fn send_raw(
     channel: ChannelHandle,
     mut raw: kernel_api::abi::driver::AbiRRefRaw,
 ) -> Result<(), KapiError> {
-    let caller = context::current_subject().domain;
+    let caller = current_subject().domain;
     let ptr = NonNull::new(raw.ptr).ok_or(KapiError::InvalidHandle)?;
     if let Err(err) = exchange_transfer_raw(
         ptr,
@@ -106,7 +106,7 @@ pub(crate) fn send_raw(
 pub(crate) fn recv_raw(
     channel: ChannelHandle,
 ) -> Result<kernel_api::abi::driver::AbiRRefRaw, KapiError> {
-    let caller = context::current_subject().domain;
+    let caller = current_subject().domain;
     let mut raw = crate::resource_registry::ipc::recv_raw(channel, caller.as_u64())?;
     let ptr = NonNull::new(raw.ptr).ok_or(KapiError::InvalidHandle)?;
     exchange_transfer_raw(

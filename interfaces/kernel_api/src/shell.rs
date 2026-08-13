@@ -128,9 +128,9 @@ pub struct DomainMonitorInfo {
 
 #[derive(Debug, Clone, Default)]
 pub struct TaskMonitorInfo {
-    pub context_switches: u64,
-    pub voluntary_yields: u64,
-    pub forced_preemptions: u64,
+    pub task_count: u64,
+    pub ready_tasks: u64,
+    pub poll_count: u64,
 }
 
 #[derive(Debug, Clone, Default)]

@@ -19,7 +19,7 @@ fn resolve_direct_handle(
         return Err(KapiError::InvalidHandle);
     }
 
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     let entry = crate::resource_registry::direct_block::lookup_open_owned(open_id, caller)
         .map_err(map_open_error)?;
 
@@ -55,7 +55,7 @@ pub(crate) fn open_direct_with_token(
         .or_else(|| crate::drivers::nvme::with_driver(|driver| driver.namespace_block_size(nsid)))
         .unwrap_or(512);
 
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     if let Some(t) = token {
         if !crate::security::capability::manager().validate_token(
             caller,
@@ -95,7 +95,7 @@ pub(crate) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
         return Err(KapiError::InvalidHandle);
     }
 
-    let caller = context::current_subject().domain.as_u64();
+    let caller = current_subject().domain.as_u64();
     match crate::resource_registry::direct_block::unregister_if_owner_or_admin(id, caller) {
         Ok(entry) => {
             if let Some(t) = entry.token {

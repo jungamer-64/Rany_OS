@@ -478,9 +478,9 @@ impl ShellServices for ExoKernel {
                     stopped: 0,
                 },
                 tasks: kernel_api::shell::TaskMonitorInfo {
-                    context_switches: 0,
-                    voluntary_yields: 0,
-                    forced_preemptions: 0,
+                    task_count: 0,
+                    ready_tasks: 0,
+                    poll_count: 0,
                 },
                 network: kernel_api::shell::NetworkMonitorInfo {
                     rx_packets: 0,
@@ -507,9 +507,9 @@ impl ShellServices for ExoKernel {
                 stopped: snap.domains.stopped,
             },
             tasks: kernel_api::shell::TaskMonitorInfo {
-                context_switches: snap.tasks.context_switches,
-                voluntary_yields: snap.tasks.voluntary_yields,
-                forced_preemptions: snap.tasks.forced_preemptions,
+                task_count: snap.tasks.task_count,
+                ready_tasks: snap.tasks.ready_tasks,
+                poll_count: snap.tasks.poll_count,
             },
             network: kernel_api::shell::NetworkMonitorInfo {
                 rx_packets: snap.network.rx_packets,

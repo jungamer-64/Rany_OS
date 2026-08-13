@@ -20,7 +20,6 @@ use core::task::Waker;
 const WAKE_QUEUE_CAPACITY: usize = 1024;
 const WAKE_QUEUE_BACKING_CAPACITY: usize = WAKE_QUEUE_CAPACITY + 1;
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WakeQueueStats {
     pub len: usize,
@@ -70,14 +69,12 @@ impl LockFreeWakeQueue {
         self.queue.pop()
     }
 
-    #[cfg(test)]
     /// Get queue length (approximate)
     #[inline]
     fn len(&self) -> usize {
         self.queue.len()
     }
 
-    #[cfg(test)]
     #[inline]
     fn capacity(&self) -> usize {
         WAKE_QUEUE_CAPACITY
@@ -90,7 +87,6 @@ impl LockFreeWakeQueue {
         self.queue.is_empty()
     }
 
-    #[cfg(test)]
     fn stats(&self) -> WakeQueueStats {
         WakeQueueStats {
             len: self.len(),
@@ -151,7 +147,6 @@ pub fn wake_queue_is_empty() -> bool {
     WAKE_QUEUE.is_empty()
 }
 
-#[cfg(test)]
 /// Wake queueの統計を取得
 pub fn wake_queue_stats() -> WakeQueueStats {
     WAKE_QUEUE.stats()

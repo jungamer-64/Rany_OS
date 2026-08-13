@@ -439,7 +439,7 @@ fn validate_udp_bind_permission(port: u16, token: Option<u64>) -> Result<(), Net
         return Ok(());
     }
 
-    let subject = crate::task::context::current_subject();
+    let subject = crate::task::current_subject();
     let caller = subject.domain.as_u64();
     if subject.domain == crate::domain::DomainId::KERNEL
         || crate::security::capability::manager()

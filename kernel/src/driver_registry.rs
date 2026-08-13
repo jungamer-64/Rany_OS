@@ -115,7 +115,7 @@ fn force_unbind_irq(vector: u8) -> Option<IrqBinding> {
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
     let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
-    let owner = crate::task::context::current_subject().domain;
+    let owner = crate::task::current_subject().domain;
     let owner_info = crate::io::msix::owner_for_vector(vector).ok_or(KapiError::InvalidHandle)?;
     if owner_info.owner != owner {
         return Err(KapiError::PermissionDenied);
@@ -142,7 +142,7 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
         );
     }
 
-    crate::task::spawn_detached_in_domain(
+    let task = crate::task::Task::in_domain(
         async move {
             let source = crate::task::interrupt_waker::InterruptSource::Irq(vector);
             // LOOP_PROOF: mode=event; reason=Interrupt forwarder loop exits once the stop flag is observed and otherwise waits for the next IRQ event.;
@@ -161,8 +161,16 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
 
             crate::task::interrupt_waker::interrupt_waker_registry().unregister(source);
         },
+        crate::task::TaskPlacement::Any,
         owner,
     );
+    if crate::task::spawn_task(task).is_err() {
+        IRQ_BINDINGS
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&vector);
+        return Err(KapiError::ResourceExhausted);
+    }
 
     Ok(())
 }
@@ -175,7 +183,7 @@ fn bind_irq_for_current_domain(_irq: u32, _cookie: u64) -> KapiResult<()> {
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 fn unbind_irq_for_current_domain(irq: u32) -> KapiResult<()> {
     let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
-    let owner = crate::task::context::current_subject().domain;
+    let owner = crate::task::current_subject().domain;
     let binding = IRQ_BINDINGS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -1106,7 +1114,7 @@ extern "C" fn kapi_current_domain_id() -> u64 {
         not(feature = "qemu-test-export")
     )))]
     {
-        crate::task::context::current_subject().domain.as_u64()
+        crate::task::current_subject().domain.as_u64()
     }
 }
 

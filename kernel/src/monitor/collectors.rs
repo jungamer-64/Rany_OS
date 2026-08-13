@@ -7,8 +7,8 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 /// CPU statistics collector
 pub struct CpuCollector {
-    /// Last idle ticks
-    last_idle: AtomicU64,
+    /// Last observed scheduler poll count.
+    last_polls: AtomicU64,
     /// Last total ticks
     last_total: AtomicU64,
 }
@@ -16,22 +16,18 @@ pub struct CpuCollector {
 impl CpuCollector {
     pub const fn new() -> Self {
         CpuCollector {
-            last_idle: AtomicU64::new(0),
+            last_polls: AtomicU64::new(0),
             last_total: AtomicU64::new(0),
         }
     }
 
     /// Collect CPU usage percentage
     pub fn collect(&self) -> u8 {
-        // In a real implementation, this would read from performance counters
-        // For now, estimate based on preemption activity
-        let switches = {
-            let p = crate::task::aggregate_preemption_stats();
-            p.forced_preemptions + p.voluntary_yields
-        };
+        let polls = crate::task::scheduler_snapshot().map_or(0, |state| state.poll_count);
 
         let total = crate::interrupts::get_timer_ticks();
         let last_total = self.last_total.swap(total, Ordering::Relaxed);
+        let last_polls = self.last_polls.swap(polls, Ordering::Relaxed);
 
         if last_total == 0 || total <= last_total {
             return 5; // Default low usage
@@ -39,8 +35,8 @@ impl CpuCollector {
 
         let delta = total - last_total;
 
-        // Estimate based on context switches (simplified)
-        let estimated_usage = ((switches * 100) / delta.max(1)) as u8;
+        let poll_delta = polls.saturating_sub(last_polls);
+        let estimated_usage = ((poll_delta * 100) / delta.max(1)) as u8;
 
         estimated_usage.min(100)
     }
@@ -149,36 +145,41 @@ impl NetworkCollector {
 
 /// Task statistics collector
 pub struct TaskCollector {
-    /// Last context switch count
-    last_switches: AtomicU64,
+    /// Last scheduler poll count.
+    last_polls: AtomicU64,
 }
 
 impl TaskCollector {
     pub const fn new() -> Self {
         TaskCollector {
-            last_switches: AtomicU64::new(0),
+            last_polls: AtomicU64::new(0),
         }
     }
 
     /// Collect task statistics
     pub fn collect(&self) -> super::TaskStats {
-        let preempt_stats = crate::task::aggregate_preemption_stats();
-        let context_switches = preempt_stats.forced_preemptions + preempt_stats.voluntary_yields;
+        let scheduler = crate::task::scheduler_snapshot();
+        let ready_tasks = scheduler.as_ref().map_or(0, |state| {
+            state
+                .run_queues
+                .iter()
+                .map(|queue| queue.ready_tasks as u64)
+                .sum()
+        });
 
         super::TaskStats {
-            total_created: 0,
-            active: 0,
-            context_switches: context_switches,
-            voluntary_yields: preempt_stats.voluntary_yields,
-            forced_preemptions: preempt_stats.forced_preemptions,
+            task_count: scheduler
+                .as_ref()
+                .map_or(0, |state| state.task_count as u64),
+            ready_tasks,
+            poll_count: scheduler.as_ref().map_or(0, |state| state.poll_count),
         }
     }
 
-    /// Calculate context switches per second
-    pub fn switches_per_sec(&self, interval_ms: u64) -> u64 {
-        let p = crate::task::aggregate_preemption_stats();
-        let current = p.forced_preemptions + p.voluntary_yields;
-        let last = self.last_switches.swap(current, Ordering::Relaxed);
+    /// Calculate stackless task polls per second.
+    pub fn polls_per_sec(&self, interval_ms: u64) -> u64 {
+        let current = crate::task::scheduler_snapshot().map_or(0, |state| state.poll_count);
+        let last = self.last_polls.swap(current, Ordering::Relaxed);
 
         if interval_ms == 0 || current < last {
             return 0;

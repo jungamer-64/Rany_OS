@@ -94,16 +94,12 @@ pub struct NetworkStats {
 /// Task statistics
 #[derive(Debug, Clone, Default)]
 pub struct TaskStats {
-    /// Total tasks created
-    pub total_created: u64,
-    /// Currently active tasks
-    pub active: u64,
-    /// Context switches
-    pub context_switches: u64,
-    /// Voluntary yields
-    pub voluntary_yields: u64,
-    /// Forced preemptions
-    pub forced_preemptions: u64,
+    /// Tasks currently owned by the scheduler.
+    pub task_count: u64,
+    /// Tasks waiting in an online CPU run queue.
+    pub ready_tasks: u64,
+    /// Stackless task polls completed since scheduler initialization.
+    pub poll_count: u64,
 }
 
 /// I/O statistics
@@ -153,7 +149,14 @@ pub fn snapshot() -> SystemSnapshot {
 
     let domain_stats = crate::domain::get_domain_stats();
 
-    let preempt_stats = crate::task::aggregate_preemption_stats();
+    let scheduler = crate::task::scheduler_snapshot();
+    let ready_tasks = scheduler.as_ref().map_or(0, |state| {
+        state
+            .run_queues
+            .iter()
+            .map(|queue| queue.ready_tasks as u64)
+            .sum()
+    });
 
     SystemSnapshot {
         timestamp: crate::interrupts::get_timer_ticks(),
@@ -172,11 +175,11 @@ pub fn snapshot() -> SystemSnapshot {
         },
         network: collect_network_stats(),
         tasks: TaskStats {
-            total_created: 0,
-            active: 0,
-            context_switches: 0,
-            voluntary_yields: preempt_stats.voluntary_yields,
-            forced_preemptions: preempt_stats.forced_preemptions,
+            task_count: scheduler
+                .as_ref()
+                .map_or(0, |state| state.task_count as u64),
+            ready_tasks,
+            poll_count: scheduler.as_ref().map_or(0, |state| state.poll_count),
         },
         io: IoStats::default(),
     }
@@ -293,18 +296,18 @@ pub fn format_snapshot(snap: &SystemSnapshot) -> String {
     );
     let _ = writeln!(
         s,
-        "│    Context Switches: {:>10}                                     │",
-        snap.tasks.context_switches
+        "│    Scheduler Tasks:  {:>10}                                     │",
+        snap.tasks.task_count
     );
     let _ = writeln!(
         s,
-        "│    Voluntary Yields: {:>10}                                     │",
-        snap.tasks.voluntary_yields
+        "│    Ready Tasks:      {:>10}                                     │",
+        snap.tasks.ready_tasks
     );
     let _ = writeln!(
         s,
-        "│    Forced Preempts:  {:>10}                                     │",
-        snap.tasks.forced_preemptions
+        "│    Task Polls:       {:>10}                                     │",
+        snap.tasks.poll_count
     );
 
     let _ = writeln!(
@@ -345,13 +348,13 @@ pub fn print_snapshot(snap: &SystemSnapshot) {
 /// Print compact one-line status
 pub fn print_status_line(snap: &SystemSnapshot) {
     log::info!(
-        "[STATS] T={} CPU={}% MEM={}% DOM={}/{} CTX={}\n",
+        "[STATS] T={} CPU={}% MEM={}% DOM={}/{} POLLS={}\n",
         snap.timestamp,
         snap.cpu_usage,
         snap.memory.usage_percent,
         snap.domains.running,
         snap.domains.total,
-        snap.tasks.context_switches
+        snap.tasks.poll_count
     );
 }
 
