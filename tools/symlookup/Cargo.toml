@@ -3,6 +3,10 @@ name = "symlookup"
 version = "0.1.0"
 edition = "2021"
 
+[lints.clippy]
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
 [dependencies]
 object = "0.32"
 anyhow = "1.0"

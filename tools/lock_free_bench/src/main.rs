@@ -118,6 +118,10 @@ impl HeapRegistry {
         shards
     }
 
+    /// # Errors
+    ///
+    /// Returns [`RegistryError::AlreadyRegistered`] if `address` is already
+    /// present in any shard covering the range.
     pub fn register(
         &self,
         address: usize,
@@ -165,6 +169,15 @@ impl HeapRegistry {
         Ok(generation)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error if `address` is not registered or `owner` does not own
+    /// the registered object.
+    ///
+    /// # Panics
+    ///
+    /// Panics only if the internally derived primary shard is absent from the
+    /// locked shard set or its object disappears while all shard locks are held.
     pub fn unregister(&self, address: usize, owner: DomainId) -> Result<(), RegistryError> {
         let primary = self.get_shard_index(address);
         // Lock just purely to read size; optimizing this away is possible but

@@ -5,6 +5,10 @@ edition = "2024"
 description = "Ed25519 kernel signing tool for RanyOS secure boot"
 license = "MIT"
 
+[lints.clippy]
+missing_errors_doc = "deny"
+missing_panics_doc = "deny"
+
 [dependencies]
 ed25519-compact = "2.1"
 clap = { version = "4", features = ["derive"] }
