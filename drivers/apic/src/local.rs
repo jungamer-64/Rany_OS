@@ -37,6 +37,21 @@ pub enum ApicMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InServiceVectors {
+    banks: [u32; 8],
+}
+
+impl InServiceVectors {
+    pub fn iter(&self) -> impl Iterator<Item = u8> + '_ {
+        self.banks.iter().enumerate().flat_map(|(bank, bits)| {
+            (0..32u8)
+                .filter(move |bit| bits & (1u32 << bit) != 0)
+                .map(move |bit| bank as u8 * 32 + bit)
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ApicDeliveryTarget {
     One(ApicDestination),
     AllExcludingSelf,
@@ -127,6 +142,14 @@ impl XApic {
         self.register(register).write(value);
     }
 
+    fn in_service_vectors(&self) -> InServiceVectors {
+        let mut banks = [0; 8];
+        for (bank, bits) in banks.iter_mut().enumerate() {
+            *bits = hal::MmioReg::<u32>::new(self.base as usize, 0x100 + bank * 0x10).read();
+        }
+        InServiceVectors { banks }
+    }
+
     fn destination_high(destination: ApicDestination) -> Result<u32, LocalApicError> {
         let value = destination.as_u32();
         if value > u8::MAX.into() {
@@ -184,6 +207,14 @@ impl X2Apic {
 
     fn write(&self, register: Register, value: u32) {
         unsafe { write_msr(Self::msr(register), u64::from(value)) }
+    }
+
+    fn in_service_vectors(&self) -> InServiceVectors {
+        let mut banks = [0; 8];
+        for (bank, bits) in banks.iter_mut().enumerate() {
+            *bits = unsafe { read_msr(X2APIC_MSR_BASE + 0x10 + bank as u32) as u32 };
+        }
+        InServiceVectors { banks }
     }
 
     fn write_icr(&self, destination: ApicDestination, command: u32) -> Result<(), LocalApicError> {
@@ -263,6 +294,13 @@ impl LocalApic {
 
     pub fn is_enabled(&self) -> bool {
         self.enabled.load(Ordering::Acquire)
+    }
+
+    pub fn in_service_vectors(&self) -> InServiceVectors {
+        match self.backend {
+            Backend::XApic(ref xapic) => xapic.in_service_vectors(),
+            Backend::X2Apic(ref x2apic) => x2apic.in_service_vectors(),
+        }
     }
 
     /// Enables and initializes the local APIC on the executing CPU.

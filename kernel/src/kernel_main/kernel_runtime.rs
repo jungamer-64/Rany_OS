@@ -497,8 +497,9 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     if allow_interrupts && crate::cpu::count() > 1 {
         crate::cpu::broadcast_ipi(crate::cpu::IpiKind::ExecutorWake);
     }
-    if apic_timer_runtime {
-        info!(target: "run", "Runtime handoff switched to per-core APIC timers");
+    match apic_timer_runtime {
+        Ok(()) => info!(target: "run", "Runtime handoff switched to per-core APIC timers"),
+        Err(error) => warn!(target: "run", "Runtime APIC timer handoff failed: {error:?}"),
     }
 
     print_system_stats();

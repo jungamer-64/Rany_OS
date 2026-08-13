@@ -13,22 +13,38 @@ macro_rules! define_interrupt {
         // MSVC-hosted builds (x86_64-pc-windows-msvc) use plain C ABI
         #[cfg(all(target_arch = "x86_64", target_env = "msvc"))]
         $(#[$meta])*
-        $vis extern "C" fn $name($($args)*) $(-> $ret)? $body
+        $vis extern "C" fn $name($($args)*) $(-> $ret)? {
+            let _interrupt_context = crate::cpu::CurrentCpu::acquire()
+                .map(crate::cpu::CurrentCpu::enter_interrupt);
+            $body
+        }
 
         // Non-MSVC builds use the real x86-interrupt ABI.
         #[cfg(not(all(target_arch = "x86_64", target_env = "msvc")))]
         $(#[$meta])*
-        $vis extern "x86-interrupt" fn $name($($args)*) $(-> $ret)? $body
+        $vis extern "x86-interrupt" fn $name($($args)*) $(-> $ret)? {
+            let _interrupt_context = crate::cpu::CurrentCpu::acquire()
+                .map(crate::cpu::CurrentCpu::enter_interrupt);
+            $body
+        }
     };
 
     // No-arg handler with optional return type
     ($(#[$meta:meta])* $vis:vis fn $name:ident() $(-> $ret:ty)? $body:block) => {
         #[cfg(all(target_arch = "x86_64", target_env = "msvc"))]
         $(#[$meta])*
-        $vis extern "C" fn $name() $(-> $ret)? $body
+        $vis extern "C" fn $name() $(-> $ret)? {
+            let _interrupt_context = crate::cpu::CurrentCpu::acquire()
+                .map(crate::cpu::CurrentCpu::enter_interrupt);
+            $body
+        }
 
         #[cfg(not(all(target_arch = "x86_64", target_env = "msvc")))]
         $(#[$meta])*
-        $vis extern "x86-interrupt" fn $name() $(-> $ret)? $body
+        $vis extern "x86-interrupt" fn $name() $(-> $ret)? {
+            let _interrupt_context = crate::cpu::CurrentCpu::acquire()
+                .map(crate::cpu::CurrentCpu::enter_interrupt);
+            $body
+        }
     };
 }

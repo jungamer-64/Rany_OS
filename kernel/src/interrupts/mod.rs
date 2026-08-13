@@ -7,7 +7,7 @@ pub mod gdt;
 
 use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
 // Helper macro to coerce handler function items into the expected
@@ -38,18 +38,6 @@ static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static NET_DRIVER_POLL_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Pending flag for deferred network driver polling (handled outside ISR).
 static NET_DRIVER_POLL_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
-static LAST_INTERRUPT_VECTOR: [AtomicU8; crate::per_cpu::MAX_CPUS] = {
-    const INIT: AtomicU8 = AtomicU8::new(0);
-    [INIT; crate::per_cpu::MAX_CPUS]
-};
-static LAST_INTERRUPT_RIP: [AtomicU64; crate::per_cpu::MAX_CPUS] = {
-    const INIT: AtomicU64 = AtomicU64::new(0);
-    [INIT; crate::per_cpu::MAX_CPUS]
-};
-static LAST_INTERRUPT_RSP: [AtomicU64; crate::per_cpu::MAX_CPUS] = {
-    const INIT: AtomicU64 = AtomicU64::new(0);
-    [INIT; crate::per_cpu::MAX_CPUS]
-};
 
 /// IDTコンテナ（Sync実装のため）
 struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
@@ -71,39 +59,24 @@ fn smp_idt_mark(marker: u8) {
 
 #[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
-    let cpu_id = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
-    if cpu_id < crate::per_cpu::MAX_CPUS {
-        LAST_INTERRUPT_VECTOR[cpu_id].store(vector, Ordering::Relaxed);
-        LAST_INTERRUPT_RIP[cpu_id]
-            .store(stack_frame.instruction_pointer.as_u64(), Ordering::Relaxed);
-        LAST_INTERRUPT_RSP[cpu_id].store(stack_frame.stack_pointer.as_u64(), Ordering::Relaxed);
+    if let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() {
+        current_cpu.record_interrupt(crate::cpu::InterruptContext {
+            vector,
+            instruction_pointer: stack_frame.instruction_pointer.as_u64(),
+            stack_pointer: stack_frame.stack_pointer.as_u64(),
+        });
     }
 }
 
-pub fn last_interrupt_vector(cpu_id: usize) -> Option<u8> {
-    if cpu_id >= crate::per_cpu::MAX_CPUS {
-        return None;
-    }
-
-    let vector = LAST_INTERRUPT_VECTOR[cpu_id].load(Ordering::Relaxed);
-    (vector != 0).then_some(vector)
+pub fn last_interrupt_vector(cpu_id: crate::cpu::CpuId) -> Option<u8> {
+    last_interrupt_context(cpu_id).map(|context| context.vector)
 }
 
-pub fn last_interrupt_context(cpu_id: usize) -> Option<(u8, u64, u64)> {
-    if cpu_id >= crate::per_cpu::MAX_CPUS {
-        return None;
-    }
-
-    let vector = LAST_INTERRUPT_VECTOR[cpu_id].load(Ordering::Relaxed);
-    if vector == 0 {
-        return None;
-    }
-
-    Some((
-        vector,
-        LAST_INTERRUPT_RIP[cpu_id].load(Ordering::Relaxed),
-        LAST_INTERRUPT_RSP[cpu_id].load(Ordering::Relaxed),
-    ))
+pub fn last_interrupt_context(cpu_id: crate::cpu::CpuId) -> Option<crate::cpu::InterruptContext> {
+    crate::cpu::try_runtime()?
+        .cpu_local(cpu_id)?
+        .remote()
+        .last_interrupt_context()
 }
 
 /// ハードウェア割り込みのベースオフセット
@@ -389,8 +362,9 @@ pub fn enable_interrupts() {
 
     // Serial TX kick is global housekeeping and only needs to run on the BSP.
     // Avoid touching COM1 TX interrupt state from AP worker bring-up paths.
-    let current_cpu = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
-    if current_cpu == 0 {
+    if crate::cpu::CurrentCpu::acquire()
+        .is_some_and(|current_cpu| current_cpu.id() == crate::cpu::CpuId::BOOTSTRAP)
+    {
         crate::io::log::start_serial_tx();
     }
 }
@@ -541,14 +515,6 @@ pub fn mask_irq(irq: u8) {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-#[derive(Debug, Clone, Copy)]
-pub struct RuntimeTimerSnapshot {
-    pub enabled: bool,
-    pub cpu_count: usize,
-    pub armed: [bool; crate::per_cpu::MAX_CPUS],
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
 fn read_pic_irq_masked(irq: u8) -> bool {
     let (port, bit) = if irq < 8 {
         (PIC1_DATA, irq)
@@ -557,23 +523,6 @@ fn read_pic_irq_masked(irq: u8) -> bool {
     };
 
     (crate::io::inb(port) & (1 << bit)) != 0
-}
-
-#[cfg(any(test, feature = "qemu-test-export"))]
-pub fn runtime_timer_snapshot() -> RuntimeTimerSnapshot {
-    let cpu_count = (crate::cpu::count() as usize).clamp(1, crate::per_cpu::MAX_CPUS);
-    let mut armed = [false; crate::per_cpu::MAX_CPUS];
-    let mut cpu_id = 0usize;
-    while cpu_id < cpu_count {
-        armed[cpu_id] = LOCAL_RUNTIME_TIMER_ARMED[cpu_id].load(Ordering::Acquire);
-        cpu_id += 1;
-    }
-
-    RuntimeTimerSnapshot {
-        enabled: runtime_local_timers_enabled(),
-        cpu_count,
-        armed,
-    }
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -589,55 +538,66 @@ use x86_64::structures::idt::InterruptStackFrame;
 
 /// タイマー割り込みカウンタ
 pub static TIMER_TICKS: AtomicU64 = AtomicU64::new(0);
-static TIMER_EVENT_PENDING: [AtomicBool; crate::per_cpu::MAX_CPUS] = {
-    const INIT: AtomicBool = AtomicBool::new(false);
-    [INIT; crate::per_cpu::MAX_CPUS]
-};
 static RUNTIME_LOCAL_TIMERS_ENABLED: AtomicBool = AtomicBool::new(false);
-static LOCAL_RUNTIME_TIMER_ARMED: [AtomicBool; crate::per_cpu::MAX_CPUS] = {
-    const INIT: AtomicBool = AtomicBool::new(false);
-    [INIT; crate::per_cpu::MAX_CPUS]
-};
 
-#[inline]
-fn timer_cpu_index() -> usize {
-    crate::cpu::try_current_id()
-        .unwrap_or_else(|| crate::cpu::current_id())
-        .min(crate::per_cpu::MAX_CPUS.saturating_sub(1))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RuntimeTimerError {
+    RuntimeModeDisabled,
+    CpuLocalUnavailable,
+    LocalApicDisabled,
+    LocalApic(crate::drivers::apic::LocalApicError),
 }
 
 #[inline]
-fn is_global_timekeeping_cpu(cpu_id: usize) -> bool {
-    cpu_id == 0
+fn is_global_timekeeping_cpu(cpu_id: crate::cpu::CpuId) -> bool {
+    cpu_id == crate::cpu::CpuId::BOOTSTRAP
 }
 
 pub fn runtime_local_timers_enabled() -> bool {
     RUNTIME_LOCAL_TIMERS_ENABLED.load(Ordering::Acquire)
 }
 
-pub fn ensure_runtime_local_timer_started() {
-    if !runtime_local_timers_enabled() || !crate::drivers::apic::is_apic_enabled() {
-        return;
+fn arm_current_runtime_timer() -> Result<(), RuntimeTimerError> {
+    let apic = crate::drivers::apic::local_apic().map_err(RuntimeTimerError::LocalApic)?;
+    if !apic.is_enabled() {
+        return Err(RuntimeTimerError::LocalApicDisabled);
     }
-
-    let cpu_id = timer_cpu_index();
-    if LOCAL_RUNTIME_TIMER_ARMED[cpu_id]
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        crate::drivers::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1);
+    let current_cpu =
+        crate::cpu::CurrentCpu::acquire().ok_or(RuntimeTimerError::CpuLocalUnavailable)?;
+    if current_cpu.arm_runtime_timer_once() {
+        if let Err(error) = crate::drivers::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1) {
+            current_cpu.disarm_runtime_timer();
+            return Err(RuntimeTimerError::LocalApic(error));
+        }
     }
+    Ok(())
 }
 
-pub fn transition_to_runtime_local_timers() -> bool {
-    if !crate::drivers::apic::is_apic_enabled() {
-        return false;
+/// Arms the periodic local APIC timer on the executing CPU once.
+///
+/// # Errors
+///
+/// Returns a typed error when runtime timer mode is inactive, CPU-local state
+/// is unavailable, or the selected APIC backend cannot start its timer.
+pub fn ensure_runtime_local_timer_started() -> Result<(), RuntimeTimerError> {
+    if !runtime_local_timers_enabled() {
+        return Err(RuntimeTimerError::RuntimeModeDisabled);
     }
+    arm_current_runtime_timer()
+}
 
+/// Commits the bootstrap CPU from the PIT to periodic local APIC timers.
+///
+/// # Errors
+///
+/// Returns a typed error when the local APIC is disabled, CPU-local state is
+/// unavailable, or the timer cannot be armed. The PIT remains unmasked when
+/// the transition fails.
+pub fn transition_to_runtime_local_timers() -> Result<(), RuntimeTimerError> {
+    arm_current_runtime_timer()?;
     RUNTIME_LOCAL_TIMERS_ENABLED.store(true, Ordering::Release);
-    ensure_runtime_local_timer_started();
     mask_irq(0);
-    true
+    Ok(())
 }
 
 /// - Wakerを起床させるだけ
@@ -659,13 +619,13 @@ fn handle_timer_interrupt_common() {
         crate::io::log::early_print("[INT] timer interrupt handler entered\n");
     }
 
-    let cpu_id = timer_cpu_index();
-    let is_global_tick_cpu = is_global_timekeeping_cpu(cpu_id);
+    let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() else {
+        crate::io::log::early_print("[INT] ERROR: timer interrupt without CPU-local state\n");
+        return;
+    };
+    let is_global_tick_cpu = is_global_timekeeping_cpu(current_cpu.id());
 
-    // 1. 各CPUのローカルtimesliceだけを更新する。
-    crate::task::preemption::handle_timer_tick(0);
-
-    // 2. グローバル時間管理はBSPのみが進める。
+    // Global timekeeping advances on the bootstrap CPU only.
     let global_tick = if is_global_tick_cpu {
         let tick = TIMER_TICKS.fetch_add(1, Ordering::Relaxed).wrapping_add(1);
         let tick_nanos = crate::time::timer_tick_nanos();
@@ -678,10 +638,9 @@ fn handle_timer_interrupt_common() {
         TIMER_TICKS.load(Ordering::Relaxed)
     };
 
-    // 3. 軽量なフラグ設定のみ（重い処理は遅延）
-    TIMER_EVENT_PENDING[cpu_id].store(true, Ordering::Release);
+    current_cpu.request_timer_event();
 
-    // 4. Interrupt-Waker Bridge（設計書 4.2: 2段階Wake方式）
+    // Wake the deferred timer path without doing executor work in the ISR.
     if is_global_tick_cpu {
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Timer as u8);
     }
@@ -692,11 +651,6 @@ fn handle_timer_interrupt_common() {
         && NET_DRIVER_POLL_FALLBACK_ENABLED.load(Ordering::Acquire)
     {
         NET_DRIVER_POLL_FALLBACK_PENDING.store(true, Ordering::Release);
-    }
-
-    // 5. プリエンプションフラグのみ設定（実際のyieldは遅延）
-    if crate::task::preemption::should_preempt() {
-        crate::task::preemption::set_preemption_pending();
     }
 }
 
@@ -722,12 +676,14 @@ define_interrupt!(
 ///
 /// 設計書 4.2: 重い処理は非ISRコンテキストで実行
 pub fn poll_timer_events() {
-    let cpu_id = timer_cpu_index();
-    if !TIMER_EVENT_PENDING[cpu_id].swap(false, Ordering::Acquire) {
+    let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() else {
+        return;
+    };
+    if !current_cpu.take_timer_event() {
         return;
     }
 
-    if is_global_timekeeping_cpu(cpu_id) {
+    if is_global_timekeeping_cpu(current_cpu.id()) {
         let tick = TIMER_TICKS.load(Ordering::Relaxed);
 
         // Interrupt-Wakerブリッジの処理
@@ -753,11 +709,6 @@ pub fn poll_timer_events() {
         crate::mm::phys::frame_allocator::pmm_maintenance_tick(tick);
 
         // Network Stack Batch Flush
-    }
-
-    // ペンディングのプリエンプションを処理
-    if crate::task::preemption::is_preemption_pending() {
-        crate::task::preemption::request_yield();
     }
 }
 

@@ -30,8 +30,19 @@ pub struct CpuRemoteAccess {
     observed_epoch: AtomicU64,
     numa_node: AtomicU8,
     interrupt_depth: AtomicU32,
+    interrupt_record_revision: AtomicU64,
+    last_interrupt_vector: AtomicU8,
+    last_interrupt_rip: AtomicU64,
+    last_interrupt_rsp: AtomicU64,
     timer_event_pending: AtomicBool,
     runtime_timer_armed: AtomicBool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InterruptContext {
+    pub vector: u8,
+    pub instruction_pointer: u64,
+    pub stack_pointer: u64,
 }
 
 impl CpuRemoteAccess {
@@ -42,6 +53,10 @@ impl CpuRemoteAccess {
             observed_epoch: AtomicU64::new(0),
             numa_node: AtomicU8::new(u8::MAX),
             interrupt_depth: AtomicU32::new(0),
+            interrupt_record_revision: AtomicU64::new(0),
+            last_interrupt_vector: AtomicU8::new(0),
+            last_interrupt_rip: AtomicU64::new(0),
+            last_interrupt_rsp: AtomicU64::new(0),
             timer_event_pending: AtomicBool::new(false),
             runtime_timer_armed: AtomicBool::new(false),
         }
@@ -73,6 +88,40 @@ impl CpuRemoteAccess {
         self.interrupt_depth.load(Ordering::Acquire) != 0
     }
 
+    pub(crate) fn record_interrupt(&self, context: InterruptContext) {
+        self.interrupt_record_revision
+            .fetch_add(1, Ordering::AcqRel);
+        self.last_interrupt_rip
+            .store(context.instruction_pointer, Ordering::Relaxed);
+        self.last_interrupt_rsp
+            .store(context.stack_pointer, Ordering::Relaxed);
+        self.last_interrupt_vector
+            .store(context.vector, Ordering::Relaxed);
+        self.interrupt_record_revision
+            .fetch_add(1, Ordering::Release);
+    }
+
+    pub fn last_interrupt_context(&self) -> Option<InterruptContext> {
+        loop {
+            let before = self.interrupt_record_revision.load(Ordering::Acquire);
+            if before & 1 != 0 {
+                core::hint::spin_loop();
+                continue;
+            }
+
+            let context = InterruptContext {
+                vector: self.last_interrupt_vector.load(Ordering::Relaxed),
+                instruction_pointer: self.last_interrupt_rip.load(Ordering::Relaxed),
+                stack_pointer: self.last_interrupt_rsp.load(Ordering::Relaxed),
+            };
+            let after = self.interrupt_record_revision.load(Ordering::Acquire);
+            if before == after {
+                return (before != 0).then_some(context);
+            }
+            core::hint::spin_loop();
+        }
+    }
+
     pub(crate) fn request_timer_event(&self) {
         self.timer_event_pending.store(true, Ordering::Release);
     }
@@ -85,6 +134,10 @@ impl CpuRemoteAccess {
         self.runtime_timer_armed
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
+    }
+
+    pub(crate) fn disarm_runtime_timer(&self) {
+        self.runtime_timer_armed.store(false, Ordering::Release);
     }
 
     pub fn runtime_timer_armed(&self) -> bool {
@@ -147,7 +200,10 @@ impl CpuTls {
         let fs_base = (allocation.as_ptr() as usize)
             .checked_add(size)
             .and_then(|address| u64::try_from(address).ok())
-            .ok_or(CpuLocalAllocationError::InvalidTlsLayout)?;
+            .ok_or_else(|| {
+                unsafe { dealloc(allocation.as_ptr(), layout) };
+                CpuLocalAllocationError::InvalidTlsLayout
+            })?;
         Ok(Some(Self {
             allocation,
             layout,
@@ -347,12 +403,29 @@ impl CurrentCpu {
         unsafe { &*pointer }
     }
 
-    pub(crate) fn enter_interrupt(&self) {
+    pub(crate) fn enter_interrupt(self) -> InterruptContextGuard {
         self.local.enter_interrupt();
+        InterruptContextGuard { current: self }
     }
 
-    pub(crate) fn exit_interrupt(&self) {
-        self.local.exit_interrupt();
+    pub(crate) fn record_interrupt(&self, context: InterruptContext) {
+        self.local.remote.record_interrupt(context);
+    }
+
+    pub(crate) fn request_timer_event(&self) {
+        self.local.remote.request_timer_event();
+    }
+
+    pub(crate) fn take_timer_event(&self) -> bool {
+        self.local.remote.take_timer_event()
+    }
+
+    pub(crate) fn arm_runtime_timer_once(&self) -> bool {
+        self.local.remote.arm_runtime_timer_once()
+    }
+
+    pub(crate) fn disarm_runtime_timer(&self) {
+        self.local.remote.disarm_runtime_timer();
     }
 
     pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {
@@ -373,6 +446,16 @@ pub(crate) enum CurrentCpuBindError {
 
 pub(crate) struct PageFaultGuard {
     current: CurrentCpu,
+}
+
+pub(crate) struct InterruptContextGuard {
+    current: CurrentCpu,
+}
+
+impl Drop for InterruptContextGuard {
+    fn drop(&mut self) {
+        self.current.local.exit_interrupt();
+    }
 }
 
 impl Drop for PageFaultGuard {

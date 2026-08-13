@@ -11,8 +11,10 @@ pub(crate) use ipi::{
     CpuIpiError, IpiKind, broadcast_ipi, current_apic_id, send_eoi_current_cpu, send_ipi,
     send_ipi_to_apic,
 };
-pub use local::{CpuControlMessage, CpuRemoteAccess, CurrentCpu};
-pub(crate) use local::{CpuLocal, CpuLocalAllocationError, ExecutionContextGuard};
+pub use local::{CpuControlMessage, CpuRemoteAccess, CurrentCpu, InterruptContext};
+pub(crate) use local::{
+    CpuLocal, CpuLocalAllocationError, ExecutionContextGuard, InterruptContextGuard,
+};
 pub(crate) use runtime::{CpuRuntime, CpuRuntimeError, install_bootstrap, runtime, try_runtime};
 pub use runtime::{CpuSnapshot, snapshot};
 pub use set::{CpuSet, CpuSetError, CpuSetIter};

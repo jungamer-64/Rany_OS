@@ -8,7 +8,8 @@ pub use ioapic::{
     RedirectionEntry, TriggerMode, initialize_io_apics, io_apics,
 };
 pub use local::{
-    ApicDeliveryTarget, ApicDestination, ApicMode, LocalApic, LocalApicError, X2Apic, XApic,
+    ApicDeliveryTarget, ApicDestination, ApicMode, InServiceVectors, LocalApic, LocalApicError,
+    X2Apic, XApic,
 };
 
 use spin::Once;

@@ -215,22 +215,18 @@ fn dump_idt_gate(label: &str, vector: u8) {
 }
 
 fn dump_local_apic_in_service() {
-    let lapic_base = crate::platform::acpi::local_apic_address().unwrap_or(0xFEE0_0000) as usize;
     early_print("  LAPIC ISR:");
+    let Ok(apic) = crate::drivers::apic::local_apic() else {
+        early_print(" unavailable\n");
+        return;
+    };
+    let in_service = apic.in_service_vectors();
     let mut found = false;
-
-    for block in 0..8usize {
-        let reg = lapic_base + 0x100 + (block * 0x10);
-        let bits = crate::io::mmio::mmio_read_u32(reg);
-        if bits == 0 {
-            continue;
-        }
-
+    for vector in in_service.iter() {
         found = true;
         early_print(" [");
-        early_print_dec((block * 32) as u64);
-        early_print("]=");
-        early_print_hex(bits as u64);
+        early_print_hex(u64::from(vector));
+        early_print("]");
     }
 
     if !found {
@@ -332,24 +328,27 @@ define_interrupt!(
         early_print("  Symbol: ");
         early_print(symbol);
         early_print("\n");
-        let current_cpu = crate::cpu::try_current_id().unwrap_or_else(|| crate::cpu::current_id());
-        let executor_phase = crate::task::current_executor_phase(current_cpu).unwrap_or("unknown");
-        let worker_stage = crate::cpu::stage_name(current_cpu).unwrap_or("unknown");
+        let current_cpu = crate::cpu::CurrentCpu::acquire();
+        let cpu_id = current_cpu.as_ref().map(crate::cpu::CurrentCpu::id);
+        let cpu_state = cpu_id
+            .and_then(|id| crate::cpu::snapshot().slot(id).map(|slot| slot.state))
+            .map(crate::cpu::CpuSlotState::name)
+            .unwrap_or("unavailable");
         early_print("  CPU: ");
-        early_print_dec(current_cpu as u64);
-        early_print("\n  Executor phase: ");
-        early_print(executor_phase);
-        early_print("\n  Worker stage: ");
-        early_print(worker_stage);
-        if let Some((last_vector, last_rip, last_rsp)) =
-            crate::interrupts::last_interrupt_context(current_cpu)
-        {
+        if let Some(cpu_id) = cpu_id {
+            early_print_dec(u64::from(cpu_id.as_u16()));
+        } else {
+            early_print("unavailable");
+        }
+        early_print("\n  CPU state: ");
+        early_print(cpu_state);
+        if let Some(last_interrupt) = cpu_id.and_then(crate::interrupts::last_interrupt_context) {
             early_print("\n  Last vector: ");
-            early_print_hex(last_vector as u64);
+            early_print_hex(u64::from(last_interrupt.vector));
             early_print("\n  Last interrupted RIP: ");
-            early_print_hex(last_rip);
+            early_print_hex(last_interrupt.instruction_pointer);
             early_print("\n  Last interrupted RSP: ");
-            early_print_hex(last_rsp);
+            early_print_hex(last_interrupt.stack_pointer);
         }
         early_print("\n");
         dump_idt_gate("com1", crate::interrupts::InterruptVector::Com1 as u8);
@@ -359,21 +358,26 @@ define_interrupt!(
         dump_local_apic_in_service();
         dump_saved_rsp_words(&stack_frame);
 
-        if let Some(ctx) = crate::task::current_polled_task_context() {
+        if let Some(context) = current_cpu.and_then(|current| current.execution()) {
             early_print("  Task context: task=");
-            early_print_dec(ctx.task_id);
+            early_print_dec(context.subject.task.as_u64());
             early_print(" domain=");
-            early_print_dec(ctx.domain_id);
+            early_print_dec(context.subject.domain.as_u64());
             early_print("\n");
             panic!(
-                "Invalid opcode rip={:#x} symbol={} cpu={} phase={} task={} domain={}",
-                rip_u64, symbol, ctx.cpu_id, executor_phase, ctx.task_id, ctx.domain_id
+                "Invalid opcode rip={:#x} symbol={} cpu={:?} state={} task={} domain={}",
+                rip_u64,
+                symbol,
+                cpu_id,
+                cpu_state,
+                context.subject.task.as_u64(),
+                context.subject.domain.as_u64()
             );
         }
 
         panic!(
-            "Invalid opcode rip={:#x} symbol={} cpu={} phase={}",
-            rip_u64, symbol, current_cpu, executor_phase
+            "Invalid opcode rip={:#x} symbol={} cpu={:?} state={}",
+            rip_u64, symbol, cpu_id, cpu_state
         );
     }
 );

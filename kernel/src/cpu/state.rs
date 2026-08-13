@@ -15,6 +15,18 @@ pub enum CpuSlotState {
 }
 
 impl CpuSlotState {
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::FirmwareAbsent => "firmware-absent",
+            Self::PresentOffline => "present-offline",
+            Self::Starting => "starting",
+            Self::Online => "online",
+            Self::Draining => "draining",
+            Self::Parked => "parked",
+            Self::Ejecting => "ejecting",
+        }
+    }
+
     pub const fn is_present(self) -> bool {
         !matches!(self, Self::FirmwareAbsent)
     }
