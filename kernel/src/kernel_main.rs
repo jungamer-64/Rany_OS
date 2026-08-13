@@ -316,10 +316,6 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     graphics::vga::init();
     io::log::early_print("[BOOT] VGA initialized\n");
 
-    unsafe {
-        crate::per_cpu::bootstrap_bsp_per_cpu_early();
-    }
-
     if boot_info.rsdp_addr != 0 {
         match unsafe {
             crate::platform::firmware::initialize_tables(
@@ -381,37 +377,29 @@ fn install_bsp_stack_guard() {
 fn phase_early_kernel_substrate(context: &KernelBootContext) {
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
-    info!(target: "init", "Initializing interrupt system");
-    interrupts::init();
-
-    // Serial driver initialization is handled later via the DriverRegistry.
-    // Keep initialization centralized and ensure drivers are started via
-    // `driver_registry::register_driver` (see serial registration below).
-    info!(target: "init", "Interrupt system initialized");
-
     // 0.1. PIT (Programmable Interval Timer) を 1000 Hz に設定
     // 早期 clock 基盤 (RTC/TSC) は Phase 2 で初期化済み。ここでは IRQ 駆動の
     // 周期 tick だけを有効化して 1 tick = 1ms の前提を整える。
-    crate::time::init(1000);
-    info!(target: "init", "PIT initialized at 1000 Hz");
-
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
     heap::init(Some(context.boot_info_view()));
     heap::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
-    // Heap-backed task runtime primitives are available at this point, so
-    // provision the BSP executor before later boot stages enqueue async work.
-    task::provision_executors(1);
-    info!(
-        target: "init",
-        "Bootstrap per-core executor provisioned for early async services"
-    );
-
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
     // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
     install_bsp_stack_guard();
+
+    if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
+        panic!("bootstrap CPU initialization failed: {:?}", error);
+    }
+
+    info!(target: "init", "Initializing interrupt system");
+    interrupts::init();
+    info!(target: "init", "Interrupt system initialized");
+
+    crate::time::init(1000);
+    info!(target: "init", "PIT initialized at 1000 Hz");
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
@@ -421,28 +409,14 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     );
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
 
-    bootstrap_smp_early(context);
-}
-
-fn bootstrap_smp_early(context: &KernelBootContext) {
+    let report = crate::cpu::start_boot_cpus();
     info!(
         target: "init",
-        "Bootstrapping SMP before ACPI/IOMMU platform bring-up"
+        "CPU bootstrap report: discovered={} online={} failed={}",
+        report.discovered,
+        report.online,
+        report.failed
     );
-
-    match crate::cpu::initialize(context.boot_info()) {
-        Ok(report) => {
-            info!(
-                target: "init",
-                "SMP bootstrap report: detected={} started={}",
-                report.detected,
-                report.started
-            );
-        }
-        Err(err) => {
-            warn!(target: "init", "SMP bootstrap failed: {}", err);
-        }
-    }
 }
 
 // Helper used during early boot to report how much of the BSP

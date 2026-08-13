@@ -114,14 +114,21 @@ struct CpuRuntimeState {
     revision: u64,
     slots: Vec<CpuSlot>,
     locals: Vec<Pin<alloc::boxed::Box<super::CpuLocal>>>,
+    startup_resources: Vec<Option<Pin<alloc::boxed::Box<super::CpuStartupResources>>>>,
+    tls_template: Option<boot_proto::TlsInfo>,
     physical_hotplug: PhysicalHotplugStatus,
     published: Arc<CpuSnapshot>,
 }
 
 impl CpuRuntimeState {
-    fn bootstrap(apic_id: ApicId) -> Self {
+    fn bootstrap(
+        apic_id: ApicId,
+        tls_template: Option<boot_proto::TlsInfo>,
+    ) -> Result<Self, super::CpuLocalAllocationError> {
         let slots = alloc::vec![CpuSlot::bootstrap(apic_id)];
-        let locals = alloc::vec![super::CpuLocal::allocate(CpuId::BOOTSTRAP)];
+        let locals = alloc::vec![super::CpuLocal::allocate(CpuId::BOOTSTRAP, tls_template)?];
+        let mut startup_resources = Vec::new();
+        startup_resources.push(None);
         let physical_hotplug = PhysicalHotplugStatus::Unavailable(super::FirmwareError {
             kind: super::FirmwareErrorKind::Namespace,
             object: None,
@@ -131,13 +138,15 @@ impl CpuRuntimeState {
             Ok(snapshot) => Arc::new(snapshot),
             Err(_) => unreachable!("a single bootstrap CPU always fits the architectural limit"),
         };
-        Self {
+        Ok(Self {
             revision: 0,
             slots,
             locals,
+            startup_resources,
+            tls_template,
             physical_hotplug,
             published,
-        }
+        })
     }
 
     fn publish(&mut self) -> Result<(), CpuTopologyIssue> {
@@ -159,10 +168,13 @@ pub(crate) struct CpuRuntime {
 }
 
 impl CpuRuntime {
-    pub(crate) fn bootstrap(apic_id: ApicId) -> Self {
-        Self {
-            state: PoisonLock::new(CpuRuntimeState::bootstrap(apic_id)),
-        }
+    pub(crate) fn bootstrap(
+        apic_id: ApicId,
+        tls_template: Option<boot_proto::TlsInfo>,
+    ) -> Result<Self, super::CpuLocalAllocationError> {
+        Ok(Self {
+            state: PoisonLock::new(CpuRuntimeState::bootstrap(apic_id, tls_template)?),
+        })
     }
 
     pub(crate) fn snapshot(&self) -> Arc<CpuSnapshot> {
@@ -190,6 +202,87 @@ impl CpuRuntime {
         // SAFETY: CpuRuntime is static, every CpuLocal is pinned, and slot
         // allocations remain owned until a post-eject grace-period retirement.
         Some(unsafe { &*pointer })
+    }
+
+    pub(crate) fn cpu_local_by_address(
+        &'static self,
+        address: usize,
+    ) -> Option<&'static super::CpuLocal> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let local = state
+            .locals
+            .iter()
+            .map(|local| local.as_ref().get_ref())
+            .find(|local| *local as *const super::CpuLocal as usize == address)?;
+        let pointer = local as *const super::CpuLocal;
+        drop(state);
+        // SAFETY: the allocation is pinned and remains owned by the static
+        // runtime until resource retirement after an eject grace period.
+        Some(unsafe { &*pointer })
+    }
+
+    pub(crate) fn prepare_startup_resource(
+        &'static self,
+        id: CpuId,
+    ) -> Result<&'static super::CpuStartupResources, super::CpuStartupResourceError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let index = id.as_usize();
+        if state.slots.get(index).is_none_or(|slot| slot.id != id) {
+            return Err(super::CpuStartupResourceError::PhysicalAllocation);
+        }
+        if state.startup_resources[index].is_none() {
+            state.startup_resources[index] = Some(super::CpuStartupResources::allocate()?);
+        }
+        let resource = state.startup_resources[index]
+            .as_ref()
+            .expect("startup resource was installed")
+            .as_ref()
+            .get_ref() as *const super::CpuStartupResources;
+        drop(state);
+        // SAFETY: startup resources are pinned and retained by the static CPU
+        // runtime across logical offline/online cycles.
+        Ok(unsafe { &*resource })
+    }
+
+    pub(crate) fn startup_resource(
+        &'static self,
+        id: CpuId,
+    ) -> Option<&'static super::CpuStartupResources> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let resource = state
+            .startup_resources
+            .get(id.as_usize())?
+            .as_ref()?
+            .as_ref()
+            .get_ref() as *const super::CpuStartupResources;
+        drop(state);
+        // SAFETY: see prepare_startup_resource; the pinned allocation remains
+        // runtime-owned until an explicit post-eject retirement path removes it.
+        Some(unsafe { &*resource })
+    }
+
+    pub(crate) fn identify_bootstrap(
+        &self,
+        firmware: FirmwareCpuIdentity,
+    ) -> Result<(), CpuTopologyIssue> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if firmware.apic_id != state.slots[CpuId::BOOTSTRAP.as_usize()].firmware.apic_id {
+            return Err(CpuTopologyIssue::ConflictingFirmwareIdentity);
+        }
+        if let Some(uid) = firmware.uid.as_ref()
+            && state
+                .slots
+                .iter()
+                .skip(1)
+                .any(|slot| slot.firmware.uid.as_ref() == Some(uid))
+        {
+            return Err(CpuTopologyIssue::DuplicateUid { uid: uid.clone() });
+        }
+        let bootstrap = &mut state.slots[CpuId::BOOTSTRAP.as_usize()];
+        bootstrap.firmware.uid = firmware.uid;
+        bootstrap.firmware.proximity_domain = firmware.proximity_domain;
+        bootstrap.firmware.eject = super::CpuEjectCapability::Fixed;
+        state.publish()
     }
 
     pub(crate) fn discover_present(
@@ -249,7 +342,10 @@ impl CpuRuntime {
         slot.transition(CpuStateTransition::FirmwarePresent)
             .map_err(map_state_error)?;
         state.slots.push(slot);
-        state.locals.push(super::CpuLocal::allocate(id));
+        let local = super::CpuLocal::allocate(id, state.tls_template)
+            .map_err(|_| CpuTopologyIssue::CpuLocalAllocationFailed { id })?;
+        state.locals.push(local);
+        state.startup_resources.push(None);
         state.publish()?;
         Ok(id)
     }
@@ -331,7 +427,10 @@ pub(crate) enum CpuRuntimeError {
 
 static CPU_RUNTIME: Once<CpuRuntime> = Once::new();
 
-pub(crate) fn install_bootstrap(apic_id: ApicId) -> Result<(), CpuTopologyIssue> {
+pub(crate) fn install_bootstrap(
+    apic_id: ApicId,
+    tls_template: Option<boot_proto::TlsInfo>,
+) -> Result<(), CpuTopologyIssue> {
     if let Some(runtime) = CPU_RUNTIME.get() {
         let snapshot = runtime.snapshot();
         let bootstrap = snapshot
@@ -342,8 +441,17 @@ pub(crate) fn install_bootstrap(apic_id: ApicId) -> Result<(), CpuTopologyIssue>
         }
         return Ok(());
     }
-    CPU_RUNTIME.call_once(|| CpuRuntime::bootstrap(apic_id));
+    let runtime = CpuRuntime::bootstrap(apic_id, tls_template).map_err(|_| {
+        CpuTopologyIssue::CpuLocalAllocationFailed {
+            id: CpuId::BOOTSTRAP,
+        }
+    })?;
+    CPU_RUNTIME.call_once(|| runtime);
     Ok(())
+}
+
+pub(crate) fn try_runtime() -> Option<&'static CpuRuntime> {
+    CPU_RUNTIME.get()
 }
 
 pub(crate) fn runtime() -> &'static CpuRuntime {
@@ -372,7 +480,7 @@ mod tests {
 
     #[test]
     fn sparse_snapshot_keeps_cpu_ids_instead_of_dense_count() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         let cpu1 = runtime.discover_present(firmware(1, 1)).unwrap();
         let cpu2 = runtime.discover_present(firmware(2, 2)).unwrap();
         runtime.begin_start(cpu2).unwrap();
@@ -388,7 +496,7 @@ mod tests {
 
     #[test]
     fn duplicate_uid_and_apic_are_rejected_before_online() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         runtime.discover_present(firmware(7, 10)).unwrap();
         assert!(matches!(
             runtime.discover_present(firmware(7, 11)),
@@ -402,7 +510,7 @@ mod tests {
 
     #[test]
     fn readd_reuses_the_same_firmware_slot() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         let id = runtime.discover_present(firmware(9, 9)).unwrap();
         runtime.begin_start(id).unwrap();
         runtime.startup_ready(id).unwrap();
@@ -421,7 +529,7 @@ mod tests {
 
     #[test]
     fn immutable_snapshot_is_not_rewritten_after_publication() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         let before = runtime.snapshot();
         runtime.discover_present(firmware(1, 1)).unwrap();
         let after = runtime.snapshot();
@@ -432,7 +540,7 @@ mod tests {
 
     #[test]
     fn fixed_cpu_eject_capability_is_preserved() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         assert_eq!(
             runtime
                 .snapshot()

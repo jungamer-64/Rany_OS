@@ -1,15 +1,19 @@
+use alloc::alloc::{Layout, alloc_zeroed, dealloc};
 use alloc::boxed::Box;
 use alloc::rc::Rc;
 use core::cell::UnsafeCell;
 use core::marker::{PhantomData, PhantomPinned};
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use core::ptr::NonNull;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::sync::MpscRingBuffer;
 
 use super::CpuId;
 
 const CONTROL_QUEUE_SLOTS: usize = 32;
+const IA32_FS_BASE: u32 = 0xc000_0100;
+const IA32_GS_BASE: u32 = 0xc000_0101;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuControlMessage {
@@ -25,6 +29,9 @@ pub struct CpuRemoteAccess {
     wake_pending: AtomicBool,
     observed_epoch: AtomicU64,
     numa_node: AtomicU8,
+    interrupt_depth: AtomicU32,
+    timer_event_pending: AtomicBool,
+    runtime_timer_armed: AtomicBool,
 }
 
 impl CpuRemoteAccess {
@@ -34,6 +41,9 @@ impl CpuRemoteAccess {
             wake_pending: AtomicBool::new(false),
             observed_epoch: AtomicU64::new(0),
             numa_node: AtomicU8::new(u8::MAX),
+            interrupt_depth: AtomicU32::new(0),
+            timer_event_pending: AtomicBool::new(false),
+            runtime_timer_armed: AtomicBool::new(false),
         }
     }
 
@@ -58,16 +68,108 @@ impl CpuRemoteAccess {
         self.numa_node
             .store(node.unwrap_or(u8::MAX), Ordering::Release);
     }
+
+    pub fn in_interrupt(&self) -> bool {
+        self.interrupt_depth.load(Ordering::Acquire) != 0
+    }
+
+    pub(crate) fn request_timer_event(&self) {
+        self.timer_event_pending.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn take_timer_event(&self) -> bool {
+        self.timer_event_pending.swap(false, Ordering::AcqRel)
+    }
+
+    pub(crate) fn arm_runtime_timer_once(&self) -> bool {
+        self.runtime_timer_armed
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_ok()
+    }
+
+    pub fn runtime_timer_armed(&self) -> bool {
+        self.runtime_timer_armed.load(Ordering::Acquire)
+    }
 }
 
 struct CpuOwnedState {
     execution: Option<crate::task::ExecutionContext>,
+    page_fault_active: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CpuLocalAllocationError {
+    DescriptorTablesAllocationFailed,
+    InvalidTlsLayout,
+    TlsAllocationFailed,
+}
+
+struct CpuTls {
+    allocation: NonNull<u8>,
+    layout: Layout,
+    fs_base: u64,
+}
+
+// SAFETY: CpuTls owns its allocation. The pointer is only installed into FS
+// on the CPU that owns the enclosing CpuLocal and is never dereferenced by a
+// remote CPU.
+unsafe impl Send for CpuTls {}
+
+impl CpuTls {
+    fn allocate(template: boot_proto::TlsInfo) -> Result<Option<Self>, CpuLocalAllocationError> {
+        if template.start_addr == 0 || template.mem_size == 0 {
+            return Ok(None);
+        }
+        let size = usize::try_from(template.mem_size)
+            .map_err(|_| CpuLocalAllocationError::InvalidTlsLayout)?;
+        let file_size = usize::try_from(template.file_size)
+            .map_err(|_| CpuLocalAllocationError::InvalidTlsLayout)?
+            .min(size);
+        let requested_align = usize::try_from(template.align)
+            .map_err(|_| CpuLocalAllocationError::InvalidTlsLayout)?;
+        let align = requested_align.max(core::mem::align_of::<usize>());
+        let align = align
+            .checked_next_power_of_two()
+            .ok_or(CpuLocalAllocationError::InvalidTlsLayout)?;
+        let layout = Layout::from_size_align(size, align)
+            .map_err(|_| CpuLocalAllocationError::InvalidTlsLayout)?;
+        let allocation = NonNull::new(unsafe { alloc_zeroed(layout) })
+            .ok_or(CpuLocalAllocationError::TlsAllocationFailed)?;
+        if file_size != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    template.start_addr as *const u8,
+                    allocation.as_ptr(),
+                    file_size,
+                );
+            }
+        }
+        let fs_base = (allocation.as_ptr() as usize)
+            .checked_add(size)
+            .and_then(|address| u64::try_from(address).ok())
+            .ok_or(CpuLocalAllocationError::InvalidTlsLayout)?;
+        Ok(Some(Self {
+            allocation,
+            layout,
+            fs_base,
+        }))
+    }
+}
+
+impl Drop for CpuTls {
+    fn drop(&mut self) {
+        unsafe { dealloc(self.allocation.as_ptr(), self.layout) };
+    }
+}
+
+#[repr(C, align(64))]
 pub struct CpuLocal {
+    self_address: usize,
     id: CpuId,
     owned: UnsafeCell<CpuOwnedState>,
     remote: CpuRemoteAccess,
+    descriptor_tables: Pin<Box<crate::interrupts::gdt::CpuDescriptorTables>>,
+    tls: Option<CpuTls>,
     _pin: PhantomPinned,
 }
 
@@ -77,13 +179,28 @@ pub struct CpuLocal {
 unsafe impl Sync for CpuLocal {}
 
 impl CpuLocal {
-    pub(crate) fn allocate(id: CpuId) -> Pin<Box<Self>> {
-        Box::pin(Self {
+    pub(crate) fn allocate(
+        id: CpuId,
+        tls_template: Option<boot_proto::TlsInfo>,
+    ) -> Result<Pin<Box<Self>>, CpuLocalAllocationError> {
+        let tls = tls_template.map(CpuTls::allocate).transpose()?.flatten();
+        let descriptor_tables = crate::interrupts::gdt::CpuDescriptorTables::allocate()
+            .ok_or(CpuLocalAllocationError::DescriptorTablesAllocationFailed)?;
+        let mut local = Box::pin(Self {
+            self_address: 0,
             id,
-            owned: UnsafeCell::new(CpuOwnedState { execution: None }),
+            owned: UnsafeCell::new(CpuOwnedState {
+                execution: None,
+                page_fault_active: false,
+            }),
             remote: CpuRemoteAccess::new(),
+            descriptor_tables,
+            tls,
             _pin: PhantomPinned,
-        })
+        });
+        let address = local.as_ref().get_ref() as *const Self as usize;
+        unsafe { Pin::get_unchecked_mut(local.as_mut()).self_address = address };
+        Ok(local)
     }
 
     pub const fn id(&self) -> CpuId {
@@ -92,6 +209,17 @@ impl CpuLocal {
 
     pub fn remote(&self) -> &CpuRemoteAccess {
         &self.remote
+    }
+
+    fn is_self_address(&self, address: usize) -> bool {
+        self.self_address == address && self.self_address == self as *const Self as usize
+    }
+
+    unsafe fn install_on_current_cpu(&self) {
+        unsafe { write_msr(IA32_GS_BASE, self.self_address as u64) };
+        if let Some(tls) = self.tls.as_ref() {
+            unsafe { write_msr(IA32_FS_BASE, tls.fs_base) };
+        }
     }
 
     fn execution(&self) -> Option<crate::task::ExecutionContext> {
@@ -123,6 +251,31 @@ impl CpuLocal {
     fn record_epoch(&self, epoch: u64) {
         self.remote.observed_epoch.store(epoch, Ordering::Release);
     }
+
+    fn enter_interrupt(&self) {
+        self.remote.interrupt_depth.fetch_add(1, Ordering::AcqRel);
+    }
+
+    fn exit_interrupt(&self) {
+        let previous = self.remote.interrupt_depth.fetch_sub(1, Ordering::AcqRel);
+        assert!(previous != 0, "interrupt nesting depth underflow");
+    }
+
+    fn try_enter_page_fault(&self) -> bool {
+        with_owner_access(|| {
+            let owned = unsafe { &mut *self.owned.get() };
+            if owned.page_fault_active {
+                false
+            } else {
+                owned.page_fault_active = true;
+                true
+            }
+        })
+    }
+
+    fn exit_page_fault(&self) {
+        with_owner_access(|| unsafe { (*self.owned.get()).page_fault_active = false });
+    }
 }
 
 pub struct CurrentCpu {
@@ -132,13 +285,27 @@ pub struct CurrentCpu {
 
 impl CurrentCpu {
     pub fn acquire() -> Option<Self> {
-        let raw_id = crate::per_cpu::try_current_cpu_id()?;
-        let id = CpuId::try_from(raw_id).ok()?;
-        let local = super::runtime().cpu_local(id)?;
+        let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
+        if address == 0 {
+            return None;
+        }
+        let local = super::try_runtime()?.cpu_local_by_address(address)?;
+        if !local.is_self_address(address) {
+            return None;
+        }
         Some(Self {
             local,
             _not_send_or_sync: PhantomData,
         })
+    }
+
+    pub(crate) fn bind(id: CpuId) -> Result<Self, CurrentCpuBindError> {
+        let runtime = super::try_runtime().ok_or(CurrentCpuBindError::RuntimeUnavailable)?;
+        let local = runtime
+            .cpu_local(id)
+            .ok_or(CurrentCpuBindError::UnknownCpu(id))?;
+        unsafe { local.install_on_current_cpu() };
+        Self::acquire().ok_or(CurrentCpuBindError::BindingRejected(id))
     }
 
     pub const fn id(&self) -> CpuId {
@@ -167,6 +334,51 @@ impl CurrentCpu {
     pub fn record_epoch(&self, epoch: u64) {
         self.local.record_epoch(epoch);
     }
+
+    pub fn in_interrupt(&self) -> bool {
+        self.local.remote.in_interrupt()
+    }
+
+    pub(crate) fn descriptor_tables(&self) -> &'static crate::interrupts::gdt::CpuDescriptorTables {
+        let tables = self.local.descriptor_tables.as_ref().get_ref();
+        let pointer = tables as *const crate::interrupts::gdt::CpuDescriptorTables;
+        // SAFETY: CurrentCpu holds a static CpuLocal and the descriptor-table
+        // allocation is pinned for exactly that CpuLocal's lifetime.
+        unsafe { &*pointer }
+    }
+
+    pub(crate) fn enter_interrupt(&self) {
+        self.local.enter_interrupt();
+    }
+
+    pub(crate) fn exit_interrupt(&self) {
+        self.local.exit_interrupt();
+    }
+
+    pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {
+        if self.local.try_enter_page_fault() {
+            Ok(PageFaultGuard { current: self })
+        } else {
+            Err(self)
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CurrentCpuBindError {
+    RuntimeUnavailable,
+    UnknownCpu(CpuId),
+    BindingRejected(CpuId),
+}
+
+pub(crate) struct PageFaultGuard {
+    current: CurrentCpu,
+}
+
+impl Drop for PageFaultGuard {
+    fn drop(&mut self) {
+        self.current.local.exit_page_fault();
+    }
 }
 
 pub(crate) struct ExecutionContextGuard {
@@ -189,5 +401,32 @@ fn with_owner_access<R>(operation: impl FnOnce() -> R) -> R {
     #[cfg(not(any(test, feature = "std", target_os = "linux", target_os = "windows")))]
     {
         x86_64::instructions::interrupts::without_interrupts(operation)
+    }
+}
+
+unsafe fn read_msr(msr: u32) -> u64 {
+    let low: u32;
+    let high: u32;
+    unsafe {
+        core::arch::asm!(
+            "rdmsr",
+            in("ecx") msr,
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack, preserves_flags)
+        );
+    }
+    (u64::from(high) << 32) | u64::from(low)
+}
+
+unsafe fn write_msr(msr: u32, value: u64) {
+    unsafe {
+        core::arch::asm!(
+            "wrmsr",
+            in("ecx") msr,
+            in("eax") value as u32,
+            in("edx") (value >> 32) as u32,
+            options(nomem, nostack, preserves_flags)
+        );
     }
 }

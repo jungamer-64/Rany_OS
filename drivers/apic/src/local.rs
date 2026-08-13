@@ -37,11 +37,17 @@ pub enum ApicMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApicDeliveryTarget {
+    One(ApicDestination),
+    AllExcludingSelf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalApicError {
     Unsupported,
     InvalidMmioBase { base: u64 },
     DestinationNotAddressable { destination: ApicDestination },
-    DeliveryTimedOut { destination: ApicDestination },
+    DeliveryTimedOut { target: ApicDeliveryTarget },
     TimerNotCalibrated,
     TimerCountOverflow,
 }
@@ -58,11 +64,16 @@ impl fmt::Display for LocalApicError {
                 "xAPIC cannot address destination {}",
                 destination.as_u32()
             ),
-            Self::DeliveryTimedOut { destination } => write!(
+            Self::DeliveryTimedOut {
+                target: ApicDeliveryTarget::One(destination),
+            } => write!(
                 formatter,
                 "IPI delivery to destination {} timed out",
                 destination.as_u32()
             ),
+            Self::DeliveryTimedOut {
+                target: ApicDeliveryTarget::AllExcludingSelf,
+            } => formatter.write_str("broadcast IPI delivery timed out"),
             Self::TimerNotCalibrated => formatter.write_str("local APIC timer is not calibrated"),
             Self::TimerCountOverflow => formatter.write_str("local APIC timer count overflowed"),
         }
@@ -131,7 +142,9 @@ impl XApic {
         ) {
             Ok(())
         } else {
-            Err(LocalApicError::DeliveryTimedOut { destination })
+            Err(LocalApicError::DeliveryTimedOut {
+                target: ApicDeliveryTarget::One(destination),
+            })
         }
     }
 
@@ -139,6 +152,21 @@ impl XApic {
         self.write(Register::IcrHigh, Self::destination_high(destination)?);
         self.write(Register::IcrLow, command);
         self.wait_for_delivery(destination)
+    }
+
+    fn write_shorthand_icr(&self, command: u32) -> Result<(), LocalApicError> {
+        self.write(Register::IcrHigh, 0);
+        self.write(Register::IcrLow, command);
+        if spin_until(
+            || self.read(Register::IcrLow) & DELIVERY_STATUS == 0,
+            DELIVERY_WAIT_SPINS,
+        ) {
+            Ok(())
+        } else {
+            Err(LocalApicError::DeliveryTimedOut {
+                target: ApicDeliveryTarget::AllExcludingSelf,
+            })
+        }
     }
 }
 
@@ -167,7 +195,23 @@ impl X2Apic {
         ) {
             Ok(())
         } else {
-            Err(LocalApicError::DeliveryTimedOut { destination })
+            Err(LocalApicError::DeliveryTimedOut {
+                target: ApicDeliveryTarget::One(destination),
+            })
+        }
+    }
+
+    fn write_shorthand_icr(&self, command: u32) -> Result<(), LocalApicError> {
+        unsafe { write_msr(Self::msr(Register::IcrLow), u64::from(command)) };
+        if spin_until(
+            || unsafe { read_msr(Self::msr(Register::IcrLow)) as u32 } & DELIVERY_STATUS == 0,
+            DELIVERY_WAIT_SPINS,
+        ) {
+            Ok(())
+        } else {
+            Err(LocalApicError::DeliveryTimedOut {
+                target: ApicDeliveryTarget::AllExcludingSelf,
+            })
         }
     }
 }
@@ -321,10 +365,11 @@ impl LocalApic {
     /// Returns an error when delivery does not complete before the bounded
     /// timeout.
     pub fn broadcast_excluding_self(&self, vector: u8) -> Result<(), LocalApicError> {
-        self.write_icr(
-            ApicDestination::new(u32::MAX),
-            DESTINATION_ALL_EXCLUDING_SELF | u32::from(vector),
-        )
+        let command = DESTINATION_ALL_EXCLUDING_SELF | u32::from(vector);
+        match self.backend {
+            Backend::XApic(ref backend) => backend.write_shorthand_icr(command),
+            Backend::X2Apic(ref backend) => backend.write_shorthand_icr(command),
+        }
     }
 
     pub fn calibrate_timer(&self) -> Result<(), LocalApicError> {

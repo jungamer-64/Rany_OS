@@ -58,7 +58,7 @@ pub use interrupt_waker::{
 pub use scheduler::{
     SpawnError, TaskPlacement, initialize_scheduler, run_forever, spawn, spawn_task,
 };
-pub(crate) use scheduler::{prepare_cpu_offline, publish_cpu_online};
+pub(crate) use scheduler::{prepare_cpu_offline, prepare_cpu_online, publish_cpu_online};
 // 新規追加: タイマー割り込み統合用
 pub use waker::create_waker;
 pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};

@@ -343,9 +343,9 @@ pub fn load_idt_for_current_cpu() -> Result<(), &'static str> {
     Ok(())
 }
 
-pub fn load_for_cpu(cpu_id: usize) -> Result<(), &'static str> {
+pub fn load_for_current_cpu() -> Result<(), &'static str> {
     smp_idt_mark(b'9');
-    gdt::load_for_cpu(cpu_id)?;
+    gdt::load_for_current_cpu()?;
     smp_idt_mark(b'A');
     load_idt_for_current_cpu()
 }
@@ -370,11 +370,6 @@ pub fn init() {
     // 3. IDT のロード
     init_idt();
     IDT_INITIALIZED.store(true, Ordering::SeqCst);
-}
-
-pub fn load_for_current_cpu() -> Result<(), &'static str> {
-    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-    load_for_cpu(cpu_id)
 }
 
 /// 割り込みを有効化

@@ -7,7 +7,9 @@ pub use ioapic::{
     IoApic, IoApicDescriptor, IoApicDestination, IoApicError, IoApicSet, Polarity,
     RedirectionEntry, TriggerMode, initialize_io_apics, io_apics,
 };
-pub use local::{ApicDestination, ApicMode, LocalApic, LocalApicError, X2Apic, XApic};
+pub use local::{
+    ApicDeliveryTarget, ApicDestination, ApicMode, LocalApic, LocalApicError, X2Apic, XApic,
+};
 
 use spin::Once;
 

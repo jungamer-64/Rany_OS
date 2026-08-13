@@ -49,12 +49,23 @@ pub enum CpuFailurePhase {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuFailureReason {
     MissingRequiredFeature { feature: &'static str },
+    Startup(CpuStartupFailure),
     TscInconsistent,
     NumaInconsistent,
     StartupAcknowledgementTimedOut,
     DrainTimedOut,
     Firmware(FirmwareError),
     Topology(CpuTopologyIssue),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuStartupFailure {
+    Trampoline,
+    CpuLocalBinding,
+    InterruptTables,
+    LocalApic,
+    SlabCache,
+    TlbState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -240,6 +251,7 @@ pub enum CpuTopologyIssue {
     TscInconsistent,
     NumaInconsistent,
     MissingRequiredFeature { feature: &'static str },
+    CpuLocalAllocationFailed { id: CpuId },
     RevisionExhausted,
 }
 

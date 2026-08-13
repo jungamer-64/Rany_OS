@@ -244,6 +244,11 @@ impl SchedulerState {
         self.online = snapshot.online().clone();
         self.queues.entry(cpu).or_default();
     }
+
+    fn prepare_online_cpu(&mut self, cpu: CpuId, snapshot: &crate::cpu::CpuSnapshot) {
+        self.present = snapshot.present().clone();
+        self.queues.entry(cpu).or_default();
+    }
 }
 
 pub(crate) struct TaskRuntime {
@@ -339,6 +344,13 @@ impl TaskRuntime {
             .unwrap_or_else(|error| error.into_inner())
             .add_online_cpu(cpu, snapshot);
     }
+
+    fn prepare_online_cpu(&self, cpu: CpuId, snapshot: &crate::cpu::CpuSnapshot) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .prepare_online_cpu(cpu, snapshot);
+    }
 }
 
 static TASK_RUNTIME: Once<TaskRuntime> = Once::new();
@@ -370,6 +382,13 @@ pub(crate) fn prepare_cpu_offline(cpu: CpuId) -> Result<(), Arc<[CpuBlocker]>> {
     match runtime() {
         Ok(runtime) => runtime.remove_online_cpu(cpu),
         Err(_) => Ok(()),
+    }
+}
+
+pub(crate) fn prepare_cpu_online(cpu: CpuId) {
+    if let Ok(runtime) = runtime() {
+        let snapshot = crate::cpu::snapshot();
+        runtime.prepare_online_cpu(cpu, &snapshot);
     }
 }
 
@@ -411,7 +430,7 @@ mod tests {
     use crate::cpu::{ApicId, CpuEjectCapability, FirmwareCpuIdentity, FirmwareCpuUid};
 
     fn sparse_runtime() -> crate::cpu::CpuRuntime {
-        let runtime = crate::cpu::CpuRuntime::bootstrap(ApicId::new(0));
+        let runtime = crate::cpu::CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
         let cpu1 = runtime
             .discover_present(FirmwareCpuIdentity {
                 uid: Some(FirmwareCpuUid::Integer(1)),

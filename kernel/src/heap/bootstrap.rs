@@ -179,7 +179,7 @@ pub(crate) fn init_numa_pmm(
 }
 
 /// Exchange Heap, BSP Per-CPU/TLS, Per-Core Slab Cache の初期化
-pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfoView<'_>>) {
+pub(crate) fn init_post_buddy(_boot_info: Option<&ExoBootInfoView<'_>>) {
     unsafe {
         crate::mm::cache::exchange_heap::init_exchange_heap(
             exchange_heap_start() as usize,
@@ -187,12 +187,6 @@ pub(crate) fn init_post_buddy(boot_info: Option<&ExoBootInfoView<'_>>) {
         );
     }
     verify_buddy_integrity();
-
-    unsafe {
-        crate::per_cpu::complete_bsp_per_cpu_tls(
-            boot_info.map(|info| &info.boot_info().tls_template),
-        );
-    }
 
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(0);
 }
