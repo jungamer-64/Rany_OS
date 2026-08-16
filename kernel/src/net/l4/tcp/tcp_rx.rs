@@ -15,9 +15,11 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use super::congestion::CongestionAction;
 use super::ooo_queue;
 use super::retransmit::{
-    get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_remove,
+    get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_fast_retransmit,
+    retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{
@@ -753,7 +755,7 @@ pub fn flush_delayed_acks_in(runtime: NetRuntimeHandle) {
     }
 }
 
-/// SYN-SENT状態でのセグメント処理
+/// SYN-SENT状態でのセグメント処理（RFC 9293 Section 3.10.7.3 準拠パイプライン）
 fn handle_syn_sent_segment(
     runtime: NetRuntimeHandle,
     tcb: TcpControlBlockSnapshot,
@@ -766,16 +768,49 @@ fn handle_syn_sent_segment(
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
 
-    if is_syn && is_ack {
-        handle_syn_ack_received(runtime, tcb, seq_num, ack_num, options);
-    } else if is_syn {
-        // RFC 793: Simultaneous Open (双方からSYNを送信した場合)
-        // SYN-SENT -> SYN-RECEIVED 遷移し、SYN-ACKを返送する。
-        handle_simultaneous_syn_received(runtime, tcb, seq_num, options);
-    } else if is_rst {
-        handle_rst_received(runtime, tcb, seq_num);
-    } else if is_ack {
-        // RFC 793: SYN-SENT状態でSYNなしACKを受信した場合はRSTでリセット
+    // 1. First, check the ACK bit
+    let mut ack_acceptable = false;
+    if is_ack {
+        // Acceptable ACK condition: SND.UNA < SEG.ACK <= SND.NXT
+        // (SYN-SENT では SND.UNA == ISS)
+        let is_invalid_ack = ack_num.wrapping_sub(tcb.snd_una) as i32 <= 0
+            || (ack_num.wrapping_sub(tcb.snd_nxt) as i32) > 0;
+
+        if is_invalid_ack {
+            if !is_rst {
+                send_rst_for_unexpected_ack(runtime, &tcb, ack_num);
+            }
+            return;
+        }
+        ack_acceptable = true;
+    }
+
+    // 2. Second, check the RST bit
+    if is_rst {
+        if ack_acceptable {
+            // RFC 9293: Acceptable ACK + RST resets the connection
+            handle_rst_received(runtime, tcb, seq_num);
+        }
+        // Unacceptable ACK or bare RST in SYN-SENT: drop segment
+        return;
+    }
+
+    // 3. Third, check the SYN bit
+    if is_syn {
+        if is_ack {
+            // RFC 9293: SYN-ACK (3-way handshake completion)
+            handle_syn_ack_received(runtime, tcb, seq_num, ack_num, options);
+        } else {
+            // RFC 9293: Simultaneous Open (双方からSYNを送信した場合)
+            // SYN-SENT -> SYN-RECEIVED 遷移し、SYN-ACKを返送する
+            handle_simultaneous_syn_received(runtime, tcb, seq_num, options);
+        }
+        return;
+    }
+
+    // 4. If neither SYN nor RST, drop or handle bare acceptable ACK
+    if is_ack {
+        // SYNなしの素のACKセグメントは不正
         send_rst_for_unexpected_ack(runtime, &tcb, ack_num);
     }
 }
@@ -941,7 +976,7 @@ fn handle_synchronized_segment(
     }
 
     // Acceptable ACK: Process it
-    handle_ack_received(runtime, tcb, ack_num);
+    handle_ack_received(runtime, tcb, ack_num, payload_len, flags);
 
     // 4. Check URG bit (RFC 793 / RFC 6093)
     if is_urg && urgent_ptr > 0 {
@@ -1610,8 +1645,14 @@ fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
     }
 }
 
-/// ACK受信処理（データ確認応答 + 輻輳制御）
-fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, ack_num: u32) {
+/// ACK受信処理（データ確認応答 + 輻輳制御 + 高速再送）
+fn handle_ack_received(
+    runtime: NetRuntimeHandle,
+    tcb: TcpControlBlockSnapshot,
+    ack_num: u32,
+    payload_len: usize,
+    flags: u8,
+) {
     // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
     // ack_num > snd_nxt の場合、送信していないデータのACKなので不正。
     let diff_nxt = ack_num.wrapping_sub(tcb.snd_nxt) as i32;
@@ -1628,10 +1669,18 @@ fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
     // 現在時刻を取得（輻輳制御アルゴリズム用）
     let current_time_ms = tcp_table_in(runtime).get_current_tick();
 
-    // 重複ACK判定: ack_num == snd_una なら新データ未確認（重複ACK）
-    let is_dup = ack_num == tcb.snd_una;
+    // RFC 5681 Section 2: Duplicate ACK 厳格判定
+    // 1. ack_num == snd_una (新データ未確認)
+    // 2. payload_len == 0 (データなし)
+    // 3. SYN / FIN フラグなし
+    // 4. 未確認データが存在する (snd_una < snd_nxt)
+    let has_unacked_data = (tcb.snd_nxt.wrapping_sub(tcb.snd_una) as i32) > 0;
+    let is_dup = ack_num == tcb.snd_una
+        && payload_len == 0
+        && (flags & (tcp_flags::SYN | tcp_flags::FIN)) == 0
+        && has_unacked_data;
 
-    let should_remove = tcp_table_in(runtime)
+    let (should_remove, action) = tcp_table_in(runtime)
         .record_ack_and_close_progress(
             tcb.if_id,
             tcb.local,
@@ -1640,10 +1689,15 @@ fn handle_ack_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
             is_dup,
             current_time_ms,
         )
-        .unwrap_or(false);
+        .unwrap_or((false, CongestionAction::None));
 
     if should_remove {
         tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
+    }
+
+    // RFC 6582 / RFC 5681: 3重複ACKまたはPartial ACKによる即時Fast Retransmit実行
+    if action == CongestionAction::FastRetransmit {
+        retransmit_queue_fast_retransmit(runtime, tcb.if_id, tcb.local, tcb.remote);
     }
 
     // 再送キューからACK済みセグメントを削除（RTT測定も実行）

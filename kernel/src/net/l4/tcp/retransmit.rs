@@ -293,6 +293,47 @@ impl RetransmitQueue {
         RetransmitAttempt::NoReadySegment
     }
 
+    /// Fast Retransmit (RFC 5681 / RFC 6582)
+    /// 3重複ACKまたはPartial ACK受信時に、最古の未確認セグメントを即座に再送する。
+    /// （RTOの指数バックオフは行わない）
+    pub fn fast_retransmit(
+        &mut self,
+        runtime: NetRuntimeHandle,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        current_tick: u64,
+    ) -> RetransmitAttempt {
+        // SACKされていない最古の未確認セグメントを即座に再送
+        if let Some(seg) = self
+            .unacked
+            .iter_mut()
+            .find(|s| !s.is_sacked && matches!(s.data, RetransmitPayloadState::Ready(_)))
+        {
+            if seg.retransmit_count >= self.max_retries {
+                return RetransmitAttempt::MaxRetriesExceeded;
+            }
+
+            seg.retransmit_count += 1;
+            let seq = seg.seq;
+
+            return if self.transmit_ready_inner(
+                runtime,
+                if_id,
+                local,
+                remote,
+                seq,
+                current_tick,
+                true,
+            ) {
+                RetransmitAttempt::Sent
+            } else {
+                RetransmitAttempt::NoReadySegment
+            };
+        }
+        RetransmitAttempt::NoReadySegment
+    }
+
     fn complete_inflight(
         &mut self,
         completion_id: u64,
@@ -600,6 +641,20 @@ pub fn retransmit_queue_remove(
         .unwrap_or_else(|e| e.into_inner())
         .remove(&key);
     cancel_retransmit_timer(runtime, key);
+}
+
+/// Fast Retransmit 即時再送実行 (RFC 5681 / RFC 6582)
+pub fn retransmit_queue_fast_retransmit(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+) -> RetransmitAttempt {
+    let key = TcpFlowKey::new(if_id, local, remote);
+    let queue_lock = get_or_create_retransmit_queue(runtime, key);
+    let mut queue = queue_lock.lock();
+    let current_tick = tcp_runtime_in(runtime).get_current_tick();
+    queue.fast_retransmit(runtime, if_id, local, remote, current_tick)
 }
 
 /// タイマー駆動の再送チェック

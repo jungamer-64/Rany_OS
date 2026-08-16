@@ -19,6 +19,16 @@ pub const INITIAL_WINDOW: u32 = 10;
 /// 最小輻輳ウィンドウ
 pub const MIN_CWND: u32 = 2;
 
+/// 輻輳制御が要求するパケット層アクション
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CongestionAction {
+    /// 追加アクションなし
+    None,
+    /// Fast Retransmit (RFC 5681 / RFC 6582):
+    /// 3重複ACKまたはPartial ACKにより、最古の未確認セグメントの即時再送を要求
+    FastRetransmit,
+}
+
 /// 輻輳制御状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CongestionState {
@@ -102,13 +112,12 @@ impl CongestionController {
     /// - is_dup_ack: 重複ACKかどうか
     /// - ack_num: 受信したACKシーケンス番号 (RFC 6582 Full ACK判定用)
     /// - snd_nxt: 次に送信するシーケンス番号 (Fast Recoveryの回復ポイント設定用)
-    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, ack_num: u32, snd_nxt: u32) {
+    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, ack_num: u32, snd_nxt: u32) -> CongestionAction {
         // in-flight更新
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(bytes_acked);
 
         if is_dup_ack {
-            self.on_dup_ack(snd_nxt);
-            return;
+            return self.on_dup_ack(snd_nxt);
         }
 
         // 新規ACK - 重複カウンタリセット
@@ -125,6 +134,7 @@ impl CongestionController {
                     self.state = CongestionState::CongestionAvoidance;
                     self.bytes_acked = 0;
                 }
+                CongestionAction::None
             }
             CongestionState::CongestionAvoidance => {
                 // Congestion Avoidance: cwnd += SMSS * SMSS / cwnd for each ACK
@@ -136,6 +146,7 @@ impl CongestionController {
                     self.cwnd = self.cwnd.saturating_add(self.mss);
                     self.bytes_acked = 0;
                 }
+                CongestionAction::None
             }
             CongestionState::FastRecovery => {
                 // Fast Recovery: RFC 6582 (NewReno)
@@ -145,17 +156,19 @@ impl CongestionController {
                     self.cwnd = self.ssthresh;
                     self.state = CongestionState::CongestionAvoidance;
                     self.bytes_acked = 0;
+                    CongestionAction::None
                 } else {
                     // 部分ACK (Partial ACK) - cwndをデフレート
                     self.cwnd = self.cwnd.saturating_sub(bytes_acked);
                     self.cwnd = self.cwnd.saturating_add(self.mss);
+                    CongestionAction::FastRetransmit
                 }
             }
         }
     }
 
     /// 重複ACK処理 (Fast Retransmit / Fast Recovery)
-    fn on_dup_ack(&mut self, snd_nxt: u32) {
+    fn on_dup_ack(&mut self, snd_nxt: u32) -> CongestionAction {
         self.dup_ack_count = self.dup_ack_count.saturating_add(1);
 
         match self.state {
@@ -163,11 +176,15 @@ impl CongestionController {
                 if self.dup_ack_count >= 3 {
                     // 3重複ACK - Fast Retransmitトリガー
                     self.enter_fast_recovery(snd_nxt);
+                    CongestionAction::FastRetransmit
+                } else {
+                    CongestionAction::None
                 }
             }
             CongestionState::FastRecovery => {
                 // 追加の重複ACK - cwndをインフレート
                 self.cwnd = self.cwnd.saturating_add(self.mss);
+                CongestionAction::None
             }
         }
     }
@@ -241,8 +258,8 @@ impl TcpCongestionController {
         snd_nxt: u32,
         _current_time_ms: u64,
         _rtt_sample_ms: u64,
-    ) {
-        self.controller.on_ack(bytes_acked, is_dup_ack, ack_num, snd_nxt);
+    ) -> CongestionAction {
+        self.controller.on_ack(bytes_acked, is_dup_ack, ack_num, snd_nxt)
     }
 
     pub fn on_timeout(&mut self, _current_time_ms: u64) {

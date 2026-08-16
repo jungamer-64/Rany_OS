@@ -57,7 +57,7 @@ impl ArpProcessor {
             local_mac,
             local_ip,
             cache: ArpCache::new(),
-            last_defend_tick: core::sync::atomic::AtomicU64::new(0),
+            last_defend_tick: core::sync::atomic::AtomicU64::new(u64::MAX),
         }
     }
 
@@ -111,17 +111,19 @@ impl ArpProcessor {
         // RFC 5227: If we detect another host claiming our IP, we should defend it
         // by broadcasting a gratuitous ARP or log a conflict error.
         if sender_ip == self.local_ip && sender_mac != self.local_mac {
+            // Defend our address by sending a gratuitous ARP (RFC 5227 Section 2.4(c))
+            let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
+            if last_defend != u64::MAX && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+                // Rate-limited: suppress redundant defensive announcement and log flooding
+                return ArpResult::Ignored;
+            }
+
             log::error!(
-                "[NET-ARP] IP CONFLICT DETECTED: {} is claimed by MAC {} (our MAC: {})",
+                "[NET-ARP] IP CONFLICT DETECTED: {} is claimed by MAC {} (our MAC: {}) - defending (RFC 5227)",
                 sender_ip,
                 sender_mac,
                 self.local_mac
             );
-            // Defend our address by sending a gratuitous ARP (RFC 5227)
-            let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-            if last_defend != 0 && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
-                return ArpResult::Ignored;
-            }
             self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
             return ArpResult::SendGratuitous;
         }
@@ -173,14 +175,15 @@ impl ArpProcessor {
                 // RFC 5227: Check for ARP probe (sender_ip is unspecified)
                 if sender_ip.is_any() {
                     if target_ip == self.local_ip {
+                        let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
+                        if last_defend != u64::MAX && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+                            return ArpResult::Ignored;
+                        }
+
                         log::info!(
                             "[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)",
                             target_ip
                         );
-                        let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-                        if last_defend != 0 && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
-                            return ArpResult::Ignored;
-                        }
                         self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
                         return ArpResult::SendGratuitous;
                     }

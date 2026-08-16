@@ -9,7 +9,7 @@ use crate::sync::PoisonRwLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
-use super::congestion::TcpCongestionController;
+use super::congestion::{CongestionAction, TcpCongestionController};
 use super::flow_control::FlowController;
 use super::window_scale::WindowScaleOption;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, conn_key_hash, seq_after};
@@ -621,9 +621,9 @@ impl TcpControlBlock {
         is_dup: bool,
         current_time_ms: u64,
         rtt_sample_ms: u64,
-    ) {
+    ) -> CongestionAction {
         let Some(data) = self.state.connection_data_mut() else {
-            return;
+            return CongestionAction::None;
         };
         let is_valid_ack = (ack_num.wrapping_sub(data.seq.snd_una) as i32) > 0
             && (ack_num.wrapping_sub(data.seq.snd_nxt) as i32) <= 0;
@@ -634,7 +634,7 @@ impl TcpControlBlock {
             0
         };
 
-        data.congestion.on_ack(
+        let action = data.congestion.on_ack(
             bytes_acked,
             is_dup,
             ack_num,
@@ -646,6 +646,7 @@ impl TcpControlBlock {
         if !is_dup && is_valid_ack {
             data.seq.snd_una = ack_num;
         }
+        action
     }
 
     pub fn on_data_received(&mut self, bytes: u32) {
@@ -1522,10 +1523,11 @@ impl TcbTable {
         ack_num: u32,
         is_dup: bool,
         current_time_ms: u64,
-    ) -> Option<bool> {
+    ) -> Option<(bool, CongestionAction)> {
         let mut should_remove = false;
-        self.mutate_entry(if_id, local, remote, |entry| {
-            entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
+        let mut congestion_action = CongestionAction::None;
+        let mutated = self.mutate_entry(if_id, local, remote, |entry| {
+            congestion_action = entry.on_ack_received(ack_num, is_dup, current_time_ms, 0);
 
             if !is_dup {
                 let old = core::mem::replace(&mut entry.state, TcpTcbState::Closed);
@@ -1574,8 +1576,12 @@ impl TcbTable {
                     other => other,
                 };
             }
-        })
-        .then_some(should_remove)
+        });
+        if mutated {
+            Some((should_remove, congestion_action))
+        } else {
+            None
+        }
     }
 
     pub(in crate::net::l4::tcp) fn set_socket_id(
