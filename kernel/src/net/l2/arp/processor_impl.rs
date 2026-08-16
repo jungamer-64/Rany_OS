@@ -172,25 +172,9 @@ impl ArpProcessor {
 
         match packet.operation() {
             ArpOperation::Request => {
-                // RFC 5227: Check for ARP probe (sender_ip is unspecified)
-                if sender_ip.is_any() {
-                    if target_ip == self.local_ip {
-                        let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-                        if last_defend != u64::MAX && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
-                            return ArpResult::Ignored;
-                        }
-
-                        log::info!(
-                            "[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)",
-                            target_ip
-                        );
-                        self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
-                        return ArpResult::SendGratuitous;
-                    }
-                    return ArpResult::Ignored;
-                }
-
-                // Is this request for us?
+                // RFC 826 & RFC 5227 Section 2.5:
+                // If this is an ARP Request or ARP Probe (sender_ip == 0.0.0.0) for our IP,
+                // the host MUST respond with a standard ARP Reply.
                 if target_ip == self.local_ip {
                     ArpResult::SendReply {
                         target_mac: sender_mac,
@@ -299,5 +283,48 @@ impl ArpProcessor {
     /// Mark that we're waiting for a reply
     pub fn request_sent(&self, ip: Ipv4Address, current_time: u64) {
         self.cache.mark_incomplete(ip, current_time);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_arp_probe_response_and_conflict_defense() {
+        let our_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
+        let our_ip = Ipv4Address::new(192, 168, 1, 100);
+        let mut proc = ArpProcessor::new(our_mac, our_ip);
+
+        let probe_sender_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
+        let mut buf = [0u8; 28];
+        let pkt = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0).unwrap();
+        pkt.init_request(probe_sender_mac, Ipv4Address::ANY, our_ip);
+
+        // RFC 5227 §2.5: Host MUST respond with standard ARP Reply to ARP Probe for active IP
+        let res = proc.process_packet(&buf, 1000);
+        assert_eq!(
+            res,
+            ArpResult::SendReply {
+                target_mac: probe_sender_mac,
+                target_ip: Ipv4Address::ANY,
+            }
+        );
+
+        // IP Conflict: Another host claims our IP with different MAC
+        let conflict_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
+        pkt.init_request(conflict_mac, our_ip, our_ip);
+
+        // 1st conflict -> Defend with Gratuitous ARP (RFC 5227 §2.4(c))
+        let res_conflict1 = proc.process_packet(&buf, 2000);
+        assert_eq!(res_conflict1, ArpResult::SendGratuitous);
+
+        // 2nd conflict within 10s -> Suppressed (Rate-limited)
+        let res_conflict2 = proc.process_packet(&buf, 5000);
+        assert_eq!(res_conflict2, ArpResult::Ignored);
+
+        // 3rd conflict after 10s -> Defend again
+        let res_conflict3 = proc.process_packet(&buf, 13000);
+        assert_eq!(res_conflict3, ArpResult::SendGratuitous);
     }
 }

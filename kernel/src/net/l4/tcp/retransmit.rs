@@ -651,10 +651,15 @@ pub fn retransmit_queue_fast_retransmit(
     remote: EndpointAddr,
 ) -> RetransmitAttempt {
     let key = TcpFlowKey::new(if_id, local, remote);
-    let queue_lock = get_or_create_retransmit_queue(runtime, key);
-    let mut queue = queue_lock.lock();
-    let current_tick = tcp_runtime_in(runtime).get_current_tick();
-    queue.fast_retransmit(runtime, if_id, local, remote, current_tick)
+    let idx = retransmit_shard_index(key);
+    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
+    let state = tcp_runtime_in(runtime).retransmit();
+    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(queue) = queues.get_mut(&key) {
+        queue.fast_retransmit(runtime, if_id, local, remote, current_tick)
+    } else {
+        RetransmitAttempt::NoReadySegment
+    }
 }
 
 /// タイマー駆動の再送チェック

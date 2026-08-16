@@ -117,7 +117,7 @@ impl CongestionController {
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(bytes_acked);
 
         if is_dup_ack {
-            return self.on_dup_ack(snd_nxt);
+            return self.on_dup_ack(snd_nxt, ack_num);
         }
 
         // 新規ACK - 重複カウンタリセット
@@ -167,22 +167,26 @@ impl CongestionController {
         }
     }
 
-    /// 重複ACK処理 (Fast Retransmit / Fast Recovery)
-    fn on_dup_ack(&mut self, snd_nxt: u32) -> CongestionAction {
+    /// 重複ACK処理 (Fast Retransmit / Fast Recovery - RFC 5681 / RFC 6582)
+    fn on_dup_ack(&mut self, snd_nxt: u32, ack_num: u32) -> CongestionAction {
         self.dup_ack_count = self.dup_ack_count.saturating_add(1);
 
         match self.state {
             CongestionState::SlowStart | CongestionState::CongestionAvoidance => {
                 if self.dup_ack_count >= 3 {
-                    // 3重複ACK - Fast Retransmitトリガー
-                    self.enter_fast_recovery(snd_nxt);
-                    CongestionAction::FastRetransmit
+                    // RFC 6582 Section 3.2: 過去のFast Recovery完了点（recover）を超えるACKのみ新規Fast Retransmit
+                    if self.recover == 0 || (ack_num.wrapping_sub(self.recover) as i32) > 0 {
+                        self.enter_fast_recovery(snd_nxt);
+                        CongestionAction::FastRetransmit
+                    } else {
+                        CongestionAction::None
+                    }
                 } else {
                     CongestionAction::None
                 }
             }
             CongestionState::FastRecovery => {
-                // 追加の重複ACK - cwndをインフレート
+                // 追加の重複ACK - cwndをインフレート (RFC 6582 Step 2)
                 self.cwnd = self.cwnd.saturating_add(self.mss);
                 CongestionAction::None
             }
@@ -210,10 +214,10 @@ impl CongestionController {
         let flight_size = self.bytes_in_flight;
         self.ssthresh = max(flight_size / 2, MIN_CWND * self.mss);
 
-        // cwnd = 1 MSS (または loss window)
+        // cwnd = 1 MSS (Loss Window)
         self.cwnd = self.mss;
 
-        // Slow Startに戻る
+        // 状態リセット
         self.state = CongestionState::SlowStart;
         self.dup_ack_count = 0;
         self.bytes_acked = 0;
@@ -270,5 +274,44 @@ impl TcpCongestionController {
 impl Default for TcpCongestionController {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_newreno_fast_retransmit_and_partial_ack() {
+        let mut cc = CongestionController::new();
+        let mss = 1460;
+        cc.update_mss(mss);
+
+        // Send 10 packets (14600 bytes)
+        cc.on_send(10 * mss);
+
+        // 1st dup ACK
+        let act1 = cc.on_ack(0, true, 1000, 15600);
+        assert_eq!(act1, CongestionAction::None);
+        assert_eq!(cc.state(), CongestionState::SlowStart);
+
+        // 2nd dup ACK
+        let act2 = cc.on_ack(0, true, 1000, 15600);
+        assert_eq!(act2, CongestionAction::None);
+
+        // 3rd dup ACK -> triggers Fast Retransmit & enters Fast Recovery
+        let act3 = cc.on_ack(0, true, 1000, 15600);
+        assert_eq!(act3, CongestionAction::FastRetransmit);
+        assert_eq!(cc.state(), CongestionState::FastRecovery);
+
+        // Partial ACK arrives (ack=3920 < recover=15600)
+        let partial_act = cc.on_ack(2920, false, 3920, 15600);
+        assert_eq!(partial_act, CongestionAction::FastRetransmit);
+        assert_eq!(cc.state(), CongestionState::FastRecovery);
+
+        // Full ACK arrives (ack=15600 >= recover=15600)
+        let full_act = cc.on_ack(11680, false, 15600, 15600);
+        assert_eq!(full_act, CongestionAction::None);
+        assert_eq!(cc.state(), CongestionState::CongestionAvoidance);
     }
 }

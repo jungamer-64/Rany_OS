@@ -1695,13 +1695,13 @@ fn handle_ack_received(
         tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
     }
 
-    // RFC 6582 / RFC 5681: 3重複ACKまたはPartial ACKによる即時Fast Retransmit実行
+    // RFC 6582 Section 3.2: まず届いた累積ACK（Partial ACK含む）で確認済みセグメントをキューから削除
+    retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
+
+    // その後、3重複ACKまたはPartial ACKによる「現在最古の未確認セグメント」を即座に再送
     if action == CongestionAction::FastRetransmit {
         retransmit_queue_fast_retransmit(runtime, tcb.if_id, tcb.local, tcb.remote);
     }
-
-    // 再送キューからACK済みセグメントを削除（RTT測定も実行）
-    retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
 }
 
 /// Accept用の新規ソケットを作成
