@@ -123,6 +123,23 @@ impl Ipv6Processor {
                 ExtHeaderResult::Fragment { .. } => {
                     return self.process_fragment_owned_packet(packet_ref, current_time);
                 }
+                ExtHeaderResult::Discard => {
+                    self.stats.record_dropped();
+                    return Ipv6ProcessResult::Dropped;
+                }
+                ExtHeaderResult::ParameterProblem { code, pointer, allow_multicast_dst } => {
+                    if !allow_multicast_dst && dst.is_multicast() {
+                        self.stats.record_dropped();
+                        return Ipv6ProcessResult::Dropped;
+                    }
+                    return Ipv6ProcessResult::ParameterProblem(
+                        code,
+                        pointer,
+                        src,
+                        dst,
+                        PacketPayload::single(packet_ref),
+                    );
+                }
             }
         };
 
@@ -241,6 +258,23 @@ impl Ipv6Processor {
                         frag_payload.len(),
                         frag_header,
                     )
+                }
+                ExtHeaderResult::Discard => {
+                    self.stats.record_dropped();
+                    return Ipv6ProcessResult::Dropped;
+                }
+                ExtHeaderResult::ParameterProblem { code, pointer, allow_multicast_dst } => {
+                    if !allow_multicast_dst && dst.is_multicast() {
+                        self.stats.record_dropped();
+                        return Ipv6ProcessResult::Dropped;
+                    }
+                    return Ipv6ProcessResult::ParameterProblem(
+                        code,
+                        pointer,
+                        src,
+                        dst,
+                        PacketPayload::single(packet_ref),
+                    );
                 }
                 _ => return Ipv6ProcessResult::Error,
             }

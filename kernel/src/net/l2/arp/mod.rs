@@ -619,6 +619,8 @@ pub struct ArpProcessor {
     local_ip: Ipv4Address,
     /// ARP cache
     cache: ArpCache,
+    /// Last defense time (RFC 5227)
+    pub(crate) last_defend_tick: core::sync::atomic::AtomicU64,
 }
 
 /// Result of ARP processing

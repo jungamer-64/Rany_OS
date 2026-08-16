@@ -303,6 +303,16 @@ impl NetworkStack {
                     orig_packet,
                 );
             }
+            Ipv6ProcessResult::ParameterProblem(code, pointer, src, _dst, orig_packet) => {
+                // RFC 4443 Section 3.4: Parameter Problem with specific code (e.g. Code 2 for Unrecognized Option).
+                self.send_icmpv6_parameter_problem_payload(
+                    ingress_if_id,
+                    src,
+                    code,
+                    pointer,
+                    orig_packet,
+                );
+            }
             Ipv6ProcessResult::HopLimitExceeded(src, _dst, orig_packet) => {
                 // RFC 4443 Section 3.3: Time Exceeded (Code 0).
                 self.send_icmpv6_time_exceeded_on(ingress_if_id, src, 0, orig_packet);

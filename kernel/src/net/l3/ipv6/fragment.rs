@@ -315,7 +315,8 @@ impl Ipv6FragmentBuffer {
             // RFC 8200/7112: The first fragment (offset 0) MUST contain the entire header chain
             // (all extension headers + upper-layer header).
             let payload_view = PacketPayloadView::new(&payload_packet);
-            let mut header_chain = [0u8; 64];
+            // 256 bytes covers all realistic extension header chains while still providing DoS protection.
+            let mut header_chain = [0u8; 256];
             let chain_len = payload_view.total_len().min(header_chain.len());
             let mut copied = 0usize;
             payload_view.for_each_chunk(|chunk| {

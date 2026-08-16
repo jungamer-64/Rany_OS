@@ -638,6 +638,7 @@ impl TcpControlBlock {
             bytes_acked,
             is_dup,
             data.seq.snd_una,
+            data.seq.snd_nxt,
             current_time_ms,
             rtt_sample_ms,
         );
@@ -698,12 +699,6 @@ impl TcpControlBlock {
             return true;
         }
         false
-    }
-
-    pub fn on_source_quench(&mut self) {
-        if let Some(data) = self.state.connection_data_mut() {
-            data.congestion.on_timeout(data.last_send_tick);
-        }
     }
 
     pub fn on_icmp_error(&mut self, error: EndpointError) {
@@ -1483,15 +1478,6 @@ impl TcbTable {
             }
         });
         accepted
-    }
-
-    pub(in crate::net::l4::tcp) fn record_source_quench(
-        &self,
-        if_id: NetIfId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-    ) -> bool {
-        self.mutate_entry(if_id, local, remote, |entry| entry.on_source_quench())
     }
 
     pub(in crate::net::l4::tcp) fn record_icmp_error(

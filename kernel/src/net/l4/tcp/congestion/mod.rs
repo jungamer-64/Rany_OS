@@ -101,12 +101,13 @@ impl CongestionController {
     /// - bytes_acked: 今回ACKされたバイト数（新規ACK）
     /// - is_dup_ack: 重複ACKかどうか
     /// - snd_una: 未確認の最古シーケンス番号
-    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, snd_una: u32) {
+    /// - snd_nxt: 次に送信するシーケンス番号（Fast Recoveryの回復ポイント設定用）
+    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, snd_una: u32, snd_nxt: u32) {
         // in-flight更新
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(bytes_acked);
 
         if is_dup_ack {
-            self.on_dup_ack(snd_una);
+            self.on_dup_ack(snd_nxt);
             return;
         }
 
@@ -137,8 +138,9 @@ impl CongestionController {
                 }
             }
             CongestionState::FastRecovery => {
-                // Fast Recovery: 新規ACKで回復完了
-                if snd_una > self.recover {
+                // Fast Recovery: RFC 6582 (NewReno)
+                // snd_una が recover を超えたら全再送完了で回復終了
+                if (snd_una.wrapping_sub(self.recover) as i32) > 0 {
                     // 回復完了 - Congestion Avoidanceへ
                     self.cwnd = self.ssthresh;
                     self.state = CongestionState::CongestionAvoidance;
@@ -153,14 +155,14 @@ impl CongestionController {
     }
 
     /// 重複ACK処理 (Fast Retransmit / Fast Recovery)
-    fn on_dup_ack(&mut self, snd_una: u32) {
+    fn on_dup_ack(&mut self, snd_nxt: u32) {
         self.dup_ack_count = self.dup_ack_count.saturating_add(1);
 
         match self.state {
             CongestionState::SlowStart | CongestionState::CongestionAvoidance => {
                 if self.dup_ack_count >= 3 {
                     // 3重複ACK - Fast Retransmitトリガー
-                    self.enter_fast_recovery(snd_una);
+                    self.enter_fast_recovery(snd_nxt);
                 }
             }
             CongestionState::FastRecovery => {
@@ -170,8 +172,8 @@ impl CongestionController {
         }
     }
 
-    /// Fast Recovery開始
-    fn enter_fast_recovery(&mut self, snd_una: u32) {
+    /// Fast Recovery開始 (RFC 6582 NewReno)
+    fn enter_fast_recovery(&mut self, snd_nxt: u32) {
         // ssthresh = max(FlightSize / 2, 2*SMSS)
         let flight_size = self.bytes_in_flight;
         self.ssthresh = max(flight_size / 2, MIN_CWND * self.mss);
@@ -179,8 +181,8 @@ impl CongestionController {
         // cwnd = ssthresh + 3*SMSS (既受信の3重複ACK分)
         self.cwnd = self.ssthresh + 3 * self.mss;
 
-        // 回復ポイント設定
-        self.recover = snd_una;
+        // 回復ポイント設定 (RFC 6582: 送信済み最高シーケンス番号 = SND.NXT)
+        self.recover = snd_nxt;
 
         self.state = CongestionState::FastRecovery;
     }
@@ -236,10 +238,11 @@ impl TcpCongestionController {
         bytes_acked: u32,
         is_dup_ack: bool,
         snd_una: u32,
+        snd_nxt: u32,
         _current_time_ms: u64,
         _rtt_sample_ms: u64,
     ) {
-        self.controller.on_ack(bytes_acked, is_dup_ack, snd_una);
+        self.controller.on_ack(bytes_acked, is_dup_ack, snd_una, snd_nxt);
     }
 
     pub fn on_timeout(&mut self, _current_time_ms: u64) {

@@ -200,7 +200,7 @@ impl DnsClient {
             *offset = parsed_name.next_offset + 4;
         }
 
-        if matched_question || qcount == 0 {
+        if matched_question {
             return Ok(());
         }
 

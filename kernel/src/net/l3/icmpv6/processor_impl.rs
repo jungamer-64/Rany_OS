@@ -238,10 +238,10 @@ impl Icmpv6Processor {
         let identifier = u16::from_be_bytes(identifier_bytes);
         let sequence = u16::from_be_bytes(sequence_bytes);
 
-        // SECURITY: memory exhaustion を防ぐため Echo payload size を制限する。
-        // 1232 bytes is the max payload that fits in a minimum IPv6 MTU (1280).
-        let max_payload = 1232;
-        let echo_data_len = (view.total_len() - ICMPV6_ECHO_HEADER_SIZE).min(max_payload);
+        let echo_data_len = view.total_len() - ICMPV6_ECHO_HEADER_SIZE;
+        if echo_data_len > 65535 {
+            log::debug!("Very large ICMPv6 Echo Request payload: {} bytes", echo_data_len);
+        }
         let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &payload,
             ICMPV6_ECHO_HEADER_SIZE,

@@ -654,7 +654,8 @@ impl NetworkStack {
         current_time: u64,
     ) {
         match icmp_type {
-            IcmpType::DestinationUnreachable | IcmpType::SourceQuench => {}
+            IcmpType::DestinationUnreachable => {}
+            // RFC 6633: ICMP Source Quench is formally deprecated; implementations MUST silently discard it.
             _ => return,
         }
 
@@ -704,15 +705,9 @@ impl NetworkStack {
                 let remote = TcpEndpointAddr::new(original_dst.octets(), dst_port);
                 let tcb_table = tcp_table_in(runtime);
                 if tcb_table.validate_icmp_sequence(if_id, local, remote, seq_num) {
-                    if icmp_type == IcmpType::SourceQuench {
-                        crate::net::l4::tcp::tcp_rx::handle_source_quench(
-                            runtime, if_id, local, remote,
-                        );
-                    } else if icmp_type == IcmpType::DestinationUnreachable {
-                        crate::net::l4::tcp::tcp_rx::handle_icmp_error(
-                            runtime, if_id, local, remote, icmp_type, code,
-                        );
-                    }
+                    crate::net::l4::tcp::tcp_rx::handle_icmp_error(
+                        runtime, if_id, local, remote, icmp_type, code,
+                    );
                 } else {
                     log::warn!(
                         "[NET] ICMP: error for {} rejected due to invalid TCP seq {} (RFC 5927)",

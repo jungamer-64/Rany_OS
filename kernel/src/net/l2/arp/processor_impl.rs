@@ -21,6 +21,10 @@ static ARP_FLAP_LAST_RESET: AtomicU64 = AtomicU64::new(0);
 /// 抑制されたフラップイベント数（統計用）
 static ARP_FLAP_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 
+/// ARP Defend interval (RFC 5227)
+const ARP_DEFEND_INTERVAL_MS: u64 = 10_000;
+
+
 /// ARP MACフラップログのレート制限チェック
 fn check_arp_flap_log_rate(current_time: u64) -> bool {
     let last_reset = ARP_FLAP_LAST_RESET.load(AtomicOrdering::Relaxed);
@@ -53,6 +57,7 @@ impl ArpProcessor {
             local_mac,
             local_ip,
             cache: ArpCache::new(),
+            last_defend_tick: core::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -113,6 +118,11 @@ impl ArpProcessor {
                 self.local_mac
             );
             // Defend our address by sending a gratuitous ARP (RFC 5227)
+            let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
+            if current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+                return ArpResult::Ignored;
+            }
+            self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
             return ArpResult::SendGratuitous;
         }
 
@@ -167,6 +177,11 @@ impl ArpProcessor {
                             "[NET-ARP] Received ARP probe for our IP {} - sending gratuitous ARP to defend (RFC 5227)",
                             target_ip
                         );
+                        let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
+                        if current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+                            return ArpResult::Ignored;
+                        }
+                        self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
                         return ArpResult::SendGratuitous;
                     }
                     return ArpResult::Ignored;

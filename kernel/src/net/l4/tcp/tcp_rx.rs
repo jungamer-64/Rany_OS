@@ -389,20 +389,10 @@ fn process_parsed_tcp_segment(
 
         let mut data_payload = data_payload;
         let payload_len = data_payload.total_len();
-        let mut seg_len = payload_len;
-        if (header.flags & tcp_flags::SYN) != 0 {
-            seg_len += 1;
-        }
-        if (header.flags & tcp_flags::FIN) != 0 {
-            seg_len += 1;
-        }
 
-        if !is_acceptable_sequence(&tcb, header.seq_num, seg_len) {
-            if (header.flags & tcp_flags::RST) == 0 {
-                send_challenge_ack(runtime, &tcb);
-            }
-            return;
-        }
+        // Sequence validation is performed in process_tcp_with_tcb (L1124) which
+        // correctly excludes SYN-SENT state. The fast-path below already requires
+        // seq_num == rcv_nxt && state == Established, providing equivalent protection.
 
         let base_flags = header.flags & !(tcp_flags::CWR | tcp_flags::ECE);
         let can_try_fast_path = tcb.state == TcpConnectionState::Established
@@ -511,8 +501,33 @@ fn process_parsed_tcp_segment(
                         );
                     }
                 }
+                return;
             }
         }
+
+        // RFC 9293 Section 3.10.7.1: If no TCB and SYN Cookie validation fails, send stateless RST
+        send_stateless_rst(
+            runtime,
+            ingress_if_id,
+            local,
+            remote,
+            header.flags,
+            header.seq_num,
+            header.ack_num,
+            data_payload.total_len(),
+        );
+    } else if !is_rst {
+        // RFC 9293 Section 3.10.7.1: Incoming segment (e.g. FIN, DATA) on CLOSED connection
+        send_stateless_rst(
+            runtime,
+            ingress_if_id,
+            local,
+            remote,
+            header.flags,
+            header.seq_num,
+            header.ack_num,
+            data_payload.total_len(),
+        );
     }
 }
 
@@ -1095,19 +1110,36 @@ fn process_tcp_with_tcb(
 ) {
     let payload_len = data_payload.total_len();
 
-    // RFC 7323 Section 5.8: PAWS (Protection Against Wrapped Sequence numbers)
-    if tcb.ts_enabled && !options.is_empty() {
-        let mut parser = TcpOptionParser::new(options);
-        if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-            if (flags & tcp_flags::RST) == 0 && peer_ts_val < tcb.ts_ecr {
-                log::warn!(
-                    "[TCP] PAWS check failed (TSval {} < TSrecent {}) for {} - dropping segment (RFC 7323)",
-                    peer_ts_val,
-                    tcb.ts_ecr,
-                    tcb.remote
-                );
-                send_challenge_ack(runtime, &tcb);
-                return;
+    // RFC 7323 Section 3.2 & Section 5.8: Timestamps and PAWS
+    if tcb.ts_enabled && (flags & tcp_flags::RST) == 0 {
+        let ts_opt = if !options.is_empty() {
+            TcpOptionParser::new(options).find_timestamps()
+        } else {
+            None
+        };
+
+        match ts_opt {
+            Some((peer_ts_val, _peer_ts_ecr)) => {
+                if (peer_ts_val.wrapping_sub(tcb.ts_ecr) as i32) < 0 {
+                    log::warn!(
+                        "[TCP] PAWS check failed (TSval {} < TSrecent {}) for {} - dropping segment (RFC 7323)",
+                        peer_ts_val,
+                        tcb.ts_ecr,
+                        tcb.remote
+                    );
+                    send_challenge_ack(runtime, &tcb);
+                    return;
+                }
+            }
+            None => {
+                if tcb.state != TcpConnectionState::SynSent {
+                    log::warn!(
+                        "[TCP] Missing required Timestamp option on timestamp-enabled connection to {}, sending Challenge ACK (RFC 7323)",
+                        tcb.remote
+                    );
+                    send_challenge_ack(runtime, &tcb);
+                    return;
+                }
             }
         }
     }
@@ -1193,14 +1225,42 @@ fn process_tcp_with_tcb(
     }
 }
 
-/// Handle ICMP Source Quench (RFC 1122 Section 4.2.3.9)
-pub fn handle_source_quench(
+/// Stateless RST 送信（RFC 793 / RFC 9293 Section 3.10.7.1）
+fn send_stateless_rst(
     runtime: NetRuntimeHandle,
-    if_id: NetIfId,
+    ingress_if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
+    flags: u8,
+    seq_num: u32,
+    ack_num: u32,
+    payload_len: usize,
 ) {
-    tcp_table_in(runtime).record_source_quench(if_id, local, remote);
+    if (flags & tcp_flags::RST) != 0 {
+        return;
+    }
+    if !check_closed_port_rst_rate(runtime) {
+        return;
+    }
+
+    let is_ack = (flags & tcp_flags::ACK) != 0;
+    let mut builder = TcpSegmentBuilder::new(local.port(), remote.port()).rst();
+
+    if is_ack {
+        // <SEQ=SEG.ACK><CTL=RST>
+        builder = builder.seq(ack_num);
+    } else {
+        // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
+        let is_syn = (flags & tcp_flags::SYN) != 0;
+        let is_fin = (flags & tcp_flags::FIN) != 0;
+        let seg_len = (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
+        let ack = seq_num
+            .wrapping_add(seg_len as u32)
+            .wrapping_add(payload_len as u32);
+        builder = builder.seq(0).ack(ack).ack_flag();
+    }
+
+    send_control_segment(runtime, ingress_if_id, local, remote, builder);
 }
 
 /// Handle ICMP Error (RFC 1122 Section 4.2.3.9)
@@ -1371,7 +1431,6 @@ fn process_tcp_new_connection(
     data_payload: PacketPayload,
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
-    let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
 
     // RFC 793: If the connection does not exist (CLOSED) then a reset is sent
@@ -1385,49 +1444,16 @@ fn process_tcp_new_connection(
 
     // リッスン中のソケットがない場合、または SYN 以外を受信した場合
     if socket.is_none() || !is_syn {
-        // ────────────────────────────────────────────────────────
-        // 閉ポート宛: stateless RST with rate limiting
-        // ────────────────────────────────────────────────────────
-        // インターネット直結環境ではポートスキャンが大量に届く。
-        // 各パケットにRSTを返すとイベントキュー（容量256）が溢れ、
-        // 正規トラフィックの ResourceExhausted を引き起こす。
-        // We still maintain a simple rate counter to avoid pathological
-        // packet storms, but the RFC guidance is a **SHOULD** rather than a
-        // **MUST**.  To remain compliant we always attempt to send the RST
-        // even when the rate window has been exceeded; the underlying async
-        // queue may still drop packets if it is full, but the host has at least
-        // made an effort to respond.  The counter returned by
-        // `closed_port_rst_dropped_count()` now reflects the number of packets
-        // that *actually* dropped under the policy, useful for
-        // telemetry.
-        if !check_closed_port_rst_rate(runtime) {
-            return;
-        }
-
-        // RFC 793 / RFC 9293 Section 3.10.7.1:
-        // If the segment has an ACK field, the reset takes its sequence number
-        // from the ACK field of the segment, otherwise the reset has sequence
-        // number zero and the ACK field is set to the sum of the sequence
-        // number and segment length of the incoming segment.
-
-        let mut builder = TcpSegmentBuilder::new(local.port(), remote.port()).rst();
-
-        if is_ack {
-            // <SEQ=SEG.ACK><CTL=RST>
-            builder = builder.seq(ack_num);
-        } else {
-            // <SEQ=0><ACK=SEG.SEQ+SEG.LEN><CTL=RST,ACK>
-            let is_syn = (flags & tcp_flags::SYN) != 0;
-            let is_fin = (flags & tcp_flags::FIN) != 0;
-            let payload_len = data_payload.total_len();
-            let seg_len = (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
-            let ack = seq_num
-                .wrapping_add(seg_len as u32)
-                .wrapping_add(payload_len as u32);
-            builder = builder.seq(0).ack(ack).ack_flag();
-        }
-
-        send_control_segment(runtime, ingress_if_id, local, remote, builder);
+        send_stateless_rst(
+            runtime,
+            ingress_if_id,
+            local,
+            remote,
+            flags,
+            seq_num,
+            ack_num,
+            data_payload.total_len(),
+        );
         return;
     }
 

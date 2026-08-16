@@ -116,24 +116,6 @@ impl Ipv6Address {
         ])
     }
 
-    /// Create a global address from a /64 prefix + random interface ID (RFC 4941)
-    ///
-    /// Used for IPv6 Privacy Extensions to prevent tracking via the MAC address.
-    pub fn from_prefix_random(prefix: &Ipv6Address) -> Option<Self> {
-        let p = prefix.as_bytes();
-        // Generate 8 bytes of entropy for the interface identifier
-        let rand = crate::net::security::tls::crypto::generate_random().ok()?;
-
-        let mut addr = [0u8; 16];
-        addr[0..8].copy_from_slice(&p[0..8]);
-        addr[8..16].copy_from_slice(&rand[0..8]);
-
-        // SECURITY: universal/local bit が local を示す 0 であることを保証する。
-        // per RFC 4941, although many implementations just use full randomness.
-        addr[8] &= !0x02;
-
-        Some(Self(addr))
-    }
 
     /// Get raw bytes
     #[inline]
@@ -849,7 +831,6 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
     }
 }
 
-/// Result of extension-header walk with fragment awareness.
 pub enum ExtHeaderResult<'a> {
     /// No fragment header encountered — upper-layer protocol, payload, and pointer to final next_header field
     NoFragment(IpProtocol, &'a [u8], u32),
@@ -863,7 +844,79 @@ pub enum ExtHeaderResult<'a> {
         /// Fragment payload (data after the fragment header)
         frag_payload: &'a [u8],
     },
+    /// Discard the packet
+    Discard,
+    /// Send ICMPv6 Parameter Problem
+    ParameterProblem {
+        code: u8,
+        pointer: u32,
+        allow_multicast_dst: bool,
+    },
 }
+
+/// Helper to process HBH and Destination Options headers
+fn process_extension_header_options(
+    data: &[u8],
+    offset: usize,
+    ext_len: usize,
+) -> Result<(), ExtHeaderResult<'static>> {
+    let mut i = offset + 2; // Skip Next Header and Hdr Ext Len
+    let end = offset + ext_len;
+    while i < end {
+        let opt_type = data[i];
+        if opt_type == 0 {
+            // Pad1
+            i += 1;
+            continue;
+        }
+        if i + 1 >= end {
+            return Err(ExtHeaderResult::Discard); // Malformed
+        }
+        let opt_len = data[i + 1] as usize;
+        if i + 2 + opt_len > end {
+            return Err(ExtHeaderResult::Discard); // Malformed
+        }
+
+        match opt_type {
+            1 => {
+                // PadN (skip)
+            }
+            _ => {
+                // Unknown option, check high-order 2 bits (action)
+                let action = opt_type >> 6;
+                match action {
+                    0b00 => {
+                        // skip and continue
+                    }
+                    0b01 => {
+                        // discard packet
+                        return Err(ExtHeaderResult::Discard);
+                    }
+                    0b10 => {
+                        // discard and send ICMP Parameter Problem, Code 2
+                        return Err(ExtHeaderResult::ParameterProblem {
+                            code: 2,
+                            pointer: i as u32,
+                            allow_multicast_dst: true,
+                        });
+                    }
+                    0b11 => {
+                        // discard and send ICMP Parameter Problem, Code 2, only if dst is not multicast
+                        return Err(ExtHeaderResult::ParameterProblem {
+                            code: 2,
+                            pointer: i as u32,
+                            allow_multicast_dst: false,
+                        });
+                    }
+                    _ => unreachable!(),
+                }
+            }
+        }
+        i += 2 + opt_len;
+    }
+    Ok(())
+}
+
 
 /// Walk extension headers returning fragment info if present.
 ///
@@ -891,6 +944,12 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
 
         match next_header {
             EXT_HEADER_HOP_BY_HOP | EXT_HEADER_ROUTING | EXT_HEADER_DESTINATION => {
+                // Bug 6 Fix: HBH MUST only appear immediately after the IPv6 fixed header
+                if next_header == EXT_HEADER_HOP_BY_HOP && headers_seen > 1 {
+                    // RFC 8200: HBH not immediately following IPv6 header MUST be discarded
+                    return ExtHeaderResult::Discard;
+                }
+
                 if offset + 2 > raw_packet.len() {
                     return ExtHeaderResult::NoFragment(
                         IpProtocol::from(next_header),
@@ -920,6 +979,14 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                         next_header_ptr as u32,
                     );
                 }
+
+                // Bug 11 Fix: Process HBH and Destination Options TLVs
+                if next_header == EXT_HEADER_HOP_BY_HOP || next_header == EXT_HEADER_DESTINATION {
+                    if let Err(action) = process_extension_header_options(raw_packet, offset, ext_len) {
+                        return action;
+                    }
+                }
+
                 next_header_ptr = offset;
                 next_header = ext_next;
                 offset += ext_len;
@@ -1004,8 +1071,7 @@ pub struct Ipv6Config {
     pub link_local: Ipv6Address,
     /// Global unicast address (via SLAAC or manual)
     pub global: Option<Ipv6Address>,
-    /// Temporary global address (RFC 4941 Privacy Extensions)
-    pub temporary: Option<Ipv6Address>,
+
     /// Prefix length (default 64)
     pub prefix_len: u8,
     /// Default gateway (link-local of router)
@@ -1020,7 +1086,7 @@ impl Ipv6Config {
         Self {
             link_local: Ipv6Address::from_eui64(mac),
             global: None,
-            temporary: None,
+
             prefix_len: 64,
             gateway: None,
             hop_limit: 64,
@@ -1033,7 +1099,7 @@ impl Default for Ipv6Config {
         Self {
             link_local: Ipv6Address::UNSPECIFIED,
             global: None,
-            temporary: None,
+
             prefix_len: 64,
             gateway: None,
             hop_limit: 64,
@@ -1140,6 +1206,14 @@ pub enum Ipv6ProcessResult {
     ),
     /// Unknown Next Header encountered (RFC 4443 Parameter Problem Code 1).
     UnknownNextHeader(
+        u8,
+        u32,
+        Ipv6Address,
+        Ipv6Address,
+        kernel_api::resource::net::PacketPayload,
+    ),
+    /// Parameter Problem with a specific code (e.g. Code 2 for Unrecognized Option)
+    ParameterProblem(
         u8,
         u32,
         Ipv6Address,

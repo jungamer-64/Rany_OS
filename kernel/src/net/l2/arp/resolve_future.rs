@@ -259,6 +259,12 @@ impl Future for ArpResolveFuture {
             return Poll::Ready(Ok(MacAddress::BROADCAST));
         }
 
+        if self.target_ip.is_multicast() {
+            let ip = self.target_ip.as_bytes();
+            let mac = MacAddress::new([0x01, 0x00, 0x5e, ip[1] & 0x7f, ip[2], ip[3]]);
+            return Poll::Ready(Ok(mac));
+        }
+
         // 初回ポーリング時にウェイター登録
         if self.waiter_id.is_none() {
             self.waiter_id = register_arp_waiter(self.runtime, self.if_id, ip_bytes, cx.waker());
