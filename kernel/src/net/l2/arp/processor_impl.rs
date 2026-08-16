@@ -119,7 +119,7 @@ impl ArpProcessor {
             );
             // Defend our address by sending a gratuitous ARP (RFC 5227)
             let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-            if current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+            if last_defend != 0 && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
                 return ArpResult::Ignored;
             }
             self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
@@ -178,7 +178,7 @@ impl ArpProcessor {
                             target_ip
                         );
                         let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-                        if current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+                        if last_defend != 0 && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
                             return ArpResult::Ignored;
                         }
                         self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);

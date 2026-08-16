@@ -637,7 +637,7 @@ impl TcpControlBlock {
         data.congestion.on_ack(
             bytes_acked,
             is_dup,
-            data.seq.snd_una,
+            ack_num,
             data.seq.snd_nxt,
             current_time_ms,
             rtt_sample_ms,

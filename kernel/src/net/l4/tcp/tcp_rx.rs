@@ -1133,11 +1133,12 @@ fn process_tcp_with_tcb(
             }
             None => {
                 if tcb.state != TcpConnectionState::SynSent {
+                    // RFC 7323 Section 3.2: Once TSopt has been negotiated, a segment without
+                    // TSopt SHOULD be silently dropped (MUST NOT cause connection abort).
                     log::warn!(
-                        "[TCP] Missing required Timestamp option on timestamp-enabled connection to {}, sending Challenge ACK (RFC 7323)",
+                        "[TCP] Missing required Timestamp option on timestamp-enabled connection to {} - silently dropping (RFC 7323)",
                         tcb.remote
                     );
-                    send_challenge_ack(runtime, &tcb);
                     return;
                 }
             }
@@ -1348,13 +1349,15 @@ fn handle_syn_ack_received(
     ack_num: u32,
     options: &[u8],
 ) {
-    // ACK番号を検証
+    // ACK番号を検証 (RFC 793 / RFC 9293 Section 3.10.7.3)
+    // SYN-SENT状態で不正なACK番号を受信した場合はRSTを返送する
     if ack_num != tcb.snd_nxt {
         log::info!(
-            "TCP: Invalid SYN-ACK ack_num: expected {}, got {}",
+            "TCP: Invalid SYN-ACK ack_num: expected {}, got {}, sending RST (RFC 9293)",
             tcb.snd_nxt,
             ack_num
         );
+        send_rst_for_unexpected_ack(runtime, &tcb, ack_num);
         return;
     }
 

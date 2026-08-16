@@ -100,9 +100,9 @@ impl CongestionController {
     ///
     /// - bytes_acked: 今回ACKされたバイト数（新規ACK）
     /// - is_dup_ack: 重複ACKかどうか
-    /// - snd_una: 未確認の最古シーケンス番号
-    /// - snd_nxt: 次に送信するシーケンス番号（Fast Recoveryの回復ポイント設定用）
-    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, snd_una: u32, snd_nxt: u32) {
+    /// - ack_num: 受信したACKシーケンス番号 (RFC 6582 Full ACK判定用)
+    /// - snd_nxt: 次に送信するシーケンス番号 (Fast Recoveryの回復ポイント設定用)
+    pub fn on_ack(&mut self, bytes_acked: u32, is_dup_ack: bool, ack_num: u32, snd_nxt: u32) {
         // in-flight更新
         self.bytes_in_flight = self.bytes_in_flight.saturating_sub(bytes_acked);
 
@@ -139,14 +139,14 @@ impl CongestionController {
             }
             CongestionState::FastRecovery => {
                 // Fast Recovery: RFC 6582 (NewReno)
-                // snd_una が recover を超えたら全再送完了で回復終了
-                if (snd_una.wrapping_sub(self.recover) as i32) > 0 {
+                // ack_num が recover 以上なら全再送完了 (Full ACK) で回復終了
+                if (ack_num.wrapping_sub(self.recover) as i32) >= 0 {
                     // 回復完了 - Congestion Avoidanceへ
                     self.cwnd = self.ssthresh;
                     self.state = CongestionState::CongestionAvoidance;
                     self.bytes_acked = 0;
                 } else {
-                    // 部分ACK - cwndをデフレート
+                    // 部分ACK (Partial ACK) - cwndをデフレート
                     self.cwnd = self.cwnd.saturating_sub(bytes_acked);
                     self.cwnd = self.cwnd.saturating_add(self.mss);
                 }
@@ -237,12 +237,12 @@ impl TcpCongestionController {
         &mut self,
         bytes_acked: u32,
         is_dup_ack: bool,
-        snd_una: u32,
+        ack_num: u32,
         snd_nxt: u32,
         _current_time_ms: u64,
         _rtt_sample_ms: u64,
     ) {
-        self.controller.on_ack(bytes_acked, is_dup_ack, snd_una, snd_nxt);
+        self.controller.on_ack(bytes_acked, is_dup_ack, ack_num, snd_nxt);
     }
 
     pub fn on_timeout(&mut self, _current_time_ms: u64) {
