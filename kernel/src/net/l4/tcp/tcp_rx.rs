@@ -420,6 +420,7 @@ fn process_parsed_tcp_segment(
             header.flags,
             header.seq_num,
             header.ack_num,
+            header.window,
             header.urgent_ptr,
             options,
             data_payload,
@@ -881,6 +882,7 @@ fn handle_synchronized_segment(
     flags: u8,
     seq_num: u32,
     ack_num: u32,
+    window: u16,
     urgent_ptr: u16,
     options: &[u8],
     data_payload: PacketPayload,
@@ -976,7 +978,7 @@ fn handle_synchronized_segment(
     }
 
     // Acceptable ACK: Process it
-    handle_ack_received(runtime, tcb, ack_num, payload_len, flags);
+    handle_ack_received(runtime, tcb, ack_num, payload_len, flags, window);
 
     // 4. Check URG bit (RFC 793 / RFC 6093)
     if is_urg && urgent_ptr > 0 {
@@ -1139,6 +1141,7 @@ fn process_tcp_with_tcb(
     flags: u8,
     seq_num: u32,
     ack_num: u32,
+    window: u16,
     urgent_ptr: u16,
     options: &[u8],
     data_payload: PacketPayload,
@@ -1227,6 +1230,7 @@ fn process_tcp_with_tcb(
                             flags,
                             seq_num,
                             ack_num,
+                            window,
                             urgent_ptr,
                             options,
                             data_payload,
@@ -1252,6 +1256,7 @@ fn process_tcp_with_tcb(
                 flags,
                 seq_num,
                 ack_num,
+                window,
                 urgent_ptr,
                 options,
                 data_payload,
@@ -1652,6 +1657,7 @@ fn handle_ack_received(
     ack_num: u32,
     payload_len: usize,
     flags: u8,
+    window: u16,
 ) {
     // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
     // ack_num > snd_nxt の場合、送信していないデータのACKなので不正。
@@ -1673,11 +1679,13 @@ fn handle_ack_received(
     // 1. ack_num == snd_una (新データ未確認)
     // 2. payload_len == 0 (データなし)
     // 3. SYN / FIN フラグなし
-    // 4. 未確認データが存在する (snd_una < snd_nxt)
+    // 4. advertised window が前回のACKから変化していない (window == tcb.snd_wnd)
+    // 5. 未確認データが存在する (snd_una < snd_nxt)
     let has_unacked_data = (tcb.snd_nxt.wrapping_sub(tcb.snd_una) as i32) > 0;
     let is_dup = ack_num == tcb.snd_una
         && payload_len == 0
         && (flags & (tcp_flags::SYN | tcp_flags::FIN)) == 0
+        && window == tcb.snd_wnd
         && has_unacked_data;
 
     let (should_remove, action) = tcp_table_in(runtime)

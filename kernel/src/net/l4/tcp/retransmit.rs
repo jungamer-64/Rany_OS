@@ -151,8 +151,10 @@ impl RetransmitQueue {
     }
 
     /// ACK受信時の処理（累積ACK）
-    /// 確認されたセグメントを削除し、RTTサンプルを収集
-    pub fn ack_received(&mut self, ack_num: u32, current_tick: u64) {
+    /// 確認されたセグメントを削除し、RTTサンプルを収集。
+    /// 戻り値: 新規データがACKされたかどうか
+    pub fn ack_received(&mut self, ack_num: u32, current_tick: u64) -> bool {
+        let mut acked_new_data = false;
         // 累積ACKによって完全に確認されたセグメントを全て削除
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while let Some(seg) = self.unacked.front_mut() {
@@ -160,6 +162,7 @@ impl RetransmitQueue {
 
             // セグメントの末尾まで確認されているか？
             if Self::seq_leq(seg_end, ack_num) {
+                acked_new_data = true;
                 if let RetransmitPayloadState::InFlight { acked, .. } = &mut seg.data {
                     *acked = true;
                     break;
@@ -176,6 +179,7 @@ impl RetransmitQueue {
                 break;
             }
         }
+        acked_new_data
     }
 
     /// タイムアウトチェック
@@ -275,6 +279,9 @@ impl RetransmitQueue {
             seg.retransmit_count += 1;
             let seq = seg.seq;
             self.rto_calc.backoff();
+
+            // RFC 6582: RTOタイムアウト発生時に輻輳制御状態を更新 (recover = snd_nxt, cwnd = 1 MSS)
+            tcp_table_in(runtime).record_retransmit_timeout(if_id, local, remote, current_tick);
 
             return if self.transmit_ready_inner(
                 runtime,
@@ -589,10 +596,11 @@ pub fn retransmit_queue_ack(
     let state = tcp_runtime_in(runtime).retransmit();
     let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&key) {
-        queue.ack_received(ack_num, current_tick);
+        let acked_new_data = queue.ack_received(ack_num, current_tick);
         if queue.is_empty() {
             cancel_retransmit_timer(runtime, key);
-        } else {
+        } else if acked_new_data {
+            // RFC 6298: 新規データがACKされた場合のみRTOタイマーを再起動（重複ACKでは延長しない）
             let deadline = current_tick + queue.get_rto();
             schedule_retransmit_timer(runtime, key, deadline);
         }

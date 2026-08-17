@@ -298,11 +298,13 @@ mod tests {
 
         let probe_sender_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);
         let mut buf = [0u8; 28];
-        let pkt = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0).unwrap();
-        pkt.init_request(probe_sender_mac, Ipv4Address::ANY, our_ip);
+        {
+            let pkt = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0).unwrap();
+            pkt.init_request(probe_sender_mac, Ipv4Address::ANY, our_ip);
+        }
 
         // RFC 5227 §2.5: Host MUST respond with standard ARP Reply to ARP Probe for active IP
-        let res = proc.process_packet(&buf, 1000);
+        let res = proc.process(&buf, 1000, probe_sender_mac);
         assert_eq!(
             res,
             ArpResult::SendReply {
@@ -313,18 +315,21 @@ mod tests {
 
         // IP Conflict: Another host claims our IP with different MAC
         let conflict_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x03]);
-        pkt.init_request(conflict_mac, our_ip, our_ip);
+        {
+            let pkt = crate::util::get_mut_ref::<ArpPacket>(&mut buf, 0).unwrap();
+            pkt.init_request(conflict_mac, our_ip, our_ip);
+        }
 
         // 1st conflict -> Defend with Gratuitous ARP (RFC 5227 §2.4(c))
-        let res_conflict1 = proc.process_packet(&buf, 2000);
+        let res_conflict1 = proc.process(&buf, 2000, conflict_mac);
         assert_eq!(res_conflict1, ArpResult::SendGratuitous);
 
         // 2nd conflict within 10s -> Suppressed (Rate-limited)
-        let res_conflict2 = proc.process_packet(&buf, 5000);
+        let res_conflict2 = proc.process(&buf, 5000, conflict_mac);
         assert_eq!(res_conflict2, ArpResult::Ignored);
 
         // 3rd conflict after 10s -> Defend again
-        let res_conflict3 = proc.process_packet(&buf, 13000);
+        let res_conflict3 = proc.process(&buf, 13000, conflict_mac);
         assert_eq!(res_conflict3, ArpResult::SendGratuitous);
     }
 }

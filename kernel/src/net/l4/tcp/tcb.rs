@@ -198,6 +198,7 @@ pub struct TcpControlBlockSnapshot {
     pub snd_nxt: u32,
     pub snd_una: u32,
     pub rcv_nxt: u32,
+    pub snd_wnd: u16,
     pub max_snd_wnd: u32,
     pub scaled_snd_wnd: u32,
     pub effective_send_window: u32,
@@ -262,21 +263,18 @@ impl TcpHandshakeData {
     }
 
     fn apply_options(&mut self, options: TcpHandshakeOptions) {
-        if let Some(peer_ts_val) = options.peer_ts_val {
-            self.ts_enabled = true;
-            self.ts_ecr = peer_ts_val;
-            if let Some(local_ts_val) = options.local_ts_val {
-                self.ts_val = local_ts_val;
-            }
-        }
-        if options.sack_permitted {
-            self.sack_enabled = true;
-        }
         if let Some(mss) = options.peer_mss {
             self.mss = mss as u32;
         }
+        self.sack_enabled = options.sack_permitted;
+        if let (Some(peer_ts), Some(local_ts)) = (options.peer_ts_val, options.local_ts_val) {
+            self.ts_enabled = true;
+            self.ts_val = local_ts;
+            self.ts_ecr = peer_ts;
+        } else {
+            self.ts_enabled = false;
+        }
         if let Some(ws) = options.peer_window_scale {
-            self.window_scale.enabled = true;
             self.window_scale.set_snd_scale(ws);
         } else {
             self.window_scale.enabled = false;
@@ -284,7 +282,7 @@ impl TcpHandshakeData {
     }
 
     fn into_connection(self) -> TcpConnectionData {
-        let mut congestion = TcpCongestionController::new();
+        let mut congestion = TcpCongestionController::with_iss(self.seq.snd_una);
         congestion.update_mss(self.mss);
         TcpConnectionData {
             seq: self.seq,
@@ -323,7 +321,7 @@ impl TcpConnectionData {
             rcv_wnd: 65535,
             retransmit_count: 0,
             last_send_tick: 0,
-            congestion: TcpCongestionController::new(),
+            congestion: TcpCongestionController::with_iss(isn),
             window_scale: WindowScaleOption::default_enabled(),
             flow_control: FlowController::new(),
             mss: 536,
@@ -354,8 +352,7 @@ impl TcpConnectionData {
     }
 
     fn advertised_recv_window(&self) -> u16 {
-        self.window_scale
-            .advertised_window(self.flow_control.advertised_window())
+        self.flow_control.advertised_window() as u16
     }
 }
 
@@ -368,6 +365,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
             rcv_nxt: 0,
         });
         let (
+            snd_wnd,
             max_snd_wnd,
             scaled_snd_wnd,
             effective_send_window,
@@ -382,6 +380,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
             (Some(data), _) => {
                 let scaled = data.window_scale.scale_snd_window(data.snd_wnd);
                 (
+                    data.snd_wnd,
                     data.max_snd_wnd,
                     scaled,
                     scaled,
@@ -395,6 +394,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
                 )
             }
             (_, Some(data)) => (
+                data.snd_wnd,
                 data.max_snd_wnd,
                 data.window_scale.scale_snd_window(data.snd_wnd),
                 data.effective_send_window(),
@@ -406,7 +406,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
                 data.ts_ecr,
                 data.nagle_enabled,
             ),
-            _ => (0, 0, 0, 0, 0, 536, false, false, 0, true),
+            _ => (65535, 0, 0, 0, 0, 0, 536, false, false, 0, true),
         };
         Self {
             socket_id: value.socket_id,
@@ -417,6 +417,7 @@ impl From<&TcpControlBlock> for TcpControlBlockSnapshot {
             snd_nxt: seq.snd_nxt,
             snd_una: seq.snd_una,
             rcv_nxt: seq.rcv_nxt,
+            snd_wnd,
             max_snd_wnd,
             scaled_snd_wnd,
             effective_send_window,
@@ -647,6 +648,13 @@ impl TcpControlBlock {
             data.seq.snd_una = ack_num;
         }
         action
+    }
+
+    /// RTOタイムアウト発生時の輻輳制御更新 (RFC 6582 §3.2: recover = snd_nxt)
+    pub fn on_retransmit_timeout(&mut self, current_time_ms: u64) {
+        if let Some(data) = self.state.connection_data_mut() {
+            data.congestion.on_timeout(data.seq.snd_nxt, current_time_ms);
+        }
     }
 
     pub fn on_data_received(&mut self, bytes: u32) {
@@ -1582,6 +1590,18 @@ impl TcbTable {
         } else {
             None
         }
+    }
+
+    pub(in crate::net::l4::tcp) fn record_retransmit_timeout(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        current_time_ms: u64,
+    ) -> bool {
+        self.mutate_entry(if_id, local, remote, |entry| {
+            entry.on_retransmit_timeout(current_time_ms);
+        })
     }
 
     pub(in crate::net::l4::tcp) fn set_socket_id(
