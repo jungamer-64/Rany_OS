@@ -187,8 +187,6 @@ pub(crate) fn init_post_buddy(_boot_info: Option<&ExoBootInfoView<'_>>) {
         );
     }
     verify_buddy_integrity();
-
-    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(0);
 }
 
 /// メモリサブシステムの完全初期化

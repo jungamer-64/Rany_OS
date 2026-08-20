@@ -692,7 +692,6 @@ fn ap_entry(id: CpuId) -> ! {
         fail_stop_ap();
     }
 
-    crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(id.as_usize());
     crate::mm::sync::tlb::enter_lazy_mode();
     crate::mm::numa::topology::apply_current_cpu_locality();
     let current = super::CurrentCpu::acquire().unwrap_or_else(|| fail_stop_ap());

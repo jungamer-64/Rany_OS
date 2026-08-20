@@ -13,16 +13,9 @@
 // Partial優先によりフラグメンテーションを削減し、
 // メモリ使用効率を向上させる。
 // ============================================================================
-use crate::sync::PoisonLock;
-use core::alloc::Layout;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering};
 
 use alloc::boxed::Box;
-use alloc::vec::Vec;
-
-// リモートフリー用の型定義
-use crate::mm::remote_free::RemoteFreeRing;
 
 /// Slab内のオブジェクトサイズクラス（2のべき乗）
 mod magazine_layer;
@@ -54,10 +47,6 @@ const REFILL_SCALE_UP_THRESHOLD: usize = 256;
 /// 4KB / 64B = 64 だが、オブジェクト用のスペースを確保するため小さめに
 const MAX_SLAB_COLORS: usize = 8;
 
-/// リモートフリーリングの容量（ロックフリークロスCPU解放用）
-/// 各CPUコアが他CPUから解放要求を受け取るためのリング
-const SLAB_REMOTE_FREE_CAPACITY: usize = 256;
-
 // ============================================================================
 // Partial Slab 分離 (Full/Partial/Empty 3状態管理)
 // ============================================================================
@@ -81,10 +70,6 @@ pub enum SlabPageState {
 /// by masking the lower bits of the address (assuming aligned pages).
 #[repr(C)]
 pub struct SlabPageHeader {
-    /// Pointer to the SlabCache that owns this page
-    /// Used for validation and accounting
-    pub slab_cache: NonNull<SlabCache>,
-
     /// Index of the first free object (freelist head)
     /// Non-None value means there are free objects.
     pub next_free: Option<u16>,
@@ -118,14 +103,13 @@ impl SlabPageHeader {
     /// `page_ptr` must be a valid pointer to the start of a mapped page.
     pub unsafe fn init(
         page_ptr: NonNull<u8>,
-        slab_cache: NonNull<SlabCache>,
+        object_size: usize,
         total_objects: u16,
         color_offset: u16,
     ) -> NonNull<Self> {
         let header_ptr = page_ptr.cast::<Self>();
         let header = &mut *header_ptr.as_ptr();
 
-        header.slab_cache = slab_cache;
         header.next_free = Some(0); // Initial freelist head is index 0
         header.inuse = 0;
         header.total_objects = total_objects;
@@ -143,9 +127,7 @@ impl SlabPageHeader {
         // IMPORTANT: We need minimum object size >= sizeof(u16).
         // Since MIN_ALIGN is usually 8 or more, this is fine.
 
-        Self::init_freelist(page_ptr, total_objects, color_offset, unsafe {
-            (*slab_cache.as_ptr()).object_size
-        });
+        Self::init_freelist(page_ptr, total_objects, color_offset, object_size);
 
         header_ptr
     }
@@ -285,3 +267,8 @@ pub struct SlabCache {
     /// Optional: Migrator for compaction
     migrator: Option<Box<dyn ObjectMigrator>>,
 }
+
+// SAFETY: SlabCache has exclusive mutation through its owning PoisonLock. Its
+// intrusive pointers refer only to separately allocated pages owned by that
+// cache; moving the cache does not invalidate those page addresses.
+unsafe impl Send for SlabCache {}

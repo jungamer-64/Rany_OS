@@ -313,9 +313,7 @@ impl SlabCache {
         unsafe {
             let header = SlabPageHeader::init(
                 page_ptr,
-                NonNull::from(&*self), // pointer to self (stable in PerCoreCache)
-                // SlabCache is often in a Box or fixed location (PerCoreCache static array).
-                // Yes, PER_CORE_CACHES are static, so addresses are stable.
+                self.object_size,
                 total_objects,
                 color_offset as u16,
             );
