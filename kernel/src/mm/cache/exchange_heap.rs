@@ -15,6 +15,8 @@
 // ============================================================================
 use crate::sync::{IrqMutex, PoisonLock};
 use alloc::alloc::{GlobalAlloc, Layout};
+use alloc::sync::Arc;
+use alloc::vec::Vec;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
@@ -22,11 +24,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // Per-CPU Caching Constants
 // ============================================================================
 
-/// Maximum CPUs supported
 mod stats_and_compat;
 pub use stats_and_compat::*;
 mod heap_impl;
-const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 /// Per-CPU cache capacity (number of cached blocks per size class)
 const PER_CPU_CACHE_CAPACITY: usize = 32;
@@ -143,11 +143,38 @@ impl PerCpuExchangeCache {
     }
 }
 
-/// Global per-CPU caches
-static PER_CPU_CACHES: [IrqMutex<PerCpuExchangeCache>; MAX_CPUS] = {
-    const INIT: IrqMutex<PerCpuExchangeCache> = IrqMutex::new(PerCpuExchangeCache::new());
-    [INIT; MAX_CPUS]
-};
+/// CPU cache entries have stable addresses while the registry grows for newly
+/// discovered firmware slots.
+type ExchangeCacheSnapshot = Arc<[Arc<IrqMutex<PerCpuExchangeCache>>]>;
+
+static PER_CPU_CACHES: spin::Once<IrqMutex<ExchangeCacheSnapshot>> = spin::Once::new();
+
+fn per_cpu_cache(cpu_id: crate::cpu::CpuId) -> Option<Arc<IrqMutex<PerCpuExchangeCache>>> {
+    let slot_count = crate::cpu::try_runtime()?.snapshot().slots().len();
+    let required_slots = slot_count.max(cpu_id.as_usize().saturating_add(1));
+    let registry = PER_CPU_CACHES.call_once(|| IrqMutex::new(Arc::from([])));
+
+    loop {
+        let current = registry.lock().clone();
+        if let Some(cache) = current.get(cpu_id.as_usize()) {
+            return Some(Arc::clone(cache));
+        }
+
+        let mut expanded = Vec::new();
+        expanded.try_reserve_exact(required_slots).ok()?;
+        expanded.extend(current.iter().cloned());
+        expanded.resize_with(required_slots, || {
+            Arc::new(IrqMutex::new(PerCpuExchangeCache::new()))
+        });
+        let expanded: ExchangeCacheSnapshot = Arc::from(expanded.into_boxed_slice());
+
+        let mut published = registry.lock();
+        if Arc::ptr_eq(&published, &current) {
+            *published = expanded;
+            return published.get(cpu_id.as_usize()).cloned();
+        }
+    }
+}
 
 // ============================================================================
 // RRef Memory Pool - Zero-Copy IPC Optimization (v0.6.0)

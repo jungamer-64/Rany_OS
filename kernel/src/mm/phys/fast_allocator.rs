@@ -37,7 +37,6 @@
 //! | free_4k (remote) | RemoteFreeRing | O(1), lock-free push |
 extern crate alloc;
 
-use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, AtomicUsize, Ordering};
 
@@ -72,12 +71,6 @@ const BITS_PER_WORD: usize = 64;
 
 /// Pages per 2MB block
 const PAGES_PER_2MB_BLOCK: usize = 512;
-
-/// Maximum CPUs supported
-#[cfg(feature = "qemu-test-export")]
-pub const MAX_CPUS: usize = 1;
-#[cfg(not(feature = "qemu-test-export"))]
-pub const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 /// Magazine size classes
 const MAGAZINE_SIZE_CLASSES: usize = 3; // 4KB, 2MB, 1GB
@@ -367,7 +360,7 @@ pub struct FastBitmapAllocator {
     /// Hierarchical bitmap for 4KB/2MB/1GB tracking
     bitmap: HugePageBitmap,
     /// Per-CPU magazines
-    magazines: Box<[PerCpuFastMagazine]>,
+    magazines: Vec<PerCpuFastMagazine>,
     /// Arena ownership tracking
     arena_ownership: ArenaOwnership,
     /// Statistics

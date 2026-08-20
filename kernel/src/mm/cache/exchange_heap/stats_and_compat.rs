@@ -44,22 +44,26 @@ impl ExchangeHeap {
     }
 
     pub(super) fn try_per_cpu_cache_alloc(size_class: usize) -> Option<NonNull<u8>> {
-        let cpu_id = crate::cpu::try_current_id()?;
-        if cpu_id >= MAX_CPUS {
-            return None;
-        }
+        let cpu_id = crate::cpu::CurrentCpu::acquire().map(|current| current.id())?;
+        let local_cache = per_cpu_cache(cpu_id)?;
         {
-            let mut cache = PER_CPU_CACHES[cpu_id].lock();
+            let mut cache = local_cache.lock();
             if let Some((addr, _cached_size)) = cache.try_alloc(size_class) {
                 return NonNull::new(addr as *mut u8);
             }
             cache.steal_attempts.fetch_add(1, Ordering::Relaxed);
         }
-        for offset in 1..MAX_CPUS {
-            let victim_id = (cpu_id + offset) % MAX_CPUS;
-            if let Some(mut victim_cache) = PER_CPU_CACHES[victim_id].try_lock() {
+        let snapshot = crate::cpu::snapshot();
+        for victim_id in snapshot.online() {
+            if victim_id == cpu_id {
+                continue;
+            }
+            let Some(victim) = per_cpu_cache(victim_id) else {
+                continue;
+            };
+            if let Some(mut victim_cache) = victim.try_lock() {
                 if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
-                    let local = PER_CPU_CACHES[cpu_id].lock();
+                    let local = local_cache.lock();
                     local.steal_successes.fetch_add(1, Ordering::Relaxed);
                     return NonNull::new(addr as *mut u8);
                 }
@@ -102,9 +106,9 @@ impl ExchangeHeap {
 
         // Fast path: try per-CPU cache first
         if size_class < CACHED_SIZE_CLASSES {
-            if let Some(cpu_id) = crate::cpu::try_current_id() {
-                if cpu_id < MAX_CPUS {
-                    let mut cache = PER_CPU_CACHES[cpu_id].lock();
+            if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) {
+                if let Some(cache) = per_cpu_cache(cpu_id) {
+                    let mut cache = cache.lock();
                     if cache.try_cache(addr, size, size_class) {
                         return;
                     }

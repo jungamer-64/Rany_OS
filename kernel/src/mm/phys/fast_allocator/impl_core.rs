@@ -9,17 +9,19 @@ impl FastBitmapAllocator {
         // Calculate arena sizes
         let total_words_4k = (total_pages.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
         let total_blocks_2m = total_pages / PAGES_PER_2MB_BLOCK;
+        let initial_cpu_count = 1usize;
 
-        let words_per_cpu = (total_words_4k.saturating_add(MAX_CPUS - 1)) / MAX_CPUS;
-        let blocks_2m_per_cpu = if total_blocks_2m >= MAX_CPUS {
-            (total_blocks_2m.saturating_add(MAX_CPUS - 1)) / MAX_CPUS
+        let words_per_cpu = total_words_4k;
+        let blocks_2m_per_cpu = if total_blocks_2m >= initial_cpu_count {
+            total_blocks_2m
         } else {
             1
         };
 
-        // Create per-CPU magazines
-        let mut magazines = Vec::with_capacity(MAX_CPUS);
-        for cpu_id in 0..MAX_CPUS {
+        // CPU topology is not available during early PMM construction. Start
+        // with the bootstrap slot; topology reconfiguration grows this set.
+        let mut magazines = Vec::with_capacity(initial_cpu_count);
+        for cpu_id in 0..initial_cpu_count {
             let mut mag = PerCpuFastMagazine::new();
 
             let arena_start_4k = cpu_id * words_per_cpu;
@@ -38,13 +40,13 @@ impl FastBitmapAllocator {
             magazines.push(mag);
         }
 
-        let arena_ownership = ArenaOwnership::new(total_words_4k, MAX_CPUS);
+        let arena_ownership = ArenaOwnership::new(total_words_4k, initial_cpu_count);
 
         Self {
             base,
             size,
             bitmap,
-            magazines: magazines.into_boxed_slice(),
+            magazines,
             arena_ownership,
             stats: FastAllocatorStats::new(),
         }
@@ -64,8 +66,10 @@ impl FastBitmapAllocator {
 
     /// Get current CPU ID
     #[inline]
-    pub(super) fn current_cpu_id() -> Option<usize> {
-        crate::cpu::try_current_id().filter(|&cpu_id| cpu_id < MAX_CPUS)
+    pub(super) fn current_cpu_id(&self) -> Option<usize> {
+        crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id().as_usize())
+            .filter(|cpu_id| self.magazines.get(*cpu_id).is_some())
     }
 
     // ========================================================================
@@ -76,9 +80,7 @@ impl FastBitmapAllocator {
     pub fn enable_single_writer_arenas(&self) {
         let global_detail = self.bitmap.detail();
 
-        for cpu_id in 0..MAX_CPUS {
-            let magazine = &self.magazines[cpu_id];
-
+        for magazine in &self.magazines {
             if magazine.arena_end_4k > magazine.arena_start_4k {
                 let num_words = magazine.arena_end_4k - magazine.arena_start_4k;
 
@@ -94,8 +96,7 @@ impl FastBitmapAllocator {
     pub fn sync_single_writer_arenas(&self) {
         let global_detail = self.bitmap.detail();
 
-        for cpu_id in 0..MAX_CPUS {
-            let magazine = &self.magazines[cpu_id];
+        for magazine in &self.magazines {
             if magazine.is_single_writer_enabled() {
                 let arena_guard = magazine.arena_detail.lock().expect("lock poisoned");
                 if let Some(ref arena) = *arena_guard {
@@ -169,7 +170,7 @@ impl FastBitmapAllocator {
     /// Allocate a 4KB page
     #[inline]
     pub fn allocate_4k(&self) -> Option<u64> {
-        if let Some(cpu_id) = Self::current_cpu_id() {
+        if let Some(cpu_id) = self.current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if let Some(addr) = self.try_arena_4k(magazine) {
                 return Some(addr);
@@ -217,7 +218,7 @@ impl FastBitmapAllocator {
     /// Allocate a 2MB super-page
     pub fn allocate_2m(&self) -> Option<u64> {
         // Try magazine first
-        if let Some(cpu_id) = Self::current_cpu_id() {
+        if let Some(cpu_id) = self.current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if let Some(mag_lock) = magazine.get_magazine(1) {
                 let mut mag = mag_lock.lock().expect("lock poisoned");
@@ -324,7 +325,7 @@ impl FastBitmapAllocator {
         let page_idx = ((addr - self.base) / PAGE_SIZE_4K) as usize;
 
         // Try local magazine first
-        if let Some(cpu_id) = Self::current_cpu_id() {
+        if let Some(cpu_id) = self.current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if self.try_free_single_writer(magazine, page_idx) {
                 return true;
@@ -383,7 +384,7 @@ impl FastBitmapAllocator {
         let block_idx = ((addr - self.base) / PAGE_SIZE_2M) as usize;
 
         // Try magazine first
-        if let Some(cpu_id) = Self::current_cpu_id() {
+        if let Some(cpu_id) = self.current_cpu_id() {
             let magazine = &self.magazines[cpu_id];
             if let Some(mag_lock) = magazine.get_magazine(1) {
                 let mut mag = mag_lock.lock().expect("lock poisoned");
@@ -414,7 +415,7 @@ impl FastBitmapAllocator {
 
     /// Drain remote free ring for current CPU
     pub fn drain_remote_frees(&self) -> usize {
-        let Some(cpu_id) = Self::current_cpu_id() else {
+        let Some(cpu_id) = self.current_cpu_id() else {
             return 0;
         };
 
@@ -488,6 +489,16 @@ impl FastBitmapAllocator {
         let total_words_4k = (total_pages + BITS_PER_WORD - 1) / BITS_PER_WORD;
         let total_blocks_2m = total_pages / PAGES_PER_2MB_BLOCK;
 
+        let required_slots = cpu_ids
+            .iter()
+            .copied()
+            .max()
+            .map_or(1, |cpu_id| cpu_id.saturating_add(1));
+        if self.magazines.len() < required_slots {
+            self.magazines
+                .resize_with(required_slots, PerCpuFastMagazine::new);
+        }
+
         let num_cpus = cpu_ids.len().max(1);
         let words_per_cpu = (total_words_4k + num_cpus - 1) / num_cpus;
         let blocks_2m_per_cpu = if total_blocks_2m >= num_cpus {
@@ -497,25 +508,22 @@ impl FastBitmapAllocator {
         };
 
         for (idx, &cpu_id) in cpu_ids.iter().enumerate() {
-            if cpu_id < MAX_CPUS {
-                let arena_start_4k = (idx.saturating_mul(words_per_cpu)).min(total_words_4k);
-                let arena_end_4k = ((idx + 1).saturating_mul(words_per_cpu)).min(total_words_4k);
+            let arena_start_4k = (idx.saturating_mul(words_per_cpu)).min(total_words_4k);
+            let arena_end_4k = ((idx + 1).saturating_mul(words_per_cpu)).min(total_words_4k);
 
-                let arena_start_2m = (idx.saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
-                let arena_end_2m =
-                    ((idx + 1).saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
+            let arena_start_2m = (idx.saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
+            let arena_end_2m = ((idx + 1).saturating_mul(blocks_2m_per_cpu)).min(total_blocks_2m);
 
-                let mag = &mut self.magazines[cpu_id];
-                mag.set_arena(
-                    cpu_id,
-                    arena_start_4k,
-                    arena_end_4k,
-                    arena_start_2m,
-                    arena_end_2m,
-                );
-                mag.single_writer_enabled.store(false, Ordering::Release);
-                *mag.arena_detail.lock().expect("lock poisoned") = None;
-            }
+            let mag = &mut self.magazines[cpu_id];
+            mag.set_arena(
+                cpu_id,
+                arena_start_4k,
+                arena_end_4k,
+                arena_start_2m,
+                arena_end_2m,
+            );
+            mag.single_writer_enabled.store(false, Ordering::Release);
+            *mag.arena_detail.lock().expect("lock poisoned") = None;
         }
 
         self.arena_ownership
