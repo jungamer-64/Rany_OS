@@ -263,6 +263,15 @@ impl SchedulerState {
         self.present = snapshot.present().clone();
         self.queues.entry(cpu).or_default();
     }
+
+    fn abort_online_cpu(&mut self, cpu: CpuId) {
+        self.online.remove(cpu);
+        let queue = self.queues.remove(&cpu).unwrap_or_default();
+        assert!(
+            queue.is_empty(),
+            "aborted CPU online preparation retained runnable tasks"
+        );
+    }
 }
 
 pub(crate) struct TaskRuntime {
@@ -386,6 +395,13 @@ impl TaskRuntime {
             .unwrap_or_else(|error| error.into_inner())
             .prepare_online_cpu(cpu, snapshot);
     }
+
+    fn abort_online_cpu(&self, cpu: CpuId) {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .abort_online_cpu(cpu);
+    }
 }
 
 static TASK_RUNTIME: Once<TaskRuntime> = Once::new();
@@ -431,6 +447,12 @@ pub(crate) fn prepare_cpu_online(cpu: CpuId) {
     }
 }
 
+pub(crate) fn abort_cpu_online(cpu: CpuId) {
+    if let Ok(runtime) = runtime() {
+        runtime.abort_online_cpu(cpu);
+    }
+}
+
 pub(crate) fn publish_cpu_online(cpu: CpuId) {
     if let Ok(runtime) = runtime() {
         let snapshot = crate::cpu::snapshot();
@@ -438,14 +460,38 @@ pub(crate) fn publish_cpu_online(cpu: CpuId) {
     }
 }
 
-pub fn run_forever() -> ! {
-    let processes_rcu_callbacks =
-        CurrentCpu::acquire().is_some_and(|current| current.id() == CpuId::BOOTSTRAP);
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ParkPolicy {
+    Reject,
+    Return,
+}
+
+fn run_scheduler_loop(park_policy: ParkPolicy) {
+    let current = CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("scheduler loop entered without CPU-local state"));
+    let processes_rcu_callbacks = current.id() == CpuId::BOOTSTRAP;
     loop {
+        let mut park_requested = false;
+        while let Some(message) = current.take_control() {
+            match message {
+                crate::cpu::CpuControlMessage::WakeExecutor
+                | crate::cpu::CpuControlMessage::Start => {}
+                crate::cpu::CpuControlMessage::Park => match park_policy {
+                    ParkPolicy::Reject => {
+                        panic!("bootstrap scheduler received an illegal park request")
+                    }
+                    ParkPolicy::Return => park_requested = true,
+                },
+            }
+        }
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
         super::interrupt_waker::process_interrupt_events();
         crate::io::io_scheduler::process_deferred_completions_local();
+        if park_requested {
+            crate::mm::sync::rcu::rcu_note_context_switch();
+            return;
+        }
         let made_progress = runtime().is_ok_and(TaskRuntime::poll_one);
         crate::mm::sync::rcu::rcu_note_context_switch();
         if processes_rcu_callbacks {
@@ -455,6 +501,22 @@ pub fn run_forever() -> ! {
             idle_once();
         }
     }
+}
+
+pub(crate) fn run_until_parked() {
+    let current = CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("AP scheduler entered without CPU-local state"));
+    assert_ne!(
+        current.id(),
+        CpuId::BOOTSTRAP,
+        "bootstrap CPU cannot use the parkable scheduler loop"
+    );
+    run_scheduler_loop(ParkPolicy::Return);
+}
+
+pub fn run_forever() -> ! {
+    run_scheduler_loop(ParkPolicy::Reject);
+    unreachable!("bootstrap scheduler loop returned")
 }
 
 fn notify_target(cpu: CpuId) {

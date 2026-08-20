@@ -30,6 +30,8 @@ pub enum CpuControlMessage {
 pub struct CpuRemoteAccess {
     control: MpscRingBuffer<CpuControlMessage, CONTROL_QUEUE_SLOTS>,
     wake_pending: AtomicBool,
+    online_acknowledgements: AtomicU64,
+    park_acknowledgements: AtomicU64,
     numa_node: AtomicU8,
     interrupt_depth: AtomicU32,
     interrupt_record_revision: AtomicU64,
@@ -61,6 +63,8 @@ impl CpuRemoteAccess {
         Self {
             control: MpscRingBuffer::new(),
             wake_pending: AtomicBool::new(false),
+            online_acknowledgements: AtomicU64::new(0),
+            park_acknowledgements: AtomicU64::new(0),
             numa_node: AtomicU8::new(u8::MAX),
             interrupt_depth: AtomicU32::new(0),
             interrupt_record_revision: AtomicU64::new(0),
@@ -87,6 +91,30 @@ impl CpuRemoteAccess {
 
     pub fn request_wake(&self) -> bool {
         !self.wake_pending.swap(true, Ordering::AcqRel)
+    }
+
+    pub(crate) fn online_acknowledgements(&self) -> u64 {
+        self.online_acknowledgements.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn acknowledge_online(&self) {
+        self.online_acknowledgements
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .unwrap_or_else(|_| panic!("CPU online acknowledgement generation exhausted"));
+    }
+
+    pub(crate) fn park_acknowledgements(&self) -> u64 {
+        self.park_acknowledgements.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn acknowledge_parked(&self) {
+        self.park_acknowledgements
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |value| {
+                value.checked_add(1)
+            })
+            .unwrap_or_else(|_| panic!("CPU park acknowledgement generation exhausted"));
     }
 
     pub fn numa_node(&self) -> Option<u8> {
@@ -518,6 +546,14 @@ impl CurrentCpu {
 
     pub fn take_control(&self) -> Option<CpuControlMessage> {
         self.local.take_control()
+    }
+
+    pub(crate) fn acknowledge_online(&self) {
+        self.local.remote.acknowledge_online();
+    }
+
+    pub(crate) fn acknowledge_parked(&self) {
+        self.local.remote.acknowledge_parked();
     }
 
     pub fn in_interrupt(&self) -> bool {

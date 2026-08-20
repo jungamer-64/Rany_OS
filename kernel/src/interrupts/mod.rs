@@ -573,6 +573,19 @@ fn arm_current_runtime_timer() -> Result<(), RuntimeTimerError> {
     Ok(())
 }
 
+pub(crate) fn prepare_current_cpu_runtime_timer() -> Result<(), RuntimeTimerError> {
+    arm_current_runtime_timer()
+}
+
+pub(crate) fn stop_current_cpu_runtime_timer() -> Result<(), RuntimeTimerError> {
+    let apic = crate::drivers::apic::local_apic().map_err(RuntimeTimerError::LocalApic)?;
+    let current_cpu =
+        crate::cpu::CurrentCpu::acquire().ok_or(RuntimeTimerError::CpuLocalUnavailable)?;
+    apic.stop_timer();
+    current_cpu.disarm_runtime_timer();
+    Ok(())
+}
+
 /// Arms the periodic local APIC timer on the executing CPU once.
 ///
 /// # Errors

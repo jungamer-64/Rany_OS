@@ -76,6 +76,7 @@ pub enum CpuStartupFailure {
     CpuLocalBinding,
     InterruptTables,
     LocalApic,
+    Timer,
     SlabCache,
     TlbState,
 }
@@ -93,6 +94,13 @@ pub struct CpuSlot {
     pub firmware: FirmwareCpuIdentity,
     pub state: CpuSlotState,
     pub last_failure: Option<CpuFailure>,
+    startup_origin: Option<CpuStartupOrigin>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuStartupOrigin {
+    PresentOffline,
+    Parked,
 }
 
 impl CpuSlot {
@@ -108,6 +116,7 @@ impl CpuSlot {
             },
             state: CpuSlotState::Online,
             last_failure: None,
+            startup_origin: None,
         }
     }
 
@@ -118,6 +127,7 @@ impl CpuSlot {
             firmware,
             state: CpuSlotState::FirmwareAbsent,
             last_failure: None,
+            startup_origin: None,
         }
     }
 
@@ -126,29 +136,46 @@ impl CpuSlot {
         transition: CpuStateTransition,
     ) -> Result<(), CpuStateTransitionError> {
         let from = self.state;
-        let (next, failure) = match (from, transition) {
+        let (next, failure, startup_origin) = match (from, transition) {
             (CpuSlotState::FirmwareAbsent, CpuStateTransition::FirmwarePresent) => {
-                (CpuSlotState::PresentOffline, None)
+                (CpuSlotState::PresentOffline, None, None)
             }
-            (CpuSlotState::PresentOffline, CpuStateTransition::BeginStart)
-            | (CpuSlotState::Parked, CpuStateTransition::BeginStart) => {
-                (CpuSlotState::Starting, None)
+            (CpuSlotState::PresentOffline, CpuStateTransition::BeginStart) => (
+                CpuSlotState::Starting,
+                None,
+                Some(CpuStartupOrigin::PresentOffline),
+            ),
+            (CpuSlotState::Parked, CpuStateTransition::BeginStart) => {
+                (CpuSlotState::Starting, None, Some(CpuStartupOrigin::Parked))
             }
             (CpuSlotState::Starting, CpuStateTransition::StartupReady) => {
-                (CpuSlotState::Online, None)
+                (CpuSlotState::Online, None, None)
             }
-            (CpuSlotState::Starting, CpuStateTransition::StartupFailed(reason)) => (
-                CpuSlotState::PresentOffline,
-                Some(CpuFailure {
-                    phase: CpuFailurePhase::Start,
-                    reason,
-                }),
-            ),
+            (CpuSlotState::Starting, CpuStateTransition::StartupFailed(reason)) => {
+                let next = match self.startup_origin {
+                    Some(CpuStartupOrigin::PresentOffline) => CpuSlotState::PresentOffline,
+                    Some(CpuStartupOrigin::Parked) => CpuSlotState::Parked,
+                    None => {
+                        return Err(CpuStateTransitionError::Illegal {
+                            from,
+                            attempted: CpuStateTransitionKind::StartupFailed,
+                        });
+                    }
+                };
+                (
+                    next,
+                    Some(CpuFailure {
+                        phase: CpuFailurePhase::Start,
+                        reason,
+                    }),
+                    None,
+                )
+            }
             (CpuSlotState::Online, CpuStateTransition::BeginDrain) => {
                 if self.role == CpuRole::Bootstrap {
                     return Err(CpuStateTransitionError::BootstrapCpu);
                 }
-                (CpuSlotState::Draining, None)
+                (CpuSlotState::Draining, None, None)
             }
             (CpuSlotState::Draining, CpuStateTransition::DrainAborted(reason)) => (
                 CpuSlotState::Online,
@@ -156,15 +183,16 @@ impl CpuSlot {
                     phase: CpuFailurePhase::Drain,
                     reason,
                 }),
+                None,
             ),
             (CpuSlotState::Draining, CpuStateTransition::DrainComplete) => {
-                (CpuSlotState::Parked, None)
+                (CpuSlotState::Parked, None, None)
             }
             (CpuSlotState::Parked, CpuStateTransition::BeginEject) => {
-                (CpuSlotState::Ejecting, None)
+                (CpuSlotState::Ejecting, None, None)
             }
             (CpuSlotState::Ejecting, CpuStateTransition::EjectComplete) => {
-                (CpuSlotState::FirmwareAbsent, None)
+                (CpuSlotState::FirmwareAbsent, None, None)
             }
             (CpuSlotState::Ejecting, CpuStateTransition::EjectFailed(reason)) => (
                 CpuSlotState::PresentOffline,
@@ -172,6 +200,7 @@ impl CpuSlot {
                     phase: CpuFailurePhase::Eject,
                     reason,
                 }),
+                None,
             ),
             (_, attempted) => {
                 return Err(CpuStateTransitionError::Illegal {
@@ -183,6 +212,7 @@ impl CpuSlot {
 
         self.state = next;
         self.last_failure = failure;
+        self.startup_origin = startup_origin;
         Ok(())
     }
 }
@@ -377,6 +407,31 @@ mod tests {
             Some(CpuFailure {
                 phase: CpuFailurePhase::Start,
                 reason: CpuFailureReason::StartupAcknowledgementTimedOut,
+            })
+        );
+    }
+
+    #[test]
+    fn parked_startup_failure_returns_to_parked_state() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupReady).unwrap();
+        slot.transition(CpuStateTransition::BeginDrain).unwrap();
+        slot.transition(CpuStateTransition::DrainComplete).unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupFailed(
+            CpuFailureReason::Startup(CpuStartupFailure::Timer),
+        ))
+        .unwrap();
+
+        assert_eq!(slot.state, CpuSlotState::Parked);
+        assert_eq!(
+            slot.last_failure,
+            Some(CpuFailure {
+                phase: CpuFailurePhase::Start,
+                reason: CpuFailureReason::Startup(CpuStartupFailure::Timer),
             })
         );
     }

@@ -33,14 +33,16 @@ static AP_BOOT_PROBE: u8 = 0x5a;
 enum ApStartupSignal {
     Preparing = 0,
     ReadyParked = 1,
-    MissingApic = 2,
-    MissingSse2 = 3,
-    MissingX2Apic = 4,
-    MissingInvariantTsc = 5,
-    CpuLocalBindingFailed = 6,
-    InterruptTablesFailed = 7,
-    LocalApicFailed = 8,
-    ApicIdentityMismatch = 9,
+    ReadyOnline = 2,
+    MissingApic = 3,
+    MissingSse2 = 4,
+    MissingX2Apic = 5,
+    MissingInvariantTsc = 6,
+    CpuLocalBindingFailed = 7,
+    InterruptTablesFailed = 8,
+    LocalApicFailed = 9,
+    ApicIdentityMismatch = 10,
+    TimerFailed = 11,
 }
 
 impl ApStartupSignal {
@@ -48,21 +50,23 @@ impl ApStartupSignal {
         match raw {
             0 => Some(Self::Preparing),
             1 => Some(Self::ReadyParked),
-            2 => Some(Self::MissingApic),
-            3 => Some(Self::MissingSse2),
-            4 => Some(Self::MissingX2Apic),
-            5 => Some(Self::MissingInvariantTsc),
-            6 => Some(Self::CpuLocalBindingFailed),
-            7 => Some(Self::InterruptTablesFailed),
-            8 => Some(Self::LocalApicFailed),
-            9 => Some(Self::ApicIdentityMismatch),
+            2 => Some(Self::ReadyOnline),
+            3 => Some(Self::MissingApic),
+            4 => Some(Self::MissingSse2),
+            5 => Some(Self::MissingX2Apic),
+            6 => Some(Self::MissingInvariantTsc),
+            7 => Some(Self::CpuLocalBindingFailed),
+            8 => Some(Self::InterruptTablesFailed),
+            9 => Some(Self::LocalApicFailed),
+            10 => Some(Self::ApicIdentityMismatch),
+            11 => Some(Self::TimerFailed),
             _ => None,
         }
     }
 
     fn failure(self) -> Option<CpuFailureReason> {
         match self {
-            Self::Preparing | Self::ReadyParked => None,
+            Self::Preparing | Self::ReadyParked | Self::ReadyOnline => None,
             Self::MissingApic => Some(CpuFailureReason::MissingRequiredFeature { feature: "APIC" }),
             Self::MissingSse2 => Some(CpuFailureReason::MissingRequiredFeature { feature: "SSE2" }),
             Self::MissingX2Apic => {
@@ -80,6 +84,7 @@ impl ApStartupSignal {
             Self::LocalApicFailed | Self::ApicIdentityMismatch => {
                 Some(CpuFailureReason::Startup(CpuStartupFailure::LocalApic))
             }
+            Self::TimerFailed => Some(CpuFailureReason::Startup(CpuStartupFailure::Timer)),
         }
     }
 }
@@ -418,15 +423,9 @@ pub(crate) fn start_boot_cpus() -> CpuBootSummary {
             failed: 0,
         };
     };
-    let controller = STARTUP_CONTROLLER
-        .get()
-        .and_then(|result| result.as_ref().ok());
     let mut failed = 0usize;
     for id in inventory.enabled.iter().copied() {
-        let result = match controller {
-            Some(controller) => online_during_boot(controller, id),
-            None => record_unavailable_trampoline(id),
-        };
+        let result = online_cpu(id);
         if let Err(reason) = result {
             failed += 1;
             log::warn!("CPU {} startup rejected: {:?}", id, reason);
@@ -449,10 +448,7 @@ fn record_unavailable_trampoline(id: CpuId) -> Result<(), CpuFailureReason> {
     Err(reason)
 }
 
-fn online_during_boot(
-    controller: &CpuStartupController,
-    id: CpuId,
-) -> Result<(), CpuFailureReason> {
+pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
     let runtime = super::runtime();
     let slot = runtime
         .snapshot()
@@ -461,39 +457,118 @@ fn online_during_boot(
         .ok_or(CpuFailureReason::Topology(
             CpuTopologyIssue::ConflictingFirmwareIdentity,
         ))?;
-    if slot.role == CpuRole::Bootstrap || slot.state != CpuSlotState::PresentOffline {
+    if slot.role == CpuRole::Bootstrap
+        || !matches!(
+            slot.state,
+            CpuSlotState::PresentOffline | CpuSlotState::Parked
+        )
+    {
         return Err(CpuFailureReason::Topology(
             CpuTopologyIssue::ConflictingFirmwareIdentity,
         ));
     }
+    let controller = STARTUP_CONTROLLER
+        .get()
+        .and_then(|result| result.as_ref().ok());
+    let Some(controller) = controller else {
+        return record_unavailable_trampoline(id);
+    };
+    let local = runtime.cpu_local(id).ok_or(CpuFailureReason::Startup(
+        CpuStartupFailure::CpuLocalBinding,
+    ))?;
     runtime.begin_start(id).map_err(runtime_failure)?;
-    if let Err(error) = runtime.prepare_startup_resource(id) {
-        let reason = match error {
-            CpuStartupResourceError::PhysicalAllocation
-            | CpuStartupResourceError::VirtualMapping => {
-                CpuFailureReason::Startup(CpuStartupFailure::CpuLocalBinding)
-            }
-        };
-        let _ = runtime.startup_failed(id, reason.clone());
-        return Err(reason);
-    }
-    if let Err(reason) = controller.launch(id, slot.firmware.apic_id) {
-        let _ = runtime.startup_failed(id, reason.clone());
+    let resource = match runtime.prepare_startup_resource(id) {
+        Ok(resource) => resource,
+        Err(error) => {
+            let reason = match error {
+                CpuStartupResourceError::PhysicalAllocation
+                | CpuStartupResourceError::VirtualMapping => {
+                    CpuFailureReason::Startup(CpuStartupFailure::CpuLocalBinding)
+                }
+            };
+            record_startup_failure(runtime, id, reason.clone());
+            return Err(reason);
+        }
+    };
+    if slot.state == CpuSlotState::PresentOffline
+        && let Err(reason) = controller.launch(id, slot.firmware.apic_id)
+    {
+        record_startup_failure(runtime, id, reason.clone());
         return Err(reason);
     }
 
     crate::task::prepare_cpu_online(id);
-    runtime.startup_ready(id).map_err(runtime_failure)?;
+    resource.reset();
+    let acknowledgement = local.remote().online_acknowledgements();
+    let activation = match local.remote().send(super::CpuControlMessage::Start) {
+        Ok(()) => {
+            let ipi_failure =
+                super::send_ipi_to_apic(slot.firmware.apic_id, super::IpiKind::ExecutorWake)
+                    .err()
+                    .map(map_ipi_start_error);
+            wait_for_online_acknowledgement(local, resource, acknowledgement)
+                .or_else(|wait_failure| Err(ipi_failure.unwrap_or(wait_failure)))
+        }
+        Err(_) => Err(CpuFailureReason::Startup(
+            CpuStartupFailure::CpuLocalBinding,
+        )),
+    };
+    if let Err(reason) = activation {
+        crate::task::abort_cpu_online(id);
+        record_startup_failure(runtime, id, reason.clone());
+        return Err(reason);
+    }
+    runtime.startup_ready(id).unwrap_or_else(|error| {
+        panic!("CPU {id} online commit failed after AP acknowledgement: {error:?}")
+    });
     crate::task::publish_cpu_online(id);
-    let local = runtime.cpu_local(id).ok_or(CpuFailureReason::Startup(
-        CpuStartupFailure::CpuLocalBinding,
-    ))?;
-    local
-        .remote()
-        .send(super::CpuControlMessage::Start)
-        .map_err(|_| CpuFailureReason::Startup(CpuStartupFailure::CpuLocalBinding))?;
-    crate::cpu::send_ipi(id, super::IpiKind::ExecutorWake).map_err(map_ipi_start_error)?;
     Ok(())
+}
+
+fn record_startup_failure(runtime: &super::CpuRuntime, id: CpuId, reason: CpuFailureReason) {
+    runtime.startup_failed(id, reason).unwrap_or_else(|error| {
+        panic!("CPU {id} startup failure could not be committed: {error:?}")
+    });
+}
+
+fn wait_for_online_acknowledgement(
+    local: &super::CpuLocal,
+    resource: &CpuStartupResources,
+    acknowledgement: u64,
+) -> Result<(), CpuFailureReason> {
+    let start = crate::time::best_effort_time_nanos();
+    for _ in 0..AP_STARTUP_MAX_SPINS {
+        if local.remote().online_acknowledgements() != acknowledgement {
+            return Ok(());
+        }
+        if let Some(reason) = resource.signal().failure() {
+            return Err(reason);
+        }
+        if crate::time::best_effort_time_nanos().saturating_sub(start) >= AP_STARTUP_TIMEOUT_NS {
+            break;
+        }
+        core::hint::spin_loop();
+    }
+    Err(CpuFailureReason::StartupAcknowledgementTimedOut)
+}
+
+fn online_commit_observed(current: &super::CurrentCpu, id: CpuId) -> bool {
+    loop {
+        while let Some(message) = current.take_control() {
+            match message {
+                super::CpuControlMessage::Park => return false,
+                super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Start => {}
+            }
+        }
+        let Some(slot) = super::snapshot().slot(id).cloned() else {
+            return false;
+        };
+        match slot.state {
+            CpuSlotState::Online => return true,
+            CpuSlotState::Starting => core::hint::spin_loop(),
+            _ => return false,
+        }
+    }
 }
 
 fn map_ipi_start_error(error: super::CpuIpiError) -> CpuFailureReason {
@@ -578,12 +653,13 @@ fn ap_entry(id: CpuId) -> ! {
     crate::mm::cache::slab_cache::init_per_core_cache_for_cpu(id.as_usize());
     crate::mm::sync::tlb::enter_lazy_mode();
     crate::mm::numa::topology::apply_current_cpu_locality();
+    let current = super::CurrentCpu::acquire().unwrap_or_else(|| fail_stop_ap());
     local_apic.set_task_priority(0xe0);
     crate::interrupts::enable_interrupts();
     resource.publish(ApStartupSignal::ReadyParked);
+    current.acknowledge_parked();
     fence(Ordering::SeqCst);
 
-    let current = super::CurrentCpu::acquire().unwrap_or_else(|| fail_stop_ap());
     loop {
         while let Some(message) = current.take_control() {
             match message {
@@ -592,8 +668,31 @@ fn ap_entry(id: CpuId) -> ! {
                     local_apic.set_task_priority(0);
                     let _ = crate::mm::sync::tlb::exit_lazy_mode();
                     crate::mm::numa::topology::apply_current_cpu_locality();
+                    if crate::interrupts::prepare_current_cpu_runtime_timer().is_err() {
+                        resource.publish(ApStartupSignal::TimerFailed);
+                        crate::mm::sync::tlb::enter_lazy_mode();
+                        local_apic.set_task_priority(0xe0);
+                        crate::interrupts::enable_interrupts();
+                        continue;
+                    }
+                    resource.publish(ApStartupSignal::ReadyOnline);
+                    current.acknowledge_online();
+                    fence(Ordering::SeqCst);
                     crate::interrupts::enable_interrupts();
-                    crate::task::run_forever();
+                    if online_commit_observed(&current, id) {
+                        crate::task::run_until_parked();
+                    }
+                    crate::interrupts::disable_interrupts();
+                    if crate::interrupts::stop_current_cpu_runtime_timer().is_err() {
+                        resource.publish(ApStartupSignal::TimerFailed);
+                        fail_stop_ap();
+                    }
+                    crate::mm::sync::tlb::enter_lazy_mode();
+                    local_apic.set_task_priority(0xe0);
+                    resource.publish(ApStartupSignal::ReadyParked);
+                    current.acknowledge_parked();
+                    fence(Ordering::SeqCst);
+                    crate::interrupts::enable_interrupts();
                 }
                 super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
             }
