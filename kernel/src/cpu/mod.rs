@@ -5,6 +5,7 @@ mod runtime;
 mod set;
 mod startup;
 mod state;
+mod transition;
 
 pub use identity::{ApicId, CpuId, CpuIdOutOfRange, CpuRole, FirmwareCpuUid, MAX_POSSIBLE_CPUS};
 pub(crate) use ipi::{
@@ -21,8 +22,9 @@ pub(crate) use startup::{
     CpuStartupResourceError, CpuStartupResources, prepare_bootstrap, start_boot_cpus,
 };
 pub use state::{
-    CpuBlocker, CpuEjectCapability, CpuFailure, CpuFailurePhase, CpuFailureReason, CpuSlot,
-    CpuSlotState, CpuStartupFailure, CpuTopologyIssue, CpuTransitionError, FirmwareCpuIdentity,
-    FirmwareError, FirmwareErrorKind, PhysicalHotplugStatus,
+    CpuBlocker, CpuDrainFailure, CpuEjectCapability, CpuFailure, CpuFailurePhase, CpuFailureReason,
+    CpuSlot, CpuSlotState, CpuStartupFailure, CpuTopologyIssue, CpuTransitionError,
+    FirmwareCpuIdentity, FirmwareError, FirmwareErrorKind, PhysicalHotplugStatus,
 };
 pub(crate) use state::{CpuStateTransition, CpuStateTransitionError};
+pub use transition::{offline, online};

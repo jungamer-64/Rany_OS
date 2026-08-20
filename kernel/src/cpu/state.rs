@@ -62,6 +62,7 @@ pub enum CpuFailurePhase {
 pub enum CpuFailureReason {
     MissingRequiredFeature { feature: &'static str },
     Startup(CpuStartupFailure),
+    Drain(CpuDrainFailure),
     TscInconsistent,
     NumaInconsistent,
     StartupAcknowledgementTimedOut,
@@ -79,6 +80,12 @@ pub enum CpuStartupFailure {
     Timer,
     SlabCache,
     TlbState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuDrainFailure {
+    ControlQueueSaturated,
+    IpiDelivery,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,8 +192,16 @@ impl CpuSlot {
                 }),
                 None,
             ),
+            (CpuSlotState::Draining, CpuStateTransition::DrainFailed(reason)) => (
+                CpuSlotState::Draining,
+                Some(CpuFailure {
+                    phase: CpuFailurePhase::Drain,
+                    reason,
+                }),
+                None,
+            ),
             (CpuSlotState::Draining, CpuStateTransition::DrainComplete) => {
-                (CpuSlotState::Parked, None, None)
+                (CpuSlotState::Parked, self.last_failure.clone(), None)
             }
             (CpuSlotState::Parked, CpuStateTransition::BeginEject) => {
                 (CpuSlotState::Ejecting, None, None)
@@ -225,6 +240,7 @@ pub(crate) enum CpuStateTransition {
     StartupFailed(CpuFailureReason),
     BeginDrain,
     DrainAborted(CpuFailureReason),
+    DrainFailed(CpuFailureReason),
     DrainComplete,
     BeginEject,
     EjectComplete,
@@ -240,6 +256,7 @@ impl CpuStateTransition {
             Self::StartupFailed(_) => CpuStateTransitionKind::StartupFailed,
             Self::BeginDrain => CpuStateTransitionKind::BeginDrain,
             Self::DrainAborted(_) => CpuStateTransitionKind::DrainAborted,
+            Self::DrainFailed(_) => CpuStateTransitionKind::DrainFailed,
             Self::DrainComplete => CpuStateTransitionKind::DrainComplete,
             Self::BeginEject => CpuStateTransitionKind::BeginEject,
             Self::EjectComplete => CpuStateTransitionKind::EjectComplete,
@@ -256,6 +273,7 @@ pub(crate) enum CpuStateTransitionKind {
     StartupFailed,
     BeginDrain,
     DrainAborted,
+    DrainFailed,
     DrainComplete,
     BeginEject,
     EjectComplete,
@@ -274,6 +292,7 @@ pub(crate) enum CpuStateTransitionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuBlocker {
     PinnedTask { task_id: u64 },
+    ControlQueue,
     IrqRoute { vector: u8 },
     NetworkQueue { queue_id: u32 },
     DeferredWake,
@@ -285,15 +304,34 @@ pub enum CpuBlocker {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuTopologyIssue {
-    TooManyPossibleCpus { limit: usize },
-    DuplicateUid { uid: FirmwareCpuUid },
-    DuplicateApicId { apic_id: ApicId },
+    TooManyPossibleCpus {
+        limit: usize,
+    },
+    DuplicateUid {
+        uid: FirmwareCpuUid,
+    },
+    DuplicateApicId {
+        apic_id: ApicId,
+    },
     ConflictingFirmwareIdentity,
-    UnsupportedApicDestination { apic_id: ApicId },
+    UnsupportedApicDestination {
+        apic_id: ApicId,
+    },
+    InterruptDeliveryUnavailable {
+        apic_id: ApicId,
+    },
     TscInconsistent,
     NumaInconsistent,
-    MissingRequiredFeature { feature: &'static str },
-    CpuLocalAllocationFailed { id: CpuId },
+    MissingRequiredFeature {
+        feature: &'static str,
+    },
+    CpuLocalAllocationFailed {
+        id: CpuId,
+    },
+    CpuStartupUnavailable {
+        id: CpuId,
+        failure: CpuStartupFailure,
+    },
     RevisionExhausted,
 }
 
@@ -432,6 +470,30 @@ mod tests {
             Some(CpuFailure {
                 phase: CpuFailurePhase::Start,
                 reason: CpuFailureReason::Startup(CpuStartupFailure::Timer),
+            })
+        );
+    }
+
+    #[test]
+    fn late_park_acknowledgement_preserves_the_reported_drain_timeout() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupReady).unwrap();
+        slot.transition(CpuStateTransition::BeginDrain).unwrap();
+        slot.transition(CpuStateTransition::DrainFailed(
+            CpuFailureReason::DrainTimedOut,
+        ))
+        .unwrap();
+        slot.transition(CpuStateTransition::DrainComplete).unwrap();
+
+        assert_eq!(slot.state, CpuSlotState::Parked);
+        assert_eq!(
+            slot.last_failure,
+            Some(CpuFailure {
+                phase: CpuFailurePhase::Drain,
+                reason: CpuFailureReason::DrainTimedOut,
             })
         );
     }

@@ -434,30 +434,31 @@ pub fn scheduler_snapshot() -> Option<SchedulerSnapshot> {
 }
 
 pub(crate) fn prepare_cpu_offline(cpu: CpuId) -> Result<(), Arc<[CpuBlocker]>> {
-    match runtime() {
-        Ok(runtime) => runtime.remove_online_cpu(cpu),
-        Err(_) => Ok(()),
-    }
+    runtime()
+        .unwrap_or_else(|error| {
+            panic!("CPU offline requested without scheduler runtime: {error:?}")
+        })
+        .remove_online_cpu(cpu)
 }
 
 pub(crate) fn prepare_cpu_online(cpu: CpuId) {
-    if let Ok(runtime) = runtime() {
-        let snapshot = crate::cpu::snapshot();
-        runtime.prepare_online_cpu(cpu, &snapshot);
-    }
+    let snapshot = crate::cpu::snapshot();
+    runtime()
+        .unwrap_or_else(|error| panic!("CPU online requested without scheduler runtime: {error:?}"))
+        .prepare_online_cpu(cpu, &snapshot);
 }
 
 pub(crate) fn abort_cpu_online(cpu: CpuId) {
-    if let Ok(runtime) = runtime() {
-        runtime.abort_online_cpu(cpu);
-    }
+    runtime()
+        .unwrap_or_else(|error| panic!("CPU online abort lost scheduler runtime: {error:?}"))
+        .abort_online_cpu(cpu);
 }
 
 pub(crate) fn publish_cpu_online(cpu: CpuId) {
-    if let Ok(runtime) = runtime() {
-        let snapshot = crate::cpu::snapshot();
-        runtime.add_online_cpu(cpu, &snapshot);
-    }
+    let snapshot = crate::cpu::snapshot();
+    runtime()
+        .unwrap_or_else(|error| panic!("CPU online commit lost scheduler runtime: {error:?}"))
+        .add_online_cpu(cpu, &snapshot);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

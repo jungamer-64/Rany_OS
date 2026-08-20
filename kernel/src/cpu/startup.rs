@@ -334,6 +334,7 @@ pub(crate) enum CpuInitializationError {
     Trampoline(&'static str),
     Topology(CpuTopologyIssue),
     BootstrapBinding,
+    TransitionWorker(crate::task::SpawnError),
 }
 
 pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitializationError> {
@@ -348,6 +349,7 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
     super::CurrentCpu::bind(CpuId::BOOTSTRAP)
         .map_err(|_| CpuInitializationError::BootstrapBinding)?;
     crate::task::initialize_scheduler().map_err(|_| CpuInitializationError::BootstrapBinding)?;
+    super::transition::initialize().map_err(CpuInitializationError::TransitionWorker)?;
 
     STARTUP_CONTROLLER.call_once(|| CpuStartupController::new(boot_info, local_apic.mode()));
 
@@ -571,6 +573,46 @@ fn online_commit_observed(current: &super::CurrentCpu, id: CpuId) -> bool {
     }
 }
 
+fn wait_for_park_commit(current: &super::CurrentCpu, id: CpuId) {
+    loop {
+        while let Some(message) = current.take_control() {
+            match message {
+                super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
+                super::CpuControlMessage::Start => fail_stop_ap(),
+            }
+        }
+        let Some(slot) = super::snapshot().slot(id).cloned() else {
+            fail_stop_ap();
+        };
+        match slot.state {
+            CpuSlotState::Parked => return,
+            CpuSlotState::Draining => core::hint::spin_loop(),
+            _ => fail_stop_ap(),
+        }
+    }
+}
+
+fn run_online_lifecycle(
+    current: &super::CurrentCpu,
+    id: CpuId,
+    resource: &CpuStartupResources,
+    local_apic: &crate::drivers::apic::LocalApic,
+) {
+    crate::task::run_until_parked();
+    crate::interrupts::disable_interrupts();
+    if crate::interrupts::stop_current_cpu_runtime_timer().is_err() {
+        resource.publish(ApStartupSignal::TimerFailed);
+        fail_stop_ap();
+    }
+    crate::mm::sync::tlb::enter_lazy_mode();
+    local_apic.set_task_priority(0xe0);
+    resource.publish(ApStartupSignal::ReadyParked);
+    current.acknowledge_parked();
+    fence(Ordering::SeqCst);
+    crate::interrupts::enable_interrupts();
+    wait_for_park_commit(current, id);
+}
+
 fn map_ipi_start_error(error: super::CpuIpiError) -> CpuFailureReason {
     match error {
         super::CpuIpiError::LocalApic(error) => map_apic_start_error(error),
@@ -680,19 +722,20 @@ fn ap_entry(id: CpuId) -> ! {
                     fence(Ordering::SeqCst);
                     crate::interrupts::enable_interrupts();
                     if online_commit_observed(&current, id) {
-                        crate::task::run_until_parked();
+                        run_online_lifecycle(&current, id, resource, local_apic);
+                    } else {
+                        crate::interrupts::disable_interrupts();
+                        if crate::interrupts::stop_current_cpu_runtime_timer().is_err() {
+                            resource.publish(ApStartupSignal::TimerFailed);
+                            fail_stop_ap();
+                        }
+                        crate::mm::sync::tlb::enter_lazy_mode();
+                        local_apic.set_task_priority(0xe0);
+                        resource.publish(ApStartupSignal::ReadyParked);
+                        current.acknowledge_parked();
+                        fence(Ordering::SeqCst);
+                        crate::interrupts::enable_interrupts();
                     }
-                    crate::interrupts::disable_interrupts();
-                    if crate::interrupts::stop_current_cpu_runtime_timer().is_err() {
-                        resource.publish(ApStartupSignal::TimerFailed);
-                        fail_stop_ap();
-                    }
-                    crate::mm::sync::tlb::enter_lazy_mode();
-                    local_apic.set_task_priority(0xe0);
-                    resource.publish(ApStartupSignal::ReadyParked);
-                    current.acknowledge_parked();
-                    fence(Ordering::SeqCst);
-                    crate::interrupts::enable_interrupts();
                 }
                 super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
             }

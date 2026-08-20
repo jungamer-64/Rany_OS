@@ -378,6 +378,14 @@ impl CpuRuntime {
         self.transition(id, CpuStateTransition::DrainAborted(reason))
     }
 
+    pub(crate) fn drain_failed(
+        &self,
+        id: CpuId,
+        reason: CpuFailureReason,
+    ) -> Result<(), CpuRuntimeError> {
+        self.transition(id, CpuStateTransition::DrainFailed(reason))
+    }
+
     pub(crate) fn drain_complete(&self, id: CpuId) -> Result<(), CpuRuntimeError> {
         self.transition(id, CpuStateTransition::DrainComplete)
     }
