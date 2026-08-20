@@ -1,16 +1,20 @@
 #[cfg(feature = "qemu-test-export")]
+use alloc::boxed::Box;
+#[cfg(feature = "qemu-test-export")]
 use alloc::format;
 #[cfg(feature = "qemu-test-export")]
 use alloc::string::String;
 #[cfg(feature = "qemu-test-export")]
 use alloc::sync::Arc;
 #[cfg(feature = "qemu-test-export")]
+use core::future::Future;
+#[cfg(feature = "qemu-test-export")]
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 #[cfg(feature = "qemu-test-export")]
 use crate::fs::{FileMode, Inode, MemoryInode};
 #[cfg(feature = "qemu-test-export")]
-use crate::task::{self, InterruptSource, Task};
+use crate::task::{self, InterruptSource, TaskPlacement, TimeoutResult};
 
 #[cfg(feature = "qemu-test-export")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,15 +63,10 @@ type BootCase = fn() -> Result<(), BootCaseError>;
 #[cfg(feature = "qemu-test-export")]
 static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
     ("interrupts_enabled", case_interrupts_enabled),
-    ("smp_workers_online", case_smp_workers_online),
-    ("per_core_workers_running", case_per_core_workers_running),
+    ("cpu_topology_published", case_cpu_topology_published),
     (
-        "async_boot_stages_distributed",
-        case_async_boot_stages_distributed,
-    ),
-    (
-        "runtime_local_timers_enabled",
-        case_runtime_local_timers_enabled,
+        "scheduler_covers_online_cpus",
+        case_scheduler_covers_online_cpus,
     ),
     (
         "pit_irq0_masked_after_handoff",
@@ -78,12 +77,8 @@ static BOOT_RUNTIME_CASES: &[(&str, BootCase)] = &[
         case_apic_timers_armed_on_all_online_cpus,
     ),
     (
-        "per_cpu_local_ticks_progress",
-        case_per_cpu_local_ticks_progress,
-    ),
-    (
-        "cross_core_preemption_isolated",
-        case_cross_core_preemption_isolated,
+        "pinned_task_runs_on_online_cpu",
+        case_pinned_task_runs_on_online_cpu,
     ),
     ("uptime_ms_progresses", case_uptime_ms_progresses),
     ("tick_progresses", case_tick_progresses),
@@ -189,60 +184,27 @@ fn case_interrupts_enabled() -> Result<(), BootCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_smp_workers_online() -> Result<(), BootCaseError> {
-    let cpu_count = crate::cpu::count() as usize;
-    if cpu_count <= 1 {
-        return Err(BootCaseError::blocked(
-            "smp_workers_online requires a multi-core QEMU configuration",
-        ));
-    }
-
-    let per_cpu_count = crate::cpu::count();
-    if per_cpu_count != cpu_count {
-        return Err(BootCaseError::failed(format!(
-            "per_cpu active count mismatch: expected={} actual={}",
-            cpu_count, per_cpu_count
-        )));
-    }
-
-    let executor_cpu_count = task::executor_slot_count();
-    if executor_cpu_count != cpu_count {
-        return Err(BootCaseError::failed(format!(
-            "executor active count mismatch: expected={} actual={}",
-            cpu_count, executor_cpu_count
-        )));
-    }
-
-    if !crate::cpu::workers_released() {
+fn case_cpu_topology_published() -> Result<(), BootCaseError> {
+    let snapshot = crate::cpu::snapshot();
+    if !snapshot.possible().contains(crate::cpu::CpuId::BOOTSTRAP)
+        || !snapshot.present().contains(crate::cpu::CpuId::BOOTSTRAP)
+        || !snapshot.online().contains(crate::cpu::CpuId::BOOTSTRAP)
+    {
         return Err(BootCaseError::failed(
-            "runtime workers were not released before boot runtime checks",
+            "bootstrap CPU is not the permanent possible/present/online anchor",
         ));
     }
 
-    Ok(())
-}
-
-#[cfg(feature = "qemu-test-export")]
-fn case_per_core_workers_running() -> Result<(), BootCaseError> {
-    let cpu_count = crate::cpu::count() as usize;
-    if cpu_count <= 1 {
-        return Err(BootCaseError::blocked(
-            "per_core_workers_running requires a multi-core QEMU configuration",
-        ));
-    }
-
-    for cpu_id in 0..cpu_count {
-        let Some(stage) = crate::cpu::stage_name(cpu_id) else {
+    for slot in snapshot.slots() {
+        let possible = snapshot.possible().contains(slot.id);
+        let present = snapshot.present().contains(slot.id);
+        let online = snapshot.online().contains(slot.id);
+        if !possible || present != slot.state.is_present() || online != slot.state.is_schedulable()
+        {
             return Err(BootCaseError::failed(format!(
-                "runtime worker stage unavailable for cpu{}",
-                cpu_id
-            )));
-        };
-
-        if !str_eq(stage, "executor_running") {
-            return Err(BootCaseError::failed(format!(
-                "cpu{} did not reach per-core executor run stage: stage={}",
-                cpu_id, stage
+                "CPU snapshot projections disagree for cpu={} state={}",
+                slot.id,
+                slot.state.name()
             )));
         }
     }
@@ -251,59 +213,27 @@ fn case_per_core_workers_running() -> Result<(), BootCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_async_boot_stages_distributed() -> Result<(), BootCaseError> {
-    let cpu_count = crate::cpu::count() as usize;
-    if cpu_count <= 1 {
-        return Err(BootCaseError::blocked(
-            "async_boot_stages_distributed requires a multi-core QEMU configuration",
-        ));
-    }
+fn case_scheduler_covers_online_cpus() -> Result<(), BootCaseError> {
+    let topology = crate::cpu::snapshot();
+    let scheduler = task::scheduler_snapshot()
+        .ok_or_else(|| BootCaseError::failed("task scheduler is not initialized"))?;
 
-    let snapshot = crate::async_boot_stage_runtime_snapshot();
-    if snapshot.platform.started_cpu != Some(0) {
+    if scheduler.run_queues.len() != topology.online().len() {
         return Err(BootCaseError::failed(format!(
-            "platform stage did not start on BSP: snapshot={:?}",
-            snapshot
+            "scheduler queue count does not match sparse online set: queues={} online={}",
+            scheduler.run_queues.len(),
+            topology.online().len()
         )));
     }
-
-    let non_bsp_stage_seen = [
-        snapshot.graphics.started_cpu,
-        snapshot.core_services.started_cpu,
-        snapshot.driver.started_cpu,
-        snapshot.post_driver.started_cpu,
-        snapshot.finalizer.started_cpu,
-    ]
-    .into_iter()
-    .flatten()
-    .any(|cpu_id| cpu_id != 0);
-    if !non_bsp_stage_seen {
-        return Err(BootCaseError::failed(format!(
-            "no async boot stage started on an AP: snapshot={:?}",
-            snapshot
-        )));
+    for cpu in topology.online() {
+        if !scheduler.run_queues.iter().any(|queue| queue.cpu == cpu) {
+            return Err(BootCaseError::failed(format!(
+                "scheduler has no run queue for online cpu={cpu}"
+            )));
+        }
     }
 
-    if snapshot.finalizer.started_cpu != Some(0) && snapshot.finalizer.started_cpu.is_some() {
-        return Ok(());
-    }
-
-    Err(BootCaseError::failed(format!(
-        "finalizer stage did not start on an AP: snapshot={:?}",
-        snapshot
-    )))
-}
-
-#[cfg(feature = "qemu-test-export")]
-fn case_runtime_local_timers_enabled() -> Result<(), BootCaseError> {
-    let snapshot = crate::interrupts::runtime_timer_snapshot();
-    if snapshot.enabled {
-        Ok(())
-    } else {
-        Err(BootCaseError::failed(
-            "runtime handoff did not enable per-core LAPIC timers",
-        ))
-    }
+    Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -323,156 +253,62 @@ fn case_apic_timers_armed_on_all_online_cpus() -> Result<(), BootCaseError> {
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
-        let snapshot = crate::interrupts::runtime_timer_snapshot();
-        if snapshot.enabled {
-            let mut all_armed = true;
-            let mut cpu_id = 0usize;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while cpu_id < snapshot.cpu_count {
-                if !snapshot.armed[cpu_id] {
-                    all_armed = false;
-                    break;
-                }
-                cpu_id += 1;
-            }
-            if all_armed {
-                return Ok(());
-            }
-        }
-        core::hint::spin_loop();
-    }
-
-    let snapshot = crate::interrupts::runtime_timer_snapshot();
-    Err(BootCaseError::failed(format!(
-        "runtime LAPIC timers not armed on all CPUs: enabled={} cpu_count={} armed={:?}",
-        snapshot.enabled,
-        snapshot.cpu_count,
-        &snapshot.armed[..snapshot.cpu_count]
-    )))
-}
-
-#[cfg(feature = "qemu-test-export")]
-fn case_per_cpu_local_ticks_progress() -> Result<(), BootCaseError> {
-    let before = task::per_cpu_preemption_snapshot();
-    let deadline_ns = crate::time::precise_time_nanos().saturating_add(250 * 1_000_000);
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::time::precise_time_nanos() < deadline_ns {
-        let after = task::per_cpu_preemption_snapshot();
-        let mut all_progressed = true;
-        let mut cpu_id = 0usize;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while cpu_id < after.cpu_count {
-            if after.local_ticks[cpu_id] <= before.local_ticks[cpu_id] {
-                all_progressed = false;
-                break;
-            }
-            cpu_id += 1;
-        }
-        if all_progressed {
+        let snapshot = crate::cpu::snapshot();
+        if snapshot.online().iter().all(|cpu| {
+            crate::cpu::runtime()
+                .cpu_local(cpu)
+                .is_some_and(|local| local.remote().runtime_timer_armed())
+        }) {
             return Ok(());
         }
         core::hint::spin_loop();
     }
 
-    let after = task::per_cpu_preemption_snapshot();
+    let snapshot = crate::cpu::snapshot();
+    let unarmed = snapshot
+        .online()
+        .iter()
+        .filter(|&cpu| {
+            crate::cpu::runtime()
+                .cpu_local(cpu)
+                .is_none_or(|local| !local.remote().runtime_timer_armed())
+        })
+        .map(crate::cpu::CpuId::as_u16)
+        .collect::<alloc::vec::Vec<_>>();
     Err(BootCaseError::failed(format!(
-        "per-cpu local preemption ticks did not advance: before={:?} after={:?}",
-        &before.local_ticks[..before.cpu_count],
-        &after.local_ticks[..after.cpu_count]
+        "runtime LAPIC timers are not armed for online CPUs: {unarmed:?}"
     )))
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_cross_core_preemption_isolated() -> Result<(), BootCaseError> {
-    let cpu_count = crate::cpu::count() as usize;
-    if cpu_count < 3 {
-        return Err(BootCaseError::blocked(
-            "cross_core_preemption_isolated requires >=3 CPUs so the runtime test runner stays off cpu0/cpu1",
-        ));
-    }
-
-    let timer_snapshot = crate::interrupts::runtime_timer_snapshot();
-    if !timer_snapshot.enabled {
-        return Err(BootCaseError::failed(
-            "runtime LAPIC timers are not enabled for cross-core isolation",
-        ));
-    }
-
-    let before = task::per_cpu_preemption_snapshot();
-    let heartbeat = Arc::new(AtomicU64::new(0));
-    let keep_running = Arc::new(AtomicBool::new(true));
-
-    task::spawn_on_cpu_for_test(0, {
-        let heartbeat = heartbeat.clone();
-        let keep_running = keep_running.clone();
+fn case_pinned_task_runs_on_online_cpu() -> Result<(), BootCaseError> {
+    let target = peer_online_cpu()?;
+    let observed_cpu = Arc::new(AtomicU64::new(u64::MAX));
+    let observed_cpu_task = observed_cpu.clone();
+    task::spawn(
         async move {
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while keep_running.load(Ordering::SeqCst) {
-                heartbeat.fetch_add(1, Ordering::SeqCst);
-                task::yield_now().await;
-            }
-        }
-    });
+            let observed = crate::cpu::CurrentCpu::acquire()
+                .map(|current| u64::from(current.id().as_u16()))
+                .unwrap_or(u64::MAX - 1);
+            observed_cpu_task.store(observed, Ordering::Release);
+        },
+        TaskPlacement::Pinned(target),
+    )
+    .map_err(|error| {
+        BootCaseError::failed(format!(
+            "failed to spawn pinned production task on cpu={target}: {error:?}"
+        ))
+    })?;
 
-    task::spawn_on_cpu_for_test(1, async move {
-        let deadline_ns = crate::time::precise_time_nanos().saturating_add(150 * 1_000_000);
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while crate::time::precise_time_nanos() < deadline_ns {
-            let chunk_deadline = crate::time::precise_time_nanos().saturating_add(15 * 1_000_000);
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while crate::time::precise_time_nanos() < chunk_deadline {
-                task::yield_point_with_quota_check();
-                core::hint::spin_loop();
-            }
-            task::yield_now().await;
-        }
-    });
-
-    let heartbeat_start = heartbeat.load(Ordering::SeqCst);
-    let deadline_ns = crate::time::precise_time_nanos().saturating_add(500 * 1_000_000);
-    let mut forced_seen = false;
-    let mut heartbeat_after_forced_start = None;
-    let mut heartbeat_progress_after_forced = false;
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::time::precise_time_nanos() < deadline_ns {
-        let snapshot = task::per_cpu_preemption_snapshot();
-        forced_seen |= snapshot.forced_preemptions[1] > before.forced_preemptions[1];
-
-        let heartbeat_now = heartbeat.load(Ordering::SeqCst);
-        if forced_seen {
-            if let Some(start) = heartbeat_after_forced_start {
-                if heartbeat_now > start {
-                    heartbeat_progress_after_forced = true;
-                    break;
-                }
-            } else {
-                heartbeat_after_forced_start = Some(heartbeat_now);
-            }
-        } else if heartbeat_now <= heartbeat_start {
-            core::hint::spin_loop();
-            continue;
-        }
-
-        core::hint::spin_loop();
-    }
-
-    keep_running.store(false, Ordering::SeqCst);
-
-    if !forced_seen {
-        let after = task::per_cpu_preemption_snapshot();
+    if !wait_for_atomic_change(&observed_cpu, u64::MAX, 500) {
         return Err(BootCaseError::failed(format!(
-            "cpu1 did not record forced preemption: before={} after={}",
-            before.forced_preemptions[1], after.forced_preemptions[1]
+            "pinned production task did not run on cpu={target}"
         )));
     }
-
-    if !heartbeat_progress_after_forced {
+    let observed = observed_cpu.load(Ordering::Acquire);
+    if observed != u64::from(target.as_u16()) {
         return Err(BootCaseError::failed(format!(
-            "cpu0 heartbeat stopped while cpu1 was being preempted: heartbeat_start={} heartbeat_end={}",
-            heartbeat_start,
-            heartbeat.load(Ordering::SeqCst)
+            "pinned production task ran on cpu={observed}, expected cpu={target}"
         )));
     }
 
@@ -531,51 +367,76 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
-    let mut executor = task::TestExecutor::new();
+    let target = peer_online_cpu()?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_at_tick = Arc::new(AtomicU64::new(0));
     let completed_clone = completed.clone();
     let completed_at_tick_clone = completed_at_tick.clone();
     let start_tick = task::current_tick();
 
-    executor.spawn(Task::new(async move {
-        task::sleep_ms(2).await;
-        completed_at_tick_clone.store(task::current_tick(), Ordering::SeqCst);
-        completed_clone.store(true, Ordering::SeqCst);
-    }));
-    executor.drive_once_for_test();
+    task::spawn(
+        async move {
+            task::sleep_ms(2).await;
+            completed_at_tick_clone.store(task::current_tick(), Ordering::Release);
+            completed_clone.store(true, Ordering::Release);
+        },
+        TaskPlacement::Pinned(target),
+    )
+    .map_err(|error| {
+        BootCaseError::failed(format!(
+            "failed to spawn sleep task on cpu={target}: {error:?}"
+        ))
+    })?;
 
-    let raw_before = crate::interrupts::get_timer_ticks();
-    match drive_executor_until(&mut executor, &completed, raw_before, 500) {
-        PumpResult::Completed => {
-            let completed_tick = completed_at_tick.load(Ordering::SeqCst);
-            if completed_tick < start_tick.saturating_add(2) {
-                return Err(BootCaseError::failed(format!(
-                    "sleep_ms resumed too early: start_tick={} completed_tick={}",
-                    start_tick, completed_tick
-                )));
-            }
-            Ok(())
-        }
-        PumpResult::NoRawTickProgress => Err(BootCaseError::blocked(
-            "raw timer ticks did not advance during sleep_ms case",
-        )),
-        PumpResult::TimedOut => Err(BootCaseError::failed(
-            "sleep_ms future did not resume on the phase-2 executor path",
-        )),
+    if !wait_for_atomic_bool(&completed, 500) {
+        return Err(BootCaseError::failed(format!(
+            "sleep_ms task did not resume on cpu={target}"
+        )));
     }
+    let completed_tick = completed_at_tick.load(Ordering::Acquire);
+    if completed_tick < start_tick.saturating_add(2) {
+        return Err(BootCaseError::failed(format!(
+            "sleep_ms resumed too early: start_tick={start_tick} completed_tick={completed_tick}"
+        )));
+    }
+
+    Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]
 fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
-    let mut executor = task::TestExecutor::new();
+    let target = peer_online_cpu()?;
+    let armed = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let armed_clone = armed.clone();
     let completed_clone = completed.clone();
-    executor.spawn(Task::new(async move {
-        task::wait_for_interrupt(InterruptSource::Timer).await;
-        completed_clone.store(true, Ordering::SeqCst);
-    }));
-    executor.drive_once_for_test();
+    let timed_out_clone = timed_out.clone();
+    task::spawn(
+        async move {
+            match task::with_timeout(
+                wait_for_registered_interrupt(InterruptSource::Timer, armed_clone),
+                500,
+            )
+            .await
+            {
+                TimeoutResult::Completed(()) => completed_clone.store(true, Ordering::Release),
+                TimeoutResult::TimedOut => timed_out_clone.store(true, Ordering::Release),
+            }
+        },
+        TaskPlacement::Pinned(target),
+    )
+    .map_err(|error| {
+        BootCaseError::failed(format!(
+            "failed to spawn timer-wait task on cpu={target}: {error:?}"
+        ))
+    })?;
+
+    if !wait_for_atomic_bool(&armed, 250) {
+        return Err(BootCaseError::failed(format!(
+            "timer-wait task was not polled on cpu={target}"
+        )));
+    }
 
     let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
     let raw_before = crate::interrupts::get_timer_ticks();
@@ -591,43 +452,26 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
             "timer service tick did not advance on the raw IRQ path",
         ));
     }
-    let stats_after_irq = task::interrupt_waker::interrupt_waker_registry().stats();
-    if stats_after_irq.interrupt_count != stats_before.interrupt_count
-        || stats_after_irq.wake_count != stats_before.wake_count
-    {
+    if !wait_for_atomic_bool(&completed, 500) {
+        if timed_out.load(Ordering::Acquire) {
+            return Err(BootCaseError::failed(
+                "timer interrupt wait timed out on the production scheduler",
+            ));
+        }
         return Err(BootCaseError::failed(
-            "timer interrupt waker stats changed before executor-side drain",
-        ));
-    }
-    if completed.load(Ordering::SeqCst) {
-        return Err(BootCaseError::failed(
-            "timer wait future completed before executor-side drain",
+            "timer interrupt wait did not complete on the production scheduler",
         ));
     }
 
-    executor.drive_once_for_test();
-
-    let stats_after_drain = task::interrupt_waker::interrupt_waker_registry().stats();
-    if stats_after_drain.interrupt_count <= stats_before.interrupt_count {
+    let stats_after = task::interrupt_waker::interrupt_waker_registry().stats();
+    if stats_after.interrupt_count <= stats_before.interrupt_count {
         return Err(BootCaseError::failed(
             "timer wake was not bridged into the interrupt waker registry",
         ));
     }
-    if stats_after_drain.wake_count <= stats_before.wake_count {
+    if stats_after.wake_count <= stats_before.wake_count {
         return Err(BootCaseError::failed(
             "timer wake was not drained outside ISR context",
-        ));
-    }
-    if completed.load(Ordering::SeqCst) {
-        return Err(BootCaseError::failed(
-            "timer wait future completed before the requeued task was re-polled",
-        ));
-    }
-
-    executor.drive_once_for_test();
-    if !completed.load(Ordering::SeqCst) {
-        return Err(BootCaseError::failed(
-            "timer wait future did not complete after deferred executor wake",
         ));
     }
 
@@ -694,14 +538,34 @@ fn case_synthetic_interrupt_deferred_path(
     source: InterruptSource,
     label: &str,
 ) -> Result<(), BootCaseError> {
-    let mut executor = task::TestExecutor::new();
+    let target = peer_online_cpu()?;
+    let armed = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let armed_clone = armed.clone();
     let completed_clone = completed.clone();
-    executor.spawn(Task::new(async move {
-        task::wait_for_interrupt(source).await;
-        completed_clone.store(true, Ordering::SeqCst);
-    }));
-    executor.drive_once_for_test();
+    let timed_out_clone = timed_out.clone();
+    task::spawn(
+        async move {
+            match task::with_timeout(wait_for_registered_interrupt(source, armed_clone), 500).await
+            {
+                TimeoutResult::Completed(()) => completed_clone.store(true, Ordering::Release),
+                TimeoutResult::TimedOut => timed_out_clone.store(true, Ordering::Release),
+            }
+        },
+        TaskPlacement::Pinned(target),
+    )
+    .map_err(|error| {
+        BootCaseError::failed(format!(
+            "failed to spawn {label} wait task on cpu={target}: {error:?}"
+        ))
+    })?;
+
+    if !wait_for_atomic_bool(&armed, 250) {
+        return Err(BootCaseError::failed(format!(
+            "{label} wait task was not polled on cpu={target}"
+        )));
+    }
 
     let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
     task::wake_from_interrupt(source);
@@ -716,27 +580,19 @@ fn case_synthetic_interrupt_deferred_path(
             "{label} interrupt woke a task before executor-side drain"
         )));
     }
-    if completed.load(Ordering::SeqCst) {
-        return Err(BootCaseError::failed(format!(
-            "{label} wait future completed before executor-side drain"
-        )));
-    }
-
-    executor.drive_once_for_test();
+    task::interrupt_waker::process_interrupt_events();
     let stats_after_drain = task::interrupt_waker::interrupt_waker_registry().stats();
     if stats_after_drain.wake_count <= stats_before.wake_count {
         return Err(BootCaseError::failed(format!(
             "{label} deferred wake did not drain on executor poll"
         )));
     }
-    if completed.load(Ordering::SeqCst) {
-        return Err(BootCaseError::failed(format!(
-            "{label} wait future completed before the requeued task was re-polled"
-        )));
-    }
-
-    executor.drive_once_for_test();
-    if !completed.load(Ordering::SeqCst) {
+    if !wait_for_atomic_bool(&completed, 500) {
+        if timed_out.load(Ordering::Acquire) {
+            return Err(BootCaseError::failed(format!(
+                "{label} interrupt wait timed out on the production scheduler"
+            )));
+        }
         return Err(BootCaseError::failed(format!(
             "{label} wait future did not complete after deferred wake"
         )));
@@ -746,43 +602,60 @@ fn case_synthetic_interrupt_deferred_path(
 }
 
 #[cfg(feature = "qemu-test-export")]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PumpResult {
-    Completed,
-    NoRawTickProgress,
-    TimedOut,
+async fn wait_for_registered_interrupt(source: InterruptSource, armed: Arc<AtomicBool>) {
+    let mut wait = Box::pin(task::wait_for_interrupt(source));
+    core::future::poll_fn(move |context| {
+        let poll = wait.as_mut().poll(context);
+        if poll.is_pending() {
+            armed.store(true, Ordering::Release);
+        }
+        poll
+    })
+    .await;
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn drive_executor_until(
-    executor: &mut task::TestExecutor,
-    completed: &AtomicBool,
-    raw_tick_start: u64,
-    timeout_ms: u64,
-) -> PumpResult {
+fn peer_online_cpu() -> Result<crate::cpu::CpuId, BootCaseError> {
+    let current = crate::cpu::CurrentCpu::acquire()
+        .ok_or_else(|| BootCaseError::failed("runtime test task has no CurrentCpu binding"))?
+        .id();
+    crate::cpu::snapshot()
+        .online()
+        .iter()
+        .find(|&cpu| cpu != current)
+        .ok_or_else(|| {
+            BootCaseError::blocked("production scheduler task cases require two online CPUs")
+        })
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn wait_for_atomic_bool(value: &AtomicBool, timeout_ms: u64) -> bool {
     let deadline_ns = crate::time::precise_time_nanos().saturating_add(timeout_ms * 1_000_000);
-    let mut saw_raw_tick = false;
 
     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
     while crate::time::precise_time_nanos() < deadline_ns {
-        if completed.load(Ordering::SeqCst) {
-            return PumpResult::Completed;
+        if value.load(Ordering::Acquire) {
+            return true;
         }
-
-        executor.drive_once_for_test();
-        if completed.load(Ordering::SeqCst) {
-            return PumpResult::Completed;
-        }
-
-        saw_raw_tick |= crate::interrupts::get_timer_ticks() > raw_tick_start;
         core::hint::spin_loop();
     }
 
-    if saw_raw_tick {
-        PumpResult::TimedOut
-    } else {
-        PumpResult::NoRawTickProgress
+    value.load(Ordering::Acquire)
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn wait_for_atomic_change(value: &AtomicU64, initial: u64, timeout_ms: u64) -> bool {
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(timeout_ms * 1_000_000);
+
+    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+    while crate::time::precise_time_nanos() < deadline_ns {
+        if value.load(Ordering::Acquire) != initial {
+            return true;
+        }
+        core::hint::spin_loop();
     }
+
+    value.load(Ordering::Acquire) != initial
 }
 
 #[cfg(feature = "qemu-test-export")]
