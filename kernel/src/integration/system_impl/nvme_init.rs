@@ -34,7 +34,10 @@ impl SystemIntegration {
                     x86_64::PhysAddr::new_truncate(bar0_phys),
                 )
                 .as_u64();
-                let num_cores = crate::cpu::count() as u32;
+                let Ok(num_cores) = u32::try_from(crate::cpu::snapshot().online().len()) else {
+                    self.log("    online CPU topology cannot be represented by the NVMe ABI");
+                    continue;
+                };
                 let packed_device_id = dev.packed_locator();
 
                 let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(

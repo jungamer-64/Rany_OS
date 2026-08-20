@@ -124,15 +124,11 @@ impl HeapRegistry {
 
     /// Default initialization: choose shard count based on CPU count
     pub fn default() -> Self {
-        // When running unit tests under `cargo test --lib`, the full
-        // `smp` module may not be available; use a small default CPU
-        // count to make shard-sizing deterministic in tests.
         #[cfg(not(any(test, feature = "bench")))]
-        let cpus = crate::cpu::count() as usize;
+        let cpus = crate::cpu::snapshot().online().len();
 
         #[cfg(any(test, feature = "bench"))]
         let cpus = 4usize;
-        let cpus = if cpus == 0 { 1 } else { cpus };
         // 4 shards per CPU (rounded by next_power_of_two) is a practical default
         let shards = core::cmp::min(
             core::cmp::max(

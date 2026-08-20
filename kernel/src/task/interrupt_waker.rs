@@ -62,16 +62,12 @@ impl InterruptSource {
 
 /// 最大インデックスサイズ（配列サイズ）
 const MAX_INTERRUPT_INDICES: usize = 2048;
-const INTERRUPT_EVENT_QUEUE_SIZE: usize = 1024;
-const INTERRUPT_EVENT_QUEUE_BACKING_SIZE: usize = INTERRUPT_EVENT_QUEUE_SIZE + 1;
-const MAX_CPUS: usize = crate::per_cpu::MAX_CPUS;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
 // ============================================================================
 
 pub use crate::sync::AtomicWaker;
-use crate::sync::MpscRingBuffer;
 
 // ============================================================================
 // Interrupt Waker Registry
@@ -86,8 +82,6 @@ pub struct InterruptWakerRegistry {
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
     wake_count: AtomicU64,
-    /// ISRから投入される遅延Wakeイベントキュー（CPUローカル）
-    event_queues: [InterruptEventQueue; MAX_CPUS],
 }
 
 impl InterruptWakerRegistry {
@@ -97,15 +91,7 @@ impl InterruptWakerRegistry {
             wakers: spin::Once::new(),
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
-            event_queues: [const { InterruptEventQueue::new() }; MAX_CPUS],
         }
-    }
-
-    #[inline]
-    fn current_cpu_index(&self) -> usize {
-        crate::cpu::try_current_id()
-            .unwrap_or_else(|| crate::cpu::current_id())
-            .min(MAX_CPUS.saturating_sub(1))
     }
 
     /// Waker配列を取得（未初期化なら初期化）
@@ -144,8 +130,9 @@ impl InterruptWakerRegistry {
         // spin::Onceが初期化済みかチェック（初期化前はwake不可）
         if self.wakers.get().is_some() {
             // +1 して 0 を空スロットに使う
-            let cpu_idx = self.current_cpu_index();
-            let _ = self.event_queues[cpu_idx].push_once(idx + 1);
+            if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+                let _queued = current.defer_interrupt_wake(idx + 1);
+            }
         }
     }
 
@@ -155,11 +142,12 @@ impl InterruptWakerRegistry {
             .fetch_add(sources.len() as u64, Ordering::Relaxed);
 
         if self.wakers.get().is_some() {
-            let cpu_idx = self.current_cpu_index();
-            for source in sources {
-                let idx = source.to_index();
-                if idx < MAX_INTERRUPT_INDICES {
-                    let _ = self.event_queues[cpu_idx].push_once(idx + 1);
+            if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+                for source in sources {
+                    let idx = source.to_index();
+                    if idx < MAX_INTERRUPT_INDICES {
+                        let _queued = current.defer_interrupt_wake(idx + 1);
+                    }
                 }
             }
         }
@@ -170,10 +158,11 @@ impl InterruptWakerRegistry {
         let Some(wakers) = self.wakers.get() else {
             return;
         };
-        let cpu_idx = self.current_cpu_index();
-        let queue = &self.event_queues[cpu_idx];
+        let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+            return;
+        };
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(encoded_idx) = queue.pop() {
+        while let Some(encoded_idx) = current.take_interrupt_wake() {
             if encoded_idx == 0 {
                 continue;
             }
@@ -188,7 +177,16 @@ impl InterruptWakerRegistry {
 
     /// 保留中のイベント数を取得
     pub fn pending_event_count(&self) -> usize {
-        self.event_queues.iter().map(InterruptEventQueue::len).sum()
+        let Some(runtime) = crate::cpu::try_runtime() else {
+            return 0;
+        };
+        let snapshot = runtime.snapshot();
+        snapshot
+            .present()
+            .iter()
+            .filter_map(|cpu| runtime.cpu_local(cpu))
+            .map(|local| local.remote().pending_interrupt_wakes())
+            .sum()
     }
 
     /// 割り込みソースの登録を解除
@@ -232,34 +230,6 @@ impl InterruptWakerRegistry {
             wake_count: self.wake_count.load(Ordering::Relaxed),
             registered_sources: registered,
         }
-    }
-}
-
-#[repr(C, align(64))]
-struct InterruptEventQueue {
-    buffer: MpscRingBuffer<usize, INTERRUPT_EVENT_QUEUE_BACKING_SIZE>,
-}
-
-impl InterruptEventQueue {
-    const fn new() -> Self {
-        Self {
-            buffer: MpscRingBuffer::new(),
-        }
-    }
-
-    #[inline]
-    fn push_once(&self, value: usize) -> bool {
-        self.buffer.try_push(value).is_ok()
-    }
-
-    #[inline]
-    fn pop(&self) -> Option<usize> {
-        self.buffer.pop()
-    }
-
-    #[inline]
-    fn len(&self) -> usize {
-        self.buffer.len()
     }
 }
 

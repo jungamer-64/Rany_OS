@@ -442,6 +442,10 @@ pub fn run_forever() -> ! {
     let processes_rcu_callbacks =
         CurrentCpu::acquire().is_some_and(|current| current.id() == CpuId::BOOTSTRAP);
     loop {
+        crate::sync::process_deferred_wakes();
+        crate::sync::process_deferred_waker_queue_wakes();
+        super::interrupt_waker::process_interrupt_events();
+        crate::io::io_scheduler::process_deferred_completions_local();
         let made_progress = runtime().is_ok_and(TaskRuntime::poll_one);
         crate::mm::sync::rcu::rcu_note_context_switch();
         if processes_rcu_callbacks {

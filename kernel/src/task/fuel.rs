@@ -14,11 +14,6 @@
 //! - **Consumption**: The task consumes fuel during loops or heavy operations.
 //! - **Yielding**: When fuel is exhausted, the task yields (returns `Poll::Pending`).
 //!
-use core::sync::atomic::{AtomicU64, Ordering};
-
-/// Maximum number of CPUs supported
-const MAX_CPUS: usize = 64;
-
 /// Global fuel configuration
 pub struct FuelConfig {
     /// Default fuel per task slice
@@ -31,25 +26,6 @@ impl FuelConfig {
     };
 }
 
-/// Per-CPU fuel storage
-/// Uses atomic operations for safe access from any context.
-/// Index by current CPU ID.
-static CURRENT_FUEL: [AtomicU64; MAX_CPUS] = {
-    const INIT: AtomicU64 = AtomicU64::new(0);
-    [INIT; MAX_CPUS]
-};
-
-/// Get current CPU index safely (clamped to valid range)
-#[inline]
-fn cpu_index() -> usize {
-    let cpu_id = crate::cpu::current_id();
-    if cpu_id < MAX_CPUS {
-        cpu_id
-    } else {
-        0 // Fallback to CPU 0 if out of range
-    }
-}
-
 /// Fuel manager
 pub struct Fuel;
 
@@ -57,39 +33,33 @@ impl Fuel {
     /// Refill the current task's fuel
     #[inline]
     pub fn refill(amount: u64) {
-        CURRENT_FUEL[cpu_index()].store(amount, Ordering::Relaxed);
+        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            current.refill_task_fuel(amount);
+        }
     }
 
     /// Consume fuel. Returns false if exhausted (should yield).
     #[inline]
     pub fn consume(amount: u64) -> bool {
-        let idx = cpu_index();
-        let current = CURRENT_FUEL[idx].load(Ordering::Relaxed);
-        if let Some(remaining) = current.checked_sub(amount) {
-            CURRENT_FUEL[idx].store(remaining, Ordering::Relaxed);
-            true
-        } else {
-            CURRENT_FUEL[idx].store(0, Ordering::Relaxed);
-            false
-        }
+        crate::cpu::CurrentCpu::acquire().is_none_or(|current| current.consume_task_fuel(amount))
     }
 
     /// Check remaining fuel
     #[inline]
     pub fn remaining() -> u64 {
-        CURRENT_FUEL[cpu_index()].load(Ordering::Relaxed)
+        crate::cpu::CurrentCpu::acquire().map_or(0, |current| current.task_fuel())
     }
 
     /// Check if fuel management is active (fuel has been set)
     #[inline]
     pub fn is_active() -> bool {
-        CURRENT_FUEL[cpu_index()].load(Ordering::Relaxed) > 0
+        Self::remaining() > 0
     }
 
     /// Force exhaustion (e.g. on yield)
     #[inline]
     pub fn exhaust() {
-        CURRENT_FUEL[cpu_index()].store(0, Ordering::Relaxed);
+        Self::refill(0);
     }
 }
 

@@ -1,5 +1,5 @@
 use super::*;
-use crate::sync::{MpscRingBuffer, PoisonRwLock};
+use crate::sync::PoisonRwLock;
 
 mod coordinator_helpers;
 pub use coordinator_helpers::*;
@@ -26,127 +26,35 @@ impl Drop for IoFuture {
 // Deferred I/O Completions (ISR-safe queue)
 // ============================================================================
 
-pub(crate) const IO_COMPLETION_QUEUE_SIZE: usize = 256;
-pub(crate) const IO_COMPLETION_QUEUE_BACKING_SIZE: usize = IO_COMPLETION_QUEUE_SIZE + 1;
 pub(crate) const IO_RESULT_ERROR_FLAG: u64 = 1 << 63;
-type DeferredIoCompletion = (u64, u64, u64);
-
-pub(crate) struct DeferredIoCompletionQueue {
-    queue: MpscRingBuffer<DeferredIoCompletion, IO_COMPLETION_QUEUE_BACKING_SIZE>,
-}
-
-impl DeferredIoCompletionQueue {
-    #[cfg(test)]
-    pub(super) const CAPACITY: usize = IO_COMPLETION_QUEUE_SIZE;
-
-    pub(super) const fn new() -> Self {
-        Self {
-            queue: MpscRingBuffer::new(),
-        }
-    }
-
-    pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-        self.queue
-            .push((encode_device_id(device), id.0, encode_io_result(result)))
-            .is_ok()
-    }
-
-    pub(super) fn pop(&self) -> Option<(DeviceId, IoRequestId, IoResult)> {
-        self.queue.pop().map(|(device_raw, id_raw, result_raw)| {
-            let device = decode_device_id(device_raw).unwrap_or(DeviceId::Custom(0));
-            let id = IoRequestId(id_raw);
-            let result = decode_io_result(result_raw);
-            (device, id, result)
-        })
-    }
-
-    #[cfg(test)]
-    pub(super) fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    #[cfg(test)]
-    pub(super) const fn capacity(&self) -> usize {
-        Self::CAPACITY
-    }
-
-    #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-}
-
-pub(crate) const MAX_CPUS: usize = 64;
-
-pub(crate) struct PerCpuDeferredCompletionQueues {
-    queues: [DeferredIoCompletionQueue; MAX_CPUS],
-}
-
-impl PerCpuDeferredCompletionQueues {
-    pub(super) const fn new() -> Self {
-        const QUEUE: DeferredIoCompletionQueue = DeferredIoCompletionQueue::new();
-        Self {
-            queues: [QUEUE; MAX_CPUS],
-        }
-    }
-
-    pub(super) fn push(&self, device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-        let cpu_idx = crate::cpu::current_id();
-        if cpu_idx >= MAX_CPUS {
-            return false;
-        }
-        self.queues[cpu_idx].push(device, id, result)
-    }
-
-    pub(super) fn pop_from_cpu(&self, cpu_idx: usize) -> Option<(DeviceId, IoRequestId, IoResult)> {
-        if cpu_idx >= MAX_CPUS {
-            return None;
-        }
-        self.queues[cpu_idx].pop()
-    }
-
-    pub(super) fn drain_all<F>(&self, mut callback: F) -> usize
-    where
-        F: FnMut(DeviceId, IoRequestId, IoResult),
-    {
-        let mut total = 0;
-        for queue in &self.queues {
-            while let Some((device, id, result)) = queue.pop() {
-                callback(device, id, result);
-                total += 1;
-            }
-        }
-        total
-    }
-}
-
-pub(crate) static DEFERRED_IO_COMPLETIONS: PerCpuDeferredCompletionQueues =
-    PerCpuDeferredCompletionQueues::new();
 
 pub(crate) fn defer_io_completion(device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-    DEFERRED_IO_COMPLETIONS.push(device, id, result)
-}
-
-pub fn process_deferred_completions() -> usize {
-    let coordinator = hybrid_coordinator();
-    let scheduler = coordinator.scheduler.clone();
-    let bridge = coordinator.interrupt_bridge();
-    DEFERRED_IO_COMPLETIONS.drain_all(|device, id, result| {
-        scheduler.complete_request(id, result);
-        bridge.complete_pending(device, id);
+    crate::cpu::CurrentCpu::acquire().is_some_and(|current| {
+        current.defer_io_completion((encode_device_id(device), id.0, encode_io_result(result)))
     })
 }
 
 pub fn process_deferred_completions_local() -> usize {
-    let cpu_idx = crate::cpu::current_id();
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return 0;
+    };
+    let Some(first) = current.take_io_completion() else {
+        return 0;
+    };
     let coordinator = hybrid_coordinator();
     let scheduler = coordinator.scheduler.clone();
     let bridge = coordinator.interrupt_bridge();
     let mut processed = 0;
-    while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
+    let mut completion = Some(first);
+    while let Some((device_raw, id_raw, result_raw)) = completion {
+        let device = decode_device_id(device_raw)
+            .expect("CPU-local I/O completion queue contained an invalid device encoding");
+        let id = IoRequestId(id_raw);
+        let result = decode_io_result(result_raw);
         scheduler.complete_request(id, result);
         bridge.complete_pending(device, id);
         processed += 1;
+        completion = current.take_io_completion();
     }
     processed
 }
@@ -314,41 +222,17 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn deferred_io_completion_queue_preserves_full_capacity() {
-        let queue = DeferredIoCompletionQueue::new();
-
-        for i in 0..IO_COMPLETION_QUEUE_SIZE {
-            assert!(
-                queue.push(
-                    DeviceId::Custom(i as u32),
-                    IoRequestId(i as u64 + 1),
-                    IoResult::Success(i),
-                ),
-                "failed at {}",
-                i
-            );
-        }
-        assert!(!queue.push(
-            DeviceId::Custom(u32::MAX),
-            IoRequestId(u64::MAX),
-            IoResult::Success(0),
-        ));
-        assert_eq!(queue.len(), IO_COMPLETION_QUEUE_SIZE);
-        assert_eq!(queue.capacity(), IO_COMPLETION_QUEUE_SIZE);
-        assert!(!queue.is_empty());
-
-        for i in 0..IO_COMPLETION_QUEUE_SIZE {
-            match queue.pop() {
-                Some((device_id, request_id, IoResult::Success(result))) => {
-                    assert_eq!(device_id, DeviceId::Custom(i as u32));
-                    assert_eq!(request_id, IoRequestId(i as u64 + 1));
-                    assert_eq!(result, i);
-                }
-                other => panic!("unexpected completion entry: {:?}", other),
-            }
-        }
-        assert!(queue.pop().is_none());
-        assert!(queue.is_empty());
+    fn deferred_io_completion_encoding_round_trips() {
+        let device = DeviceId::Custom(42);
+        assert_eq!(decode_device_id(encode_device_id(device)), Some(device));
+        assert_eq!(
+            decode_io_result(encode_io_result(IoResult::Success(4096))),
+            IoResult::Success(4096)
+        );
+        assert_eq!(
+            decode_io_result(encode_io_result(IoResult::Error(IoError::Timeout))),
+            IoResult::Error(IoError::Timeout)
+        );
     }
 }
 
@@ -456,11 +340,7 @@ impl HybridIoCoordinator {
         F: FnOnce(),
     {
         process_interrupts();
-        let cpu_idx = crate::cpu::current_id();
-        while let Some((device, id, result)) = DEFERRED_IO_COMPLETIONS.pop_from_cpu(cpu_idx) {
-            self.scheduler.complete_request(id, result);
-            self.interrupt_bridge.complete_pending(device, id);
-        }
+        process_deferred_completions_local();
         if self.interrupt_bridge.check_and_clear_overflow() {
             self.recover_overflow();
         }
@@ -471,6 +351,11 @@ impl HybridIoCoordinator {
 
     pub(super) fn dispatch_pending(&self) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
+        let Some(cpu_idx) =
+            crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
+        else {
+            return;
+        };
         for _ in 0..DISPATCH_BATCH_LIMIT {
             let id = match self.scheduler.next_request() {
                 Some(id) => id,
@@ -484,7 +369,6 @@ impl HybridIoCoordinator {
                 continue;
             }
             let ops = self.scheduler.get_device_ops(request.device);
-            let cpu_idx = crate::cpu::current_id();
             let result = match ops {
                 Some(ops) => ops.submit(&request, cpu_idx),
                 None => Err(IoError::NotSupported),

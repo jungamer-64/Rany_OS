@@ -701,7 +701,11 @@ impl PollingExecutor {
             return 0;
         }
 
-        let cpu_idx = crate::cpu::current_id();
+        let Some(cpu_idx) =
+            crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
+        else {
+            return 0;
+        };
         let mut completed = 0;
         let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
 

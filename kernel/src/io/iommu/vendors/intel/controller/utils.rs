@@ -95,25 +95,7 @@ impl IommuUtils for IommuController {
             return Ok(());
         }
 
-        // If it's safe to yield and scheduler is present, use tick-based waiting
-        if can_yield {
-            if let Some(_cpu_id) = crate::cpu::try_current_id() {
-                // Convert microseconds to milliseconds (ceiling)
-                let timeout_ms = (timeout_us + 999) / 1000;
-                let end_tick = crate::task::current_tick().saturating_add(timeout_ms);
-
-                return wait_until(
-                    &condition,
-                    || crate::task::current_tick() < end_tick,
-                    || {
-                        // Best-effort cooperative yield to avoid busy-looping
-                        crate::task::preemption::voluntary_yield();
-                        crate::task::preemption::yield_point();
-                    },
-                );
-            }
-            // If scheduler isn't available, fallthrough to busy-wait below
-        }
+        let _ = can_yield;
 
         // Busy-wait path: prefer kernel's precise time API
         if let Some(result) = self.busy_wait_precise(&condition, timeout_us) {

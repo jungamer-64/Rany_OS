@@ -12,8 +12,6 @@ use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use core::task::Waker;
 
-use super::lockfree::MpscRingBuffer;
-
 // ============================================================================
 // Lock-Free AtomicWaker (State Machine Based)
 // ============================================================================
@@ -136,7 +134,9 @@ impl AtomicWaker {
     #[inline]
     pub fn wake_from_isr(&self) {
         let ptr = self as *const Self as usize;
-        let _ = DEFERRED_ATOMIC_WAKER_QUEUE[deferred_wake_queue_index()].push_once(ptr);
+        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            let _queued = current.defer_atomic_wake(ptr);
+        }
     }
 
     fn wake_impl(&self, _from_isr: bool) {
@@ -246,7 +246,10 @@ pub type LockFreeAtomicWaker = AtomicWaker;
 
 #[inline]
 pub fn process_deferred_wakes() {
-    while let Some(ptr) = DEFERRED_ATOMIC_WAKER_QUEUE[deferred_wake_queue_index()].pop() {
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return;
+    };
+    while let Some(ptr) = current.take_atomic_wake() {
         if ptr == 0 {
             continue;
         }
@@ -301,7 +304,9 @@ impl WakerQueue {
     pub fn wake_all_from_isr(&self) {
         self.wake_requested.store(true, Ordering::Release);
         let ptr = self as *const Self as usize;
-        let _ = DEFERRED_WAKER_QUEUE_QUEUE[deferred_wake_queue_index()].push_once(ptr);
+        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            let _queued = current.defer_queue_wake(ptr);
+        }
     }
 
     pub fn is_wake_pending(&self) -> bool {
@@ -327,55 +332,16 @@ impl Default for WakerQueue {
     }
 }
 
-#[inline]
-fn deferred_wake_queue_index() -> usize {
-    crate::cpu::try_current_id()
-        .unwrap_or(0)
-        .min(crate::per_cpu::MAX_CPUS - 1)
-}
-
-static DEFERRED_WAKER_QUEUE_QUEUE: [DeferredWakerQueue; crate::per_cpu::MAX_CPUS] =
-    [const { DeferredWakerQueue::new() }; crate::per_cpu::MAX_CPUS];
-static DEFERRED_ATOMIC_WAKER_QUEUE: [DeferredWakerQueue; crate::per_cpu::MAX_CPUS] =
-    [const { DeferredWakerQueue::new() }; crate::per_cpu::MAX_CPUS];
-
 pub fn process_deferred_waker_queue_wakes() {
-    while let Some(ptr) = DEFERRED_WAKER_QUEUE_QUEUE[deferred_wake_queue_index()].pop() {
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return;
+    };
+    while let Some(ptr) = current.take_queue_wake() {
         if ptr == 0 {
             continue;
         }
         let wq = unsafe { &*(ptr as *const WakerQueue) };
         wq.wake_all();
-    }
-}
-
-// ============================================================================
-// Deferred Waker Queue (ISR-safe producer, non-ISR consumer)
-// ============================================================================
-
-const DEFERRED_WAKE_QUEUE_SIZE: usize = 256;
-const DEFERRED_WAKE_QUEUE_BACKING_SIZE: usize = DEFERRED_WAKE_QUEUE_SIZE + 1;
-
-#[repr(C, align(64))]
-struct DeferredWakerQueue {
-    buffer: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_BACKING_SIZE>,
-}
-
-impl DeferredWakerQueue {
-    const fn new() -> Self {
-        Self {
-            buffer: MpscRingBuffer::new(),
-        }
-    }
-
-    #[inline]
-    fn push_once(&self, value: usize) -> bool {
-        self.buffer.try_push(value).is_ok()
-    }
-
-    #[inline]
-    fn pop(&self) -> Option<usize> {
-        self.buffer.pop()
     }
 }
 

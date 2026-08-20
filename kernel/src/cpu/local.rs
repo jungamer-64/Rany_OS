@@ -12,6 +12,9 @@ use crate::sync::MpscRingBuffer;
 use super::CpuId;
 
 const CONTROL_QUEUE_SLOTS: usize = 32;
+const DEFERRED_WAKE_QUEUE_SLOTS: usize = 257;
+const IO_COMPLETION_QUEUE_SLOTS: usize = 257;
+const INTERRUPT_WAKE_QUEUE_SLOTS: usize = 1025;
 const IA32_FS_BASE: u32 = 0xc000_0100;
 const IA32_GS_BASE: u32 = 0xc000_0101;
 const TLB_ACTIVE: u8 = 0;
@@ -40,6 +43,10 @@ pub struct CpuRemoteAccess {
     tlb_mode: AtomicU8,
     tlb_requested_generation: AtomicU64,
     tlb_observed_generation: AtomicU64,
+    deferred_atomic_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
+    deferred_queue_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
+    deferred_io_completions: MpscRingBuffer<(u64, u64, u64), IO_COMPLETION_QUEUE_SLOTS>,
+    interrupt_wakes: MpscRingBuffer<usize, INTERRUPT_WAKE_QUEUE_SLOTS>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,6 +74,10 @@ impl CpuRemoteAccess {
             tlb_mode: AtomicU8::new(TLB_ACTIVE),
             tlb_requested_generation: AtomicU64::new(0),
             tlb_observed_generation: AtomicU64::new(0),
+            deferred_atomic_wakes: MpscRingBuffer::new(),
+            deferred_queue_wakes: MpscRingBuffer::new(),
+            deferred_io_completions: MpscRingBuffer::new(),
+            interrupt_wakes: MpscRingBuffer::new(),
         }
     }
 
@@ -178,11 +189,48 @@ impl CpuRemoteAccess {
         self.tlb_observed_generation
             .fetch_max(generation, Ordering::SeqCst);
     }
+
+    fn defer_atomic_wake(&self, pointer: usize) -> bool {
+        self.deferred_atomic_wakes.try_push(pointer).is_ok()
+    }
+
+    fn take_atomic_wake(&self) -> Option<usize> {
+        self.deferred_atomic_wakes.pop()
+    }
+
+    fn defer_queue_wake(&self, pointer: usize) -> bool {
+        self.deferred_queue_wakes.try_push(pointer).is_ok()
+    }
+
+    fn take_queue_wake(&self) -> Option<usize> {
+        self.deferred_queue_wakes.pop()
+    }
+
+    fn defer_io_completion(&self, completion: (u64, u64, u64)) -> bool {
+        self.deferred_io_completions.try_push(completion).is_ok()
+    }
+
+    fn take_io_completion(&self) -> Option<(u64, u64, u64)> {
+        self.deferred_io_completions.pop()
+    }
+
+    fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
+        self.interrupt_wakes.try_push(encoded_source).is_ok()
+    }
+
+    fn take_interrupt_wake(&self) -> Option<usize> {
+        self.interrupt_wakes.pop()
+    }
+
+    pub(crate) fn pending_interrupt_wakes(&self) -> usize {
+        self.interrupt_wakes.len()
+    }
 }
 
 struct CpuOwnedState {
     execution: Option<crate::task::ExecutionContext>,
     page_fault_active: bool,
+    task_fuel: u64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,6 +331,7 @@ impl CpuLocal {
             owned: UnsafeCell::new(CpuOwnedState {
                 execution: None,
                 page_fault_active: false,
+                task_fuel: 0,
             }),
             remote: CpuRemoteAccess::new(),
             descriptor_tables,
@@ -362,6 +411,30 @@ impl CpuLocal {
 
     fn exit_page_fault(&self) {
         with_owner_access(|| unsafe { (*self.owned.get()).page_fault_active = false });
+    }
+
+    fn refill_task_fuel(&self, amount: u64) {
+        with_owner_access(|| unsafe { (*self.owned.get()).task_fuel = amount });
+    }
+
+    fn consume_task_fuel(&self, amount: u64) -> bool {
+        with_owner_access(|| {
+            let owned = unsafe { &mut *self.owned.get() };
+            match owned.task_fuel.checked_sub(amount) {
+                Some(remaining) => {
+                    owned.task_fuel = remaining;
+                    true
+                }
+                None => {
+                    owned.task_fuel = 0;
+                    false
+                }
+            }
+        })
+    }
+
+    fn task_fuel(&self) -> u64 {
+        with_owner_access(|| unsafe { (*self.owned.get()).task_fuel })
     }
 
     fn enter_rcu_read(&self) {
@@ -484,6 +557,18 @@ impl CurrentCpu {
         self.local.remote.disarm_runtime_timer();
     }
 
+    pub(crate) fn refill_task_fuel(&self, amount: u64) {
+        self.local.refill_task_fuel(amount);
+    }
+
+    pub(crate) fn consume_task_fuel(&self, amount: u64) -> bool {
+        self.local.consume_task_fuel(amount)
+    }
+
+    pub(crate) fn task_fuel(&self) -> u64 {
+        self.local.task_fuel()
+    }
+
     pub(crate) fn enter_rcu_read(&self) {
         self.local.enter_rcu_read();
     }
@@ -514,6 +599,38 @@ impl CurrentCpu {
 
     pub(crate) fn complete_tlb_generation(&self, generation: u64) {
         self.local.remote.complete_tlb_generation(generation);
+    }
+
+    pub(crate) fn defer_atomic_wake(&self, pointer: usize) -> bool {
+        self.local.remote.defer_atomic_wake(pointer)
+    }
+
+    pub(crate) fn take_atomic_wake(&self) -> Option<usize> {
+        self.local.remote.take_atomic_wake()
+    }
+
+    pub(crate) fn defer_queue_wake(&self, pointer: usize) -> bool {
+        self.local.remote.defer_queue_wake(pointer)
+    }
+
+    pub(crate) fn take_queue_wake(&self) -> Option<usize> {
+        self.local.remote.take_queue_wake()
+    }
+
+    pub(crate) fn defer_io_completion(&self, completion: (u64, u64, u64)) -> bool {
+        self.local.remote.defer_io_completion(completion)
+    }
+
+    pub(crate) fn take_io_completion(&self) -> Option<(u64, u64, u64)> {
+        self.local.remote.take_io_completion()
+    }
+
+    pub(crate) fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
+        self.local.remote.defer_interrupt_wake(encoded_source)
+    }
+
+    pub(crate) fn take_interrupt_wake(&self) -> Option<usize> {
+        self.local.remote.take_interrupt_wake()
     }
 
     pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {
@@ -599,5 +716,42 @@ unsafe fn write_msr(msr: u32, value: u64) {
             in("edx") (value >> 32) as u32,
             options(nomem, nostack, preserves_flags)
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn deferred_queue_is_bounded_and_preserves_fifo_order() {
+        let remote = CpuRemoteAccess::new();
+
+        for pointer in 1..=DEFERRED_WAKE_QUEUE_SLOTS - 1 {
+            assert!(remote.defer_atomic_wake(pointer));
+        }
+        assert!(!remote.defer_atomic_wake(DEFERRED_WAKE_QUEUE_SLOTS));
+
+        for pointer in 1..=DEFERRED_WAKE_QUEUE_SLOTS - 1 {
+            assert_eq!(remote.take_atomic_wake(), Some(pointer));
+        }
+        assert_eq!(remote.take_atomic_wake(), None);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn deferred_queues_keep_message_classes_separate() {
+        let remote = CpuRemoteAccess::new();
+
+        assert!(remote.defer_atomic_wake(11));
+        assert!(remote.defer_queue_wake(22));
+        assert!(remote.defer_io_completion((33, 44, 55)));
+        assert!(remote.defer_interrupt_wake(66));
+
+        assert_eq!(remote.take_atomic_wake(), Some(11));
+        assert_eq!(remote.take_queue_wake(), Some(22));
+        assert_eq!(remote.take_io_completion(), Some((33, 44, 55)));
+        assert_eq!(remote.take_interrupt_wake(), Some(66));
     }
 }
