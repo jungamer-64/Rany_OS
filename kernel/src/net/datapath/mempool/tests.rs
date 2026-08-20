@@ -6,10 +6,18 @@ use super::*;
 use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
+fn test_cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
+    crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
+        .expect("bootstrap CPU topology")
+        .snapshot()
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_poisoned_alloc_fails() {
-    let pool = Box::leak(Box::new(Mempool::new(1)));
+    let pool = Box::leak(Box::new(
+        Mempool::new(1, &test_cpu_snapshot()).expect("mempool CPU resources"),
+    ));
     pool.init(1).expect("init should succeed");
 
     // Poison the free_list by simulating a panic while holding the lock
@@ -21,7 +29,7 @@ fn test_mempool_poisoned_alloc_fails() {
 
     // Allocation should fail and increment alloc_failed
     assert_eq!(
-        pool.alloc(),
+        pool.alloc_on_cpu(crate::cpu::CpuId::BOOTSTRAP),
         Err(MempoolError::LockPoisoned(MempoolLock::FreeList))
     );
     assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
@@ -30,7 +38,9 @@ fn test_mempool_poisoned_alloc_fails() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_stats() {
-    let pool = Box::leak(Box::new(Mempool::new(1)));
+    let pool = Box::leak(Box::new(
+        Mempool::new(1, &test_cpu_snapshot()).expect("mempool CPU resources"),
+    ));
     let stats = pool.stats();
     assert_eq!(stats.total_buffers, 0);
     assert_eq!(stats.free_buffers, 0);

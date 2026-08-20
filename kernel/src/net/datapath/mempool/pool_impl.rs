@@ -7,16 +7,16 @@ use crate::net::runtime::NetRuntimeHandle;
 
 /// ランタイム所有メモリプールを初期化
 pub fn init_net_mempool_in(runtime: NetRuntimeHandle, capacity: usize) -> Result<(), &'static str> {
-    let pool = runtime
+    runtime
         .context()
         .packet_pool
-        .call_once(|| Mempool::new(runtime.id().0 as u32));
-    pool.init(capacity).map_err(MempoolError::as_str)
+        .init(capacity)
+        .map_err(MempoolError::as_str)
 }
 
 /// ランタイム所有メモリプールを取得
 pub fn net_mempool_in(runtime: NetRuntimeHandle) -> Option<&'static Mempool> {
-    runtime.context().packet_pool.get()
+    Some(&runtime.context().packet_pool)
 }
 
 /// パケットバッファを割り当て

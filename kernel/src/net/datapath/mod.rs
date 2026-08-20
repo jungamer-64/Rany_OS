@@ -8,4 +8,3 @@
 pub mod checksum_offload;
 pub mod mempool;
 pub mod optimization;
-pub mod per_cpu_batch;

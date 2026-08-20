@@ -146,7 +146,7 @@ pub struct NetRuntimeContext {
     pub(crate) tx_owner_groups: PoisonLock<BTreeMap<u64, TxOwnerGroupState>>,
     pub(crate) tx_lease_next_id: AtomicU64,
     pub(crate) tx_leases: PoisonLock<BTreeMap<u64, TxLeaseState>>,
-    pub(crate) packet_pool: spin::Once<Mempool>,
+    pub(crate) packet_pool: Mempool,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
     pub(crate) network_background_tasks_started: AtomicBool,
@@ -173,6 +173,8 @@ impl NetRuntimeContext {
             }
             cpu_resources.push(Some(Arc::new(NetCpuResources::new(slot.id))));
         }
+        let packet_pool = Mempool::new(id.0 as u32, cpu_snapshot)
+            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)?;
 
         Ok(Self {
             id,
@@ -194,7 +196,7 @@ impl NetRuntimeContext {
             tx_owner_groups: PoisonLock::new(BTreeMap::new()),
             tx_lease_next_id: AtomicU64::new(1),
             tx_leases: PoisonLock::new(BTreeMap::new()),
-            packet_pool: spin::Once::new(),
+            packet_pool,
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),
             network_background_tasks_started: AtomicBool::new(false),

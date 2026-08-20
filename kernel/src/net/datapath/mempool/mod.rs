@@ -696,7 +696,7 @@ pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> 
     })
 }
 
-const PER_CORE_CACHE_CAPACITY: usize = 32;
+const CPU_CACHE_CAPACITY: usize = 32;
 const BATCH_SIZE: usize = 16;
 
 #[derive(Debug)]
@@ -704,7 +704,7 @@ pub struct Mempool {
     id: u32,
     buffers: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     free_list: PoisonLock<Vec<NonNull<PacketBuffer>>>,
-    local_caches: [PoisonLock<Vec<NonNull<PacketBuffer>>>; crate::per_cpu::MAX_CPUS],
+    local_caches: Box<[PoisonLock<Vec<NonNull<PacketBuffer>>>]>,
     alloc_count: AtomicU64,
     free_count: AtomicU64,
     alloc_failed: AtomicU64,
@@ -723,6 +723,9 @@ pub enum MempoolLock {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MempoolError {
     LockPoisoned(MempoolLock),
+    CpuCacheAllocationFailed,
+    NoCurrentCpu,
+    CpuNotProvisioned(crate::cpu::CpuId),
     BufferAllocationFailed,
     OutOfBuffers,
 }
@@ -733,6 +736,9 @@ impl MempoolError {
             Self::LockPoisoned(MempoolLock::BufferRegistry) => "mempool buffer registry poisoned",
             Self::LockPoisoned(MempoolLock::FreeList) => "mempool free list poisoned",
             Self::LockPoisoned(MempoolLock::LocalCache) => "mempool local cache poisoned",
+            Self::CpuCacheAllocationFailed => "mempool CPU cache allocation failed",
+            Self::NoCurrentCpu => "mempool allocation requires a current CPU",
+            Self::CpuNotProvisioned(_) => "mempool cache is not provisioned for the current CPU",
             Self::BufferAllocationFailed => "mempool buffer allocation failed",
             Self::OutOfBuffers => "mempool exhausted",
         }
@@ -746,16 +752,27 @@ impl fmt::Display for MempoolError {
 }
 
 impl Mempool {
-    pub fn new(id: u32) -> Self {
-        Self {
+    pub fn new(id: u32, cpu_snapshot: &crate::cpu::CpuSnapshot) -> Result<Self, MempoolError> {
+        let mut local_caches = Vec::new();
+        local_caches
+            .try_reserve_exact(cpu_snapshot.slots().len())
+            .map_err(|_| MempoolError::CpuCacheAllocationFailed)?;
+        for slot in cpu_snapshot.slots() {
+            if slot.id.as_usize() != local_caches.len() {
+                return Err(MempoolError::CpuNotProvisioned(slot.id));
+            }
+            local_caches.push(PoisonLock::new(Vec::new()));
+        }
+
+        Ok(Self {
             id,
             buffers: PoisonLock::new(Vec::new()),
             free_list: PoisonLock::new(Vec::new()),
-            local_caches: [const { PoisonLock::new(Vec::new()) }; crate::per_cpu::MAX_CPUS],
+            local_caches: local_caches.into_boxed_slice(),
             alloc_count: AtomicU64::new(0),
             free_count: AtomicU64::new(0),
             alloc_failed: AtomicU64::new(0),
-        }
+        })
     }
 
     pub fn init(&self, capacity: usize) -> Result<(), MempoolError> {
@@ -830,8 +847,17 @@ impl Mempool {
     }
 
     pub fn alloc(&'static self) -> Result<PacketRef, MempoolError> {
-        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-        let cache_lock = &self.local_caches[cpu_id % crate::per_cpu::MAX_CPUS];
+        let cpu_id = crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .ok_or_else(|| self.record_alloc_failure(MempoolError::NoCurrentCpu))?;
+        self.alloc_on_cpu(cpu_id)
+    }
+
+    fn alloc_on_cpu(&'static self, cpu_id: crate::cpu::CpuId) -> Result<PacketRef, MempoolError> {
+        let cache_lock = self
+            .local_caches
+            .get(cpu_id.as_usize())
+            .ok_or_else(|| self.record_alloc_failure(MempoolError::CpuNotProvisioned(cpu_id)))?;
         let mut cache = cache_lock.lock().map_err(|_| {
             self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::LocalCache))
         })?;
@@ -852,11 +878,15 @@ impl Mempool {
 
             if !refilled {
                 // Global list is empty. Attempt work stealing from remote CPU local caches.
-                let max_cpus = crate::per_cpu::MAX_CPUS;
                 // Pass 1: Look for remote caches with multiple buffers (steal half to maintain locality)
-                for offset in 1..max_cpus {
-                    let remote_cpu = (cpu_id + offset) % max_cpus;
-                    let remote_lock = &self.local_caches[remote_cpu];
+                let cpu_snapshot = crate::cpu::snapshot();
+                for remote_cpu in cpu_snapshot.online() {
+                    if remote_cpu == cpu_id {
+                        continue;
+                    }
+                    let Some(remote_lock) = self.local_caches.get(remote_cpu.as_usize()) else {
+                        continue;
+                    };
                     if let Ok(mut remote_cache) = remote_lock.try_lock() {
                         if remote_cache.len() > 1 {
                             let steal_count = (remote_cache.len() / 2).min(BATCH_SIZE);
@@ -870,9 +900,13 @@ impl Mempool {
                 }
                 // Pass 2: Emergency fallback — steal single buffer if any remote cache has one
                 if !refilled {
-                    for offset in 1..max_cpus {
-                        let remote_cpu = (cpu_id + offset) % max_cpus;
-                        let remote_lock = &self.local_caches[remote_cpu];
+                    for remote_cpu in cpu_snapshot.online() {
+                        if remote_cpu == cpu_id {
+                            continue;
+                        }
+                        let Some(remote_lock) = self.local_caches.get(remote_cpu.as_usize()) else {
+                            continue;
+                        };
                         if let Ok(mut remote_cache) = remote_lock.try_lock() {
                             if let Some(buf) = remote_cache.pop() {
                                 cache.push(buf);
@@ -897,16 +931,27 @@ impl Mempool {
     }
 
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
-        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-        let cache_lock = &self.local_caches[cpu_id % crate::per_cpu::MAX_CPUS];
-        let mut cache = cache_lock.lock().unwrap_or_else(|e| e.into_inner());
-        cache.push(buffer);
-        if cache.len() >= PER_CORE_CACHE_CAPACITY {
-            let mid = cache.len() / 2;
-            let to_flush = cache.split_off(mid);
-            let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
-            global_free.extend(to_flush);
+        let cache_lock = crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .and_then(|cpu_id| self.local_caches.get(cpu_id.as_usize()));
+        if let Some(cache_lock) = cache_lock {
+            if let Ok(mut cache) = cache_lock.lock() {
+                cache.push(buffer);
+                if cache.len() >= CPU_CACHE_CAPACITY {
+                    let mid = cache.len() / 2;
+                    let to_flush = cache.split_off(mid);
+                    let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
+                    global_free.extend(to_flush);
+                }
+                self.free_count.fetch_add(1, Ordering::Relaxed);
+                return;
+            }
         }
+
+        self.free_list
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(buffer);
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
 
