@@ -20,103 +20,6 @@
 //! - Maintains NUMA locality for better memory access latency
 //! - Statistics for tuning (hit/miss/evict)
 //!
-//! ## Lock Granularity Improvement Plan (Per-CPU Magazine Layer)
-//!
-//! **Current State**: Per-NUMA-node pools protected by `IrqMutex`
-//!
-//! **Problem**: High-frequency page table operations (100Gbps networking) cause
-//! lock contention across all CPUs within the same NUMA node.
-//!
-//! **Proposed Architecture: 3-Layer Allocation**
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────────────┐
-//! │                    Per-CPU Magazine (Hot)                       │
-//! │  ┌───────┐ ┌───────┐ ┌───────┐ ┌───────┐                       │
-//! │  │ CPU 0 │ │ CPU 1 │ │ CPU 2 │ │ CPU 3 │  ... Lock-Free O(1)   │
-//! │  │ [PT*8]│ │ [PT*8]│ │ [PT*8]│ │ [PT*8]│                       │
-//! │  └───┬───┘ └───┬───┘ └───┬───┘ └───┬───┘                       │
-//! └─────┼─────────┼─────────┼─────────┼─────────────────────────────┘
-//!       │         │         │         │  Batch refill/drain
-//! ┌─────┼─────────┼─────────┼─────────┼─────────────────────────────┐
-//! │     ▼         ▼         ▼         ▼                             │
-//! │           Per-NUMA-Node Depot (Warm)                            │
-//! │  ┌─────────────────┐  ┌─────────────────┐                       │
-//! │  │   Node 0 Pool   │  │   Node 1 Pool   │  Mutex-protected      │
-//! │  │ [PooledPt * N]  │  │ [PooledPt * N]  │  O(1) amortized       │
-//! │  └────────┬────────┘  └────────┬────────┘                       │
-//! └───────────┼────────────────────┼────────────────────────────────┘
-//!             │                    │  On depot empty/full
-//! ┌───────────┼────────────────────┼────────────────────────────────┐
-//! │           ▼                    ▼                                │
-//! │              Physical Allocator (Cold)                          │
-//! │         allocate_zeroed_on_node() / deallocate_on_node()        │
-//! └─────────────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! **Implementation Steps**:
-//!
-//! 1. **Phase 1: Per-CPU Magazine Structure**
-//!    ```rust
-//!    // In per_cpu.rs
-//!    pub struct PtMagazine {
-//!        /// Small fixed-size array (8-16 entries)
-//!        slots: [Option<PooledPt>; 8],
-//!        /// Current fill level
-//!        count: usize,
-//!        /// NUMA node affinity
-//!        node: usize,
-//!    }
-//!    ```
-//!
-//! 2. **Phase 2: Lock-Free Fast Path**
-//!    ```rust
-//!    pub fn acquire_fast(&self, cpu_id: usize) -> Option<PooledPt> {
-//!        // No lock needed - per-CPU data accessed only by owning CPU
-//!        let magazine = crate::per_cpu::with_current_cold_mut(|cold| &mut cold.pt_magazine)?;
-//!        if magazine.count > 0 {
-//!            magazine.count -= 1;
-//!            return magazine.slots[magazine.count].take();
-//!        }
-//!        None // Fall through to depot
-//!    }
-//!    ```
-//!
-//! 3. **Phase 3: Batch Refill from Depot**
-//!    ```rust
-//!    fn refill_magazine(&self, magazine: &mut PtMagazine) {
-//!        let depot = &self.pools[magazine.node];
-//!        let mut guard = depot.lock();
-//!        // Transfer min(BATCH_SIZE, available) entries
-//!        while magazine.count < magazine.slots.len() && !guard.is_empty() {
-//!            magazine.slots[magazine.count] = guard.pop();
-//!            magazine.count += 1;
-//!        }
-//!    }
-//!    ```
-//!
-//! 4. **Phase 4: Magazine Drain on Overflow**
-//!    ```rust
-//!    pub fn release_fast(&self, pt: PooledPt) -> bool {
-//!        let magazine = crate::per_cpu::with_current_cold_mut(|cold| &mut cold.pt_magazine)?;
-//!        if magazine.count < magazine.slots.len() {
-//!            magazine.slots[magazine.count] = Some(pt);
-//!            magazine.count += 1;
-//!            return true;
-//!        }
-//!        false // Fall through to depot drain
-//!    }
-//!    ```
-//!
-//! **Expected Performance Gains**:
-//! - Hot path: Zero lock contention, O(1) constant time
-//! - Amortized depot access: 1 lock per 8 operations
-//! - NUMA locality: Magazine inherits CPU's node affinity
-//!
-//! **Memory Overhead**:
-//! - 8 slots × 32 bytes × num_cpus ≈ 256 bytes per CPU
-//! - Acceptable for high-frequency I/O workloads
-//!
 
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
@@ -358,12 +261,11 @@ impl PageTablePool {
     /// - Fresh allocation: zeroed by allocator
     ///
     /// # Arguments
-    /// * `node_hint` - Preferred NUMA node (clamped to valid range)
+    /// * `node_hint` - Preferred NUMA node
     pub fn acquire(&self, node_hint: Option<usize>) -> Result<PooledPt, IommuError> {
-        let node = node_hint
-            .unwrap_or(0)
-            .min(self.pools.len().saturating_sub(1));
-        let mut pool = self.pools[node].lock();
+        let node = node_hint.unwrap_or(0);
+        let pool = self.pools.get(node).ok_or(IommuError::InvalidAddress)?;
+        let mut pool = pool.lock();
 
         if let Some(pt) = pool.pop() {
             // CRITICAL: Zero the page table before returning (security + correctness)
@@ -389,20 +291,18 @@ impl PageTablePool {
     /// This method NEVER reallocates because:
     /// - Vector capacity is pre-allocated in `new()`
     /// - We check `len() < max_per_node` before push
-    pub fn release(&self, mut pt: PooledPt) {
-        // Keep node within this pool instance's configured NUMA range.
-        // Some callers may carry broader system node IDs than this pool supports.
-        let max_node = self.pools.len().saturating_sub(1);
-        if pt.node > max_node {
-            log::warn!(
-                "[IOMMU] PageTablePool::release remapping out-of-range node {} -> {}",
-                pt.node,
-                max_node
+    pub fn release(&self, pt: PooledPt) {
+        let Some(node_pool) = self.pools.get(pt.node) else {
+            log::error!(
+                "[IOMMU] rejecting page-table cache placement on absent NUMA node {}",
+                pt.node
             );
-            pt.node = max_node;
-        }
+            self.evicts.fetch_add(1, Ordering::Relaxed);
+            Self::dealloc(pt);
+            return;
+        };
 
-        let mut pool = self.pools[pt.node].lock();
+        let mut pool = node_pool.lock();
 
         // NEVER exceed capacity to avoid realloc
         if pool.len() < self.max_per_node {
@@ -474,184 +374,6 @@ impl PageTablePool {
         }
         #[cfg(not(any(test, feature = "bench")))]
         crate::mm::numa::topology::deallocate_on_node(pt.ptr.cast(), pt.layout, Some(pt.node));
-    }
-
-    // ========================================================================
-    // Per-CPU Magazine Fast Path (Lock-Free Hot Path)
-    // ========================================================================
-
-    /// Acquire a page table using the per-CPU magazine fast path
-    ///
-    /// This is the preferred method for high-frequency allocations.
-    /// Falls back to the depot (locked pool) on magazine miss.
-    ///
-    /// # Performance
-    /// - Hot path: O(1) lock-free access to per-CPU magazine
-    /// - Cold path: Mutex-protected depot access with batch refill
-    ///
-    /// # Zero Guarantee
-    /// The returned page table is ALWAYS zeroed (security requirement).
-    pub fn acquire_fast(&self, node_hint: Option<usize>) -> Result<PooledPt, IommuError> {
-        // Try per-CPU magazine first (lock-free)
-        if let Some(pt) = self.try_acquire_from_magazine() {
-            return Ok(pt);
-        }
-
-        // Magazine empty - refill from depot and retry
-        self.refill_magazine_from_depot(node_hint);
-
-        // Try magazine again after refill
-        if let Some(pt) = self.try_acquire_from_magazine() {
-            return Ok(pt);
-        }
-
-        // Still empty - fall back to regular acquire (fresh allocation)
-        self.acquire(node_hint)
-    }
-
-    /// Release a page table using the per-CPU magazine fast path
-    ///
-    /// This is the preferred method for high-frequency deallocations.
-    /// Drains to the depot when magazine is full.
-    ///
-    /// # Performance
-    /// - Hot path: O(1) lock-free push to per-CPU magazine
-    /// - Overflow path: Batch drain to depot
-    pub fn release_fast(&self, pt: PooledPt) {
-        // Try per-CPU magazine first (lock-free)
-        if self.try_release_to_magazine(&pt) {
-            return;
-        }
-
-        // Magazine full - drain half to depot and retry
-        self.drain_magazine_to_depot(pt.node);
-
-        // Try magazine again after drain
-        if self.try_release_to_magazine(&pt) {
-            return;
-        }
-
-        // Still full (shouldn't happen) - fall back to regular release
-        self.release(pt);
-    }
-
-    /// Try to acquire from per-CPU magazine (lock-free)
-    #[inline]
-    fn try_acquire_from_magazine(&self) -> Option<PooledPt> {
-        let entry =
-            crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.pop()).flatten()?;
-
-        if !entry.is_valid() {
-            return None;
-        }
-
-        // Reconstruct PooledPt from magazine entry
-        // SAFETY: The pointer was stored when we released the page table
-        let ptr = unsafe { NonNull::new_unchecked(entry.virt as *mut SlPte) };
-        let pt = PooledPt::new(ptr, entry.phys, entry.node as usize);
-
-        // CRITICAL: Zero the page table before returning (security)
-        unsafe {
-            core::ptr::write_bytes(pt.ptr.as_ptr(), 0, PT_ENTRIES);
-        }
-
-        self.hits.fetch_add(1, Ordering::Relaxed);
-        Some(pt)
-    }
-
-    /// Try to release to per-CPU magazine (lock-free)
-    #[inline]
-    fn try_release_to_magazine(&self, pt: &PooledPt) -> bool {
-        let entry = crate::per_cpu::PtMagEntry {
-            phys: pt.phys,
-            virt: pt.ptr.as_ptr() as usize,
-            node: pt.node as u8,
-        };
-
-        crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.push(entry)).unwrap_or(false)
-    }
-
-    /// Refill per-CPU magazine from depot (locked)
-    ///
-    /// Transfers up to half capacity from depot to magazine.
-    fn refill_magazine_from_depot(&self, node_hint: Option<usize>) {
-        let Some((node, available)) = crate::per_cpu::with_current_cold_mut(|cold| {
-            (
-                node_hint.unwrap_or(cold.pt_magazine.preferred_node() as usize),
-                cold.pt_magazine.available(),
-            )
-        }) else {
-            return;
-        };
-
-        let node = node.min(self.pools.len().saturating_sub(1));
-
-        let mut pool = self.pools[node].lock();
-        let transfer_count = available
-            .min(pool.len())
-            .min(crate::per_cpu::PT_MAG_CAPACITY / 2);
-
-        for _ in 0..transfer_count {
-            if let Some(pt) = pool.pop() {
-                let entry = crate::per_cpu::PtMagEntry {
-                    phys: pt.phys,
-                    virt: pt.ptr.as_ptr() as usize,
-                    node: pt.node as u8,
-                };
-                if !crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.push(entry))
-                    .unwrap_or(false)
-                {
-                    // Magazine unexpectedly full - put it back
-                    pool.push(pt);
-                    break;
-                }
-                // Don't drop pt - ownership transferred to magazine entry
-                core::mem::forget(pt);
-            } else {
-                break;
-            }
-        }
-    }
-
-    /// Drain per-CPU magazine to depot (locked)
-    ///
-    /// Transfers half of magazine entries to depot.
-    fn drain_magazine_to_depot(&self, preferred_node: usize) {
-        let Some(drain_count) =
-            crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.len() / 2)
-        else {
-            return;
-        };
-        if drain_count == 0 {
-            return;
-        }
-
-        let node = preferred_node.min(self.pools.len().saturating_sub(1));
-        let mut pool = self.pools[node].lock();
-
-        for _ in 0..drain_count {
-            let Some(entry) =
-                crate::per_cpu::with_current_cold_mut(|cold| cold.pt_magazine.pop()).flatten()
-            else {
-                continue;
-            };
-            {
-                if entry.is_valid() && pool.len() < self.max_per_node {
-                    // Reconstruct PooledPt
-                    let ptr = unsafe { NonNull::new_unchecked(entry.virt as *mut SlPte) };
-                    let pt = PooledPt::new(ptr, entry.phys, entry.node as usize);
-                    pool.push(pt);
-                } else if entry.is_valid() {
-                    // Depot full - deallocate
-                    let ptr = unsafe { NonNull::new_unchecked(entry.virt as *mut SlPte) };
-                    let pt = PooledPt::new(ptr, entry.phys, entry.node as usize);
-                    drop(pool); // Release lock before dealloc
-                    Self::dealloc(pt);
-                    self.evicts.fetch_add(1, Ordering::Relaxed);
-                    return; // Can't continue without lock
-                }
-            }
-        }
     }
 }
 

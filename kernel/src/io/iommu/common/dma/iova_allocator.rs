@@ -33,34 +33,24 @@
 // ============================================================================
 
 use crate::sync::IrqMutex;
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::mm::phys::fast_allocator::FastBitmapAllocator;
 pub use crate::mm::phys::fast_allocator::PageGranularity;
 use crate::mm::remote_free::{QuarantineEntry, QuarantineRing}; // Using generic QuarantineRing
-#[cfg(not(feature = "qemu-test-export"))]
-use crate::per_cpu::MAX_CPUS;
 
 use crate::io::iommu::types::IommuError;
 
 /// Default capacity for quarantine ring (must be power of 2)
 const QUARANTINE_CAPACITY: usize = 256;
 
-#[cfg(feature = "qemu-test-export")]
-const IOVA_ALLOCATOR_MAX_CPUS: usize = 1;
-#[cfg(not(feature = "qemu-test-export"))]
-const IOVA_ALLOCATOR_MAX_CPUS: usize = MAX_CPUS;
-
-// Global fallback quarantine ring used when per-CPU quarantines cannot be allocated (early boot / OOM).
-// This static ring does not require heap allocation and provides limited quarantine semantics to
-// prevent immediate frees and potential UAF via DMA during early initialization.
-static FALLBACK_QUARANTINE: IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>> =
-    IrqMutex::new(QuarantineRing::new());
-
 // Batch size used to drain fallback ring
 const FALLBACK_DRAIN_BATCH: usize = 32;
+
+type IovaQuarantine = IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>;
+type QuarantineSnapshot = Arc<[Arc<IovaQuarantine>]>;
 
 // ============================================================================
 // IovaAllocator
@@ -72,11 +62,14 @@ pub struct IovaAllocator {
     /// Generic Fast Bitmap Allocator (providing core allocation/free logic)
     inner: FastBitmapAllocator,
 
-    /// Per-CPU Quarantine Rings (delayed free queue)
-    /// Protected by IrqMutex to allow safe access from IRQ handlers
-    ///
-    /// Per-CPU quarantine storage (None = fallback to immediate free)
-    quarantines: Option<Box<[IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>]>>,
+    /// Immutable snapshot of per-CPU quarantine rings. Entries remain at stable
+    /// addresses while firmware discovery grows the slot set.
+    quarantines: IrqMutex<QuarantineSnapshot>,
+
+    /// Allocator-local quarantine for execution without a current CPU or when
+    /// CPU-slot provisioning cannot allocate. It must not be shared between
+    /// IOVA address spaces.
+    fallback_quarantine: IovaQuarantine,
 
     /// Current global epoch (incremented *before* IOTLB invalidation)
     current_epoch: AtomicU32,
@@ -104,29 +97,50 @@ impl IovaAllocator {
     /// * `size` - Size of the IOVA space (bytes)
     pub fn new(base: u64, size: u64) -> Self {
         // Initialize Inner Allocator
-        let inner = FastBitmapAllocator::new(base, size);
-
-        // Initialize Per-CPU Quarantine Rings (try to allocate, but avoid panic on OOM)
-        let quarantines = {
-            let mut v: Vec<IrqMutex<QuarantineRing<QUARANTINE_CAPACITY>>> = Vec::new();
-            if v.try_reserve(IOVA_ALLOCATOR_MAX_CPUS).is_ok() {
-                for _ in 0..IOVA_ALLOCATOR_MAX_CPUS {
-                    v.push(IrqMutex::new(QuarantineRing::new()));
-                }
-                Some(v.into_boxed_slice())
-            } else {
-                // Heap not available or OOM during early boot: fall back to None and
-                // perform immediate frees instead of quarantining.
-                None
-            }
-        };
+        let mut inner = FastBitmapAllocator::new(base, size);
+        if let Some(runtime) = crate::cpu::try_runtime() {
+            let online_ids = runtime
+                .snapshot()
+                .online()
+                .iter()
+                .map(crate::cpu::CpuId::as_usize)
+                .collect::<Vec<_>>();
+            inner.reconfigure_for_cpu_ids(&online_ids);
+        }
 
         Self {
             inner,
-            quarantines,
+            quarantines: IrqMutex::new(Arc::from([])),
+            fallback_quarantine: IrqMutex::new(QuarantineRing::new()),
             current_epoch: AtomicU32::new(0),
             completed_epoch: AtomicU32::new(0),
             stats: IovaAllocatorStats::default(),
+        }
+    }
+
+    fn quarantine_for(&self, cpu_id: crate::cpu::CpuId) -> Option<Arc<IovaQuarantine>> {
+        let slot_count = crate::cpu::try_runtime()?.snapshot().slots().len();
+        let required_slots = slot_count.max(cpu_id.as_usize().saturating_add(1));
+
+        loop {
+            let current = self.quarantines.lock().clone();
+            if let Some(quarantine) = current.get(cpu_id.as_usize()) {
+                return Some(Arc::clone(quarantine));
+            }
+
+            let mut expanded = Vec::new();
+            expanded.try_reserve_exact(required_slots).ok()?;
+            expanded.extend(current.iter().cloned());
+            expanded.resize_with(required_slots, || {
+                Arc::new(IrqMutex::new(QuarantineRing::new()))
+            });
+            let expanded: QuarantineSnapshot = Arc::from(expanded.into_boxed_slice());
+
+            let mut published = self.quarantines.lock();
+            if Arc::ptr_eq(&published, &current) {
+                *published = expanded;
+                return published.get(cpu_id.as_usize()).cloned();
+            }
         }
     }
 
@@ -203,15 +217,6 @@ impl IovaAllocator {
         addr: u64,
         granularity: PageGranularity,
     ) -> Result<(), IommuError> {
-        let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-
-        // Ensure CPU ID is valid
-        if cpu_id >= IOVA_ALLOCATOR_MAX_CPUS {
-            // Fallback for invalid CPU ID: behave as immediate free?
-            // Or just use CPU 0. Let's use CPU 0 for safety but this shouldn't happen.
-            return self.free_immediate(addr, granularity.size_bytes());
-        }
-
         let epoch = self.current_epoch.load(Ordering::Relaxed);
         let entry = QuarantineEntry {
             addr,
@@ -223,11 +228,13 @@ impl IovaAllocator {
             },
         };
 
-        // Try to push to quarantine ring (fall back to immediate free if quarantines unavailable)
-        if let Some(ref qbox) = self.quarantines {
-            // Try to push to quarantine ring
+        let current_cpu = crate::cpu::CurrentCpu::acquire().map(|current| current.id());
+        if let Some((cpu_id, quarantine)) = current_cpu.and_then(|cpu_id| {
+            self.quarantine_for(cpu_id)
+                .map(|quarantine| (cpu_id, quarantine))
+        }) {
             let pushed = {
-                let mut ring = qbox[cpu_id].lock();
+                let mut ring = quarantine.lock();
                 ring.push(entry.addr, entry.size_class, entry.epoch)
             };
 
@@ -251,7 +258,7 @@ impl IovaAllocator {
                 Err(IommuError::OutOfMemory)
             }
         } else {
-            self.free_via_fallback_quarantine(entry, addr, granularity)
+            self.free_via_fallback_quarantine(entry, addr)
         }
     }
 
@@ -260,9 +267,8 @@ impl IovaAllocator {
         &self,
         entry: QuarantineEntry,
         addr: u64,
-        _granularity: PageGranularity,
     ) -> Result<(), IommuError> {
-        let mut fb = FALLBACK_QUARANTINE.lock();
+        let mut fb = self.fallback_quarantine.lock();
         if fb.push_entry(entry) {
             self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
             return Ok(());
@@ -411,41 +417,27 @@ impl IovaAllocator {
             }
         }
 
-        // Opportunistic drain: Try to reclaim memory from current CPU's ring
-        if let Some(cpu_id) = crate::cpu::try_current_id() {
-            if cpu_id < IOVA_ALLOCATOR_MAX_CPUS {
-                self.drain_quarantine_for_cpu(cpu_id, false);
-            }
-        }
-
-        // Also attempt to reclaim from global fallback quarantine (if any)
         let completed = self.completed_epoch.load(Ordering::Acquire);
-        self.drain_fallback_for_epoch(completed, false);
+        let quarantines = self.quarantines.lock().clone();
+        for quarantine in quarantines.iter() {
+            self.drain_quarantine(quarantine, completed);
+        }
+        self.drain_fallback_for_epoch(completed);
     }
 
     /// Drain quarantine ring for a specific CPU
     ///
     /// Reclaims pages that have been safe-guarded long enough.
-    fn drain_quarantine_for_cpu(&self, cpu_id: usize, force: bool) {
-        let completed_epoch = self.completed_epoch.load(Ordering::Acquire);
-
+    fn drain_quarantine(&self, quarantine: &IovaQuarantine, completed_epoch: u32) {
         // We use a small on-stack buffer to batch frees
         // This minimizes lock hold time on the quarantine ring
         let mut entries = [QuarantineEntry::default(); 32];
 
         // LOOP_PROOF: mode=event; reason=Drain loop exits when no reclaimable entries remain or when batch count falls below buffer length.;
         loop {
-            let count = if let Some(ref qbox) = self.quarantines {
-                let mut ring = qbox[cpu_id].lock();
-                if force {
-                    // In force mode, we just take the oldest items regardless of epoch
-                    // WARNING: potentially unsafe for IOTLB, but prevents OOM/deadlock
-                    ring.drain_all(&mut entries)
-                } else {
-                    ring.drain_older_than(completed_epoch, entries.len(), &mut entries)
-                }
-            } else {
-                0
+            let count = {
+                let mut ring = quarantine.lock();
+                ring.drain_older_than(completed_epoch, entries.len(), &mut entries)
             };
 
             if count == 0 {
@@ -453,17 +445,8 @@ impl IovaAllocator {
             }
 
             // Process batch free outside the lock
-            for i in 0..count {
-                let entry = entries[i];
-                let granularity = match entry.size_class {
-                    0 => PageGranularity::Page4K,
-                    1 => PageGranularity::Page2M,
-                    2 => PageGranularity::Page1G,
-                    _ => PageGranularity::Page4K,
-                };
-
-                // Free to the underlying allocator
-                let _ = self.inner.free_immediate(entry.addr, granularity);
+            for entry in entries.iter().take(count).copied() {
+                self.reclaim_entry(entry);
             }
 
             self.stats
@@ -476,34 +459,38 @@ impl IovaAllocator {
         }
     }
 
-    /// Drain the global fallback quarantine (used when per-CPU rings were not alloc'd)
-    fn drain_fallback_for_epoch(&self, completed_epoch: u32, force: bool) {
+    fn reclaim_entry(&self, entry: QuarantineEntry) {
+        let granularity = match entry.size_class {
+            0 => PageGranularity::Page4K,
+            1 => PageGranularity::Page2M,
+            2 => PageGranularity::Page1G,
+            invalid => panic!("invalid IOVA quarantine size class {invalid}"),
+        };
+        if self.inner.free_immediate(entry.addr, granularity).is_err() {
+            panic!(
+                "IOVA quarantine reclaimed unallocated address {:#x}",
+                entry.addr
+            );
+        }
+    }
+
+    /// Drain the allocator-local fallback quarantine.
+    fn drain_fallback_for_epoch(&self, completed_epoch: u32) {
         let mut entries = [QuarantineEntry::default(); FALLBACK_DRAIN_BATCH];
 
         // LOOP_PROOF: mode=event; reason=Fallback drain loop exits when ring is empty or when drained batch is smaller than buffer capacity.;
         loop {
             let count = {
-                let mut fb = FALLBACK_QUARANTINE.lock();
-                if force {
-                    fb.drain_all(&mut entries)
-                } else {
-                    fb.drain_older_than(completed_epoch, entries.len(), &mut entries)
-                }
+                let mut fallback = self.fallback_quarantine.lock();
+                fallback.drain_older_than(completed_epoch, entries.len(), &mut entries)
             };
 
             if count == 0 {
                 break;
             }
 
-            for i in 0..count {
-                let entry = entries[i];
-                let granularity = match entry.size_class {
-                    0 => PageGranularity::Page4K,
-                    1 => PageGranularity::Page2M,
-                    2 => PageGranularity::Page1G,
-                    _ => PageGranularity::Page4K,
-                };
-                let _ = self.inner.free_immediate(entry.addr, granularity);
+            for entry in entries.iter().take(count).copied() {
+                self.reclaim_entry(entry);
             }
 
             self.stats
