@@ -80,12 +80,12 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
         rx_dropped: 0,
     };
 
-    let current_core = crate::cpu::try_current_id().unwrap_or(0);
+    let current_cpu = crate::cpu::CurrentCpu::acquire().map(|current| current.id());
     let mut found_any = false;
 
-    for (i, stack_lock) in runtime.context().stacks.iter().enumerate() {
+    for resources in runtime.context().cpu_resources_snapshot().ok()? {
         if let Some(stack) = current_stack {
-            if i == current_core {
+            if Some(resources.cpu_id) == current_cpu {
                 if let Some(stats) = stack.interface_stats(if_id) {
                     stack_snapshot.rx_packets +=
                         stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
@@ -105,7 +105,7 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
             }
         }
 
-        if let Ok(guard) = stack_lock.lock() {
+        if let Ok(guard) = resources.stack.lock() {
             if let Some(stack) = guard.as_ref() {
                 if let Some(stats) = stack.interface_stats(if_id) {
                     stack_snapshot.rx_packets +=

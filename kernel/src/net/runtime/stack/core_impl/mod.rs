@@ -1242,7 +1242,13 @@ mod interface_topology_tests {
             crate::net::runtime::manager::current_interface_topology_revision_in(runtime);
         assert!(stack.needs_interface_topology_revision(changed_revision));
 
-        let queue = crate::net::runtime::command::command_queue_in(runtime);
+        let queue = crate::net::runtime::command::command_resources_for_cpu_in(
+            runtime,
+            crate::cpu::CpuId::BOOTSTRAP,
+        )
+        .expect("bootstrap command resources")
+        .command_queue
+        .clone();
         while queue.recv().is_some() {}
         for _ in 0..crate::net::runtime::command::RuntimeCommandQueue::CAPACITY {
             assert!(queue.send(RuntimeCommand::Control(

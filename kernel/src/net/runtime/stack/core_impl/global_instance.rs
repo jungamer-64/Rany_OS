@@ -9,19 +9,36 @@ use crate::net::runtime::command::{
 };
 
 /// Initialize a runtime-local network stack.
-pub(crate) fn init_in(runtime: NetRuntimeHandle) {
-    for stack_lock in runtime.context().stacks.iter() {
-        let mut stack = stack_lock.lock_for_init("[NET] Global Stack init");
+pub(crate) fn init_in(
+    runtime: NetRuntimeHandle,
+) -> Result<(), crate::net::runtime::context::NetCpuResourceError> {
+    for resources in runtime.context().cpu_resources_snapshot()? {
+        let mut stack = resources.stack.lock_for_init("[NET] Global Stack init");
         if stack.is_none() {
             *stack = Some(NetworkStack::new_in(runtime));
         }
     }
+    Ok(())
 }
 
 /// Get the runtime-local network stack
-pub(crate) fn stack_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<NetworkStack>> {
-    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-    &runtime.context().stacks[cpu_id]
+pub(crate) fn stack_in(
+    runtime: NetRuntimeHandle,
+) -> Result<
+    alloc::sync::Arc<PoisonLock<Option<NetworkStack>>>,
+    crate::net::runtime::context::NetCpuResourceError,
+> {
+    Ok(runtime.context().current_cpu_resources()?.stack.clone())
+}
+
+pub(crate) fn stack_for_cpu_in(
+    runtime: NetRuntimeHandle,
+    cpu_id: crate::cpu::CpuId,
+) -> Result<
+    alloc::sync::Arc<PoisonLock<Option<NetworkStack>>>,
+    crate::net::runtime::context::NetCpuResourceError,
+> {
+    Ok(runtime.context().cpu_resources(cpu_id)?.stack.clone())
 }
 
 /// 非同期タイムアウト処理タスク
@@ -34,9 +51,10 @@ pub(crate) fn stack_in(runtime: NetRuntimeHandle) -> &'static PoisonLock<Option<
 /// イベントキュー経由にすることで、イベントハンドラ側でスタックロックを
 /// 取得して処理するため、ロック競合を回避できる。
 pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
+    let cpu_id = crate::cpu::CurrentCpu::acquire().map(|current| current.id());
     log::info!(
-        "[NET] timeout_task started on CPU {} (event-queue mode)",
-        crate::cpu::try_current_id().unwrap_or(0)
+        "[NET] timeout_task started on CPU {:?} (event-queue mode)",
+        cpu_id
     );
     log::info!("[NET][boot] timeout_task stage: registering first 100ms sleep");
     // LOOP_PROOF: mode=event; reason=Timeout task intentionally runs for system lifetime and sleeps between finite timeout-processing passes.;
@@ -45,17 +63,37 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
         crate::task::sleep_ms(100).await;
 
         // 全 CPU コアのキューへローカルタイムアウト処理（100ms）をブロードキャスト
-        crate::net::runtime::command::broadcast_command_in(runtime, || {
+        let report = crate::net::runtime::command::broadcast_command_in(runtime, || {
             crate::net::runtime::command::RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::ProcessLocalTimeouts,
             )
         });
+        if report.unavailable != 0 || report.saturated != 0 {
+            log::warn!(
+                "[NET] local timeout broadcast incomplete: targets={} enqueued={} unavailable={} saturated={}",
+                report.targets,
+                report.enqueued,
+                report.unavailable,
+                report.saturated
+            );
+        }
 
         // CPU 0 にのみグローバルタイムアウト処理を要求
-        if let Some(queue) = runtime.context().command_queues.first() {
-            let _ = queue.send(crate::net::runtime::command::RuntimeCommand::Control(
-                crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
-            ));
+        match crate::net::runtime::command::command_resources_for_cpu_in(
+            runtime,
+            crate::cpu::CpuId::BOOTSTRAP,
+        ) {
+            Ok(resources)
+                if resources.command_queue.send(
+                    crate::net::runtime::command::RuntimeCommand::Control(
+                        crate::net::runtime::command::ControlCommand::ProcessGlobalTimeouts,
+                    ),
+                ) => {}
+            Ok(_) => log::warn!("[NET] bootstrap timeout command queue is saturated"),
+            Err(error) => log::error!(
+                "[NET] bootstrap timeout command queue unavailable: {:?}",
+                error
+            ),
         }
     }
 }

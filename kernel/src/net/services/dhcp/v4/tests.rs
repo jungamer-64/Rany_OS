@@ -667,7 +667,7 @@ pub fn test_offer_probe_and_decline_flow() {
     use crate::net::runtime::stack;
 
     // Initialize global stack for ARP facilities (best-effort)
-    stack::init_in(crate::net::runtime::default_runtime());
+    stack::init_in(crate::net::runtime::default_runtime()).expect("per-CPU network stack init");
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),

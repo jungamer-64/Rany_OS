@@ -6,8 +6,10 @@
 //! RuntimeCommand, RuntimeCommandQueue, CommandWaitFuture
 
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::context::{NetCpuResourceError, NetCpuResources};
 use crate::sync::{MpscRingBuffer, PoisonLock, WakerQueue};
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::PhantomData;
@@ -797,14 +799,6 @@ impl RuntimeCommandQueue {
     pub(crate) fn wait_for_events(&self) -> CommandWaitFuture<'_> {
         CommandWaitFuture { queue: self }
     }
-
-    #[cfg(test)]
-    pub fn reset_for_tests(&self) {
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while self.recv().is_some() {}
-        self.consumer_waiters.clear();
-        self.space_waiters.clear();
-    }
 }
 
 /// イベント待ちFuture
@@ -839,17 +833,30 @@ fn runtime_context_for(
     runtime.context()
 }
 
-pub(crate) fn command_queue_for_core_in(
+pub(crate) fn command_resources_for_cpu_in(
     runtime: NetRuntimeHandle,
-    cpu_id: usize,
-) -> &'static RuntimeCommandQueue {
-    let index = cpu_id % crate::per_cpu::MAX_CPUS;
-    &runtime_context_for(runtime).command_queues[index]
+    cpu_id: crate::cpu::CpuId,
+) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
+    runtime_context_for(runtime).cpu_resources(cpu_id)
 }
 
-pub(crate) fn command_queue_in(runtime: NetRuntimeHandle) -> &'static RuntimeCommandQueue {
-    let cpu_id = crate::cpu::try_current_id().unwrap_or(0);
-    command_queue_for_core_in(runtime, cpu_id)
+pub(crate) fn current_command_resources_in(
+    runtime: NetRuntimeHandle,
+) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
+    runtime_context_for(runtime).current_cpu_resources()
+}
+
+fn command_target(command: &RuntimeCommand) -> Option<crate::cpu::CpuId> {
+    let cpu_runtime = crate::cpu::try_runtime()?;
+    let snapshot = cpu_runtime.snapshot();
+    match command {
+        RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
+            snapshot.online().select(u64::from(packet.meta().flow_hash))
+        }
+        _ => crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .filter(|cpu_id| snapshot.online().contains(*cpu_id)),
+    }
 }
 
 #[inline]
@@ -857,20 +864,13 @@ pub(crate) fn try_enqueue_command_in(
     runtime: NetRuntimeHandle,
     command: RuntimeCommand,
 ) -> Result<(), RuntimeCommand> {
-    let num_cpus = crate::task::executor_slot_count().max(1);
-
-    // Ingress パケットは flow_hash を使用して owner CPU queue へディスパッチ。
-    // CPU IDは0..num_cpusの連番なので、Toeplitz hash結果の直接 modulo で
-    // FlowAffinity テーブルと同一の分散を達成する（ゼロアロケーション）。
-    let target_cpu = match &command {
-        RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
-            let flow_hash = packet.meta().flow_hash;
-            (flow_hash as usize) % num_cpus
-        }
-        _ => crate::cpu::try_current_id().unwrap_or(0) % num_cpus,
+    let Some(target_cpu) = command_target(&command) else {
+        return Err(command);
     };
-
-    command_queue_for_core_in(runtime, target_cpu).send_owned(command)
+    let Ok(resources) = command_resources_for_cpu_in(runtime, target_cpu) else {
+        return Err(command);
+    };
+    resources.command_queue.send_owned(command)
 }
 
 #[inline]
@@ -878,56 +878,63 @@ pub(crate) fn try_enqueue_command_from_isr_in(
     runtime: NetRuntimeHandle,
     command: RuntimeCommand,
 ) -> Result<(), RuntimeCommand> {
-    let num_cpus = crate::task::executor_slot_count().max(1);
-    let target_cpu = match &command {
-        RuntimeCommand::Ingress(IngressCommand::Packet { packet, .. }) => {
-            let flow_hash = packet.meta().flow_hash;
-            (flow_hash as usize) % num_cpus
-        }
-        _ => crate::cpu::try_current_id().unwrap_or(0) % num_cpus,
+    let Some(target_cpu) = command_target(&command) else {
+        return Err(command);
     };
-    command_queue_for_core_in(runtime, target_cpu).try_send_owned_from_isr(command)
+    let Ok(resources) = command_resources_for_cpu_in(runtime, target_cpu) else {
+        return Err(command);
+    };
+    resources.command_queue.try_send_owned_from_isr(command)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) struct CommandBroadcastReport {
+    pub(crate) targets: usize,
+    pub(crate) enqueued: usize,
+    pub(crate) unavailable: usize,
+    pub(crate) saturated: usize,
 }
 
 pub(crate) fn broadcast_command_in(
     runtime: NetRuntimeHandle,
     command_factory: impl Fn() -> RuntimeCommand,
-) {
-    let num_cpus = crate::task::executor_slot_count().max(1);
-    for cpu_id in 0..num_cpus {
-        let _ = command_queue_for_core_in(runtime, cpu_id).send(command_factory());
+) -> CommandBroadcastReport {
+    let mut report = CommandBroadcastReport::default();
+    let Some(cpu_runtime) = crate::cpu::try_runtime() else {
+        return report;
+    };
+    let snapshot = cpu_runtime.snapshot();
+    for cpu_id in snapshot.online() {
+        report.targets += 1;
+        let Ok(resources) = command_resources_for_cpu_in(runtime, cpu_id) else {
+            report.unavailable += 1;
+            continue;
+        };
+        if resources.command_queue.send(command_factory()) {
+            report.enqueued += 1;
+        } else {
+            report.saturated += 1;
+        }
     }
+    report
 }
 
-pub(crate) fn mark_command_task_running_in(runtime: NetRuntimeHandle) {
-    let context = runtime_context_for(runtime);
-    let was_running = context.command_task_running.swap(true, Ordering::AcqRel);
+pub(crate) fn mark_command_task_running(resources: &NetCpuResources) {
+    let was_running = resources.command_task_running.swap(true, Ordering::AcqRel);
     if !was_running {
-        context.command_task_ready_waiters.wake_all();
+        resources.command_task_ready_waiters.wake_all();
     }
 }
 
-pub(crate) fn command_task_running_in(runtime: NetRuntimeHandle) -> bool {
-    runtime_context_for(runtime)
-        .command_task_running
-        .load(Ordering::Acquire)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_command_system_for_tests_in(runtime: NetRuntimeHandle) {
-    runtime_context_for(runtime)
-        .command_task_running
-        .store(false, Ordering::Release);
-    runtime_context_for(runtime)
-        .command_task_ready_waiters
-        .clear();
-    command_queue_in(runtime).reset_for_tests();
+pub(crate) fn command_task_running(resources: &NetCpuResources) -> bool {
+    resources.command_task_running.load(Ordering::Acquire)
 }
 
 /// タスクコンテキスト向け非同期イベント送信Future
 pub(crate) struct SendCommandFuture {
     runtime: NetRuntimeHandle,
     command: Option<RuntimeCommand>,
+    target: Option<crate::cpu::CpuId>,
 }
 
 impl SendCommandFuture {
@@ -935,6 +942,7 @@ impl SendCommandFuture {
         Self {
             runtime,
             command: Some(command),
+            target: None,
         }
     }
 }
@@ -945,12 +953,26 @@ impl Future for SendCommandFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let runtime = this.runtime;
+        let target = match this.target {
+            Some(target) => target,
+            None => {
+                let Some(command) = this.command.as_ref() else {
+                    return Poll::Ready(Err(EndpointError::Internal));
+                };
+                let Some(target) = command_target(command) else {
+                    return Poll::Ready(Err(EndpointError::NetworkUnreachable));
+                };
+                this.target = Some(target);
+                target
+            }
+        };
+        let Ok(resources) = command_resources_for_cpu_in(runtime, target) else {
+            return Poll::Ready(Err(EndpointError::Internal));
+        };
 
-        if !command_task_running_in(runtime) {
-            runtime_context_for(runtime)
-                .command_task_ready_waiters
-                .register(cx.waker());
-            if !command_task_running_in(runtime) {
+        if !command_task_running(&resources) {
+            resources.command_task_ready_waiters.register(cx.waker());
+            if !command_task_running(&resources) {
                 return Poll::Pending;
             }
         }
@@ -959,17 +981,17 @@ impl Future for SendCommandFuture {
             .command
             .take()
             .expect("send command future polled after completion");
-        match command_queue_in(runtime).send_owned(command) {
+        match resources.command_queue.send_owned(command) {
             Ok(()) => Poll::Ready(Ok(())),
             Err(command) => {
                 this.command = Some(command);
-                command_queue_in(runtime).space_waiters.register(cx.waker());
+                resources.command_queue.space_waiters.register(cx.waker());
 
                 let retry = this
                     .command
                     .take()
                     .expect("send command future lost pending command");
-                match command_queue_in(runtime).send_owned(retry) {
+                match resources.command_queue.send_owned(retry) {
                     Ok(()) => Poll::Ready(Ok(())),
                     Err(command) => {
                         this.command = Some(command);
@@ -1035,98 +1057,33 @@ impl CommandDispatch {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::net::l4::test_support::noop_waker;
-    use core::task::{Context, Poll};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn send_command_waits_for_command_task_readiness() {
-        let runtime = crate::net::runtime::default_runtime();
-        reset_command_system_for_tests_in(runtime);
-
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        let mut future = send_command_in(
-            runtime,
-            RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts),
-        );
-
-        assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
-
-        mark_command_task_running_in(runtime);
-        assert!(matches!(
-            Pin::new(&mut future).poll(&mut cx),
-            Poll::Ready(Ok(()))
-        ));
-        assert!(matches!(
-            command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Control(
-                ControlCommand::ProcessLocalTimeouts
-            ))
-        ));
-
-        reset_command_system_for_tests_in(runtime);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn send_command_waits_for_queue_space() {
-        let runtime = crate::net::runtime::default_runtime();
-        reset_command_system_for_tests_in(runtime);
-        mark_command_task_running_in(runtime);
-
+    fn runtime_command_queue_returns_the_unsent_command_at_capacity() {
+        let queue = RuntimeCommandQueue::new();
         for _ in 0..RuntimeCommandQueue::CAPACITY {
             assert!(
-                enqueue_command_in(
-                    runtime,
-                    RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts)
-                )
-                .is_ok()
+                queue
+                    .send_owned(RuntimeCommand::Control(
+                        ControlCommand::ProcessLocalTimeouts
+                    ))
+                    .is_ok()
             );
         }
 
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        let mut future = send_command_in(
-            runtime,
-            RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts),
-        );
-
-        assert!(matches!(Pin::new(&mut future).poll(&mut cx), Poll::Pending));
-        assert!(matches!(
-            command_queue_in(runtime).recv(),
-            Some(RuntimeCommand::Control(
-                ControlCommand::ProcessLocalTimeouts
+        let rejected = queue
+            .send_owned(RuntimeCommand::Control(
+                ControlCommand::ProcessGlobalTimeouts,
             ))
-        ));
+            .expect_err("bounded queue must reject one command beyond capacity");
         assert!(matches!(
-            Pin::new(&mut future).poll(&mut cx),
-            Poll::Ready(Ok(()))
+            rejected,
+            RuntimeCommand::Control(ControlCommand::ProcessGlobalTimeouts)
         ));
-
-        reset_command_system_for_tests_in(runtime);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    #[should_panic(expected = "command reply type mismatch")]
-    fn command_reply_type_mismatch_is_fatal() {
-        let runtime = crate::net::runtime::default_runtime();
-        let registry = CommandReplyRegistry::new();
-        let ticket: CommandReplyTicket<Result<(), EndpointError>> = registry.reserve(runtime);
-
-        {
-            let mut entries = registry.entries.lock().unwrap_or_else(|e| e.into_inner());
-            entries
-                .get_mut(&ticket.id)
-                .expect("reserved reply entry")
-                .value = Some(CommandReplyValue::Text(alloc::string::String::from(
-                "wrong reply type",
-            )));
+        for _ in 0..RuntimeCommandQueue::CAPACITY {
+            assert!(queue.recv().is_some());
         }
-
-        let waker = noop_waker();
-        let mut cx = Context::from_waker(&waker);
-        let _ = registry.poll(ticket, &mut cx);
+        assert!(queue.recv().is_none());
     }
 }

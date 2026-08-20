@@ -52,13 +52,22 @@ impl DhcpV6Client {
         }
 
         // 初回のみスタックロックで取得してキャッシュ
-        let result = match crate::net::runtime::stack::stack_in(self.runtime).lock() {
-            Ok(guard) => guard.as_ref().and_then(|s| {
-                s.interface_state_for_ingress(self.if_id)
-                    .and_then(|(_, state)| state.ipv6_link_local())
-            }),
-            Err(_) => {
-                log::error!("[NET] DHCPv6: Global Stack poisoned - cannot get link-local");
+        let result = match crate::net::runtime::stack::stack_in(self.runtime) {
+            Ok(stack_lock) => match stack_lock.lock() {
+                Ok(guard) => guard.as_ref().and_then(|s| {
+                    s.interface_state_for_ingress(self.if_id)
+                        .and_then(|(_, state)| state.ipv6_link_local())
+                }),
+                Err(_) => {
+                    log::error!("[NET] DHCPv6: stack poisoned - cannot get link-local");
+                    None
+                }
+            },
+            Err(error) => {
+                log::error!(
+                    "[NET] DHCPv6: CPU stack unavailable - cannot get link-local: {:?}",
+                    error
+                );
                 None
             }
         };

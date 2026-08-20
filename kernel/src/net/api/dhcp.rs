@@ -89,10 +89,13 @@ pub fn init_dhcp_runtime_in(runtime: NetRuntimeHandle) -> Result<(), String> {
     let bootstrap_config = interfaces
         .iter()
         .find_map(|iface| iface.config)
-        .or_else(|| match stack::stack_in(runtime).lock() {
-            Ok(guard) => guard
-                .as_ref()
-                .and_then(|stack_guard| stack_guard.primary_interface_config()),
+        .or_else(|| match stack::stack_in(runtime) {
+            Ok(stack_lock) => match stack_lock.lock() {
+                Ok(guard) => guard
+                    .as_ref()
+                    .and_then(|stack_guard| stack_guard.primary_interface_config()),
+                Err(_) => None,
+            },
             Err(_) => None,
         })
         .ok_or_else(|| String::from("Network stack is not initialized"))?;

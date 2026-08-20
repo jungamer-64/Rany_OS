@@ -7,7 +7,6 @@
 
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use super::command::command_queue_in;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::transport::tcp_table_in;
@@ -24,12 +23,22 @@ use crate::net::runtime::transport::tcp_table_in;
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
+    let resources = match super::command::current_command_resources_in(runtime) {
+        Ok(resources) => resources,
+        Err(error) => {
+            log::error!(
+                "[NET] command consumer cannot bind to CPU resources: {:?}",
+                error
+            );
+            return;
+        }
+    };
     log::info!(
         "[NET] runtime_command_task started on CPU {} (fully async)",
-        crate::cpu::try_current_id().unwrap_or(0)
+        resources.cpu_id
     );
     log::info!("[NET][boot] runtime_command_task stage: awaiting first event batch");
-    super::command::mark_command_task_running_in(runtime);
+    super::command::mark_command_task_running(&resources);
 
     /// 1回のバッチで処理するイベントの最大数
     /// ロック保持時間を制限し、他タスクのスターベーションを防止
@@ -39,9 +48,9 @@ pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
 
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.
     loop {
-        let event = command_queue_in(runtime).wait_for_events().await;
+        let event = resources.command_queue.wait_for_events().await;
 
-        if let Ok(mut stack_guard) = crate::net::runtime::stack::stack_in(runtime).lock() {
+        if let Ok(mut stack_guard) = resources.stack.lock() {
             if let Some(ref mut stack) = *stack_guard {
                 let result = handler.handle_event_with_stack_in(runtime, event, stack);
                 process_handle_result(runtime, result);
@@ -49,7 +58,7 @@ pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
                 let mut batch_count = 1usize;
                 // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
                 while batch_count < MAX_BATCH_SIZE {
-                    match command_queue_in(runtime).recv() {
+                    match resources.command_queue.recv() {
                         Some(batch_event) => {
                             let result =
                                 handler.handle_event_with_stack_in(runtime, batch_event, stack);
@@ -73,7 +82,7 @@ pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
         process_handle_result(runtime, result);
 
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
-        while let Some(batch_event) = command_queue_in(runtime).recv() {
+        while let Some(batch_event) = resources.command_queue.recv() {
             let result = handler.handle_event_in(runtime, batch_event);
             process_handle_result(runtime, result);
         }

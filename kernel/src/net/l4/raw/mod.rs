@@ -150,9 +150,9 @@ impl RawEndpoint {
         let runtime = self.socket.runtime();
         let if_id =
             resolve_raw_interface(runtime, scope, &payload).map_err(network_error_to_socket)?;
-        let mut guard = crate::net::runtime::stack::stack_in(runtime)
-            .lock()
-            .map_err(|_| EndpointError::Internal)?;
+        let stack_lock =
+            crate::net::runtime::stack::stack_in(runtime).map_err(|_| EndpointError::Internal)?;
+        let mut guard = stack_lock.lock().map_err(|_| EndpointError::Internal)?;
         let stack = guard.as_mut().ok_or(EndpointError::NotFound)?;
         stack
             .send_raw_ip_payload_on(if_id, payload)

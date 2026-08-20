@@ -88,7 +88,9 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
         DHCP_MAGIC_COOKIE, DhcpClient, DhcpHeader, DhcpMessageType, DhcpOperation, DhcpOption,
     };
 
-    stack::init_in(crate::net::runtime::default_runtime());
+    if stack::init_in(crate::net::runtime::default_runtime()).is_err() {
+        return false;
+    }
 
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
@@ -495,17 +497,18 @@ fn udp_datagram(src_port: u16, dst_port: u16, data: &[u8]) -> Option<Vec<u8>> {
 fn process_runtime_commands(
     runtime: crate::net::runtime::NetRuntimeHandle,
     handler: &crate::net::runtime::command_handler::RuntimeCommandHandler,
-    executor_count: usize,
-    mut observe_packet: impl FnMut(usize, NetIfId, u8),
+    online: &crate::cpu::CpuSet,
+    mut observe_packet: impl FnMut(crate::cpu::CpuId, NetIfId, u8),
 ) -> Option<usize> {
     let mut total = 0usize;
     for _ in 0..8 {
         let mut processed = 0usize;
-        for cpu_id in 0..executor_count {
-            let queue = crate::net::runtime::command::command_queue_for_core_in(runtime, cpu_id);
-            let mut stack_guard = runtime.context().stacks[cpu_id].lock().ok()?;
+        for cpu_id in online {
+            let resources =
+                crate::net::runtime::command::command_resources_for_cpu_in(runtime, cpu_id).ok()?;
+            let mut stack_guard = resources.stack.lock().ok()?;
             let core_stack = stack_guard.as_mut()?;
-            while let Some(command) = queue.recv() {
+            while let Some(command) = resources.command_queue.recv() {
                 let observed = match &command {
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Packet { if_id, packet },
@@ -591,13 +594,15 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     (crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_a)).then_some(())?;
     log::info!(target: "qemu::net", "initial primary verified");
 
-    let cpu_count = (crate::cpu::count() as usize).clamp(1, 4);
-    let executor_count = crate::task::executor_slot_count().max(1);
-    (executor_count >= cpu_count).then_some(())?;
+    let online = crate::cpu::snapshot().online().clone();
+    let exercised_cpus = online.iter().take(4).collect::<Vec<_>>();
+    let cpu_count = exercised_cpus.len();
+    (cpu_count != 0).then_some(())?;
     let handler = crate::net::runtime::command_handler::RuntimeCommandHandler::new();
-    process_runtime_commands(runtime, &handler, executor_count, |_, _, _| {})?;
-    for cpu_id in 0..executor_count {
-        let stack_guard = runtime.context().stacks[cpu_id].lock().ok()?;
+    process_runtime_commands(runtime, &handler, &online, |_, _, _| {})?;
+    for cpu_id in &online {
+        let stack_lock = crate::net::runtime::stack::stack_for_cpu_in(runtime, cpu_id).ok()?;
+        let stack_guard = stack_lock.lock().ok()?;
         let core_stack = stack_guard.as_ref()?;
         core_stack.interface_config(if_a)?;
         core_stack.interface_config(if_b)?;
@@ -669,11 +674,8 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let mut fragments_a = 0usize;
     let mut fragments_b = 0usize;
     let mut fragment_cpu = None;
-    let processed_fragments = process_runtime_commands(
-        runtime,
-        &handler,
-        executor_count,
-        |cpu_id, if_id, protocol| {
+    let processed_fragments =
+        process_runtime_commands(runtime, &handler, &online, |cpu_id, if_id, protocol| {
             if protocol != 17 {
                 return;
             }
@@ -687,8 +689,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
                     fragments_b = fragments_b.saturating_add(1);
                 }
             }
-        },
-    )?;
+        })?;
     log::info!(
         target: "qemu::net",
         "fragment commands processed: total={processed_fragments} if_a={fragments_a} if_b={fragments_b} cpu={fragment_cpu:?}"
@@ -713,17 +714,17 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let rss_tx_before =
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_b)
             .map_or(0, |stats| stats.tx_packets);
-    for target_cpu in 0..cpu_count {
+    for target_cpu in exercised_cpus.iter().copied() {
         let src_port = (1024u16..=u16::MAX).find(|src_port| {
-            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
-                src_ip_u32,
-                dst_ip_u32,
-                *src_port,
-                destination_port,
-                17,
-            ) as usize
-                % executor_count
-                == target_cpu
+            online.select(u64::from(
+                crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                    src_ip_u32,
+                    dst_ip_u32,
+                    *src_port,
+                    destination_port,
+                    17,
+                ),
+            )) == Some(target_cpu)
         })?;
         let udp = udp_datagram(src_port, destination_port, b"rss-udp")?;
         state_b
@@ -745,15 +746,17 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
 
         let source_octet = (3u8..=254).find(|octet| {
             let source = u32::from_be_bytes([10, 23, 0, *octet]);
-            crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
-                source, dst_ip_u32, 0, 0, 1,
-            ) as usize
-                % executor_count
-                == target_cpu
+            online.select(u64::from(
+                crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+                    source, dst_ip_u32, 0, 0, 1,
+                ),
+            )) == Some(target_cpu)
         })?;
         let icmp_source = Ipv4Address::new([10, 23, 0, source_octet]);
         {
-            let mut stack_guard = runtime.context().stacks[target_cpu].lock().ok()?;
+            let stack_lock =
+                crate::net::runtime::stack::stack_for_cpu_in(runtime, target_cpu).ok()?;
+            let mut stack_guard = stack_lock.lock().ok()?;
             stack_guard.as_mut()?.arp_cache_insert_on(
                 if_b,
                 icmp_source,
@@ -761,7 +764,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
                 10,
             );
         }
-        let echo = icmp_echo_request(target_cpu as u16, 1, b"rss-icmp");
+        let echo = icmp_echo_request(target_cpu.as_u16(), 1, b"rss-icmp");
         state_b
             .submit_rx(build_ipv4_frame(
                 runtime,
@@ -771,7 +774,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
                     src_ip: icmp_source,
                     dst_ip: local_ip,
                     protocol: crate::net::l3::ipv4::IpProtocol::Icmp,
-                    identification: 0x6000 + target_cpu as u16,
+                    identification: 0x6000 + target_cpu.as_u16(),
                     fragment_offset: 0,
                     more_fragments: false,
                     payload: &echo,
@@ -781,27 +784,28 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     }
     log::info!(
         target: "qemu::net",
-        "per-core packets submitted: cpu_count={cpu_count} executor_count={executor_count}"
+        "per-core packets submitted: cpu_count={cpu_count} online_count={}",
+        online.len()
     );
     let mut saw_udp = [false; 4];
     let mut saw_icmp = [false; 4];
-    let processed_per_core = process_runtime_commands(
-        runtime,
-        &handler,
-        executor_count,
-        |cpu_id, if_id, protocol| {
-            if if_id == if_b && cpu_id < 4 {
-                saw_udp[cpu_id] |= protocol == 17;
-                saw_icmp[cpu_id] |= protocol == 1;
+    let processed_per_core =
+        process_runtime_commands(runtime, &handler, &online, |cpu_id, if_id, protocol| {
+            if if_id == if_b {
+                if let Some(member_index) =
+                    exercised_cpus.iter().position(|member| *member == cpu_id)
+                {
+                    saw_udp[member_index] |= protocol == 17;
+                    saw_icmp[member_index] |= protocol == 1;
+                }
             }
-        },
-    )?;
+        })?;
     log::info!(
         target: "qemu::net",
         "per-core commands processed: total={processed_per_core} udp={saw_udp:?} icmp={saw_icmp:?}"
     );
-    for cpu_id in 0..cpu_count {
-        (saw_udp[cpu_id] && saw_icmp[cpu_id]).then_some(())?;
+    for member_index in 0..cpu_count {
+        (saw_udp[member_index] && saw_icmp[member_index]).then_some(())?;
     }
     for _ in 0..cpu_count {
         let received = socket_b.try_recv_udp_payload();
@@ -823,8 +827,9 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     (rss_tx_after >= rss_tx_before.saturating_add(cpu_count as u64)).then_some(())?;
     log::info!(target: "qemu::net", "per-core UDP and ICMP dispatch verified");
 
-    for cpu_id in 0..executor_count {
-        let mut stack_guard = runtime.context().stacks[cpu_id].lock().ok()?;
+    for cpu_id in &online {
+        let stack_lock = crate::net::runtime::stack::stack_for_cpu_in(runtime, cpu_id).ok()?;
+        let mut stack_guard = stack_lock.lock().ok()?;
         stack_guard.as_mut()?.arp_cache_insert_on(
             if_a,
             remote_ip,
@@ -852,7 +857,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     )?;
     state_a.submit_rx(frame).ok()?;
     let mut primary_icmp = 0usize;
-    process_runtime_commands(runtime, &handler, executor_count, |_, if_id, protocol| {
+    process_runtime_commands(runtime, &handler, &online, |_, if_id, protocol| {
         if if_id == if_a && protocol == 1 {
             primary_icmp = primary_icmp.saturating_add(1);
         }
@@ -911,9 +916,10 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     .then_some(())?;
     log::info!(target: "qemu::net", "stopped interface RX and TX rejection verified");
 
-    process_runtime_commands(runtime, &handler, executor_count, |_, _, _| {})?;
-    for cpu_id in 0..executor_count {
-        let mut stack_guard = runtime.context().stacks[cpu_id].lock().ok()?;
+    process_runtime_commands(runtime, &handler, &online, |_, _, _| {})?;
+    for cpu_id in &online {
+        let stack_lock = crate::net::runtime::stack::stack_for_cpu_in(runtime, cpu_id).ok()?;
+        let mut stack_guard = stack_lock.lock().ok()?;
         let core_stack = stack_guard.as_mut()?;
         core_stack.interface_config(if_a).is_none().then_some(())?;
         core_stack.interface_config(if_b)?;
@@ -945,7 +951,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     )?;
     state_b.submit_rx(frame).ok()?;
     let mut secondary_icmp = 0usize;
-    process_runtime_commands(runtime, &handler, executor_count, |_, if_id, protocol| {
+    process_runtime_commands(runtime, &handler, &online, |_, if_id, protocol| {
         if if_id == if_b && protocol == 1 {
             secondary_icmp = secondary_icmp.saturating_add(1);
         }

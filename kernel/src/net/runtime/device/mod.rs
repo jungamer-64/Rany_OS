@@ -1409,7 +1409,13 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
     }
 
     manager::init_network_manager_in(runtime);
-    stack::init_in(runtime);
+    if let Err(error) = stack::init_in(runtime) {
+        runtime_context_for(runtime)
+            .stack_initialized
+            .store(false, Ordering::Release);
+        log::warn!(target: "net::device", "per-CPU stack resource init failed: {:?}", error);
+        return Err("network CPU resources unavailable");
+    }
 
     if let Err(err) = crate::net::api::dhcp::init_dhcp_runtime_in(runtime) {
         log::warn!(target: "net::device", "DHCP runtime init failed: {}", err);

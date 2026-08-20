@@ -2,6 +2,7 @@
 // kernel/src/net/runtime/context.rs - ランタイム / context
 // ============================================================================
 
+use crate::cpu::CpuId;
 use crate::net::datapath::mempool::Mempool;
 use crate::net::l4::socket::SocketRegistry;
 use crate::net::obs::NetObservability;
@@ -23,6 +24,7 @@ use crate::net::{l2::arp::ArpWaiterRegistry, l3::ndp::NdpWaiterRegistry};
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
@@ -53,6 +55,36 @@ impl NetRuntimeGeneration {
 pub enum RuntimeAllocationError {
     IdSpaceExhausted,
     IdAlreadyAllocated,
+    CpuTopologyUnavailable,
+    CpuTopologyInconsistent,
+    CpuResourceAllocationFailed,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NetCpuResourceError {
+    NoCurrentCpu,
+    CpuNotProvisioned(CpuId),
+    RegistryPoisoned,
+}
+
+pub(crate) struct NetCpuResources {
+    pub(crate) cpu_id: CpuId,
+    pub(crate) stack: Arc<PoisonLock<Option<NetworkStack>>>,
+    pub(crate) command_queue: Arc<RuntimeCommandQueue>,
+    pub(crate) command_task_running: AtomicBool,
+    pub(crate) command_task_ready_waiters: WakerQueue,
+}
+
+impl NetCpuResources {
+    fn new(cpu_id: CpuId) -> Self {
+        Self {
+            cpu_id,
+            stack: Arc::new(PoisonLock::new(None)),
+            command_queue: Arc::new(RuntimeCommandQueue::new()),
+            command_task_running: AtomicBool::new(false),
+            command_task_ready_waiters: WakerQueue::new(),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -97,13 +129,10 @@ impl Eq for NetRuntimeHandle {}
 pub struct NetRuntimeContext {
     id: NetRuntimeId,
     generation: NetRuntimeGeneration,
-    pub(crate) stacks: Box<[PoisonLock<Option<NetworkStack>>; crate::per_cpu::MAX_CPUS]>,
+    cpu_resources: PoisonRwLock<Vec<Option<Arc<NetCpuResources>>>>,
     pub(crate) manager: PoisonLock<Option<NetworkManager>>,
     pub(crate) interface_topology_revision: AtomicU64,
-    pub(crate) command_queues: Box<[RuntimeCommandQueue; crate::per_cpu::MAX_CPUS]>,
     pub(crate) command_replies: CommandReplyRegistry,
-    pub(crate) command_task_running: AtomicBool,
-    pub(crate) command_task_ready_waiters: WakerQueue,
     pub(crate) sockets: SocketRegistry,
     pub(crate) transport: TransportState,
     pub(crate) firewall: FirewallRuntimeState,
@@ -129,19 +158,29 @@ pub struct NetRuntimeContext {
 }
 
 impl NetRuntimeContext {
-    fn new(id: NetRuntimeId, generation: NetRuntimeGeneration) -> Self {
-        let stacks = allocate_per_cpu_array(|| PoisonLock::new(None));
-        let command_queues = allocate_per_cpu_array(RuntimeCommandQueue::new);
-        Self {
+    fn new(
+        id: NetRuntimeId,
+        generation: NetRuntimeGeneration,
+        cpu_snapshot: &crate::cpu::CpuSnapshot,
+    ) -> Result<Self, RuntimeAllocationError> {
+        let mut cpu_resources = Vec::new();
+        cpu_resources
+            .try_reserve_exact(cpu_snapshot.slots().len())
+            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)?;
+        for slot in cpu_snapshot.slots() {
+            if slot.id.as_usize() != cpu_resources.len() {
+                return Err(RuntimeAllocationError::CpuTopologyInconsistent);
+            }
+            cpu_resources.push(Some(Arc::new(NetCpuResources::new(slot.id))));
+        }
+
+        Ok(Self {
             id,
             generation,
-            stacks,
+            cpu_resources: PoisonRwLock::new(cpu_resources),
             manager: PoisonLock::new(None),
             interface_topology_revision: AtomicU64::new(0),
-            command_queues,
             command_replies: CommandReplyRegistry::new(),
-            command_task_running: AtomicBool::new(false),
-            command_task_ready_waiters: WakerQueue::new(),
             sockets: SocketRegistry::new(),
             transport: TransportState::new(),
             firewall: FirewallRuntimeState::new(),
@@ -164,7 +203,7 @@ impl NetRuntimeContext {
             dns: DnsRuntimeState::new(),
             http: HttpRuntimeState::new(),
             mdns: MdnsRuntimeState::new(),
-        }
+        })
     }
 
     pub const fn id(&self) -> NetRuntimeId {
@@ -178,16 +217,40 @@ impl NetRuntimeContext {
     pub const fn handle(&'static self) -> NetRuntimeHandle {
         NetRuntimeHandle::new(self)
     }
-}
 
-fn allocate_per_cpu_array<T>(mut create: impl FnMut() -> T) -> Box<[T; crate::per_cpu::MAX_CPUS]> {
-    let slots = (0..crate::per_cpu::MAX_CPUS)
-        .map(|_| create())
-        .collect::<Vec<_>>()
-        .into_boxed_slice();
-    match slots.try_into() {
-        Ok(slots) => slots,
-        Err(_) => unreachable!("per-core array length changed during allocation"),
+    pub(crate) fn cpu_resources(
+        &self,
+        cpu_id: CpuId,
+    ) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
+        let resources = self
+            .cpu_resources
+            .read()
+            .map_err(|_| NetCpuResourceError::RegistryPoisoned)?;
+        resources
+            .get(cpu_id.as_usize())
+            .and_then(Option::as_ref)
+            .filter(|resources| resources.cpu_id == cpu_id)
+            .cloned()
+            .ok_or(NetCpuResourceError::CpuNotProvisioned(cpu_id))
+    }
+
+    pub(crate) fn current_cpu_resources(
+        &self,
+    ) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
+        let cpu_id = crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .ok_or(NetCpuResourceError::NoCurrentCpu)?;
+        self.cpu_resources(cpu_id)
+    }
+
+    pub(crate) fn cpu_resources_snapshot(
+        &self,
+    ) -> Result<Vec<Arc<NetCpuResources>>, NetCpuResourceError> {
+        let resources = self
+            .cpu_resources
+            .read()
+            .map_err(|_| NetCpuResourceError::RegistryPoisoned)?;
+        Ok(resources.iter().filter_map(Clone::clone).collect())
     }
 }
 
@@ -209,7 +272,10 @@ impl RuntimeRegistry {
         }
     }
 
-    fn allocate_runtime(&mut self) -> Result<&'static NetRuntimeContext, RuntimeAllocationError> {
+    fn allocate_runtime(
+        &mut self,
+        cpu_snapshot: &crate::cpu::CpuSnapshot,
+    ) -> Result<&'static NetRuntimeContext, RuntimeAllocationError> {
         let raw_id = self
             .next_id
             .ok_or(RuntimeAllocationError::IdSpaceExhausted)?;
@@ -218,13 +284,17 @@ impl RuntimeRegistry {
             return Err(RuntimeAllocationError::IdAlreadyAllocated);
         }
 
+        let context = NetRuntimeContext::new(id, self.generation, cpu_snapshot)?;
         self.next_id = raw_id.checked_add(1);
-        let context = Box::leak(Box::new(NetRuntimeContext::new(id, self.generation)));
+        let context = Box::leak(Box::new(context));
         self.runtimes.insert(id, context);
         Ok(context)
     }
 
-    fn default_runtime(&mut self) -> &'static NetRuntimeContext {
+    fn default_runtime(
+        &mut self,
+        cpu_snapshot: &crate::cpu::CpuSnapshot,
+    ) -> &'static NetRuntimeContext {
         if let Some(id) = self.default {
             if let Some(context) = self.runtimes.get(&id).copied() {
                 return context;
@@ -232,7 +302,7 @@ impl RuntimeRegistry {
         }
 
         let context = self
-            .allocate_runtime()
+            .allocate_runtime(cpu_snapshot)
             .expect("network runtime id space exhausted");
         self.default = Some(context.id());
         context
@@ -242,8 +312,11 @@ impl RuntimeRegistry {
 static RUNTIME_REGISTRY: PoisonLock<RuntimeRegistry> = PoisonLock::new(RuntimeRegistry::new());
 
 pub fn default_runtime() -> NetRuntimeHandle {
+    let cpu_snapshot = crate::cpu::try_runtime()
+        .expect("CPU runtime must be installed before the network runtime")
+        .snapshot();
     let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry init");
-    registry.default_runtime().handle()
+    registry.default_runtime(&cpu_snapshot).handle()
 }
 
 pub fn default_runtime_context() -> &'static NetRuntimeContext {
@@ -251,8 +324,13 @@ pub fn default_runtime_context() -> &'static NetRuntimeContext {
 }
 
 pub fn create_runtime() -> Result<NetRuntimeHandle, RuntimeAllocationError> {
+    let cpu_snapshot = crate::cpu::try_runtime()
+        .ok_or(RuntimeAllocationError::CpuTopologyUnavailable)?
+        .snapshot();
     let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry create");
-    registry.allocate_runtime().map(NetRuntimeContext::handle)
+    registry
+        .allocate_runtime(&cpu_snapshot)
+        .map(NetRuntimeContext::handle)
 }
 
 pub fn runtime(id: NetRuntimeId) -> Option<NetRuntimeHandle> {
@@ -312,41 +390,59 @@ mod tests {
     use crate::net::runtime::command::RuntimeCommand;
     use crate::net::runtime::manager;
 
+    fn cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
+        crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
+            .expect("bootstrap CPU topology")
+            .snapshot()
+    }
+
     #[test]
     fn runtimes_keep_manager_and_event_state_isolated() {
-        reset_runtime_registry_for_tests();
-
-        let runtime_a = default_runtime();
-        let runtime_b = create_runtime().expect("second runtime allocation");
+        let cpu_snapshot = cpu_snapshot();
+        let mut registry = RuntimeRegistry::new();
+        let runtime_a = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("first runtime allocation")
+            .handle();
+        let runtime_b = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("second runtime allocation")
+            .handle();
 
         assert_ne!(runtime_a.id(), runtime_b.id());
-        assert_eq!(list_runtimes().len(), 2);
-
-        runtime_a.context().command_queue.reset_for_tests();
-        runtime_b.context().command_queue.reset_for_tests();
+        assert_eq!(registry.runtimes.len(), 2);
 
         manager::init_network_manager_in(runtime_a);
         assert!(manager::list_interfaces_in(runtime_a).is_ok());
         assert!(manager::list_interfaces_in(runtime_b).is_err());
 
-        assert!(
-            runtime_a
-                .context()
-                .command_queue
-                .send(RuntimeCommand::Transport(
-                    crate::net::runtime::command::TransportCommand::TxAvailable
-                ))
-        );
-        assert!(runtime_a.context().command_queue.has_events());
-        assert!(runtime_b.context().command_queue.is_empty());
+        let resources_a = runtime_a
+            .context()
+            .cpu_resources(CpuId::BOOTSTRAP)
+            .expect("runtime A bootstrap resources");
+        let resources_b = runtime_b
+            .context()
+            .cpu_resources(CpuId::BOOTSTRAP)
+            .expect("runtime B bootstrap resources");
+        assert!(resources_a.command_queue.send(RuntimeCommand::Transport(
+            crate::net::runtime::command::TransportCommand::TxAvailable
+        )));
+        assert!(resources_a.command_queue.recv().is_some());
+        assert!(resources_b.command_queue.recv().is_none());
     }
 
     #[test]
     fn background_service_task_claims_are_runtime_local() {
-        reset_runtime_registry_for_tests();
-
-        let runtime_a = default_runtime();
-        let runtime_b = create_runtime().expect("second runtime allocation");
+        let cpu_snapshot = cpu_snapshot();
+        let mut registry = RuntimeRegistry::new();
+        let runtime_a = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("first runtime allocation")
+            .handle();
+        let runtime_b = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("second runtime allocation")
+            .handle();
 
         assert!(
             !runtime_a
@@ -370,15 +466,16 @@ mod tests {
 
     #[test]
     fn runtime_ids_do_not_wrap_after_exhaustion() {
+        let cpu_snapshot = cpu_snapshot();
         let mut registry = RuntimeRegistry::new();
         registry.next_id = Some(u64::MAX);
 
         let runtime = registry
-            .allocate_runtime()
+            .allocate_runtime(&cpu_snapshot)
             .expect("last representable runtime id");
         assert_eq!(runtime.id(), NetRuntimeId(u64::MAX));
         assert!(matches!(
-            registry.allocate_runtime(),
+            registry.allocate_runtime(&cpu_snapshot),
             Err(RuntimeAllocationError::IdSpaceExhausted)
         ));
         assert_eq!(registry.runtimes.len(), 1);
@@ -386,31 +483,47 @@ mod tests {
 
     #[test]
     fn runtime_registry_rejects_id_reuse() {
+        let cpu_snapshot = cpu_snapshot();
         let mut registry = RuntimeRegistry::new();
-        let runtime = registry.allocate_runtime().expect("first runtime");
+        let runtime = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("first runtime");
         assert_eq!(runtime.id(), NetRuntimeId(0));
 
         registry.next_id = Some(0);
         assert!(matches!(
-            registry.allocate_runtime(),
+            registry.allocate_runtime(&cpu_snapshot),
             Err(RuntimeAllocationError::IdAlreadyAllocated)
         ));
         assert_eq!(registry.runtimes.len(), 1);
     }
 
     #[test]
-    fn runtime_generation_changes_after_test_registry_reset() {
-        reset_runtime_registry_for_tests();
-        let old = default_runtime();
+    fn runtime_generation_changes_when_registry_epoch_advances() {
+        let cpu_snapshot = cpu_snapshot();
+        let mut registry = RuntimeRegistry::new();
+        let old = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("old runtime")
+            .handle();
         let old_id = old.id();
         let old_generation = old.generation();
 
-        reset_runtime_registry_for_tests();
-        let new = default_runtime();
+        registry.next_id = Some(0);
+        registry.generation = registry.generation.next();
+        registry.runtimes.clear();
+        let new = registry
+            .allocate_runtime(&cpu_snapshot)
+            .expect("new runtime")
+            .handle();
 
         assert_eq!(old_id, new.id());
         assert_ne!(old_generation, new.generation());
-        assert!(runtime_with_generation(old_id, old_generation).is_none());
-        assert!(runtime_with_generation(new.id(), new.generation()).is_some());
+        assert!(
+            registry
+                .runtimes
+                .get(&new.id())
+                .is_some_and(|context| core::ptr::eq(*context, new.context()))
+        );
     }
 }
