@@ -14,8 +14,10 @@ pub enum PmemError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PmemDiscoveryError {
-    TableNotFound,
+    AcpiUnavailable,
     InvalidTable,
+    AddressOutOfRange,
+    MultiplePersistentRangesUnsupported,
     RegisterFailed(PmemError),
 }
 
@@ -196,74 +198,31 @@ fn flush_cachelines(addr: usize, len: usize) {
     }
 }
 
-#[inline]
-fn read_u16(ptr: usize) -> u16 {
-    u16::from_le_bytes([
-        unsafe { core::ptr::read_unaligned(ptr as *const u8) },
-        unsafe { core::ptr::read_unaligned((ptr + 1) as *const u8) },
-    ])
-}
-
-#[inline]
-fn read_u64(ptr: usize) -> u64 {
-    let mut b = [0u8; 8];
-    let mut i = 0usize;
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while i < 8 {
-        b[i] = unsafe { core::ptr::read_unaligned((ptr + i) as *const u8) };
-        i += 1;
-    }
-    u64::from_le_bytes(b)
-}
-
 /// Discover PMEM region from ACPI NFIT SPA range entries.
 ///
 /// Returns `Ok(None)` when NFIT is absent or no suitable SPA range is found.
 pub fn init_from_nfit() -> Result<Option<PmemRegion>, PmemDiscoveryError> {
-    let nfit_addr =
-        match crate::drivers::acpi::find_table_global(&crate::drivers::acpi::signature::NFIT) {
-            Ok(v) => v,
-            Err(_) => return Ok(None),
-        };
-
-    let header = unsafe { &*(nfit_addr as *const crate::drivers::acpi::AcpiSdtHeader) };
-    if !header.validate() {
-        return Err(PmemDiscoveryError::InvalidTable);
+    let catalog = crate::platform::firmware::tables().ok_or(PmemDiscoveryError::AcpiUnavailable)?;
+    let ranges = catalog
+        .nfit_spa_ranges()
+        .map_err(|_| PmemDiscoveryError::InvalidTable)?;
+    let mut persistent = ranges.into_iter().filter(|range| {
+        range.kind == crate::drivers::acpi::NfitSpaKind::ByteAddressablePersistentMemory
+    });
+    let Some(range) = persistent.next() else {
+        return Ok(None);
+    };
+    if persistent.next().is_some() {
+        return Err(PmemDiscoveryError::MultiplePersistentRangesUnsupported);
     }
 
-    let table_len = header.length as usize;
-    let mut offset = nfit_addr + core::mem::size_of::<crate::drivers::acpi::AcpiSdtHeader>();
-    let end = nfit_addr + table_len;
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while offset + 4 <= end {
-        let ty = read_u16(offset);
-        let len = read_u16(offset + 2) as usize;
-        if len < 4 || offset + len > end {
-            break;
-        }
-
-        // NFIT SPA Range Structure (Type 0), minimum 56 bytes.
-        if ty == 0 && len >= 56 {
-            let spa_base = read_u64(offset + 32);
-            let spa_len = read_u64(offset + 40);
-            if spa_base != 0 && spa_len != 0 {
-                let virt = crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(spa_base));
-                register_region(virt.as_u64() as *mut u8, spa_len as usize)
-                    .map_err(PmemDiscoveryError::RegisterFailed)?;
-                return Ok(current_region());
-            }
-        }
-
-        offset += len;
-    }
-
-    Ok(None)
-}
-
-/// Default platform discovery hook: attempt NFIT discovery and fail-open.
-pub fn init_default_region() {
-    let _ = init_from_nfit();
+    let length =
+        usize::try_from(range.length).map_err(|_| PmemDiscoveryError::AddressOutOfRange)?;
+    let virtual_address = crate::mm::virt::mapping::phys_to_virt(PhysAddr::new(range.base));
+    let base = usize::try_from(virtual_address.as_u64())
+        .map_err(|_| PmemDiscoveryError::AddressOutOfRange)?;
+    register_region(base as *mut u8, length).map_err(PmemDiscoveryError::RegisterFailed)?;
+    Ok(current_region())
 }
 
 #[cfg(test)]

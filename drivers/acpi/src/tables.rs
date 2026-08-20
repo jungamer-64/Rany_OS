@@ -343,6 +343,19 @@ impl TableCatalog {
         parse_mcfg(mcfg.bytes())
     }
 
+    /// Parses NFIT system-physical-address ranges.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when a present NFIT contains a truncated structure,
+    /// a reserved zero range index, or an overflowing physical range.
+    pub fn nfit_spa_ranges(&self) -> Result<Vec<NfitSpaRange>, AcpiError> {
+        let Some(nfit) = self.first(TableSignature::NFIT) else {
+            return Ok(Vec::new());
+        };
+        parse_nfit_spa_ranges(nfit.bytes())
+    }
+
     fn required(&self, signature: TableSignature) -> Result<&AcpiTable, AcpiError> {
         self.first(signature).ok_or_else(|| {
             AcpiError::table(
@@ -374,7 +387,22 @@ pub struct InterruptOverride {
     pub bus: u8,
     pub source: u8,
     pub global_interrupt: u32,
-    pub flags: u16,
+    pub polarity: InterruptPolarity,
+    pub trigger_mode: InterruptTriggerMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptPolarity {
+    ConformsToBus,
+    ActiveHigh,
+    ActiveLow,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InterruptTriggerMode {
+    ConformsToBus,
+    Edge,
+    Level,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -399,6 +427,22 @@ pub struct McfgAllocation {
     pub segment: u16,
     pub start_bus: u8,
     pub end_bus: u8,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NfitSpaKind {
+    ByteAddressablePersistentMemory,
+    Other([u8; 16]),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct NfitSpaRange {
+    pub index: u16,
+    pub proximity_domain: Option<u32>,
+    pub kind: NfitSpaKind,
+    pub base: u64,
+    pub length: u64,
+    pub memory_attributes: u64,
 }
 
 #[derive(Debug)]
@@ -455,12 +499,16 @@ fn parse_madt(bytes: &[u8]) -> Result<ParsedMadt, AcpiError> {
                 address: read_u32(entry, 4)?,
                 global_interrupt_base: read_u32(entry, 8)?,
             }),
-            2 if length >= 10 => parsed.overrides.push(InterruptOverride {
-                bus: entry[2],
-                source: entry[3],
-                global_interrupt: read_u32(entry, 4)?,
-                flags: read_u16(entry, 8)?,
-            }),
+            2 if length >= 10 => {
+                let flags = read_u16(entry, 8)?;
+                parsed.overrides.push(InterruptOverride {
+                    bus: entry[2],
+                    source: entry[3],
+                    global_interrupt: read_u32(entry, 4)?,
+                    polarity: parse_interrupt_polarity(flags)?,
+                    trigger_mode: parse_interrupt_trigger(flags)?,
+                });
+            }
             5 if length >= 12 => parsed.local_apic_address = read_u64(entry, 4)?,
             9 if length >= 16 => {
                 let flags = read_u32(entry, 8)?;
@@ -559,6 +607,109 @@ fn parse_mcfg(bytes: &[u8]) -> Result<Vec<McfgAllocation>, AcpiError> {
         .collect()
 }
 
+fn parse_interrupt_polarity(flags: u16) -> Result<InterruptPolarity, AcpiError> {
+    match flags & 0b11 {
+        0 => Ok(InterruptPolarity::ConformsToBus),
+        1 => Ok(InterruptPolarity::ActiveHigh),
+        3 => Ok(InterruptPolarity::ActiveLow),
+        _ => Err(table_encoding_error(
+            *b"APIC",
+            "MADT interrupt override uses a reserved polarity encoding",
+        )),
+    }
+}
+
+fn parse_interrupt_trigger(flags: u16) -> Result<InterruptTriggerMode, AcpiError> {
+    match (flags >> 2) & 0b11 {
+        0 => Ok(InterruptTriggerMode::ConformsToBus),
+        1 => Ok(InterruptTriggerMode::Edge),
+        3 => Ok(InterruptTriggerMode::Level),
+        _ => Err(table_encoding_error(
+            *b"APIC",
+            "MADT interrupt override uses a reserved trigger encoding",
+        )),
+    }
+}
+
+fn parse_nfit_spa_ranges(bytes: &[u8]) -> Result<Vec<NfitSpaRange>, AcpiError> {
+    const NFIT_FIXED_LEN: usize = 40;
+    const SPA_RANGE_MIN_LEN: usize = 56;
+    const PERSISTENT_MEMORY_GUID: [u8; 16] = [
+        0x79, 0xd3, 0xf0, 0x66, 0xf3, 0xb4, 0x74, 0x40, 0xac, 0x43, 0x0d, 0x33, 0x18, 0xb7, 0x8c,
+        0xdb,
+    ];
+
+    if bytes.len() < NFIT_FIXED_LEN {
+        return Err(table_length_error(
+            *b"NFIT",
+            "NFIT fixed header is truncated",
+        ));
+    }
+
+    let mut ranges = Vec::new();
+    let mut offset = NFIT_FIXED_LEN;
+    while offset < bytes.len() {
+        let structure_type = read_u16(bytes, offset)?;
+        let length = usize::from(read_u16(bytes, offset + 2)?);
+        let end = offset
+            .checked_add(length)
+            .ok_or_else(|| table_length_error(*b"NFIT", "NFIT structure length overflowed"))?;
+        if length < 4 || end > bytes.len() {
+            return Err(table_length_error(
+                *b"NFIT",
+                "NFIT structure is truncated or has an invalid length",
+            ));
+        }
+
+        if structure_type == 0 {
+            if length < SPA_RANGE_MIN_LEN {
+                return Err(table_length_error(
+                    *b"NFIT",
+                    "NFIT SPA range structure is truncated",
+                ));
+            }
+            let structure = &bytes[offset..end];
+            let index = read_u16(structure, 4)?;
+            if index == 0 {
+                return Err(table_encoding_error(
+                    *b"NFIT",
+                    "NFIT SPA range uses the reserved zero index",
+                ));
+            }
+            let flags = read_u16(structure, 6)?;
+            let guid: [u8; 16] = structure[16..32].try_into().map_err(|_| {
+                table_length_error(*b"NFIT", "NFIT SPA range type GUID is truncated")
+            })?;
+            let base = read_u64(structure, 32)?;
+            let length = read_u64(structure, 40)?;
+            if length == 0 || base.checked_add(length).is_none() {
+                return Err(table_length_error(
+                    *b"NFIT",
+                    "NFIT SPA range is empty or overflows physical address space",
+                ));
+            }
+            ranges.push(NfitSpaRange {
+                index,
+                proximity_domain: (flags & (1 << 1) != 0)
+                    .then(|| read_u32(structure, 12))
+                    .transpose()?,
+                kind: if guid == PERSISTENT_MEMORY_GUID {
+                    NfitSpaKind::ByteAddressablePersistentMemory
+                } else {
+                    NfitSpaKind::Other(guid)
+                },
+                base,
+                length,
+                memory_attributes: read_u64(structure, 48)?,
+            });
+        }
+
+        offset = end;
+    }
+
+    Ok(ranges)
+}
+
 unsafe fn read_table(
     memory: &impl AcpiMemory,
     physical_address: u64,
@@ -645,6 +796,10 @@ fn table_length_error(signature: [u8; 4], detail: &'static str) -> AcpiError {
     AcpiError::table(AcpiErrorKind::InvalidLength, signature, detail)
 }
 
+fn table_encoding_error(signature: [u8; 4], detail: &'static str) -> AcpiError {
+    AcpiError::table(AcpiErrorKind::InvalidEncoding, signature, detail)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -684,6 +839,63 @@ mod tests {
         checksum(&mut bytes, 9);
         assert_eq!(
             parse_madt(&bytes).unwrap_err().kind,
+            AcpiErrorKind::InvalidLength
+        );
+    }
+
+    #[test]
+    fn madt_rejects_reserved_interrupt_override_encoding() {
+        let mut bytes = alloc::vec![0u8; 54];
+        bytes[0..4].copy_from_slice(b"APIC");
+        bytes[44] = 2;
+        bytes[45] = 10;
+        bytes[52..54].copy_from_slice(&0b10u16.to_le_bytes());
+
+        assert_eq!(
+            parse_madt(&bytes).unwrap_err().kind,
+            AcpiErrorKind::InvalidEncoding
+        );
+    }
+
+    #[test]
+    fn nfit_identifies_only_the_persistent_memory_guid() {
+        let mut bytes = alloc::vec![0u8; 96];
+        bytes[0..4].copy_from_slice(b"NFIT");
+        bytes[40..42].copy_from_slice(&0u16.to_le_bytes());
+        bytes[42..44].copy_from_slice(&56u16.to_le_bytes());
+        bytes[44..46].copy_from_slice(&7u16.to_le_bytes());
+        bytes[46..48].copy_from_slice(&(1u16 << 1).to_le_bytes());
+        bytes[52..56].copy_from_slice(&3u32.to_le_bytes());
+        bytes[56..72].copy_from_slice(&[
+            0x79, 0xd3, 0xf0, 0x66, 0xf3, 0xb4, 0x74, 0x40, 0xac, 0x43, 0x0d, 0x33, 0x18, 0xb7,
+            0x8c, 0xdb,
+        ]);
+        bytes[72..80].copy_from_slice(&0x1_0000_0000u64.to_le_bytes());
+        bytes[80..88].copy_from_slice(&0x20_0000u64.to_le_bytes());
+        bytes[88..96].copy_from_slice(&0x8008u64.to_le_bytes());
+
+        assert_eq!(
+            parse_nfit_spa_ranges(&bytes).unwrap(),
+            [NfitSpaRange {
+                index: 7,
+                proximity_domain: Some(3),
+                kind: NfitSpaKind::ByteAddressablePersistentMemory,
+                base: 0x1_0000_0000,
+                length: 0x20_0000,
+                memory_attributes: 0x8008,
+            }]
+        );
+    }
+
+    #[test]
+    fn nfit_rejects_truncated_spa_structure() {
+        let mut bytes = alloc::vec![0u8; 44];
+        bytes[0..4].copy_from_slice(b"NFIT");
+        bytes[40..42].copy_from_slice(&0u16.to_le_bytes());
+        bytes[42..44].copy_from_slice(&56u16.to_le_bytes());
+
+        assert_eq!(
+            parse_nfit_spa_ranges(&bytes).unwrap_err().kind,
             AcpiErrorKind::InvalidLength
         );
     }

@@ -120,10 +120,18 @@ impl SystemIntegration {
     pub(super) fn integrate_acpi(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 1: ACPI integration");
 
-        // Get ACPI information
-        let local_apics = crate::platform::acpi::local_apics();
-        let io_apics = crate::platform::acpi::io_apics();
-        let pcie_ecam = crate::platform::acpi::pcie_ecam_regions();
+        let catalog = crate::platform::firmware::tables().ok_or_else(|| {
+            IntegrationError::AcpiError(String::from("ACPI table catalog is unavailable"))
+        })?;
+        let local_apics = catalog
+            .firmware_cpus()
+            .map_err(|error| IntegrationError::AcpiError(alloc::format!("{error:?}")))?;
+        let io_apics = catalog
+            .io_apics()
+            .map_err(|error| IntegrationError::AcpiError(alloc::format!("{error:?}")))?;
+        let pcie_ecam = catalog
+            .mcfg_allocations()
+            .map_err(|error| IntegrationError::AcpiError(alloc::format!("{error:?}")))?;
 
         self.log(&alloc::format!(
             "  Found {} processor(s)",
@@ -137,15 +145,39 @@ impl SystemIntegration {
 
         // Store APIC information for interrupt routing
         for apic in &io_apics {
-            self.interrupt_router
-                .add_io_apic(apic.id, apic.address, apic.gsi_base);
+            self.interrupt_router.add_io_apic(
+                apic.id,
+                u64::from(apic.address),
+                apic.global_interrupt_base,
+            );
         }
 
-        // Store interrupt overrides
-        let overrides = crate::platform::acpi::interrupt_overrides();
+        let overrides = catalog
+            .interrupt_overrides()
+            .map_err(|error| IntegrationError::AcpiError(alloc::format!("{error:?}")))?;
         for ovr in &overrides {
-            self.interrupt_router
-                .add_override(ovr.source, ovr.gsi, ovr.polarity, ovr.trigger_mode);
+            if ovr.bus != 0 {
+                return Err(IntegrationError::AcpiError(alloc::format!(
+                    "unsupported MADT interrupt override bus {}",
+                    ovr.bus
+                )));
+            }
+            let polarity = match ovr.polarity {
+                crate::drivers::acpi::InterruptPolarity::ConformsToBus
+                | crate::drivers::acpi::InterruptPolarity::ActiveHigh => 0,
+                crate::drivers::acpi::InterruptPolarity::ActiveLow => 1,
+            };
+            let trigger_mode = match ovr.trigger_mode {
+                crate::drivers::acpi::InterruptTriggerMode::ConformsToBus
+                | crate::drivers::acpi::InterruptTriggerMode::Edge => 0,
+                crate::drivers::acpi::InterruptTriggerMode::Level => 1,
+            };
+            self.interrupt_router.add_override(
+                ovr.source,
+                ovr.global_interrupt,
+                polarity,
+                trigger_mode,
+            );
         }
 
         self.status = IntegrationStatus::AcpiParsed;

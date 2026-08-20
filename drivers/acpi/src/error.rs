@@ -7,6 +7,7 @@ pub enum AcpiErrorKind {
     InvalidSignature,
     InvalidChecksum,
     InvalidLength,
+    InvalidEncoding,
     MissingTable,
     DuplicateTable,
     CapacityExceeded,

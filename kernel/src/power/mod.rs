@@ -6,8 +6,6 @@ use crate::io::port_io::{PortU8, PortU16, PortU32};
 use crate::sync::PoisonLock;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
-use crate::drivers::acpi::Fadt;
-
 /// 電源状態
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
@@ -106,24 +104,6 @@ impl AcpiPmConfig {
             pm1_evt_len: 4,
             pm1_cnt_len: 2,
             pm_tmr_32bit: true,
-            s5_slp_typ_a: 0,
-            s5_slp_typ_b: 0,
-        }
-    }
-
-    pub fn from_fadt(fadt: &Fadt) -> Self {
-        Self {
-            pm1a_evt_blk: fadt.pm1a_evt_blk as u16,
-            pm1b_evt_blk: fadt.pm1b_evt_blk as u16,
-            pm1a_cnt_blk: fadt.pm1a_cnt_blk as u16,
-            pm1b_cnt_blk: fadt.pm1b_cnt_blk as u16,
-            pm2_cnt_blk: fadt.pm2_cnt_blk as u16,
-            pm_tmr_blk: fadt.pm_tmr_blk as u16,
-            gpe0_blk: fadt.gpe0_blk as u16,
-            gpe1_blk: fadt.gpe1_blk as u16,
-            pm1_evt_len: fadt.pm1_evt_len,
-            pm1_cnt_len: fadt.pm1_cnt_len,
-            pm_tmr_32bit: (fadt.flags & 0x100) != 0,
             s5_slp_typ_a: 0,
             s5_slp_typ_b: 0,
         }
@@ -378,12 +358,6 @@ pub fn cpu_idle() -> &'static CpuIdle {
 }
 
 pub fn init() {}
-
-pub fn init_from_fadt(fadt: &Fadt) {
-    let config = AcpiPmConfig::from_fadt(fadt);
-    POWER_MANAGER.set_config(config);
-    POWER_MANAGER.enable_sci();
-}
 
 pub fn shutdown() -> ! {
     let _ = POWER_MANAGER.shutdown();

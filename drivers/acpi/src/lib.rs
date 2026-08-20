@@ -22,6 +22,7 @@ pub use events::{
 };
 pub use runtime::{AcpiRuntime, AcpiRuntimeState, CpuNamespaceDevice, FirmwareUid, MatProcessor};
 pub use tables::{
-    AcpiMemory, AcpiTable, FirmwareCpuEntry, HhdmAcpiMemory, InterruptOverride, IoApicEntry,
-    McfgAllocation, NumaCpuAffinity, NumaMemoryAffinity, SdtHeader, TableCatalog, TableSignature,
+    AcpiMemory, AcpiTable, FirmwareCpuEntry, HhdmAcpiMemory, InterruptOverride, InterruptPolarity,
+    InterruptTriggerMode, IoApicEntry, McfgAllocation, NfitSpaKind, NfitSpaRange, NumaCpuAffinity,
+    NumaMemoryAffinity, SdtHeader, TableCatalog, TableSignature,
 };
