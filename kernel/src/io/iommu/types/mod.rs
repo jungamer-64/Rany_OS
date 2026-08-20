@@ -12,6 +12,8 @@ use pci_driver::PcieError;
 pub enum IommuError {
     /// IOMMU not initialized
     NotInitialized,
+    /// Kernel task runtime cannot host an IOMMU service task.
+    RuntimeUnavailable,
     /// IOMMU not present
     NotPresent,
     /// Not supported

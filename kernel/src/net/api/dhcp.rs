@@ -153,6 +153,15 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
         return;
     }
 
+    if crate::task::scheduler_snapshot().is_none()
+        || !crate::cpu::snapshot()
+            .online()
+            .contains(crate::cpu::CpuId::BOOTSTRAP)
+    {
+        log::error!("[NET][boot] network service tasks require the bootstrap scheduler queue");
+        return;
+    }
+
     if runtime
         .context()
         .network_background_tasks_started
@@ -171,13 +180,26 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
     if has_mdns {
         if let Some(mut service) = crate::net::services::mdns::take_service_for_task_in(runtime) {
             log::info!("[NET][boot] scheduling mDNS service task on bootstrap CPU0");
-            crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-                log::info!(
-                    "[NET][boot] mDNS service task running on CPU {}",
-                    crate::cpu::try_current_id().unwrap_or(0)
-                );
-                let _ = service.run().await;
-            });
+            if let Err(error) = crate::task::spawn(
+                async move {
+                    let Some(cpu) = crate::cpu::CurrentCpu::acquire().map(|current| current.id())
+                    else {
+                        log::error!("[NET][boot] mDNS task has no CPU-local execution context");
+                        return;
+                    };
+                    log::info!("[NET][boot] mDNS service task running on CPU {}", cpu);
+                    loop {
+                        match service.run().await {
+                            Ok(()) => log::error!("[NET] mDNS service stopped unexpectedly"),
+                            Err(error) => log::warn!("[NET] mDNS service failed: {}", error),
+                        }
+                        crate::task::sleep_ms(1_000).await;
+                    }
+                },
+                crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+            ) {
+                log::error!("[NET][boot] failed to schedule mDNS service: {:?}", error);
+            }
         } else {
             log::warn!("[NET][boot] mDNS service was already claimed by a task");
         }
@@ -185,16 +207,29 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
 
     if has_dns {
         log::info!("[NET][boot] scheduling DNS client task on bootstrap CPU0");
-        crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-            log::info!(
-                "[NET][boot] DNS client task running on CPU {}",
-                crate::cpu::try_current_id().unwrap_or(0)
-            );
-            let client = crate::net::services::dns::shared_client_in(runtime);
-            if let Some(client) = client {
-                let _ = client.run().await;
-            }
-        });
+        if let Err(error) = crate::task::spawn(
+            async move {
+                let Some(cpu) = crate::cpu::CurrentCpu::acquire().map(|current| current.id())
+                else {
+                    log::error!("[NET][boot] DNS task has no CPU-local execution context");
+                    return;
+                };
+                log::info!("[NET][boot] DNS client task running on CPU {}", cpu);
+                let client = crate::net::services::dns::shared_client_in(runtime);
+                if let Some(client) = client {
+                    loop {
+                        match client.run().await {
+                            Ok(()) => log::error!("[NET] DNS client stopped unexpectedly"),
+                            Err(error) => log::warn!("[NET] DNS client failed: {}", error),
+                        }
+                        crate::task::sleep_ms(1_000).await;
+                    }
+                }
+            },
+            crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+        ) {
+            log::error!("[NET][boot] failed to schedule DNS client: {:?}", error);
+        }
     }
 }
 

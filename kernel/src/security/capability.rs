@@ -16,7 +16,6 @@ use crate::sync::PoisonLock;
 use alloc::format;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Once;
 
 extern crate alloc;
 

@@ -152,37 +152,45 @@ impl<F: ShellFrontend> ShellSession<F> {
 /// Spawn a console shell task
 pub fn spawn_console_shell() {
     use crate::shell::frontend::ConsoleFrontend;
-    use crate::task::Task;
 
-    crate::task::spawn_task(Task::new(async {
-        #[cfg(feature = "qemu-test-export")]
-        crate::io::log::early_print("[SHELL] console shell task start\n");
-        // Acquire the keyboard stream before yielding so background services
-        // cannot steal the SPSC stream first.
-        let mut session = ShellSession::new(ConsoleFrontend::new());
-        crate::task::yield_now().await;
-        crate::io::log::set_console_mirror_enabled(false);
-        session.run().await;
-        crate::io::log::set_console_mirror_enabled(true);
-        #[cfg(feature = "qemu-test-export")]
-        crate::io::log::early_print("[SHELL] console shell task exit\n");
-    }));
+    if let Err(error) = crate::task::spawn(
+        async {
+            #[cfg(feature = "qemu-test-export")]
+            crate::io::log::early_print("[SHELL] console shell task start\n");
+            // Acquire the keyboard stream before yielding so background services
+            // cannot steal the SPSC stream first.
+            let mut session = ShellSession::new(ConsoleFrontend::new());
+            crate::task::yield_now().await;
+            crate::io::log::set_console_mirror_enabled(false);
+            session.run().await;
+            crate::io::log::set_console_mirror_enabled(true);
+            #[cfg(feature = "qemu-test-export")]
+            crate::io::log::early_print("[SHELL] console shell task exit\n");
+        },
+        crate::task::TaskPlacement::Any,
+    ) {
+        log::error!("failed to schedule console shell: {:?}", error);
+    }
 }
 
 /// Spawn a serial shell task
 pub fn spawn_serial_shell() {
     use crate::shell::exoshell::frontend::serial::SerialFrontend;
-    use crate::task::Task;
 
-    crate::task::spawn_task(Task::new(async {
-        #[cfg(feature = "qemu-test-export")]
-        crate::io::log::early_print("[SHELL] serial shell task start\n");
-        crate::task::yield_now().await;
-        let mut session = ShellSession::new(SerialFrontend::new());
-        session.run().await;
-        #[cfg(feature = "qemu-test-export")]
-        crate::io::log::early_print("[SHELL] serial shell task exit\n");
-    }));
+    if let Err(error) = crate::task::spawn(
+        async {
+            #[cfg(feature = "qemu-test-export")]
+            crate::io::log::early_print("[SHELL] serial shell task start\n");
+            crate::task::yield_now().await;
+            let mut session = ShellSession::new(SerialFrontend::new());
+            session.run().await;
+            #[cfg(feature = "qemu-test-export")]
+            crate::io::log::early_print("[SHELL] serial shell task exit\n");
+        },
+        crate::task::TaskPlacement::Any,
+    ) {
+        log::error!("failed to schedule serial shell: {:?}", error);
+    }
 }
 
 #[cfg(test)]

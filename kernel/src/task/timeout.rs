@@ -24,7 +24,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
 
-use super::{Task, TaskId, current_tick, spawn_task};
+use super::current_tick;
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -204,21 +204,4 @@ pub fn block_on<F: Future>(future: F) -> F::Output {
             }
         }
     }
-}
-
-/// タイムアウト付きタスクをスポーン
-///
-/// 設計書 4.4対応: タイムアウト後は自動的にキャンセル
-pub fn spawn_with_timeout<F>(future: F, timeout_ms: u64) -> TaskId
-where
-    F: Future<Output = ()> + Send + 'static,
-{
-    let task = Task::new(async move {
-        let result = with_timeout(future, timeout_ms).await;
-        if result.is_timed_out() {
-            log::info!("[TASK] Task timed out after {}ms\n", timeout_ms);
-        }
-    });
-
-    spawn_task(task)
 }

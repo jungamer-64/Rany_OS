@@ -276,10 +276,10 @@ impl DnsClient {
     ///
     /// キャッシュの定期的なクリーンアップなどを行います。
     pub async fn run(&self) -> Result<(), &'static str> {
-        log::info!(
-            "[NET] DNS client task started on CPU {}",
-            crate::cpu::try_current_id().unwrap_or(0)
-        );
+        let cpu = crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .ok_or("DNS service requires a CPU-local execution context")?;
+        log::info!("[NET] DNS client task started on CPU {}", cpu);
         log::info!("[NET][boot] DNS client task stage: registering first cleanup timer");
 
         loop {

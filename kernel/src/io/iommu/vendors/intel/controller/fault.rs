@@ -23,8 +23,7 @@ use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::sync::MpscRingBuffer;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
-use spin::Once;
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // ISR-Safe Deferred Fault Queue (ExoRust Compliance)
@@ -524,20 +523,28 @@ pub async fn fault_handler_task() {
     }
 }
 
-static FAULT_HANDLER_TASK_STARTED: Once<()> = Once::new();
+static FAULT_HANDLER_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Spawn the fault handler task
 ///
 /// Call this during kernel initialization after the scheduler is ready.
 /// The task will run in the background, draining ISR-queued faults.
-pub fn spawn_fault_handler_task() {
-    let mut spawned = false;
-    FAULT_HANDLER_TASK_STARTED.call_once(|| {
-        let _ = crate::task::spawn_detached(fault_handler_task());
-        spawned = true;
-    });
-    if spawned {
-        log::info!("[IOMMU] Fault handler task spawned");
+pub fn spawn_fault_handler_task() -> Result<(), crate::task::SpawnError> {
+    if FAULT_HANDLER_TASK_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Ok(());
+    }
+    match crate::task::spawn(fault_handler_task(), crate::task::TaskPlacement::Any) {
+        Ok(_) => {
+            log::info!("[IOMMU] Fault handler task spawned");
+            Ok(())
+        }
+        Err(error) => {
+            FAULT_HANDLER_TASK_STARTED.store(false, Ordering::Release);
+            Err(error)
+        }
     }
 }
 

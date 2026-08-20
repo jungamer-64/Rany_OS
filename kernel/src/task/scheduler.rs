@@ -409,7 +409,7 @@ pub fn spawn(
     spawn_task(Task::new(future, placement))
 }
 
-pub fn spawn_task(task: Task) -> Result<TaskId, SpawnError> {
+pub(crate) fn spawn_task(task: Task) -> Result<TaskId, SpawnError> {
     runtime()?.spawn_task(task)
 }
 

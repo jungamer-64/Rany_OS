@@ -177,10 +177,10 @@ impl MdnsService {
 
     /// mDNSサービスのメインループ（非同期）
     pub async fn run(&mut self) -> Result<(), &'static str> {
-        log::info!(
-            "[NET][boot] mDNS task entered run loop on CPU {}",
-            crate::cpu::try_current_id().unwrap_or(0)
-        );
+        let cpu = crate::cpu::CurrentCpu::acquire()
+            .map(|current| current.id())
+            .ok_or("mDNS service requires a CPU-local execution context")?;
+        log::info!("[NET][boot] mDNS task entered run loop on CPU {}", cpu);
         self.drain_runtime_commands();
         let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
             self.runtime,

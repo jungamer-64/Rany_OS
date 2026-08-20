@@ -900,11 +900,27 @@ fn runtime_update_link(
     if up {
         if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
             if let Some(config) = iface.config {
-                let _ =
-                    crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config);
+                if let Err(error) =
+                    crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
+                {
+                    log::warn!(
+                        target: "net::device",
+                        "DHCP runtime start failed for if{} after link-up: {}",
+                        if_id.0,
+                        error
+                    );
+                }
             }
         }
-        let _ = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id);
+        if let Err(error) = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id)
+        {
+            log::warn!(
+                target: "net::device",
+                "DHCP runtime restart failed for if{} after link-up: {}",
+                if_id.0,
+                error
+            );
+        }
         let primary = manager::primary_interface_in(runtime);
         if primary == Some(if_id) {
             log::info!(

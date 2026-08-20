@@ -261,29 +261,23 @@ fn build_log_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBui
 fn build_executor_stats_response(
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    let manager = crate::task::executor_manager();
-    let all_stats = manager.all_stats();
+    let Some(snapshot) = crate::task::scheduler_snapshot() else {
+        return build_json_response("503 Service Unavailable", "[]", keep_alive);
+    };
 
     let mut json = String::from("[\n");
-    for (i, stats) in all_stats.iter().enumerate() {
+    for (i, queue) in snapshot.run_queues.iter().enumerate() {
         if i > 0 {
             json.push_str(",\n");
         }
         json.push_str(&format!(
             r#"  {{
-    "core_id": {},
-    "tasks_executed": {},
-    "tasks_stolen": {},
-    "tasks_stolen_from": {},
-    "queue_length": {},
-    "running_count": {}
+    "cpu_id": {},
+    "ready_tasks": {},
+    "scheduler_task_count": {},
+    "scheduler_poll_count": {}
   }}"#,
-            stats.core_id,
-            stats.tasks_executed,
-            stats.tasks_stolen,
-            stats.tasks_stolen_from,
-            stats.queue_length,
-            stats.running_count
+            queue.cpu, queue.ready_tasks, snapshot.task_count, snapshot.poll_count
         ));
     }
     json.push_str("\n]");

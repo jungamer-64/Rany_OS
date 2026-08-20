@@ -2,7 +2,7 @@
 // kernel/src/io/iommu/runtime/security/monitor_task.rs
 // ============================================================================
 
-use spin::Once;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::security::audit::{AuditEvent, AuditEventType};
 
@@ -156,11 +156,19 @@ pub(crate) fn run_zombie_dma_gc() {
     }
 }
 
-static SECURITY_MONITOR_TASK: Once<()> = Once::new();
+static SECURITY_MONITOR_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Spawn the default IOMMU security monitor task (idempotent).
 pub fn spawn_security_monitor_task() {
-    SECURITY_MONITOR_TASK.call_once(|| {
-        let _ = crate::task::spawn_detached(security_monitor_task());
-    });
+    if SECURITY_MONITOR_TASK_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if let Err(error) = crate::task::spawn(security_monitor_task(), crate::task::TaskPlacement::Any)
+    {
+        SECURITY_MONITOR_TASK_STARTED.store(false, Ordering::Release);
+        log::error!("failed to schedule IOMMU security monitor: {:?}", error);
+    }
 }

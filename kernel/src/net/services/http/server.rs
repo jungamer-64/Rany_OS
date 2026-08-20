@@ -2,7 +2,7 @@
 // kernel/src/net/services/http/server.rs - サービス / HTTP / サーバ
 // ============================================================================
 
-use core::future::Future;
+use core::future::{Future, poll_fn};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll};
@@ -10,7 +10,7 @@ use core::task::{Context, Poll};
 use crate::net::l4::tcp::{EndpointAddr, TcpAcceptor, TcpError};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::atomic_waker::AtomicWaker;
-use crate::task::{self, Task, TimeoutResult};
+use crate::task::{self, TimeoutResult};
 use kernel_api::service::netdev::NetDriverEvent;
 
 mod connection;
@@ -149,33 +149,65 @@ enum ServiceRestartCause {
     NextConnection(TcpError),
 }
 
-pub fn start_once(runtime: NetRuntimeHandle) {
+/// Starts the HTTP poller and acceptor supervisor as one scheduler-owned service.
+///
+/// # Errors
+///
+/// Returns the scheduler error when the bootstrap CPU cannot accept the service task.
+pub fn start_once(runtime: NetRuntimeHandle) -> Result<(), crate::task::SpawnError> {
     if http_runtime_in(runtime)
         .started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_err()
     {
         log::info!("[HOST-HTTP] service already started, skipping");
-        return;
+        return Ok(());
     }
 
-    // spawn_on_cpu_with_priority は TaskId を常に返す設計で、失敗パスを公開しない。
-    // そのため started フラグは spawn 前に確定し、二重起動を防ぐ。
     log::info!("[HOST-HTTP] scheduling host HTTP service on 0.0.0.0:80");
-    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-        log::info!(
-            "[HOST-HTTP] net poller running on CPU {}",
-            crate::cpu::try_current_id().unwrap_or(0)
-        );
-        run_net_poller_in(runtime).await;
-    });
-    crate::task::spawn_on_cpu_with_priority(0, crate::task::Priority::Normal, async move {
-        log::info!(
-            "[HOST-HTTP] supervisor running on CPU {}",
-            crate::cpu::try_current_id().unwrap_or(0)
-        );
-        run_service_supervisor_in(runtime).await;
-    });
+    match crate::task::spawn(
+        async move {
+            let Some(cpu) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
+                log::error!("[HOST-HTTP] service task has no CPU-local execution context");
+                http_runtime_in(runtime)
+                    .started
+                    .store(false, Ordering::Release);
+                return;
+            };
+            log::info!("[HOST-HTTP] service running on CPU {}", cpu);
+            run_http_service_loops_in(runtime).await;
+            http_runtime_in(runtime)
+                .started
+                .store(false, Ordering::Release);
+            log::error!("[HOST-HTTP] service loops terminated unexpectedly");
+        },
+        crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+    ) {
+        Ok(_) => Ok(()),
+        Err(error) => {
+            http_runtime_in(runtime)
+                .started
+                .store(false, Ordering::Release);
+            Err(error)
+        }
+    }
+}
+
+async fn run_http_service_loops_in(runtime: NetRuntimeHandle) {
+    let poller = run_net_poller_in(runtime);
+    let supervisor = run_service_supervisor_in(runtime);
+    let mut poller = core::pin::pin!(poller);
+    let mut supervisor = core::pin::pin!(supervisor);
+
+    poll_fn(move |context| {
+        if poller.as_mut().poll(context).is_ready() || supervisor.as_mut().poll(context).is_ready()
+        {
+            Poll::Ready(())
+        } else {
+            Poll::Pending
+        }
+    })
+    .await;
 }
 
 /// 【設計書準拠】適応的ポーリングをHTTPサービスに適用
@@ -376,13 +408,24 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                 );
 
                 // 【設計書準拠】各接続を独立タスクとしてspawn（並行処理）
-                crate::task::spawn_task(Task::new(async move {
-                    connection::handle_client(runtime, client).await;
+                if let Err(error) = crate::task::spawn(
+                    async move {
+                        connection::handle_client(runtime, client).await;
+                        http_runtime_in(runtime)
+                            .active_connections
+                            .fetch_sub(1, Ordering::AcqRel);
+                        notify_http_poller_signal(runtime);
+                    },
+                    crate::task::TaskPlacement::Any,
+                ) {
                     http_runtime_in(runtime)
                         .active_connections
                         .fetch_sub(1, Ordering::AcqRel);
-                    notify_http_poller_signal(runtime);
-                }));
+                    log::warn!(
+                        "[HOST-HTTP] failed to schedule connection task: {:?}",
+                        error
+                    );
+                }
 
                 notify_http_poller_signal(runtime);
             }

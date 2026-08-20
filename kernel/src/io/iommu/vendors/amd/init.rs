@@ -71,8 +71,10 @@ async fn command_queue_worker() {
 }
 
 #[cfg(not(test))]
-pub(super) fn spawn_command_queue_worker() {
-    let _ = crate::task::spawn(command_queue_worker(), crate::task::TaskPlacement::Any);
+pub(super) fn spawn_command_queue_worker() -> Result<(), IommuError> {
+    crate::task::spawn(command_queue_worker(), crate::task::TaskPlacement::Any)
+        .map(|_| ())
+        .map_err(|_| IommuError::RuntimeUnavailable)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,7 +337,7 @@ pub fn init_iommu_from_ivrs(ivrs: &[u8], _config: IommuConfig) -> Result<(), Iom
     let table_count = device_tables.len();
     AmdIommuDriver::register_driver(units, ivmd_ranges, cmd_states, event_logs, device_tables)?;
     #[cfg(not(test))]
-    spawn_command_queue_worker();
+    spawn_command_queue_worker()?;
     log::info!(
         "AMD-Vi IVRS parsed ({} unit(s), {} IVMD range(s), {} cmd buffer(s) ready, {} event log(s) ready, {} device table(s))",
         unit_count,

@@ -76,9 +76,11 @@ async fn command_queue_worker(controller: Arc<IommuController>) {
 }
 
 #[cfg(not(test))]
-fn spawn_command_queue_worker(controller: Arc<IommuController>) {
+fn spawn_command_queue_worker(controller: Arc<IommuController>) -> Result<(), IommuError> {
     let future = command_queue_worker(controller);
-    let _ = crate::task::spawn(future, crate::task::TaskPlacement::Any);
+    crate::task::spawn(future, crate::task::TaskPlacement::Any)
+        .map(|_| ())
+        .map_err(|_| IommuError::RuntimeUnavailable)
 }
 
 fn activate_runtime_services_for_controller(
@@ -91,7 +93,7 @@ fn activate_runtime_services_for_controller(
     controller.ensure_command_queue();
 
     #[cfg(not(test))]
-    spawn_command_queue_worker(Arc::clone(controller));
+    spawn_command_queue_worker(Arc::clone(controller))?;
 
     controller.enable_fault_interrupt(RUNTIME_INTERRUPT_VECTOR);
 
@@ -109,7 +111,7 @@ pub(crate) fn start_runtime_services() -> Result<usize, IommuError> {
         return Ok(0);
     };
 
-    super::fault::spawn_fault_handler_task();
+    super::fault::spawn_fault_handler_task().map_err(|_| IommuError::RuntimeUnavailable)?;
 
     let mut started = 0;
     for controller in &registry.controllers {

@@ -103,8 +103,8 @@ pub async fn run_async_shell() {
 
 /// Start the async shell task
 pub fn spawn_async_shell() {
-    use crate::task::Task;
-    crate::task::spawn_task(Task::new(run_async_shell()));
-    crate::console::write(&format!("[SHELL] ExoShell task spawned"));
-    crate::console::write("\n");
+    match crate::task::spawn(run_async_shell(), crate::task::TaskPlacement::Any) {
+        Ok(_) => crate::console::write("[SHELL] ExoShell task spawned\n"),
+        Err(error) => log::error!("failed to schedule ExoShell: {:?}", error),
+    }
 }

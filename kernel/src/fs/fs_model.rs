@@ -555,11 +555,18 @@ impl<'a> Future for AsyncReadFuture<'a> {
                 let position = this.position;
                 let len = this.buf.len();
                 let shared_for_task = shared.clone();
-                crate::task::spawn(async move {
-                    let mut data = vec![0u8; len];
-                    let result = inode.read(position, &mut data);
-                    shared_for_task.complete(result, data);
-                });
+                if let Err(error) = crate::task::spawn(
+                    async move {
+                        let mut data = vec![0u8; len];
+                        let result = inode.read(position, &mut data);
+                        shared_for_task.complete(result, data);
+                    },
+                    crate::task::TaskPlacement::Any,
+                ) {
+                    log::error!("failed to schedule filesystem read: {:?}", error);
+                    this.state = ReadFutureState::Finished;
+                    return Poll::Ready(Err(FsError::IoError));
+                }
 
                 this.state = ReadFutureState::Pending(shared);
                 Poll::Pending
@@ -664,9 +671,16 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                 let position = this.position;
                 let data = this.buf.to_vec();
                 let shared_for_task = shared.clone();
-                crate::task::spawn(async move {
-                    shared_for_task.complete(inode.write(position, &data));
-                });
+                if let Err(error) = crate::task::spawn(
+                    async move {
+                        shared_for_task.complete(inode.write(position, &data));
+                    },
+                    crate::task::TaskPlacement::Any,
+                ) {
+                    log::error!("failed to schedule filesystem write: {:?}", error);
+                    this.state = WriteFutureState::Finished;
+                    return Poll::Ready(Err(FsError::IoError));
+                }
 
                 this.state = WriteFutureState::Pending(shared);
                 Poll::Pending
@@ -697,7 +711,7 @@ fn register_waker(slot: &Mutex<Option<Waker>>, waker: &Waker) {
 }
 
 fn async_runtime_available() -> bool {
-    !crate::task::executor_manager().all_stats().is_empty()
+    crate::task::scheduler_snapshot().is_some()
 }
 
 // ============================================================================

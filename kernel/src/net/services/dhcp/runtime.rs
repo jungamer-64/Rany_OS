@@ -11,7 +11,25 @@ use crate::net::runtime::stack::NetworkConfig;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
+use core::fmt;
 use core::sync::atomic::{AtomicBool, Ordering};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DhcpRuntimeError {
+    StatePoisoned,
+    MissingInterface,
+    Spawn(crate::task::SpawnError),
+}
+
+impl fmt::Display for DhcpRuntimeError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::StatePoisoned => formatter.write_str("DHCP runtime state is poisoned"),
+            Self::MissingInterface => formatter.write_str("DHCP interface runtime is missing"),
+            Self::Spawn(error) => write!(formatter, "failed to schedule DHCP task: {error:?}"),
+        }
+    }
+}
 
 struct DhcpInterfaceRuntime {
     if_id: NetIfId,
@@ -71,15 +89,15 @@ pub(crate) fn ensure_interface_runtime_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
     config: NetworkConfig,
-) -> Result<(), &'static str> {
-    ensure_v4_dispatcher_task_in(runtime);
-    ensure_v6_dispatcher_task_in(runtime);
+) -> Result<(), DhcpRuntimeError> {
+    ensure_v4_dispatcher_task_in(runtime)?;
+    ensure_v6_dispatcher_task_in(runtime)?;
 
     let interface_runtime = {
         let mut guard = runtime_state_for(runtime)
             .interface_runtimes
             .lock()
-            .map_err(|_| "DHCP interface runtime lock poisoned")?;
+            .map_err(|_| DhcpRuntimeError::StatePoisoned)?;
         if let Some(existing) = guard.get(&if_id) {
             existing.active.store(true, Ordering::Release);
             existing.suspended.store(false, Ordering::Release);
@@ -92,18 +110,30 @@ pub(crate) fn ensure_interface_runtime_in(
     };
 
     if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(
-            interface_runtime,
-        )));
+        if let Err(error) = crate::task::spawn(
+            dhcp_v4_drive_task(interface_runtime),
+            crate::task::TaskPlacement::Any,
+        ) {
+            interface_runtime
+                .drive_started
+                .store(false, Ordering::Release);
+            return Err(DhcpRuntimeError::Spawn(error));
+        }
     }
 
     if !interface_runtime
         .v6_drive_started
         .swap(true, Ordering::AcqRel)
     {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_drive_task(
-            interface_runtime,
-        )));
+        if let Err(error) = crate::task::spawn(
+            dhcp_v6_drive_task(interface_runtime),
+            crate::task::TaskPlacement::Any,
+        ) {
+            interface_runtime
+                .v6_drive_started
+                .store(false, Ordering::Release);
+            return Err(DhcpRuntimeError::Spawn(error));
+        }
     }
 
     Ok(())
@@ -160,20 +190,26 @@ pub(crate) fn release_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) ->
 pub(crate) fn restart_interface_runtime_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
-) -> Result<(), &'static str> {
-    ensure_v4_dispatcher_task_in(runtime);
+) -> Result<(), DhcpRuntimeError> {
+    ensure_v4_dispatcher_task_in(runtime)?;
 
     let Some(interface_runtime) = interface_runtime_in(runtime, if_id) else {
-        return Err("DHCP interface runtime missing");
+        return Err(DhcpRuntimeError::MissingInterface);
     };
 
     interface_runtime.active.store(true, Ordering::Release);
     interface_runtime.suspended.store(false, Ordering::Release);
 
     if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_drive_task(
-            interface_runtime,
-        )));
+        if let Err(error) = crate::task::spawn(
+            dhcp_v4_drive_task(interface_runtime),
+            crate::task::TaskPlacement::Any,
+        ) {
+            interface_runtime
+                .drive_started
+                .store(false, Ordering::Release);
+            return Err(DhcpRuntimeError::Spawn(error));
+        }
     }
 
     interface_runtime
@@ -197,24 +233,42 @@ pub(crate) fn primary_v4_client_in(runtime: NetRuntimeHandle) -> Option<&'static
     primary_interface_runtime_in(runtime).map(|runtime| &runtime.v4)
 }
 
-fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) {
+fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRuntimeError> {
     if runtime_state_for(runtime)
         .v4_dispatcher_started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v4_dispatcher_task(runtime)));
+        if let Err(error) = crate::task::spawn(
+            dhcp_v4_dispatcher_task(runtime),
+            crate::task::TaskPlacement::Any,
+        ) {
+            runtime_state_for(runtime)
+                .v4_dispatcher_started
+                .store(false, Ordering::Release);
+            return Err(DhcpRuntimeError::Spawn(error));
+        }
     }
+    Ok(())
 }
 
-fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) {
+fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRuntimeError> {
     if runtime_state_for(runtime)
         .v6_dispatcher_started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
     {
-        crate::task::spawn_task(crate::task::Task::new(dhcp_v6_dispatcher_task(runtime)));
+        if let Err(error) = crate::task::spawn(
+            dhcp_v6_dispatcher_task(runtime),
+            crate::task::TaskPlacement::Any,
+        ) {
+            runtime_state_for(runtime)
+                .v6_dispatcher_started
+                .store(false, Ordering::Release);
+            return Err(DhcpRuntimeError::Spawn(error));
+        }
     }
+    Ok(())
 }
 
 async fn dhcp_v4_drive_task(runtime: &'static DhcpInterfaceRuntime) {

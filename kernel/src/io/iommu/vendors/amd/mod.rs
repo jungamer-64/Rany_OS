@@ -327,10 +327,15 @@ impl AmdIommuDriver {
         if get_iommu_driver().is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
+        #[cfg(not(test))]
+        if crate::task::scheduler_snapshot().is_none() {
+            return Err(IommuError::RuntimeUnavailable);
+        }
         let driver = AmdIommuDriver::new(units, ivmd_ranges, cmd_states, event_logs, device_tables);
         driver.populate_default_entries()?;
         init_driver(Arc::new(IommuBackend::Amd(driver)));
-        fault::spawn_fault_handler_task();
+        #[cfg(not(test))]
+        fault::spawn_fault_handler_task().map_err(|_| IommuError::RuntimeUnavailable)?;
         Ok(())
     }
 

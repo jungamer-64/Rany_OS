@@ -1,4 +1,5 @@
 use super::*;
+use core::sync::atomic::AtomicBool;
 
 /// Helper: Map resource string to capability bit
 pub fn resource_to_capability(resource: &str) -> Capability {
@@ -19,7 +20,6 @@ pub fn resource_to_capability(resource: &str) -> Capability {
 
 /// Global capability manager
 pub(crate) static CAPABILITY_MANAGER: CapabilityManager = CapabilityManager::new();
-static CAPABILITY_DAEMONS_INIT: Once<()> = Once::new();
 
 /// Get the global capability manager
 pub fn manager() -> &'static CapabilityManager {
@@ -36,15 +36,12 @@ pub fn init() {
     // Kernel domain gets all capabilities
     CAPABILITY_MANAGER.set_capabilities(0, CapabilitySet::full());
 
-    // Keep init idempotent across repeated boot/test setup paths.
-    CAPABILITY_DAEMONS_INIT.call_once(|| {
-        spawn_expiry_daemon_task();
-        spawn_reclamation_daemon_task();
-    });
+    spawn_expiry_daemon_task();
+    spawn_reclamation_daemon_task();
 }
 
 /// Expiry daemon (runs periodically to remove expired grants)
-pub(crate) static CAP_EXPIRY_TASK: Once<()> = Once::new();
+static CAP_EXPIRY_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Async expiry daemon task
 pub async fn expiry_daemon_task() {
@@ -56,9 +53,16 @@ pub async fn expiry_daemon_task() {
 
 /// Start the expiry daemon (idempotent)
 pub fn spawn_expiry_daemon_task() {
-    CAP_EXPIRY_TASK.call_once(|| {
-        let _ = crate::task::spawn_detached(expiry_daemon_task());
-    });
+    if CAP_EXPIRY_TASK_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if let Err(error) = crate::task::spawn(expiry_daemon_task(), crate::task::TaskPlacement::Any) {
+        CAP_EXPIRY_TASK_STARTED.store(false, Ordering::Release);
+        log::error!("failed to schedule capability expiry daemon: {:?}", error);
+    }
 }
 
 /// Test / utility: expire now (public wrapper)
@@ -67,7 +71,7 @@ pub fn expire_grants_now() {
 }
 
 /// Reclamation daemon (runs periodically to reclaim revoked tokens once drained)
-pub(crate) static CAP_RECLAIM_TASK: Once<()> = Once::new();
+static CAP_RECLAIM_TASK_STARTED: AtomicBool = AtomicBool::new(false);
 
 /// Async reclamation daemon task
 pub async fn reclamation_daemon_task() {
@@ -79,9 +83,21 @@ pub async fn reclamation_daemon_task() {
 
 /// Start the reclamation daemon (idempotent)
 pub fn spawn_reclamation_daemon_task() {
-    CAP_RECLAIM_TASK.call_once(|| {
-        let _ = crate::task::spawn_detached(reclamation_daemon_task());
-    });
+    if CAP_RECLAIM_TASK_STARTED
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return;
+    }
+    if let Err(error) =
+        crate::task::spawn(reclamation_daemon_task(), crate::task::TaskPlacement::Any)
+    {
+        CAP_RECLAIM_TASK_STARTED.store(false, Ordering::Release);
+        log::error!(
+            "failed to schedule capability reclamation daemon: {:?}",
+            error
+        );
+    }
 }
 
 /// Test / utility: reclaim now (public wrapper)

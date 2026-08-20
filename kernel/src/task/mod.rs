@@ -2,25 +2,12 @@
 // src/task/mod.rs - Task Definition and Per-Core Executor
 // ============================================================================
 //!
-//! # Task / Per-Core Executor モジュール構成
+//! # Task scheduler
 //!
 //! タスク実行に関連する複数のモジュールが存在する。それぞれの責務は以下の通り：
 //!
-//! ## `mod.rs`（本ファイル）
-//! タスクの核となる型定義（`TaskId`, `Task`）と Waker VTable。
-//! 他のサブモジュールはすべてここで `pub mod` 宣言され、
-//! 主要な型が `pub use` で再エクスポートされる。
-//!
-//! ## `timeout` (タイムアウトユーティリティ)
-//! `TimeoutFuture`, `with_timeout()`, `block_on()`, `spawn_with_timeout()`。
-//! 設計書 4.4 対応のタイマーベースyield。
-//!
-//! ## `per_core_executor` (Per-Core Executor)
-//! 通常 boot/runtime で使う正規の実行基盤。
-//! `ExecutorManager` が全コアの executor を管理し、BSP/AP とも
-//! `run_forever(cpu_id)` で同じ run loop に入る。
-//! タスク本体は canonical な `Task` / `TaskId` を共有し、
-//! per-core 側では内部 wrapper で優先度や統計を管理する。
+//! `TaskPlacement` is the sole placement contract. Scheduler queues are keyed
+//! by sparse `CpuId` values and follow the CPU lifecycle state machine.
 //!
 use alloc::boxed::Box;
 use core::future::Future;
@@ -56,16 +43,18 @@ pub use interrupt_waker::{
 };
 pub use scheduler::{
     CpuRunQueueSnapshot, SchedulerSnapshot, SpawnError, TaskPlacement, initialize_scheduler,
-    run_forever, scheduler_snapshot, spawn, spawn_task,
+    run_forever, scheduler_snapshot, spawn,
 };
-pub(crate) use scheduler::{prepare_cpu_offline, prepare_cpu_online, publish_cpu_online};
+pub(crate) use scheduler::{
+    prepare_cpu_offline, prepare_cpu_online, publish_cpu_online, spawn_task,
+};
 // 新規追加: タイマー割り込み統合用
 pub use waker::create_waker;
 pub use waker::{WakeQueueStats, wake_queue_stats};
 pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};
 
 // Timeout/block_on utilities re-exported from timeout.rs
-pub use timeout::{TimeoutFuture, TimeoutResult, block_on, spawn_with_timeout, with_timeout};
+pub use timeout::{TimeoutFuture, TimeoutResult, block_on, with_timeout};
 
 /// タスクID
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -92,15 +81,15 @@ impl Default for TaskId {
 }
 
 /// 設計書 4.1: スタックレスコルーチンとしてのタスク
-pub struct Task {
-    pub id: TaskId,
-    pub domain_id: crate::domain::DomainId,
-    pub placement: TaskPlacement,
+pub(crate) struct Task {
+    pub(crate) id: TaskId,
+    pub(crate) domain_id: crate::domain::DomainId,
+    pub(crate) placement: TaskPlacement,
     future: Pin<Box<dyn Future<Output = ()> + Send>>,
 }
 
 impl Task {
-    pub fn new(
+    pub(crate) fn new(
         future: impl Future<Output = ()> + Send + 'static,
         placement: TaskPlacement,
     ) -> Task {
@@ -112,7 +101,7 @@ impl Task {
         }
     }
 
-    pub fn in_domain(
+    pub(crate) fn in_domain(
         future: impl Future<Output = ()> + Send + 'static,
         placement: TaskPlacement,
         domain_id: crate::domain::DomainId,
