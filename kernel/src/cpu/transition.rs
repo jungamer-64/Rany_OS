@@ -18,6 +18,8 @@ use super::{
 
 const PARK_TIMEOUT_NS: u64 = 1_000_000_000;
 const PARK_MAX_POLLS: usize = 10_000_000;
+const SUBSYSTEM_DRAIN_TIMEOUT_NS: u64 = 1_000_000_000;
+const SUBSYSTEM_DRAIN_MAX_POLLS: usize = 10_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum TransitionOperation {
@@ -306,6 +308,15 @@ async fn try_perform_offline(
         return Err(runtime_error(error));
     }
 
+    crate::net::runtime::context::begin_cpu_drain(id);
+    let irq_blockers = crate::io::interrupt_manager::cpu_offline_blockers(slot.firmware.apic_id);
+    if !irq_blockers.is_empty() {
+        return Err(abort_blocked_drain(id, irq_blockers));
+    }
+    if let Err(blockers) = wait_for_subsystem_drain(id).await {
+        return Err(abort_blocked_drain(id, blockers));
+    }
+
     let acknowledgement = local.remote().park_acknowledgements();
     if local.remote().send(CpuControlMessage::Park).is_err() {
         let reason = CpuFailureReason::Drain(CpuDrainFailure::ControlQueueSaturated);
@@ -338,6 +349,29 @@ async fn try_perform_offline(
         panic!("CPU {id} park commit failed after AP acknowledgement: {error:?}")
     });
     Ok(None)
+}
+
+async fn wait_for_subsystem_drain(id: CpuId) -> Result<(), Arc<[CpuBlocker]>> {
+    let start = crate::time::best_effort_time_nanos();
+    for _ in 0..SUBSYSTEM_DRAIN_MAX_POLLS {
+        let blockers = crate::net::runtime::context::cpu_drain_blockers(id);
+        if blockers.is_empty() {
+            return Ok(());
+        }
+        if crate::time::best_effort_time_nanos().saturating_sub(start) >= SUBSYSTEM_DRAIN_TIMEOUT_NS
+        {
+            return Err(blockers);
+        }
+        crate::task::yield_now().await;
+    }
+    Err(crate::net::runtime::context::cpu_drain_blockers(id))
+}
+
+fn abort_blocked_drain(id: CpuId, blockers: Arc<[CpuBlocker]>) -> CpuTransitionError {
+    let reason = CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers });
+    let error = transition_error(id, reason.clone());
+    rollback_drain(id, reason);
+    error
 }
 
 async fn reconcile_timed_out_drain(pending: PendingDrainReconciliation) {
@@ -386,6 +420,7 @@ fn rollback_drain(id: CpuId, reason: CpuFailureReason) {
         .unwrap_or_else(|error| {
             panic!("CPU {id} drain rollback could not be committed: {error:?}")
         });
+    crate::net::runtime::context::publish_cpu_online(id);
     crate::task::publish_cpu_online(id);
 }
 
@@ -428,6 +463,9 @@ fn transition_error(id: CpuId, reason: CpuFailureReason) -> CpuTransitionError {
         CpuFailureReason::Drain(CpuDrainFailure::IpiDelivery) => CpuTransitionError::TimedOut {
             phase: CpuFailurePhase::Drain,
         },
+        CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers }) => {
+            CpuTransitionError::Busy { blockers }
+        }
         CpuFailureReason::TscInconsistent => {
             CpuTransitionError::UnsupportedTopology(CpuTopologyIssue::TscInconsistent)
         }

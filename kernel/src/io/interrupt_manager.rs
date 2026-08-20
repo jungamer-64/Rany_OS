@@ -227,6 +227,8 @@ impl VectorAllocation {
 
 /// 割り込みマネージャ
 pub struct InterruptManager {
+    /// Serializes destination validation/allocation against CPU drain.
+    route_allocation_gate: Mutex<()>,
     /// 割り当て済みベクタ（ビットマップ）
     /// ベクタ 0-63
     allocated_vectors_0: AtomicU64,
@@ -301,6 +303,7 @@ impl InterruptManager {
     /// 新しい割り込みマネージャを作成
     pub const fn new() -> Self {
         Self {
+            route_allocation_gate: Mutex::new(()),
             // 予約済みベクタ（0-31）をマーク
             allocated_vectors_0: AtomicU64::new(0xFFFFFFFF),
             allocated_vectors_1: AtomicU64::new(0),
@@ -359,6 +362,7 @@ impl InterruptManager {
         handler_name: String,
         target_cpu: crate::cpu::CpuId,
     ) -> Result<VectorAllocation, InterruptError> {
+        let _route_allocation = self.route_allocation_gate.lock();
         let target_apic_id = online_apic_id(target_cpu)?;
         // MSI範囲から空きベクタを探す
         for vector in MSI_VECTORS_START..=MSI_VECTORS_END {
@@ -550,16 +554,6 @@ impl InterruptManager {
             .map(|a| a.config.clone())
     }
 
-    /// ベクタの設定を更新
-    pub fn update_config(&self, vector: u8, config: InterruptConfig) -> Result<(), InterruptError> {
-        if let Some(allocation) = self.allocations.write().get_mut(&vector) {
-            allocation.config = config;
-            Ok(())
-        } else {
-            Err(InterruptError::InvalidVector)
-        }
-    }
-
     /// 割り込み発生を記録
     pub fn record_interrupt(&self, vector: u8) {
         self.stats.record(vector);
@@ -579,6 +573,27 @@ impl InterruptManager {
     pub fn list_allocations(&self) -> Vec<InterruptAllocation> {
         self.allocations.read().values().cloned().collect()
     }
+
+    /// Returns interrupt routes which cannot survive removal of `apic_id`.
+    ///
+    /// MSI/MSI-X and I/O APIC programming are device-visible state. Until a
+    /// route-specific reprogramming operation exists, changing only the cached
+    /// `InterruptConfig` would leave hardware targeting the parked CPU.
+    pub(crate) fn cpu_offline_blockers(
+        &self,
+        apic_id: crate::cpu::ApicId,
+    ) -> alloc::sync::Arc<[crate::cpu::CpuBlocker]> {
+        let _route_allocation = self.route_allocation_gate.lock();
+        self.allocations
+            .read()
+            .values()
+            .filter(|allocation| allocation.config.target_apic_id == apic_id)
+            .map(|allocation| crate::cpu::CpuBlocker::IrqRoute {
+                vector: allocation.vector,
+            })
+            .collect::<Vec<_>>()
+            .into()
+    }
 }
 
 // ============================================================================
@@ -595,6 +610,12 @@ pub fn init() {
 /// グローバル割り込みマネージャを取得
 pub fn interrupt_manager() -> &'static InterruptManager {
     &INTERRUPT_MANAGER
+}
+
+pub(crate) fn cpu_offline_blockers(
+    apic_id: crate::cpu::ApicId,
+) -> alloc::sync::Arc<[crate::cpu::CpuBlocker]> {
+    INTERRUPT_MANAGER.cpu_offline_blockers(apic_id)
 }
 
 /// MSIベクタを割り当て
@@ -724,6 +745,32 @@ mod tests {
             Err(InterruptError::DestinationRequiresInterruptRemapping(
                 crate::cpu::ApicId::new(0x100)
             ))
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn cpu_offline_reports_each_hardware_route_to_the_target_apic() {
+        let manager = InterruptManager::new();
+        let target = crate::cpu::ApicId::new(7);
+        manager.allocations.write().insert(
+            0x60,
+            InterruptAllocation {
+                vector: 0x60,
+                source: InterruptSourceType::Msi { device_bdf: 0 },
+                config: direct_config(target.as_u32()),
+                handler_name: String::from("test route"),
+            },
+        );
+
+        assert_eq!(
+            manager.cpu_offline_blockers(target).as_ref(),
+            [crate::cpu::CpuBlocker::IrqRoute { vector: 0x60 }]
+        );
+        assert!(
+            manager
+                .cpu_offline_blockers(crate::cpu::ApicId::new(8))
+                .is_empty()
         );
     }
 }

@@ -82,10 +82,11 @@ pub enum CpuStartupFailure {
     TlbState,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuDrainFailure {
     ControlQueueSaturated,
     IpiDelivery,
+    Blocked { blockers: Arc<[CpuBlocker]> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -294,7 +295,7 @@ pub enum CpuBlocker {
     PinnedTask { task_id: u64 },
     ControlQueue,
     IrqRoute { vector: u8 },
-    NetworkQueue { queue_id: u32 },
+    NetworkQueue { runtime_id: u64 },
     DeferredWake,
     Timer,
     AllocatorCache,
@@ -494,6 +495,32 @@ mod tests {
             Some(CpuFailure {
                 phase: CpuFailurePhase::Drain,
                 reason: CpuFailureReason::DrainTimedOut,
+            })
+        );
+    }
+
+    #[test]
+    fn aborted_drain_retains_typed_blockers_while_restoring_online_state() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupReady).unwrap();
+        slot.transition(CpuStateTransition::BeginDrain).unwrap();
+        let blockers: Arc<[CpuBlocker]> = Arc::from([CpuBlocker::NetworkQueue { runtime_id: 19 }]);
+        slot.transition(CpuStateTransition::DrainAborted(CpuFailureReason::Drain(
+            CpuDrainFailure::Blocked {
+                blockers: blockers.clone(),
+            },
+        )))
+        .unwrap();
+
+        assert_eq!(slot.state, CpuSlotState::Online);
+        assert_eq!(
+            slot.last_failure,
+            Some(CpuFailure {
+                phase: CpuFailurePhase::Drain,
+                reason: CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers }),
             })
         );
     }

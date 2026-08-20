@@ -958,8 +958,8 @@ pub(crate) fn spawn_core_runtime_tasks() {
     let online = crate::cpu::snapshot().online().clone();
     for cpu_id in &online {
         if let Err(error) = crate::task::spawn(
-            crate::net::runtime::command_loop::runtime_command_task_in(net_runtime),
-            crate::task::TaskPlacement::Pinned(cpu_id),
+            crate::net::runtime::command_loop::runtime_command_task_in(net_runtime, cpu_id),
+            crate::task::TaskPlacement::Prefer(cpu_id),
         ) {
             warn!(
                 target: "net_boot",

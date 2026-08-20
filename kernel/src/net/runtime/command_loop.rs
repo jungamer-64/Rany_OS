@@ -22,8 +22,11 @@ use crate::net::runtime::transport::tcp_table_in;
 /// - バッチサイズに上限を設け、長時間のロック保持によるスターベーションを防止
 /// - バッチ間でロックを解放し、yield_now()で他のタスクに実行機会を与える
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
-pub(crate) async fn runtime_command_task_in(runtime: NetRuntimeHandle) {
-    let resources = match super::command::current_command_resources_in(runtime) {
+pub(crate) async fn runtime_command_task_in(
+    runtime: NetRuntimeHandle,
+    resource_cpu: crate::cpu::CpuId,
+) {
+    let resources = match super::command::command_resources_for_cpu_in(runtime, resource_cpu) {
         Ok(resources) => resources,
         Err(error) => {
             log::error!(

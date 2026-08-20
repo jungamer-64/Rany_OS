@@ -14,7 +14,7 @@ use alloc::vec::Vec;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 
 use crate::net::datapath::mempool::PacketRef;
@@ -732,26 +732,121 @@ const NETWORK_EVENT_QUEUE_BACKING_CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY
 /// - 全操作がロック取得なしで完了（ISR コンテキストから安全に呼び出し可能）
 pub(crate) struct RuntimeCommandQueue {
     queue: MpscRingBuffer<RuntimeCommand, NETWORK_EVENT_QUEUE_BACKING_CAPACITY>,
+    producer_state: AtomicUsize,
     /// マルチコンシューマー向け ISR-safe Waker Queue
     consumer_waiters: WakerQueue,
     /// タスクコンテキストのプロデューサー向け空き待ち通知
     space_waiters: WakerQueue,
 }
 
+const PRODUCER_ADMISSION_CLOSED: usize = 1usize << (usize::BITS - 1);
+const ACTIVE_PRODUCER_MASK: usize = !PRODUCER_ADMISSION_CLOSED;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CommandAdmissionState {
+    Open,
+    Draining,
+}
+
+struct ProducerAdmission<'a> {
+    state: &'a AtomicUsize,
+}
+
+impl Drop for ProducerAdmission<'_> {
+    fn drop(&mut self) {
+        let previous = self.state.fetch_sub(1, Ordering::AcqRel);
+        assert_ne!(
+            previous & ACTIVE_PRODUCER_MASK,
+            0,
+            "network command producer admission underflow"
+        );
+    }
+}
+
 impl RuntimeCommandQueue {
     pub(crate) const CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY;
 
     /// 新規作成
-    pub const fn new() -> Self {
+    pub const fn new(admission: CommandAdmissionState) -> Self {
         Self {
             queue: MpscRingBuffer::new(),
+            producer_state: AtomicUsize::new(match admission {
+                CommandAdmissionState::Open => 0,
+                CommandAdmissionState::Draining => PRODUCER_ADMISSION_CLOSED,
+            }),
             consumer_waiters: WakerQueue::new(),
             space_waiters: WakerQueue::new(),
         }
     }
 
+    fn admit_producer(&self) -> Option<ProducerAdmission<'_>> {
+        let mut state = self.producer_state.load(Ordering::Acquire);
+        loop {
+            if state & PRODUCER_ADMISSION_CLOSED != 0 {
+                return None;
+            }
+            assert_ne!(
+                state & ACTIVE_PRODUCER_MASK,
+                ACTIVE_PRODUCER_MASK,
+                "network command producer admission count exhausted"
+            );
+            match self.producer_state.compare_exchange_weak(
+                state,
+                state + 1,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            ) {
+                Ok(_) => {
+                    return Some(ProducerAdmission {
+                        state: &self.producer_state,
+                    });
+                }
+                Err(observed) => state = observed,
+            }
+        }
+    }
+
+    fn try_admit_producer_from_isr(&self) -> Option<ProducerAdmission<'_>> {
+        let state = self.producer_state.load(Ordering::Acquire);
+        if state & PRODUCER_ADMISSION_CLOSED != 0
+            || state & ACTIVE_PRODUCER_MASK == ACTIVE_PRODUCER_MASK
+        {
+            return None;
+        }
+        self.producer_state
+            .compare_exchange(state, state + 1, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| ProducerAdmission {
+                state: &self.producer_state,
+            })
+    }
+
+    pub(crate) fn begin_drain(&self) {
+        self.producer_state
+            .fetch_or(PRODUCER_ADMISSION_CLOSED, Ordering::AcqRel);
+        self.space_waiters.wake_all();
+    }
+
+    pub(crate) fn publish_online(&self) {
+        self.producer_state
+            .fetch_and(ACTIVE_PRODUCER_MASK, Ordering::AcqRel);
+        self.space_waiters.wake_all();
+    }
+
+    pub(crate) fn is_accepting(&self) -> bool {
+        self.producer_state.load(Ordering::Acquire) & PRODUCER_ADMISSION_CLOSED == 0
+    }
+
+    pub(crate) fn is_quiescent(&self) -> bool {
+        let producer_state = self.producer_state.load(Ordering::Acquire);
+        producer_state & ACTIVE_PRODUCER_MASK == 0 && self.queue.is_empty()
+    }
+
     /// イベント送信（所有権を保持したまま失敗を返す版）
     fn send_owned(&self, command: RuntimeCommand) -> Result<(), RuntimeCommand> {
+        let Some(_admission) = self.admit_producer() else {
+            return Err(command);
+        };
         match self.queue.push(command) {
             Ok(()) => {
                 self.consumer_waiters.wake_all();
@@ -764,6 +859,9 @@ impl RuntimeCommandQueue {
     /// イベント送信（ISR コンテキスト用・非同期・フェイルファスト）
     /// 既存のプッシュ操作（先行の予約コミットなど）で競合した場合はspinせず即座に破棄する
     fn try_send_owned_from_isr(&self, command: RuntimeCommand) -> Result<(), RuntimeCommand> {
+        let Some(_admission) = self.try_admit_producer_from_isr() else {
+            return Err(command);
+        };
         match self.queue.try_push(command) {
             Ok(()) => {
                 self.consumer_waiters.wake_all_from_isr();
@@ -838,12 +936,6 @@ pub(crate) fn command_resources_for_cpu_in(
     cpu_id: crate::cpu::CpuId,
 ) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
     runtime_context_for(runtime).cpu_resources(cpu_id)
-}
-
-pub(crate) fn current_command_resources_in(
-    runtime: NetRuntimeHandle,
-) -> Result<Arc<NetCpuResources>, NetCpuResourceError> {
-    runtime_context_for(runtime).current_cpu_resources()
 }
 
 fn command_target(command: &RuntimeCommand) -> Option<crate::cpu::CpuId> {
@@ -953,6 +1045,13 @@ impl Future for SendCommandFuture {
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
         let runtime = this.runtime;
+        if this.target.is_some_and(|target| {
+            !crate::cpu::snapshot().online().contains(target)
+                || command_resources_for_cpu_in(runtime, target)
+                    .is_ok_and(|resources| !resources.command_queue.is_accepting())
+        }) {
+            this.target = None;
+        }
         let target = match this.target {
             Some(target) => target,
             None => {
@@ -985,6 +1084,11 @@ impl Future for SendCommandFuture {
             Ok(()) => Poll::Ready(Ok(())),
             Err(command) => {
                 this.command = Some(command);
+                if !resources.command_queue.is_accepting() {
+                    this.target = None;
+                    cx.waker().wake_by_ref();
+                    return Poll::Pending;
+                }
                 resources.command_queue.space_waiters.register(cx.waker());
 
                 let retry = this
@@ -995,6 +1099,10 @@ impl Future for SendCommandFuture {
                     Ok(()) => Poll::Ready(Ok(())),
                     Err(command) => {
                         this.command = Some(command);
+                        if !resources.command_queue.is_accepting() {
+                            this.target = None;
+                            cx.waker().wake_by_ref();
+                        }
                         Poll::Pending
                     }
                 }
@@ -1061,7 +1169,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn runtime_command_queue_returns_the_unsent_command_at_capacity() {
-        let queue = RuntimeCommandQueue::new();
+        let queue = RuntimeCommandQueue::new(CommandAdmissionState::Open);
         for _ in 0..RuntimeCommandQueue::CAPACITY {
             assert!(
                 queue
@@ -1085,5 +1193,24 @@ mod tests {
             assert!(queue.recv().is_some());
         }
         assert!(queue.recv().is_none());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn draining_command_queue_rejects_new_producers_until_reopened() {
+        let queue = RuntimeCommandQueue::new(CommandAdmissionState::Open);
+        let active_producer = queue.admit_producer().expect("open producer admission");
+        queue.begin_drain();
+        let command = RuntimeCommand::Control(ControlCommand::ProcessLocalTimeouts);
+        assert!(queue.send_owned(command).is_err());
+        assert!(!queue.is_quiescent());
+        drop(active_producer);
+        assert!(queue.is_quiescent());
+
+        queue.publish_online();
+        assert!(queue.send(RuntimeCommand::Control(
+            ControlCommand::ProcessLocalTimeouts
+        )));
+        assert!(queue.recv().is_some());
     }
 }

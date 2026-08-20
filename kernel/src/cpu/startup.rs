@@ -523,6 +523,7 @@ pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
     runtime.startup_ready(id).unwrap_or_else(|error| {
         panic!("CPU {id} online commit failed after AP acknowledgement: {error:?}")
     });
+    crate::net::runtime::context::publish_cpu_online(id);
     crate::task::publish_cpu_online(id);
     Ok(())
 }

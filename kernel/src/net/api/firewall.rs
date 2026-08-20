@@ -323,7 +323,11 @@ mod tests {
         crate::net::runtime::command::reset_command_system_for_tests_in(runtime);
         let mut executor = crate::task::TestExecutor::new();
         executor.spawn(crate::task::Task::new(async {
-            crate::net::runtime::command_loop::runtime_command_task_in(runtime).await;
+            crate::net::runtime::command_loop::runtime_command_task_in(
+                runtime,
+                crate::cpu::CpuId::BOOTSTRAP,
+            )
+            .await;
         }));
 
         let waker = crate::net::l4::test_support::noop_waker();

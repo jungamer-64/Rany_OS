@@ -7,7 +7,9 @@ use crate::net::datapath::mempool::Mempool;
 use crate::net::l4::socket::SocketRegistry;
 use crate::net::obs::NetObservability;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
-use crate::net::runtime::command::{CommandReplyRegistry, RuntimeCommandQueue};
+use crate::net::runtime::command::{
+    CommandAdmissionState, CommandReplyRegistry, RuntimeCommandQueue,
+};
 use crate::net::runtime::device::{
     NetDeviceManager, TxCompletionState, TxLeaseState, TxOwnerGroupState,
 };
@@ -76,11 +78,11 @@ pub(crate) struct NetCpuResources {
 }
 
 impl NetCpuResources {
-    fn new(cpu_id: CpuId) -> Self {
+    fn new(cpu_id: CpuId, admission: CommandAdmissionState) -> Self {
         Self {
             cpu_id,
             stack: Arc::new(PoisonLock::new(None)),
-            command_queue: Arc::new(RuntimeCommandQueue::new()),
+            command_queue: Arc::new(RuntimeCommandQueue::new(admission)),
             command_task_running: AtomicBool::new(false),
             command_task_ready_waiters: WakerQueue::new(),
         }
@@ -171,7 +173,12 @@ impl NetRuntimeContext {
             if slot.id.as_usize() != cpu_resources.len() {
                 return Err(RuntimeAllocationError::CpuTopologyInconsistent);
             }
-            cpu_resources.push(Some(Arc::new(NetCpuResources::new(slot.id))));
+            let admission = if slot.state.is_schedulable() {
+                CommandAdmissionState::Open
+            } else {
+                CommandAdmissionState::Draining
+            };
+            cpu_resources.push(Some(Arc::new(NetCpuResources::new(slot.id, admission))));
         }
         let packet_pool = Mempool::new(id.0 as u32, cpu_snapshot)
             .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)?;
@@ -314,10 +321,10 @@ impl RuntimeRegistry {
 static RUNTIME_REGISTRY: PoisonLock<RuntimeRegistry> = PoisonLock::new(RuntimeRegistry::new());
 
 pub fn default_runtime() -> NetRuntimeHandle {
+    let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry init");
     let cpu_snapshot = crate::cpu::try_runtime()
         .expect("CPU runtime must be installed before the network runtime")
         .snapshot();
-    let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry init");
     registry.default_runtime(&cpu_snapshot).handle()
 }
 
@@ -326,10 +333,10 @@ pub fn default_runtime_context() -> &'static NetRuntimeContext {
 }
 
 pub fn create_runtime() -> Result<NetRuntimeHandle, RuntimeAllocationError> {
+    let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry create");
     let cpu_snapshot = crate::cpu::try_runtime()
         .ok_or(RuntimeAllocationError::CpuTopologyUnavailable)?
         .snapshot();
-    let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry create");
     registry
         .allocate_runtime(&cpu_snapshot)
         .map(NetRuntimeContext::handle)
@@ -364,6 +371,65 @@ pub fn list_runtimes() -> alloc::vec::Vec<NetRuntimeHandle> {
         .copied()
         .map(NetRuntimeContext::handle)
         .collect()
+}
+
+pub(crate) fn begin_cpu_drain(cpu_id: CpuId) {
+    for runtime in list_runtimes() {
+        let resources = runtime
+            .context()
+            .cpu_resources(cpu_id)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "network runtime {} cannot close CPU {} command admission: {:?}",
+                    runtime.id().0,
+                    cpu_id,
+                    error
+                )
+            });
+        resources.command_queue.begin_drain();
+    }
+}
+
+pub(crate) fn cpu_drain_blockers(cpu_id: CpuId) -> Arc<[crate::cpu::CpuBlocker]> {
+    list_runtimes()
+        .into_iter()
+        .filter_map(|runtime| {
+            let resources = runtime
+                .context()
+                .cpu_resources(cpu_id)
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "network runtime {} lost CPU {} resources during drain: {:?}",
+                        runtime.id().0,
+                        cpu_id,
+                        error
+                    )
+                });
+            (!resources.command_queue.is_quiescent()).then_some(
+                crate::cpu::CpuBlocker::NetworkQueue {
+                    runtime_id: runtime.id().0,
+                },
+            )
+        })
+        .collect::<Vec<_>>()
+        .into()
+}
+
+pub(crate) fn publish_cpu_online(cpu_id: CpuId) {
+    for runtime in list_runtimes() {
+        let resources = runtime
+            .context()
+            .cpu_resources(cpu_id)
+            .unwrap_or_else(|error| {
+                panic!(
+                    "network runtime {} cannot publish CPU {} command admission: {:?}",
+                    runtime.id().0,
+                    cpu_id,
+                    error
+                )
+            });
+        resources.command_queue.publish_online();
+    }
 }
 
 pub fn set_default_runtime(handle: NetRuntimeHandle) {
