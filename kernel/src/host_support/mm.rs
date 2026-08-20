@@ -46,6 +46,12 @@ pub mod fast_allocator {
         Page1G,
     }
 
+    #[derive(Clone, Copy, Debug)]
+    pub enum LocalCachePolicy {
+        PerCpu,
+        SharedBitmap,
+    }
+
     impl PageGranularity {
         pub fn size_bytes(&self) -> u64 {
             match self {
@@ -66,7 +72,7 @@ pub mod fast_allocator {
     }
 
     impl FastBitmapAllocator {
-        pub fn new(base: u64, size: u64) -> Self {
+        pub fn new(base: u64, size: u64, _cache_policy: LocalCachePolicy) -> Self {
             Self {
                 base,
                 size,
@@ -156,11 +162,6 @@ pub mod fast_allocator {
             Ok(())
         }
 
-        pub fn reconfigure_for_cpu_ids(&mut self, _cpu_ids: &[usize]) {}
-
-        pub fn enable_single_writer_arenas(&self) {}
-
-        pub fn drain_remote_frees(&self) {}
         pub fn base(&self) -> u64 {
             self.base
         }

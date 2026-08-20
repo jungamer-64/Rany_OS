@@ -410,10 +410,8 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
 
     let report = crate::cpu::start_boot_cpus();
-    // SAFETY: Scheduler execution has not started, and all boot CPUs have
-    // completed their startup handshake, so PMM arena ownership can be
-    // republished without racing allocations on another CPU.
-    unsafe { crate::mm::phys::frame_allocator::pmm_reconfigure_for_online_cpus() };
+    crate::mm::phys::frame_allocator::pmm_provision_possible_cpus()
+        .unwrap_or_else(|error| panic!("failed to provision PMM CPU-local caches: {error:?}"));
     info!(
         target: "init",
         "CPU bootstrap report: discovered={} online={} failed={}",

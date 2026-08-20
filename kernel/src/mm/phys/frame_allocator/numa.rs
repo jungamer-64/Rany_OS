@@ -61,10 +61,15 @@ impl NumaPmmAllocator {
             return false;
         }
 
-        if let Some(mut pmm) = build_pmm_from_regions(&node_regions) {
+        if let Some(pmm) = build_pmm_from_regions(&node_regions) {
             let cpu_ids = self.cpu_ids_for_node(node_idx);
-            pmm.configure_arenas_for_cpu_ids(&cpu_ids);
-            pmm.enable_single_writer();
+            if let Err(error) = pmm.provision_cpu_ids(&cpu_ids) {
+                log::warn!(
+                    "[PMM] NUMA node {} could not provision CPU-local cache slots: {:?}",
+                    node_idx,
+                    error
+                );
+            }
             self.node_allocators[node_idx] = Some(pmm);
         }
 
@@ -237,10 +242,12 @@ impl NumaPmmAllocator {
         &self.topology
     }
 
-    pub(super) fn allocator_for_cpu(&self, cpu_id: crate::cpu::CpuId) -> Option<&PmmAllocatorFast> {
-        let node = self.topology.cpu_to_node(cpu_id);
-        let idx = node.as_usize();
-        self.node_allocators.get(idx)?.as_ref()
+    pub(super) fn quiesce_current_cpu(&self) -> crate::mm::phys::fast_allocator::CpuMagazineDrain {
+        let mut drained = crate::mm::phys::fast_allocator::CpuMagazineDrain::default();
+        for allocator in self.node_allocators.iter().flatten() {
+            drained.merge(allocator.quiesce_current_cpu());
+        }
+        drained
     }
 }
 
@@ -266,8 +273,6 @@ pub(crate) static PMM_GLOBAL_PTR: AtomicPtr<PmmAllocatorFast> = AtomicPtr::new(p
 
 /// PMM fast allocator (NUMA-aware)
 pub(crate) static PMM_NUMA_PTR: AtomicPtr<NumaPmmAllocator> = AtomicPtr::new(ptr::null_mut());
-pub(crate) static PMM_LAST_SYNC_TICK: AtomicU64 = AtomicU64::new(0);
-
 /// PMM reconfiguration lock (prevents race during arena/topology updates)
 pub(crate) static PMM_RECONFIG_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
 
@@ -281,24 +286,9 @@ pub(crate) fn pmm_numa() -> Option<&'static NumaPmmAllocator> {
     unsafe { ptr.as_ref() }
 }
 
-pub(crate) unsafe fn pmm_global_mut() -> Option<&'static mut PmmAllocatorFast> {
-    let ptr = PMM_GLOBAL_PTR.load(Ordering::Acquire);
-    unsafe { ptr.as_mut() }
-}
-
 pub(crate) unsafe fn pmm_numa_mut() -> Option<&'static mut NumaPmmAllocator> {
     let ptr = PMM_NUMA_PTR.load(Ordering::Acquire);
     unsafe { ptr.as_mut() }
-}
-
-pub(crate) fn should_sync_single_writer(tick: u64) -> bool {
-    let last = PMM_LAST_SYNC_TICK.load(Ordering::Relaxed);
-    if tick.saturating_sub(last) < PMM_SYNC_INTERVAL_TICKS {
-        return false;
-    }
-    PMM_LAST_SYNC_TICK
-        .compare_exchange(last, tick, Ordering::AcqRel, Ordering::Relaxed)
-        .is_ok()
 }
 
 /// フレームアロケータを初期化（後方互換）
@@ -312,7 +302,6 @@ pub unsafe fn init_frame_allocator(usable_regions: &[(PhysAddr, u64)]) {
     }
 
     if let Some(pmm) = build_pmm_from_regions(usable_regions) {
-        pmm.enable_single_writer();
         let boxed = Box::new(pmm);
         PMM_GLOBAL_PTR.store(Box::into_raw(boxed), Ordering::Release);
         return;
@@ -443,67 +432,82 @@ pub fn init_numa_frame_allocator_from_firmware(
     Ok(true)
 }
 
-/// NUMAノード単位でアリーナを再構成
-pub(crate) fn reconfigure_numa_node(
-    numa: &mut NumaPmmAllocator,
+/// NUMAノード単位で CPU-local cache slot を準備する。
+pub(crate) fn provision_numa_node_cpu_caches(
+    numa: &NumaPmmAllocator,
     node_idx: usize,
-    online: &crate::cpu::CpuSet,
-) {
+    possible: &crate::cpu::CpuSet,
+) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
     let node_cpu_ids = numa.cpu_ids_for_node(node_idx);
     let filtered = node_cpu_ids
         .into_iter()
         .filter_map(|raw_id| crate::cpu::CpuId::try_from(raw_id).ok())
-        .filter(|cpu_id| online.contains(*cpu_id))
+        .filter(|cpu_id| possible.contains(*cpu_id))
         .map(crate::cpu::CpuId::as_usize)
         .collect::<Vec<_>>();
-    let online_ids = online
+    let possible_ids = possible
         .iter()
         .map(crate::cpu::CpuId::as_usize)
         .collect::<Vec<_>>();
     if let Some(pmm) = numa
         .node_allocators
-        .get_mut(node_idx)
-        .and_then(|opt| opt.as_mut())
+        .get(node_idx)
+        .and_then(|opt| opt.as_ref())
     {
-        pmm.sync_single_writer_arenas();
         if filtered.is_empty() {
-            pmm.configure_arenas_for_cpu_ids(&online_ids);
+            pmm.provision_cpu_ids(&possible_ids)?;
         } else {
-            pmm.configure_arenas_for_cpu_ids(&filtered);
+            pmm.provision_cpu_ids(&filtered)?;
         }
-        pmm.enable_single_writer();
     }
+    Ok(())
 }
 
-fn pmm_reconfigure_for_online_set(online: &crate::cpu::CpuSet) {
+fn pmm_provision_for_possible_set(
+    possible: &crate::cpu::CpuSet,
+) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
 
-    if let Some(numa) = unsafe { pmm_numa_mut() } {
+    if let Some(numa) = pmm_numa() {
         let node_count = numa.node_allocators.len();
         for node_idx in 0..node_count {
-            reconfigure_numa_node(numa, node_idx, online);
+            provision_numa_node_cpu_caches(numa, node_idx, possible)?;
         }
-        return;
+        return Ok(());
     }
 
-    if let Some(pmm) = unsafe { pmm_global_mut() } {
-        let cpu_ids = online
+    if let Some(pmm) = pmm_global() {
+        let cpu_ids = possible
             .iter()
             .map(crate::cpu::CpuId::as_usize)
             .collect::<Vec<_>>();
-        pmm.sync_single_writer_arenas();
-        pmm.configure_arenas_for_cpu_ids(&cpu_ids);
-        pmm.enable_single_writer();
+        pmm.provision_cpu_ids(&cpu_ids)?;
     }
+    Ok(())
 }
 
-/// Reconfigure PMM arena ownership for currently online CPUs.
-///
-/// # Safety
-/// Call during early boot while no concurrent allocations are running.
-pub unsafe fn pmm_reconfigure_for_online_cpus() {
+/// Provision stable PMM cache slots for every possible logical CPU.
+pub fn pmm_provision_possible_cpus()
+-> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
     let snapshot = crate::cpu::snapshot();
-    pmm_reconfigure_for_online_set(snapshot.online());
+    pmm_provision_for_possible_set(snapshot.possible())
+}
+
+pub(crate) fn quiesce_current_cpu_for_offline() -> crate::mm::phys::fast_allocator::CpuMagazineDrain
+{
+    let current = crate::cpu::CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("PMM CPU-cache quiescence requires CPU-local state"));
+    assert_ne!(
+        current.id(),
+        crate::cpu::CpuId::BOOTSTRAP,
+        "bootstrap CPU cache cannot be retired"
+    );
+    if let Some(numa) = pmm_numa() {
+        return numa.quiesce_current_cpu();
+    }
+    pmm_global()
+        .map(PmmAllocatorFast::quiesce_current_cpu)
+        .unwrap_or_default()
 }
 
 pub(crate) fn configure_numa_cpu_affinity(

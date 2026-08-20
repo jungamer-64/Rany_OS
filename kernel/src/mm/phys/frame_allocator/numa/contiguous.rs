@@ -253,32 +253,6 @@ pub fn pmm_managed_end() -> Option<u64> {
     None
 }
 
-/// PMM定期メンテナンス（リモートフリーの排出など）
-///
-/// 非ISRコンテキストから呼び出すこと。
-pub fn pmm_maintenance_tick(tick: u64) {
-    let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|cpu| cpu.id()) else {
-        return;
-    };
-
-    if let Some(numa) = pmm_numa() {
-        if let Some(pmm) = numa.allocator_for_cpu(cpu_id) {
-            let _ = pmm.drain_remote_frees();
-            if should_sync_single_writer(tick) {
-                pmm.sync_single_writer_arenas();
-            }
-        }
-        return;
-    }
-
-    if let Some(pmm) = pmm_global() {
-        let _ = pmm.drain_remote_frees();
-        if should_sync_single_writer(tick) {
-            pmm.sync_single_writer_arenas();
-        }
-    }
-}
-
 /// NUMAノードから物理範囲を解放
 pub(crate) fn release_range_from_numa(numa: &NumaPmmAllocator, start: u64, end: u64) -> u64 {
     let node_count = numa.topology.node_count;
@@ -313,35 +287,12 @@ pub fn pmm_release_range(start: PhysAddr, size: u64) -> u64 {
     let _reconfig_guard = PMM_RECONFIG_LOCK.lock().expect("lock poisoned");
     let start = start.as_u64();
     let end = start.saturating_add(size);
-    let cpu_ids = crate::cpu::snapshot()
-        .online()
-        .iter()
-        .map(crate::cpu::CpuId::as_usize)
-        .collect::<Vec<_>>();
-
-    if let Some(numa) = unsafe { pmm_numa_mut() } {
-        for allocator in numa.node_allocators.iter_mut() {
-            if let Some(pmm) = allocator.as_mut() {
-                pmm.configure_arenas_for_cpu_ids(&cpu_ids);
-            }
-        }
-
-        let freed = release_range_from_numa(numa, start, end);
-
-        for allocator in numa.node_allocators.iter_mut() {
-            if let Some(pmm) = allocator.as_mut() {
-                pmm.enable_single_writer();
-            }
-        }
-
-        return freed;
+    if let Some(numa) = pmm_numa() {
+        return release_range_from_numa(numa, start, end);
     }
 
-    if let Some(pmm) = unsafe { pmm_global_mut() } {
-        pmm.configure_arenas_for_cpu_ids(&cpu_ids);
-        let freed = pmm.release_range_direct(start, size);
-        pmm.enable_single_writer();
-        return freed;
+    if let Some(pmm) = pmm_global() {
+        return pmm.release_range_direct(start, size);
     }
 
     0

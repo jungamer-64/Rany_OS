@@ -1,8 +1,7 @@
 //! キャッシュ・最適化レイヤー
 //!
-//! Per-CPU/Per-Core キャッシュ、マガジン、Arena、Exchange Heap等。
+//! Per-CPU/Per-Core キャッシュ、マガジン、Exchange Heap等。
 
-pub mod arena; // Single-Writer Arena
 pub mod exchange_heap; // ゼロコピーIPC用ヒープ
 pub mod magazine; // ジェネリックマガジンキャッシュ
 pub mod slab_cache; // Per-Core Slabキャッシュ

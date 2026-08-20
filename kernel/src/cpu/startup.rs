@@ -605,6 +605,7 @@ fn run_online_lifecycle(
         resource.publish(ApStartupSignal::TimerFailed);
         fail_stop_ap();
     }
+    let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
     crate::mm::sync::tlb::enter_lazy_mode();
     local_apic.set_task_priority(0xe0);
     resource.publish(ApStartupSignal::ReadyParked);
@@ -729,6 +730,7 @@ fn ap_entry(id: CpuId) -> ! {
                             resource.publish(ApStartupSignal::TimerFailed);
                             fail_stop_ap();
                         }
+                        let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
                         crate::mm::sync::tlb::enter_lazy_mode();
                         local_apic.set_task_priority(0xe0);
                         resource.publish(ApStartupSignal::ReadyParked);

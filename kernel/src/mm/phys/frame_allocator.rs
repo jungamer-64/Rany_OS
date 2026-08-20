@@ -8,7 +8,7 @@
 // ============================================================================
 extern crate alloc;
 
-use crate::mm::phys::fast_allocator::{FastBitmapAllocator, PageGranularity};
+use crate::mm::phys::fast_allocator::{FastBitmapAllocator, LocalCachePolicy, PageGranularity};
 use crate::sync::IrqPoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
@@ -32,8 +32,6 @@ use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_
 mod numa;
 pub use numa::*;
 const PMM_MAX_PAGES: usize = 64 * 1024 * 1024;
-/// Single-writer arena sync interval (ticks)
-const PMM_SYNC_INTERVAL_TICKS: u64 = 1024;
 
 /// 物理メモリの最大サイズ（16GiB想定）
 const MAX_PHYSICAL_MEMORY: usize = 16 * 1024 * 1024 * 1024;
@@ -355,26 +353,21 @@ pub(crate) struct PmmAllocatorFast {
 impl PmmAllocatorFast {
     fn new(base: u64, size: u64) -> Self {
         Self {
-            inner: FastBitmapAllocator::new(base, size),
+            inner: FastBitmapAllocator::new(base, size, LocalCachePolicy::PerCpu),
             base,
             size,
         }
     }
 
-    fn configure_arenas_for_cpu_ids(&mut self, cpu_ids: &[usize]) {
-        self.inner.reconfigure_for_cpu_ids(cpu_ids);
+    fn provision_cpu_ids(
+        &self,
+        cpu_ids: &[usize],
+    ) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
+        self.inner.provision_cpu_ids(cpu_ids)
     }
 
-    fn enable_single_writer(&self) {
-        self.inner.enable_single_writer_arenas();
-    }
-
-    fn drain_remote_frees(&self) -> usize {
-        self.inner.drain_remote_frees()
-    }
-
-    fn sync_single_writer_arenas(&self) {
-        self.inner.sync_single_writer_arenas();
+    fn quiesce_current_cpu(&self) -> crate::mm::phys::fast_allocator::CpuMagazineDrain {
+        self.inner.quiesce_current_cpu()
     }
 
     fn stats(&self) -> (u64, usize) {

@@ -37,8 +37,8 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-use crate::mm::phys::fast_allocator::FastBitmapAllocator;
 pub use crate::mm::phys::fast_allocator::PageGranularity;
+use crate::mm::phys::fast_allocator::{FastBitmapAllocator, LocalCachePolicy};
 use crate::mm::remote_free::{QuarantineEntry, QuarantineRing}; // Using generic QuarantineRing
 
 use crate::io::iommu::types::IommuError;
@@ -97,16 +97,7 @@ impl IovaAllocator {
     /// * `size` - Size of the IOVA space (bytes)
     pub fn new(base: u64, size: u64) -> Self {
         // Initialize Inner Allocator
-        let mut inner = FastBitmapAllocator::new(base, size);
-        if let Some(runtime) = crate::cpu::try_runtime() {
-            let online_ids = runtime
-                .snapshot()
-                .online()
-                .iter()
-                .map(crate::cpu::CpuId::as_usize)
-                .collect::<Vec<_>>();
-            inner.reconfigure_for_cpu_ids(&online_ids);
-        }
+        let inner = FastBitmapAllocator::new(base, size, LocalCachePolicy::SharedBitmap);
 
         Self {
             inner,

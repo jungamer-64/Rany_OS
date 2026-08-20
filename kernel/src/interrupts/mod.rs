@@ -697,8 +697,6 @@ pub fn poll_timer_events() {
     }
 
     if is_global_timekeeping_cpu(current_cpu.id()) {
-        let tick = TIMER_TICKS.load(Ordering::Relaxed);
-
         // Interrupt-Wakerブリッジの処理
         crate::task::interrupt_waker::handle_timer_interrupt_waker();
 
@@ -717,11 +715,6 @@ pub fn poll_timer_events() {
                 );
             }
         }
-
-        // PMMメンテナンス (非ISRコンテキスト)
-        crate::mm::phys::frame_allocator::pmm_maintenance_tick(tick);
-
-        // Network Stack Batch Flush
     }
 }
 
