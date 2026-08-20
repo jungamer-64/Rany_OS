@@ -845,7 +845,6 @@ fn phase_core_services_base(context: &KernelBootContext) {
     loader::init_kernel_cell();
     register_kernel_symbols();
     loader::live_update::init();
-    loader::live_update::set_active_cores(crate::cpu::snapshot().online().len() as u64);
     crate::driver_domain::init();
     info!(target: "init", "Cell loader/live update/DriverDomain initialized");
 

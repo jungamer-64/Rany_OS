@@ -24,8 +24,9 @@
 //! 4. Quiescent State Detection で全コアの離脱を確認
 //! 5. 旧セルのメモリを解放
 //! ```
-use crate::sync::PoisonLock;
+use crate::sync::{IrqMutex, PoisonLock};
 use alloc::string::String;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use kernel_api::abi::driver::{
@@ -35,9 +36,6 @@ use kernel_api::abi::driver::{
 // ============================================================================
 // Epoch Management
 // ============================================================================
-
-/// 最大CPUコア数
-const MAX_CORES: usize = 64;
 
 /// グローバルエポックカウンタ
 pub static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -60,14 +58,45 @@ impl PerCoreEpoch {
     }
 }
 
-/// 全コアのエポック状態
-static PER_CORE_EPOCHS: [PerCoreEpoch; MAX_CORES] = {
-    const INIT: PerCoreEpoch = PerCoreEpoch::new();
-    [INIT; MAX_CORES]
-};
+type EpochSnapshot = Arc<[Arc<PerCoreEpoch>]>;
 
-/// アクティブなコア数
-static ACTIVE_CORES: AtomicU64 = AtomicU64::new(1);
+static PER_CORE_EPOCHS: spin::Once<IrqMutex<EpochSnapshot>> = spin::Once::new();
+
+fn epoch_for(cpu_id: crate::cpu::CpuId) -> Arc<PerCoreEpoch> {
+    let required_slots = crate::cpu::snapshot()
+        .slots()
+        .len()
+        .max(cpu_id.as_usize().saturating_add(1));
+    let registry = PER_CORE_EPOCHS.call_once(|| IrqMutex::new(Arc::from([])));
+
+    // LOOP_PROOF: mode=event; reason=Retry only when another CPU publishes a newer immutable slot snapshot; any snapshot containing cpu_id exits.;
+    loop {
+        let current = registry.lock().clone();
+        if let Some(epoch) = current.get(cpu_id.as_usize()) {
+            return Arc::clone(epoch);
+        }
+
+        let mut expanded = Vec::new();
+        expanded
+            .try_reserve_exact(required_slots)
+            .unwrap_or_else(|_| panic!("failed to provision live-update epoch slots"));
+        expanded.extend(current.iter().cloned());
+        expanded.resize_with(required_slots, || Arc::new(PerCoreEpoch::new()));
+        let expanded: EpochSnapshot = Arc::from(expanded.into_boxed_slice());
+
+        let mut published = registry.lock();
+        if Arc::ptr_eq(&published, &current) {
+            *published = expanded;
+            return Arc::clone(&published[cpu_id.as_usize()]);
+        }
+    }
+}
+
+fn current_epoch_slot() -> Arc<PerCoreEpoch> {
+    let current = crate::cpu::CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("live-update epoch operation requires a current CPU"));
+    epoch_for(current.id())
+}
 
 // ============================================================================
 // Quiescent State API
@@ -79,16 +108,17 @@ static ACTIVE_CORES: AtomicU64 = AtomicU64::new(1);
 /// 現在のグローバルエポックをローカルに記録する。
 #[inline]
 pub fn enter_critical_section() {
-    let core_id = get_current_core_id();
-    if core_id >= MAX_CORES {
-        return;
+    let epoch = current_epoch_slot();
+    // LOOP_PROOF: mode=event; reason=Retry only when a concurrent epoch advance changes the observed generation; a stable generation exits immediately.;
+    loop {
+        let observed = GLOBAL_EPOCH.load(Ordering::SeqCst);
+        epoch.in_critical_section.store(true, Ordering::SeqCst);
+        epoch.local_epoch.store(observed, Ordering::SeqCst);
+        if GLOBAL_EPOCH.load(Ordering::SeqCst) == observed {
+            break;
+        }
+        epoch.in_critical_section.store(false, Ordering::SeqCst);
     }
-
-    let epoch = &PER_CORE_EPOCHS[core_id];
-    let global = GLOBAL_EPOCH.load(Ordering::Acquire);
-
-    epoch.local_epoch.store(global, Ordering::Release);
-    epoch.in_critical_section.store(true, Ordering::Release);
 }
 
 /// クリティカルセクションから出る
@@ -96,13 +126,8 @@ pub fn enter_critical_section() {
 /// セルのコードの使用が完了したら呼び出す。
 #[inline]
 pub fn leave_critical_section() {
-    let core_id = get_current_core_id();
-    if core_id >= MAX_CORES {
-        return;
-    }
-
-    let epoch = &PER_CORE_EPOCHS[core_id];
-    epoch.in_critical_section.store(false, Ordering::Release);
+    let epoch = current_epoch_slot();
+    epoch.in_critical_section.store(false, Ordering::SeqCst);
 }
 
 /// Quiescent State（安全な状態）に入る
@@ -111,19 +136,14 @@ pub fn leave_critical_section() {
 /// これにより、ライブアップデートの安全な切り替えポイントを提供する。
 #[inline]
 pub fn enter_quiescent_state() {
-    let core_id = get_current_core_id();
-    if core_id >= MAX_CORES {
-        return;
-    }
-
-    let epoch = &PER_CORE_EPOCHS[core_id];
+    let epoch = current_epoch_slot();
 
     // ローカルエポックをグローバルに同期
     let global = GLOBAL_EPOCH.load(Ordering::Acquire);
-    epoch.local_epoch.store(global, Ordering::Release);
+    epoch.local_epoch.store(global, Ordering::SeqCst);
 
     // クリティカルセクション外であることを示す
-    epoch.in_critical_section.store(false, Ordering::Release);
+    epoch.in_critical_section.store(false, Ordering::SeqCst);
 }
 
 /// 全コアがQuiescent Stateに到達するのを待つ
@@ -147,12 +167,10 @@ pub fn wait_for_quiescent_state_with_timeout(old_epoch: u64, max_attempts: u64) 
 }
 
 pub fn all_cores_past_epoch(target_epoch: u64) -> bool {
-    let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
-    (0..active_cores.min(MAX_CORES)).all(|cpu| {
-        let core_epoch = PER_CORE_EPOCHS[cpu].local_epoch.load(Ordering::Acquire);
-        let in_cs = PER_CORE_EPOCHS[cpu]
-            .in_critical_section
-            .load(Ordering::Acquire);
+    crate::cpu::snapshot().online().iter().all(|cpu_id| {
+        let epoch = epoch_for(cpu_id);
+        let core_epoch = epoch.local_epoch.load(Ordering::Acquire);
+        let in_cs = epoch.in_critical_section.load(Ordering::Acquire);
 
         !in_cs || core_epoch > target_epoch
     })
@@ -170,11 +188,11 @@ pub struct EpochStats {
 }
 
 pub fn epoch_stats() -> EpochStats {
-    let active_cores = ACTIVE_CORES.load(Ordering::Acquire) as usize;
-    let online = active_cores.min(MAX_CORES);
-    let in_critical_sections = (0..online)
-        .filter(|&cpu| {
-            PER_CORE_EPOCHS[cpu]
+    let online = crate::cpu::snapshot().online().clone();
+    let in_critical_sections = online
+        .iter()
+        .filter(|cpu_id| {
+            epoch_for(*cpu_id)
                 .in_critical_section
                 .load(Ordering::Acquire)
         })
@@ -182,7 +200,7 @@ pub fn epoch_stats() -> EpochStats {
 
     EpochStats {
         current_epoch: current_epoch(),
-        active_cores: online,
+        active_cores: online.len(),
         in_critical_sections,
     }
 }
@@ -903,11 +921,6 @@ pub fn set_rollback_grace_period_for_test(ticks: u64) -> u64 {
     LIVE_UPDATE_MANAGER.set_rollback_grace_period_for_test(ticks)
 }
 
-/// アクティブコア数を設定
-pub fn set_active_cores(count: u64) {
-    ACTIVE_CORES.store(count, Ordering::Release);
-}
-
 /// 現在のグローバルエポックを取得
 pub fn current_epoch() -> u64 {
     GLOBAL_EPOCH.load(Ordering::Acquire)
@@ -915,30 +928,12 @@ pub fn current_epoch() -> u64 {
 
 /// ライブアップデートサブシステムを初期化
 pub fn init() {
+    for cpu_id in crate::cpu::snapshot().possible() {
+        drop(epoch_for(cpu_id));
+    }
     // 初期エポックを1に設定
     GLOBAL_EPOCH.store(1, Ordering::Release);
     log::info!("[LIVE_UPDATE] Epoch-based reclamation initialized\n");
-}
-
-// ============================================================================
-// Helper Functions
-// ============================================================================
-
-/// 現在のCPUコアIDを取得
-fn get_current_core_id() -> usize {
-    if let Some(cpu_id) = crate::cpu::try_current_id() {
-        return cpu_id;
-    }
-
-    #[cfg(not(test))]
-    {
-        let apic_id = crate::drivers::apic::local_apic().id() as u32;
-        if let Some(cpu_id) = crate::cpu::cpu_for_apic(apic_id) {
-            return cpu_id;
-        }
-    }
-
-    0
 }
 
 // ============================================================================
