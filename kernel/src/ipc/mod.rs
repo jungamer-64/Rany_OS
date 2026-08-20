@@ -4,14 +4,5 @@
 // ============================================================================
 pub mod proxy;
 pub mod rref;
-pub use proxy::{
-    BasicProxy,
-    DomainProxy,
-    ProxyError,
-    ProxyResult,
-    // パニック捕捉
-    begin_proxy_call,
-    did_proxy_panic,
-    record_proxy_panic,
-};
+pub use proxy::{BasicProxy, DomainProxy, ProxyError, ProxyResult};
 pub use rref::{DomainId, RRef, reclaim_domain_resources};

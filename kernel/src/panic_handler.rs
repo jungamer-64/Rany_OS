@@ -49,13 +49,6 @@ static mut PANIC_RECORD: MaybeUninit<PanicRecord> = MaybeUninit::uninit();
 /// パニック統計
 static PANIC_COUNT: AtomicU64 = AtomicU64::new(0);
 
-/// 現在実行中のドメインID（Thread Local相当）
-/// 実際のマルチコア環境ではCPUごとに保持する必要がある
-
-/// 現在のドメインIDを設定
-
-/// 現在のドメインIDを取得
-
 /// 固定長バッファへの書き込み用ヘルパー
 struct PanicBufferWriter<'a> {
     buffer: &'a mut [u8],
@@ -189,8 +182,7 @@ fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
 
     if let Ok(s) = core::str::from_utf8(message_slice) {
         if try_handle_domain_panic(domain_id, s) {
-            crate::io::log::early_print("Domain terminated, attempting to continue...\n");
-            set_current_domain(0);
+            crate::io::log::early_print("Domain resources terminated before system halt.\n");
         }
     }
 }
@@ -265,7 +257,9 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     crate::sync::set_panicking(true);
 
     let _count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
-    let domain_id = get_current_domain();
+    let domain_id = crate::task::current_execution_context()
+        .map(|context| context.subject.domain.as_u64())
+        .unwrap_or(crate::domain::DomainId::KERNEL.as_u64());
 
     crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
 

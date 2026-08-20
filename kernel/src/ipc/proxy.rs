@@ -109,38 +109,17 @@ impl DomainProxy for BasicProxy {
     where
         F: FnOnce() -> T,
     {
-        // 現在のドメインを保存
-        let prev_domain = crate::panic_handler::get_current_domain();
-
-        // ターゲットドメインに切り替え
-        crate::panic_handler::set_current_domain(self.target_domain.as_u64());
-
-        // パニック状態をリセット
-        PROXY_PANIC_STATE.store(false, core::sync::atomic::Ordering::SeqCst);
-
-        // 関数を呼び出し
-        // 設計書 8.2: パニックハンドラとの統合でドメイン境界でのパニック捕捉
-        let result = execute_with_panic_capture(func);
-
-        // ドメインを復元
-        crate::panic_handler::set_current_domain(prev_domain);
-
-        // パニックをチェック
-        if PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst) {
-            // 【設計書 8.4】PoisonLockの毒入れ対応
-            let message = match PROXY_PANIC_MESSAGE.lock() {
-                Ok(mut guard) => guard.take().unwrap_or_default(),
-                Err(_) => {
-                    log::error!(
-                        "[Proxy] PROXY_PANIC_MESSAGE lock poisoned while retrieving message - using default"
-                    );
-                    String::new()
-                }
-            };
-            return Err(ProxyError::DomainPanicked(message));
+        self.check_domain_available()?;
+        let current = crate::task::current_execution_context().ok_or_else(|| {
+            ProxyError::CommunicationError(String::from("execution context unavailable"))
+        })?;
+        if current.subject.domain != self.caller_domain {
+            return Err(ProxyError::PermissionDenied);
         }
-
-        Ok(result)
+        let _domain_guard = crate::task::enter_domain(self.target_domain).map_err(|_| {
+            ProxyError::CommunicationError(String::from("execution context unavailable"))
+        })?;
+        execute_with_panic_capture(func)
     }
 
     fn call_async<'a, F, Fut, T>(&'a self, func: F) -> ProxyCallFuture<'a, T>
@@ -157,38 +136,6 @@ impl DomainProxy for BasicProxy {
 // 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
 
-use crate::sync::PoisonLock;
-use core::sync::atomic::AtomicBool;
-
-/// プロキシ呼び出し中のパニック状態
-static PROXY_PANIC_STATE: AtomicBool = AtomicBool::new(false);
-
-/// パニックメッセージ
-/// 【設計書 8.4】跨ドメインアクセスにはPoisonLockを使用
-static PROXY_PANIC_MESSAGE: PoisonLock<Option<String>> = PoisonLock::new(None);
-
-/// プロキシ呼び出しの開始を記録
-pub fn begin_proxy_call() {
-    PROXY_PANIC_STATE.store(false, core::sync::atomic::Ordering::SeqCst);
-}
-
-/// プロキシ呼び出し中のパニックを記録（パニックハンドラから呼ばれる）
-pub fn record_proxy_panic(message: String) {
-    PROXY_PANIC_STATE.store(true, core::sync::atomic::Ordering::SeqCst);
-    // 【設計書 8.4】PoisonLockの毒入れ対応
-    if let Ok(mut guard) = PROXY_PANIC_MESSAGE.lock() {
-        *guard = Some(message);
-    } else {
-        // 毒入れ時はメッセージを破棄（パニック中のエラーハンドリング）
-        log::info!("[Proxy] Warning: panic message lost due to poisoned lock\n");
-    }
-}
-
-/// プロキシ呼び出しがパニックしたかチェック
-pub fn did_proxy_panic() -> bool {
-    PROXY_PANIC_STATE.load(core::sync::atomic::Ordering::SeqCst)
-}
-
 /// パニック捕捉付きで関数を実行
 ///
 /// no_std環境ではstd::panic::catch_unwindが使えないため、
@@ -198,31 +145,13 @@ pub fn did_proxy_panic() -> bool {
 /// - パニックはドメイン境界で停止
 /// - パニックハンドラがリソース回収を行う
 /// - プロキシは Result::Err を返す
-fn execute_with_panic_capture<F, T>(func: F) -> T
+fn execute_with_panic_capture<F, T>(func: F) -> ProxyResult<T>
 where
     F: FnOnce() -> T,
 {
-    // unwindモジュールのcatch_panic機構を使用
-    // これによりパニックハンドラとの連携でパニックを捕捉できる
     match crate::unwind::catch_panic(func) {
-        Ok(result) => result,
-        Err(payload) => {
-            // パニックが捕捉された場合、PROXY_PANIC_STATEを設定
-            record_proxy_panic(payload.message);
-
-            // 注意: ここに到達した場合、関数は完了していないため
-            // 戻り値を生成できない。この問題は呼び出し元で
-            // PROXY_PANIC_STATEをチェックすることで対処する。
-            //
-            // 現在の設計では、catch_panic後にここに到達することは
-            // 実際には起こらない（パニックハンドラがHALTするため）。
-            // 将来的にsetjmp/longjmpを実装した場合、ここでの処理が必要になる。
-
-            // 暫定的にデフォルト値を返す（実際には到達しない）
-            // TODO: 将来的にはunsafe { core::mem::zeroed() } または
-            // MaybeUninitを使用する
-            unreachable!("catch_panic should have returned Ok or halted")
-        }
+        Ok(result) => Ok(result),
+        Err(payload) => Err(ProxyError::DomainPanicked(payload.message)),
     }
 }
 
