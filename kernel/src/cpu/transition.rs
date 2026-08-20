@@ -436,7 +436,7 @@ fn map_drain_ipi_failure(apic_id: super::ApicId, error: CpuIpiError) -> CpuFailu
         }
         CpuIpiError::LocalApic(_)
         | CpuIpiError::CpuNotPresent(_)
-        | CpuIpiError::CpuNotOnline(_) => {
+        | CpuIpiError::CpuStateIneligible { .. } => {
             CpuFailureReason::Topology(CpuTopologyIssue::InterruptDeliveryUnavailable { apic_id })
         }
     }

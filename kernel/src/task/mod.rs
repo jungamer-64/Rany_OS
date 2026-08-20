@@ -47,7 +47,7 @@ pub use scheduler::{
 };
 pub(crate) use scheduler::{
     abort_cpu_online, prepare_cpu_offline, prepare_cpu_online, publish_cpu_online,
-    run_until_parked, spawn_task,
+    quiesce_current_cpu_deferred_work, run_until_parked, spawn_task,
 };
 // 新規追加: タイマー割り込み統合用
 pub use waker::create_waker;

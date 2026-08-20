@@ -10,7 +10,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use x86_64::VirtAddr;
 
-use crate::cpu::{CpuId, CpuSet, CurrentCpu};
+use crate::cpu::{CpuId, CpuSnapshot, CurrentCpu};
 
 /// Local APIC vector used for TLB shootdowns.
 pub(crate) const TLB_FLUSH_VECTOR: u8 = 241;
@@ -22,8 +22,12 @@ static LOCAL_PAGE_FLUSHES: AtomicU64 = AtomicU64::new(0);
 static LOCAL_FULL_FLUSHES: AtomicU64 = AtomicU64::new(0);
 static REMOTE_SHOOTDOWNS: AtomicU64 = AtomicU64::new(0);
 
-fn remote_targets<'a>(online: &'a CpuSet, current: CpuId) -> impl Iterator<Item = CpuId> + 'a {
-    online.iter().filter(move |candidate| *candidate != current)
+fn remote_targets(topology: &CpuSnapshot, current: CpuId) -> impl Iterator<Item = CpuId> + '_ {
+    topology
+        .slots()
+        .iter()
+        .filter(move |slot| slot.id != current && slot.state.participates_in_tlb())
+        .map(|slot| slot.id)
 }
 
 fn next_generation() -> u64 {
@@ -52,45 +56,59 @@ fn service_pending_on_current(current: &CurrentCpu) -> bool {
 
 fn request_remote_shootdown(current: &CurrentCpu) {
     let topology = crate::cpu::snapshot();
-    if remote_targets(topology.online(), current.id())
-        .next()
-        .is_none()
-    {
+    if remote_targets(&topology, current.id()).next().is_none() {
         return;
     }
 
     let generation = next_generation();
     let runtime = crate::cpu::runtime();
 
-    for target in remote_targets(topology.online(), current.id()) {
+    for target in remote_targets(&topology, current.id()) {
         let local = runtime
             .cpu_local(target)
-            .unwrap_or_else(|| panic!("online CPU {} has no CPU-local TLB mailbox", target));
+            .unwrap_or_else(|| panic!("coherent CPU {} has no CPU-local TLB mailbox", target));
         local.remote().request_tlb_generation(generation);
     }
 
-    for target in remote_targets(topology.online(), current.id()) {
+    for target in remote_targets(&topology, current.id()) {
         let local = runtime
             .cpu_local(target)
-            .unwrap_or_else(|| panic!("online CPU {} lost its CPU-local TLB mailbox", target));
+            .unwrap_or_else(|| panic!("coherent CPU {} lost its CPU-local TLB mailbox", target));
         if local.remote().tlb_is_lazy() {
             continue;
         }
-        crate::cpu::send_ipi(target, crate::cpu::IpiKind::TlbFlush).unwrap_or_else(|error| {
-            panic!(
-                "failed to send TLB shootdown generation {} to CPU {}: {:?}",
-                generation, target, error
-            )
-        });
+        match crate::cpu::send_ipi(target, crate::cpu::IpiKind::TlbFlush) {
+            Ok(()) => {}
+            Err(crate::cpu::CpuIpiError::CpuStateIneligible { .. })
+                if local.remote().tlb_is_lazy() =>
+            {
+                continue;
+            }
+            Err(error) => {
+                panic!(
+                    "failed to send TLB shootdown generation {} to CPU {}: {:?}",
+                    generation, target, error
+                );
+            }
+        }
         REMOTE_SHOOTDOWNS.fetch_add(1, Ordering::Relaxed);
     }
 
-    for target in remote_targets(topology.online(), current.id()) {
+    for target in remote_targets(&topology, current.id()) {
         let local = runtime
             .cpu_local(target)
-            .unwrap_or_else(|| panic!("online CPU {} lost its CPU-local TLB mailbox", target));
+            .unwrap_or_else(|| panic!("coherent CPU {} lost its CPU-local TLB mailbox", target));
         let mut spins = 0usize;
         while local.remote().observed_tlb_generation() < generation {
+            if local.remote().tlb_is_lazy() {
+                break;
+            }
+            let current_state = crate::cpu::snapshot().slot(target).map(|slot| slot.state);
+            assert!(
+                current_state.is_some_and(crate::cpu::CpuSlotState::participates_in_tlb),
+                "CPU {} left TLB participation without entering lazy mode",
+                target
+            );
             // Two CPUs may initiate a shootdown while local interrupts are
             // disabled. Servicing our own mailbox here prevents a cyclic wait.
             service_pending_on_current(current);
@@ -198,11 +216,28 @@ mod tests {
     }
 
     #[test]
-    fn sparse_shootdown_targets_only_actual_remote_members() {
-        let online = CpuSet::from_ids(8, [cpu(0), cpu(2), cpu(7)]).unwrap();
+    fn sparse_shootdown_includes_starting_and_draining_cpus() {
+        let runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None).unwrap();
+        let firmware = |uid, apic| crate::cpu::FirmwareCpuIdentity {
+            uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+            apic_id: crate::cpu::ApicId::new(apic),
+            proximity_domain: Some(0),
+            eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+        };
+        let cpu1 = runtime.discover_present(firmware(1, 1)).unwrap();
+        let cpu2 = runtime.discover_present(firmware(2, 2)).unwrap();
+        let cpu3 = runtime.discover_present(firmware(3, 3)).unwrap();
+        runtime.begin_start(cpu1).unwrap();
+        runtime.begin_start(cpu2).unwrap();
+        runtime.startup_ready(cpu2).unwrap();
+        runtime.begin_start(cpu3).unwrap();
+        runtime.startup_ready(cpu3).unwrap();
+        runtime.begin_drain(cpu3).unwrap();
+
+        let topology = runtime.snapshot();
         assert_eq!(
-            remote_targets(&online, cpu(2)).collect::<alloc::vec::Vec<_>>(),
-            [cpu(0), cpu(7)]
+            remote_targets(&topology, cpu(2)).collect::<alloc::vec::Vec<_>>(),
+            [cpu(0), cpu(1), cpu(3)]
         );
     }
 }

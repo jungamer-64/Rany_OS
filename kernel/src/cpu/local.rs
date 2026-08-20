@@ -75,7 +75,10 @@ impl CpuRemoteAccess {
             runtime_timer_armed: AtomicBool::new(false),
             rcu_read_depth: AtomicU32::new(0),
             rcu_quiescent_count: AtomicU64::new(0),
-            tlb_mode: AtomicU8::new(TLB_ACTIVE),
+            // Every newly allocated CPU-local block starts detached from
+            // address-space execution. The bootstrap CPU activates after GS
+            // binding; application CPUs activate only after online commit.
+            tlb_mode: AtomicU8::new(TLB_LAZY),
             tlb_requested_generation: AtomicU64::new(0),
             tlb_observed_generation: AtomicU64::new(0),
             deferred_atomic_wakes: MpscRingBuffer::new(),
@@ -252,6 +255,14 @@ impl CpuRemoteAccess {
 
     pub(crate) fn pending_interrupt_wakes(&self) -> usize {
         self.interrupt_wakes.len()
+    }
+
+    pub(crate) fn pending_deferred_work(&self) -> usize {
+        self.deferred_atomic_wakes
+            .len()
+            .saturating_add(self.deferred_queue_wakes.len())
+            .saturating_add(self.deferred_io_completions.len())
+            .saturating_add(self.interrupt_wakes.len())
     }
 }
 
@@ -593,6 +604,10 @@ impl CurrentCpu {
         self.local.remote.disarm_runtime_timer();
     }
 
+    pub(crate) fn runtime_timer_armed(&self) -> bool {
+        self.local.remote.runtime_timer_armed()
+    }
+
     pub(crate) fn refill_task_fuel(&self, amount: u64) {
         self.local.refill_task_fuel(amount);
     }
@@ -667,6 +682,10 @@ impl CurrentCpu {
 
     pub(crate) fn take_interrupt_wake(&self) -> Option<usize> {
         self.local.remote.take_interrupt_wake()
+    }
+
+    pub(crate) fn pending_deferred_work(&self) -> usize {
+        self.local.remote.pending_deferred_work()
     }
 
     pub(crate) fn try_enter_page_fault(self) -> Result<PageFaultGuard, Self> {
@@ -784,10 +803,12 @@ mod tests {
         assert!(remote.defer_queue_wake(22));
         assert!(remote.defer_io_completion((33, 44, 55)));
         assert!(remote.defer_interrupt_wake(66));
+        assert_eq!(remote.pending_deferred_work(), 4);
 
         assert_eq!(remote.take_atomic_wake(), Some(11));
         assert_eq!(remote.take_queue_wake(), Some(22));
         assert_eq!(remote.take_io_completion(), Some((33, 44, 55)));
         assert_eq!(remote.take_interrupt_wake(), Some(66));
+        assert_eq!(remote.pending_deferred_work(), 0);
     }
 }

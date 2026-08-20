@@ -701,8 +701,10 @@ pub fn send_eoi() {
 pub fn current_apic_id() -> Result<crate::cpu::ApicId, InterruptError> {
     crate::cpu::current_apic_id().map_err(|error| match error {
         crate::cpu::CpuIpiError::LocalApic(error) => InterruptError::LocalApic(error),
-        crate::cpu::CpuIpiError::CpuNotPresent(cpu)
-        | crate::cpu::CpuIpiError::CpuNotOnline(cpu) => InterruptError::CpuNotOnline(cpu),
+        crate::cpu::CpuIpiError::CpuNotPresent(cpu) => InterruptError::CpuNotOnline(cpu),
+        crate::cpu::CpuIpiError::CpuStateIneligible { cpu_id, .. } => {
+            InterruptError::CpuNotOnline(cpu_id)
+        }
     })
 }
 

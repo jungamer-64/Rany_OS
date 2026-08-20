@@ -110,6 +110,20 @@ pub fn rcu_note_context_switch() {
     }
 }
 
+pub(crate) fn quiesce_current_cpu_for_offline() {
+    let current = CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("RCU CPU quiescence requires CPU-local state"));
+    assert!(
+        !current.rcu_read_active(),
+        "CPU cannot park inside an RCU read-side section"
+    );
+    assert!(
+        current.note_rcu_quiescent(),
+        "CPU failed to publish its final RCU quiescent state"
+    );
+    RCU_CONTEXT_SWITCHES.fetch_add(1, Ordering::Relaxed);
+}
+
 /// 現在のコンテキストスイッチカウントを取得
 #[inline]
 pub fn rcu_context_switch_count() -> usize {
@@ -131,10 +145,15 @@ pub fn synchronize_rcu() {
     let topology = crate::cpu::snapshot();
     let runtime = crate::cpu::runtime();
     let mut snapshots = Vec::new();
-    for cpu_id in topology.online() {
+    for slot in topology
+        .slots()
+        .iter()
+        .filter(|slot| slot.state.participates_in_rcu())
+    {
+        let cpu_id = slot.id;
         let local = runtime
             .cpu_local(cpu_id)
-            .unwrap_or_else(|| panic!("online CPU {} has no CPU-local RCU state", cpu_id));
+            .unwrap_or_else(|| panic!("RCU CPU {} has no CPU-local state", cpu_id));
         snapshots.push((cpu_id, local.remote().rcu_quiescent_count()));
     }
     drop(topology);
@@ -151,23 +170,36 @@ pub fn synchronize_rcu() {
         if Some(cpu_id) == current_id {
             continue;
         }
-        crate::cpu::send_ipi(cpu_id, crate::cpu::IpiKind::ExecutorWake).unwrap_or_else(|error| {
-            panic!(
-                "failed to request an RCU quiescent state from CPU {}: {:?}",
-                cpu_id, error
-            )
-        });
+        match crate::cpu::send_ipi(cpu_id, crate::cpu::IpiKind::ExecutorWake) {
+            Ok(()) => {}
+            Err(crate::cpu::CpuIpiError::CpuStateIneligible { .. })
+                if !crate::cpu::snapshot()
+                    .slot(cpu_id)
+                    .is_some_and(|slot| slot.state.participates_in_rcu()) =>
+            {
+                continue;
+            }
+            Err(error) => {
+                panic!(
+                    "failed to request an RCU quiescent state from CPU {}: {:?}",
+                    cpu_id, error
+                );
+            }
+        }
     }
 
     for (cpu_id, snap_val) in snapshots {
         // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
         loop {
-            if !crate::cpu::snapshot().online().contains(cpu_id) {
+            if !crate::cpu::snapshot()
+                .slot(cpu_id)
+                .is_some_and(|slot| slot.state.participates_in_rcu())
+            {
                 break;
             }
             let local = runtime
                 .cpu_local(cpu_id)
-                .unwrap_or_else(|| panic!("online CPU {} lost its CPU-local RCU state", cpu_id));
+                .unwrap_or_else(|| panic!("RCU CPU {} lost its CPU-local state", cpu_id));
             if local.remote().rcu_quiescent_count() != snap_val {
                 break;
             }

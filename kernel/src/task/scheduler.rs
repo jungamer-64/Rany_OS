@@ -515,6 +515,29 @@ pub(crate) fn run_until_parked() {
     run_scheduler_loop(ParkPolicy::Return);
 }
 
+pub(crate) fn quiesce_current_cpu_deferred_work() {
+    assert!(
+        !crate::interrupts::are_interrupts_enabled(),
+        "CPU deferred work can only be retired with local interrupts disabled"
+    );
+    let current = CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("deferred-work quiescence requires CPU-local state"));
+
+    // These queues are produced only by local interrupt context. Once local
+    // interrupts are disabled, each consumer drains its queue to exhaustion
+    // and no producer can race the final emptiness check.
+    crate::sync::process_deferred_wakes();
+    crate::sync::process_deferred_waker_queue_wakes();
+    super::interrupt_waker::process_interrupt_events();
+    crate::io::io_scheduler::process_deferred_completions_local();
+    assert_eq!(
+        current.pending_deferred_work(),
+        0,
+        "CPU {} retained deferred operations after local interrupt shutdown",
+        current.id(),
+    );
+}
+
 pub fn run_forever() -> ! {
     run_scheduler_loop(ParkPolicy::Reject);
     unreachable!("bootstrap scheduler loop returned")

@@ -586,6 +586,16 @@ pub(crate) fn stop_current_cpu_runtime_timer() -> Result<(), RuntimeTimerError> 
     Ok(())
 }
 
+pub(crate) fn retire_current_cpu_timer_event() -> bool {
+    let current_cpu = crate::cpu::CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("timer-event retirement requires CPU-local state"));
+    assert!(
+        !current_cpu.runtime_timer_armed(),
+        "timer event retired while the local runtime timer remained armed"
+    );
+    current_cpu.take_timer_event()
+}
+
 /// Arms the periodic local APIC timer on the executing CPU once.
 ///
 /// # Errors

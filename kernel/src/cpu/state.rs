@@ -34,6 +34,18 @@ impl CpuSlotState {
     pub const fn is_schedulable(self) -> bool {
         matches!(self, Self::Online)
     }
+
+    pub(crate) const fn participates_in_tlb(self) -> bool {
+        matches!(self, Self::Starting | Self::Online | Self::Draining)
+    }
+
+    pub(crate) const fn participates_in_rcu(self) -> bool {
+        matches!(self, Self::Online | Self::Draining)
+    }
+
+    pub(crate) const fn accepts_executor_wake(self) -> bool {
+        matches!(self, Self::Online | Self::Draining)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -523,5 +535,19 @@ mod tests {
                 reason: CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers }),
             })
         );
+    }
+
+    #[test]
+    fn coherence_participation_extends_through_draining() {
+        assert!(CpuSlotState::Starting.participates_in_tlb());
+        assert!(!CpuSlotState::Starting.participates_in_rcu());
+        assert!(CpuSlotState::Online.participates_in_tlb());
+        assert!(CpuSlotState::Online.participates_in_rcu());
+        assert!(CpuSlotState::Draining.participates_in_tlb());
+        assert!(CpuSlotState::Draining.participates_in_rcu());
+        assert!(CpuSlotState::Draining.accepts_executor_wake());
+        assert!(!CpuSlotState::Parked.participates_in_tlb());
+        assert!(!CpuSlotState::Parked.participates_in_rcu());
+        assert!(!CpuSlotState::Parked.accepts_executor_wake());
     }
 }

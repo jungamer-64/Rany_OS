@@ -1,4 +1,4 @@
-use super::{ApicId, CpuId};
+use super::{ApicId, CpuId, CpuSlotState};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IpiKind {
@@ -9,7 +9,11 @@ pub enum IpiKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CpuIpiError {
     CpuNotPresent(CpuId),
-    CpuNotOnline(CpuId),
+    CpuStateIneligible {
+        cpu_id: CpuId,
+        state: CpuSlotState,
+        kind: IpiKind,
+    },
     LocalApic(crate::drivers::apic::LocalApicError),
 }
 
@@ -18,8 +22,16 @@ pub(crate) fn send_ipi(cpu_id: CpuId, kind: IpiKind) -> Result<(), CpuIpiError> 
     let slot = snapshot
         .slot(cpu_id)
         .ok_or(CpuIpiError::CpuNotPresent(cpu_id))?;
-    if !slot.state.is_schedulable() {
-        return Err(CpuIpiError::CpuNotOnline(cpu_id));
+    let eligible = match kind {
+        IpiKind::ExecutorWake => slot.state.accepts_executor_wake(),
+        IpiKind::TlbFlush => slot.state.participates_in_tlb(),
+    };
+    if !eligible {
+        return Err(CpuIpiError::CpuStateIneligible {
+            cpu_id,
+            state: slot.state,
+            kind,
+        });
     }
     send_ipi_to_apic(slot.firmware.apic_id, kind)
 }

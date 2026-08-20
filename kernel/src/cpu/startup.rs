@@ -348,6 +348,7 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
         .map_err(CpuInitializationError::Topology)?;
     super::CurrentCpu::bind(CpuId::BOOTSTRAP)
         .map_err(|_| CpuInitializationError::BootstrapBinding)?;
+    let _ = crate::mm::sync::tlb::exit_lazy_mode();
     crate::task::initialize_scheduler().map_err(|_| CpuInitializationError::BootstrapBinding)?;
     super::transition::initialize().map_err(CpuInitializationError::TransitionWorker)?;
 
@@ -605,7 +606,10 @@ fn run_online_lifecycle(
         resource.publish(ApStartupSignal::TimerFailed);
         fail_stop_ap();
     }
+    let _ = crate::interrupts::retire_current_cpu_timer_event();
+    crate::task::quiesce_current_cpu_deferred_work();
     let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
+    crate::mm::sync::rcu::quiesce_current_cpu_for_offline();
     crate::mm::sync::tlb::enter_lazy_mode();
     local_apic.set_task_priority(0xe0);
     resource.publish(ApStartupSignal::ReadyParked);
@@ -618,7 +622,7 @@ fn run_online_lifecycle(
 fn map_ipi_start_error(error: super::CpuIpiError) -> CpuFailureReason {
     match error {
         super::CpuIpiError::LocalApic(error) => map_apic_start_error(error),
-        super::CpuIpiError::CpuNotPresent(_) | super::CpuIpiError::CpuNotOnline(_) => {
+        super::CpuIpiError::CpuNotPresent(_) | super::CpuIpiError::CpuStateIneligible { .. } => {
             CpuFailureReason::Topology(CpuTopologyIssue::ConflictingFirmwareIdentity)
         }
     }
@@ -709,7 +713,6 @@ fn ap_entry(id: CpuId) -> ! {
                 super::CpuControlMessage::Start => {
                     crate::interrupts::disable_interrupts();
                     local_apic.set_task_priority(0);
-                    let _ = crate::mm::sync::tlb::exit_lazy_mode();
                     crate::mm::numa::topology::apply_current_cpu_locality();
                     if crate::interrupts::prepare_current_cpu_runtime_timer().is_err() {
                         resource.publish(ApStartupSignal::TimerFailed);
@@ -721,16 +724,19 @@ fn ap_entry(id: CpuId) -> ! {
                     resource.publish(ApStartupSignal::ReadyOnline);
                     current.acknowledge_online();
                     fence(Ordering::SeqCst);
-                    crate::interrupts::enable_interrupts();
                     if online_commit_observed(&current, id) {
+                        let _ = crate::mm::sync::tlb::exit_lazy_mode();
+                        crate::interrupts::enable_interrupts();
                         run_online_lifecycle(&current, id, resource, local_apic);
                     } else {
-                        crate::interrupts::disable_interrupts();
                         if crate::interrupts::stop_current_cpu_runtime_timer().is_err() {
                             resource.publish(ApStartupSignal::TimerFailed);
                             fail_stop_ap();
                         }
+                        let _ = crate::interrupts::retire_current_cpu_timer_event();
+                        crate::task::quiesce_current_cpu_deferred_work();
                         let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
+                        crate::mm::sync::rcu::quiesce_current_cpu_for_offline();
                         crate::mm::sync::tlb::enter_lazy_mode();
                         local_apic.set_task_priority(0xe0);
                         resource.publish(ApStartupSignal::ReadyParked);
