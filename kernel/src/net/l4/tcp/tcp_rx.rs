@@ -498,6 +498,7 @@ fn process_parsed_tcp_segment(
                             header.flags,
                             header.seq_num,
                             header.ack_num,
+                            header.window,
                             header.urgent_ptr,
                             options,
                             data_payload,
