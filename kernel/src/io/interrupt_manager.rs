@@ -123,8 +123,8 @@ pub enum Polarity {
 pub struct InterruptConfig {
     /// ベクタ番号
     pub vector: u8,
-    /// 配送先CPUのAPIC ID（Noneの場合はブロードキャスト）
-    pub target_apic_id: Option<u32>,
+    /// Validated physical APIC destination.
+    pub target_apic_id: crate::cpu::ApicId,
     /// 配送モード
     pub delivery_mode: DeliveryMode,
     /// トリガーモード
@@ -137,29 +137,17 @@ pub struct InterruptConfig {
     pub ir_handle: Option<u16>,
 }
 
-impl Default for InterruptConfig {
-    fn default() -> Self {
-        Self {
-            vector: 0,
-            target_apic_id: None,
-            delivery_mode: DeliveryMode::Fixed,
-            trigger_mode: TriggerMode::Edge,
-            polarity: Polarity::ActiveHigh,
-            masked: true,
-            ir_handle: None,
-        }
-    }
-}
-
 impl InterruptConfig {
     /// MSI用のメッセージアドレスを生成
-    pub fn msi_address(&self) -> u64 {
+    pub fn msi_address(&self) -> Result<u64, InterruptError> {
         if let Some(handle) = self.ir_handle {
-            crate::io::iommu::api::get_remap_msi_message(handle).0
+            Ok(crate::io::iommu::api::get_remap_msi_message(handle).0)
         } else {
             const MSI_ADDRESS_BASE: u64 = 0xFEE00000;
-            let apic_id = self.target_apic_id.unwrap_or(0) as u64;
-            MSI_ADDRESS_BASE | (apic_id << 12)
+            let apic_id = u8::try_from(self.target_apic_id.as_u32()).map_err(|_| {
+                InterruptError::DestinationRequiresInterruptRemapping(self.target_apic_id)
+            })?;
+            Ok(MSI_ADDRESS_BASE | (u64::from(apic_id) << 12))
         }
     }
 
@@ -179,7 +167,7 @@ impl InterruptConfig {
     }
 
     /// IO-APIC用のリダイレクションエントリを生成
-    pub fn ioapic_entry(&self) -> u64 {
+    pub fn ioapic_entry(&self) -> Result<crate::drivers::apic::RedirectionEntry, InterruptError> {
         let mut entry = self.vector as u64;
         entry |= (self.delivery_mode.to_bits() as u64) << 8;
 
@@ -193,11 +181,11 @@ impl InterruptConfig {
             entry |= 1 << 16;
         }
 
-        // Destination APIC ID
-        let apic_id = self.target_apic_id.unwrap_or(0) as u64;
-        entry |= apic_id << 56;
-
-        entry
+        let destination = crate::drivers::apic::IoApicDestination::try_from(
+            crate::drivers::apic::ApicDestination::new(self.target_apic_id.as_u32()),
+        )
+        .map_err(InterruptError::IoApic)?;
+        Ok(crate::drivers::apic::RedirectionEntry::from_raw(entry).destination(destination))
     }
 }
 
@@ -298,6 +286,15 @@ pub enum InterruptError {
     InvalidGsi,
     /// ハードウェアエラー
     HardwareError,
+    /// CPU topology cannot provide the requested online destination.
+    CpuNotOnline(crate::cpu::CpuId),
+    /// Direct MSI delivery cannot represent this destination without an IOMMU
+    /// interrupt-remapping entry.
+    DestinationRequiresInterruptRemapping(crate::cpu::ApicId),
+    /// Typed I/O APIC backend failure.
+    IoApic(crate::drivers::apic::IoApicError),
+    /// Typed local APIC backend failure.
+    LocalApic(crate::drivers::apic::LocalApicError),
 }
 
 impl InterruptManager {
@@ -360,8 +357,9 @@ impl InterruptManager {
         &self,
         device_bdf: u32,
         handler_name: String,
-        target_apic_id: Option<u32>,
+        target_cpu: crate::cpu::CpuId,
     ) -> Result<VectorAllocation, InterruptError> {
+        let target_apic_id = online_apic_id(target_cpu)?;
         // MSI範囲から空きベクタを探す
         for vector in MSI_VECTORS_START..=MSI_VECTORS_END {
             if self.try_allocate_vector(vector) {
@@ -380,12 +378,19 @@ impl InterruptManager {
                 let bus = ((device_bdf >> 8) & 0xFF) as u8;
                 let dev = ((device_bdf >> 3) & 0x1F) as u8;
                 let func = (device_bdf & 0x7) as u8;
-                let dest_id = target_apic_id.unwrap_or(0);
+                let dest_id = target_apic_id.as_u32();
 
-                if let Ok(handle) =
-                    crate::io::iommu::api::map_interrupt(0, bus, dev, func, vector, dest_id, true)
-                {
-                    config.ir_handle = Some(handle);
+                match crate::io::iommu::api::map_interrupt(
+                    0, bus, dev, func, vector, dest_id, false,
+                ) {
+                    Ok(handle) => config.ir_handle = Some(handle),
+                    Err(_) if u8::try_from(dest_id).is_ok() => {}
+                    Err(_) => {
+                        self.mark_vector_free(vector);
+                        return Err(InterruptError::DestinationRequiresInterruptRemapping(
+                            target_apic_id,
+                        ));
+                    }
                 }
 
                 let allocation = InterruptAllocation {
@@ -410,12 +415,12 @@ impl InterruptManager {
         device_bdf: u32,
         count: u16,
         handler_name: String,
-        target_apic_id: Option<u32>,
+        target_cpu: crate::cpu::CpuId,
     ) -> Result<Vec<VectorAllocation>, InterruptError> {
         let mut allocations = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            match self.allocate_msi_vector(device_bdf, handler_name.clone(), target_apic_id) {
+            match self.allocate_msi_vector(device_bdf, handler_name.clone(), target_cpu) {
                 Ok(alloc) => {
                     // MSI-Xとして記録
                     if let Some(allocation) = self.allocations.write().get_mut(&alloc.vector) {
@@ -447,6 +452,7 @@ impl InterruptManager {
         trigger_mode: TriggerMode,
         polarity: Polarity,
     ) -> Result<VectorAllocation, InterruptError> {
+        let target_apic_id = online_apic_id(crate::cpu::CpuId::BOOTSTRAP)?;
         // 既存のマッピングを確認
         if let Some(&vector) = self.gsi_to_vector.read().get(&gsi) {
             let config = self
@@ -454,7 +460,7 @@ impl InterruptManager {
                 .read()
                 .get(&vector)
                 .map(|a| a.config.clone())
-                .unwrap_or_default();
+                .ok_or(InterruptError::InvalidVector)?;
             return Ok(VectorAllocation { vector, config });
         }
 
@@ -473,7 +479,7 @@ impl InterruptManager {
 
         let config = InterruptConfig {
             vector,
-            target_apic_id: Some(0), // BSP
+            target_apic_id,
             delivery_mode: DeliveryMode::Fixed,
             trigger_mode,
             polarity,
@@ -595,12 +601,12 @@ pub fn interrupt_manager() -> &'static InterruptManager {
 pub fn allocate_msi(
     device_bdf: u32,
     handler_name: &str,
-    target_apic_id: Option<u32>,
+    target_cpu: crate::cpu::CpuId,
 ) -> Result<VectorAllocation, InterruptError> {
     INTERRUPT_MANAGER.allocate_msi_vector(
         device_bdf,
         alloc::string::ToString::to_string(handler_name),
-        target_apic_id,
+        target_cpu,
     )
 }
 
@@ -609,13 +615,13 @@ pub fn allocate_msix(
     device_bdf: u32,
     count: u16,
     handler_name: &str,
-    target_apic_id: Option<u32>,
+    target_cpu: crate::cpu::CpuId,
 ) -> Result<Vec<VectorAllocation>, InterruptError> {
     INTERRUPT_MANAGER.allocate_msix_vectors(
         device_bdf,
         count,
         alloc::string::ToString::to_string(handler_name),
-        target_apic_id,
+        target_cpu,
     )
 }
 
@@ -654,18 +660,11 @@ pub fn configure_ioapic_interrupt(
     config: &InterruptConfig,
 ) -> Result<(), InterruptError> {
     // IO-APICのリダイレクションテーブルに書き込み
-    let entry = config.ioapic_entry();
-    if let Some((ioapic_index, local_irq)) = crate::io::apic::map_gsi_to_ioapic(gsi) {
-        if ioapic_index == 0 {
-            crate::io::apic::io_apic().write_entry(
-                local_irq,
-                crate::io::apic::RedirectionEntry::from_raw(entry),
-            );
-            return Ok(());
-        }
-    }
-
-    Err(InterruptError::InvalidGsi)
+    let entry = config.ioapic_entry()?;
+    crate::drivers::apic::io_apics()
+        .map_err(InterruptError::IoApic)?
+        .write_gsi(gsi, entry)
+        .map_err(InterruptError::IoApic)
 }
 
 /// Local APICにEOIを送信
@@ -673,20 +672,58 @@ pub fn configure_ioapic_interrupt(
 /// 割り込みハンドラの最後で呼び出してください
 #[inline]
 pub fn send_eoi() {
-    crate::cpu::send_eoi_current_cpu();
-}
-
-/// 特定のCPUにIPIを送信
-pub fn send_ipi(target_apic_id: u32, vector: u8) {
-    crate::smp::bootstrap::send_ipi(target_apic_id, vector);
-}
-
-/// 全CPUにブロードキャストIPIを送信
-pub fn broadcast_ipi(vector: u8) {
-    crate::smp::bootstrap::broadcast_ipi(vector);
+    crate::cpu::send_eoi_current_cpu()
+        .unwrap_or_else(|error| panic!("local APIC EOI failed: {error:?}"));
 }
 
 /// 現在のCPUのAPIC IDを取得
-pub fn current_apic_id() -> u32 {
-    crate::cpu::current_apic_id()
+pub fn current_apic_id() -> Result<crate::cpu::ApicId, InterruptError> {
+    crate::cpu::current_apic_id().map_err(|error| match error {
+        crate::cpu::CpuIpiError::LocalApic(error) => InterruptError::LocalApic(error),
+        crate::cpu::CpuIpiError::CpuNotPresent(cpu)
+        | crate::cpu::CpuIpiError::CpuNotOnline(cpu) => InterruptError::CpuNotOnline(cpu),
+    })
+}
+
+fn online_apic_id(cpu_id: crate::cpu::CpuId) -> Result<crate::cpu::ApicId, InterruptError> {
+    let snapshot = crate::cpu::snapshot();
+    let slot = snapshot
+        .slot(cpu_id)
+        .ok_or(InterruptError::CpuNotOnline(cpu_id))?;
+    if !slot.state.is_schedulable() {
+        return Err(InterruptError::CpuNotOnline(cpu_id));
+    }
+    Ok(slot.firmware.apic_id)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn direct_config(destination: u32) -> InterruptConfig {
+        InterruptConfig {
+            vector: 0x60,
+            target_apic_id: crate::cpu::ApicId::new(destination),
+            delivery_mode: DeliveryMode::Fixed,
+            trigger_mode: TriggerMode::Edge,
+            polarity: Polarity::ActiveHigh,
+            masked: false,
+            ir_handle: None,
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn direct_msi_rejects_destination_wider_than_xapic() {
+        assert_eq!(
+            direct_config(0xff).msi_address(),
+            Ok(0xfee0_0000 | (0xff << 12))
+        );
+        assert_eq!(
+            direct_config(0x100).msi_address(),
+            Err(InterruptError::DestinationRequiresInterruptRemapping(
+                crate::cpu::ApicId::new(0x100)
+            ))
+        );
+    }
 }

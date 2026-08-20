@@ -6,7 +6,9 @@ static BUILTIN_APIC_PROVIDER: BuiltinApicProvider = BuiltinApicProvider;
 
 impl ApicServices for BuiltinApicProvider {
     fn local_apic_id(&self) -> u32 {
-        crate::drivers::apic::local_apic().id() as u32
+        crate::drivers::apic::local_apic()
+            .unwrap_or_else(|error| panic!("local APIC service unavailable: {error}"))
+            .id()
     }
 }
 

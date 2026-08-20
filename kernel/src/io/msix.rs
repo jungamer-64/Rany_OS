@@ -118,7 +118,11 @@ fn map_interrupt_error(err: InterruptError) -> KapiError {
         InterruptError::NoAvailableVector => KapiError::ResourceExhausted,
         InterruptError::VectorInUse => KapiError::AlreadyExists,
         InterruptError::InvalidVector | InterruptError::InvalidGsi => KapiError::InvalidHandle,
-        InterruptError::HardwareError => KapiError::IoError,
+        InterruptError::HardwareError
+        | InterruptError::CpuNotOnline(_)
+        | InterruptError::DestinationRequiresInterruptRemapping(_)
+        | InterruptError::IoApic(_)
+        | InterruptError::LocalApic(_) => KapiError::IoError,
     }
 }
 
@@ -221,13 +225,17 @@ unsafe fn program_table_entry(
     table_base: *mut MsixTableEntry,
     table_index: u16,
     allocation: &VectorAllocation,
-) {
+) -> KapiResult<()> {
     let entry = unsafe { &mut *table_base.add(table_index as usize) };
-    let address = allocation.config.msi_address();
+    let address = allocation
+        .config
+        .msi_address()
+        .map_err(map_interrupt_error)?;
     entry.msg_addr_lo = address as u32;
     entry.msg_addr_hi = (address >> 32) as u32;
     entry.msg_data = allocation.config.msi_data();
     entry.vector_ctrl = 0;
+    Ok(())
 }
 
 fn program_device_msix(
@@ -243,7 +251,7 @@ fn program_device_msix(
 
     for (table_index, allocation) in allocations.iter().enumerate() {
         unsafe {
-            program_table_entry(table_base, table_index as u16, allocation);
+            program_table_entry(table_base, table_index as u16, allocation)?;
         }
     }
 
@@ -310,7 +318,7 @@ pub fn enable_for_owner(
         pci_device.bdf.to_u16() as u32,
         requested_count,
         "driver_msix",
-        Some(0),
+        crate::cpu::CpuId::BOOTSTRAP,
     )
     .map_err(map_interrupt_error)?;
     let vectors: Vec<u8> = allocations.iter().map(|alloc| alloc.vector).collect();
@@ -543,16 +551,24 @@ mod tests {
                 vector: 0x66,
                 config: InterruptConfig {
                     vector: 0x66,
-                    target_apic_id: Some(2),
-                    ..InterruptConfig::default()
+                    target_apic_id: crate::cpu::ApicId::new(2),
+                    delivery_mode: crate::io::interrupt_manager::DeliveryMode::Fixed,
+                    trigger_mode: crate::io::interrupt_manager::TriggerMode::Edge,
+                    polarity: crate::io::interrupt_manager::Polarity::ActiveHigh,
+                    masked: false,
+                    ir_handle: None,
                 },
             },
             VectorAllocation {
                 vector: 0x67,
                 config: InterruptConfig {
                     vector: 0x67,
-                    target_apic_id: Some(3),
-                    ..InterruptConfig::default()
+                    target_apic_id: crate::cpu::ApicId::new(3),
+                    delivery_mode: crate::io::interrupt_manager::DeliveryMode::Fixed,
+                    trigger_mode: crate::io::interrupt_manager::TriggerMode::Edge,
+                    polarity: crate::io::interrupt_manager::Polarity::ActiveHigh,
+                    masked: false,
+                    ir_handle: None,
                 },
             },
         ];

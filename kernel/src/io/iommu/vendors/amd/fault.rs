@@ -244,21 +244,14 @@ pub fn spawn_fault_handler_task() -> Result<(), crate::task::SpawnError> {
 // Helper functions
 // ---------------------------------------------------------------------------
 
-pub(super) fn msi_message(vector: u8) -> (u64, u32) {
+pub(super) fn msi_message(vector: u8) -> Result<(u64, u32), IommuError> {
     const MSI_ADDRESS_BASE: u64 = 0xFEE0_0000;
-    let apic_id: u64 = {
-        #[cfg(feature = "apic")]
-        {
-            crate::io::interrupt_manager::current_apic_id() as u64
-        }
-        #[cfg(not(feature = "apic"))]
-        {
-            0u64
-        }
-    };
-    let address = MSI_ADDRESS_BASE | (apic_id << 12);
+    let apic_id =
+        crate::io::interrupt_manager::current_apic_id().map_err(|_| IommuError::NotInitialized)?;
+    let apic_id = u8::try_from(apic_id.as_u32()).map_err(|_| IommuError::NotSupported)?;
+    let address = MSI_ADDRESS_BASE | (u64::from(apic_id) << 12);
     let data = vector as u32;
-    (address, data)
+    Ok((address, data))
 }
 
 pub(super) fn event_type_name(event_type: u8) -> &'static str {
@@ -386,7 +379,7 @@ impl AmdIommuDriver {
         &self,
         unit: &AmdIommuUnit,
     ) -> Result<(), IommuError> {
-        let (addr, data) = msi_message(AMD_IOMMU_FAULT_VECTOR);
+        let (addr, data) = msi_message(AMD_IOMMU_FAULT_VECTOR)?;
         let mmio_base = phys_to_virt_usize(unit.base_addr);
         mmio_write_u32(
             mmio_base + MMIO_MSI_ADDR_LO_OFFSET as usize,

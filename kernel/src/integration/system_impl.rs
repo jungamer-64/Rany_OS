@@ -249,18 +249,40 @@ impl SystemIntegration {
                             match crate::io::interrupt_manager::allocate_msi(
                                 bdf,
                                 dev_name.as_str(),
-                                Some(0),
+                                crate::cpu::CpuId::BOOTSTRAP,
                             ) {
                                 Ok(allocation) => {
                                     let vector = allocation.vector();
-                                    unsafe {
+                                    let message_address = match allocation.config.msi_address() {
+                                        Ok(address) => address,
+                                        Err(error) => {
+                                            crate::io::interrupt_manager::free_vector(vector);
+                                            self.log(&alloc::format!(
+                                                "    MSI destination rejected for {}: {:?}",
+                                                dev_name,
+                                                error
+                                            ));
+                                            continue;
+                                        }
+                                    };
+                                    let program_result = unsafe {
                                         super::interrupt_routing::program_msi(
                                             pci_dev.bdf.bus(),
                                             pci_dev.bdf.device(),
                                             pci_dev.bdf.function(),
                                             offset,
-                                            vector,
-                                        );
+                                            message_address,
+                                            allocation.config.msi_data(),
+                                        )
+                                    };
+                                    if let Err(error) = program_result {
+                                        crate::io::interrupt_manager::free_vector(vector);
+                                        self.log(&alloc::format!(
+                                            "    MSI programming failed for {}: {:?}",
+                                            dev_name,
+                                            error
+                                        ));
+                                        continue;
                                     }
                                     let _ = crate::platform::pci::disable_intx(pci_dev);
                                     crate::io::interrupt_manager::register_handler(
