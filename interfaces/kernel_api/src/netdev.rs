@@ -8,6 +8,7 @@ use crate::resource::net::{PacketByteCount, PacketRef};
 use crate::service::kernel;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::num::NonZeroU16;
 use core::num::NonZeroU64;
 use core::num::NonZeroUsize;
 use core::ptr::NonNull;
@@ -153,19 +154,11 @@ impl TxCompletionTicket {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum TxCompletionMode {
-    #[default]
-    QueueAcceptance,
-    DeviceCompletion(TxCompletionTicket),
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetTxMeta {
     pub queue_index: Option<u16>,
     pub flags: u32,
     pub vlan_tag: Option<u16>,
-    pub completion: TxCompletionMode,
 }
 
 impl Default for NetTxMeta {
@@ -174,25 +167,32 @@ impl Default for NetTxMeta {
             queue_index: None,
             flags: 0,
             vlan_tag: None,
-            completion: TxCompletionMode::QueueAcceptance,
         }
     }
 }
 
-impl NetTxMeta {
-    pub const fn completion(&self) -> TxCompletionMode {
-        self.completion
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TxLeaseId(NonZeroU64);
+
+impl TxLeaseId {
+    pub const fn new(id: u64) -> Option<Self> {
+        match NonZeroU64::new(id) {
+            Some(id) => Some(Self(id)),
+            None => None,
+        }
     }
 
-    pub const fn device_completion_ticket(&self) -> Option<TxCompletionTicket> {
-        match self.completion {
-            TxCompletionMode::QueueAcceptance => None,
-            TxCompletionMode::DeviceCompletion(ticket) => Some(ticket),
-        }
+    pub const fn get(self) -> u64 {
+        self.0.get()
     }
 }
 
-pub type TxLeaseId = u64;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxDeviceOutcome {
+    Transmitted,
+    NotTransmitted,
+    OutcomeUnknown,
+}
 
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
@@ -294,6 +294,7 @@ pub struct NetDeviceInfo {
     pub if_id: Option<u16>,
     pub driver_name: &'static str,
     pub queue_pairs: u16,
+    pub max_tx_segments: NonZeroU16,
     pub mtu: u32,
     pub mac: MacAddress,
     pub flags: u32,
@@ -306,6 +307,7 @@ impl Default for NetDeviceInfo {
             if_id: None,
             driver_name: "unknown",
             queue_pairs: 1,
+            max_tx_segments: NonZeroU16::MIN,
             mtu: 1500,
             mac: MacAddress::ZERO,
             flags: 0,
@@ -333,16 +335,169 @@ impl NetPortRuntimeCookie {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxWritableRegion {
+    cpu_ptr: NonNull<u8>,
+    device_addr: NonZeroU64,
+    writable_len: NonZeroUsize,
+}
+
+impl RxWritableRegion {
+    pub const fn cpu_ptr(self) -> *mut u8 {
+        self.cpu_ptr.as_ptr()
+    }
+
+    pub const fn device_addr(self) -> NonZeroU64 {
+        self.device_addr
+    }
+
+    pub const fn writable_len(self) -> usize {
+        self.writable_len.get()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RxBufferErrorCause {
+    VisibleData,
+    EmptyWritableRegion,
+    MissingDeviceAddress,
+}
+
+#[derive(Debug)]
+pub struct RxBufferBuildError {
+    cause: RxBufferErrorCause,
+    packet: PacketRef,
+}
+
+impl RxBufferBuildError {
+    pub const fn cause(&self) -> RxBufferErrorCause {
+        self.cause
+    }
+
+    pub fn into_packet(self) -> PacketRef {
+        self.packet
+    }
+}
+
+#[derive(Debug)]
+pub struct RxBuffer {
+    packet: PacketRef,
+    region: RxWritableRegion,
+}
+
+impl RxBuffer {
+    pub fn try_from_empty_packet(mut packet: PacketRef) -> Result<Self, RxBufferBuildError> {
+        if !packet.is_empty() {
+            return Err(RxBufferBuildError {
+                cause: RxBufferErrorCause::VisibleData,
+                packet,
+            });
+        }
+        let Some((cpu_ptr, device_addr, writable_len)) = packet.unpublished_writable_region()
+        else {
+            return Err(RxBufferBuildError {
+                cause: RxBufferErrorCause::EmptyWritableRegion,
+                packet,
+            });
+        };
+        let Some(cpu_ptr) = NonNull::new(cpu_ptr) else {
+            return Err(RxBufferBuildError {
+                cause: RxBufferErrorCause::EmptyWritableRegion,
+                packet,
+            });
+        };
+        let Some(device_addr) = NonZeroU64::new(device_addr) else {
+            return Err(RxBufferBuildError {
+                cause: RxBufferErrorCause::MissingDeviceAddress,
+                packet,
+            });
+        };
+        let Some(writable_len) = NonZeroUsize::new(writable_len) else {
+            return Err(RxBufferBuildError {
+                cause: RxBufferErrorCause::EmptyWritableRegion,
+                packet,
+            });
+        };
+        Ok(Self {
+            packet,
+            region: RxWritableRegion {
+                cpu_ptr,
+                device_addr,
+                writable_len,
+            },
+        })
+    }
+
+    pub const fn writable_region(&self) -> RxWritableRegion {
+        self.region
+    }
+
+    pub fn complete(mut self, meta: NetRxMeta) -> Result<ReceivedPacket, RxCompletionError> {
+        if meta.layout().frame_len().get() > self.region.writable_len() {
+            return Err(RxCompletionError {
+                cause: RxCompletionErrorCause::FrameTooLarge,
+                buffer: self,
+            });
+        }
+        // SAFETY: the driver may call `complete` only after the device has
+        // stopped writing this buffer. The checked layout bounds the exact
+        // initialized prefix that becomes visible.
+        if unsafe {
+            self.packet
+                .publish_device_written(meta.layout().frame_len())
+        }
+        .is_err()
+        {
+            return Err(RxCompletionError {
+                cause: RxCompletionErrorCause::FrameTooLarge,
+                buffer: self,
+            });
+        }
+        Ok(ReceivedPacket {
+            packet: self.packet,
+            meta,
+        })
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RxCompletionErrorCause {
+    FrameTooLarge,
+}
+
+#[derive(Debug)]
+pub struct RxCompletionError {
+    cause: RxCompletionErrorCause,
+    buffer: RxBuffer,
+}
+
+impl RxCompletionError {
+    pub const fn cause(&self) -> RxCompletionErrorCause {
+        self.cause
+    }
+
+    pub fn into_buffer(self) -> RxBuffer {
+        self.buffer
+    }
+}
+
+#[derive(Debug)]
+pub struct ReceivedPacket {
+    packet: PacketRef,
+    meta: NetRxMeta,
+}
+
+impl ReceivedPacket {
+    pub fn into_parts(self) -> (PacketRef, NetRxMeta) {
+        (self.packet, self.meta)
+    }
+}
+
 pub struct NetPortRuntimeOps {
-    pub alloc_packet: fn(NetPortRuntimeCookie, NetPortId) -> Option<PacketRef>,
-    pub submit_rx:
-        fn(NetPortRuntimeCookie, NetPortId, PacketRef, NetRxMeta) -> Result<(), &'static str>,
-    pub complete_tx_lease: fn(
-        NetPortRuntimeCookie,
-        NetPortId,
-        TxLeaseId,
-        Result<(), &'static str>,
-    ) -> Result<(), &'static str>,
+    pub lease_rx_buffer: fn(NetPortRuntimeCookie, NetPortId) -> Option<RxBuffer>,
+    pub submit_rx: fn(NetPortRuntimeCookie, NetPortId, ReceivedPacket) -> Result<(), &'static str>,
+    pub complete_tx_lease:
+        fn(NetPortRuntimeCookie, NetPortId, TxLeaseId, TxDeviceOutcome) -> Result<(), &'static str>,
     pub schedule_event:
         fn(NetPortRuntimeCookie, NetPortId, NetDriverEvent) -> Result<(), &'static str>,
     pub update_link: fn(NetPortRuntimeCookie, NetPortId, bool) -> Result<(), &'static str>,
@@ -351,18 +506,13 @@ pub struct NetPortRuntimeOps {
 
 impl NetPortRuntimeOps {
     pub const fn new(
-        alloc_packet: fn(NetPortRuntimeCookie, NetPortId) -> Option<PacketRef>,
-        submit_rx: fn(
-            NetPortRuntimeCookie,
-            NetPortId,
-            PacketRef,
-            NetRxMeta,
-        ) -> Result<(), &'static str>,
+        lease_rx_buffer: fn(NetPortRuntimeCookie, NetPortId) -> Option<RxBuffer>,
+        submit_rx: fn(NetPortRuntimeCookie, NetPortId, ReceivedPacket) -> Result<(), &'static str>,
         complete_tx_lease: fn(
             NetPortRuntimeCookie,
             NetPortId,
             TxLeaseId,
-            Result<(), &'static str>,
+            TxDeviceOutcome,
         ) -> Result<(), &'static str>,
         schedule_event: fn(
             NetPortRuntimeCookie,
@@ -373,7 +523,7 @@ impl NetPortRuntimeOps {
         log: fn(NetLogLevel, &str),
     ) -> Self {
         Self {
-            alloc_packet,
+            lease_rx_buffer,
             submit_rx,
             complete_tx_lease,
             schedule_event,
@@ -407,15 +557,15 @@ impl NetPortRuntimeHandle {
         self.port_id
     }
 
-    pub fn alloc_packet(self) -> Option<PacketRef> {
-        (self.ops.alloc_packet)(self.context, self.port_id)
+    pub fn lease_rx_buffer(self) -> Option<RxBuffer> {
+        (self.ops.lease_rx_buffer)(self.context, self.port_id)
     }
 
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the receiver cannot accept the operation.
-    pub fn submit_rx(self, packet: PacketRef, meta: NetRxMeta) -> Result<(), &'static str> {
-        (self.ops.submit_rx)(self.context, self.port_id, packet, meta)
+    pub fn submit_rx(self, packet: ReceivedPacket) -> Result<(), &'static str> {
+        (self.ops.submit_rx)(self.context, self.port_id, packet)
     }
 
     /// # Errors
@@ -424,9 +574,9 @@ impl NetPortRuntimeHandle {
     pub fn complete_tx_lease(
         self,
         lease_id: TxLeaseId,
-        result: Result<(), &'static str>,
+        outcome: TxDeviceOutcome,
     ) -> Result<(), &'static str> {
-        (self.ops.complete_tx_lease)(self.context, self.port_id, lease_id, result)
+        (self.ops.complete_tx_lease)(self.context, self.port_id, lease_id, outcome)
     }
 
     /// # Errors

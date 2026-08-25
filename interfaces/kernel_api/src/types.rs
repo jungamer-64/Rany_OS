@@ -177,6 +177,64 @@ pub enum PacketWindowError {
     BackendSplitUnsupported,
 }
 
+#[derive(Debug)]
+pub struct PacketOwnershipError<T> {
+    cause: PacketWindowError,
+    owner: T,
+}
+
+impl<T> PacketOwnershipError<T> {
+    pub const fn new(cause: PacketWindowError, owner: T) -> Self {
+        Self { cause, owner }
+    }
+
+    pub const fn cause(&self) -> PacketWindowError {
+        self.cause
+    }
+
+    pub fn into_owner(self) -> T {
+        self.owner
+    }
+
+    pub fn into_parts(self) -> (PacketWindowError, T) {
+        (self.cause, self.owner)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PacketPayloadError {
+    EmptyPayload,
+    EmptySegment,
+    LengthOverflow,
+    AllocationFailed,
+    OutOfBounds,
+    BackendSplitUnsupported,
+}
+
+#[derive(Debug)]
+pub struct PacketPayloadOwnershipError<T> {
+    cause: PacketPayloadError,
+    owner: T,
+}
+
+impl<T> PacketPayloadOwnershipError<T> {
+    pub const fn new(cause: PacketPayloadError, owner: T) -> Self {
+        Self { cause, owner }
+    }
+
+    pub const fn cause(&self) -> PacketPayloadError {
+        self.cause
+    }
+
+    pub fn into_owner(self) -> T {
+        self.owner
+    }
+
+    pub fn into_parts(self) -> (PacketPayloadError, T) {
+        (self.cause, self.owner)
+    }
+}
+
 /// Inline opaque storage used by `PacketRef` backings.
 #[derive(Clone, Copy)]
 #[repr(C)]
@@ -238,8 +296,8 @@ pub struct PacketRefVTable {
     pub data_ptr: unsafe fn(&PacketRefStorage) -> *const u8,
     pub data_mut_ptr: unsafe fn(&mut PacketRefStorage) -> *mut u8,
     pub len: unsafe fn(&PacketRefStorage) -> usize,
-    pub set_len: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
-    pub capacity: unsafe fn(&PacketRefStorage) -> usize,
+    pub resize: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub data_capacity: unsafe fn(&PacketRefStorage) -> usize,
     pub phys_addr: unsafe fn(&PacketRefStorage) -> u64,
     pub device_address: unsafe fn(&PacketRefStorage) -> u64,
     pub headroom: unsafe fn(&PacketRefStorage) -> usize,
@@ -324,18 +382,38 @@ impl PacketRef {
 
     #[inline]
     #[must_use]
-    pub fn set_len(&mut self, len: PacketByteCount) -> bool {
-        unsafe { (self.vtable.set_len)(&mut self.storage, len) }
+    pub fn try_resize(&mut self, len: usize) -> Result<(), PacketWindowError> {
+        let old_len = self.len();
+        if len > self.data_capacity() {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        if len > old_len {
+            let initialize_len = len - old_len;
+            let ptr = unsafe { (self.vtable.data_mut_ptr)(&mut self.storage) };
+            // SAFETY: `len <= data_capacity` proves that the newly visible tail
+            // lies within the exclusively owned packet backing.
+            unsafe { ptr.add(old_len).write_bytes(0, initialize_len) };
+        }
+        if unsafe { (self.vtable.resize)(&mut self.storage, len) } {
+            Ok(())
+        } else {
+            Err(PacketWindowError::OutOfBounds)
+        }
     }
 
     #[inline]
-    pub fn capacity(&self) -> usize {
-        unsafe { (self.vtable.capacity)(&self.storage) }
+    pub fn data_capacity(&self) -> usize {
+        unsafe { (self.vtable.data_capacity)(&self.storage) }
     }
 
     #[inline]
     pub fn headroom(&self) -> usize {
         unsafe { (self.vtable.headroom)(&self.storage) }
+    }
+
+    #[inline]
+    pub fn tailroom(&self) -> usize {
+        self.data_capacity().saturating_sub(self.len())
     }
 
     #[inline]
@@ -350,42 +428,111 @@ impl PacketRef {
 
     #[inline]
     #[must_use]
-    pub fn advance(&mut self, size: PacketByteCount) -> bool {
-        unsafe { (self.vtable.advance)(&mut self.storage, size) }
+    pub fn try_advance(&mut self, size: PacketByteCount) -> Result<(), PacketWindowError> {
+        if unsafe { (self.vtable.advance)(&mut self.storage, size) } {
+            Ok(())
+        } else {
+            Err(PacketWindowError::OutOfBounds)
+        }
     }
 
     #[inline]
-    pub fn retreat(&mut self, size: PacketByteCount) -> bool {
-        unsafe { (self.vtable.retreat)(&mut self.storage, size) }
+    pub fn try_retreat(&mut self, size: PacketByteCount) -> Result<(), PacketWindowError> {
+        if size.get() > self.headroom() {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        if !unsafe { (self.vtable.retreat)(&mut self.storage, size) } {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        let ptr = unsafe { (self.vtable.data_mut_ptr)(&mut self.storage) };
+        // SAFETY: a successful retreat made exactly `size` bytes at the new
+        // data pointer part of the exclusively owned visible region.
+        unsafe { ptr.write_bytes(0, size.get()) };
+        Ok(())
     }
 
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required state cannot be read.
-    pub fn take_front(self, len: PacketByteCount) -> Result<PacketFront, PacketWindowError> {
+    pub fn try_take_front(
+        self,
+        len: PacketByteCount,
+    ) -> Result<PacketFront, PacketOwnershipError<Self>> {
         let take = len.get();
         let total_len = self.len();
         if take > total_len {
-            return Err(PacketWindowError::OutOfBounds);
+            return Err(PacketOwnershipError::new(
+                PacketWindowError::OutOfBounds,
+                self,
+            ));
         }
         if take == total_len {
             return Ok(PacketFront::Whole(self));
         }
 
-        let mut packet = ManuallyDrop::new(self);
-        let storage = packet.storage;
-        let vtable = packet.vtable;
+        let storage = self.storage;
+        let vtable = self.vtable;
+        let meta = self.meta_cache;
         let Some((front_storage, remainder_storage)) =
             (unsafe { (vtable.split_front)(&storage, len) })
         else {
-            unsafe { ManuallyDrop::drop(&mut packet) };
-            return Err(PacketWindowError::BackendSplitUnsupported);
+            return Err(PacketOwnershipError::new(
+                PacketWindowError::BackendSplitUnsupported,
+                self,
+            ));
         };
+        let packet = ManuallyDrop::new(self);
 
         Ok(PacketFront::Prefix {
-            front: unsafe { Self::from_opaque_parts(front_storage, vtable) },
-            remainder: unsafe { Self::from_opaque_parts(remainder_storage, vtable) },
+            front: unsafe { Self::from_opaque_parts_with_meta(front_storage, vtable, meta) },
+            remainder: unsafe {
+                Self::from_opaque_parts_with_meta(remainder_storage, vtable, meta)
+            },
         })
+    }
+
+    unsafe fn from_opaque_parts_with_meta(
+        storage: PacketRefStorage,
+        vtable: &'static PacketRefVTable,
+        meta_cache: PacketMeta,
+    ) -> Self {
+        Self {
+            storage,
+            vtable,
+            meta_cache,
+            _not_sync: PhantomData,
+        }
+    }
+
+    pub(crate) fn unpublished_writable_region(&mut self) -> Option<(*mut u8, u64, usize)> {
+        if !self.is_empty() {
+            return None;
+        }
+        let writable_len = self.data_capacity();
+        if writable_len == 0 {
+            return None;
+        }
+        let cpu_ptr = unsafe { (self.vtable.data_mut_ptr)(&mut self.storage) };
+        Some((cpu_ptr, self.device_address(), writable_len))
+    }
+
+    /// Publish bytes initialized by a device into the safe visible region.
+    ///
+    /// # Safety
+    /// The caller must prove that the device has finished writing every byte
+    /// in `0..len` and no longer holds write authority for the backing.
+    pub(crate) unsafe fn publish_device_written(
+        &mut self,
+        len: PacketByteCount,
+    ) -> Result<(), PacketWindowError> {
+        if len.get() > self.data_capacity() {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        if unsafe { (self.vtable.resize)(&mut self.storage, len.get()) } {
+            Ok(())
+        } else {
+            Err(PacketWindowError::OutOfBounds)
+        }
     }
 
     #[inline]
@@ -416,8 +563,9 @@ impl fmt::Debug for PacketRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("PacketRef")
             .field("len", &self.len())
-            .field("capacity", &self.capacity())
+            .field("data_capacity", &self.data_capacity())
             .field("headroom", &self.headroom())
+            .field("tailroom", &self.tailroom())
             .field("phys_addr", &self.phys_addr())
             .field("device_address", &self.device_address())
             .field("meta", &self.meta_cache)
@@ -425,192 +573,475 @@ impl fmt::Debug for PacketRef {
     }
 }
 
-#[derive(Debug, Default)]
-pub struct PacketChain {
-    segments: Vec<PacketRef>,
-    total_len: usize,
-}
-
-impl PacketChain {
-    pub const fn new() -> Self {
-        Self {
-            segments: Vec::new(),
-            total_len: 0,
-        }
-    }
-
-    pub fn from_segments(segments: Vec<PacketRef>) -> Self {
-        let total_len = segments.iter().map(PacketRef::len).sum();
-        Self {
-            segments,
-            total_len,
-        }
-    }
-
-    pub fn push(&mut self, packet: PacketRef) {
-        self.total_len = self.total_len.saturating_add(packet.len());
-        self.segments.push(packet);
-    }
-
-    pub fn push_front(&mut self, packet: PacketRef) {
-        self.total_len = self.total_len.saturating_add(packet.len());
-        self.segments.insert(0, packet);
-    }
-
-    pub fn segments(&self) -> &[PacketRef] {
-        &self.segments
-    }
-
-    pub fn segments_mut(&mut self) -> &mut [PacketRef] {
-        &mut self.segments
-    }
-
-    pub fn into_segments(self) -> Vec<PacketRef> {
-        self.segments
-    }
-
-    pub fn total_len(&self) -> usize {
-        self.total_len
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.total_len == 0
-    }
+#[derive(Debug)]
+enum PacketSegmentStorage {
+    One(PacketRef),
+    Pair([PacketRef; 2]),
+    Many(Vec<PacketRef>),
 }
 
 #[derive(Debug)]
-pub enum PacketPayload {
-    Single(PacketRef),
-    Chain(PacketChain),
+pub struct PacketPayload {
+    storage: PacketSegmentStorage,
+    total_len: PacketByteCount,
 }
 
+pub struct PacketSegments {
+    inner: PacketSegmentsInner,
+}
+
+enum PacketSegmentsInner {
+    One(core::option::IntoIter<PacketRef>),
+    Pair(core::array::IntoIter<PacketRef, 2>),
+    Many(alloc::vec::IntoIter<PacketRef>),
+}
+
+impl Iterator for PacketSegments {
+    type Item = PacketRef;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        match &mut self.inner {
+            PacketSegmentsInner::One(iter) => iter.next(),
+            PacketSegmentsInner::Pair(iter) => iter.next(),
+            PacketSegmentsInner::Many(iter) => iter.next(),
+        }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        match &self.inner {
+            PacketSegmentsInner::One(iter) => iter.size_hint(),
+            PacketSegmentsInner::Pair(iter) => iter.size_hint(),
+            PacketSegmentsInner::Many(iter) => iter.size_hint(),
+        }
+    }
+}
+
+impl ExactSizeIterator for PacketSegments {}
+
 impl PacketPayload {
+    pub fn try_single(packet: PacketRef) -> Result<Self, PacketPayloadOwnershipError<PacketRef>> {
+        let Some(total_len) = PacketByteCount::new(packet.len()) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptySegment,
+                packet,
+            ));
+        };
+        Ok(Self {
+            storage: PacketSegmentStorage::One(packet),
+            total_len,
+        })
+    }
+
+    pub fn try_pair(
+        first: PacketRef,
+        second: PacketRef,
+    ) -> Result<Self, PacketPayloadOwnershipError<(PacketRef, PacketRef)>> {
+        let Some(total) = first.len().checked_add(second.len()) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::LengthOverflow,
+                (first, second),
+            ));
+        };
+        if first.is_empty() || second.is_empty() {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptySegment,
+                (first, second),
+            ));
+        }
+        let Some(total_len) = PacketByteCount::new(total) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptyPayload,
+                (first, second),
+            ));
+        };
+        Ok(Self {
+            storage: PacketSegmentStorage::Pair([first, second]),
+            total_len,
+        })
+    }
+
+    pub fn try_from_segments(
+        segments: Vec<PacketRef>,
+    ) -> Result<Self, PacketPayloadOwnershipError<Vec<PacketRef>>> {
+        if segments.is_empty() {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptyPayload,
+                segments,
+            ));
+        }
+        let mut total = 0usize;
+        for segment in &segments {
+            if segment.is_empty() {
+                return Err(PacketPayloadOwnershipError::new(
+                    PacketPayloadError::EmptySegment,
+                    segments,
+                ));
+            }
+            let Some(next) = total.checked_add(segment.len()) else {
+                return Err(PacketPayloadOwnershipError::new(
+                    PacketPayloadError::LengthOverflow,
+                    segments,
+                ));
+            };
+            total = next;
+        }
+        let Some(total_len) = PacketByteCount::new(total) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptyPayload,
+                segments,
+            ));
+        };
+        Ok(Self::from_validated_segments(segments, total_len))
+    }
+
+    fn from_validated_segments(segments: Vec<PacketRef>, total_len: PacketByteCount) -> Self {
+        let storage = match segments.len() {
+            1 => match <Vec<PacketRef> as TryInto<[PacketRef; 1]>>::try_into(segments) {
+                Ok([packet]) => PacketSegmentStorage::One(packet),
+                Err(segments) => PacketSegmentStorage::Many(segments),
+            },
+            2 => match <Vec<PacketRef> as TryInto<[PacketRef; 2]>>::try_into(segments) {
+                Ok(pair) => PacketSegmentStorage::Pair(pair),
+                Err(segments) => PacketSegmentStorage::Many(segments),
+            },
+            _ => PacketSegmentStorage::Many(segments),
+        };
+        Self { storage, total_len }
+    }
+
     pub fn segments(&self) -> &[PacketRef] {
-        match self {
-            Self::Single(packet) => core::slice::from_ref(packet),
-            Self::Chain(chain) => chain.segments(),
+        match &self.storage {
+            PacketSegmentStorage::One(packet) => core::slice::from_ref(packet),
+            PacketSegmentStorage::Pair(pair) => pair,
+            PacketSegmentStorage::Many(segments) => segments,
         }
     }
 
     pub fn segments_mut(&mut self) -> &mut [PacketRef] {
-        match self {
-            Self::Single(packet) => core::slice::from_mut(packet),
-            Self::Chain(chain) => chain.segments_mut(),
+        match &mut self.storage {
+            PacketSegmentStorage::One(packet) => core::slice::from_mut(packet),
+            PacketSegmentStorage::Pair(pair) => pair,
+            PacketSegmentStorage::Many(segments) => segments,
         }
     }
-}
 
-impl Default for PacketPayload {
-    fn default() -> Self {
-        Self::Chain(PacketChain::new())
-    }
-}
-
-impl PacketPayload {
-    pub fn single(packet: PacketRef) -> Self {
-        Self::Single(packet)
+    pub const fn byte_len(&self) -> PacketByteCount {
+        self.total_len
     }
 
-    pub fn chain(chain: PacketChain) -> Self {
-        Self::Chain(chain)
+    pub const fn total_len(&self) -> usize {
+        self.total_len.get()
     }
 
-    pub fn prepend(self, packet: PacketRef) -> Self {
-        match self {
-            Self::Single(existing) => {
-                Self::Chain(PacketChain::from_segments(alloc::vec![packet, existing,]))
+    pub fn into_segments(self) -> PacketSegments {
+        let inner = match self.storage {
+            PacketSegmentStorage::One(packet) => PacketSegmentsInner::One(Some(packet).into_iter()),
+            PacketSegmentStorage::Pair(pair) => PacketSegmentsInner::Pair(pair.into_iter()),
+            PacketSegmentStorage::Many(segments) => PacketSegmentsInner::Many(segments.into_iter()),
+        };
+        PacketSegments { inner }
+    }
+
+    pub fn try_prepend(
+        self,
+        packet: PacketRef,
+    ) -> Result<Self, PacketPayloadOwnershipError<(PacketRef, Self)>> {
+        if packet.is_empty() {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::EmptySegment,
+                (packet, self),
+            ));
+        }
+        let Some(total) = self.total_len().checked_add(packet.len()) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::LengthOverflow,
+                (packet, self),
+            ));
+        };
+        let total_len = match PacketByteCount::new(total) {
+            Some(total_len) => total_len,
+            None => {
+                return Err(PacketPayloadOwnershipError::new(
+                    PacketPayloadError::LengthOverflow,
+                    (packet, self),
+                ));
             }
-            Self::Chain(mut chain) => {
-                chain.push_front(packet);
-                Self::Chain(chain)
+        };
+        let Self {
+            storage,
+            total_len: old_total_len,
+        } = self;
+        let storage = match storage {
+            PacketSegmentStorage::One(existing) => PacketSegmentStorage::Pair([packet, existing]),
+            PacketSegmentStorage::Pair(pair) => {
+                let mut segments = Vec::new();
+                if segments.try_reserve_exact(3).is_err() {
+                    let owner = Self {
+                        storage: PacketSegmentStorage::Pair(pair),
+                        total_len: old_total_len,
+                    };
+                    return Err(PacketPayloadOwnershipError::new(
+                        PacketPayloadError::AllocationFailed,
+                        (packet, owner),
+                    ));
+                }
+                segments.push(packet);
+                segments.extend(pair);
+                PacketSegmentStorage::Many(segments)
             }
-        }
+            PacketSegmentStorage::Many(mut segments) => {
+                if segments.try_reserve(1).is_err() {
+                    let owner = Self {
+                        storage: PacketSegmentStorage::Many(segments),
+                        total_len: old_total_len,
+                    };
+                    return Err(PacketPayloadOwnershipError::new(
+                        PacketPayloadError::AllocationFailed,
+                        (packet, owner),
+                    ));
+                }
+                segments.insert(0, packet);
+                PacketSegmentStorage::Many(segments)
+            }
+        };
+        Ok(Self { storage, total_len })
     }
 
-    pub fn total_len(&self) -> usize {
-        match self {
-            Self::Single(packet) => packet.len(),
-            Self::Chain(chain) => chain.total_len(),
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.total_len() == 0
-    }
-
-    pub fn into_segments(self) -> Vec<PacketRef> {
-        match self {
-            Self::Single(packet) => alloc::vec![packet],
-            Self::Chain(chain) => chain.into_segments(),
-        }
-    }
-
-    /// # Errors
+    /// Split this payload while preserving the original owner on failure.
     ///
-    /// Returns an error if the request is invalid or the required state cannot be read.
-    pub fn take_front(self, len: PacketByteCount) -> Result<PacketPayloadFront, PacketWindowError> {
+    /// # Errors
+    /// Returns the unchanged payload if `len` is out of bounds, backing split
+    /// is unsupported, or storage for a multi-segment prefix cannot be reserved.
+    pub fn try_take_front(
+        self,
+        len: PacketByteCount,
+    ) -> Result<PacketPayloadFront, PacketPayloadOwnershipError<Self>> {
         let take = len.get();
-        let total_len = self.total_len();
-        if take > total_len {
-            return Err(PacketWindowError::OutOfBounds);
+        let total = self.total_len();
+        if take > total {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::OutOfBounds,
+                self,
+            ));
         }
-        if take == total_len {
+        if take == total {
             return Ok(PacketPayloadFront::Whole(self));
         }
+        let remainder_len = PacketByteCount::new(total - take);
+        let front_len = PacketByteCount::new(take);
+        let (Some(front_len), Some(remainder_len)) = (front_len, remainder_len) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::OutOfBounds,
+                self,
+            ));
+        };
 
-        let mut remaining = take;
-        let mut front_segments = Vec::new();
-        let mut remainder_segments = Vec::new();
-        let mut collecting_remainder = false;
-
-        for segment in self.into_segments() {
-            if collecting_remainder {
-                remainder_segments.push(segment);
-                continue;
+        match self.storage {
+            PacketSegmentStorage::One(packet) => match packet.try_take_front(len) {
+                Ok(PacketFront::Prefix { front, remainder }) => Ok(PacketPayloadFront::Prefix {
+                    front: Self {
+                        storage: PacketSegmentStorage::One(front),
+                        total_len: front_len,
+                    },
+                    remainder: Self {
+                        storage: PacketSegmentStorage::One(remainder),
+                        total_len: remainder_len,
+                    },
+                }),
+                Ok(PacketFront::Whole(packet)) => Ok(PacketPayloadFront::Whole(Self {
+                    storage: PacketSegmentStorage::One(packet),
+                    total_len: front_len,
+                })),
+                Err(error) => Err(PacketPayloadOwnershipError::new(
+                    map_window_error(error.cause()),
+                    Self {
+                        storage: PacketSegmentStorage::One(error.into_owner()),
+                        total_len: PacketByteCount::new(total).unwrap_or(front_len),
+                    },
+                )),
+            },
+            PacketSegmentStorage::Pair([first, second]) => {
+                split_pair(first, second, len, front_len, remainder_len)
             }
-
-            let segment_len = segment.len();
-            if remaining == 0 {
-                collecting_remainder = true;
-                remainder_segments.push(segment);
-                continue;
+            PacketSegmentStorage::Many(segments) => {
+                split_many(segments, len, front_len, remainder_len)
             }
-
-            if remaining >= segment_len {
-                remaining -= segment_len;
-                front_segments.push(segment);
-                continue;
-            }
-
-            let count = PacketByteCount::new(remaining).ok_or(PacketWindowError::Empty)?;
-            match segment.take_front(count)? {
-                PacketFront::Whole(front) => front_segments.push(front),
-                PacketFront::Prefix { front, remainder } => {
-                    front_segments.push(front);
-                    remainder_segments.push(remainder);
-                    collecting_remainder = true;
-                }
-            }
-            remaining = 0;
-        }
-
-        if remaining != 0 || front_segments.is_empty() || remainder_segments.is_empty() {
-            return Err(PacketWindowError::OutOfBounds);
-        }
-
-        Ok(PacketPayloadFront::Prefix {
-            front: Self::from_segments(front_segments),
-            remainder: Self::from_segments(remainder_segments),
-        })
-    }
-
-    fn from_segments(mut segments: Vec<PacketRef>) -> Self {
-        match segments.len() {
-            0 => Self::default(),
-            1 => Self::Single(segments.remove(0)),
-            _ => Self::Chain(PacketChain::from_segments(segments)),
         }
     }
+}
+
+fn map_window_error(error: PacketWindowError) -> PacketPayloadError {
+    match error {
+        PacketWindowError::Empty => PacketPayloadError::EmptyPayload,
+        PacketWindowError::OutOfBounds => PacketPayloadError::OutOfBounds,
+        PacketWindowError::BackendSplitUnsupported => PacketPayloadError::BackendSplitUnsupported,
+    }
+}
+
+fn split_pair(
+    first: PacketRef,
+    second: PacketRef,
+    len: PacketByteCount,
+    front_len: PacketByteCount,
+    remainder_len: PacketByteCount,
+) -> Result<PacketPayloadFront, PacketPayloadOwnershipError<PacketPayload>> {
+    let first_len = first.len();
+    if len.get() == first_len {
+        return Ok(PacketPayloadFront::Prefix {
+            front: PacketPayload {
+                storage: PacketSegmentStorage::One(first),
+                total_len: front_len,
+            },
+            remainder: PacketPayload {
+                storage: PacketSegmentStorage::One(second),
+                total_len: remainder_len,
+            },
+        });
+    }
+    if len.get() < first_len {
+        return match first.try_take_front(len) {
+            Ok(PacketFront::Prefix { front, remainder }) => Ok(PacketPayloadFront::Prefix {
+                front: PacketPayload {
+                    storage: PacketSegmentStorage::One(front),
+                    total_len: front_len,
+                },
+                remainder: PacketPayload {
+                    storage: PacketSegmentStorage::Pair([remainder, second]),
+                    total_len: remainder_len,
+                },
+            }),
+            Ok(PacketFront::Whole(first)) => Ok(PacketPayloadFront::Prefix {
+                front: PacketPayload {
+                    storage: PacketSegmentStorage::One(first),
+                    total_len: front_len,
+                },
+                remainder: PacketPayload {
+                    storage: PacketSegmentStorage::One(second),
+                    total_len: remainder_len,
+                },
+            }),
+            Err(error) => Err(PacketPayloadOwnershipError::new(
+                map_window_error(error.cause()),
+                PacketPayload {
+                    storage: PacketSegmentStorage::Pair([error.into_owner(), second]),
+                    total_len: PacketByteCount::new(first_len + remainder_len.get())
+                        .unwrap_or(remainder_len),
+                },
+            )),
+        };
+    }
+
+    let within_second = PacketByteCount::new(len.get() - first_len);
+    let Some(within_second) = within_second else {
+        return Err(PacketPayloadOwnershipError::new(
+            PacketPayloadError::OutOfBounds,
+            PacketPayload {
+                storage: PacketSegmentStorage::Pair([first, second]),
+                total_len: PacketByteCount::new(first_len + remainder_len.get())
+                    .unwrap_or(remainder_len),
+            },
+        ));
+    };
+    match second.try_take_front(within_second) {
+        Ok(PacketFront::Prefix { front, remainder }) => Ok(PacketPayloadFront::Prefix {
+            front: PacketPayload {
+                storage: PacketSegmentStorage::Pair([first, front]),
+                total_len: front_len,
+            },
+            remainder: PacketPayload {
+                storage: PacketSegmentStorage::One(remainder),
+                total_len: remainder_len,
+            },
+        }),
+        Ok(PacketFront::Whole(second)) => Ok(PacketPayloadFront::Whole(PacketPayload {
+            storage: PacketSegmentStorage::Pair([first, second]),
+            total_len: front_len,
+        })),
+        Err(error) => Err(PacketPayloadOwnershipError::new(
+            map_window_error(error.cause()),
+            PacketPayload {
+                storage: PacketSegmentStorage::Pair([first, error.into_owner()]),
+                total_len: PacketByteCount::new(front_len.get() + remainder_len.get())
+                    .unwrap_or(front_len),
+            },
+        )),
+    }
+}
+
+fn split_many(
+    mut segments: Vec<PacketRef>,
+    len: PacketByteCount,
+    front_len: PacketByteCount,
+    remainder_len: PacketByteCount,
+) -> Result<PacketPayloadFront, PacketPayloadOwnershipError<PacketPayload>> {
+    let total_len =
+        PacketByteCount::new(front_len.get() + remainder_len.get()).unwrap_or(front_len);
+    let mut consumed = 0usize;
+    let mut split_index = 0usize;
+    let mut within_segment = 0usize;
+    for (index, segment) in segments.iter().enumerate() {
+        let next = consumed + segment.len();
+        if len.get() <= next {
+            split_index = index;
+            within_segment = len.get() - consumed;
+            break;
+        }
+        consumed = next;
+    }
+
+    let prefix_count = split_index + usize::from(within_segment != 0);
+    let mut prefix = Vec::new();
+    if prefix.try_reserve_exact(prefix_count).is_err() {
+        return Err(PacketPayloadOwnershipError::new(
+            PacketPayloadError::AllocationFailed,
+            PacketPayload {
+                storage: PacketSegmentStorage::Many(segments),
+                total_len,
+            },
+        ));
+    }
+
+    if within_segment == 0 {
+        prefix.extend(segments.drain(..split_index));
+    } else {
+        let segment = segments.remove(split_index);
+        let Some(within) = PacketByteCount::new(within_segment) else {
+            segments.insert(split_index, segment);
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::OutOfBounds,
+                PacketPayload {
+                    storage: PacketSegmentStorage::Many(segments),
+                    total_len,
+                },
+            ));
+        };
+        match segment.try_take_front(within) {
+            Ok(PacketFront::Prefix { front, remainder }) => {
+                prefix.extend(segments.drain(..split_index));
+                prefix.push(front);
+                segments.insert(0, remainder);
+            }
+            Ok(PacketFront::Whole(segment)) => {
+                prefix.extend(segments.drain(..split_index));
+                prefix.push(segment);
+            }
+            Err(error) => {
+                segments.insert(split_index, error.into_owner());
+                return Err(PacketPayloadOwnershipError::new(
+                    PacketPayloadError::BackendSplitUnsupported,
+                    PacketPayload {
+                        storage: PacketSegmentStorage::Many(segments),
+                        total_len,
+                    },
+                ));
+            }
+        }
+    }
+
+    Ok(PacketPayloadFront::Prefix {
+        front: PacketPayload::from_validated_segments(prefix, front_len),
+        remainder: PacketPayload::from_validated_segments(segments, remainder_len),
+    })
 }
 
 /// System information
