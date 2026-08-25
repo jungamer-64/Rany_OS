@@ -25,7 +25,7 @@ use hal::IoPort;
 
 use crate::sync::{IrqPoisonLock, PoisonLock};
 use crate::time;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicUsize, Ordering};
 use hal::port_io::PortU8;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
 
@@ -105,8 +105,8 @@ static SERIAL_IO_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
 
 /// パニック中フラグ（デッドロック回避用）
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
-const PANIC_OUTPUT_NO_OWNER: usize = usize::MAX;
-static PANIC_OUTPUT_OWNER: AtomicUsize = AtomicUsize::new(PANIC_OUTPUT_NO_OWNER);
+const PANIC_OUTPUT_NO_OWNER: u16 = crate::cpu::MAX_POSSIBLE_CPUS as u16;
+static PANIC_OUTPUT_OWNER: AtomicU16 = AtomicU16::new(PANIC_OUTPUT_NO_OWNER);
 const DEBUG_SERIAL_MARKS_ENABLED: bool = false;
 
 /// 非同期ログバッファ（固定長リングバッファ、ヒープ不要）
@@ -543,13 +543,25 @@ pub fn set_in_panic(in_panic: bool) {
 }
 
 #[inline]
-fn current_log_cpu_id() -> Option<usize> {
-    crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
+fn current_log_cpu_id() -> Option<crate::cpu::CpuId> {
+    crate::cpu::CurrentCpu::acquire().map(|current| current.id())
 }
 
 #[inline]
-fn panic_output_allowed_for_owner(owner: usize, cpu_id: Option<usize>) -> bool {
-    owner == PANIC_OUTPUT_NO_OWNER || cpu_id == Some(owner)
+fn panic_output_owner(value: u16) -> Option<crate::cpu::CpuId> {
+    if value == PANIC_OUTPUT_NO_OWNER {
+        None
+    } else {
+        Some(crate::cpu::CpuId::new(value).expect("panic output owner must be a valid CPU ID"))
+    }
+}
+
+#[inline]
+fn panic_output_allowed_for_owner(
+    owner: Option<crate::cpu::CpuId>,
+    cpu_id: Option<crate::cpu::CpuId>,
+) -> bool {
+    owner.is_none() || cpu_id == owner
 }
 
 pub(crate) fn panic_output_allowed() -> bool {
@@ -557,7 +569,7 @@ pub(crate) fn panic_output_allowed() -> bool {
         return true;
     }
 
-    let owner = PANIC_OUTPUT_OWNER.load(Ordering::Acquire);
+    let owner = panic_output_owner(PANIC_OUTPUT_OWNER.load(Ordering::Acquire));
     panic_output_allowed_for_owner(owner, current_log_cpu_id())
 }
 
@@ -569,7 +581,7 @@ pub fn enter_panic_mode() {
     if let Some(cpu_id) = current_log_cpu_id() {
         let _ = PANIC_OUTPUT_OWNER.compare_exchange(
             PANIC_OUTPUT_NO_OWNER,
-            cpu_id,
+            cpu_id.as_u16(),
             Ordering::AcqRel,
             Ordering::Acquire,
         );
@@ -735,26 +747,28 @@ pub fn trim_spaces_before_newline(s: &str) -> alloc::string::String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::sync::atomic::AtomicUsize;
+    use core::sync::atomic::AtomicU16;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn panic_owner_allows_output_when_cpu_id_is_unavailable() {
-        assert!(panic_output_allowed_for_owner(PANIC_OUTPUT_NO_OWNER, None));
-        assert!(!panic_output_allowed_for_owner(0, None));
-        assert!(panic_output_allowed_for_owner(0, Some(0)));
-        assert!(!panic_output_allowed_for_owner(1, Some(0)));
+        let cpu0 = crate::cpu::CpuId::BOOTSTRAP;
+        let cpu1 = crate::cpu::CpuId::new(1).unwrap();
+        assert!(panic_output_allowed_for_owner(None, None));
+        assert!(!panic_output_allowed_for_owner(Some(cpu0), None));
+        assert!(panic_output_allowed_for_owner(Some(cpu0), Some(cpu0)));
+        assert!(!panic_output_allowed_for_owner(Some(cpu1), Some(cpu0)));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn panic_owner_is_not_pinned_without_cpu_identity() {
-        let owner = AtomicUsize::new(PANIC_OUTPUT_NO_OWNER);
+        let owner = AtomicU16::new(PANIC_OUTPUT_NO_OWNER);
 
-        if let Some(cpu_id) = None::<usize> {
+        if let Some(cpu_id) = None::<crate::cpu::CpuId> {
             let _ = owner.compare_exchange(
                 PANIC_OUTPUT_NO_OWNER,
-                cpu_id,
+                cpu_id.as_u16(),
                 Ordering::AcqRel,
                 Ordering::Acquire,
             );

@@ -1,17 +1,17 @@
 #[cfg(any(test, feature = "qemu-test-export"))]
-use core::sync::atomic::{AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU16, Ordering};
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 const ASYNC_BOOT_STAGE_COUNT: usize = 6;
 #[cfg(any(test, feature = "qemu-test-export"))]
-const ASYNC_BOOT_CPU_UNSET: usize = usize::MAX;
+const ASYNC_BOOT_CPU_UNSET: u16 = crate::cpu::MAX_POSSIBLE_CPUS as u16;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) struct AsyncBootStageCpuRuntimeSnapshot {
-    pub assigned_cpu: Option<usize>,
-    pub started_cpu: Option<usize>,
-    pub completed_cpu: Option<usize>,
+    pub assigned_cpu: Option<crate::cpu::CpuId>,
+    pub started_cpu: Option<crate::cpu::CpuId>,
+    pub completed_cpu: Option<crate::cpu::CpuId>,
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -26,24 +26,28 @@ pub(crate) struct AsyncBootStageRuntimeSnapshot {
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-static ASYNC_BOOT_ASSIGNED_CPUS: [AtomicUsize; ASYNC_BOOT_STAGE_COUNT] = {
-    const INIT: AtomicUsize = AtomicUsize::new(ASYNC_BOOT_CPU_UNSET);
+static ASYNC_BOOT_ASSIGNED_CPUS: [AtomicU16; ASYNC_BOOT_STAGE_COUNT] = {
+    const INIT: AtomicU16 = AtomicU16::new(ASYNC_BOOT_CPU_UNSET);
     [INIT; ASYNC_BOOT_STAGE_COUNT]
 };
 #[cfg(any(test, feature = "qemu-test-export"))]
-static ASYNC_BOOT_STARTED_CPUS: [AtomicUsize; ASYNC_BOOT_STAGE_COUNT] = {
-    const INIT: AtomicUsize = AtomicUsize::new(ASYNC_BOOT_CPU_UNSET);
+static ASYNC_BOOT_STARTED_CPUS: [AtomicU16; ASYNC_BOOT_STAGE_COUNT] = {
+    const INIT: AtomicU16 = AtomicU16::new(ASYNC_BOOT_CPU_UNSET);
     [INIT; ASYNC_BOOT_STAGE_COUNT]
 };
 #[cfg(any(test, feature = "qemu-test-export"))]
-static ASYNC_BOOT_COMPLETED_CPUS: [AtomicUsize; ASYNC_BOOT_STAGE_COUNT] = {
-    const INIT: AtomicUsize = AtomicUsize::new(ASYNC_BOOT_CPU_UNSET);
+static ASYNC_BOOT_COMPLETED_CPUS: [AtomicU16; ASYNC_BOOT_STAGE_COUNT] = {
+    const INIT: AtomicU16 = AtomicU16::new(ASYNC_BOOT_CPU_UNSET);
     [INIT; ASYNC_BOOT_STAGE_COUNT]
 };
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-fn decode_async_boot_cpu(value: usize) -> Option<usize> {
-    (value != ASYNC_BOOT_CPU_UNSET).then_some(value)
+fn decode_async_boot_cpu(value: u16) -> Option<crate::cpu::CpuId> {
+    if value == ASYNC_BOOT_CPU_UNSET {
+        None
+    } else {
+        Some(crate::cpu::CpuId::new(value).expect("recorded async-boot CPU ID must be valid"))
+    }
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -86,31 +90,40 @@ pub(crate) fn reset_async_boot_stage_runtime_snapshot() {
 pub(crate) fn reset_async_boot_stage_runtime_snapshot() {}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn record_async_boot_stage_assigned_cpu(stage_index: usize, cpu_id: usize) {
+pub(crate) fn record_async_boot_stage_assigned_cpu(stage_index: usize, cpu_id: crate::cpu::CpuId) {
     if stage_index < ASYNC_BOOT_STAGE_COUNT {
-        ASYNC_BOOT_ASSIGNED_CPUS[stage_index].store(cpu_id, Ordering::Release);
+        ASYNC_BOOT_ASSIGNED_CPUS[stage_index].store(cpu_id.as_u16(), Ordering::Release);
     }
 }
 
 #[cfg(not(any(test, feature = "qemu-test-export")))]
-pub(crate) fn record_async_boot_stage_assigned_cpu(_stage_index: usize, _cpu_id: usize) {}
+pub(crate) fn record_async_boot_stage_assigned_cpu(
+    _stage_index: usize,
+    _cpu_id: crate::cpu::CpuId,
+) {
+}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn record_async_boot_stage_started_cpu(stage_index: usize, cpu_id: usize) {
+pub(crate) fn record_async_boot_stage_started_cpu(stage_index: usize, cpu_id: crate::cpu::CpuId) {
     if stage_index < ASYNC_BOOT_STAGE_COUNT {
-        ASYNC_BOOT_STARTED_CPUS[stage_index].store(cpu_id, Ordering::Release);
+        ASYNC_BOOT_STARTED_CPUS[stage_index].store(cpu_id.as_u16(), Ordering::Release);
     }
 }
 
 #[cfg(not(any(test, feature = "qemu-test-export")))]
-pub(crate) fn record_async_boot_stage_started_cpu(_stage_index: usize, _cpu_id: usize) {}
+pub(crate) fn record_async_boot_stage_started_cpu(_stage_index: usize, _cpu_id: crate::cpu::CpuId) {
+}
 
 #[cfg(any(test, feature = "qemu-test-export"))]
-pub(crate) fn record_async_boot_stage_completed_cpu(stage_index: usize, cpu_id: usize) {
+pub(crate) fn record_async_boot_stage_completed_cpu(stage_index: usize, cpu_id: crate::cpu::CpuId) {
     if stage_index < ASYNC_BOOT_STAGE_COUNT {
-        ASYNC_BOOT_COMPLETED_CPUS[stage_index].store(cpu_id, Ordering::Release);
+        ASYNC_BOOT_COMPLETED_CPUS[stage_index].store(cpu_id.as_u16(), Ordering::Release);
     }
 }
 
 #[cfg(not(any(test, feature = "qemu-test-export")))]
-pub(crate) fn record_async_boot_stage_completed_cpu(_stage_index: usize, _cpu_id: usize) {}
+pub(crate) fn record_async_boot_stage_completed_cpu(
+    _stage_index: usize,
+    _cpu_id: crate::cpu::CpuId,
+) {
+}

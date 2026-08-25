@@ -122,23 +122,17 @@ fn reset_async_boot_stage_runtime_snapshot() {
 }
 
 fn record_async_boot_stage_assigned_cpu(stage: AsyncBootStage, cpu_id: crate::cpu::CpuId) {
-    crate::async_boot_runtime_snapshot::record_async_boot_stage_assigned_cpu(
-        stage.index(),
-        cpu_id.as_usize(),
-    );
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_assigned_cpu(stage.index(), cpu_id);
 }
 
 fn record_async_boot_stage_started_cpu(stage: AsyncBootStage, cpu_id: crate::cpu::CpuId) {
-    crate::async_boot_runtime_snapshot::record_async_boot_stage_started_cpu(
-        stage.index(),
-        cpu_id.as_usize(),
-    );
+    crate::async_boot_runtime_snapshot::record_async_boot_stage_started_cpu(stage.index(), cpu_id);
 }
 
 fn record_async_boot_stage_completed_cpu(stage: AsyncBootStage, cpu_id: crate::cpu::CpuId) {
     crate::async_boot_runtime_snapshot::record_async_boot_stage_completed_cpu(
         stage.index(),
-        cpu_id.as_usize(),
+        cpu_id,
     );
 }
 
@@ -1245,9 +1239,9 @@ mod tests {
         record_async_boot_stage_completed_cpu(AsyncBootStage::Finalizer, cpu(3));
 
         let snapshot = async_boot_stage_runtime_snapshot();
-        assert_eq!(snapshot.platform.assigned_cpu, Some(0));
-        assert_eq!(snapshot.graphics.started_cpu, Some(2));
-        assert_eq!(snapshot.finalizer.completed_cpu, Some(3));
+        assert_eq!(snapshot.platform.assigned_cpu, Some(cpu(0)));
+        assert_eq!(snapshot.graphics.started_cpu, Some(cpu(2)));
+        assert_eq!(snapshot.finalizer.completed_cpu, Some(cpu(3)));
 
         reset_async_boot_stage_runtime_snapshot();
         let snapshot = async_boot_stage_runtime_snapshot();

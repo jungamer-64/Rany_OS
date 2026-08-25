@@ -4,7 +4,7 @@ impl KernelLogger {
     fn write_header_prefix<W: Write>(
         w: &mut W,
         uptime_nanos: u64,
-        core_id: Option<usize>,
+        cpu_id: Option<crate::cpu::CpuId>,
         level: Level,
         target: &str,
     ) {
@@ -27,8 +27,8 @@ impl KernelLogger {
         }
         let _ = write!(w, "{}.{:06}] ", secs, micros);
 
-        if let Some(core_id) = core_id {
-            let _ = write!(w, "[C{}] ", core_id);
+        if let Some(cpu_id) = cpu_id {
+            let _ = write!(w, "[C{}] ", cpu_id);
         }
 
         let _ = write!(w, "{}", Self::level_prefix(level));
@@ -188,8 +188,8 @@ impl KernelLogger {
         // Early boot runs with interrupts masked for a while, so prefer the
         // calibrated TSC clock when available and fall back to PIT-backed uptime.
         let uptime_nanos = crate::time::best_effort_time_nanos();
-        let core_id = current_log_cpu_id();
-        Self::write_header_prefix(w, uptime_nanos, core_id, record.level(), record.target());
+        let cpu_id = current_log_cpu_id();
+        Self::write_header_prefix(w, uptime_nanos, cpu_id, record.level(), record.target());
     }
 }
 
@@ -210,7 +210,13 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn header_keeps_cpu_field_after_per_cpu_is_ready() {
         let mut out = String::new();
-        KernelLogger::write_header_prefix(&mut out, 1_234_000_000, Some(2), Level::Info, "boot");
+        KernelLogger::write_header_prefix(
+            &mut out,
+            1_234_000_000,
+            Some(crate::cpu::CpuId::new(2).unwrap()),
+            Level::Info,
+            "boot",
+        );
         assert_eq!(out, "[    1.234000] [C2] [INFO]  [boot] ");
     }
 }
