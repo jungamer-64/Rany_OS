@@ -5,7 +5,10 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use crate::aml::{
     AmlBudget, AmlNamespace, AmlNamespaceBuilder, AmlObject, AmlPath, AmlValue, AmlVm,
 };
-use crate::{AmlError, AmlErrorKind, CpuFirmwareEvent, TableCatalog, TableSignature};
+use crate::{
+    AmlError, AmlErrorKind, CpuFirmwareEvent, GpeEvent, GpeNumber, GpeTrigger, TableCatalog,
+    TableSignature,
+};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AcpiRuntimeState {
@@ -26,25 +29,24 @@ pub struct MatProcessor {
     pub online_capable: bool,
 }
 
+/// Namespace object that either already contains a value or must be evaluated
+/// by the AML worker.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CpuNamespaceDevice {
-    pub path: AmlPath,
-    pub uid: Option<FirmwareUid>,
-    pub mat: Option<MatProcessor>,
-    pub proximity_domain: Option<u32>,
-    pub status: u64,
-    pub eject_method: Option<AmlPath>,
-    pub ost_method: Option<AmlPath>,
+pub enum NamespaceBinding {
+    Value(AmlValue),
+    Method(AmlPath),
 }
 
-impl CpuNamespaceDevice {
-    pub const fn is_present(&self) -> bool {
-        self.status & 0x01 != 0
-    }
-
-    pub const fn is_enabled(&self) -> bool {
-        self.status & 0x02 != 0
-    }
+/// AML bindings owned by one processor object or `ACPI0007` device.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CpuNamespaceBinding {
+    pub path: AmlPath,
+    pub uid: Option<NamespaceBinding>,
+    pub mat: Option<NamespaceBinding>,
+    pub proximity_domain: Option<NamespaceBinding>,
+    pub status: Option<NamespaceBinding>,
+    pub eject_method: Option<AmlPath>,
+    pub ost_method: Option<AmlPath>,
 }
 
 pub struct AcpiRuntime {
@@ -91,9 +93,9 @@ impl AcpiRuntime {
     ///
     /// # Errors
     ///
-    /// Returns a typed AML error when the namespace is unavailable, `_UID`,
-    /// `_MAT`, `_PXM`, or `_STA` has an invalid type, or `_MAT` is malformed.
-    pub fn cpu_devices(&self) -> Result<Vec<CpuNamespaceDevice>, AmlError> {
+    /// Returns a typed AML error when the namespace is unavailable or a CPU
+    /// property is neither a value nor a control method.
+    pub fn cpu_devices(&self) -> Result<Vec<CpuNamespaceBinding>, AmlError> {
         let namespace = self.namespace.as_ref().ok_or_else(|| match &self.state {
             AcpiRuntimeState::StaticTablesOnly { aml_error } => aml_error.clone(),
             AcpiRuntimeState::NamespaceReady => AmlError::new(
@@ -101,13 +103,29 @@ impl AcpiRuntime {
                 "ACPI namespace was not published",
             ),
         })?;
-        namespace
-            .iter()
-            .filter_map(|(path, object)| {
-                matches!(object, AmlObject::Device(_) | AmlObject::Processor(_))
-                    .then_some(read_cpu_device(namespace, path))
-            })
-            .collect()
+        let mut devices = Vec::new();
+        for (path, object) in namespace.iter() {
+            if is_cpu_device(namespace, path, object)? {
+                devices.push(bind_cpu_device(namespace, path)?);
+            }
+        }
+        Ok(devices)
+    }
+
+    /// Resolves the AML event method for one GPE number.
+    ///
+    /// # Errors
+    ///
+    /// Returns a typed firmware error when both edge and level methods exist,
+    /// or an event-method name resolves to an object that is not a method.
+    pub fn gpe_event(&self, number: GpeNumber) -> Result<Option<GpeEvent>, AmlError> {
+        let namespace = self.namespace.as_ref().ok_or_else(|| {
+            AmlError::new(
+                AmlErrorKind::MissingObject,
+                "ACPI AML namespace is unavailable",
+            )
+        })?;
+        resolve_gpe_event(namespace, number)
     }
 
     /// Starts one budgeted AML method invocation.
@@ -128,13 +146,17 @@ impl AcpiRuntime {
                 "ACPI AML namespace is unavailable",
             )
         })?;
-        let id = self.next_vm_id.fetch_add(1, Ordering::Relaxed);
-        if id == u64::MAX {
-            return Err(AmlError::new(
-                AmlErrorKind::AllocationBudgetExhausted,
-                "AML VM identifier space exhausted",
-            ));
-        }
+        let id = self
+            .next_vm_id
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
+                current.checked_add(1)
+            })
+            .map_err(|_| {
+                AmlError::new(
+                    AmlErrorKind::AllocationBudgetExhausted,
+                    "AML VM identifier space exhausted",
+                )
+            })?;
         AmlVm::new(id, namespace.clone(), method, arguments, budget)
     }
 
@@ -154,10 +176,28 @@ fn build_namespace(catalog: &TableCatalog) -> Result<AmlNamespace, AmlError> {
     Ok(builder.finish())
 }
 
-fn read_cpu_device(
+fn is_cpu_device(
     namespace: &AmlNamespace,
     path: &AmlPath,
-) -> Result<CpuNamespaceDevice, AmlError> {
+    object: &AmlObject,
+) -> Result<bool, AmlError> {
+    if matches!(object, AmlObject::Processor(_)) {
+        return Ok(true);
+    }
+    if !matches!(object, AmlObject::Device(_)) {
+        return Ok(false);
+    }
+    let hid_path = path.child("_HID")?;
+    Ok(matches!(
+        namespace.get(&hid_path),
+        Some(AmlObject::Value(AmlValue::String(hid))) if hid.as_ref() == "ACPI0007"
+    ))
+}
+
+fn bind_cpu_device(
+    namespace: &AmlNamespace,
+    path: &AmlPath,
+) -> Result<CpuNamespaceBinding, AmlError> {
     let uid_path = path.child("_UID")?;
     let mat_path = path.child("_MAT")?;
     let pxm_path = path.child("_PXM")?;
@@ -165,49 +205,125 @@ fn read_cpu_device(
     let eject_path = path.child("_EJ0")?;
     let ost_path = path.child("_OST")?;
 
-    let uid = match namespace.get(&uid_path) {
-        None => None,
-        Some(AmlObject::Value(AmlValue::Integer(value))) => Some(FirmwareUid::Integer(*value)),
-        Some(AmlObject::Value(AmlValue::String(value))) => Some(FirmwareUid::String(value.clone())),
-        Some(_) => {
-            return Err(invalid_object(
-                &uid_path,
-                "_UID must be an Integer or String",
-            ));
-        }
-    };
-    let mat = match namespace.get(&mat_path) {
-        None => None,
-        Some(AmlObject::Value(AmlValue::Buffer(value))) => Some(parse_mat(value)?),
-        Some(_) => return Err(invalid_object(&mat_path, "_MAT must be a Buffer")),
-    };
-    let proximity_domain = match namespace.get(&pxm_path) {
-        None => None,
-        Some(AmlObject::Value(value)) => Some(
-            u32::try_from(value.as_integer()?)
-                .map_err(|_| invalid_object(&pxm_path, "_PXM exceeds u32"))?,
-        ),
-        Some(_) => return Err(invalid_object(&pxm_path, "_PXM must be an Integer")),
-    };
-    let status = match namespace.get(&sta_path) {
-        None => 0x0f,
-        Some(AmlObject::Value(value)) => value
-            .as_integer()
-            .map_err(|_| invalid_object(&sta_path, "_STA must evaluate to an Integer"))?,
-        Some(AmlObject::Method(_)) => 0x0f,
-        Some(_) => return Err(invalid_object(&sta_path, "_STA has an invalid object type")),
-    };
-
-    Ok(CpuNamespaceDevice {
+    Ok(CpuNamespaceBinding {
         path: path.clone(),
-        uid,
-        mat,
-        proximity_domain,
-        status,
-        eject_method: matches!(namespace.get(&eject_path), Some(AmlObject::Method(_)))
-            .then_some(eject_path),
-        ost_method: matches!(namespace.get(&ost_path), Some(AmlObject::Method(_)))
-            .then_some(ost_path),
+        uid: bind_value_or_method(namespace, &uid_path)?,
+        mat: bind_value_or_method(namespace, &mat_path)?,
+        proximity_domain: bind_value_or_method(namespace, &pxm_path)?,
+        status: bind_value_or_method(namespace, &sta_path)?,
+        eject_method: bind_method(namespace, eject_path)?,
+        ost_method: bind_method(namespace, ost_path)?,
+    })
+}
+
+fn bind_method(namespace: &AmlNamespace, path: AmlPath) -> Result<Option<AmlPath>, AmlError> {
+    match namespace.get(&path) {
+        None => Ok(None),
+        Some(AmlObject::Method(_)) => Ok(Some(path)),
+        Some(_) => Err(invalid_object(&path, "CPU control object must be a method")),
+    }
+}
+
+fn bind_value_or_method(
+    namespace: &AmlNamespace,
+    path: &AmlPath,
+) -> Result<Option<NamespaceBinding>, AmlError> {
+    match namespace.get(path) {
+        None => Ok(None),
+        Some(AmlObject::Value(value)) => Ok(Some(NamespaceBinding::Value(value.clone()))),
+        Some(AmlObject::Method(_)) => Ok(Some(NamespaceBinding::Method(path.clone()))),
+        Some(_) => Err(invalid_object(
+            path,
+            "CPU property must be a value or control method",
+        )),
+    }
+}
+
+fn event_method_present(namespace: &AmlNamespace, path: &AmlPath) -> Result<bool, AmlError> {
+    match namespace.get(path) {
+        None => Ok(false),
+        Some(AmlObject::Method(_)) => Ok(true),
+        Some(_) => Err(invalid_object(path, "GPE event object must be a method")),
+    }
+}
+
+fn resolve_gpe_event(
+    namespace: &AmlNamespace,
+    number: GpeNumber,
+) -> Result<Option<GpeEvent>, AmlError> {
+    let edge = GpeEvent {
+        number,
+        trigger: GpeTrigger::Edge,
+    };
+    let level = GpeEvent {
+        number,
+        trigger: GpeTrigger::Level,
+    };
+    let edge_present = event_method_present(namespace, &edge.method_path()?)?;
+    let level_present = event_method_present(namespace, &level.method_path()?)?;
+    match (edge_present, level_present) {
+        (true, true) => Err(AmlError::new(
+            AmlErrorKind::MalformedEncoding,
+            "GPE has both edge-triggered and level-triggered event methods",
+        )),
+        (true, false) => Ok(Some(edge)),
+        (false, true) => Ok(Some(level)),
+        (false, false) => Ok(None),
+    }
+}
+
+/// Decodes the evaluated `_UID` value of a processor device.
+///
+/// # Errors
+///
+/// Returns a typed object error for values other than Integer or String.
+pub fn decode_firmware_uid(value: &AmlValue) -> Result<FirmwareUid, AmlError> {
+    match value {
+        AmlValue::Integer(value) => Ok(FirmwareUid::Integer(*value)),
+        AmlValue::String(value) => Ok(FirmwareUid::String(value.clone())),
+        _ => Err(AmlError::new(
+            AmlErrorKind::InvalidObjectType,
+            "_UID must evaluate to an Integer or String",
+        )),
+    }
+}
+
+/// Decodes the evaluated `_MAT` processor structure.
+///
+/// # Errors
+///
+/// Returns a typed object or encoding error when the value is not a Buffer or
+/// does not contain a complete LAPIC/x2APIC processor structure.
+pub fn decode_mat_processor(value: &AmlValue) -> Result<MatProcessor, AmlError> {
+    parse_mat(value.as_buffer()?)
+}
+
+/// Decodes the evaluated `_PXM` proximity domain.
+///
+/// # Errors
+///
+/// Returns a typed object error when the value is not an Integer or exceeds
+/// the firmware proximity-domain width.
+pub fn decode_proximity_domain(value: &AmlValue) -> Result<u32, AmlError> {
+    u32::try_from(value.as_integer()?).map_err(|_| {
+        AmlError::new(
+            AmlErrorKind::InvalidObjectType,
+            "_PXM exceeds the u32 proximity-domain range",
+        )
+    })
+}
+
+/// Decodes the evaluated `_STA` bit field.
+///
+/// # Errors
+///
+/// Returns a typed object error when the value is not an Integer.
+pub fn decode_device_status(value: &AmlValue) -> Result<u64, AmlError> {
+    value.as_integer().map_err(|_| {
+        AmlError::new(
+            AmlErrorKind::InvalidObjectType,
+            "_STA must evaluate to an Integer",
+        )
     })
 }
 
@@ -283,7 +399,14 @@ mod tests {
 
     #[test]
     fn non_integer_sta_is_rejected_without_panic() {
+        let error = decode_device_status(&AmlValue::String(Arc::from("present"))).unwrap_err();
+        assert_eq!(error.kind, AmlErrorKind::InvalidObjectType);
+    }
+
+    #[test]
+    fn cpu_binding_keeps_dynamic_sta_unevaluated() {
         let cpu = AmlPath::new(Arc::<str>::from("\\CPU2")).unwrap();
+        let hid = cpu.child("_HID").unwrap();
         let sta = cpu.child("_STA").unwrap();
         let mut namespace = AmlNamespace::default();
         namespace
@@ -291,12 +414,69 @@ mod tests {
             .unwrap();
         namespace
             .insert(
-                sta,
-                AmlObject::Value(AmlValue::String(Arc::from("present"))),
+                hid,
+                AmlObject::Value(AmlValue::String(Arc::from("ACPI0007"))),
             )
             .unwrap();
-        let error = read_cpu_device(&namespace, &cpu).unwrap_err();
-        assert_eq!(error.kind, AmlErrorKind::InvalidObjectType);
+        namespace
+            .insert(
+                sta.clone(),
+                AmlObject::Method(crate::aml::AmlMethod::instructions(0, [])),
+            )
+            .unwrap();
+
+        let binding = bind_cpu_device(&namespace, &cpu).unwrap();
+        assert_eq!(binding.status, Some(NamespaceBinding::Method(sta)));
+    }
+
+    #[test]
+    fn non_cpu_devices_do_not_enter_cpu_enumeration() {
+        let device = AmlPath::new(Arc::<str>::from("\\PCI0")).unwrap();
+        let uid = device.child("_UID").unwrap();
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(device.clone(), AmlObject::Device(AmlDevice))
+            .unwrap();
+        namespace
+            .insert(uid, AmlObject::Value(AmlValue::Buffer(Arc::from([1]))))
+            .unwrap();
+
+        assert!(!is_cpu_device(&namespace, &device, namespace.get(&device).unwrap()).unwrap());
+    }
+
+    #[test]
+    fn gpe_cannot_have_both_edge_and_level_methods() {
+        let number = GpeNumber::new(0x2a).unwrap();
+        let edge = GpeEvent {
+            number,
+            trigger: GpeTrigger::Edge,
+        }
+        .method_path()
+        .unwrap();
+        let level = GpeEvent {
+            number,
+            trigger: GpeTrigger::Level,
+        }
+        .method_path()
+        .unwrap();
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(
+                edge,
+                AmlObject::Method(crate::aml::AmlMethod::instructions(0, [])),
+            )
+            .unwrap();
+        namespace
+            .insert(
+                level,
+                AmlObject::Method(crate::aml::AmlMethod::instructions(0, [])),
+            )
+            .unwrap();
+
+        assert_eq!(
+            resolve_gpe_event(&namespace, number).unwrap_err().kind,
+            AmlErrorKind::MalformedEncoding
+        );
     }
 
     #[test]

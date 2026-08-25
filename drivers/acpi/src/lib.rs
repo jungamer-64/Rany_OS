@@ -20,7 +20,11 @@ pub use error::{AcpiError, AcpiErrorKind, AmlError, AmlErrorKind};
 pub use events::{
     CpuFirmwareEvent, GpeController, GpeEvent, GpeNumber, GpeQueue, GpeTrigger, NotifyCode,
 };
-pub use runtime::{AcpiRuntime, AcpiRuntimeState, CpuNamespaceDevice, FirmwareUid, MatProcessor};
+pub use runtime::{
+    AcpiRuntime, AcpiRuntimeState, CpuNamespaceBinding, FirmwareUid, MatProcessor,
+    NamespaceBinding, decode_device_status, decode_firmware_uid, decode_mat_processor,
+    decode_proximity_domain,
+};
 pub use tables::{
     AcpiMemory, AcpiTable, FirmwareCpuEntry, FixedEventDescription, GenericAddress,
     GenericAddressSpace, GpeRegisterBlock, HhdmAcpiMemory, InterruptOverride, InterruptPolarity,
