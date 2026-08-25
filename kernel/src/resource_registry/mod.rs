@@ -95,7 +95,7 @@ struct BlockDeviceAdapter {
 }
 
 impl DeviceOps for BlockDeviceAdapter {
-    fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
+    fn submit(&self, req: &IoRequest, _cpu_id: crate::cpu::CpuId) -> Result<(), IoError> {
         let Some(command) = req.command.as_ref() else {
             return Err(IoError::NotSupported);
         };

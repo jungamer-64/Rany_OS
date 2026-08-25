@@ -483,13 +483,14 @@ fn init_single_nvme_controller(
         crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
     }
 
-    let num_cores = crate::cpu::snapshot().online().len() as u32;
+    let online = crate::cpu::snapshot().online().clone();
+    let num_cores = online.len() as u32;
     let packed_device_id = dev.packed_locator();
     match crate::drivers::nvme::init_nvme_polling(bar0_virt, num_cores, packed_device_id) {
         Ok(()) => {
             info!(target: "init", "NVMe driver initialized (polling)");
             if let Err(e) =
-                crate::drivers::nvme::register_with_io_scheduler(nvme_controller_id, 1, num_cores)
+                crate::drivers::nvme::register_with_io_scheduler(nvme_controller_id, 1, &online)
             {
                 warn!(target: "init", "NVMe IoScheduler registration failed: {}", e);
             }

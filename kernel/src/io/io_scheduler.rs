@@ -126,8 +126,8 @@ pub trait DeviceOps: Send + Sync {
     /// リクエストをサブミット（非同期）
     ///
     /// * `req`: I/Oリクエスト
-    /// * `cpu_idx`: 送信元CPUのインデックス（0-based, contiguous）
-    fn submit(&self, req: &IoRequest, cpu_idx: usize) -> Result<(), IoError>;
+    /// * `cpu_id`: 送信元の論理CPU identity
+    fn submit(&self, req: &IoRequest, cpu_id: crate::cpu::CpuId) -> Result<(), IoError>;
 
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
@@ -597,12 +597,17 @@ pub trait PollHandler {
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
 
-    /// このハンドラを処理すべきCPU index（None = 全CPU、Some(n) = CPU n のみ）
-    ///
-    /// cpu_index() と同じ 0-based 連番を返す。
-    fn affinity_cpu_index(&self) -> Option<usize> {
-        None // デフォルト: どのCPUでも処理可
+    /// 現在このハンドラを処理できるCPU。
+    fn affinity(&self) -> PollAffinity {
+        PollAffinity::Any
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PollAffinity {
+    Any,
+    Cpu(crate::cpu::CpuId),
+    Unavailable,
 }
 
 impl PollingExecutor {
@@ -701,9 +706,7 @@ impl PollingExecutor {
             return 0;
         }
 
-        let Some(cpu_idx) =
-            crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
-        else {
+        let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
             return 0;
         };
         let mut completed = 0;
@@ -711,9 +714,10 @@ impl PollingExecutor {
 
         for (_device, handlers) in handlers.iter() {
             for handler in handlers.iter() {
-                match handler.affinity_cpu_index() {
-                    Some(idx) if idx != cpu_idx => continue,
-                    _ => {}
+                match handler.affinity() {
+                    PollAffinity::Any => {}
+                    PollAffinity::Cpu(affinity) if affinity == cpu_id => {}
+                    PollAffinity::Cpu(_) | PollAffinity::Unavailable => continue,
                 }
 
                 if handler.is_ready() {

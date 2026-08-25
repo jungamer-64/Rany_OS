@@ -81,7 +81,7 @@ struct MockNvmeOps {
 }
 
 impl DeviceOps for MockNvmeOps {
-    fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
+    fn submit(&self, req: &IoRequest, _cpu_id: crate::cpu::CpuId) -> Result<(), IoError> {
         let bytes = match req.command.as_ref() {
             Some(IoCommand::BlockRead { bytes, .. }) => {
                 self.counters.read.fetch_add(1, Ordering::Relaxed);

@@ -13,10 +13,34 @@ use alloc::vec::Vec;
 
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DeviceOps, DmaBufHandle, IoCommand, IoError, IoRequest, IoRequestId,
-    IoResult, ModeThresholds, PollHandler,
+    IoResult, ModeThresholds, PollAffinity, PollHandler,
 };
 
 use super::global;
+
+fn queue_index_for_cpu(
+    online: &crate::cpu::CpuSet,
+    cpu_id: crate::cpu::CpuId,
+    queue_count: usize,
+) -> Option<usize> {
+    if queue_count == 0 {
+        return None;
+    }
+    online
+        .iter()
+        .position(|member| member == cpu_id)
+        .map(|member_index| member_index % queue_count)
+}
+
+fn poll_cpu_for_queue(
+    online: &crate::cpu::CpuSet,
+    queue_id: u32,
+) -> Option<crate::cpu::CpuId> {
+    if online.is_empty() {
+        return None;
+    }
+    online.member_at(queue_id as usize % online.len())
+}
 
 // ============================================================================
 // NVMe Device Operations (DeviceOps Implementation)
@@ -117,10 +141,10 @@ impl NvmeOps {
 }
 
 impl DeviceOps for NvmeOps {
-    fn submit(&self, req: &IoRequest, cpu_idx: usize) -> Result<(), IoError> {
+    fn submit(&self, req: &IoRequest, cpu_id: crate::cpu::CpuId) -> Result<(), IoError> {
         // Use new IoCommand API only
         if let Some(cmd) = &req.command {
-            return self.submit_command(cmd, req.id, cpu_idx);
+            return self.submit_command(cmd, req.id, cpu_id);
         }
         // Legacy payload support removed: require IoCommand
         Err(IoError::NotSupported)
@@ -137,25 +161,21 @@ impl NvmeOps {
         &self,
         cmd: &IoCommand,
         id: IoRequestId,
-        cpu_idx: usize,
+        cpu_id: crate::cpu::CpuId,
     ) -> Result<(), IoError> {
-        let core_id = cpu_idx as u32;
+        let online = crate::cpu::snapshot();
+        let queue_index = queue_index_for_cpu(online.online(), cpu_id, self.handlers.len())
+            .ok_or(IoError::NoResources)?;
 
-        // 1. 指定されたCPUに関連付けられたハンドラを取得
+        // Hardware queue identity is independent from sparse logical CPU ID.
         let handler = self
             .handlers
-            .iter()
-            .find(|h| h.core_id == core_id)
+            .get(queue_index)
             .cloned()
-            .or_else(|| {
-                // フォールバック
-                let idx = (core_id as usize) % self.handlers.len().max(1);
-                self.handlers.get(idx).cloned()
-            })
             .ok_or(IoError::NoResources)?;
 
         // submit と poll_completions で同じ queue を使用
-        let submit_qid = handler.core_id;
+        let submit_qid = handler.queue_id;
 
         let (cid, bytes) = match cmd {
             IoCommand::BlockRead {
@@ -282,8 +302,8 @@ static NVME_POLL_HANDLERS: PoisonRwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePol
 /// IoSchedulerとNvmePollingDriverを接続するアダプタ。
 /// 特定のコアIDに紐付けられる。
 pub struct NvmePollHandler {
-    /// コアID
-    core_id: u32,
+    /// NVMe hardware I/O queue ID.
+    queue_id: u32,
     /// 保留中のNVMeコマンドID → I/Oリクエスト
     /// Vec を使用して O(1) アクセス（CID は通常 0-1023 の範囲）
     pending: PoisonLock<Vec<Option<PendingNvmeRequest>>>,
@@ -294,11 +314,11 @@ const NVME_MAX_CID: usize = 1024;
 
 impl NvmePollHandler {
     /// 新しいPollHandlerを作成
-    pub fn new(core_id: u32) -> Self {
+    pub fn new(queue_id: u32) -> Self {
         let mut pending = Vec::with_capacity(NVME_MAX_CID);
         pending.resize_with(NVME_MAX_CID, || None);
         Self {
-            core_id,
+            queue_id,
             pending: PoisonLock::new(pending),
         }
     }
@@ -320,7 +340,7 @@ impl PollHandler for NvmePollHandler {
         let mut results = Vec::new();
 
         global::with_driver(|driver| {
-            if let Some(queue) = driver.get_queue(self.core_id) {
+            if let Some(queue) = driver.get_queue(self.queue_id) {
                 let pending_requests = queue.get_pending_requests();
                 // SAFETY: poll は内部で適切に同期されている
                 unsafe {
@@ -381,10 +401,10 @@ impl PollHandler for NvmePollHandlerWrapper {
         self.inner.is_ready()
     }
 
-    fn affinity_cpu_index(&self) -> Option<usize> {
-        // NVMe handler は特定の queue/CPU index に紐づく
-        // core_id は登録時の CPU 番号 (0-based) を想定
-        Some(self.inner.core_id as usize)
+    fn affinity(&self) -> PollAffinity {
+        let snapshot = crate::cpu::snapshot();
+        poll_cpu_for_queue(snapshot.online(), self.inner.queue_id)
+            .map_or(PollAffinity::Unavailable, PollAffinity::Cpu)
     }
 }
 
@@ -398,14 +418,14 @@ impl PollHandler for NvmePollHandlerWrapper {
 pub fn register_with_io_scheduler(
     controller_id: u8,
     namespace_id: u32,
-    num_cores: u32,
+    online: &crate::cpu::CpuSet,
 ) -> Result<Vec<Arc<NvmePollHandler>>, &'static str> {
     // 1. 利用可能なキュー数を確認
     let available = global::with_driver(|driver| driver.io_queue_count()).unwrap_or(0);
     if available == 0 {
         return Err("NVMe driver not initialized or no I/O queues");
     }
-    let handler_count = num_cores.min(available as u32);
+    let handler_count = online.len().min(usize::from(available));
     let mut handlers = Vec::new();
 
     // 2. Scheduler/Coordinator 取得
@@ -419,8 +439,9 @@ pub fn register_with_io_scheduler(
 
     // 3. DeviceOps生成 & 登録 (DI: driver adapter, handlers)
     // ハンドラ生成
-    for core_id in 0..handler_count {
-        let handler = Arc::new(NvmePollHandler::new(core_id));
+    for queue_index in 0..handler_count {
+        let queue_id = u32::try_from(queue_index).map_err(|_| "NVMe queue ID out of range")?;
+        let handler = Arc::new(NvmePollHandler::new(queue_id));
         handlers.push(handler);
     }
     let handlers_arc = Arc::new(handlers.clone());
@@ -455,4 +476,26 @@ pub fn register_with_io_scheduler(
     );
 
     Ok(handlers)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cpu(value: usize) -> crate::cpu::CpuId {
+        crate::cpu::CpuId::try_from(value).unwrap()
+    }
+
+    #[test]
+    fn sparse_cpu_members_select_hardware_queues_by_member_index() {
+        let online = crate::cpu::CpuSet::from_ids(3, [cpu(0), cpu(2)]).unwrap();
+
+        assert_eq!(queue_index_for_cpu(&online, cpu(0), 2), Some(0));
+        assert_eq!(queue_index_for_cpu(&online, cpu(2), 2), Some(1));
+        assert_eq!(queue_index_for_cpu(&online, cpu(1), 2), None);
+        assert_eq!(queue_index_for_cpu(&online, cpu(2), 0), None);
+        assert_eq!(poll_cpu_for_queue(&online, 0), Some(cpu(0)));
+        assert_eq!(poll_cpu_for_queue(&online, 1), Some(cpu(2)));
+        assert_eq!(poll_cpu_for_queue(&online, 2), Some(cpu(0)));
+    }
 }

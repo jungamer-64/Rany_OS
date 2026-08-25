@@ -34,7 +34,8 @@ impl SystemIntegration {
                     x86_64::PhysAddr::new_truncate(bar0_phys),
                 )
                 .as_u64();
-                let Ok(num_cores) = u32::try_from(crate::cpu::snapshot().online().len()) else {
+                let online = crate::cpu::snapshot().online().clone();
+                let Ok(num_cores) = u32::try_from(online.len()) else {
                     self.log("    online CPU topology cannot be represented by the NVMe ABI");
                     continue;
                 };
@@ -77,7 +78,7 @@ impl SystemIntegration {
                         if let Err(e) = crate::drivers::nvme::register_with_io_scheduler(
                             nvme_controller_id,
                             1,
-                            num_cores,
+                            &online,
                         ) {
                             self.log(&alloc::format!(
                                 "    NVMe IoScheduler registration failed: {}",

@@ -213,7 +213,7 @@ impl AhciOps {
 }
 
 impl DeviceOps for AhciOps {
-    fn submit(&self, req: &IoRequest, _cpu_idx: usize) -> Result<(), IoError> {
+    fn submit(&self, req: &IoRequest, _cpu_id: crate::cpu::CpuId) -> Result<(), IoError> {
         // IoCommand 対応
         if let Some(cmd) = &req.command {
             return match cmd {

@@ -351,9 +351,7 @@ impl HybridIoCoordinator {
 
     pub(super) fn dispatch_pending(&self) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
-        let Some(cpu_idx) =
-            crate::cpu::CurrentCpu::acquire().map(|current| current.id().as_usize())
-        else {
+        let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
             return;
         };
         for _ in 0..DISPATCH_BATCH_LIMIT {
@@ -370,7 +368,7 @@ impl HybridIoCoordinator {
             }
             let ops = self.scheduler.get_device_ops(request.device);
             let result = match ops {
-                Some(ops) => ops.submit(&request, cpu_idx),
+                Some(ops) => ops.submit(&request, cpu_id),
                 None => Err(IoError::NotSupported),
             };
             if let Err(err) = result {
