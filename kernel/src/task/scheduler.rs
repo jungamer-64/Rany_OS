@@ -216,6 +216,18 @@ impl SchedulerState {
         }
     }
 
+    fn defer_running(&mut self, id: TaskId, cpu: CpuId) {
+        let Some(entry) = self.tasks.get_mut(&id) else {
+            return;
+        };
+        if !matches!(entry.state, TaskRunState::Running { cpu: running, .. } if running == cpu) {
+            return;
+        }
+        entry.state = TaskRunState::Ready { cpu };
+        self.enqueue(id, cpu)
+            .unwrap_or_else(|error| panic!("deferred task lost its CPU run queue: {error:?}"));
+    }
+
     fn pinned_blockers(&self, cpu: CpuId) -> Arc<[CpuBlocker]> {
         self.tasks
             .values()
@@ -333,16 +345,33 @@ impl TaskRuntime {
             return false;
         };
 
+        let admission_time = crate::time::best_effort_time_nanos();
+        if !crate::domain::is_domain_runnable_now(record.domain, admission_time) {
+            self.state
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .defer_running(record.id, cpu);
+            return false;
+        }
+
         let execution = ExecutionContext::for_task(cpu, record.id, record.domain);
         let execution_guard = current.enter_execution(execution);
         let waker = create_waker(record.id);
         let mut context = Context::from_waker(&waker);
+        let poll_started = crate::time::best_effort_time_nanos();
         let poll = record
             .future
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_mut()
             .poll(&mut context);
+        let poll_finished = crate::time::best_effort_time_nanos();
+        let elapsed = poll_finished.saturating_sub(poll_started);
+        if crate::domain::quota_manager().consume_cpu_time(record.domain, elapsed, poll_finished) {
+            let _ = crate::domain::report_cpu_quota_exceeded(record.domain, poll_finished);
+        } else {
+            crate::domain::report_cpu_quota_ok(record.domain);
+        }
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         drop(execution_guard);
 
@@ -614,5 +643,32 @@ mod tests {
             scheduler.select_target(TaskPlacement::Pinned(offline)),
             Err(SpawnError::CpuOffline(offline))
         );
+    }
+
+    #[test]
+    fn deferred_domain_task_remains_ready_on_its_sparse_run_queue() {
+        let cpu_runtime = sparse_runtime();
+        let mut scheduler = SchedulerState::from_snapshot(&cpu_runtime.snapshot());
+        let cpu = CpuId::try_from(2usize).unwrap();
+        let id = TaskId::new();
+        let record = Arc::new(TaskRecord {
+            id,
+            domain: crate::domain::DomainId::KERNEL,
+            placement: TaskPlacement::Pinned(cpu),
+            future: PoisonLock::new(Box::pin(async {}) as Pin<Box<dyn Future<Output = ()> + Send>>),
+        });
+        scheduler.tasks.insert(
+            id,
+            TaskEntry {
+                record,
+                state: TaskRunState::Ready { cpu },
+            },
+        );
+        scheduler.enqueue(id, cpu).unwrap();
+
+        assert_eq!(scheduler.take_ready(cpu).map(|task| task.id), Some(id));
+        scheduler.defer_running(id, cpu);
+
+        assert_eq!(scheduler.take_ready(cpu).map(|task| task.id), Some(id));
     }
 }

@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-if command -v rg >/dev/null 2>&1; then
+if command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
   SEARCH="rg"
   SEARCH_COUNT=(rg -c)
 else
@@ -42,10 +42,10 @@ if [[ "$future_hits" -ne 0 ]]; then
 fi
 
 echo "[M05-GUARD] Checking consume_cpu_time wiring..."
-preemption_hits=$(search_count "consume_cpu_time\(" kernel/src/task/preemption.rs)
-percore_hits=$(search_count "consume_cpu_time\(" kernel/src/task/per_core_executor.rs)
-if [[ "$preemption_hits" -eq 0 || "$percore_hits" -eq 0 ]]; then
-  echo "[M05-GUARD] FAIL: consume_cpu_time wiring missing (preemption=$preemption_hits per_core=$percore_hits)"
+scheduler_accounting_hits=$(search_count "consume_cpu_time\(" kernel/src/task/scheduler.rs)
+scheduler_admission_hits=$(search_count "is_domain_runnable_now\(" kernel/src/task/scheduler.rs)
+if [[ "$scheduler_accounting_hits" -eq 0 || "$scheduler_admission_hits" -eq 0 ]]; then
+  echo "[M05-GUARD] FAIL: scheduler quota wiring missing (accounting=$scheduler_accounting_hits admission=$scheduler_admission_hits)"
   fail=1
 fi
 
