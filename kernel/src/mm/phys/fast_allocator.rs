@@ -41,6 +41,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
+use crate::cpu::{CpuId, CpuSet};
 use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 use crate::mm::bitmap::HugePageBitmap;
 use crate::mm::cache::magazine::{DEFAULT_MAGAZINE_CAPACITY, Magazine};
@@ -139,7 +140,6 @@ pub enum LocalCachePolicy {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuCacheProvisionError {
-    CpuLimit { requested: usize, maximum: usize },
     Allocation,
 }
 
@@ -171,14 +171,14 @@ impl CpuMagazineDrain {
 #[derive(Debug)]
 pub struct PerCpuFastMagazine {
     /// CPU ID for this magazine set
-    pub cpu_id: usize,
+    pub cpu_id: CpuId,
     /// Magazines indexed by size class (4KB, 2MB, 1GB)
     magazines: [IrqPoisonLock<FastMagazine>; MAGAZINE_SIZE_CLASSES],
 }
 
 impl PerCpuFastMagazine {
     /// Create new per-CPU magazine set
-    pub const fn new(cpu_id: usize) -> Self {
+    pub const fn new(cpu_id: CpuId) -> Self {
         Self {
             cpu_id,
             magazines: [
@@ -198,7 +198,7 @@ impl PerCpuFastMagazine {
 
 impl TypeIdHash for PerCpuFastMagazine {
     fn type_id_hash() -> TypeHash {
-        const_hash(b"PerCpuFastMagazine:v2:cpu_id,magazines")
+        const_hash(b"PerCpuFastMagazine:v3:typed_cpu_id,magazines")
     }
 
     fn type_name() -> &'static str {
@@ -206,7 +206,7 @@ impl TypeIdHash for PerCpuFastMagazine {
     }
 
     fn type_version() -> SemVer {
-        SemVer::new(2, 0, 0)
+        SemVer::new(3, 0, 0)
     }
 }
 

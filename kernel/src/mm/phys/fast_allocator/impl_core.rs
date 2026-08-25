@@ -7,9 +7,7 @@ impl FastBitmapAllocator {
         let bitmap = HugePageBitmap::new(total_pages);
         let magazines = match cache_policy {
             LocalCachePolicy::PerCpu => {
-                alloc::vec![Arc::new(PerCpuFastMagazine::new(
-                    crate::cpu::CpuId::BOOTSTRAP.as_usize()
-                ))]
+                alloc::vec![Arc::new(PerCpuFastMagazine::new(CpuId::BOOTSTRAP))]
             }
             LocalCachePolicy::SharedBitmap => Vec::new(),
         };
@@ -40,11 +38,11 @@ impl FastBitmapAllocator {
     /// Get current CPU ID
     #[inline]
     pub(super) fn current_magazine(&self) -> Option<Arc<PerCpuFastMagazine>> {
-        let cpu_id = crate::cpu::CurrentCpu::acquire()?.id().as_usize();
+        let cpu_id = crate::cpu::CurrentCpu::acquire()?.id();
         self.magazines
             .lock()
             .unwrap_or_else(|error| error.into_inner())
-            .get(cpu_id)
+            .get(cpu_id.as_usize())
             .filter(|magazine| magazine.cpu_id == cpu_id)
             .cloned()
     }
@@ -386,21 +384,15 @@ impl FastBitmapAllocator {
     }
 
     /// Provision stable cache slots for every discovered CPU identity.
-    pub fn provision_cpu_ids(&self, cpu_ids: &[usize]) -> Result<(), CpuCacheProvisionError> {
+    pub fn provision_cpu_set(&self, cpu_ids: &CpuSet) -> Result<(), CpuCacheProvisionError> {
         if self.cache_policy == LocalCachePolicy::SharedBitmap {
             return Ok(());
         }
         let required_slots = cpu_ids
             .iter()
-            .copied()
+            .map(CpuId::as_usize)
             .max()
-            .map_or(1, |cpu_id| cpu_id.saturating_add(1));
-        if required_slots > crate::cpu::MAX_POSSIBLE_CPUS {
-            return Err(CpuCacheProvisionError::CpuLimit {
-                requested: required_slots,
-                maximum: crate::cpu::MAX_POSSIBLE_CPUS,
-            });
-        }
+            .map_or(1, |cpu_id| cpu_id + 1);
 
         let _provision = self
             .provision_lock
@@ -430,7 +422,7 @@ impl FastBitmapAllocator {
             return Err(CpuCacheProvisionError::Allocation);
         }
         while magazines.len() < required_slots {
-            let cpu_id = magazines.len();
+            let cpu_id = CpuId::from_valid_index(magazines.len());
             magazines.push(Arc::new(PerCpuFastMagazine::new(cpu_id)));
         }
 
@@ -613,22 +605,33 @@ mod tests {
     fn sparse_cpu_cache_slots_are_stable_and_bounded() {
         let allocator =
             FastBitmapAllocator::new(0x1000_0000, PAGE_SIZE_2M, LocalCachePolicy::PerCpu);
+        let sparse =
+            CpuSet::from_ids(3, [CpuId::BOOTSTRAP, CpuId::try_from(2usize).unwrap()]).unwrap();
 
         allocator
-            .provision_cpu_ids(&[0, 2])
+            .provision_cpu_set(&sparse)
             .expect("sparse CPU cache provisioning must succeed");
         let registry = allocator.magazines.lock().expect("registry lock poisoned");
         assert_eq!(registry.len(), 3);
-        assert_eq!(registry[0].cpu_id, 0);
-        assert_eq!(registry[2].cpu_id, 2);
+        assert_eq!(registry[0].cpu_id, CpuId::BOOTSTRAP);
+        assert_eq!(registry[2].cpu_id, CpuId::try_from(2usize).unwrap());
         drop(registry);
 
+        let maximum = CpuSet::from_ids(
+            crate::cpu::MAX_POSSIBLE_CPUS,
+            [CpuId::try_from(crate::cpu::MAX_POSSIBLE_CPUS - 1).unwrap()],
+        )
+        .unwrap();
+        allocator
+            .provision_cpu_set(&maximum)
+            .expect("maximum CPU identity must remain provisionable");
         assert_eq!(
-            allocator.provision_cpu_ids(&[crate::cpu::MAX_POSSIBLE_CPUS]),
-            Err(CpuCacheProvisionError::CpuLimit {
-                requested: crate::cpu::MAX_POSSIBLE_CPUS + 1,
-                maximum: crate::cpu::MAX_POSSIBLE_CPUS,
-            })
+            allocator
+                .magazines
+                .lock()
+                .expect("registry lock poisoned")
+                .len(),
+            crate::cpu::MAX_POSSIBLE_CPUS
         );
     }
 

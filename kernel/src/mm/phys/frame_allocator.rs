@@ -359,11 +359,11 @@ impl PmmAllocatorFast {
         }
     }
 
-    fn provision_cpu_ids(
+    fn provision_cpu_set(
         &self,
-        cpu_ids: &[usize],
+        cpu_ids: &crate::cpu::CpuSet,
     ) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
-        self.inner.provision_cpu_ids(cpu_ids)
+        self.inner.provision_cpu_set(cpu_ids)
     }
 
     fn quiesce_current_cpu(&self) -> crate::mm::phys::fast_allocator::CpuMagazineDrain {

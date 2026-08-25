@@ -32,17 +32,20 @@ impl NumaPmmAllocator {
         }
     }
 
-    pub(super) fn cpu_ids_for_node(&self, node_idx: usize) -> Vec<usize> {
-        let mut ids: Vec<usize> = self
+    pub(super) fn cpu_set_for_node(&self, node_idx: usize) -> crate::cpu::CpuSet {
+        let mut cpus = self
             .topology
             .nodes
             .get(node_idx)
-            .map(|node| node.cpus.iter().map(crate::cpu::CpuId::as_usize).collect())
-            .unwrap_or_default();
-        if ids.is_empty() {
-            ids.push(crate::cpu::CpuId::BOOTSTRAP.as_usize());
+            .map(|node| node.cpus.clone())
+            .unwrap_or_else(|| {
+                crate::cpu::CpuSet::new(1).expect("bootstrap CPU set capacity is valid")
+            });
+        if cpus.is_empty() {
+            cpus.insert(crate::cpu::CpuId::BOOTSTRAP)
+                .expect("bootstrap CPU fits the initial NUMA topology");
         }
-        ids
+        cpus
     }
 
     pub(super) fn init_numa_node(
@@ -62,8 +65,8 @@ impl NumaPmmAllocator {
         }
 
         if let Some(pmm) = build_pmm_from_regions(&node_regions) {
-            let cpu_ids = self.cpu_ids_for_node(node_idx);
-            if let Err(error) = pmm.provision_cpu_ids(&cpu_ids) {
+            let cpu_ids = self.cpu_set_for_node(node_idx);
+            if let Err(error) = pmm.provision_cpu_set(&cpu_ids) {
                 log::warn!(
                     "[PMM] NUMA node {} could not provision CPU-local cache slots: {:?}",
                     node_idx,
@@ -438,26 +441,23 @@ pub(crate) fn provision_numa_node_cpu_caches(
     node_idx: usize,
     possible: &crate::cpu::CpuSet,
 ) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
-    let node_cpu_ids = numa.cpu_ids_for_node(node_idx);
-    let filtered = node_cpu_ids
-        .into_iter()
-        .filter_map(|raw_id| crate::cpu::CpuId::try_from(raw_id).ok())
-        .filter(|cpu_id| possible.contains(*cpu_id))
-        .map(crate::cpu::CpuId::as_usize)
-        .collect::<Vec<_>>();
-    let possible_ids = possible
-        .iter()
-        .map(crate::cpu::CpuId::as_usize)
-        .collect::<Vec<_>>();
+    let node_cpu_ids = numa.cpu_set_for_node(node_idx);
+    let mut filtered = crate::cpu::CpuSet::new(possible.capacity())
+        .expect("possible CPU set capacity is already validated");
+    for cpu_id in node_cpu_ids.iter().filter(|id| possible.contains(*id)) {
+        filtered
+            .insert(cpu_id)
+            .expect("filtered CPU belongs to the possible-set capacity");
+    }
     if let Some(pmm) = numa
         .node_allocators
         .get(node_idx)
         .and_then(|opt| opt.as_ref())
     {
         if filtered.is_empty() {
-            pmm.provision_cpu_ids(&possible_ids)?;
+            pmm.provision_cpu_set(possible)?;
         } else {
-            pmm.provision_cpu_ids(&filtered)?;
+            pmm.provision_cpu_set(&filtered)?;
         }
     }
     Ok(())
@@ -477,11 +477,7 @@ fn pmm_provision_for_possible_set(
     }
 
     if let Some(pmm) = pmm_global() {
-        let cpu_ids = possible
-            .iter()
-            .map(crate::cpu::CpuId::as_usize)
-            .collect::<Vec<_>>();
-        pmm.provision_cpu_ids(&cpu_ids)?;
+        pmm.provision_cpu_set(possible)?;
     }
     Ok(())
 }
