@@ -381,11 +381,6 @@ pub mod collections;
     feature = "qemu-test-export"
 ))]
 pub mod mm;
-// The real `per_cpu` module is not compiled when running tests or benches
-// because we provide a lightweight stub later in this file that satisfies
-// the few symbols needed by unit tests.  Without this guard the crate ends up
-// defining `per_cpu` twice during `cargo test`, which triggers a compile
-// error.
 #[cfg(any(
     not(any(test, feature = "bench")),
     feature = "full_mm_tests",
