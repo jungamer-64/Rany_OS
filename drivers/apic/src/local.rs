@@ -420,6 +420,12 @@ impl LocalApic {
         }
     }
 
+    /// Calibrates the local APIC timer against a ten-millisecond PIT interval.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`LocalApicError::TimerNotCalibrated`] if the PIT does not
+    /// complete within the bounded wait or the measured APIC tick rate is zero.
     pub fn calibrate_timer(&self) -> Result<(), LocalApicError> {
         let mut pit_command = PortU8::new(0x43);
         let mut pit_data = PortU8::new(0x42);
