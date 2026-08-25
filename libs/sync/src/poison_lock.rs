@@ -12,7 +12,7 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::Backoff;
 
@@ -369,56 +369,21 @@ impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
 // パニック検出ヘルパー
 // ============================================================================
 
-static PANICKING_CORES: AtomicU64 = AtomicU64::new(0);
+/// Panic is terminal for a no-std kernel image, so poisoning tracks one
+/// system transition rather than inventing a second CPU identity source.
+static PANICKING: AtomicBool = AtomicBool::new(false);
 
 fn is_panicking() -> bool {
     #[cfg(feature = "std")]
     {
-        std::thread::panicking()
+        std::thread::panicking() || PANICKING.load(Ordering::Acquire)
     }
     #[cfg(not(feature = "std"))]
     {
-        let core_id = get_current_core_id();
-        if core_id >= 64 {
-            return false;
-        }
-        let mask = PANICKING_CORES.load(Ordering::Acquire);
-        (mask & (1u64 << core_id)) != 0
+        PANICKING.load(Ordering::Acquire)
     }
 }
 
 pub fn set_panicking(panicking: bool) {
-    let core_id = get_current_core_id();
-    if core_id >= 64 {
-        return;
-    }
-    let bit = 1u64 << core_id;
-    if panicking {
-        PANICKING_CORES.fetch_or(bit, Ordering::Release);
-    } else {
-        PANICKING_CORES.fetch_and(!bit, Ordering::Release);
-    }
-}
-
-#[inline]
-fn get_current_core_id() -> u32 {
-    #[cfg(test)]
-    {
-        return 0;
-    }
-    #[cfg(not(test))]
-    {
-        #[cfg(target_arch = "x86_64")]
-        {
-            let aux: u32;
-            unsafe {
-                core::arch::asm!("rdtscp", out("ecx") aux, out("eax") _, out("edx") _, options(nomem, nostack));
-            }
-            aux
-        }
-        #[cfg(not(target_arch = "x86_64"))]
-        {
-            0
-        }
-    }
+    PANICKING.store(panicking, Ordering::Release);
 }
