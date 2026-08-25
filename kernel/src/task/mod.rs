@@ -1,5 +1,5 @@
 // ============================================================================
-// src/task/mod.rs - Task Definition and Per-Core Executor
+// src/task/mod.rs - Task definition and topology-aware scheduler
 // ============================================================================
 //!
 //! # Task scheduler

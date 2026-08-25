@@ -35,14 +35,6 @@ impl Task {
     }
 }
 
-pub mod per_core_executor {
-    pub fn spawn<F>(_future: F)
-    where
-        F: core::future::Future<Output = ()> + 'static,
-    {
-    }
-}
-
 pub async fn sleep_ms(_ms: u64) {}
 
 pub fn current_tick() -> u64 {

@@ -504,12 +504,6 @@ pub(crate) fn drive_tcp_data_ready_in(
 /// ネットワークイベント処理の初期化
 pub fn init_network_event_handler() {
     // イベントキューは既に初期化済み（NETWORK_EVENT_QUEUE）
-    // タスクスケジューラにruntime_command_taskを登録する
-    // runtime_command_taskはasync関数なので、per_core_executor経由でspawnする
-    // ネットワークイベント処理はCPU 0で実行（ネットワーク割り込みと同じコア）
+    // runtime_command_task の登録は、scheduler 初期化後の起動シーケンスが担当する。
     log::info!("Network: Event handler initialized");
-
-    // タスクスポーン（実行時にエグゼキュータが初期化されている必要がある）
-    // crate::task::per_core_executor::spawn(super::tcp_rx::runtime_command_task());
-    // 上記は起動シーケンスで呼び出される必要があるため、ここではログのみ
 }

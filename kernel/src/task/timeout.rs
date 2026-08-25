@@ -10,12 +10,11 @@
 //! - `TimeoutResult<T>`: タイムアウト結果型
 //! - `TimeoutFuture<F>`: デッドライン付きFutureラッパー
 //! - `with_timeout()`: タイムアウト付き実行
-//! - `spawn_with_timeout()`: タイムアウト付きタスクスポーン
 //! - `block_on()`: テスト用同期実行ヘルパー
 //!
 //! ## 注意
 //! コアなタスク型定義 (`TaskId`, `Task`) は `task/mod.rs` に残ります。
-//! 実行基盤は `task/per_core_executor.rs` が担当します。
+//! 実行基盤と配置判断は `task/scheduler.rs` が担当します。
 
 use alloc::boxed::Box;
 use alloc::sync::Arc;
