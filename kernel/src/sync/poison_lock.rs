@@ -11,7 +11,7 @@
 use core::cell::UnsafeCell;
 use core::fmt;
 use core::ops::{Deref, DerefMut};
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::lockfree::Backoff;
 // use serial_driver::serial_println;
@@ -532,20 +532,14 @@ impl<T: fmt::Display + ?Sized> fmt::Display for PoisonLockGuard<'_, T> {
 // パニック検出ヘルパー
 // ============================================================================
 
-/// 現在パニック中のCPUコアのビットマスク（最大32コア対応）
-static PANICKING_CORES: AtomicU32 = AtomicU32::new(0);
-/// Panic中のPoisonログをCPUごとに一度だけに制限する。
-static PANIC_POISON_LOGGED_CORES: AtomicU32 = AtomicU32::new(0);
+/// Kernel panic is terminal for the whole machine, so poisoning observes one
+/// system-wide transition rather than maintaining a second CPU identity map.
+static PANICKING: AtomicBool = AtomicBool::new(false);
+static PANIC_POISON_LOGGED: AtomicBool = AtomicBool::new(false);
 
 /// 現在のCPUコアがパニック中かどうかをチェック
 fn is_panicking() -> bool {
-    let core_id = get_current_core_id();
-    if core_id >= 32 {
-        return false;
-    }
-
-    let mask = PANICKING_CORES.load(Ordering::Acquire);
-    (mask & (1 << core_id)) != 0
+    PANICKING.load(Ordering::Acquire)
 }
 
 pub fn is_panicking_for_debug() -> bool {
@@ -554,12 +548,8 @@ pub fn is_panicking_for_debug() -> bool {
 
 #[cfg(not(test))]
 fn emit_panic_poison_log_once(lock_kind: &str) {
-    let core_id = get_current_core_id();
-    if core_id < 32 {
-        let bit = 1u32 << core_id;
-        if (PANIC_POISON_LOGGED_CORES.fetch_or(bit, Ordering::AcqRel) & bit) != 0 {
-            return;
-        }
+    if PANIC_POISON_LOGGED.swap(true, Ordering::AcqRel) {
+        return;
     }
 
     crate::io::log::early_print("[");
@@ -626,52 +616,9 @@ pub fn reset_lock_metrics() {
 
 /// 現在のCPUコアのパニック状態を設定
 pub fn set_panicking(panicking: bool) {
-    let core_id = get_current_core_id();
-    if core_id >= 32 {
-        return;
-    }
-
-    let bit = 1u32 << core_id;
-    if panicking {
-        PANICKING_CORES.fetch_or(bit, Ordering::Release);
-    } else {
-        PANICKING_CORES.fetch_and(!bit, Ordering::Release);
-        PANIC_POISON_LOGGED_CORES.fetch_and(!bit, Ordering::Release);
-    }
-}
-
-pub fn get_current_core_id_for_debug() -> u32 {
-    get_current_core_id()
-}
-
-/// 現在のCPUコアIDを取得
-#[inline]
-fn get_current_core_id() -> u32 {
-    // Tests should run deterministically on the host; use core 0 in test builds.
-    if cfg!(test) {
-        return 0;
-    }
-
-    // LAPIC IDから取得する場合（APICが利用可能な場合）
-    // ここでは簡易実装としてRDTSCPのAUX値を使用
-    #[cfg(target_arch = "x86_64")]
-    {
-        let aux: u32;
-        unsafe {
-            core::arch::asm!(
-                "rdtscp",
-                out("ecx") aux,
-                out("eax") _,
-                out("edx") _,
-                options(nomem, nostack),
-            );
-        }
-        aux
-    }
-
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        0
+    PANICKING.store(panicking, Ordering::Release);
+    if !panicking {
+        PANIC_POISON_LOGGED.store(false, Ordering::Release);
     }
 }
 

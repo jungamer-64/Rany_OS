@@ -78,6 +78,6 @@ pub use lockfree::{
 };
 pub use poison_lock::{
     IrqPoisonLock, IrqPoisonLockGuard, LockResult, PoisonError, PoisonLock, PoisonLockGuard,
-    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard, get_current_core_id_for_debug,
-    is_panicking_for_debug, set_panicking,
+    PoisonRwLock, PoisonRwLockReadGuard, PoisonRwLockWriteGuard, is_panicking_for_debug,
+    set_panicking,
 };
