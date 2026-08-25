@@ -2,6 +2,8 @@ use alloc::sync::Arc;
 
 use crate::{AmlError, AmlErrorKind};
 
+use super::AmlPath;
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum AmlValue {
     #[default]
@@ -10,6 +12,7 @@ pub enum AmlValue {
     String(Arc<str>),
     Buffer(Arc<[u8]>),
     Package(Arc<[AmlValue]>),
+    Reference(AmlPath),
 }
 
 impl AmlValue {
@@ -48,6 +51,7 @@ impl AmlValue {
             Self::None | Self::Integer(_) => 0,
             Self::String(value) => value.len(),
             Self::Buffer(value) => value.len(),
+            Self::Reference(path) => path.as_str().len(),
             Self::Package(values) => values.iter().fold(values.len(), |total, value| {
                 total.saturating_add(value.allocation_units())
             }),

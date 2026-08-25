@@ -5,8 +5,9 @@ use alloc::vec::Vec;
 use crate::{AmlError, AmlErrorKind};
 
 use super::{
-    AmlDevice, AmlMethod, AmlMethodBody, AmlNamespace, AmlObject, AmlOperationRegion, AmlPath,
-    AmlProcessor, AmlValue, OperationRegionSpace,
+    AmlDevice, AmlField, AmlFieldAccess, AmlFieldUpdateRule, AmlMethod, AmlMethodBody,
+    AmlNamespace, AmlObject, AmlOperationRegion, AmlPath, AmlProcessor, AmlValue,
+    OperationRegionSpace,
 };
 
 pub struct AmlNamespaceBuilder {
@@ -149,6 +150,7 @@ impl<'a> Decoder<'a> {
                     }),
                 )
             }
+            0x81 => self.field_op(namespace, scope),
             0x82 => {
                 let end = self.package_end()?;
                 let path = self.name_string(scope)?;
@@ -172,6 +174,74 @@ impl<'a> Decoder<'a> {
                 self.term_list(namespace, &path, end)
             }
             value => Err(AmlError::opcode(0x5b00 | u16::from(value))),
+        }
+    }
+
+    fn field_op(&mut self, namespace: &mut AmlNamespace, scope: &AmlPath) -> Result<(), AmlError> {
+        let end = self.package_end()?;
+        let region = self.name_string(scope)?;
+        let flags = self.byte()?;
+        let mut access = AmlFieldAccess::from(flags);
+        let lock = flags & 0x10 != 0;
+        let update_rule = match (flags >> 5) & 0x03 {
+            0 => AmlFieldUpdateRule::Preserve,
+            1 => AmlFieldUpdateRule::WriteAsOnes,
+            2 => AmlFieldUpdateRule::WriteAsZeros,
+            _ => return Err(self.malformed("AML Field has a reserved update rule")),
+        };
+        let mut bit_offset = 0u64;
+        while self.cursor < end {
+            match self.peek()? {
+                0x00 => {
+                    self.cursor += 1;
+                    bit_offset = bit_offset
+                        .checked_add(self.package_length_u64()?)
+                        .ok_or_else(|| self.malformed("AML Field bit offset overflowed"))?;
+                }
+                0x01 => {
+                    self.cursor += 1;
+                    access = AmlFieldAccess::from(self.byte()?);
+                    let _access_attribute = self.byte()?;
+                }
+                0x02 => {
+                    self.cursor += 1;
+                    if self.peek()? == 0x11 {
+                        let _connection = self.data_object(scope)?;
+                    } else {
+                        let _connection = self.name_string(scope)?;
+                    }
+                }
+                0x03 => {
+                    self.cursor += 1;
+                    access = AmlFieldAccess::from(self.byte()?);
+                    let _extended_attribute = self.byte()?;
+                    let _access_length = self.byte()?;
+                }
+                _ => {
+                    let name = self.name_segment()?;
+                    let bit_length = self.package_length_u64()?;
+                    let path = scope.child(&name)?;
+                    namespace.insert(
+                        path,
+                        AmlObject::Field(AmlField {
+                            region: region.clone(),
+                            bit_offset,
+                            bit_length,
+                            access,
+                            lock,
+                            update_rule,
+                        }),
+                    )?;
+                    bit_offset = bit_offset
+                        .checked_add(bit_length)
+                        .ok_or_else(|| self.malformed("AML Field bit offset overflowed"))?;
+                }
+            }
+        }
+        if self.cursor == end {
+            Ok(())
+        } else {
+            Err(self.malformed("AML Field crossed its package boundary"))
         }
     }
 
@@ -209,6 +279,9 @@ impl<'a> Decoder<'a> {
             0x0d => self.string_object(),
             0x11 => self.buffer_object(scope),
             0x12 | 0x13 => self.package_object(scope),
+            value if is_name_string_start(value) => {
+                self.name_string(scope).map(AmlValue::Reference)
+            }
             value => Err(AmlError::opcode(u16::from(value))),
         }
     }
@@ -315,13 +388,7 @@ impl<'a> Decoder<'a> {
 
     fn package_end(&mut self) -> Result<usize, AmlError> {
         let start = self.cursor;
-        let lead = self.byte()?;
-        let follow_count = usize::from(lead >> 6);
-        let mut length = usize::from(lead & if follow_count == 0 { 0x3f } else { 0x0f });
-        for index in 0..follow_count {
-            let follow = usize::from(self.byte()?);
-            length |= follow << (4 + index * 8);
-        }
+        let length = self.package_length()?;
         let end = start
             .checked_add(length)
             .ok_or_else(|| self.malformed("AML package length overflowed"))?;
@@ -329,6 +396,22 @@ impl<'a> Decoder<'a> {
             return Err(self.malformed("AML package extends beyond its table"));
         }
         Ok(end)
+    }
+
+    fn package_length_u64(&mut self) -> Result<u64, AmlError> {
+        u64::try_from(self.package_length()?)
+            .map_err(|_| self.malformed("AML package length exceeds u64"))
+    }
+
+    fn package_length(&mut self) -> Result<usize, AmlError> {
+        let lead = self.byte()?;
+        let follow_count = usize::from(lead >> 6);
+        let mut length = usize::from(lead & if follow_count == 0 { 0x3f } else { 0x0f });
+        for index in 0..follow_count {
+            let follow = usize::from(self.byte()?);
+            length |= follow << (4 + index * 8);
+        }
+        Ok(length)
     }
 
     fn byte(&mut self) -> Result<u8, AmlError> {
@@ -375,6 +458,10 @@ impl<'a> Decoder<'a> {
     }
 }
 
+const fn is_name_string_start(value: u8) -> bool {
+    matches!(value, b'\\' | b'^' | 0x2e | 0x2f | b'_' | b'A'..=b'Z')
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -408,5 +495,37 @@ mod tests {
             namespace.get(&sta),
             Some(&AmlObject::Value(AmlValue::Integer(0x0f)))
         );
+    }
+
+    #[test]
+    fn field_declaration_preserves_region_geometry_and_write_policy() {
+        let aml = [
+            0x5b, 0x80, b'P', b'R', b'S', b'T', 0x01, 0x0b, 0xd8, 0x0c, 0x0a, 0x0c, 0x5b, 0x81,
+            0x12, b'P', b'R', b'S', b'T', 0x03, b'C', b'S', b'E', b'L', 0x20, 0x00, 0x20, b'C',
+            b'D', b'A', b'T', 0x20,
+        ];
+        let mut builder = AmlNamespaceBuilder::new();
+        builder.ingest(&aml).unwrap();
+        let namespace = builder.finish();
+        let csel = AmlPath::new(Arc::<str>::from("\\CSEL")).unwrap();
+        let cdat = AmlPath::new(Arc::<str>::from("\\CDAT")).unwrap();
+        assert!(matches!(
+            namespace.get(&csel),
+            Some(AmlObject::Field(AmlField {
+                bit_offset: 0,
+                bit_length: 32,
+                access: AmlFieldAccess::DWord,
+                update_rule: AmlFieldUpdateRule::Preserve,
+                ..
+            }))
+        ));
+        assert!(matches!(
+            namespace.get(&cdat),
+            Some(AmlObject::Field(AmlField {
+                bit_offset: 64,
+                bit_length: 32,
+                ..
+            }))
+        ));
     }
 }

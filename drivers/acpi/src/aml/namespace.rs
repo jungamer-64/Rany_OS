@@ -96,6 +96,48 @@ pub struct AmlOperationRegion {
     pub length: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmlFieldAccess {
+    Any,
+    Byte,
+    Word,
+    DWord,
+    QWord,
+    Buffer,
+    Reserved(u8),
+}
+
+impl From<u8> for AmlFieldAccess {
+    fn from(value: u8) -> Self {
+        match value & 0x0f {
+            0 => Self::Any,
+            1 => Self::Byte,
+            2 => Self::Word,
+            3 => Self::DWord,
+            4 => Self::QWord,
+            5 => Self::Buffer,
+            value => Self::Reserved(value),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AmlFieldUpdateRule {
+    Preserve,
+    WriteAsOnes,
+    WriteAsZeros,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AmlField {
+    pub region: AmlPath,
+    pub bit_offset: u64,
+    pub bit_length: u64,
+    pub access: AmlFieldAccess,
+    pub lock: bool,
+    pub update_rule: AmlFieldUpdateRule,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AmlDevice;
 
@@ -141,6 +183,7 @@ pub enum AmlObject {
     Device(AmlDevice),
     Processor(AmlProcessor),
     OperationRegion(AmlOperationRegion),
+    Field(AmlField),
     Mutex { sync_level: u8 },
 }
 
@@ -187,22 +230,6 @@ impl AmlNamespace {
                 AmlErrorKind::MissingObject,
                 Arc::from(path.as_str()),
                 "AML method is missing",
-            )),
-        }
-    }
-
-    pub(crate) fn value(&self, path: &AmlPath) -> Result<AmlValue, AmlError> {
-        match self.objects.get(path) {
-            Some(AmlObject::Value(value)) => Ok(value.clone()),
-            Some(_) => Err(AmlError::object(
-                AmlErrorKind::InvalidObjectType,
-                Arc::from(path.as_str()),
-                "AML object is not a value",
-            )),
-            None => Err(AmlError::object(
-                AmlErrorKind::MissingObject,
-                Arc::from(path.as_str()),
-                "AML value is missing",
             )),
         }
     }
