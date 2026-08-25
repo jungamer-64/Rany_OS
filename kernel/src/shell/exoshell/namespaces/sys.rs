@@ -9,7 +9,9 @@
 //! ```text
 //! sys.info()       → { os, arch, version, kernel, uptime_ms }
 //! sys.memory()     → { total_kb, free_kb, used_kb, usage_percent }
-//! sys.cpu()        → { count, vendor, model, cores: [...] }
+//! sys.cpu()        → { revision, possible, present, online, cpus: [...] }
+//! sys.cpu_online(id)  → updated CPU snapshot
+//! sys.cpu_offline(id) → updated CPU snapshot
 //! sys.uptime()     → { ticks, seconds, hours, minutes }
 //! sys.stat()       → { timer_ticks, context_switches, ... }
 //! sys.kernel()     → { hostname, ostype, version }
@@ -22,7 +24,7 @@
 use alloc::borrow::Cow;
 use alloc::collections::BTreeMap;
 use alloc::format;
-use alloc::string::String;
+use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
 use super::{BoxFuture, ShellNamespace};
@@ -61,6 +63,17 @@ impl SysNamespace {
         } else {
             Err(ExoValue::Error(format!(
                 "Permission denied: {} requires CAP_SYS_ADMIN",
+                op_name
+            )))
+        }
+    }
+
+    fn require_sys_boot(caps: &CapabilitySet, op_name: &str) -> Result<(), ExoValue<'static>> {
+        if caps.has_capability(CAP_SYS_BOOT) {
+            Ok(())
+        } else {
+            Err(ExoValue::Error(format!(
+                "Permission denied: {} requires CAP_SYS_BOOT",
                 op_name
             )))
         }
@@ -124,30 +137,70 @@ impl SysNamespace {
     /// CPU情報
     pub fn cpu() -> ExoValue<'static> {
         use crate::system_info as si;
-        let count = si::cpu_count();
-        let vendor = si::cpu_vendor();
-        let model = si::cpu_model();
+        let snapshot = crate::cpu::snapshot();
 
         let mut map = BTreeMap::new();
-        map.insert(s("count"), ExoValue::Int(count as i64));
-        map.insert(s("vendor"), ExoValue::String(Cow::Borrowed(vendor)));
-        map.insert(s("model"), ExoValue::String(Cow::Borrowed(model)));
-        map.insert(s("family"), ExoValue::Int(6));
-        map.insert(s("mhz"), ExoValue::Float(3000.0));
-        map.insert(s("cache_kb"), ExoValue::Int(8192));
+        map.insert(s("revision"), Self::unsigned(snapshot.revision()));
+        map.insert(
+            s("possible_count"),
+            ExoValue::Int(snapshot.possible().len() as i64),
+        );
+        map.insert(
+            s("present_count"),
+            ExoValue::Int(snapshot.present().len() as i64),
+        );
+        map.insert(
+            s("online_count"),
+            ExoValue::Int(snapshot.online().len() as i64),
+        );
+        map.insert(s("possible"), Self::cpu_set_value(snapshot.possible()));
+        map.insert(s("present"), Self::cpu_set_value(snapshot.present()));
+        map.insert(s("online"), Self::cpu_set_value(snapshot.online()));
+        map.insert(
+            s("physical_hotplug"),
+            Self::physical_hotplug_value(snapshot.physical_hotplug()),
+        );
 
-        let cores: Vec<ExoValue> = (0..count)
-            .map(|id| {
-                let mut cpu = BTreeMap::new();
-                cpu.insert(s("id"), ExoValue::Int(id as i64));
-                cpu.insert(s("core_id"), ExoValue::Int(id as i64));
-                cpu.insert(s("vendor"), ExoValue::String(Cow::Borrowed(vendor)));
-                cpu.insert(s("model"), ExoValue::String(Cow::Borrowed(model)));
-                ExoValue::Map(cpu)
-            })
-            .collect();
-        map.insert(s("cores"), ExoValue::Array(cores));
+        let mut architecture = BTreeMap::new();
+        architecture.insert(
+            s("vendor"),
+            ExoValue::String(Cow::Borrowed(si::cpu_vendor())),
+        );
+        architecture.insert(s("model"), ExoValue::String(Cow::Borrowed(si::cpu_model())));
+        map.insert(s("architecture"), ExoValue::Map(architecture));
+        map.insert(
+            s("cpus"),
+            ExoValue::Array(snapshot.slots().iter().map(Self::cpu_slot_value).collect()),
+        );
         ExoValue::Map(map)
+    }
+
+    async fn cpu_online(args: &[ExoValue<'static>], caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(error) = Self::require_sys_boot(caps, "sys.cpu_online") {
+            return error;
+        }
+        let id = match Self::cpu_id_argument(args, "sys.cpu_online(id)") {
+            Ok(id) => id,
+            Err(error) => return error,
+        };
+        match crate::cpu::online(id).await {
+            Ok(()) => Self::cpu(),
+            Err(error) => ExoValue::Error(Self::cpu_transition_error(id, &error)),
+        }
+    }
+
+    async fn cpu_offline(args: &[ExoValue<'static>], caps: &CapabilitySet) -> ExoValue<'static> {
+        if let Err(error) = Self::require_sys_boot(caps, "sys.cpu_offline") {
+            return error;
+        }
+        let id = match Self::cpu_id_argument(args, "sys.cpu_offline(id)") {
+            Ok(id) => id,
+            Err(error) => return error,
+        };
+        match crate::cpu::offline(id).await {
+            Ok(()) => Self::cpu(),
+            Err(error) => ExoValue::Error(Self::cpu_transition_error(id, &error)),
+        }
     }
 
     /// システム統計
@@ -231,6 +284,211 @@ impl SysNamespace {
     }
 
     // ---- ヘルパー ----
+
+    fn unsigned(value: u64) -> ExoValue<'static> {
+        i64::try_from(value)
+            .map(ExoValue::Int)
+            .unwrap_or_else(|_| ExoValue::String(Cow::Owned(value.to_string())))
+    }
+
+    fn cpu_set_value(set: &crate::cpu::CpuSet) -> ExoValue<'static> {
+        ExoValue::Array(
+            set.iter()
+                .map(|id| ExoValue::Int(i64::from(id.as_u16())))
+                .collect(),
+        )
+    }
+
+    fn cpu_slot_value(slot: &crate::cpu::CpuSlot) -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        map.insert(s("id"), ExoValue::Int(i64::from(slot.id.as_u16())));
+        map.insert(
+            s("role"),
+            ExoValue::String(Cow::Borrowed(match slot.role {
+                crate::cpu::CpuRole::Bootstrap => "bootstrap",
+                crate::cpu::CpuRole::Application => "application",
+            })),
+        );
+        map.insert(
+            s("state"),
+            ExoValue::String(Cow::Borrowed(slot.state.name())),
+        );
+        map.insert(s("present"), ExoValue::Bool(slot.state.is_present()));
+        map.insert(s("online"), ExoValue::Bool(slot.state.is_schedulable()));
+        map.insert(
+            s("apic_id"),
+            ExoValue::Int(i64::from(slot.firmware.apic_id.as_u32())),
+        );
+        map.insert(
+            s("numa_node"),
+            slot.firmware
+                .proximity_domain
+                .map(|node| ExoValue::Int(i64::from(node)))
+                .unwrap_or(ExoValue::Nil),
+        );
+        map.insert(
+            s("eject"),
+            ExoValue::String(Cow::Borrowed(match slot.firmware.eject {
+                crate::cpu::CpuEjectCapability::Fixed => "fixed",
+                crate::cpu::CpuEjectCapability::FirmwareEject => "firmware",
+            })),
+        );
+        map.insert(
+            s("firmware_uid"),
+            match slot.firmware.uid.as_ref() {
+                Some(crate::cpu::FirmwareCpuUid::Integer(uid)) => Self::unsigned(*uid),
+                Some(crate::cpu::FirmwareCpuUid::String(uid)) => {
+                    ExoValue::String(Cow::Owned(String::from(uid.as_ref())))
+                }
+                None => ExoValue::Nil,
+            },
+        );
+        map.insert(
+            s("last_failure"),
+            slot.last_failure
+                .as_ref()
+                .map(Self::cpu_failure_value)
+                .unwrap_or(ExoValue::Nil),
+        );
+        ExoValue::Map(map)
+    }
+
+    fn cpu_failure_value(failure: &crate::cpu::CpuFailure) -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            s("phase"),
+            ExoValue::String(Cow::Borrowed(Self::cpu_failure_phase(failure.phase))),
+        );
+        map.insert(
+            s("reason"),
+            ExoValue::String(Cow::Owned(format!("{:?}", failure.reason))),
+        );
+        ExoValue::Map(map)
+    }
+
+    const fn cpu_failure_phase(phase: crate::cpu::CpuFailurePhase) -> &'static str {
+        match phase {
+            crate::cpu::CpuFailurePhase::Discovery => "discovery",
+            crate::cpu::CpuFailurePhase::Start => "start",
+            crate::cpu::CpuFailurePhase::Drain => "drain",
+            crate::cpu::CpuFailurePhase::Eject => "eject",
+        }
+    }
+
+    fn physical_hotplug_value(status: &crate::cpu::PhysicalHotplugStatus) -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        match status {
+            crate::cpu::PhysicalHotplugStatus::Available => {
+                map.insert(s("available"), ExoValue::Bool(true));
+            }
+            crate::cpu::PhysicalHotplugStatus::Unavailable(error) => {
+                map.insert(s("available"), ExoValue::Bool(false));
+                map.insert(s("error"), Self::firmware_error_value(error));
+            }
+        }
+        ExoValue::Map(map)
+    }
+
+    fn firmware_error_value(error: &crate::cpu::FirmwareError) -> ExoValue<'static> {
+        let mut map = BTreeMap::new();
+        map.insert(
+            s("kind"),
+            ExoValue::String(Cow::Borrowed(match error.kind {
+                crate::cpu::FirmwareErrorKind::InvalidTable => "invalid-table",
+                crate::cpu::FirmwareErrorKind::InvalidObjectType => "invalid-object-type",
+                crate::cpu::FirmwareErrorKind::UnsupportedOpcode => "unsupported-opcode",
+                crate::cpu::FirmwareErrorKind::BudgetExhausted => "budget-exhausted",
+                crate::cpu::FirmwareErrorKind::Namespace => "namespace",
+                crate::cpu::FirmwareErrorKind::OperationRegion => "operation-region",
+                crate::cpu::FirmwareErrorKind::EventDelivery => "event-delivery",
+                crate::cpu::FirmwareErrorKind::Resource => "resource",
+                crate::cpu::FirmwareErrorKind::TimedOut => "timed-out",
+            })),
+        );
+        map.insert(
+            s("object"),
+            error
+                .object
+                .as_ref()
+                .map(|object| ExoValue::String(Cow::Owned(String::from(object.as_ref()))))
+                .unwrap_or(ExoValue::Nil),
+        );
+        map.insert(
+            s("detail"),
+            ExoValue::String(Cow::Owned(error.detail.clone())),
+        );
+        ExoValue::Map(map)
+    }
+
+    fn cpu_id_argument(
+        args: &[ExoValue<'static>],
+        usage: &'static str,
+    ) -> Result<crate::cpu::CpuId, ExoValue<'static>> {
+        let [ExoValue::Int(value)] = args else {
+            return Err(ExoValue::Error(format!("Usage: {}", usage)));
+        };
+        let value = usize::try_from(*value)
+            .map_err(|_| ExoValue::Error(String::from("CPU id must be between 0 and 255")))?;
+        crate::cpu::CpuId::try_from(value)
+            .map_err(|_| ExoValue::Error(String::from("CPU id must be between 0 and 255")))
+    }
+
+    fn cpu_transition_error(
+        id: crate::cpu::CpuId,
+        error: &crate::cpu::CpuTransitionError,
+    ) -> String {
+        match error {
+            crate::cpu::CpuTransitionError::BootstrapCpu => {
+                format!("CPU {} is the permanent bootstrap anchor", id)
+            }
+            crate::cpu::CpuTransitionError::NotPresent => {
+                format!("CPU {} is not present", id)
+            }
+            crate::cpu::CpuTransitionError::Busy { blockers } => {
+                let blockers = blockers
+                    .iter()
+                    .map(Self::cpu_blocker)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("CPU {} is busy; blockers: [{}]", id, blockers)
+            }
+            crate::cpu::CpuTransitionError::UnsupportedTopology(issue) => {
+                format!("CPU {} topology is unsupported: {:?}", id, issue)
+            }
+            crate::cpu::CpuTransitionError::TimedOut { phase } => format!(
+                "CPU {} transition timed out during {}",
+                id,
+                Self::cpu_failure_phase(*phase)
+            ),
+            crate::cpu::CpuTransitionError::Firmware(error) => format!(
+                "CPU {} firmware error {:?}{}: {}",
+                id,
+                error.kind,
+                error
+                    .object
+                    .as_ref()
+                    .map(|object| format!(" at {}", object))
+                    .unwrap_or_default(),
+                error.detail
+            ),
+        }
+    }
+
+    fn cpu_blocker(blocker: &crate::cpu::CpuBlocker) -> String {
+        match blocker {
+            crate::cpu::CpuBlocker::PinnedTask { task_id } => format!("pinned-task:{}", task_id),
+            crate::cpu::CpuBlocker::ControlQueue => String::from("control-queue"),
+            crate::cpu::CpuBlocker::IrqRoute { vector } => format!("irq-route:{:#04x}", vector),
+            crate::cpu::CpuBlocker::NetworkQueue { runtime_id } => {
+                format!("network-queue:{}", runtime_id)
+            }
+            crate::cpu::CpuBlocker::DeferredWake => String::from("deferred-wake"),
+            crate::cpu::CpuBlocker::Timer => String::from("timer"),
+            crate::cpu::CpuBlocker::AllocatorCache => String::from("allocator-cache"),
+            crate::cpu::CpuBlocker::RcuReader => String::from("rcu-reader"),
+            crate::cpu::CpuBlocker::TlbShootdown => String::from("tlb-shootdown"),
+        }
+    }
 
     /// DomainSnapshot → ExoValue::Map
     fn snap_to_value(snap: &crate::domain::DomainSnapshot) -> ExoValue<'static> {
@@ -582,6 +840,8 @@ impl ShellNamespace for SysNamespace {
                 "memory" | "mem" => Self::memory(),
                 "time" | "uptime" => Self::time(),
                 "cpu" | "cpuinfo" => Self::cpu(),
+                "cpu_online" => Self::cpu_online(args, caps).await,
+                "cpu_offline" => Self::cpu_offline(args, caps).await,
                 "stat" | "stats" => Self::stat(),
                 "kernel" => Self::kernel(),
                 "cells" => Self::cells(caps),
@@ -596,7 +856,7 @@ impl ShellNamespace for SysNamespace {
                 "shutdown" => Self::shutdown_with_caps(caps),
                 "reboot" => Self::reboot_with_caps(caps),
                 _ => ExoValue::Error(format!(
-                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, stat, kernel, cells, cell, net, load, monitor, thermal, watchdog, power, panic_record, shutdown, reboot",
+                    "Unknown method 'sys.{}'\nValid methods: info, memory, time, cpu, cpu_online, cpu_offline, stat, kernel, cells, cell, net, load, monitor, thermal, watchdog, power, panic_record, shutdown, reboot",
                     method
                 )),
             }

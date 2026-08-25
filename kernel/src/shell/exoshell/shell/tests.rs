@@ -1,6 +1,6 @@
 use super::*;
 use crate::security::CapabilitySet;
-use crate::security::capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_PTRACE};
+use crate::security::capability::{CAP_NET_ADMIN, CAP_SYS_ADMIN, CAP_SYS_BOOT, CAP_SYS_PTRACE};
 use crate::shell::exoshell::parser::parse_expression;
 use crate::task::block_on;
 
@@ -124,6 +124,32 @@ fn test_sys_monitor_requires_cap_sys_admin() {
     match val {
         ExoValue::Error(s) => assert!(s.contains("CAP_SYS_ADMIN")),
         _ => panic!("expected CAP_SYS_ADMIN permission error"),
+    }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_cpu_lifecycle_operations_require_cap_sys_boot() {
+    let mut shell = ExoShell::with_capabilities(CapabilitySet::empty());
+    for command in ["sys.cpu_online(1)", "sys.cpu_offline(1)"] {
+        match block_on(shell.eval(command)) {
+            ExoValue::Error(error) => assert!(error.contains("CAP_SYS_BOOT")),
+            _ => panic!("expected CAP_SYS_BOOT permission error"),
+        }
+    }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn test_cpu_lifecycle_capability_reaches_argument_validation() {
+    let caps = CapabilitySet::with_permitted(CAP_SYS_BOOT);
+    let mut shell = ExoShell::with_capabilities(caps);
+    match block_on(shell.eval("sys.cpu_online(256)")) {
+        ExoValue::Error(error) => {
+            assert!(error.contains("between 0 and 255"));
+            assert!(!error.contains("CAP_SYS_BOOT"));
+        }
+        _ => panic!("expected CPU id validation error"),
     }
 }
 
