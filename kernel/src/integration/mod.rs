@@ -18,7 +18,6 @@ pub mod security_integration;
 // Re-exports
 mod system_impl;
 pub use device_manager::{DeviceInfo, DeviceManager};
-pub use interrupt_routing::InterruptRouter;
 pub use security_integration::SecurityIntegration;
 pub use system_impl::*;
 
@@ -80,8 +79,6 @@ pub struct SystemIntegration {
     status: IntegrationStatus,
     /// Device manager
     device_manager: DeviceManager,
-    /// Interrupt router
-    interrupt_router: InterruptRouter,
     /// Security integration
     security: SecurityIntegration,
     /// Boot log

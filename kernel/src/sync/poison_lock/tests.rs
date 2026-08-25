@@ -57,9 +57,9 @@ mod tests {
         let lock = PoisonLock::new(0usize);
 
         // Poison the lock by simulating a panic while holding the guard
-        set_panicking(true);
         {
             let _guard = lock.lock().unwrap();
+            set_panicking(true);
             // dropping _guard while panicking will mark the lock as poisoned
         }
         set_panicking(false);
@@ -78,6 +78,21 @@ mod tests {
                 assert_eq!(*guard, 123usize);
             }
         }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub(super) fn test_lock_acquired_during_panic_is_not_poisoned() {
+        let lock = PoisonLock::new(42);
+
+        set_panicking(true);
+        {
+            let guard = lock.lock().unwrap();
+            assert_eq!(*guard, 42);
+        }
+        set_panicking(false);
+
+        assert!(!lock.is_poisoned());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

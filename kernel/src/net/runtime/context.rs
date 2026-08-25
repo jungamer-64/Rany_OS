@@ -60,6 +60,7 @@ pub enum RuntimeAllocationError {
     CpuTopologyUnavailable,
     CpuTopologyInconsistent,
     CpuResourceAllocationFailed,
+    RegistryPoisoned,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -261,6 +262,45 @@ impl NetRuntimeContext {
             .map_err(|_| NetCpuResourceError::RegistryPoisoned)?;
         Ok(resources.iter().filter_map(Clone::clone).collect())
     }
+
+    fn provision_possible_cpus(
+        &self,
+        cpu_snapshot: &crate::cpu::CpuSnapshot,
+    ) -> Result<(), RuntimeAllocationError> {
+        let mut resources = self
+            .cpu_resources
+            .write()
+            .map_err(|_| RuntimeAllocationError::RegistryPoisoned)?;
+        for index in 0..resources.len() {
+            let Some(slot) = cpu_snapshot.slots().get(index) else {
+                return Err(RuntimeAllocationError::CpuTopologyInconsistent);
+            };
+            if slot.id.as_usize() != index
+                || resources[index]
+                    .as_ref()
+                    .is_none_or(|resource| resource.cpu_id != slot.id)
+            {
+                return Err(RuntimeAllocationError::CpuTopologyInconsistent);
+            }
+        }
+        let current_len = resources.len();
+        resources
+            .try_reserve_exact(cpu_snapshot.slots().len().saturating_sub(current_len))
+            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)?;
+        for slot in &cpu_snapshot.slots()[current_len..] {
+            if slot.id.as_usize() != resources.len() {
+                return Err(RuntimeAllocationError::CpuTopologyInconsistent);
+            }
+            resources.push(Some(Arc::new(NetCpuResources::new(
+                slot.id,
+                CommandAdmissionState::Draining,
+            ))));
+        }
+        drop(resources);
+        self.packet_pool
+            .provision_possible_cpus(cpu_snapshot)
+            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)
+    }
 }
 
 #[derive(Default)]
@@ -373,6 +413,18 @@ pub fn list_runtimes() -> alloc::vec::Vec<NetRuntimeHandle> {
         .collect()
 }
 
+pub(crate) fn provision_possible_cpus(
+    cpu_snapshot: &crate::cpu::CpuSnapshot,
+) -> Result<(), RuntimeAllocationError> {
+    let registry = RUNTIME_REGISTRY
+        .lock()
+        .map_err(|_| RuntimeAllocationError::RegistryPoisoned)?;
+    for runtime in registry.runtimes.values().copied() {
+        runtime.provision_possible_cpus(cpu_snapshot)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn begin_cpu_drain(cpu_id: CpuId) {
     for runtime in list_runtimes() {
         let resources = runtime
@@ -462,6 +514,40 @@ mod tests {
         crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
             .expect("bootstrap CPU topology")
             .snapshot()
+    }
+
+    fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
+        crate::cpu::FirmwareCpuIdentity {
+            uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+            apic_id: crate::cpu::ApicId::new(apic_id),
+            proximity_domain: Some(0),
+            eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+        }
+    }
+
+    #[test]
+    fn runtime_provisions_closed_resources_for_new_possible_cpu() {
+        let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
+            .expect("bootstrap CPU topology");
+        let context = NetRuntimeContext::new(
+            NetRuntimeId(7),
+            NetRuntimeGeneration::from_raw(1),
+            &cpu_runtime.snapshot(),
+        )
+        .expect("network runtime allocation");
+        let cpu_id = cpu_runtime
+            .discover_possible(firmware_cpu(1, 1))
+            .expect("possible CPU discovery");
+
+        assert!(matches!(
+            context.cpu_resources(cpu_id),
+            Err(NetCpuResourceError::CpuNotProvisioned(id)) if id == cpu_id
+        ));
+        context
+            .provision_possible_cpus(&cpu_runtime.snapshot())
+            .expect("dynamic network CPU provisioning");
+        let resources = context.cpu_resources(cpu_id).expect("new CPU resources");
+        assert!(!resources.command_queue.is_accepting());
     }
 
     #[test]

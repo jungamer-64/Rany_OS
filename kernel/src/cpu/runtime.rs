@@ -129,11 +129,7 @@ impl CpuRuntimeState {
         let locals = alloc::vec![super::CpuLocal::allocate(CpuId::BOOTSTRAP, tls_template)?];
         let mut startup_resources = Vec::new();
         startup_resources.push(None);
-        let physical_hotplug = PhysicalHotplugStatus::Unavailable(super::FirmwareError {
-            kind: super::FirmwareErrorKind::Namespace,
-            object: None,
-            detail: alloc::string::String::from("ACPI runtime has not completed initialization"),
-        });
+        let physical_hotplug = PhysicalHotplugStatus::Initializing;
         let published = match CpuSnapshot::build(0, &slots, physical_hotplug.clone()) {
             Ok(snapshot) => Arc::new(snapshot),
             Err(_) => unreachable!("a single bootstrap CPU always fits the architectural limit"),
@@ -204,42 +200,51 @@ impl CpuRuntime {
         Some(unsafe { &*pointer })
     }
 
-    pub(crate) fn cpu_local_by_address(
-        &'static self,
-        address: usize,
-    ) -> Option<&'static super::CpuLocal> {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let local = state
-            .locals
-            .iter()
-            .map(|local| local.as_ref().get_ref())
-            .find(|local| *local as *const super::CpuLocal as usize == address)?;
-        let pointer = local as *const super::CpuLocal;
-        drop(state);
-        // SAFETY: the allocation is pinned and remains owned by the static
-        // runtime until resource retirement after an eject grace period.
-        Some(unsafe { &*pointer })
-    }
-
     pub(crate) fn prepare_startup_resource(
         &'static self,
         id: CpuId,
     ) -> Result<&'static super::CpuStartupResources, super::CpuStartupResourceError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let index = id.as_usize();
+        {
+            let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+            if state.slots.get(index).is_none_or(|slot| slot.id != id) {
+                return Err(super::CpuStartupResourceError::PhysicalAllocation);
+            }
+            if let Some(resource) = state.startup_resources[index].as_ref() {
+                let resource = resource.as_ref().get_ref() as *const super::CpuStartupResources;
+                drop(state);
+                // SAFETY: startup resources are pinned and retained by the
+                // static runtime across logical offline/online cycles.
+                return Ok(unsafe { &*resource });
+            }
+        }
+
+        // Allocation and mapping may publish TLB work through the CPU runtime.
+        // Build the candidate without the topology lock, then atomically install
+        // it after revalidating the stable slot identity.
+        let candidate = super::CpuStartupResources::allocate()?;
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.slots.get(index).is_none_or(|slot| slot.id != id) {
+            drop(state);
+            drop(candidate);
             return Err(super::CpuStartupResourceError::PhysicalAllocation);
         }
-        if state.startup_resources[index].is_none() {
-            state.startup_resources[index] = Some(super::CpuStartupResources::allocate()?);
-        }
+        let unused = if state.startup_resources[index].is_none() {
+            state.startup_resources[index] = Some(candidate);
+            None
+        } else {
+            Some(candidate)
+        };
         let resource = state.startup_resources[index]
             .as_ref()
             .expect("startup resource was installed")
             .as_ref()
             .get_ref() as *const super::CpuStartupResources;
         drop(state);
-        // SAFETY: startup resources are pinned and retained by the static CPU
+        // An unneeded racing candidate must unmap only after the topology lock
+        // is released because teardown can publish TLB work through this runtime.
+        drop(unused);
+        // SAFETY: the installed resource is pinned and retained by the static
         // runtime across logical offline/online cycles.
         Ok(unsafe { &*resource })
     }

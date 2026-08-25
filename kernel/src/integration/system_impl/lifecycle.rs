@@ -34,11 +34,6 @@ impl SystemIntegration {
         &self.device_manager
     }
 
-    /// Get interrupt router
-    pub fn interrupt_router(&self) -> &InterruptRouter {
-        &self.interrupt_router
-    }
-
     /// Add log entry
     pub(super) fn log(&mut self, msg: &str) {
         crate::io::log::early_print("[INTEGRATION] ");

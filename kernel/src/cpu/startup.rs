@@ -16,9 +16,9 @@ use crate::drivers::apic::{ApicDestination, ApicMode, LocalApicError};
 use crate::sync::PoisonLock;
 
 use super::{
-    ApicId, CpuEjectCapability, CpuFailureReason, CpuId, CpuRole, CpuSlotState, CpuStartupFailure,
-    CpuTopologyIssue, FirmwareCpuIdentity, FirmwareCpuUid, FirmwareError, FirmwareErrorKind,
-    PhysicalHotplugStatus,
+    ApicId, CpuEjectCapability, CpuFailureReason, CpuId, CpuRole, CpuSlotState,
+    CpuStartupApicFailure, CpuStartupFailure, CpuStartupStage, CpuTopologyIssue,
+    FirmwareCpuIdentity, FirmwareCpuUid, FirmwareError, FirmwareErrorKind, PhysicalHotplugStatus,
 };
 
 const PAGE_SIZE: u64 = 4096;
@@ -32,41 +32,57 @@ static AP_BOOT_PROBE: u8 = 0x5a;
 #[repr(u8)]
 enum ApStartupSignal {
     Preparing = 0,
-    ReadyParked = 1,
-    ReadyOnline = 2,
-    MissingApic = 3,
-    MissingSse2 = 4,
-    MissingX2Apic = 5,
-    MissingInvariantTsc = 6,
-    CpuLocalBindingFailed = 7,
-    InterruptTablesFailed = 8,
-    LocalApicFailed = 9,
-    ApicIdentityMismatch = 10,
-    TimerFailed = 11,
+    TrampolineEntered = 1,
+    CpuLocalBound = 2,
+    InterruptTablesLoaded = 3,
+    LocalApicReady = 4,
+    ReadyParked = 5,
+    ReadyOnline = 6,
+    MissingApic = 7,
+    MissingSse2 = 8,
+    MissingX2Apic = 9,
+    MissingInvariantTsc = 10,
+    CpuLocalBindingFailed = 11,
+    InterruptTablesFailed = 12,
+    LocalApicUnsupported = 13,
+    ApicIdentityMismatch = 14,
+    TimerFailed = 15,
+    LocalApicInvalidMmioBase = 16,
 }
 
 impl ApStartupSignal {
     fn from_raw(raw: u8) -> Option<Self> {
         match raw {
             0 => Some(Self::Preparing),
-            1 => Some(Self::ReadyParked),
-            2 => Some(Self::ReadyOnline),
-            3 => Some(Self::MissingApic),
-            4 => Some(Self::MissingSse2),
-            5 => Some(Self::MissingX2Apic),
-            6 => Some(Self::MissingInvariantTsc),
-            7 => Some(Self::CpuLocalBindingFailed),
-            8 => Some(Self::InterruptTablesFailed),
-            9 => Some(Self::LocalApicFailed),
-            10 => Some(Self::ApicIdentityMismatch),
-            11 => Some(Self::TimerFailed),
+            1 => Some(Self::TrampolineEntered),
+            2 => Some(Self::CpuLocalBound),
+            3 => Some(Self::InterruptTablesLoaded),
+            4 => Some(Self::LocalApicReady),
+            5 => Some(Self::ReadyParked),
+            6 => Some(Self::ReadyOnline),
+            7 => Some(Self::MissingApic),
+            8 => Some(Self::MissingSse2),
+            9 => Some(Self::MissingX2Apic),
+            10 => Some(Self::MissingInvariantTsc),
+            11 => Some(Self::CpuLocalBindingFailed),
+            12 => Some(Self::InterruptTablesFailed),
+            13 => Some(Self::LocalApicUnsupported),
+            14 => Some(Self::ApicIdentityMismatch),
+            15 => Some(Self::TimerFailed),
+            16 => Some(Self::LocalApicInvalidMmioBase),
             _ => None,
         }
     }
 
     fn failure(self) -> Option<CpuFailureReason> {
         match self {
-            Self::Preparing | Self::ReadyParked | Self::ReadyOnline => None,
+            Self::Preparing
+            | Self::TrampolineEntered
+            | Self::CpuLocalBound
+            | Self::InterruptTablesLoaded
+            | Self::LocalApicReady
+            | Self::ReadyParked
+            | Self::ReadyOnline => None,
             Self::MissingApic => Some(CpuFailureReason::MissingRequiredFeature { feature: "APIC" }),
             Self::MissingSse2 => Some(CpuFailureReason::MissingRequiredFeature { feature: "SSE2" }),
             Self::MissingX2Apic => {
@@ -81,10 +97,29 @@ impl ApStartupSignal {
             Self::InterruptTablesFailed => Some(CpuFailureReason::Startup(
                 CpuStartupFailure::InterruptTables,
             )),
-            Self::LocalApicFailed | Self::ApicIdentityMismatch => {
-                Some(CpuFailureReason::Startup(CpuStartupFailure::LocalApic))
-            }
+            Self::LocalApicUnsupported => Some(CpuFailureReason::Startup(
+                CpuStartupFailure::LocalApic(CpuStartupApicFailure::Unsupported),
+            )),
+            Self::LocalApicInvalidMmioBase => Some(CpuFailureReason::Startup(
+                CpuStartupFailure::LocalApic(CpuStartupApicFailure::InvalidMmioBase),
+            )),
+            Self::ApicIdentityMismatch => Some(CpuFailureReason::Startup(
+                CpuStartupFailure::ApicIdentityMismatch,
+            )),
             Self::TimerFailed => Some(CpuFailureReason::Startup(CpuStartupFailure::Timer)),
+        }
+    }
+
+    const fn stage(self) -> Option<CpuStartupStage> {
+        match self {
+            Self::Preparing => Some(CpuStartupStage::Preparing),
+            Self::TrampolineEntered => Some(CpuStartupStage::TrampolineEntered),
+            Self::CpuLocalBound => Some(CpuStartupStage::CpuLocalBound),
+            Self::InterruptTablesLoaded => Some(CpuStartupStage::InterruptTablesLoaded),
+            Self::LocalApicReady => Some(CpuStartupStage::LocalApicReady),
+            Self::ReadyParked => Some(CpuStartupStage::Parked),
+            Self::ReadyOnline => Some(CpuStartupStage::Online),
+            _ => None,
         }
     }
 }
@@ -151,9 +186,11 @@ impl CpuStartupResources {
         self.signal.store(signal as u8, Ordering::Release);
     }
 
-    fn signal(&self) -> ApStartupSignal {
-        ApStartupSignal::from_raw(self.signal.load(Ordering::Acquire))
-            .unwrap_or(ApStartupSignal::LocalApicFailed)
+    fn signal(&self) -> Result<ApStartupSignal, CpuFailureReason> {
+        let value = self.signal.load(Ordering::Acquire);
+        ApStartupSignal::from_raw(value).ok_or(CpuFailureReason::Startup(
+            CpuStartupFailure::InvalidSignal { value },
+        ))
     }
 }
 
@@ -276,23 +313,29 @@ impl CpuStartupController {
             .map_err(map_apic_start_error)?;
 
         let start = crate::time::best_effort_time_nanos();
-        for _ in 0..AP_STARTUP_MAX_SPINS {
-            match resource.signal() {
-                ApStartupSignal::Preparing => {}
-                ApStartupSignal::ReadyParked => return Ok(()),
-                failure => {
-                    return Err(failure
-                        .failure()
-                        .unwrap_or(CpuFailureReason::Startup(CpuStartupFailure::LocalApic)));
-                }
+        for spin in 0..AP_STARTUP_MAX_SPINS {
+            let signal = resource.signal()?;
+            if signal == ApStartupSignal::ReadyParked {
+                return Ok(());
             }
-            if crate::time::best_effort_time_nanos().saturating_sub(start) >= AP_STARTUP_TIMEOUT_NS
+            if let Some(failure) = signal.failure() {
+                return Err(failure);
+            }
+            if spin & 0x3ff == 0
+                && crate::time::best_effort_time_nanos().saturating_sub(start)
+                    >= AP_STARTUP_TIMEOUT_NS
             {
                 break;
             }
             core::hint::spin_loop();
         }
-        Err(CpuFailureReason::StartupAcknowledgementTimedOut)
+        Err(CpuFailureReason::StartupAcknowledgementTimedOut {
+            stage: resource
+                .signal()
+                .ok()
+                .and_then(ApStartupSignal::stage)
+                .unwrap_or(CpuStartupStage::Preparing),
+        })
     }
 }
 
@@ -303,7 +346,18 @@ fn map_apic_start_error(error: LocalApicError) -> CpuFailureReason {
                 apic_id: ApicId::new(destination.as_u32()),
             })
         }
-        _ => CpuFailureReason::Startup(CpuStartupFailure::LocalApic),
+        LocalApicError::Unsupported => CpuFailureReason::Startup(CpuStartupFailure::LocalApic(
+            CpuStartupApicFailure::Unsupported,
+        )),
+        LocalApicError::InvalidMmioBase { .. } => CpuFailureReason::Startup(
+            CpuStartupFailure::LocalApic(CpuStartupApicFailure::InvalidMmioBase),
+        ),
+        LocalApicError::DeliveryTimedOut { .. } => CpuFailureReason::Startup(
+            CpuStartupFailure::LocalApic(CpuStartupApicFailure::DeliveryTimedOut),
+        ),
+        LocalApicError::TimerNotCalibrated | LocalApicError::TimerCountOverflow => {
+            CpuFailureReason::Startup(CpuStartupFailure::Timer)
+        }
     }
 }
 
@@ -493,14 +547,20 @@ pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
             return Err(reason);
         }
     };
-    if slot.state == CpuSlotState::PresentOffline
-        && let Err(reason) = controller.launch(id, slot.firmware.apic_id)
-    {
+    let cpu_snapshot = runtime.snapshot();
+    if crate::net::runtime::context::provision_possible_cpus(&cpu_snapshot).is_err() {
+        let reason = CpuFailureReason::Startup(CpuStartupFailure::NetworkResources);
         record_startup_failure(runtime, id, reason.clone());
         return Err(reason);
     }
-
     crate::task::prepare_cpu_online(id);
+    if slot.state == CpuSlotState::PresentOffline
+        && let Err(reason) = controller.launch(id, slot.firmware.apic_id)
+    {
+        crate::task::abort_cpu_online(id);
+        record_startup_failure(runtime, id, reason.clone());
+        return Err(reason);
+    }
     resource.reset();
     let acknowledgement = local.remote().online_acknowledgements();
     let activation = match local.remote().send(super::CpuControlMessage::Start) {
@@ -541,19 +601,27 @@ fn wait_for_online_acknowledgement(
     acknowledgement: u64,
 ) -> Result<(), CpuFailureReason> {
     let start = crate::time::best_effort_time_nanos();
-    for _ in 0..AP_STARTUP_MAX_SPINS {
+    for spin in 0..AP_STARTUP_MAX_SPINS {
         if local.remote().online_acknowledgements() != acknowledgement {
             return Ok(());
         }
-        if let Some(reason) = resource.signal().failure() {
+        if let Some(reason) = resource.signal()?.failure() {
             return Err(reason);
         }
-        if crate::time::best_effort_time_nanos().saturating_sub(start) >= AP_STARTUP_TIMEOUT_NS {
+        if spin & 0x3ff == 0
+            && crate::time::best_effort_time_nanos().saturating_sub(start) >= AP_STARTUP_TIMEOUT_NS
+        {
             break;
         }
         core::hint::spin_loop();
     }
-    Err(CpuFailureReason::StartupAcknowledgementTimedOut)
+    Err(CpuFailureReason::StartupAcknowledgementTimedOut {
+        stage: resource
+            .signal()
+            .ok()
+            .and_then(ApStartupSignal::stage)
+            .unwrap_or(CpuStartupStage::Preparing),
+    })
 }
 
 fn online_commit_observed(current: &super::CurrentCpu, id: CpuId) -> bool {
@@ -650,6 +718,7 @@ fn firmware_error(error: acpi_driver::AcpiError) -> FirmwareError {
 
 #[inline(never)]
 unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const u8) -> ! {
+    super::CurrentCpu::clear_boot_binding();
     let mailbox = unsafe { TrampolineMailboxReadHandle::from_const_ptr(mailbox_ptr) }
         .and_then(|mailbox| mailbox.read_verified());
     let Ok(mailbox) = mailbox else {
@@ -661,6 +730,9 @@ unsafe extern "C" fn ap_trampoline_entry(mailbox_ptr: *const u8) -> ! {
     };
     if mailbox.ap_slot() != u32::from(id.as_u16()) {
         fail_stop_ap();
+    }
+    if let Some(resource) = super::runtime().startup_resource(id) {
+        resource.publish(ApStartupSignal::TrampolineEntered);
     }
     ap_entry(id)
 }
@@ -681,14 +753,20 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(ApStartupSignal::CpuLocalBindingFailed);
         fail_stop_ap();
     }
+    resource.publish(ApStartupSignal::CpuLocalBound);
     if crate::interrupts::load_for_current_cpu().is_err() {
         resource.publish(ApStartupSignal::InterruptTablesFailed);
         fail_stop_ap();
     }
+    resource.publish(ApStartupSignal::InterruptTablesLoaded);
     let local_apic = match crate::drivers::apic::initialize_current_cpu() {
         Ok(local_apic) => local_apic,
+        Err(LocalApicError::InvalidMmioBase { .. }) => {
+            resource.publish(ApStartupSignal::LocalApicInvalidMmioBase);
+            fail_stop_ap();
+        }
         Err(_) => {
-            resource.publish(ApStartupSignal::LocalApicFailed);
+            resource.publish(ApStartupSignal::LocalApicUnsupported);
             fail_stop_ap();
         }
     };
@@ -697,6 +775,7 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(ApStartupSignal::ApicIdentityMismatch);
         fail_stop_ap();
     }
+    resource.publish(ApStartupSignal::LocalApicReady);
 
     crate::mm::sync::tlb::enter_lazy_mode();
     crate::mm::numa::topology::apply_current_cpu_locality();
@@ -756,5 +835,51 @@ fn fail_stop_ap() -> ! {
     crate::interrupts::disable_interrupts();
     loop {
         x86_64::instructions::hlt();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ApStartupSignal;
+
+    #[test]
+    fn startup_progress_signals_are_not_failures() {
+        for signal in [
+            ApStartupSignal::Preparing,
+            ApStartupSignal::TrampolineEntered,
+            ApStartupSignal::CpuLocalBound,
+            ApStartupSignal::InterruptTablesLoaded,
+            ApStartupSignal::LocalApicReady,
+            ApStartupSignal::ReadyParked,
+            ApStartupSignal::ReadyOnline,
+        ] {
+            assert!(signal.failure().is_none());
+            assert!(signal.stage().is_some());
+        }
+    }
+
+    #[test]
+    fn startup_failure_signals_cannot_be_observed_as_progress() {
+        for signal in [
+            ApStartupSignal::MissingApic,
+            ApStartupSignal::MissingSse2,
+            ApStartupSignal::MissingX2Apic,
+            ApStartupSignal::MissingInvariantTsc,
+            ApStartupSignal::CpuLocalBindingFailed,
+            ApStartupSignal::InterruptTablesFailed,
+            ApStartupSignal::LocalApicUnsupported,
+            ApStartupSignal::ApicIdentityMismatch,
+            ApStartupSignal::TimerFailed,
+            ApStartupSignal::LocalApicInvalidMmioBase,
+        ] {
+            assert!(signal.failure().is_some());
+            assert!(signal.stage().is_none());
+        }
+    }
+
+    #[test]
+    fn startup_signal_decoder_rejects_unknown_values() {
+        assert!(ApStartupSignal::from_raw(17).is_none());
+        assert!(ApStartupSignal::from_raw(u8::MAX).is_none());
     }
 }

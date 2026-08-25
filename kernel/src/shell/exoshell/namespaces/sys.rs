@@ -378,11 +378,17 @@ impl SysNamespace {
     fn physical_hotplug_value(status: &crate::cpu::PhysicalHotplugStatus) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
         match status {
+            crate::cpu::PhysicalHotplugStatus::Initializing => {
+                map.insert(s("available"), ExoValue::Bool(false));
+                map.insert(s("state"), ExoValue::String(Cow::Borrowed("initializing")));
+            }
             crate::cpu::PhysicalHotplugStatus::Available => {
                 map.insert(s("available"), ExoValue::Bool(true));
+                map.insert(s("state"), ExoValue::String(Cow::Borrowed("available")));
             }
             crate::cpu::PhysicalHotplugStatus::Unavailable(error) => {
                 map.insert(s("available"), ExoValue::Bool(false));
+                map.insert(s("state"), ExoValue::String(Cow::Borrowed("unavailable")));
                 map.insert(s("error"), Self::firmware_error_value(error));
             }
         }

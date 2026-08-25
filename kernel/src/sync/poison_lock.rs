@@ -150,7 +150,11 @@ impl<T> PoisonRwLock<T> {
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-        let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
+        let p_guard = PoisonRwLockWriteGuard {
+            lock: self,
+            guard,
+            panicking_at_acquire: is_panicking(),
+        };
 
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
@@ -174,7 +178,11 @@ impl<T> PoisonRwLock<T> {
     /// 書き込みロックを試行
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
         self.inner.try_write().map(|guard| {
-            let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
+            let p_guard = PoisonRwLockWriteGuard {
+                lock: self,
+                guard,
+                panicking_at_acquire: is_panicking(),
+            };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -210,6 +218,7 @@ impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
 pub struct PoisonRwLockWriteGuard<'a, T> {
     lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockWriteGuard<'a, T>,
+    panicking_at_acquire: bool,
 }
 
 impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
@@ -227,7 +236,7 @@ impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
 
 impl<T> Drop for PoisonRwLockWriteGuard<'_, T> {
     fn drop(&mut self) {
-        if is_panicking() {
+        if !self.panicking_at_acquire && is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
             emit_panic_poison_log_once("PoisonRwLock");
         }
@@ -333,7 +342,10 @@ impl<T> PoisonLock<T> {
             LOCK_CONTENTION_EVENTS.fetch_add(1, Ordering::Relaxed);
         }
 
-        let guard = PoisonLockGuard { lock: self };
+        let guard = PoisonLockGuard {
+            lock: self,
+            panicking_at_acquire: is_panicking(),
+        };
 
         // 2. 毒入れ状態をチェック
         if self.poisoned.load(Ordering::Acquire) {
@@ -364,7 +376,10 @@ impl<T> PoisonLock<T> {
             LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
             LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-            let guard = PoisonLockGuard { lock: self };
+            let guard = PoisonLockGuard {
+                lock: self,
+                panicking_at_acquire: is_panicking(),
+            };
 
             if self.poisoned.load(Ordering::Acquire) {
                 Err(TryLockError::Poisoned(PoisonError::new(guard)))
@@ -463,6 +478,7 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
 /// パニック中にドロップされると、ロックが毒入れされる。
 pub struct PoisonLockGuard<'a, T: ?Sized> {
     lock: &'a PoisonLock<T>,
+    panicking_at_acquire: bool,
 }
 
 impl<T: ?Sized> Deref for PoisonLockGuard<'_, T> {
@@ -487,7 +503,7 @@ impl<T: ?Sized> Drop for PoisonLockGuard<'_, T> {
         // std::thread::panicking()の代わりにカスタム実装を使用
         let panicking = is_panicking();
 
-        if panicking {
+        if !self.panicking_at_acquire && panicking {
             // 設計書 8.4: パニック時のPoisoning
             // ドメインがMutexを保持したままパニックすると、
             // そのMutexは「poisoned」状態としてマークされる
@@ -710,6 +726,7 @@ impl<T: ?Sized> IrqPoisonLock<T> {
         let guard = IrqPoisonLockGuard {
             lock: self,
             irq_was_enabled,
+            panicking_at_acquire: is_panicking(),
         };
 
         // 3. 毒入れ状態をチェック
@@ -740,6 +757,7 @@ impl<T: ?Sized> IrqPoisonLock<T> {
         Some(IrqPoisonLockGuard {
             lock: self,
             irq_was_enabled,
+            panicking_at_acquire: is_panicking(),
         })
     }
 
@@ -777,6 +795,7 @@ impl<T: ?Sized> IrqPoisonLock<T> {
 pub struct IrqPoisonLockGuard<'a, T: ?Sized> {
     lock: &'a IrqPoisonLock<T>,
     irq_was_enabled: bool,
+    panicking_at_acquire: bool,
 }
 
 impl<T: ?Sized> Deref for IrqPoisonLockGuard<'_, T> {
@@ -796,7 +815,7 @@ impl<T: ?Sized> DerefMut for IrqPoisonLockGuard<'_, T> {
 impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
     fn drop(&mut self) {
         // パニック検出と毒入れ
-        if is_panicking() {
+        if !self.panicking_at_acquire && is_panicking() {
             self.lock.poisoned.store(true, Ordering::Release);
             emit_panic_poison_log_once("IrqPoisonLock");
         }

@@ -663,7 +663,7 @@ fn transition_error(id: CpuId, reason: CpuFailureReason) -> CpuTransitionError {
         CpuFailureReason::NumaInconsistent => {
             CpuTransitionError::UnsupportedTopology(CpuTopologyIssue::NumaInconsistent)
         }
-        CpuFailureReason::StartupAcknowledgementTimedOut => CpuTransitionError::TimedOut {
+        CpuFailureReason::StartupAcknowledgementTimedOut { .. } => CpuTransitionError::TimedOut {
             phase: CpuFailurePhase::Start,
         },
         CpuFailureReason::DrainTimedOut => CpuTransitionError::TimedOut {

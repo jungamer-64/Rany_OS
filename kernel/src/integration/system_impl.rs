@@ -29,7 +29,6 @@ impl SystemIntegration {
         SystemIntegration {
             status: IntegrationStatus::Uninitialized,
             device_manager: DeviceManager::new(),
-            interrupt_router: InterruptRouter::new(),
             security: SecurityIntegration::new(),
             boot_log: Vec::new(),
         }
@@ -143,42 +142,23 @@ impl SystemIntegration {
             pcie_ecam.len()
         ));
 
-        // Store APIC information for interrupt routing
-        for apic in &io_apics {
-            self.interrupt_router.add_io_apic(
-                apic.id,
-                u64::from(apic.address),
-                apic.global_interrupt_base,
-            );
-        }
-
-        let overrides = catalog
-            .interrupt_overrides()
-            .map_err(|error| IntegrationError::AcpiError(alloc::format!("{error:?}")))?;
-        for ovr in &overrides {
-            if ovr.bus != 0 {
-                return Err(IntegrationError::AcpiError(alloc::format!(
-                    "unsupported MADT interrupt override bus {}",
-                    ovr.bus
-                )));
-            }
-            let polarity = match ovr.polarity {
-                crate::drivers::acpi::InterruptPolarity::ConformsToBus
-                | crate::drivers::acpi::InterruptPolarity::ActiveHigh => 0,
-                crate::drivers::acpi::InterruptPolarity::ActiveLow => 1,
-            };
-            let trigger_mode = match ovr.trigger_mode {
-                crate::drivers::acpi::InterruptTriggerMode::ConformsToBus
-                | crate::drivers::acpi::InterruptTriggerMode::Edge => 0,
-                crate::drivers::acpi::InterruptTriggerMode::Level => 1,
-            };
-            self.interrupt_router.add_override(
-                ovr.source,
-                ovr.global_interrupt,
-                polarity,
-                trigger_mode,
-            );
-        }
+        let descriptors: Vec<_> = io_apics
+            .iter()
+            .map(|apic| crate::drivers::apic::IoApicDescriptor {
+                mapped_address: crate::mm::virt::mapping::phys_to_virt(
+                    x86_64::PhysAddr::new_truncate(u64::from(apic.address)),
+                )
+                .as_u64(),
+                global_interrupt_base: apic.global_interrupt_base,
+            })
+            .collect();
+        drop(
+            crate::drivers::apic::initialize_io_apics(&descriptors).map_err(|error| {
+                IntegrationError::InterruptError(alloc::format!(
+                    "I/O APIC topology initialization failed: {error:?}"
+                ))
+            })?,
+        );
 
         self.status = IntegrationStatus::AcpiParsed;
         Ok(())
@@ -244,19 +224,12 @@ impl SystemIntegration {
         // Initialize unified interrupt allocator before MSI/MSI-X vector allocation.
         crate::io::interrupt_manager::init();
 
-        // Configure IOAPIC redirection entries
-        let routes = self.interrupt_router.configure_routing();
-        self.log(&alloc::format!(
-            "  Configured {} interrupt route(s)",
-            routes
-        ));
-
         // Allocate MSI vectors for capable devices
         let msi_devices: Vec<_> = self
             .device_manager
             .get_msi_capable()
             .into_iter()
-            .map(|d| (d.id, d.name.clone(), d.pci_location))
+            .map(|d| (d.name.clone(), d.pci_location))
             .collect();
         self.log(&alloc::format!(
             "  {} device(s) support MSI/MSI-X",
@@ -266,7 +239,7 @@ impl SystemIntegration {
         // Get PCI devices with MSI capability and allocate vectors
         let pci_devices = crate::platform::pci::scan_all_devices();
         for pci_dev in &pci_devices {
-            for (dev_id, dev_name, pci_loc) in &msi_devices {
+            for (dev_name, pci_loc) in &msi_devices {
                 if pci_loc
                     .map(|l| {
                         l.bus == pci_dev.bdf.bus()
@@ -334,7 +307,6 @@ impl SystemIntegration {
                                         continue;
                                     }
                                     let _ = crate::platform::pci::disable_intx(pci_dev);
-                                    self.interrupt_router.add_msi_route(*dev_id, vector);
                                     self.log(&alloc::format!(
                                         "    MSI enabled: {} {:02x}:{:02x}.{} -> vector {}",
                                         dev_name,

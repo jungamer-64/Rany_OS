@@ -77,21 +77,42 @@ pub enum CpuFailureReason {
     Drain(CpuDrainFailure),
     TscInconsistent,
     NumaInconsistent,
-    StartupAcknowledgementTimedOut,
+    StartupAcknowledgementTimedOut { stage: CpuStartupStage },
     DrainTimedOut,
     Firmware(FirmwareError),
     Topology(CpuTopologyIssue),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuStartupStage {
+    Preparing,
+    TrampolineEntered,
+    CpuLocalBound,
+    InterruptTablesLoaded,
+    LocalApicReady,
+    Parked,
+    Online,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuStartupFailure {
     Trampoline,
+    InvalidSignal { value: u8 },
     CpuLocalBinding,
     InterruptTables,
-    LocalApic,
+    LocalApic(CpuStartupApicFailure),
+    ApicIdentityMismatch,
     Timer,
+    NetworkResources,
     SlabCache,
     TlbState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuStartupApicFailure {
+    Unsupported,
+    InvalidMmioBase,
+    DeliveryTimedOut,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,6 +395,7 @@ pub struct FirmwareError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PhysicalHotplugStatus {
+    Initializing,
     Available,
     Unavailable(FirmwareError),
 }
@@ -480,7 +502,9 @@ mod tests {
             .unwrap();
         slot.transition(CpuStateTransition::BeginStart).unwrap();
         slot.transition(CpuStateTransition::StartupFailed(
-            CpuFailureReason::StartupAcknowledgementTimedOut,
+            CpuFailureReason::StartupAcknowledgementTimedOut {
+                stage: CpuStartupStage::Preparing,
+            },
         ))
         .unwrap();
         assert_eq!(slot.state, CpuSlotState::PresentOffline);
@@ -488,7 +512,9 @@ mod tests {
             slot.last_failure,
             Some(CpuFailure {
                 phase: CpuFailurePhase::Start,
-                reason: CpuFailureReason::StartupAcknowledgementTimedOut,
+                reason: CpuFailureReason::StartupAcknowledgementTimedOut {
+                    stage: CpuStartupStage::Preparing,
+                },
             })
         );
     }

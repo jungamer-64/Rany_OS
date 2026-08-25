@@ -46,18 +46,6 @@ unsafe impl Sync for IdtContainer {}
 static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::uninit()));
 
 #[inline]
-fn smp_idt_mark(marker: u8) {
-    unsafe {
-        core::arch::asm!(
-            "out dx, al",
-            in("dx") 0x3f8u16,
-            in("al") marker,
-            options(nomem, nostack, preserves_flags)
-        );
-    }
-}
-
-#[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
     if let Some(current_cpu) = crate::cpu::CurrentCpu::acquire() {
         current_cpu.record_interrupt(crate::cpu::InterruptContext {
@@ -300,9 +288,7 @@ fn init_idt() {
 }
 
 pub fn load_idt_for_current_cpu() -> Result<(), &'static str> {
-    smp_idt_mark(b'6');
     let initialized = IDT_INITIALIZED.load(Ordering::Acquire);
-    smp_idt_mark(b'7');
     if !initialized {
         return Err("IDT not initialized");
     }
@@ -311,15 +297,12 @@ pub fn load_idt_for_current_cpu() -> Result<(), &'static str> {
         let idt = &*(*IDT_CONTAINER.0.get()).as_ptr();
         idt.load();
     }
-    smp_idt_mark(b'8');
 
     Ok(())
 }
 
 pub fn load_for_current_cpu() -> Result<(), &'static str> {
-    smp_idt_mark(b'9');
     gdt::load_for_current_cpu()?;
-    smp_idt_mark(b'A');
     load_idt_for_current_cpu()
 }
 
@@ -544,6 +527,7 @@ static RUNTIME_LOCAL_TIMERS_ENABLED: AtomicBool = AtomicBool::new(false);
 pub enum RuntimeTimerError {
     RuntimeModeDisabled,
     CpuLocalUnavailable,
+    CalibrationRequiresBootstrapCpu,
     LocalApicDisabled,
     LocalApic(crate::drivers::apic::LocalApicError),
 }
@@ -555,6 +539,34 @@ fn is_global_timekeeping_cpu(cpu_id: crate::cpu::CpuId) -> bool {
 
 pub fn runtime_local_timers_enabled() -> bool {
     RUNTIME_LOCAL_TIMERS_ENABLED.load(Ordering::Acquire)
+}
+
+fn ensure_runtime_timer_calibrated() -> Result<(), RuntimeTimerError> {
+    let current_cpu =
+        crate::cpu::CurrentCpu::acquire().ok_or(RuntimeTimerError::CpuLocalUnavailable)?;
+    if current_cpu.id() != crate::cpu::CpuId::BOOTSTRAP {
+        return Err(RuntimeTimerError::CalibrationRequiresBootstrapCpu);
+    }
+    let apic = crate::drivers::apic::local_apic().map_err(RuntimeTimerError::LocalApic)?;
+    if apic.ticks_per_ms() == 0 {
+        apic.calibrate_timer()
+            .map_err(RuntimeTimerError::LocalApic)?;
+    }
+    Ok(())
+}
+
+/// Calibrates the shared local-APIC timer rate before application CPUs start.
+///
+/// The PIT channel used as the reference clock is global, so calibration is
+/// owned by the bootstrap CPU and published before any application CPU is
+/// admitted to `Online`.
+///
+/// # Errors
+///
+/// Returns a typed error when the executing CPU is not the bootstrap CPU or
+/// the local APIC timer cannot be calibrated against the PIT reference.
+pub(crate) fn prepare_runtime_local_timer_source() -> Result<(), RuntimeTimerError> {
+    ensure_runtime_timer_calibrated()
 }
 
 fn arm_current_runtime_timer() -> Result<(), RuntimeTimerError> {
@@ -617,6 +629,7 @@ pub fn ensure_runtime_local_timer_started() -> Result<(), RuntimeTimerError> {
 /// unavailable, or the timer cannot be armed. The PIT remains unmasked when
 /// the transition fails.
 pub fn transition_to_runtime_local_timers() -> Result<(), RuntimeTimerError> {
+    ensure_runtime_timer_calibrated()?;
     arm_current_runtime_timer()?;
     RUNTIME_LOCAL_TIMERS_ENABLED.store(true, Ordering::Release);
     mask_irq(0);

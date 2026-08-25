@@ -514,10 +514,14 @@ pub struct CurrentCpu {
 impl CurrentCpu {
     pub fn acquire() -> Option<Self> {
         let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
-        if address == 0 {
+        if address == 0 || address % core::mem::align_of::<CpuLocal>() != 0 {
             return None;
         }
-        let local = super::try_runtime()?.cpu_local_by_address(address)?;
+        // SAFETY: each kernel entry path clears IA32_GS_BASE before using
+        // allocation or locking services. A non-zero value is installed only
+        // from a pinned CpuLocal owned by CpuRuntime and is never repointed
+        // during that CPU's lifetime.
+        let local = unsafe { &*(address as *const CpuLocal) };
         if !local.is_self_address(address) {
             return None;
         }
@@ -525,6 +529,10 @@ impl CurrentCpu {
             local,
             _not_send_or_sync: PhantomData,
         })
+    }
+
+    pub(crate) fn clear_boot_binding() {
+        unsafe { write_msr(IA32_GS_BASE, 0) };
     }
 
     pub(crate) fn bind(id: CpuId) -> Result<Self, CurrentCpuBindError> {

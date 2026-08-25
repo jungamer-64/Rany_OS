@@ -178,6 +178,30 @@ pub(crate) fn init_numa_pmm(
     }
 }
 
+fn initialize_firmware_catalog(boot_info: Option<&ExoBootInfoView<'_>>) {
+    let Some(info) = boot_info else {
+        return;
+    };
+    let rsdp_address = info.boot_info().rsdp_addr;
+    if rsdp_address == 0 {
+        return;
+    }
+    match unsafe {
+        crate::platform::firmware::initialize_tables(rsdp_address, physical_memory_offset())
+    } {
+        Ok(catalog) => log::info!(
+            target: "init",
+            "ACPI static catalog owns {} table(s)",
+            catalog.tables().len()
+        ),
+        Err(error) => log::warn!(
+            target: "init",
+            "ACPI static catalog unavailable: {:?}",
+            error
+        ),
+    }
+}
+
 /// Exchange Heap, BSP Per-CPU/TLS, Per-Core Slab Cache の初期化
 pub(crate) fn init_post_buddy(_boot_info: Option<&ExoBootInfoView<'_>>) {
     unsafe {
@@ -212,6 +236,11 @@ pub fn init(boot_info: Option<&ExoBootInfoView<'_>>) {
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
     init_global_heap();
     verify_buddy_integrity();
+
+    // The catalog owns copies of firmware tables and therefore needs the
+    // kernel heap. It must precede NUMA PMM construction, whose topology is
+    // derived from this catalog rather than from a bootloader snapshot.
+    initialize_firmware_catalog(boot_info);
 
     // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
     let usable_regions = init_buddy_from_boot_info(boot_info);

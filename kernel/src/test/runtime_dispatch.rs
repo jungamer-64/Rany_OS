@@ -49,12 +49,18 @@ pub enum RuntimeGroup {
     DriverDomain,
     Iommu,
     Network,
+    CpuHotplug,
     Step9Heavy,
+}
+
+enum RuntimeTestBody {
+    Sync(fn(Option<&str>) -> RuntimeTestResult),
+    CpuHotplug,
 }
 
 pub struct RuntimeTestCase {
     pub id: &'static str,
-    pub run: fn(Option<&str>) -> RuntimeTestResult,
+    body: RuntimeTestBody,
     pub tier: RuntimeTier,
     pub group: RuntimeGroup,
 }
@@ -87,6 +93,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "driver_domain")
         || str_eq(profile, "iommu")
         || str_eq(profile, "network")
+        || str_eq(profile, "cpu-hotplug")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -211,51 +218,57 @@ fn case_accepts_nested_filter(profile: &str, case_id: &str) -> bool {
 static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
         id: "boot.smoke_cmdline_dispatch",
-        run: boot_smoke_cmdline_dispatch,
+        body: RuntimeTestBody::Sync(boot_smoke_cmdline_dispatch),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Boot,
     },
     RuntimeTestCase {
         id: "nightly.smoke_cmdline_dispatch",
-        run: nightly_smoke_cmdline_dispatch,
+        body: RuntimeTestBody::Sync(nightly_smoke_cmdline_dispatch),
         tier: RuntimeTier::NightlyRequired,
         group: RuntimeGroup::Boot,
     },
     RuntimeTestCase {
         id: "nightly.step9.powercut_replay_smoke",
-        run: nightly_powercut_replay_smoke,
+        body: RuntimeTestBody::Sync(nightly_powercut_replay_smoke),
         tier: RuntimeTier::NightlyRequired,
         group: RuntimeGroup::Step9Heavy,
     },
     RuntimeTestCase {
         id: "nightly.step9.kgdb_dual_transport_smoke",
-        run: nightly_dual_transport_kgdb_smoke,
+        body: RuntimeTestBody::Sync(nightly_dual_transport_kgdb_smoke),
         tier: RuntimeTier::NightlyRequired,
         group: RuntimeGroup::Step9Heavy,
     },
     RuntimeTestCase {
         id: "storage.integration_suite",
-        run: storage_integration_suite,
+        body: RuntimeTestBody::Sync(storage_integration_suite),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Storage,
     },
     RuntimeTestCase {
         id: "iommu.integration_suite",
-        run: iommu_integration_suite,
+        body: RuntimeTestBody::Sync(iommu_integration_suite),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Iommu,
     },
     RuntimeTestCase {
         id: "network.runtime_suite",
-        run: network_runtime_suite,
+        body: RuntimeTestBody::Sync(network_runtime_suite),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Network,
     },
     RuntimeTestCase {
         id: "driver_domain.runtime_suite",
-        run: driver_domain_runtime_suite,
+        body: RuntimeTestBody::Sync(driver_domain_runtime_suite),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::DriverDomain,
+    },
+    RuntimeTestCase {
+        id: "cpu.hotplug_runtime_suite",
+        body: RuntimeTestBody::CpuHotplug,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::CpuHotplug,
     },
 ];
 
@@ -274,6 +287,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::Iommu)
     } else if str_eq(profile, "network") {
         matches!(case.group, RuntimeGroup::Network)
+    } else if str_eq(profile, "cpu-hotplug") {
+        matches!(case.group, RuntimeGroup::CpuHotplug)
     } else if str_eq(profile, "step9-heavy") {
         matches!(case.group, RuntimeGroup::Step9Heavy)
     } else {
@@ -315,7 +330,7 @@ fn log_unknown_profile(profile: &str) -> RuntimeRunSummary {
     summary
 }
 
-pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
+pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
     info!(target: "init", "[kernel-test] start profile={profile}");
 
     let mut selected_any = false;
@@ -345,7 +360,10 @@ pub fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary {
         };
 
         selected_any = true;
-        let result = (case.run)(nested_case_filter);
+        let result = match case.body {
+            RuntimeTestBody::Sync(run) => run(nested_case_filter),
+            RuntimeTestBody::CpuHotplug => crate::qemu_tests::run_cpu_hotplug_runtime_suite().await,
+        };
         log_case_result(case.id, result);
 
         match result.status {

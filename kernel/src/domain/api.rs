@@ -193,7 +193,9 @@ pub fn print_domain_list() {
 }
 
 pub fn current_domain() -> DomainId {
-    crate::task::current_subject().domain
+    crate::task::current_execution_context()
+        .map(|context| context.subject.domain)
+        .unwrap_or(DomainId::KERNEL)
 }
 
 pub fn is_kernel_domain() -> bool {

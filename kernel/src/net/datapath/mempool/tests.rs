@@ -12,6 +12,15 @@ fn test_cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
         .snapshot()
 }
 
+fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
+    crate::cpu::FirmwareCpuIdentity {
+        uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+        apic_id: crate::cpu::ApicId::new(apic_id),
+        proximity_domain: Some(0),
+        eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+    }
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_poisoned_alloc_fails() {
@@ -44,6 +53,28 @@ fn test_mempool_stats() {
     let stats = pool.stats();
     assert_eq!(stats.total_buffers, 0);
     assert_eq!(stats.free_buffers, 0);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn mempool_provisions_cache_for_new_possible_cpu() {
+    let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
+        .expect("bootstrap CPU topology");
+    let pool = Box::leak(Box::new(
+        Mempool::new(1, &cpu_runtime.snapshot()).expect("initial mempool CPU resources"),
+    ));
+    let cpu_id = cpu_runtime
+        .discover_possible(firmware_cpu(1, 1))
+        .expect("possible CPU discovery");
+
+    assert_eq!(
+        pool.alloc_on_cpu(cpu_id),
+        Err(MempoolError::CpuNotProvisioned(cpu_id))
+    );
+    pool.provision_possible_cpus(&cpu_runtime.snapshot())
+        .expect("dynamic CPU cache provisioning");
+    pool.init(1).expect("packet buffer initialization");
+    assert!(pool.alloc_on_cpu(cpu_id).is_ok());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

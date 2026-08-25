@@ -316,22 +316,6 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     graphics::vga::init();
     io::log::early_print("[BOOT] VGA initialized\n");
 
-    if boot_info.rsdp_addr != 0 {
-        match unsafe {
-            crate::platform::firmware::initialize_tables(
-                boot_info.rsdp_addr,
-                context.phys_mem_offset,
-            )
-        } {
-            Ok(catalog) => info!(
-                target: "init",
-                "ACPI static catalog owns {} table(s)",
-                catalog.tables().len()
-            ),
-            Err(error) => warn!(target: "init", "ACPI static catalog unavailable: {:?}", error),
-        }
-    }
-
     // ロギングシステムの初期化（最優先、ヒープ不要）
     io::log::early_print("[BOOT] Initializing logger...\n");
     if io::log::init().is_err() {
@@ -386,13 +370,14 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     heap::ensure_global_heap_ready();
     info!(target: "init", "Memory management initialized");
 
-    // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
-    // メモリ管理が初期化されたので、ページテーブル操作が可能になった。
-    install_bsp_stack_guard();
-
     if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
         panic!("bootstrap CPU initialization failed: {:?}", error);
     }
+
+    // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
+    // ページテーブル操作と TLB invalidation に必要な BSP CPU-local state は
+    // prepare_bootstrap で構築・bind 済みである。
+    install_bsp_stack_guard();
 
     info!(target: "init", "Initializing interrupt system");
     interrupts::init();
@@ -400,6 +385,14 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
 
     crate::time::init(1000);
     info!(target: "init", "PIT initialized at 1000 Hz");
+
+    match interrupts::prepare_runtime_local_timer_source() {
+        Ok(()) => info!(target: "init", "Local APIC timer source calibrated on bootstrap CPU"),
+        Err(error) => warn!(
+            target: "init",
+            "Local APIC timer calibration unavailable; application CPUs will remain offline: {error:?}"
+        ),
+    }
 
     // 1.1. Interrupt Waker Registryの早期初期化 (Lazy Allocation)
     // ISRが有効になる前にリソースを確保し、ISR内での初期化（デッドロックリスク）を防ぐ
@@ -961,7 +954,8 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
                 request.profile
             );
             crate::task::yield_now().await;
-            let summary = crate::test::runtime_dispatch::run(request.profile, request.case_filter);
+            let summary =
+                crate::test::runtime_dispatch::run(request.profile, request.case_filter).await;
             exit_with_runtime_summary(summary);
         },
         crate::task::TaskPlacement::Pinned(target_cpu),
@@ -1067,6 +1061,7 @@ pub(crate) fn init_usb_controllers() {
 
 #[unsafe(no_mangle)]
 pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
+    crate::cpu::CurrentCpu::clear_boot_binding();
     let context = KernelBootContext::new(boot_info);
 
     phase_entry_and_early_cpu(&context);

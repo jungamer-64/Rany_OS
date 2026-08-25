@@ -430,8 +430,12 @@ impl LocalApic {
         let elapsed = u32::MAX - self.read(Register::TimerCurrent);
         pit_gate.write(original_gate & !1);
         self.write(Register::LvtTimer, 1 << 16);
+        let ticks_per_ms = elapsed / 10;
+        if ticks_per_ms == 0 {
+            return Err(LocalApicError::TimerNotCalibrated);
+        }
         self.ticks_per_ms
-            .store(u64::from(elapsed / 10), Ordering::Release);
+            .store(u64::from(ticks_per_ms), Ordering::Release);
         Ok(())
     }
 

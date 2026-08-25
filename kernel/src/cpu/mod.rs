@@ -23,8 +23,9 @@ pub(crate) use startup::{
 };
 pub use state::{
     CpuBlocker, CpuDrainFailure, CpuEjectCapability, CpuFailure, CpuFailurePhase, CpuFailureReason,
-    CpuSlot, CpuSlotState, CpuStartupFailure, CpuTopologyIssue, CpuTransitionError,
-    FirmwareCpuIdentity, FirmwareError, FirmwareErrorKind, PhysicalHotplugStatus,
+    CpuSlot, CpuSlotState, CpuStartupApicFailure, CpuStartupFailure, CpuStartupStage,
+    CpuTopologyIssue, CpuTransitionError, FirmwareCpuIdentity, FirmwareError, FirmwareErrorKind,
+    PhysicalHotplugStatus,
 };
 pub(crate) use state::{CpuStateTransition, CpuStateTransitionError};
 pub(crate) use transition::{commit_eject, fail_eject, prepare_eject};

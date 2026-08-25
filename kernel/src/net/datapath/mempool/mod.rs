@@ -10,8 +10,9 @@
 // Building block: Memory pool types
 
 use crate::ipc::rref::RRef;
-use crate::sync::PoisonLock;
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
@@ -699,12 +700,11 @@ pub unsafe fn packet_ref_from_static_raw_for_tests(ptr: *mut u8, cap: usize) -> 
 const CPU_CACHE_CAPACITY: usize = 32;
 const BATCH_SIZE: usize = 16;
 
-#[derive(Debug)]
 pub struct Mempool {
     id: u32,
     buffers: PoisonLock<Vec<NonNull<PacketBuffer>>>,
     free_list: PoisonLock<Vec<NonNull<PacketBuffer>>>,
-    local_caches: Box<[PoisonLock<Vec<NonNull<PacketBuffer>>>]>,
+    local_caches: PoisonRwLock<Vec<Arc<PoisonLock<Vec<NonNull<PacketBuffer>>>>>>,
     alloc_count: AtomicU64,
     free_count: AtomicU64,
     alloc_failed: AtomicU64,
@@ -712,6 +712,18 @@ pub struct Mempool {
 
 unsafe impl Send for Mempool {}
 unsafe impl Sync for Mempool {}
+
+impl fmt::Debug for Mempool {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("Mempool")
+            .field("id", &self.id)
+            .field("alloc_count", &self.alloc_count.load(Ordering::Relaxed))
+            .field("free_count", &self.free_count.load(Ordering::Relaxed))
+            .field("alloc_failed", &self.alloc_failed.load(Ordering::Relaxed))
+            .finish_non_exhaustive()
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MempoolLock {
@@ -761,14 +773,14 @@ impl Mempool {
             if slot.id.as_usize() != local_caches.len() {
                 return Err(MempoolError::CpuNotProvisioned(slot.id));
             }
-            local_caches.push(PoisonLock::new(Vec::new()));
+            local_caches.push(Arc::new(PoisonLock::new(Vec::new())));
         }
 
         Ok(Self {
             id,
             buffers: PoisonLock::new(Vec::new()),
             free_list: PoisonLock::new(Vec::new()),
-            local_caches: local_caches.into_boxed_slice(),
+            local_caches: PoisonRwLock::new(local_caches),
             alloc_count: AtomicU64::new(0),
             free_count: AtomicU64::new(0),
             alloc_failed: AtomicU64::new(0),
@@ -799,6 +811,52 @@ impl Mempool {
             free_list.push(non_null);
         }
         Ok(())
+    }
+
+    pub(crate) fn provision_possible_cpus(
+        &self,
+        cpu_snapshot: &crate::cpu::CpuSnapshot,
+    ) -> Result<(), MempoolError> {
+        let mut local_caches = self
+            .local_caches
+            .write()
+            .map_err(|_| MempoolError::LockPoisoned(MempoolLock::LocalCache))?;
+        for index in 0..local_caches.len() {
+            let Some(slot) = cpu_snapshot.slots().get(index) else {
+                return Err(MempoolError::CpuNotProvisioned(
+                    crate::cpu::CpuId::from_valid_index(index),
+                ));
+            };
+            if slot.id.as_usize() != index {
+                return Err(MempoolError::CpuNotProvisioned(slot.id));
+            }
+        }
+        let additional = cpu_snapshot
+            .slots()
+            .len()
+            .saturating_sub(local_caches.len());
+        local_caches
+            .try_reserve_exact(additional)
+            .map_err(|_| MempoolError::CpuCacheAllocationFailed)?;
+        for slot in &cpu_snapshot.slots()[local_caches.len()..] {
+            if slot.id.as_usize() != local_caches.len() {
+                return Err(MempoolError::CpuNotProvisioned(slot.id));
+            }
+            local_caches.push(Arc::new(PoisonLock::new(Vec::new())));
+        }
+        Ok(())
+    }
+
+    fn local_cache(
+        &self,
+        cpu_id: crate::cpu::CpuId,
+    ) -> Result<Arc<PoisonLock<Vec<NonNull<PacketBuffer>>>>, MempoolError> {
+        self.local_caches
+            .read()
+            .map_err(|_| MempoolError::LockPoisoned(MempoolLock::LocalCache))?
+            .get(cpu_id.as_usize())
+            .cloned()
+            .ok_or(MempoolError::CpuNotProvisioned(cpu_id))
     }
 
     unsafe fn write_initial_packet_buffer(buffer: NonNull<PacketBuffer>, pool_id: u32, index: u32) {
@@ -855,9 +913,8 @@ impl Mempool {
 
     fn alloc_on_cpu(&'static self, cpu_id: crate::cpu::CpuId) -> Result<PacketRef, MempoolError> {
         let cache_lock = self
-            .local_caches
-            .get(cpu_id.as_usize())
-            .ok_or_else(|| self.record_alloc_failure(MempoolError::CpuNotProvisioned(cpu_id)))?;
+            .local_cache(cpu_id)
+            .map_err(|error| self.record_alloc_failure(error))?;
         let mut cache = cache_lock.lock().map_err(|_| {
             self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::LocalCache))
         })?;
@@ -884,7 +941,7 @@ impl Mempool {
                     if remote_cpu == cpu_id {
                         continue;
                     }
-                    let Some(remote_lock) = self.local_caches.get(remote_cpu.as_usize()) else {
+                    let Ok(remote_lock) = self.local_cache(remote_cpu) else {
                         continue;
                     };
                     if let Ok(mut remote_cache) = remote_lock.try_lock() {
@@ -904,7 +961,7 @@ impl Mempool {
                         if remote_cpu == cpu_id {
                             continue;
                         }
-                        let Some(remote_lock) = self.local_caches.get(remote_cpu.as_usize()) else {
+                        let Ok(remote_lock) = self.local_cache(remote_cpu) else {
                             continue;
                         };
                         if let Ok(mut remote_cache) = remote_lock.try_lock() {
@@ -933,7 +990,7 @@ impl Mempool {
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
         let cache_lock = crate::cpu::CurrentCpu::acquire()
             .map(|current| current.id())
-            .and_then(|cpu_id| self.local_caches.get(cpu_id.as_usize()));
+            .and_then(|cpu_id| self.local_cache(cpu_id).ok());
         if let Some(cache_lock) = cache_lock {
             if let Ok(mut cache) = cache_lock.lock() {
                 cache.push(buffer);
@@ -977,7 +1034,11 @@ impl Mempool {
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .len();
-        for cache_lock in &self.local_caches {
+        let local_caches = self
+            .local_caches
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        for cache_lock in local_caches.iter() {
             free += cache_lock.lock().unwrap_or_else(|e| e.into_inner()).len();
         }
         MempoolStats {
