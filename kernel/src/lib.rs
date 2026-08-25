@@ -392,11 +392,6 @@ pub mod mm;
     feature = "qemu-test-export"
 ))]
 pub mod console;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod cpu;
 #[cfg(any(
     not(any(test, feature = "bench")),
@@ -608,16 +603,6 @@ pub mod util;
 ))]
 pub mod watchdog;
 
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-#[path = "host_support/cpu.rs"]
-pub mod cpu;
 #[cfg(all(
     test,
     not(feature = "full_mm_tests"),
