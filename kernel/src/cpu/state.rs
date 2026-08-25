@@ -216,9 +216,10 @@ impl CpuSlot {
             (CpuSlotState::Draining, CpuStateTransition::DrainComplete) => {
                 (CpuSlotState::Parked, self.last_failure.clone(), None)
             }
-            (CpuSlotState::Parked, CpuStateTransition::BeginEject) => {
-                (CpuSlotState::Ejecting, None, None)
-            }
+            (
+                CpuSlotState::Parked | CpuSlotState::PresentOffline,
+                CpuStateTransition::BeginEject,
+            ) => (CpuSlotState::Ejecting, None, None),
             (CpuSlotState::Ejecting, CpuStateTransition::EjectComplete) => {
                 (CpuSlotState::FirmwareAbsent, None, None)
             }
@@ -345,6 +346,9 @@ pub enum CpuTopologyIssue {
         id: CpuId,
         failure: CpuStartupFailure,
     },
+    PhysicalEjectUnsupported {
+        id: CpuId,
+    },
     RevisionExhausted,
 }
 
@@ -416,6 +420,32 @@ mod tests {
         slot.transition(CpuStateTransition::BeginEject).unwrap();
         slot.transition(CpuStateTransition::EjectComplete).unwrap();
         assert_eq!(slot.state, CpuSlotState::FirmwareAbsent);
+    }
+
+    #[test]
+    fn never_started_cpu_can_eject_and_retain_typed_firmware_failure() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginEject).unwrap();
+        let firmware = FirmwareError {
+            kind: FirmwareErrorKind::OperationRegion,
+            object: Some(Arc::from("\\_SB_.CP01._EJ0")),
+            detail: String::from("firmware rejected the eject request"),
+        };
+        slot.transition(CpuStateTransition::EjectFailed(CpuFailureReason::Firmware(
+            firmware.clone(),
+        )))
+        .unwrap();
+
+        assert_eq!(slot.state, CpuSlotState::PresentOffline);
+        assert_eq!(
+            slot.last_failure,
+            Some(CpuFailure {
+                phase: CpuFailurePhase::Eject,
+                reason: CpuFailureReason::Firmware(firmware),
+            })
+        );
     }
 
     #[test]

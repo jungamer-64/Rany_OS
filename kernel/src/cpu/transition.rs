@@ -21,26 +21,12 @@ const PARK_MAX_POLLS: usize = 10_000_000;
 const SUBSYSTEM_DRAIN_TIMEOUT_NS: u64 = 1_000_000_000;
 const SUBSYSTEM_DRAIN_MAX_POLLS: usize = 10_000_000;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TransitionOperation {
-    Online(CpuId),
-    Offline(CpuId),
-}
-
-impl TransitionOperation {
-    const fn cpu(self) -> CpuId {
-        match self {
-            Self::Online(id) | Self::Offline(id) => id,
-        }
-    }
-}
-
-struct TransitionCompletion {
-    result: PoisonLock<Option<Result<(), CpuTransitionError>>>,
+struct TransitionCompletion<T> {
+    result: PoisonLock<Option<T>>,
     waker: AtomicWaker,
 }
 
-impl TransitionCompletion {
+impl<T> TransitionCompletion<T> {
     const fn new() -> Self {
         Self {
             result: PoisonLock::new(None),
@@ -48,14 +34,14 @@ impl TransitionCompletion {
         }
     }
 
-    fn take_result(&self) -> Option<Result<(), CpuTransitionError>> {
+    fn take_result(&self) -> Option<T> {
         self.result
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .take()
     }
 
-    fn complete(&self, result: Result<(), CpuTransitionError>) {
+    fn complete(&self, result: T) {
         let previous = self
             .result
             .lock()
@@ -69,9 +55,73 @@ impl TransitionCompletion {
     }
 }
 
-struct TransitionRequest {
-    operation: TransitionOperation,
-    completion: Arc<TransitionCompletion>,
+struct EjectPermit {
+    id: CpuId,
+}
+
+/// Exclusive authority to execute the firmware portion of a physical CPU
+/// eject after the lifecycle worker has removed the CPU from all runtime use.
+///
+/// The authority is consumed by exactly one outcome commit. Abandoning it is
+/// reconciled by the same BSP-pinned lifecycle worker, so cancellation cannot
+/// leave the slot indefinitely exposed as `Ejecting`.
+pub(crate) struct CpuEjectAuthority {
+    permit: Option<EjectPermit>,
+}
+
+impl CpuEjectAuthority {
+    pub(crate) const fn cpu(&self) -> CpuId {
+        self.permit
+            .as_ref()
+            .expect("consumed CPU eject authority was observed")
+            .id
+    }
+
+    fn take_permit(&mut self) -> EjectPermit {
+        self.permit
+            .take()
+            .expect("CPU eject authority was consumed more than once")
+    }
+}
+
+impl Drop for CpuEjectAuthority {
+    fn drop(&mut self) {
+        let Some(permit) = self.permit.take() else {
+            return;
+        };
+        let Some(queue) = TRANSITION_QUEUE.get() else {
+            panic!("CPU eject authority outlived its lifecycle worker");
+        };
+        queue.enqueue(TransitionRequest::AbandonEject { permit });
+    }
+}
+
+enum EjectOutcome {
+    FirmwareAbsent,
+    PresentOffline(super::FirmwareError),
+}
+
+enum TransitionRequest {
+    Online {
+        id: CpuId,
+        completion: Arc<TransitionCompletion<Result<(), CpuTransitionError>>>,
+    },
+    Offline {
+        id: CpuId,
+        completion: Arc<TransitionCompletion<Result<(), CpuTransitionError>>>,
+    },
+    PrepareEject {
+        id: CpuId,
+        completion: Arc<TransitionCompletion<Result<CpuEjectAuthority, CpuTransitionError>>>,
+    },
+    FinishEject {
+        permit: EjectPermit,
+        outcome: EjectOutcome,
+        completion: Arc<TransitionCompletion<Result<(), CpuTransitionError>>>,
+    },
+    AbandonEject {
+        permit: EjectPermit,
+    },
 }
 
 struct TransitionQueue {
@@ -130,7 +180,15 @@ pub(super) fn initialize() -> Result<(), SpawnError> {
 /// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
-    submit(TransitionOperation::Online(id)).await
+    let completion = Arc::new(TransitionCompletion::new());
+    submit(
+        TransitionRequest::Online {
+            id,
+            completion: completion.clone(),
+        },
+        completion,
+    )
+    .await
 }
 
 /// Removes an application CPU from task placement and parks it.
@@ -138,10 +196,68 @@ pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
 /// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
-    submit(TransitionOperation::Offline(id)).await
+    let completion = Arc::new(TransitionCompletion::new());
+    submit(
+        TransitionRequest::Offline {
+            id,
+            completion: completion.clone(),
+        },
+        completion,
+    )
+    .await
 }
 
-async fn submit(operation: TransitionOperation) -> Result<(), CpuTransitionError> {
+/// Quiesces a CPU and grants exclusive authority for its firmware eject.
+///
+/// Once submitted, cancellation cannot cancel the drain. If the returned
+/// authority is subsequently abandoned, the lifecycle worker records a typed
+/// firmware failure and restores the slot to `PresentOffline`.
+pub(crate) async fn prepare_eject(id: CpuId) -> Result<CpuEjectAuthority, CpuTransitionError> {
+    let completion = Arc::new(TransitionCompletion::new());
+    submit(
+        TransitionRequest::PrepareEject {
+            id,
+            completion: completion.clone(),
+        },
+        completion,
+    )
+    .await
+}
+
+/// Commits firmware-confirmed absence and consumes the eject authority.
+pub(crate) async fn commit_eject(
+    mut authority: CpuEjectAuthority,
+) -> Result<(), CpuTransitionError> {
+    let permit = authority.take_permit();
+    finish_eject(permit, EjectOutcome::FirmwareAbsent).await
+}
+
+/// Records a firmware eject failure and consumes the eject authority.
+pub(crate) async fn fail_eject(
+    mut authority: CpuEjectAuthority,
+    error: super::FirmwareError,
+) -> Result<(), CpuTransitionError> {
+    let permit = authority.take_permit();
+    finish_eject(permit, EjectOutcome::PresentOffline(error)).await
+}
+
+async fn finish_eject(
+    permit: EjectPermit,
+    outcome: EjectOutcome,
+) -> Result<(), CpuTransitionError> {
+    let completion = Arc::new(TransitionCompletion::new());
+    submit(
+        TransitionRequest::FinishEject {
+            permit,
+            outcome,
+            completion: completion.clone(),
+        },
+        completion,
+    )
+    .await
+}
+
+async fn submit<T>(request: TransitionRequest, completion: Arc<TransitionCompletion<T>>) -> T {
     let queue = TRANSITION_QUEUE
         .get()
         .unwrap_or_else(|| panic!("CPU transition requested before CPU runtime initialization"));
@@ -149,20 +265,16 @@ async fn submit(operation: TransitionOperation) -> Result<(), CpuTransitionError
         queue.worker_started.load(Ordering::Acquire),
         "CPU transition requested without its lifecycle worker"
     );
-    let completion = Arc::new(TransitionCompletion::new());
-    queue.enqueue(TransitionRequest {
-        operation,
-        completion: completion.clone(),
-    });
+    queue.enqueue(request);
     CompletionFuture { completion }.await
 }
 
-struct CompletionFuture {
-    completion: Arc<TransitionCompletion>,
+struct CompletionFuture<T> {
+    completion: Arc<TransitionCompletion<T>>,
 }
 
-impl Future for CompletionFuture {
-    type Output = Result<(), CpuTransitionError>;
+impl<T> Future for CompletionFuture<T> {
+    type Output = T;
 
     fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Self::Output> {
         if let Some(result) = self.completion.take_result() {
@@ -201,36 +313,117 @@ async fn transition_worker() {
         .unwrap_or_else(|| panic!("CPU transition worker started without its request queue"));
     loop {
         let request = NextRequestFuture { queue }.await;
-        match request.operation {
-            TransitionOperation::Online(id) => {
+        match request {
+            TransitionRequest::Online { id, completion } => {
                 let result = perform_online(id);
-                log_transition_failure(request.operation, &result);
-                request.completion.complete(result);
+                log_transition_failure(id, "online", &result);
+                completion.complete(result);
             }
-            TransitionOperation::Offline(id) => match perform_offline(id).await {
+            TransitionRequest::Offline { id, completion } => match perform_offline(id).await {
                 OfflineOutcome::Complete(result) => {
-                    log_transition_failure(request.operation, &result);
-                    request.completion.complete(result);
+                    log_transition_failure(id, "offline", &result);
+                    completion.complete(result);
                 }
                 OfflineOutcome::Reconcile(pending) => {
                     let result = Err(pending.error.clone());
-                    log_transition_failure(request.operation, &result);
-                    request.completion.complete(result);
+                    log_transition_failure(id, "offline", &result);
+                    completion.complete(result);
                     reconcile_timed_out_drain(pending).await;
                 }
             },
+            TransitionRequest::PrepareEject { id, completion } => {
+                let result = perform_prepare_eject(id).await;
+                if let Err(error) = &result {
+                    log::warn!("CPU {id} prepare-eject transition failed: {error:?}");
+                }
+                completion.complete(result);
+            }
+            TransitionRequest::FinishEject {
+                permit,
+                outcome,
+                completion,
+            } => {
+                let id = permit.id;
+                let result = perform_finish_eject(permit, outcome);
+                log_transition_failure(id, "finish-eject", &result);
+                completion.complete(result);
+            }
+            TransitionRequest::AbandonEject { permit } => {
+                let id = permit.id;
+                let error = super::FirmwareError {
+                    kind: super::FirmwareErrorKind::EventDelivery,
+                    object: None,
+                    detail: alloc::string::String::from(
+                        "firmware eject authority was abandoned before outcome reconciliation",
+                    ),
+                };
+                let result = perform_finish_eject(permit, EjectOutcome::PresentOffline(error));
+                log_transition_failure(id, "abandon-eject", &result);
+            }
         }
     }
 }
 
-fn log_transition_failure(operation: TransitionOperation, result: &Result<(), CpuTransitionError>) {
+fn log_transition_failure(
+    id: CpuId,
+    operation: &'static str,
+    result: &Result<(), CpuTransitionError>,
+) {
     if let Err(error) = result {
-        log::warn!(
-            "CPU {} {:?} transition failed: {:?}",
-            operation.cpu(),
-            operation,
-            error
-        );
+        log::warn!("CPU {} {} transition failed: {:?}", id, operation, error);
+    }
+}
+
+async fn perform_prepare_eject(id: CpuId) -> Result<CpuEjectAuthority, CpuTransitionError> {
+    let slot = super::snapshot()
+        .slot(id)
+        .cloned()
+        .ok_or(CpuTransitionError::NotPresent)?;
+    if slot.role == CpuRole::Bootstrap {
+        return Err(CpuTransitionError::BootstrapCpu);
+    }
+    if slot.firmware.eject != super::CpuEjectCapability::FirmwareEject {
+        return Err(CpuTransitionError::UnsupportedTopology(
+            CpuTopologyIssue::PhysicalEjectUnsupported { id },
+        ));
+    }
+    match slot.state {
+        CpuSlotState::Online => match perform_offline(id).await {
+            OfflineOutcome::Complete(result) => result?,
+            OfflineOutcome::Reconcile(pending) => {
+                let error = pending.error.clone();
+                reconcile_timed_out_drain(pending).await;
+                return Err(error);
+            }
+        },
+        CpuSlotState::Parked | CpuSlotState::PresentOffline => {}
+        CpuSlotState::FirmwareAbsent => return Err(CpuTransitionError::NotPresent),
+        _ => {
+            return Err(CpuTransitionError::UnsupportedTopology(
+                CpuTopologyIssue::ConflictingFirmwareIdentity,
+            ));
+        }
+    }
+    super::runtime().begin_eject(id).map_err(runtime_error)?;
+    Ok(CpuEjectAuthority {
+        permit: Some(EjectPermit { id }),
+    })
+}
+
+fn perform_finish_eject(
+    permit: EjectPermit,
+    outcome: EjectOutcome,
+) -> Result<(), CpuTransitionError> {
+    match outcome {
+        EjectOutcome::FirmwareAbsent => super::runtime()
+            .eject_complete(permit.id)
+            .map_err(runtime_error),
+        EjectOutcome::PresentOffline(error) => {
+            super::runtime()
+                .eject_failed(permit.id, CpuFailureReason::Firmware(error.clone()))
+                .map_err(runtime_error)?;
+            Err(CpuTransitionError::Firmware(error))
+        }
     }
 }
 
