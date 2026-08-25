@@ -5,53 +5,24 @@
 #[cfg(test)]
 mod nvme_tests {
     use super::*;
-    use crate::domain::{DomainCredentials, DomainId, DomainSecurity};
+    use crate::domain::{DomainCredentials, DomainId};
     use crate::kapi::EXOKERNEL;
     use crate::security::capability::{self, CapabilitySet};
-    use crate::task::context::{TaskControlBlock, get_current_task, set_current_task};
-    use alloc::boxed::Box;
-    use alloc::sync::Arc;
+    use crate::task::{ExecutionContext, Subject, TaskId};
     use kernel_api::service::kernel::KernelServices;
 
-    pub(super) fn idle_entry(_: u64) -> ! {
-        // LOOP_PROOF: mode=halt; reason=Test idle stub intentionally spins forever because the parked task never resumes normal execution.;
-        loop {
-            core::hint::spin_loop();
-        }
-    }
-
-    pub(super) struct CurrentTaskGuard {
-        prev: Option<*mut TaskControlBlock>,
-        current: *mut TaskControlBlock,
-    }
-
-    impl Drop for CurrentTaskGuard {
-        fn drop(&mut self) {
-            let cpu_id = crate::cpu::current_id();
-            let prev_ptr = self.prev.unwrap_or(core::ptr::null_mut());
-            unsafe {
-                set_current_task(cpu_id, prev_ptr);
-                drop(Box::from_raw(self.current));
-            }
-        }
-    }
-
-    pub(super) fn set_current_subject(domain_id: DomainId) -> CurrentTaskGuard {
-        let cpu_id = crate::cpu::current_id();
-        let prev = get_current_task(cpu_id);
-        let mut tcb =
-            TaskControlBlock::new(idle_entry, 0, 0, domain_id).expect("failed to create test TCB");
+    pub(super) fn set_current_subject(domain_id: DomainId) -> crate::cpu::ExecutionContextGuard {
+        let current = crate::cpu::CurrentCpu::acquire().expect("test CPU-local state");
         let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
-        tcb.security = Arc::new(DomainSecurity {
-            credentials: DomainCredentials::ROOT,
-            caps,
-        });
-        let boxed = Box::new(tcb);
-        let current = Box::into_raw(boxed);
-        unsafe {
-            set_current_task(cpu_id, current);
-        }
-        CurrentTaskGuard { prev, current }
+        current.enter_execution(ExecutionContext {
+            cpu: current.id(),
+            subject: Subject {
+                domain: domain_id,
+                task: TaskId::new(),
+                cred: DomainCredentials::ROOT,
+                caps,
+            },
+        })
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
