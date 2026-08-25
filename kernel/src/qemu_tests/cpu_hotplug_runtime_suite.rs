@@ -214,11 +214,37 @@ async fn wait_for_task_release(release: &Arc<AtomicBool>) -> bool {
 }
 
 pub(crate) async fn run_cpu_hotplug_sparse_runtime_suite() -> RuntimeTestResult {
+    match crate::drivers::apic::local_apic() {
+        Ok(apic) if apic.mode() == crate::drivers::apic::ApicMode::X2Apic => {}
+        Ok(apic) => {
+            log::error!(
+                target: "init",
+                "sparse CPU hotplug requires x2APIC, selected {:?}",
+                apic.mode()
+            );
+            return RuntimeTestResult::fail("sparse CPU hotplug did not select x2APIC");
+        }
+        Err(error) => {
+            log::error!(target: "init", "local APIC unavailable: {error:?}");
+            return RuntimeTestResult::fail("sparse CPU hotplug could not inspect the APIC mode");
+        }
+    }
+
     let Some(absent) = wait_for_hotpluggable_absent_slots(2).await else {
         return RuntimeTestResult::blocked(
             "sparse CPU hotplug requires two firmware-ejectable absent slots",
         );
     };
+    let topology = crate::cpu::snapshot();
+    if topology.possible().len() != crate::cpu::MAX_POSSIBLE_CPUS {
+        log::error!(
+            target: "init",
+            "sparse CPU hotplug enumerated {} possible CPUs, expected {}",
+            topology.possible().len(),
+            crate::cpu::MAX_POSSIBLE_CPUS
+        );
+        return RuntimeTestResult::fail("firmware did not enumerate all possible CPU slots");
+    }
     let gap = absent[0];
     let target = absent[1];
     let original_identity = crate::cpu::snapshot()

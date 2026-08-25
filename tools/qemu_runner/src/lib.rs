@@ -37,14 +37,27 @@ fn cpu_hotplug_mode(profile: &str) -> Option<CpuHotplugMode> {
     }
 }
 
+fn iommu_device_arg(profile: &str) -> &'static str {
+    if matches!(cpu_hotplug_mode(profile), Some(CpuHotplugMode::Sparse)) {
+        "intel-iommu,intremap=on,eim=on,caching-mode=on,device-iotlb=on"
+    } else {
+        "intel-iommu,intremap=on,caching-mode=on,device-iotlb=on"
+    }
+}
+
 impl RunConfig {
     #[must_use]
     pub fn for_profile(profile: impl Into<String>) -> Self {
         let profile = profile.into();
         let (smp, max_cpus) = match cpu_hotplug_mode(&profile) {
             Some(CpuHotplugMode::Lifecycle) => (1, 2),
-            Some(CpuHotplugMode::Sparse) => (1, 3),
+            Some(CpuHotplugMode::Sparse) => (1, 256),
             None => (2, 2),
+        };
+        let cpu = if matches!(cpu_hotplug_mode(&profile), Some(CpuHotplugMode::Sparse)) {
+            String::from("qemu64,+x2apic,+rdtscp,+rdrand")
+        } else {
+            String::from("qemu64,+rdtscp,+rdrand")
         };
         Self {
             profile,
@@ -53,7 +66,7 @@ impl RunConfig {
             memory_mb: 1024,
             smp,
             max_cpus,
-            cpu: String::from("qemu64,+rdtscp,+rdrand"),
+            cpu,
             extra_args: Vec::new(),
         }
     }
@@ -1298,7 +1311,7 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
 
     qemu_cmd
         .arg("-device")
-        .arg("intel-iommu,intremap=on,caching-mode=on,device-iotlb=on");
+        .arg(iommu_device_arg(&config.profile));
 
     for extra in &config.extra_args {
         qemu_cmd.arg(extra);
@@ -1365,14 +1378,23 @@ mod tests {
     }
 
     #[test]
-    fn sparse_cpu_hotplug_profile_reserves_two_empty_slots() {
+    fn sparse_cpu_hotplug_profile_enumerates_all_possible_slots_with_eime() {
         let cfg = RunConfig::for_profile("cpu-hotplug-sparse");
         let cmdline = kernel_cmdline(&cfg);
 
         assert!(cmdline.contains("run_integration=cpu-hotplug-sparse"));
         assert!(!cmdline.contains("qemu_no_if=1"));
         assert_eq!(cfg.smp, 1);
-        assert_eq!(cfg.max_cpus, 3);
+        assert_eq!(cfg.max_cpus, 256);
+        assert!(cfg.cpu.contains("+x2apic"));
+        assert!(iommu_device_arg(&cfg.profile).contains("eim=on"));
+    }
+
+    #[test]
+    fn lifecycle_cpu_hotplug_profile_keeps_xapic_compatible_remapping() {
+        let cfg = RunConfig::for_profile("cpu-hotplug");
+
+        assert!(!iommu_device_arg(&cfg.profile).contains("eim=on"));
     }
 
     #[test]

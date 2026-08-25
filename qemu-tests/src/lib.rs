@@ -43,13 +43,12 @@ fn base_config(profile: &str) -> RunConfig {
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
     let (default_smp, default_max_cpus) = match profile {
         "cpu-hotplug" => (1, 2),
-        "cpu-hotplug-sparse" => (1, 3),
+        "cpu-hotplug-sparse" => (1, 256),
         _ => (4, 4),
     };
     cfg.smp = env_u16("QEMU_TEST_SMP", default_smp);
     cfg.max_cpus = env_u16("QEMU_TEST_MAX_CPUS", default_max_cpus);
-    cfg.cpu =
-        std::env::var("QEMU_TEST_CPU").unwrap_or_else(|_| String::from("qemu64,+rdtscp,+rdrand"));
+    cfg.cpu = std::env::var("QEMU_TEST_CPU").unwrap_or(cfg.cpu);
     cfg.case_filter = std::env::var("QEMU_TEST_CASE_FILTER").ok();
     cfg
 }
