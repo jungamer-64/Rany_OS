@@ -10,6 +10,8 @@ use super::{
     AmlObject, AmlPath, AmlValue, OperationRegionSpace,
 };
 
+const RESUME_INSTRUCTION_QUANTUM: u32 = 1024;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AmlBudget {
     pub instructions: u64,
@@ -47,6 +49,7 @@ pub enum AmlInstruction {
     Equal,
     Less,
     LogicalAnd,
+    LogicalOr,
     BitAnd,
     BitOr,
     LogicalNot,
@@ -124,6 +127,7 @@ pub enum VmWait {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VmProgress {
     Complete(AmlValue),
+    Yielded,
     Waiting(VmWait),
     Notify { object: AmlPath, value: u64 },
 }
@@ -306,7 +310,12 @@ impl AmlVm {
             }
         }
 
+        let mut quantum = 0u32;
         loop {
+            if quantum == RESUME_INSTRUCTION_QUANTUM {
+                return Ok(VmProgress::Yielded);
+            }
+            quantum += 1;
             self.consume_instruction()?;
             if self.frames.is_empty() {
                 return Ok(VmProgress::Complete(
@@ -466,6 +475,12 @@ impl AmlVm {
                     let left = self.pop_value()?.truthy()?;
                     self.values
                         .push(AmlValue::Integer(u64::from(left && right)));
+                }
+                AmlInstruction::LogicalOr => {
+                    let right = self.pop_value()?.truthy()?;
+                    let left = self.pop_value()?.truthy()?;
+                    self.values
+                        .push(AmlValue::Integer(u64::from(left || right)));
                 }
                 AmlInstruction::BitAnd => self.binary_integer(|left, right| left & right)?,
                 AmlInstruction::BitOr => self.binary_integer(|left, right| left | right)?,
@@ -1189,6 +1204,13 @@ impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
                 self.instructions.push(AmlInstruction::LogicalAnd);
                 Ok(())
             }
+            0x91 => {
+                self.cursor += 1;
+                self.term_argument()?;
+                self.term_argument()?;
+                self.instructions.push(AmlInstruction::LogicalOr);
+                Ok(())
+            }
             0x93 => {
                 self.cursor += 1;
                 self.term_argument()?;
@@ -1711,6 +1733,29 @@ mod tests {
     }
 
     #[test]
+    fn execution_quantum_yields_without_resetting_the_instruction_budget() {
+        let (namespace, method) = method_namespace(alloc::vec![AmlInstruction::Jump(0)]);
+        let budget = AmlBudget {
+            instructions: u64::from(RESUME_INSTRUCTION_QUANTUM) + 1,
+            loops: u64::from(RESUME_INSTRUCTION_QUANTUM) + 1,
+            recursion: 4,
+            allocation_units: 16,
+            deadline_tick: 100,
+        };
+        let mut vm = AmlVm::new(1, namespace, &method, &[], budget).unwrap();
+        let mut environment = VmEnvironment::default();
+
+        assert_eq!(
+            vm.resume(0, &mut environment, None).unwrap(),
+            VmProgress::Yielded
+        );
+        assert_eq!(
+            vm.resume(0, &mut environment, None).unwrap_err().kind,
+            AmlErrorKind::InstructionBudgetExhausted
+        );
+    }
+
+    #[test]
     fn bytecode_compilation_reserves_allocation_budget_before_decode() {
         let method = path("\\TEST");
         let mut namespace = AmlNamespace::default();
@@ -1736,6 +1781,36 @@ mod tests {
             panic!("zero allocation budget unexpectedly admitted AML compilation");
         };
         assert_eq!(error.kind, AmlErrorKind::AllocationBudgetExhausted);
+    }
+
+    #[test]
+    fn bytecode_logical_or_uses_aml_truth_values() {
+        let method = path("\\TEST");
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(
+                method.clone(),
+                AmlObject::Method(AmlMethod {
+                    argument_count: 0,
+                    serialized: false,
+                    sync_level: 0,
+                    body: AmlMethodBody::Bytecode(Arc::from(&[0xa4, 0x91, 0x00, 0x01][..])),
+                }),
+            )
+            .unwrap();
+        let mut vm = AmlVm::new(
+            1,
+            Arc::new(namespace),
+            &method,
+            &[],
+            AmlBudget::firmware_method(100),
+        )
+        .unwrap();
+
+        assert_eq!(
+            vm.resume(0, &mut VmEnvironment::default(), None).unwrap(),
+            VmProgress::Complete(AmlValue::Integer(1))
+        );
     }
 
     #[test]

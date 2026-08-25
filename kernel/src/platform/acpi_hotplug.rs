@@ -32,11 +32,26 @@ const AML_METHOD_DEADLINE_MS: u64 = 5_000;
 const NOTIFY_CASCADE_BUDGET: usize = 256;
 const NO_WORKER_TASK: u64 = u64::MAX;
 const OST_EJECT_REQUEST: u64 = 0x03;
-const OST_SUCCESS: u64 = 0x00;
-const OST_FAILURE: u64 = 0x01;
-const OST_NOT_SUPPORTED: u64 = 0x02;
-const OST_INSUFFICIENT_RESOURCES: u64 = 0x03;
-const OST_DEVICE_BUSY: u64 = 0x04;
+
+/// ACPI 6.6 Table 6.22/6.24 status for an ejection request.
+#[derive(Clone, Copy)]
+enum EjectOstStatus {
+    Success,
+    Failure,
+    NotSupported,
+    DeviceBusy,
+}
+
+impl EjectOstStatus {
+    const fn value(self) -> u64 {
+        match self {
+            Self::Success => 0x00,
+            Self::Failure => 0x01,
+            Self::NotSupported => 0x80,
+            Self::DeviceBusy => 0x82,
+        }
+    }
+}
 
 static HOTPLUG_SERVICE: Once<AcpiHotplugService> = Once::new();
 
@@ -50,6 +65,7 @@ pub fn initialize() {
         return;
     }
     if let Err(error) = try_initialize() {
+        log::warn!("ACPI physical CPU hotplug unavailable: {error:?}");
         publish_unavailable(error);
     }
 }
@@ -274,6 +290,7 @@ async fn execute_method(
             .map_err(map_aml_error)?
         {
             VmProgress::Complete(value) => return Ok(value),
+            VmProgress::Yielded => crate::task::yield_now().await,
             VmProgress::Notify { object, value } => {
                 if let Some(event) = service.runtime.notify_event(object, value) {
                     notifications.push_back(event);
@@ -327,13 +344,6 @@ async fn evaluate_cpu<'a>(
     environment: &mut VmEnvironment,
     notifications: &mut VecDeque<CpuFirmwareEvent>,
 ) -> Result<EvaluatedCpu<'a>, FirmwareError> {
-    if binding.eject_method.is_some() != binding.ost_method.is_some() {
-        return Err(firmware_error(
-            FirmwareErrorKind::Namespace,
-            Some(Arc::from(binding.path.as_str())),
-            "CPU namespace object must provide _EJ0 and _OST together",
-        ));
-    }
     let uid = match binding.uid.as_ref() {
         Some(value) => {
             let value = evaluate_binding(service, value, environment, notifications).await?;
@@ -569,7 +579,7 @@ async fn eject_cpu(
             report_ost(
                 service,
                 binding,
-                ost_status_for_transition(&error),
+                eject_ost_status(&error),
                 environment,
                 notifications,
             )
@@ -597,7 +607,14 @@ async fn eject_cpu(
             crate::cpu::commit_eject(authority)
                 .await
                 .map_err(map_transition_error)?;
-            report_ost(service, binding, OST_SUCCESS, environment, notifications).await
+            report_ost(
+                service,
+                binding,
+                EjectOstStatus::Success,
+                environment,
+                notifications,
+            )
+            .await
         }
         (Ok(_), Ok(true)) => {
             let error = firmware_error(
@@ -608,7 +625,14 @@ async fn eject_cpu(
             crate::cpu::fail_eject(authority, error.clone())
                 .await
                 .map_err(map_transition_error)?;
-            report_ost(service, binding, OST_FAILURE, environment, notifications).await?;
+            report_ost(
+                service,
+                binding,
+                EjectOstStatus::Failure,
+                environment,
+                notifications,
+            )
+            .await?;
             log::warn!("firmware eject for CPU {id} did not remove the CPU: {error:?}");
             Ok(())
         }
@@ -616,7 +640,14 @@ async fn eject_cpu(
             crate::cpu::fail_eject(authority, error.clone())
                 .await
                 .map_err(map_transition_error)?;
-            report_ost(service, binding, OST_FAILURE, environment, notifications).await?;
+            report_ost(
+                service,
+                binding,
+                EjectOstStatus::Failure,
+                environment,
+                notifications,
+            )
+            .await?;
             log::warn!("firmware eject method for CPU {id} failed: {error:?}");
             Ok(())
         }
@@ -645,23 +676,21 @@ async fn evaluate_present_status(
 async fn report_ost(
     service: &AcpiHotplugService,
     binding: &CpuNamespaceBinding,
-    status: u64,
+    status: EjectOstStatus,
     environment: &mut VmEnvironment,
     notifications: &mut VecDeque<CpuFirmwareEvent>,
 ) -> Result<(), FirmwareError> {
-    let method = binding.ost_method.as_ref().ok_or_else(|| {
-        firmware_error(
-            FirmwareErrorKind::Namespace,
-            Some(Arc::from(binding.path.as_str())),
-            "firmware eject target does not provide _OST",
-        )
-    })?;
+    // ACPI defines _OST as optional. Its absence removes the platform-status
+    // handshake, but does not revoke the independent _EJ0 eject capability.
+    let Some(method) = binding.ost_method.as_ref() else {
+        return Ok(());
+    };
     execute_method(
         service,
         method,
         &[
             AmlValue::Integer(OST_EJECT_REQUEST),
-            AmlValue::Integer(status),
+            AmlValue::Integer(status.value()),
             AmlValue::Buffer(Arc::<[u8]>::from([])),
         ],
         environment,
@@ -671,18 +700,15 @@ async fn report_ost(
     .map(|_| ())
 }
 
-fn ost_status_for_transition(error: &CpuTransitionError) -> u64 {
+fn eject_ost_status(error: &CpuTransitionError) -> EjectOstStatus {
     match error {
-        CpuTransitionError::Busy { .. } => OST_DEVICE_BUSY,
+        CpuTransitionError::Busy { .. } => EjectOstStatus::DeviceBusy,
         CpuTransitionError::UnsupportedTopology(_) | CpuTransitionError::BootstrapCpu => {
-            OST_NOT_SUPPORTED
+            EjectOstStatus::NotSupported
         }
-        CpuTransitionError::NotPresent => OST_FAILURE,
-        CpuTransitionError::TimedOut { .. } => OST_FAILURE,
-        CpuTransitionError::Firmware(error) if error.kind == FirmwareErrorKind::Resource => {
-            OST_INSUFFICIENT_RESOURCES
-        }
-        CpuTransitionError::Firmware(_) => OST_FAILURE,
+        CpuTransitionError::NotPresent
+        | CpuTransitionError::TimedOut { .. }
+        | CpuTransitionError::Firmware(_) => EjectOstStatus::Failure,
     }
 }
 

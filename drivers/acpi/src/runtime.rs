@@ -435,6 +435,33 @@ mod tests {
     }
 
     #[test]
+    fn cpu_eject_and_status_methods_are_independent_optional_bindings() {
+        let cpu = AmlPath::new(Arc::<str>::from("\\CPU2")).unwrap();
+        let hid = cpu.child("_HID").unwrap();
+        let ost = cpu.child("_OST").unwrap();
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(cpu.clone(), AmlObject::Device(AmlDevice))
+            .unwrap();
+        namespace
+            .insert(
+                hid,
+                AmlObject::Value(AmlValue::String(Arc::from("ACPI0007"))),
+            )
+            .unwrap();
+        namespace
+            .insert(
+                ost.clone(),
+                AmlObject::Method(crate::aml::AmlMethod::instructions(3, [])),
+            )
+            .unwrap();
+
+        let binding = bind_cpu_device(&namespace, &cpu).unwrap();
+        assert_eq!(binding.eject_method, None);
+        assert_eq!(binding.ost_method, Some(ost));
+    }
+
+    #[test]
     fn non_cpu_devices_do_not_enter_cpu_enumeration() {
         let device = AmlPath::new(Arc::<str>::from("\\PCI0")).unwrap();
         let uid = device.child("_UID").unwrap();
