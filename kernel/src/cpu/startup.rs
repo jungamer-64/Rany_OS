@@ -12,7 +12,7 @@ use ap_trampoline::{
 use boot_proto::ExoBootInfo;
 use spin::Once;
 
-use crate::drivers::apic::{ApicDestination, ApicMode, LocalApicError};
+use crate::drivers::apic::{ApicDestination, ApicMode, ApicModePolicy, LocalApicError};
 use crate::sync::PoisonLock;
 
 use super::{
@@ -346,9 +346,9 @@ fn map_apic_start_error(error: LocalApicError) -> CpuFailureReason {
                 apic_id: ApicId::new(destination.as_u32()),
             })
         }
-        LocalApicError::Unsupported => CpuFailureReason::Startup(CpuStartupFailure::LocalApic(
-            CpuStartupApicFailure::Unsupported,
-        )),
+        LocalApicError::NotSelected | LocalApicError::Unsupported => CpuFailureReason::Startup(
+            CpuStartupFailure::LocalApic(CpuStartupApicFailure::Unsupported),
+        ),
         LocalApicError::InvalidMmioBase { .. } => CpuFailureReason::Startup(
             CpuStartupFailure::LocalApic(CpuStartupApicFailure::InvalidMmioBase),
         ),
@@ -385,6 +385,7 @@ pub(crate) struct CpuBootSummary {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum CpuInitializationError {
     LocalApic(LocalApicError),
+    Firmware(FirmwareError),
     Trampoline(&'static str),
     Topology(CpuTopologyIssue),
     BootstrapBinding,
@@ -395,7 +396,7 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
     if BOOT_CPU_INVENTORY.get().is_some() {
         return Ok(());
     }
-    let local_apic = crate::drivers::apic::initialize_current_cpu()
+    let local_apic = crate::drivers::apic::initialize_bootstrap_cpu(bootstrap_apic_policy()?)
         .map_err(CpuInitializationError::LocalApic)?;
     let bsp_apic = ApicId::new(local_apic.id());
     super::install_bootstrap(bsp_apic, Some(boot_info.tls_template))
@@ -470,6 +471,23 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
         enabled: Arc::from(enabled),
     });
     Ok(())
+}
+
+fn bootstrap_apic_policy() -> Result<ApicModePolicy, CpuInitializationError> {
+    let Some(tables) = crate::platform::firmware::tables() else {
+        return Ok(ApicModePolicy::PreferX2Apic);
+    };
+    let Some(table) = tables.first(acpi_driver::TableSignature::DMAR) else {
+        return Ok(ApicModePolicy::PreferX2Apic);
+    };
+    let dmar = acpi_driver::dmar::parse(table.bytes())
+        .map_err(firmware_error)
+        .map_err(CpuInitializationError::Firmware)?;
+    Ok(if dmar.x2apic_opt_out() {
+        ApicModePolicy::XApicOnly
+    } else {
+        ApicModePolicy::PreferX2Apic
+    })
 }
 
 pub(crate) fn start_boot_cpus() -> CpuBootSummary {

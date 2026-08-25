@@ -8,29 +8,50 @@ pub use ioapic::{
     RedirectionEntry, TriggerMode, initialize_io_apics, io_apics,
 };
 pub use local::{
-    ApicDeliveryTarget, ApicDestination, ApicMode, InServiceVectors, LocalApic, LocalApicError,
-    X2Apic, XApic,
+    ApicDeliveryTarget, ApicDestination, ApicMode, ApicModePolicy, InServiceVectors, LocalApic,
+    LocalApicError, X2Apic, XApic,
 };
 
 use spin::Once;
 
 static LOCAL_APIC: Once<Result<LocalApic, LocalApicError>> = Once::new();
 
-/// Returns the typed local APIC backend selected from architectural feature
-/// bits and the APIC-base MSR.
+/// Returns the typed local APIC backend selected during BSP initialization.
 ///
 /// # Errors
 ///
-/// Returns an error when the current platform lacks APIC support or exposes an
-/// invalid xAPIC MMIO base.
+/// Returns an error when BSP initialization has not selected a backend, or
+/// when that selection failed.
 pub fn local_apic() -> Result<&'static LocalApic, LocalApicError> {
-    match LOCAL_APIC.call_once(LocalApic::detect) {
+    let selected = LOCAL_APIC.get().ok_or(LocalApicError::NotSelected)?;
+    match selected {
         Ok(apic) => Ok(apic),
         Err(error) => Err(*error),
     }
 }
 
-/// Initializes the selected local APIC backend on the executing CPU.
+/// Selects the process-wide local APIC backend and initializes it on the BSP.
+///
+/// Selection must happen after firmware policy is available and before any AP
+/// or interrupt subsystem obtains the backend.
+///
+/// # Errors
+///
+/// Returns a typed backend error when APIC support is absent, the selected
+/// xAPIC MMIO base is invalid, or per-CPU initialization fails.
+pub fn initialize_bootstrap_cpu(
+    policy: ApicModePolicy,
+) -> Result<&'static LocalApic, LocalApicError> {
+    let selected = LOCAL_APIC.call_once(|| LocalApic::detect(policy));
+    let apic = match selected {
+        Ok(apic) => apic,
+        Err(error) => return Err(*error),
+    };
+    apic.initialize_current_cpu()?;
+    Ok(apic)
+}
+
+/// Initializes the already-selected local APIC backend on the executing CPU.
 ///
 /// # Errors
 ///

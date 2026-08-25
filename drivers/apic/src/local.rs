@@ -37,6 +37,14 @@ pub enum ApicMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApicModePolicy {
+    /// Use x2APIC when the processor supports it, otherwise use xAPIC.
+    PreferX2Apic,
+    /// Keep the platform in xAPIC mode even when the processor supports x2APIC.
+    XApicOnly,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct InServiceVectors {
     banks: [u32; 8],
 }
@@ -59,6 +67,7 @@ pub enum ApicDeliveryTarget {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LocalApicError {
+    NotSelected,
     Unsupported,
     InvalidMmioBase { base: u64 },
     DestinationNotAddressable { destination: ApicDestination },
@@ -70,6 +79,7 @@ pub enum LocalApicError {
 impl fmt::Display for LocalApicError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::NotSelected => formatter.write_str("local APIC mode has not been selected"),
             Self::Unsupported => formatter.write_str("local APIC is not supported"),
             Self::InvalidMmioBase { base } => {
                 write!(formatter, "invalid local APIC MMIO base {base:#x}")
@@ -261,22 +271,22 @@ pub struct LocalApic {
 }
 
 impl LocalApic {
-    /// Detects the architectural local-APIC mode without truncating x2APIC IDs.
+    /// Builds the local-APIC backend selected by architectural support and
+    /// the firmware-derived mode policy.
     ///
     /// # Errors
     ///
     /// Returns an error when APIC support is absent or the xAPIC MMIO base is
     /// invalid.
-    pub fn detect() -> Result<Self, LocalApicError> {
+    pub(super) fn detect(policy: ApicModePolicy) -> Result<Self, LocalApicError> {
         let features = core::arch::x86_64::__cpuid(1);
         if features.edx & (1 << 9) == 0 {
             return Err(LocalApicError::Unsupported);
         }
         let apic_base = unsafe { read_msr(APIC_BASE_MSR) };
-        let backend = if features.ecx & (1 << 21) != 0 {
-            Backend::X2Apic(X2Apic)
-        } else {
-            Backend::XApic(XApic::new(apic_base & APIC_BASE_MASK)?)
+        let backend = match select_mode(policy, features.ecx & (1 << 21) != 0) {
+            ApicMode::X2Apic => Backend::X2Apic(X2Apic),
+            ApicMode::XApic => Backend::XApic(XApic::new(apic_base & APIC_BASE_MASK)?),
         };
         Ok(Self {
             backend,
@@ -501,6 +511,14 @@ fn spin_until(mut ready: impl FnMut() -> bool, max_spins: usize) -> bool {
     false
 }
 
+const fn select_mode(policy: ApicModePolicy, x2apic_supported: bool) -> ApicMode {
+    match (policy, x2apic_supported) {
+        (ApicModePolicy::PreferX2Apic, true) => ApicMode::X2Apic,
+        (ApicModePolicy::PreferX2Apic | ApicModePolicy::XApicOnly, false)
+        | (ApicModePolicy::XApicOnly, true) => ApicMode::XApic,
+    }
+}
+
 unsafe fn read_msr(msr: u32) -> u64 {
     let low: u32;
     let high: u32;
@@ -547,6 +565,26 @@ mod tests {
         assert_eq!(
             XApic::destination_high(ApicDestination::new(0xab)),
             Ok(0xab00_0000)
+        );
+    }
+
+    #[test]
+    fn firmware_opt_out_keeps_xapic_on_x2apic_capable_hardware() {
+        assert_eq!(
+            select_mode(ApicModePolicy::XApicOnly, true),
+            ApicMode::XApic
+        );
+    }
+
+    #[test]
+    fn preferred_x2apic_requires_architectural_support() {
+        assert_eq!(
+            select_mode(ApicModePolicy::PreferX2Apic, true),
+            ApicMode::X2Apic
+        );
+        assert_eq!(
+            select_mode(ApicModePolicy::PreferX2Apic, false),
+            ApicMode::XApic
         );
     }
 }
