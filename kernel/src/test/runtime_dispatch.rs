@@ -55,7 +55,8 @@ pub enum RuntimeGroup {
 
 enum RuntimeTestBody {
     Sync(fn(Option<&str>) -> RuntimeTestResult),
-    CpuHotplug,
+    CpuHotplugLifecycle,
+    CpuHotplugSparse,
 }
 
 pub struct RuntimeTestCase {
@@ -94,6 +95,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "iommu")
         || str_eq(profile, "network")
         || str_eq(profile, "cpu-hotplug")
+        || str_eq(profile, "cpu-hotplug-sparse")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -266,8 +268,14 @@ static CASES: &[RuntimeTestCase] = &[
     },
     RuntimeTestCase {
         id: "cpu.hotplug_runtime_suite",
-        body: RuntimeTestBody::CpuHotplug,
+        body: RuntimeTestBody::CpuHotplugLifecycle,
         tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::CpuHotplug,
+    },
+    RuntimeTestCase {
+        id: "cpu.hotplug_sparse_runtime_suite",
+        body: RuntimeTestBody::CpuHotplugSparse,
+        tier: RuntimeTier::NightlyRequired,
         group: RuntimeGroup::CpuHotplug,
     },
 ];
@@ -277,6 +285,7 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.tier, RuntimeTier::PrRequired)
     } else if str_eq(profile, "nightly-required") {
         matches!(case.tier, RuntimeTier::NightlyRequired)
+            && !matches!(case.group, RuntimeGroup::CpuHotplug)
     } else if str_eq(profile, "boot-smoke") {
         matches!(case.group, RuntimeGroup::Boot)
     } else if str_eq(profile, "storage") {
@@ -288,7 +297,9 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
     } else if str_eq(profile, "network") {
         matches!(case.group, RuntimeGroup::Network)
     } else if str_eq(profile, "cpu-hotplug") {
-        matches!(case.group, RuntimeGroup::CpuHotplug)
+        str_eq(case.id, "cpu.hotplug_runtime_suite")
+    } else if str_eq(profile, "cpu-hotplug-sparse") {
+        str_eq(case.id, "cpu.hotplug_sparse_runtime_suite")
     } else if str_eq(profile, "step9-heavy") {
         matches!(case.group, RuntimeGroup::Step9Heavy)
     } else {
@@ -362,7 +373,12 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
         selected_any = true;
         let result = match case.body {
             RuntimeTestBody::Sync(run) => run(nested_case_filter),
-            RuntimeTestBody::CpuHotplug => crate::qemu_tests::run_cpu_hotplug_runtime_suite().await,
+            RuntimeTestBody::CpuHotplugLifecycle => {
+                crate::qemu_tests::run_cpu_hotplug_runtime_suite().await
+            }
+            RuntimeTestBody::CpuHotplugSparse => {
+                crate::qemu_tests::run_cpu_hotplug_sparse_runtime_suite().await
+            }
         };
         log_case_result(case.id, result);
 

@@ -13,7 +13,9 @@ pub use storage_fs_tests::*;
 mod network_runtime_suite;
 pub use network_runtime_suite::*;
 mod cpu_hotplug_runtime_suite;
-pub(crate) use cpu_hotplug_runtime_suite::run_cpu_hotplug_runtime_suite;
+pub(crate) use cpu_hotplug_runtime_suite::{
+    run_cpu_hotplug_runtime_suite, run_cpu_hotplug_sparse_runtime_suite,
+};
 struct FixedBuf {
     buf: [u8; 96],
     len: usize,

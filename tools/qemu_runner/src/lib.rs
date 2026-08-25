@@ -9,7 +9,7 @@ use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use qmp::{HotpluggedCpu, QmpClient};
+use qmp::{DeviceDeleteOutcome, HotpluggedCpu, QmpClient};
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -23,14 +23,28 @@ pub struct RunConfig {
     pub extra_args: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuHotplugMode {
+    Lifecycle,
+    Sparse,
+}
+
+fn cpu_hotplug_mode(profile: &str) -> Option<CpuHotplugMode> {
+    match profile {
+        "cpu-hotplug" => Some(CpuHotplugMode::Lifecycle),
+        "cpu-hotplug-sparse" => Some(CpuHotplugMode::Sparse),
+        _ => None,
+    }
+}
+
 impl RunConfig {
     #[must_use]
     pub fn for_profile(profile: impl Into<String>) -> Self {
         let profile = profile.into();
-        let (smp, max_cpus) = if profile == "cpu-hotplug" {
-            (1, 2)
-        } else {
-            (2, 2)
+        let (smp, max_cpus) = match cpu_hotplug_mode(&profile) {
+            Some(CpuHotplugMode::Lifecycle) => (1, 2),
+            Some(CpuHotplugMode::Sparse) => (1, 3),
+            None => (2, 2),
         };
         Self {
             profile,
@@ -346,7 +360,7 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if !matches!(config.profile.as_str(), "boot-smoke" | "cpu-hotplug") {
+    if config.profile != "boot-smoke" && cpu_hotplug_mode(&config.profile).is_none() {
         parts.push(String::from("qemu_no_if=1"));
     }
     if config.profile == "step9-heavy" {
@@ -854,13 +868,23 @@ fn serial_contains(log_path: &Path, marker: &str) -> bool {
 
 const CPU_HOTPLUG_READY: &str = "[kernel-test] cpu-hotplug ready";
 const CPU_HOTPLUG_EJECT_READY: &str = "[kernel-test] cpu-hotplug eject-ready";
+const CPU_HOTPLUG_SPARSE_ADD_READY: &str = "[kernel-test] cpu-hotplug sparse-add-ready";
+const CPU_HOTPLUG_BLOCKER_EJECT_READY: &str = "[kernel-test] cpu-hotplug blocker-eject-ready";
+const CPU_HOTPLUG_RETRY_EJECT_READY: &str = "[kernel-test] cpu-hotplug retry-eject-ready";
+const CPU_HOTPLUG_READD_READY: &str = "[kernel-test] cpu-hotplug readd-ready";
+const CPU_HOTPLUG_FINAL_EJECT_READY: &str = "[kernel-test] cpu-hotplug final-eject-ready";
 const QMP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const QMP_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CpuHotplugRunPhase {
-    AwaitingAdd,
-    AwaitingDelete,
+    LifecycleAwaitingAdd,
+    LifecycleAwaitingDelete,
+    SparseAwaitingAdd,
+    SparseAwaitingBlockedDelete,
+    SparseAwaitingRetryDelete,
+    SparseAwaitingReadd,
+    SparseAwaitingFinalDelete,
     Complete,
 }
 
@@ -871,45 +895,152 @@ struct CpuHotplugRun {
 }
 
 impl CpuHotplugRun {
-    const fn new(client: QmpClient) -> Self {
+    const fn new(client: QmpClient, mode: CpuHotplugMode) -> Self {
         Self {
             client,
-            phase: CpuHotplugRunPhase::AwaitingAdd,
+            phase: match mode {
+                CpuHotplugMode::Lifecycle => CpuHotplugRunPhase::LifecycleAwaitingAdd,
+                CpuHotplugMode::Sparse => CpuHotplugRunPhase::SparseAwaitingAdd,
+            },
             added_cpu: None,
         }
     }
 
     fn advance(&mut self, log_path: &Path, run_deadline: Instant) -> Result<(), QmpError> {
-        if self.phase == CpuHotplugRunPhase::AwaitingAdd
-            && serial_contains(log_path, CPU_HOTPLUG_READY)
-        {
-            let deadline = qmp_operation_deadline(run_deadline);
-            let cpu = self
-                .client
-                .add_first_available_cpu("rany-cpu-hotplug-1", deadline)?;
-            eprintln!("QMP added CPU device '{}'", cpu.device_id);
-            self.added_cpu = Some(cpu);
-            self.phase = CpuHotplugRunPhase::AwaitingDelete;
-        }
-
-        if self.phase == CpuHotplugRunPhase::AwaitingDelete
-            && serial_contains(log_path, CPU_HOTPLUG_EJECT_READY)
-        {
-            let cpu = self
-                .added_cpu
-                .as_ref()
-                .expect("added CPU must exist before the delete phase");
-            let deadline = qmp_operation_deadline(run_deadline);
-            self.client.request_cpu_delete(cpu, deadline)?;
-            self.client.wait_for_device_deleted(cpu, deadline)?;
-            eprintln!("QMP observed DEVICE_DELETED for '{}'", cpu.device_id);
-            self.phase = CpuHotplugRunPhase::Complete;
+        match self.phase {
+            CpuHotplugRunPhase::LifecycleAwaitingAdd
+                if serial_contains(log_path, CPU_HOTPLUG_READY) =>
+            {
+                let deadline = qmp_operation_deadline(run_deadline);
+                let cpu = self
+                    .client
+                    .add_available_cpu("rany-cpu-hotplug-1", 0, deadline)?;
+                eprintln!("QMP added CPU device '{}'", cpu.device_id);
+                self.added_cpu = Some(cpu);
+                self.phase = CpuHotplugRunPhase::LifecycleAwaitingDelete;
+            }
+            CpuHotplugRunPhase::LifecycleAwaitingDelete
+                if serial_contains(log_path, CPU_HOTPLUG_EJECT_READY) =>
+            {
+                let cpu = self.added_cpu()?.clone();
+                let deadline = qmp_operation_deadline(run_deadline);
+                self.client.request_cpu_delete(&cpu, deadline)?;
+                expect_cpu_deleted(
+                    self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
+                    "CPU hotplug lifecycle delete",
+                )?;
+                eprintln!("QMP observed DEVICE_DELETED for '{}'", cpu.device_id);
+                self.phase = CpuHotplugRunPhase::Complete;
+            }
+            CpuHotplugRunPhase::SparseAwaitingAdd
+                if serial_contains(log_path, CPU_HOTPLUG_SPARSE_ADD_READY) =>
+            {
+                let deadline = qmp_operation_deadline(run_deadline);
+                let cpu =
+                    self.client
+                        .add_available_cpu("rany-cpu-hotplug-sparse-1", 1, deadline)?;
+                eprintln!("QMP added sparse CPU device '{}'", cpu.device_id);
+                self.added_cpu = Some(cpu);
+                self.phase = CpuHotplugRunPhase::SparseAwaitingBlockedDelete;
+            }
+            CpuHotplugRunPhase::SparseAwaitingBlockedDelete
+                if serial_contains(log_path, CPU_HOTPLUG_BLOCKER_EJECT_READY) =>
+            {
+                let cpu = self.added_cpu()?.clone();
+                let deadline = qmp_operation_deadline(run_deadline);
+                self.client.request_cpu_delete(&cpu, deadline)?;
+                expect_cpu_delete_rejected(
+                    self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
+                )?;
+                eprintln!("QMP observed guest rejection for '{}'", cpu.device_id);
+                self.phase = CpuHotplugRunPhase::SparseAwaitingRetryDelete;
+            }
+            CpuHotplugRunPhase::SparseAwaitingRetryDelete
+                if serial_contains(log_path, CPU_HOTPLUG_RETRY_EJECT_READY) =>
+            {
+                let cpu = self.added_cpu()?.clone();
+                let deadline = qmp_operation_deadline(run_deadline);
+                self.client.request_cpu_delete(&cpu, deadline)?;
+                expect_cpu_deleted(
+                    self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
+                    "sparse CPU retry delete",
+                )?;
+                eprintln!("QMP deleted sparse CPU device '{}'", cpu.device_id);
+                self.phase = CpuHotplugRunPhase::SparseAwaitingReadd;
+            }
+            CpuHotplugRunPhase::SparseAwaitingReadd
+                if serial_contains(log_path, CPU_HOTPLUG_READD_READY) =>
+            {
+                let prior = self.added_cpu()?.clone();
+                let deadline = qmp_operation_deadline(run_deadline);
+                let cpu = self
+                    .client
+                    .readd_cpu(&prior, "rany-cpu-hotplug-sparse-2", deadline)?;
+                eprintln!("QMP re-added sparse CPU device '{}'", cpu.device_id);
+                self.added_cpu = Some(cpu);
+                self.phase = CpuHotplugRunPhase::SparseAwaitingFinalDelete;
+            }
+            CpuHotplugRunPhase::SparseAwaitingFinalDelete
+                if serial_contains(log_path, CPU_HOTPLUG_FINAL_EJECT_READY) =>
+            {
+                let cpu = self.added_cpu()?.clone();
+                let deadline = qmp_operation_deadline(run_deadline);
+                self.client.request_cpu_delete(&cpu, deadline)?;
+                expect_cpu_deleted(
+                    self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
+                    "sparse CPU final delete",
+                )?;
+                eprintln!("QMP deleted re-added CPU device '{}'", cpu.device_id);
+                self.phase = CpuHotplugRunPhase::Complete;
+            }
+            _ => {}
         }
         Ok(())
     }
 
+    fn added_cpu(&self) -> Result<&HotpluggedCpu, QmpError> {
+        self.added_cpu.as_ref().ok_or_else(|| QmpError::Protocol {
+            operation: "CPU hotplug run",
+            detail: String::from("CPU hotplug phase has no device identity").into_boxed_str(),
+        })
+    }
+
     const fn is_complete(&self) -> bool {
         matches!(self.phase, CpuHotplugRunPhase::Complete)
+    }
+}
+
+fn expect_cpu_deleted(
+    outcome: DeviceDeleteOutcome,
+    operation: &'static str,
+) -> Result<(), QmpError> {
+    match outcome {
+        DeviceDeleteOutcome::Deleted => Ok(()),
+        DeviceDeleteOutcome::GuestRejected {
+            device,
+            path,
+            acpi_status,
+        } => Err(QmpError::Protocol {
+            operation,
+            detail: format!(
+                "guest rejected removal for device {:?}, path {:?}, ACPI status {:?}",
+                device.as_deref(),
+                path.as_deref(),
+                acpi_status
+            )
+            .into_boxed_str(),
+        }),
+    }
+}
+
+fn expect_cpu_delete_rejected(outcome: DeviceDeleteOutcome) -> Result<(), QmpError> {
+    match outcome {
+        DeviceDeleteOutcome::GuestRejected { .. } => Ok(()),
+        DeviceDeleteOutcome::Deleted => Err(QmpError::Protocol {
+            operation: "blocked CPU hotplug delete",
+            detail: String::from("guest removed a CPU that still had a pinned task blocker")
+                .into_boxed_str(),
+        }),
     }
 }
 
@@ -965,7 +1096,13 @@ fn poll_qemu(
     let start = Instant::now();
     let timeout = Duration::from_secs(config.timeout_secs);
     let run_deadline = start + timeout;
-    let mut hotplug = qmp_client.map(CpuHotplugRun::new);
+    let hotplug_mode = cpu_hotplug_mode(&config.profile);
+    let mut hotplug = qmp_client.map(|client| {
+        CpuHotplugRun::new(
+            client,
+            hotplug_mode.expect("QMP client requires a CPU hotplug profile"),
+        )
+    });
 
     loop {
         if start.elapsed() > timeout {
@@ -1092,7 +1229,7 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     } else {
         None
     };
-    let qmp_address = if config.profile == "cpu-hotplug" {
+    let qmp_address = if cpu_hotplug_mode(&config.profile).is_some() {
         Some(reserve_qmp_address()?)
     } else {
         None
@@ -1225,6 +1362,17 @@ mod tests {
         assert!(!cmdline.contains("qemu_no_if=1"));
         assert_eq!(cfg.smp, 1);
         assert_eq!(cfg.max_cpus, 2);
+    }
+
+    #[test]
+    fn sparse_cpu_hotplug_profile_reserves_two_empty_slots() {
+        let cfg = RunConfig::for_profile("cpu-hotplug-sparse");
+        let cmdline = kernel_cmdline(&cfg);
+
+        assert!(cmdline.contains("run_integration=cpu-hotplug-sparse"));
+        assert!(!cmdline.contains("qemu_no_if=1"));
+        assert_eq!(cfg.smp, 1);
+        assert_eq!(cfg.max_cpus, 3);
     }
 
     #[test]

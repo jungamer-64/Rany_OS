@@ -32,7 +32,7 @@ fn base_config(profile: &str) -> RunConfig {
         480
     } else if profile == "network" {
         600
-    } else if profile == "nightly-required" {
+    } else if matches!(profile, "nightly-required" | "cpu-hotplug-sparse") {
         300
     } else if profile == "driver_domain" {
         240
@@ -41,11 +41,10 @@ fn base_config(profile: &str) -> RunConfig {
     };
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
-    let default_smp = if profile == "cpu-hotplug" { 1 } else { 4 };
-    let default_max_cpus = if profile == "cpu-hotplug" {
-        2
-    } else {
-        default_smp
+    let (default_smp, default_max_cpus) = match profile {
+        "cpu-hotplug" => (1, 2),
+        "cpu-hotplug-sparse" => (1, 3),
+        _ => (4, 4),
     };
     cfg.smp = env_u16("QEMU_TEST_SMP", default_smp);
     cfg.max_cpus = env_u16("QEMU_TEST_MAX_CPUS", default_max_cpus);
@@ -108,6 +107,12 @@ fn fullboot_pr_required() {
 #[ignore = "nightly-only full-boot expansion profile"]
 fn fullboot_nightly_required() {
     run_required_profile("nightly-required");
+}
+
+#[test]
+#[ignore = "nightly-only sparse CPU add, blocked eject, and stable re-add profile"]
+fn fullboot_nightly_cpu_hotplug() {
+    run_required_profile("cpu-hotplug-sparse");
 }
 
 #[test]

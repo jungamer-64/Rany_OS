@@ -29,11 +29,10 @@ pub enum QmpError {
     TimedOut {
         operation: &'static str,
     },
-    DeviceUnplugGuestError {
-        device: Option<Box<str>>,
-        path: Box<str>,
+    HotpluggableCpuIndexOutOfRange {
+        requested: usize,
+        available: usize,
     },
-    NoHotpluggableCpu,
 }
 
 impl fmt::Display for QmpError {
@@ -55,14 +54,13 @@ impl fmt::Display for QmpError {
                 "QMP command '{execute}' failed ({class}): {description}"
             ),
             Self::TimedOut { operation } => write!(formatter, "QMP {operation} timed out"),
-            Self::DeviceUnplugGuestError { device, path } => write!(
+            Self::HotpluggableCpuIndexOutOfRange {
+                requested,
+                available,
+            } => write!(
                 formatter,
-                "guest rejected QMP device removal for device {:?} at {path}",
-                device.as_deref()
+                "QMP hotpluggable CPU index {requested} is outside the {available} available slots"
             ),
-            Self::NoHotpluggableCpu => {
-                formatter.write_str("QMP reported no unoccupied hotpluggable CPU slot")
-            }
         }
     }
 }
@@ -107,12 +105,47 @@ impl HotpluggableCpu {
                 .map(Box::from),
         })
     }
+
+    fn topology_key(&self) -> Result<[u64; 6], QmpError> {
+        const COORDINATES: [&str; 6] = [
+            "socket-id",
+            "die-id",
+            "cluster-id",
+            "module-id",
+            "core-id",
+            "thread-id",
+        ];
+        let mut key = [0u64; COORDINATES.len()];
+        for (index, coordinate) in COORDINATES.iter().enumerate() {
+            let Some(value) = self.properties.get(*coordinate) else {
+                continue;
+            };
+            key[index] = value.as_u64().ok_or_else(|| QmpError::Protocol {
+                operation: "query-hotpluggable-cpus",
+                detail: format!("CPU topology property '{coordinate}' is not an unsigned integer")
+                    .into_boxed_str(),
+            })?;
+        }
+        Ok(key)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct HotpluggedCpu {
     pub(super) device_id: Box<str>,
     qom_path: Box<str>,
+    driver: Box<str>,
+    properties: Map<String, Value>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum DeviceDeleteOutcome {
+    Deleted,
+    GuestRejected {
+        device: Option<Box<str>>,
+        path: Option<Box<str>>,
+        acpi_status: Option<u64>,
+    },
 }
 
 pub(super) struct QmpClient {
@@ -181,16 +214,54 @@ impl QmpClient {
             .collect()
     }
 
-    pub(super) fn add_first_available_cpu(
+    pub(super) fn add_available_cpu(
         &mut self,
+        device_id: &str,
+        available_index: usize,
+        deadline: Instant,
+    ) -> Result<HotpluggedCpu, QmpError> {
+        let mut available = Vec::new();
+        for slot in self
+            .query_hotpluggable_cpus(deadline)?
+            .into_iter()
+            .filter(|slot| slot.qom_path.is_none())
+        {
+            available.push((slot.topology_key()?, slot));
+        }
+        available.sort_by_key(|(key, _)| *key);
+        let available_count = available.len();
+        let (_, slot) = available.into_iter().nth(available_index).ok_or(
+            QmpError::HotpluggableCpuIndexOutOfRange {
+                requested: available_index,
+                available: available_count,
+            },
+        )?;
+        self.add_cpu_slot(slot, device_id, deadline)
+    }
+
+    pub(super) fn readd_cpu(
+        &mut self,
+        prior: &HotpluggedCpu,
         device_id: &str,
         deadline: Instant,
     ) -> Result<HotpluggedCpu, QmpError> {
-        let slot = self
-            .query_hotpluggable_cpus(deadline)?
-            .into_iter()
-            .find(|slot| slot.qom_path.is_none())
-            .ok_or(QmpError::NoHotpluggableCpu)?;
+        self.add_cpu_slot(
+            HotpluggableCpu {
+                driver: prior.driver.clone(),
+                properties: prior.properties.clone(),
+                qom_path: None,
+            },
+            device_id,
+            deadline,
+        )
+    }
+
+    fn add_cpu_slot(
+        &mut self,
+        slot: HotpluggableCpu,
+        device_id: &str,
+        deadline: Instant,
+    ) -> Result<HotpluggedCpu, QmpError> {
         let driver = slot.driver;
         let properties = slot.properties;
         let mut arguments = properties.clone();
@@ -211,6 +282,8 @@ impl QmpClient {
         Ok(HotpluggedCpu {
             device_id: Box::from(device_id),
             qom_path,
+            driver,
+            properties,
         })
     }
 
@@ -225,22 +298,20 @@ impl QmpClient {
         Ok(())
     }
 
-    pub(super) fn wait_for_device_deleted(
+    pub(super) fn wait_for_device_delete_outcome(
         &mut self,
         cpu: &HotpluggedCpu,
         deadline: Instant,
-    ) -> Result<(), QmpError> {
+    ) -> Result<DeviceDeleteOutcome, QmpError> {
         loop {
             let event = match self.events.pop_front() {
                 Some(event) => event,
-                None => self.read_message(deadline, "wait for DEVICE_DELETED")?,
+                None => self.read_message(deadline, "wait for CPU delete outcome")?,
             };
-            if event.get("event").and_then(Value::as_str) != Some("DEVICE_DELETED") {
-                if event.get("event").and_then(Value::as_str) == Some("DEVICE_UNPLUG_GUEST_ERROR")
-                    && event_matches_cpu(&event, cpu)
-                {
+            match event.get("event").and_then(Value::as_str) {
+                Some("DEVICE_UNPLUG_GUEST_ERROR") if event_matches_cpu(&event, cpu) => {
                     let data = event.get("data").and_then(Value::as_object);
-                    return Err(QmpError::DeviceUnplugGuestError {
+                    return Ok(DeviceDeleteOutcome::GuestRejected {
                         device: data
                             .and_then(|data| data.get("device"))
                             .and_then(Value::as_str)
@@ -248,14 +319,20 @@ impl QmpClient {
                         path: data
                             .and_then(|data| data.get("path"))
                             .and_then(Value::as_str)
-                            .unwrap_or(cpu.qom_path.as_ref())
-                            .into(),
+                            .map(Box::from),
+                        acpi_status: None,
                     });
                 }
-                continue;
-            }
-            if event_matches_cpu(&event, cpu) {
-                return Ok(());
+                Some("ACPI_DEVICE_OST") => {
+                    eprintln!("QMP observed ACPI_DEVICE_OST: {event}");
+                    if let Some(outcome) = acpi_ost_delete_outcome(&event, cpu)? {
+                        return Ok(outcome);
+                    }
+                }
+                Some("DEVICE_DELETED") if event_matches_cpu(&event, cpu) => {
+                    return Ok(DeviceDeleteOutcome::Deleted);
+                }
+                _ => {}
             }
         }
     }
@@ -366,6 +443,60 @@ impl QmpClient {
     }
 }
 
+fn acpi_ost_delete_outcome(
+    event: &Value,
+    cpu: &HotpluggedCpu,
+) -> Result<Option<DeviceDeleteOutcome>, QmpError> {
+    let Some(data) = event.get("data").and_then(Value::as_object) else {
+        return Err(QmpError::Protocol {
+            operation: "ACPI_DEVICE_OST",
+            detail: String::from("event has no object data").into_boxed_str(),
+        });
+    };
+    let info = data
+        .get("info")
+        .and_then(Value::as_object)
+        .ok_or_else(|| QmpError::Protocol {
+            operation: "ACPI_DEVICE_OST",
+            detail: String::from("event data has no object info").into_boxed_str(),
+        })?;
+    if info.get("device").and_then(Value::as_str) != Some(cpu.device_id.as_ref()) {
+        return Ok(None);
+    }
+
+    let source = info
+        .get("source")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| QmpError::Protocol {
+            operation: "ACPI_DEVICE_OST",
+            detail: String::from("matching event has no unsigned source").into_boxed_str(),
+        })?;
+    if !matches!(source, 0x03 | 0x103) {
+        return Ok(None);
+    }
+    let status = info
+        .get("status")
+        .and_then(Value::as_u64)
+        .ok_or_else(|| QmpError::Protocol {
+            operation: "ACPI_DEVICE_OST",
+            detail: String::from("matching eject event has no unsigned status").into_boxed_str(),
+        })?;
+
+    match status {
+        0 | 0x84 => Ok(None),
+        0x80..=0x83 => Ok(Some(DeviceDeleteOutcome::GuestRejected {
+            device: Some(cpu.device_id.clone()),
+            path: None,
+            acpi_status: Some(status),
+        })),
+        _ => Err(QmpError::Protocol {
+            operation: "ACPI_DEVICE_OST",
+            detail: format!("matching eject event has reserved status {status:#x}")
+                .into_boxed_str(),
+        }),
+    }
+}
+
 fn event_matches_cpu(event: &Value, cpu: &HotpluggedCpu) -> bool {
     let Some(data) = event.get("data").and_then(Value::as_object) else {
         return false;
@@ -450,16 +581,165 @@ mod tests {
                 &mut stream,
                 &json!({"event":"DEVICE_DELETED","data":{"path":"/machine/peripheral/cpu-hotplug-1/lapic"},"timestamp":{"seconds":1,"microseconds":0}}),
             );
+
+            let readd = read_json(&mut reader);
+            assert_eq!(readd["execute"], "device_add");
+            assert_eq!(readd["arguments"]["driver"], "qemu64-x86_64-cpu");
+            assert_eq!(readd["arguments"]["id"], "cpu-hotplug-2");
+            assert_eq!(readd["arguments"]["socket-id"], 1);
+            write_json(&mut stream, &json!({"return":{},"id":readd["id"]}));
+
+            let query_after_readd = read_json(&mut reader);
+            assert_eq!(query_after_readd["execute"], "query-hotpluggable-cpus");
+            write_json(
+                &mut stream,
+                &json!({"return":[
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":0,"core-id":0,"thread-id":0},"qom-path":"/machine/unattached/device[0]"},
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":1,"core-id":0,"thread-id":0},"qom-path":"/machine/peripheral/cpu-hotplug-2"}
+                ],"id":query_after_readd["id"]}),
+            );
         });
 
         let deadline = Instant::now() + Duration::from_secs(2);
         let mut client = QmpClient::connect(address, deadline).unwrap();
         let cpu = client
-            .add_first_available_cpu("cpu-hotplug-1", deadline)
+            .add_available_cpu("cpu-hotplug-1", 0, deadline)
             .unwrap();
         client.request_cpu_delete(&cpu, deadline).unwrap();
-        client.wait_for_device_deleted(&cpu, deadline).unwrap();
+        assert_eq!(
+            client
+                .wait_for_device_delete_outcome(&cpu, deadline)
+                .unwrap(),
+            DeviceDeleteOutcome::Deleted
+        );
+        let readded = client.readd_cpu(&cpu, "cpu-hotplug-2", deadline).unwrap();
+        assert_eq!(readded.properties, cpu.properties);
+        assert_eq!(readded.driver, cpu.driver);
         server.join().unwrap();
+    }
+
+    #[test]
+    fn qmp_selects_available_cpu_by_sorted_topology_coordinate() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            write_json(
+                &mut stream,
+                &json!({"QMP":{"version":{"qemu":{"major":8,"minor":2,"micro":2},"package":""},"capabilities":[]}}),
+            );
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let capabilities = read_json(&mut reader);
+            write_json(&mut stream, &json!({"return":{},"id":capabilities["id"]}));
+
+            let query = read_json(&mut reader);
+            write_json(
+                &mut stream,
+                &json!({"return":[
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":2,"core-id":0,"thread-id":0}},
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":0,"core-id":0,"thread-id":0},"qom-path":"/machine/unattached/device[0]"},
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":1,"core-id":0,"thread-id":0}}
+                ],"id":query["id"]}),
+            );
+
+            let add = read_json(&mut reader);
+            assert_eq!(add["arguments"]["socket-id"], 2);
+            write_json(&mut stream, &json!({"return":{},"id":add["id"]}));
+            let query_after_add = read_json(&mut reader);
+            write_json(
+                &mut stream,
+                &json!({"return":[
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":0,"core-id":0,"thread-id":0},"qom-path":"/machine/unattached/device[0]"},
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":1,"core-id":0,"thread-id":0}},
+                    {"type":"qemu64-x86_64-cpu","props":{"socket-id":2,"core-id":0,"thread-id":0},"qom-path":"/machine/peripheral/cpu-hotplug-sparse"}
+                ],"id":query_after_add["id"]}),
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut client = QmpClient::connect(address, deadline).unwrap();
+        let cpu = client
+            .add_available_cpu("cpu-hotplug-sparse", 1, deadline)
+            .unwrap();
+        assert_eq!(cpu.properties["socket-id"], 2);
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn qmp_reports_guest_rejection_as_delete_outcome() {
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            write_json(
+                &mut stream,
+                &json!({"QMP":{"version":{"qemu":{"major":8,"minor":2,"micro":2},"package":""},"capabilities":[]}}),
+            );
+            let mut reader = BufReader::new(stream.try_clone().unwrap());
+            let capabilities = read_json(&mut reader);
+            write_json(&mut stream, &json!({"return":{},"id":capabilities["id"]}));
+            let delete = read_json(&mut reader);
+            write_json(&mut stream, &json!({"return":{},"id":delete["id"]}));
+            write_json(
+                &mut stream,
+                &json!({"event":"DEVICE_UNPLUG_GUEST_ERROR","data":{"device":"cpu-hotplug-1","path":"/machine/peripheral/cpu-hotplug-1"}}),
+            );
+        });
+
+        let deadline = Instant::now() + Duration::from_secs(2);
+        let mut client = QmpClient::connect(address, deadline).unwrap();
+        let cpu = HotpluggedCpu {
+            device_id: Box::from("cpu-hotplug-1"),
+            qom_path: Box::from("/machine/peripheral/cpu-hotplug-1"),
+            driver: Box::from("qemu64-x86_64-cpu"),
+            properties: Map::new(),
+        };
+        client.request_cpu_delete(&cpu, deadline).unwrap();
+        assert_eq!(
+            client
+                .wait_for_device_delete_outcome(&cpu, deadline)
+                .unwrap(),
+            DeviceDeleteOutcome::GuestRejected {
+                device: Some(Box::from("cpu-hotplug-1")),
+                path: Some(Box::from("/machine/peripheral/cpu-hotplug-1")),
+                acpi_status: None,
+            }
+        );
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn qmp_reports_acpi_device_busy_as_delete_rejection() {
+        let cpu = HotpluggedCpu {
+            device_id: Box::from("cpu-hotplug-2"),
+            qom_path: Box::from("/machine/peripheral/cpu-hotplug-2"),
+            driver: Box::from("qemu64-x86_64-cpu"),
+            properties: Map::new(),
+        };
+
+        assert_eq!(
+            acpi_ost_delete_outcome(
+                &json!({
+                    "event": "ACPI_DEVICE_OST",
+                    "data": {
+                        "info": {
+                            "device": "cpu-hotplug-2",
+                            "slot-type": "CPU",
+                            "slot": "2",
+                            "source": 3,
+                            "status": 130
+                        }
+                    }
+                }),
+                &cpu,
+            )
+            .unwrap(),
+            Some(DeviceDeleteOutcome::GuestRejected {
+                device: Some(Box::from("cpu-hotplug-2")),
+                path: None,
+                acpi_status: Some(0x82),
+            })
+        );
     }
 
     #[test]
@@ -467,6 +747,8 @@ mod tests {
         let cpu = HotpluggedCpu {
             device_id: Box::from("cpu-hotplug-1"),
             qom_path: Box::from("/machine/peripheral/cpu-hotplug-1"),
+            driver: Box::from("qemu64-x86_64-cpu"),
+            properties: Map::new(),
         };
 
         assert!(event_matches_cpu(
