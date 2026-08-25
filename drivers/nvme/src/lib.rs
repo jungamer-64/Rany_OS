@@ -15,14 +15,15 @@
 //! - `error`: エラー型
 //!
 //! ## Kernel-Dependent (excluded)
-//! ## Kernel-Dependent (excluded)
 //! - `polling_driver`
-//! - `async_io`, `global`, `scheduler`
+//! - `async_io`, `global`
 
 #![no_std]
 #![allow(unsafe_op_in_unsafe_fn)] // Transitional: DMA and queue operations
 
 extern crate alloc;
+#[cfg(test)]
+extern crate std;
 
 // Register Cell runtime stubs (allocator, panic handler) for standalone cdylib build
 #[cfg(feature = "standalone")]
@@ -38,7 +39,7 @@ pub mod regs;
 
 // Modules migrated from kernel
 pub mod controller;
-pub mod per_core;
+pub mod io_queue;
 pub mod queue;
 
 // Modules migrated from kernel - now enabled
@@ -48,8 +49,6 @@ pub mod global;
 pub mod polling_driver;
 pub mod requests;
 pub mod sync;
-
-// pub mod scheduler; // Requires kernel io_scheduler - stays local to kernel
 
 // Re-exports
 pub use defs::{
@@ -118,13 +117,13 @@ mod tests {
     pub fn command_create_cq_smoke() -> bool {
         // create_io_cq(cid, qid, queue_size, prp, irq_vector, irq_enabled)
         let cmd = NvmeCommand::create_io_cq(1, 1, 256, 0x10000, 0, false);
-        cmd.cdw10 == ((1 << 16) | 255) && cmd.cdw11 == 0x01
+        cmd.cdw10 == ((255 << 16) | 1) && cmd.cdw11 == 0x01
     }
 
     pub fn command_create_sq_smoke() -> bool {
         // create_io_sq(cid, qid, queue_size, prp, cqid, priority)
         let cmd = NvmeCommand::create_io_sq(1, 1, 256, 0x20000, 1, 0);
-        cmd.cdw10 == ((1 << 16) | 255) && cmd.cdw11 == ((1 << 16) | 0x01)
+        cmd.cdw10 == ((255 << 16) | 1) && cmd.cdw11 == ((1 << 16) | 0x01)
     }
 
     pub fn completion_status_smoke() -> bool {

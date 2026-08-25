@@ -21,9 +21,9 @@ pub struct NvmeDriverWrapper {
 }
 
 impl NvmeDriverWrapper {
-    pub fn new(bar0: u64, cores: u32, pci_locator: PackedPciLocation) -> Self {
+    pub fn new(bar0: u64, io_queue_capacity: u32, pci_locator: PackedPciLocation) -> Self {
         Self {
-            inner: PoisonLock::new(NvmePollingDriver::new(bar0, cores, pci_locator)),
+            inner: PoisonLock::new(NvmePollingDriver::new(bar0, io_queue_capacity, pci_locator)),
         }
     }
 }
@@ -44,7 +44,7 @@ impl Driver for NvmeDriverWrapper {
 }
 
 struct PendingRequest {
-    core_id: u32,
+    queue_index: u32,
     cid: u16,
     bytes: usize,
     prp_list: Option<DmaSlice<CpuOwned>>,
@@ -114,7 +114,7 @@ extern "C" fn nvme_block_submit(
 ) -> i32 {
     with_state(|state| {
         let queue_count = state.driver.io_queue_count().max(1) as u32;
-        let core_id = state.next_queue.fetch_add(1, Ordering::Relaxed) % queue_count;
+        let queue_index = state.next_queue.fetch_add(1, Ordering::Relaxed) % queue_count;
         if command == AbiBlockCommandKind::Discard as u32 {
             return AbiError::NotSupported as i32;
         }
@@ -130,13 +130,18 @@ extern "C" fn nvme_block_submit(
 
         let result = match command {
             x if x == AbiBlockCommandKind::Read as u32 => unsafe {
-                state
-                    .driver
-                    .submit_read(core_id, state.driver.nsid, lba, blocks as u16, prp1, prp2)
+                state.driver.submit_read(
+                    queue_index,
+                    state.driver.nsid,
+                    lba,
+                    blocks as u16,
+                    prp1,
+                    prp2,
+                )
             },
             x if x == AbiBlockCommandKind::Write as u32 => unsafe {
                 state.driver.submit_write(
-                    core_id,
+                    queue_index,
                     state.driver.nsid,
                     lba,
                     blocks as u16,
@@ -145,7 +150,7 @@ extern "C" fn nvme_block_submit(
                 )
             },
             x if x == AbiBlockCommandKind::Flush as u32 => unsafe {
-                state.driver.submit_flush(core_id, state.driver.nsid)
+                state.driver.submit_flush(queue_index, state.driver.nsid)
             },
             _ => return AbiError::NotSupported as i32,
         };
@@ -159,7 +164,7 @@ extern "C" fn nvme_block_submit(
                     .insert(
                         request_id,
                         PendingRequest {
-                            core_id,
+                            queue_index,
                             cid,
                             bytes,
                             prp_list,
@@ -192,7 +197,7 @@ extern "C" fn nvme_block_poll(
                     unsafe {
                         state
                             .driver
-                            .poll_completion_by_cid(pending_req.core_id, pending_req.cid)
+                            .poll_completion_by_cid(pending_req.queue_index, pending_req.cid)
                     }
                     .map(|cqe| (*request_id, cqe.is_success()))
                 })

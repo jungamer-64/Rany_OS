@@ -32,15 +32,15 @@ pub(crate) fn cpu_pause() {
 
 impl NvmePollingDriver {
     /// Wakerを登録（Reactor Pattern）
-    pub fn register_waker(&self, core_id: u32, cid: u16, waker: core::task::Waker) {
-        if let Some(queue) = self.get_queue(core_id) {
+    pub fn register_waker(&self, queue_index: u32, cid: u16, waker: core::task::Waker) {
+        if let Some(queue) = self.get_queue(queue_index) {
             queue.register_waker(cid, waker);
         }
     }
 
     /// 完了を確認（ソフトウェア状態のみチェック）
-    pub fn check_completion(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
-        if let Some(queue) = self.get_queue(core_id) {
+    pub fn check_completion(&self, queue_index: u32, cid: u16) -> Option<NvmeCompletion> {
+        if let Some(queue) = self.get_queue(queue_index) {
             queue.check_completion(cid)
         } else {
             None
@@ -48,8 +48,8 @@ impl NvmePollingDriver {
     }
 
     /// 完了を取得してペンディングから削除
-    pub fn take_completion(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
-        if let Some(queue) = self.get_queue(core_id) {
+    pub fn take_completion(&self, queue_index: u32, cid: u16) -> Option<NvmeCompletion> {
+        if let Some(queue) = self.get_queue(queue_index) {
             queue.take_completion(cid)
         } else {
             None

@@ -5,11 +5,10 @@
 //! # NVMeポーリングモードドライバ
 //!
 //! 設計書6.3に基づく高性能NVMeストレージアクセス。
-//! コアごとのSubmission/Completion Queueとポーリングモードで
-//! 最大スループットを実現。
+//! CPU topology から独立した Submission/Completion Queue とポーリングモードを提供する。
 //!
 //! ## 機能
-//! - マルチキューサポート（コアごとのSQ/CQ）
+//! - 複数 CPU から共有可能な hardware SQ/CQ
 //! - ポーリングモード（割り込み不使用）
 //! - 非同期コマンド発行
 //! - CMB（Controller Memory Buffer）サポート
@@ -29,7 +28,7 @@ use super::controller::{
 };
 use super::defs::{AdminOpcode, SglDescriptor};
 use super::identify::{IdentifyController, IdentifyNamespace};
-use super::per_core::PerCoreNvmeQueue;
+use super::io_queue::NvmeIoQueue;
 use super::queue::QueuePair;
 mod drop_and_helpers;
 use drop_and_helpers::*;
@@ -68,13 +67,13 @@ pub struct NvmePollingDriver {
     doorbell_stride: usize,
     /// 管理キュー
     admin_queue: Option<QueuePair>,
-    /// コアごとのI/Oキュー
-    io_queues: Vec<PerCoreNvmeQueue>,
+    /// Hardware I/O queues
+    io_queues: Vec<NvmeIoQueue>,
     /// 初期化済みI/Oキュー数
     io_queue_count: u16,
-    /// コアごとのI/O SQ DMAバッファ
+    /// I/O SQ DMA buffers
     io_sq_buffers: Vec<Option<DmaBuffer>>,
-    /// コアごとのI/O CQ DMAバッファ
+    /// I/O CQ DMA buffers
     io_cq_buffers: Vec<Option<DmaBuffer>>,
     /// 名前空間ID
     pub nsid: u32,
@@ -114,12 +113,12 @@ impl NvmePollingDriver {
     ///
     /// `device_id` にはIOMMU対応のパック済みデバイスIDを指定する。
     /// IOMMU有効環境ではDMAバッファがデバイス固有ドメインにマッピングされる。
-    pub fn new(bar0: u64, num_cores: u32, device_id: PackedPciLocation) -> Self {
+    pub fn new(bar0: u64, io_queue_capacity: u32, device_id: PackedPciLocation) -> Self {
         let mut io_queues = Vec::new();
         let mut io_sq_buffers = Vec::new();
         let mut io_cq_buffers = Vec::new();
-        for i in 0..num_cores {
-            io_queues.push(PerCoreNvmeQueue::new(i));
+        for i in 0..io_queue_capacity {
+            io_queues.push(NvmeIoQueue::new(i));
             io_sq_buffers.push(None);
             io_cq_buffers.push(None);
         }
@@ -316,8 +315,8 @@ impl NvmePollingDriver {
         self.identify_and_configure_namespace();
 
         // I/Oキューを初期化
-        let num_cores = self.io_queues.len() as u32;
-        self.init_io_queues(num_cores)?;
+        let requested_queue_count = self.io_queues.len() as u32;
+        self.init_io_queues(requested_queue_count)?;
 
         self.active.store(true, Ordering::Release);
 
@@ -341,8 +340,8 @@ impl NvmePollingDriver {
         Ok(buffer)
     }
 
-    /// Allocate and create a single I/O queue pair for the given core.
-    fn allocate_io_queue_for_core(&mut self, core_id: u32, depth: u16) -> Result<(), &'static str> {
+    /// Allocate and create one hardware I/O queue pair.
+    fn allocate_io_queue(&mut self, queue_index: u32, depth: u16) -> Result<(), &'static str> {
         let cq_size = (depth as usize) * CQ_ENTRY_SIZE;
         let sq_size = (depth as usize) * QUEUE_ENTRY_SIZE;
 
@@ -355,9 +354,9 @@ impl NvmePollingDriver {
         // SQはCMB優先（利用不可ならホストメモリ）
         if self.use_cmb && self.has_cmb() {
             if let Ok((_qid, _sq_addr)) =
-                self.create_io_queue_with_cmb(core_id, cq_ptr, cq_phys, depth)
+                self.create_io_queue_with_cmb(queue_index, cq_ptr, cq_phys, depth)
             {
-                self.io_cq_buffers[core_id as usize] = Some(cq_buffer);
+                self.io_cq_buffers[queue_index as usize] = Some(cq_buffer);
                 return Ok(());
             }
         }
@@ -367,32 +366,33 @@ impl NvmePollingDriver {
         let sq_phys = sq_buffer.device_address();
         let sq_ptr = sq_buffer.as_ptr() as *mut NvmeCommand;
 
-        self.create_io_queue_pair_internal(core_id, sq_ptr, cq_ptr, sq_phys, cq_phys, depth)?;
+        self.create_io_queue_pair_internal(queue_index, sq_ptr, cq_ptr, sq_phys, cq_phys, depth)?;
 
-        self.io_sq_buffers[core_id as usize] = Some(sq_buffer);
-        self.io_cq_buffers[core_id as usize] = Some(cq_buffer);
+        self.io_sq_buffers[queue_index as usize] = Some(sq_buffer);
+        self.io_cq_buffers[queue_index as usize] = Some(cq_buffer);
         Ok(())
     }
 
     /// I/Oキューを初期化
-    fn init_io_queues(&mut self, num_cores: u32) -> Result<(), &'static str> {
-        if num_cores == 0 {
-            return Err("No cores available for I/O queues");
+    fn init_io_queues(&mut self, requested_queue_count: u32) -> Result<(), &'static str> {
+        if requested_queue_count == 0 {
+            return Err("No I/O queues requested");
         }
 
         // コントローラに対してI/Oキュー数を要求
-        let (allocated_sq, allocated_cq) = self
-            .set_num_queues(num_cores as u16, num_cores as u16)
-            .unwrap_or((1, 1));
-        let io_queue_count = core::cmp::min(allocated_sq, allocated_cq).min(num_cores as u16);
+        let requested_queue_count = u16::try_from(requested_queue_count)
+            .map_err(|_| "Requested NVMe queue count exceeds controller representation")?;
+        let (allocated_sq, allocated_cq) =
+            self.set_num_queues(requested_queue_count, requested_queue_count)?;
+        let io_queue_count = core::cmp::min(allocated_sq, allocated_cq).min(requested_queue_count);
         if io_queue_count == 0 {
             return Err("No I/O queues allocated by controller");
         }
 
         let depth = self.max_queue_depth.min(DEFAULT_QUEUE_DEPTH as u16).max(2);
 
-        for core_id in 0..io_queue_count as u32 {
-            self.allocate_io_queue_for_core(core_id, depth)?;
+        for queue_index in 0..io_queue_count as u32 {
+            self.allocate_io_queue(queue_index, depth)?;
         }
 
         self.io_queue_count = self.allocated_sq_count;
@@ -605,7 +605,7 @@ impl NvmePollingDriver {
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_io_queue_with_cmb(
         &mut self,
-        core_id: u32,
+        queue_index: u32,
         cq_buffer: *mut NvmeCompletion,
         cq_phys: u64,
         depth: u16,
@@ -614,7 +614,7 @@ impl NvmePollingDriver {
 
         if let Some(sq_addr) = cmb_sq_addr {
             let qid = self.create_io_queue_pair_internal(
-                core_id,
+                queue_index,
                 sq_addr as *mut NvmeCommand,
                 cq_buffer,
                 sq_addr,
@@ -634,7 +634,7 @@ impl NvmePollingDriver {
     /// 内部用：I/Oキューペアを作成
     fn create_io_queue_pair_internal(
         &mut self,
-        core_id: u32,
+        queue_index: u32,
         sq_buffer: *mut NvmeCommand,
         cq_buffer: *mut NvmeCompletion,
         sq_phys: u64,
@@ -646,7 +646,7 @@ impl NvmePollingDriver {
             .as_ref()
             .ok_or("Admin queue not initialized")?;
 
-        let qid = (core_id + 1) as u16;
+        let qid = u16::try_from(queue_index + 1).map_err(|_| "NVMe queue ID out of range")?;
 
         // MSI-Xベクタ割り当て（Reactor Pattern）
         let entry = if self.interrupt_mode {
@@ -654,10 +654,9 @@ impl NvmePollingDriver {
             // Note: drivers crateからは直接kernel crateを呼べないため、
             // kernel_api::services などを通じてアクセスするか、
             // 事前に構成されたコールバックを使用する必要がある。
-            // ここでは簡易的にベクタ48 + core_id を使用（設計書準拠）
+            // Queue vector selection is based on the hardware queue index.
             // 実装時には kernel_api への依存を追加するか、初期化時に注入する設計が望ましい。
-            // 仮実装: 48 + core_id
-            48 + core_id as u16
+            48 + u16::try_from(queue_index).map_err(|_| "NVMe queue index out of range")?
         } else {
             0
         };
@@ -698,10 +697,9 @@ impl NvmePollingDriver {
             )
         };
 
-        if let Some(queue) = self.io_queues.get(core_id as usize) {
+        if let Some(queue) = self.io_queues.get(queue_index as usize) {
             unsafe { queue.set_queue_pair(qp) };
             // Register for ISR access (Reactor Pattern)
-            super::per_core::register_queue(core_id, queue);
         }
 
         self.allocated_sq_count += 1;
@@ -716,13 +714,20 @@ impl NvmePollingDriver {
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn create_io_queue_pair(
         &mut self,
-        core_id: u32,
+        queue_index: u32,
         sq_buffer: *mut NvmeCommand,
         cq_buffer: *mut NvmeCompletion,
         sq_phys: u64,
         cq_phys: u64,
         depth: u16,
     ) -> Result<u16, &'static str> {
-        self.create_io_queue_pair_internal(core_id, sq_buffer, cq_buffer, sq_phys, cq_phys, depth)
+        self.create_io_queue_pair_internal(
+            queue_index,
+            sq_buffer,
+            cq_buffer,
+            sq_phys,
+            cq_phys,
+            depth,
+        )
     }
 }

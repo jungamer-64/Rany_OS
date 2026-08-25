@@ -64,7 +64,7 @@ pub mod nvme {
         /// Safety: matches the real driver's safety contract (caller ensures core and PRP validity)
         pub unsafe fn submit_read(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
             _lba: u64,
             _blocks: u16,
@@ -77,7 +77,7 @@ pub mod nvme {
         /// Submit a read command (SGL). Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_read_sgl(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
             _lba: u64,
             _blocks: u16,
@@ -89,7 +89,7 @@ pub mod nvme {
         /// Submit a write command. Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_write(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
             _lba: u64,
             _blocks: u16,
@@ -102,7 +102,7 @@ pub mod nvme {
         /// Submit a write command (SGL). Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_write_sgl(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
             _lba: u64,
             _blocks: u16,
@@ -119,7 +119,7 @@ pub mod nvme {
         /// Submit a flush command. Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_flush(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
         ) -> Result<u16, defs::NvmeError> {
             Ok(0)
@@ -128,7 +128,7 @@ pub mod nvme {
         /// Submit a dataset management command. Minimal test implementation: returns Ok(0).
         pub unsafe fn submit_dataset_management(
             &self,
-            _core_id: u32,
+            _queue_index: u32,
             _nsid: u32,
             _nr: u8,
             _prp1: u64,
@@ -137,17 +137,17 @@ pub mod nvme {
         }
 
         /// Check completion by CID. Minimal test implementation: always return None.
-        pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> {
+        pub fn check_completion(&self, _queue_index: u32, _cid: u16) -> Option<NvmeCompletion> {
             None
         }
 
         /// Take completion by CID. Minimal test implementation: always return None.
-        pub fn take_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> {
+        pub fn take_completion(&self, _queue_index: u32, _cid: u16) -> Option<NvmeCompletion> {
             None
         }
 
         /// Poll loop for completions. Minimal test implementation: returns 0.
-        pub unsafe fn poll_loop(&self, _core_id: u32) -> usize {
+        pub unsafe fn poll_loop(&self, _queue_index: u32) -> usize {
             0
         }
 
@@ -162,6 +162,6 @@ pub mod nvme {
         }
 
         /// Register a Waker for a CID. No-op in test shim.
-        pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
+        pub fn register_waker(&self, _queue_index: u32, _cid: u16, _waker: core::task::Waker) {}
     }
 }

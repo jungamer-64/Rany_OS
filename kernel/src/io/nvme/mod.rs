@@ -43,8 +43,8 @@ pub fn iommu_device() -> IommuDeviceId {
 pub use nvme_driver::global;
 pub use nvme_driver::global::{init as init_nvme_polling, with_driver, with_driver_mut};
 
-// Per-core queue management
-pub use nvme_driver::per_core;
+// Hardware I/O queue management
+pub use nvme_driver::io_queue;
 
 // Polling driver type
 pub use nvme_driver::polling_driver::NvmePollingDriver;

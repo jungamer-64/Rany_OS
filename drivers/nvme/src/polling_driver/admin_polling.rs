@@ -40,23 +40,23 @@ impl NvmePollingDriver {
         Err("Admin command timeout")
     }
 
-    /// I/Oキューを設定（レガシーAPI）
+    /// I/O queue pair を初期化する。
     ///
     /// # Safety
     /// 初期化中にのみ呼び出すこと。
-    pub unsafe fn setup_io_queue(&self, core_id: u32, qp: QueuePair) {
-        if let Some(queue) = self.io_queues.get(core_id as usize) {
+    pub unsafe fn setup_io_queue(&self, queue_index: u32, qp: QueuePair) {
+        if let Some(queue) = self.io_queues.get(queue_index as usize) {
             unsafe { queue.set_queue_pair(qp) };
         }
     }
 
-    /// コアのキューを取得
-    pub fn get_queue(&self, core_id: u32) -> Option<&PerCoreNvmeQueue> {
+    /// 初期化済み hardware I/O queue を取得する。
+    pub fn get_queue(&self, queue_index: u32) -> Option<&NvmeIoQueue> {
         let max_queues = self.io_queue_count as u32;
-        if max_queues == 0 || core_id >= max_queues {
+        if max_queues == 0 || queue_index >= max_queues {
             return None;
         }
-        let queue = self.io_queues.get(core_id as usize)?;
+        let queue = self.io_queues.get(queue_index as usize)?;
         if queue.is_initialized() {
             Some(queue)
         } else {
@@ -71,9 +71,9 @@ impl NvmePollingDriver {
     /// ポーリングループを実行（最適化版）
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
-    pub unsafe fn poll_loop(&self, core_id: u32) -> usize {
-        let queue = match self.get_queue(core_id) {
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+    pub unsafe fn poll_loop(&self, queue_index: u32) -> usize {
+        let queue = match self.get_queue(queue_index) {
             Some(q) => q,
             None => return 0,
         };
@@ -90,21 +90,21 @@ impl NvmePollingDriver {
     /// リードコマンドを発行
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// prp1/prp2は有効な物理アドレスである必要がある。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn submit_read(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.read(nsid, lba, blocks, prp1, prp2) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -113,20 +113,20 @@ impl NvmePollingDriver {
     /// リードコマンドを発行（SGL）
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn submit_read_sgl(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         sgl: SglDescriptor,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.read_sgl(nsid, lba, blocks, sgl) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -135,21 +135,21 @@ impl NvmePollingDriver {
     /// ライトコマンドを発行
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// prp1/prp2は有効な物理アドレスである必要がある。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_write(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -158,20 +158,20 @@ impl NvmePollingDriver {
     /// ライトコマンドを発行（SGL）
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// sglは有効なデータブロック/セグメントディスクリプタである必要がある。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_write_sgl(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         sgl: SglDescriptor,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.write_sgl(nsid, lba, blocks, sgl) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -180,7 +180,7 @@ impl NvmePollingDriver {
     /// Dataset Management (DSM) コマンドを発行 (TRIM等)
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// prp1は有効な物理アドレスである必要がある (DSM Range Buffer)。
     /// prp2は現在未使用 (バッファサイズが1ページ以下を想定)。
     /// # Errors
@@ -188,12 +188,12 @@ impl NvmePollingDriver {
     /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_dsm(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         prp1: u64,
         _prp2: u64,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         // nr=0 (1 range). async_ops.rs currently only constructs single-range DSMs.
         let cid = unsafe { queue.dataset_management(nsid, 0, prp1) }?;
         unsafe { queue.flush_doorbell() };
@@ -221,12 +221,12 @@ impl NvmePollingDriver {
     /// フラッシュコマンドを発行
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
-    pub unsafe fn submit_flush(&self, core_id: u32, nsid: u32) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+    pub unsafe fn submit_flush(&self, queue_index: u32, nsid: u32) -> Result<u16, &'static str> {
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.flush(nsid) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -235,19 +235,19 @@ impl NvmePollingDriver {
     /// Dataset Management (TRIM) コマンドを発行
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
     /// prp1は有効な物理アドレスである必要がある。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub unsafe fn submit_dataset_management(
         &self,
-        core_id: u32,
+        queue_index: u32,
         nsid: u32,
         nr: u8,
         prp1: u64,
     ) -> Result<u16, &'static str> {
-        let queue = self.get_queue(core_id).ok_or("Queue not found")?;
+        let queue = self.get_queue(queue_index).ok_or("Queue not found")?;
         let cid = unsafe { queue.dataset_management(nsid, nr, prp1) }?;
         unsafe { queue.flush_doorbell() };
         Ok(cid)
@@ -256,9 +256,13 @@ impl NvmePollingDriver {
     /// 特定のCIDの完了をポーリング
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
-    pub unsafe fn poll_completion_by_cid(&self, core_id: u32, cid: u16) -> Option<NvmeCompletion> {
-        let queue = self.get_queue(core_id)?;
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+    pub unsafe fn poll_completion_by_cid(
+        &self,
+        queue_index: u32,
+        cid: u16,
+    ) -> Option<NvmeCompletion> {
+        let queue = self.get_queue(queue_index)?;
 
         // ポーリングして完了を取得
         if let Some(cqe) = unsafe { queue.poll() } {
@@ -275,9 +279,9 @@ impl NvmePollingDriver {
     /// バッチポーリング（高スループット用）
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
-    pub unsafe fn poll_batch(&self, core_id: u32, completions: &mut [NvmeCompletion]) -> usize {
-        let queue = match self.get_queue(core_id) {
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+    pub unsafe fn poll_batch(&self, queue_index: u32, completions: &mut [NvmeCompletion]) -> usize {
+        let queue = match self.get_queue(queue_index) {
             Some(q) => q,
             None => return 0,
         };
@@ -298,9 +302,9 @@ impl NvmePollingDriver {
     /// アダプティブポーリング（負荷に応じて調整）
     ///
     /// # Safety
-    /// 現在のコアIDが正しいことを呼び出し側が保証。
-    pub unsafe fn adaptive_poll(&self, core_id: u32, idle_count: &mut u32) -> usize {
-        let completed = unsafe { self.poll_loop(core_id) };
+    /// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+    pub unsafe fn adaptive_poll(&self, queue_index: u32, idle_count: &mut u32) -> usize {
+        let completed = unsafe { self.poll_loop(queue_index) };
 
         if completed > 0 {
             *idle_count = 0;

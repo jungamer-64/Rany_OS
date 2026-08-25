@@ -24,8 +24,12 @@ static NVME_DRIVER: PoisonLock<Option<NvmePollingDriver>> = PoisonLock::new(None
 /// # Errors
 ///
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub fn init(bar0: u64, num_cores: u32, device_id: PackedPciLocation) -> Result<(), &'static str> {
-    let mut driver = NvmePollingDriver::new(bar0, num_cores, device_id);
+pub fn init(
+    bar0: u64,
+    io_queue_capacity: u32,
+    device_id: PackedPciLocation,
+) -> Result<(), &'static str> {
+    let mut driver = NvmePollingDriver::new(bar0, io_queue_capacity, device_id);
     driver.init()?;
     *NVME_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) = Some(driver);
     Ok(())
@@ -58,17 +62,17 @@ where
 /// ポーリングを実行
 ///
 /// # Safety
-/// 現在のコアIDが正しいことを呼び出し側が保証。
-pub unsafe fn poll(core_id: u32) -> usize {
-    with_driver(|d| unsafe { d.poll_loop(core_id) }).unwrap_or(0)
+/// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+pub unsafe fn poll(queue_index: u32) -> usize {
+    with_driver(|d| unsafe { d.poll_loop(queue_index) }).unwrap_or(0)
 }
 
 /// バッチポーリングを実行
 ///
 /// # Safety
-/// 現在のコアIDが正しいことを呼び出し側が保証。
-pub unsafe fn poll_batch(core_id: u32, completions: &mut [NvmeCompletion]) -> usize {
-    with_driver(|d| unsafe { d.poll_batch(core_id, completions) }).unwrap_or(0)
+/// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
+pub unsafe fn poll_batch(queue_index: u32, completions: &mut [NvmeCompletion]) -> usize {
+    with_driver(|d| unsafe { d.poll_batch(queue_index, completions) }).unwrap_or(0)
 }
 
 /// 統計を取得

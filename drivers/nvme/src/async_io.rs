@@ -40,15 +40,15 @@ use super::polling_driver::NvmePollingDriver;
 /// 非同期読み取りFuture
 pub struct ReadFuture<'a> {
     driver: &'a NvmePollingDriver,
-    core_id: u32,
+    queue_index: u32,
     cid: u16,
 }
 
 impl<'a> ReadFuture<'a> {
-    pub fn new(driver: &'a NvmePollingDriver, core_id: u32, cid: u16) -> Self {
+    pub fn new(driver: &'a NvmePollingDriver, queue_index: u32, cid: u16) -> Self {
         Self {
             driver,
-            core_id,
+            queue_index,
             cid,
         }
     }
@@ -59,7 +59,7 @@ impl<'a> Future for ReadFuture<'a> {
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // Check if already completed
-        if let Some(queue) = self.driver.get_queue(self.core_id) {
+        if let Some(queue) = self.driver.get_queue(self.queue_index) {
             let pending_requests = queue.get_pending_requests();
             let mut pending = pending_requests.lock();
 
@@ -106,15 +106,15 @@ impl<'a> Future for ReadFuture<'a> {
 /// 非同期書き込みFuture
 pub struct WriteFuture<'a> {
     driver: &'a NvmePollingDriver,
-    core_id: u32,
+    queue_index: u32,
     cid: u16,
 }
 
 impl<'a> WriteFuture<'a> {
-    pub fn new(driver: &'a NvmePollingDriver, core_id: u32, cid: u16) -> Self {
+    pub fn new(driver: &'a NvmePollingDriver, queue_index: u32, cid: u16) -> Self {
         Self {
             driver,
-            core_id,
+            queue_index,
             cid,
         }
     }
@@ -124,7 +124,7 @@ impl<'a> Future for WriteFuture<'a> {
     type Output = Result<NvmeCompletion, NvmeError>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(queue) = self.driver.get_queue(self.core_id) {
+        if let Some(queue) = self.driver.get_queue(self.queue_index) {
             let pending_requests = queue.get_pending_requests();
             let mut pending = pending_requests.lock();
 
@@ -171,49 +171,53 @@ impl<'a> Future for WriteFuture<'a> {
 /// 非同期読み取り
 ///
 /// # Safety
-/// 現在のコアIDが正しいことを呼び出し側が保証。
+/// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
 /// # Errors
 ///
 /// Returns an error if the request is invalid or the required device state cannot be read.
 pub async unsafe fn async_read(
     driver: &NvmePollingDriver,
-    core_id: u32,
+    queue_index: u32,
     nsid: u32,
     lba: u64,
     blocks: u16,
     prp1: u64,
     prp2: u64,
 ) -> Result<NvmeCompletion, NvmeError> {
-    let queue = driver.get_queue(core_id).ok_or(NvmeError::QueueNotFound)?;
+    let queue = driver
+        .get_queue(queue_index)
+        .ok_or(NvmeError::QueueNotFound)?;
 
-    // Safety: 呼び出し元が正しいcore_idを保証
+    // SAFETY: the selected queue is initialized and PRP validity remains the caller's contract.
     let cid =
         unsafe { queue.read(nsid, lba, blocks, prp1, prp2) }.map_err(|_| NvmeError::QueueFull)?;
 
-    ReadFuture::new(driver, core_id, cid).await
+    ReadFuture::new(driver, queue_index, cid).await
 }
 
 /// 非同期書き込み
 ///
 /// # Safety
-/// 現在のコアIDが正しいことを呼び出し側が保証。
+/// `queue_index` が初期化済み I/O queue を指すことを呼び出し側が保証。
 /// # Errors
 ///
 /// Returns an error if the request is invalid or the device cannot accept the operation.
 pub async unsafe fn async_write(
     driver: &NvmePollingDriver,
-    core_id: u32,
+    queue_index: u32,
     nsid: u32,
     lba: u64,
     blocks: u16,
     prp1: u64,
     prp2: u64,
 ) -> Result<NvmeCompletion, NvmeError> {
-    let queue = driver.get_queue(core_id).ok_or(NvmeError::QueueNotFound)?;
+    let queue = driver
+        .get_queue(queue_index)
+        .ok_or(NvmeError::QueueNotFound)?;
 
-    // Safety: 呼び出し元が正しいcore_idを保証
+    // SAFETY: the selected queue is initialized and PRP validity remains the caller's contract.
     let cid =
         unsafe { queue.write(nsid, lba, blocks, prp1, prp2) }.map_err(|_| NvmeError::QueueFull)?;
 
-    WriteFuture::new(driver, core_id, cid).await
+    WriteFuture::new(driver, queue_index, cid).await
 }

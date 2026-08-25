@@ -32,14 +32,11 @@ fn queue_index_for_cpu(
         .map(|member_index| member_index % queue_count)
 }
 
-fn poll_cpu_for_queue(
-    online: &crate::cpu::CpuSet,
-    queue_id: u32,
-) -> Option<crate::cpu::CpuId> {
+fn poll_cpu_for_queue(online: &crate::cpu::CpuSet, queue_index: u32) -> Option<crate::cpu::CpuId> {
     if online.is_empty() {
         return None;
     }
-    online.member_at(queue_id as usize % online.len())
+    online.member_at(queue_index as usize % online.len())
 }
 
 // ============================================================================
@@ -55,7 +52,7 @@ fn poll_cpu_for_queue(
 pub trait NvmeDriverOps: Send + Sync {
     unsafe fn submit_read(
         &self,
-        qid: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
@@ -64,15 +61,15 @@ pub trait NvmeDriverOps: Send + Sync {
     ) -> Option<u16>;
     unsafe fn submit_write(
         &self,
-        qid: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         prp1: u64,
         prp2: u64,
     ) -> Option<u16>;
-    unsafe fn submit_flush(&self, qid: u32, nsid: u32) -> Option<u16>;
-    unsafe fn submit_dsm(&self, qid: u32, nsid: u32, prp1: u64, prp2: u64) -> Option<u16>;
+    unsafe fn submit_flush(&self, queue_index: u32, nsid: u32) -> Option<u16>;
+    unsafe fn submit_dsm(&self, queue_index: u32, nsid: u32, prp1: u64, prp2: u64) -> Option<u16>;
     fn is_active(&self) -> bool;
 }
 
@@ -82,36 +79,43 @@ struct GlobalDriverAdapter;
 impl NvmeDriverOps for GlobalDriverAdapter {
     unsafe fn submit_read(
         &self,
-        qid: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         prp1: u64,
         prp2: u64,
     ) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_read(qid, nsid, lba, blocks, prp1, prp2).ok() })
-            .flatten()
+        global::with_driver(|d| unsafe {
+            d.submit_read(queue_index, nsid, lba, blocks, prp1, prp2)
+                .ok()
+        })
+        .flatten()
     }
 
     unsafe fn submit_write(
         &self,
-        qid: u32,
+        queue_index: u32,
         nsid: u32,
         lba: u64,
         blocks: u16,
         prp1: u64,
         prp2: u64,
     ) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_write(qid, nsid, lba, blocks, prp1, prp2).ok() })
+        global::with_driver(|d| unsafe {
+            d.submit_write(queue_index, nsid, lba, blocks, prp1, prp2)
+                .ok()
+        })
+        .flatten()
+    }
+
+    unsafe fn submit_flush(&self, queue_index: u32, nsid: u32) -> Option<u16> {
+        global::with_driver(|d| unsafe { d.submit_flush(queue_index, nsid).ok() }).flatten()
+    }
+
+    unsafe fn submit_dsm(&self, queue_index: u32, nsid: u32, prp1: u64, prp2: u64) -> Option<u16> {
+        global::with_driver(|d| unsafe { d.submit_dsm(queue_index, nsid, prp1, prp2).ok() })
             .flatten()
-    }
-
-    unsafe fn submit_flush(&self, qid: u32, nsid: u32) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_flush(qid, nsid).ok() }).flatten()
-    }
-
-    unsafe fn submit_dsm(&self, qid: u32, nsid: u32, prp1: u64, prp2: u64) -> Option<u16> {
-        global::with_driver(|d| unsafe { d.submit_dsm(qid, nsid, prp1, prp2).ok() }).flatten()
     }
 
     fn is_active(&self) -> bool {
@@ -175,7 +179,7 @@ impl NvmeOps {
             .ok_or(IoError::NoResources)?;
 
         // submit と poll_completions で同じ queue を使用
-        let submit_qid = handler.queue_id;
+        let queue_index = handler.queue_index;
 
         let (cid, bytes) = match cmd {
             IoCommand::BlockRead {
@@ -195,7 +199,7 @@ impl NvmeOps {
                 let cid = if is_read {
                     unsafe {
                         self.driver.submit_read(
-                            submit_qid,
+                            queue_index,
                             self.namespace_id,
                             *lba,
                             *blocks,
@@ -206,7 +210,7 @@ impl NvmeOps {
                 } else {
                     unsafe {
                         self.driver.submit_write(
-                            submit_qid,
+                            queue_index,
                             self.namespace_id,
                             *lba,
                             *blocks,
@@ -219,12 +223,12 @@ impl NvmeOps {
                 (cid, *bytes)
             }
             IoCommand::Flush => {
-                let cid = unsafe { self.driver.submit_flush(submit_qid, self.namespace_id) }
+                let cid = unsafe { self.driver.submit_flush(queue_index, self.namespace_id) }
                     .ok_or(IoError::NoResources)?;
                 (cid, 0)
             }
             IoCommand::Discard { .. } => (0, 0),
-            IoCommand::Ioctl { code, buf } => self.handle_ioctl_submit(submit_qid, *code, buf)?,
+            IoCommand::Ioctl { code, buf } => self.handle_ioctl_submit(queue_index, *code, buf)?,
         };
 
         handler.register_request(id, cid, bytes);
@@ -234,14 +238,17 @@ impl NvmeOps {
     /// IoctlコマンドをNVMeに変換してsubmit
     fn handle_ioctl_submit(
         &self,
-        qid: u32,
+        queue_index: u32,
         code: u32,
         buf: &DmaBufHandle,
     ) -> Result<(u16, usize), IoError> {
         if code == 0x09 {
             let prp1 = buf.iova;
-            let cid = unsafe { self.driver.submit_dsm(qid, self.namespace_id, prp1, 0) }
-                .ok_or(IoError::NoResources)?;
+            let cid = unsafe {
+                self.driver
+                    .submit_dsm(queue_index, self.namespace_id, prp1, 0)
+            }
+            .ok_or(IoError::NoResources)?;
             Ok((cid, 0))
         } else {
             Err(IoError::NotSupported)
@@ -300,10 +307,10 @@ static NVME_POLL_HANDLERS: PoisonRwLock<BTreeMap<NvmeHandlerKey, Vec<Arc<NvmePol
 /// NVMe用PollHandlerラッパー
 ///
 /// IoSchedulerとNvmePollingDriverを接続するアダプタ。
-/// 特定のコアIDに紐付けられる。
+/// Hardware queue identity is mapped to a currently online CPU only at poll time.
 pub struct NvmePollHandler {
     /// NVMe hardware I/O queue ID.
-    queue_id: u32,
+    queue_index: u32,
     /// 保留中のNVMeコマンドID → I/Oリクエスト
     /// Vec を使用して O(1) アクセス（CID は通常 0-1023 の範囲）
     pending: PoisonLock<Vec<Option<PendingNvmeRequest>>>,
@@ -314,11 +321,11 @@ const NVME_MAX_CID: usize = 1024;
 
 impl NvmePollHandler {
     /// 新しいPollHandlerを作成
-    pub fn new(queue_id: u32) -> Self {
+    pub fn new(queue_index: u32) -> Self {
         let mut pending = Vec::with_capacity(NVME_MAX_CID);
         pending.resize_with(NVME_MAX_CID, || None);
         Self {
-            queue_id,
+            queue_index,
             pending: PoisonLock::new(pending),
         }
     }
@@ -340,7 +347,7 @@ impl PollHandler for NvmePollHandler {
         let mut results = Vec::new();
 
         global::with_driver(|driver| {
-            if let Some(queue) = driver.get_queue(self.queue_id) {
+            if let Some(queue) = driver.get_queue(self.queue_index) {
                 let pending_requests = queue.get_pending_requests();
                 // SAFETY: poll は内部で適切に同期されている
                 unsafe {
@@ -403,7 +410,7 @@ impl PollHandler for NvmePollHandlerWrapper {
 
     fn affinity(&self) -> PollAffinity {
         let snapshot = crate::cpu::snapshot();
-        poll_cpu_for_queue(snapshot.online(), self.inner.queue_id)
+        poll_cpu_for_queue(snapshot.online(), self.inner.queue_index)
             .map_or(PollAffinity::Unavailable, PollAffinity::Cpu)
     }
 }
@@ -440,8 +447,9 @@ pub fn register_with_io_scheduler(
     // 3. DeviceOps生成 & 登録 (DI: driver adapter, handlers)
     // ハンドラ生成
     for queue_index in 0..handler_count {
-        let queue_id = u32::try_from(queue_index).map_err(|_| "NVMe queue ID out of range")?;
-        let handler = Arc::new(NvmePollHandler::new(queue_id));
+        let queue_index =
+            u32::try_from(queue_index).map_err(|_| "NVMe queue index out of range")?;
+        let handler = Arc::new(NvmePollHandler::new(queue_index));
         handlers.push(handler);
     }
     let handlers_arc = Arc::new(handlers.clone());

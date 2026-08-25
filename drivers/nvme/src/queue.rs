@@ -10,6 +10,7 @@ use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use hal::mmio;
 
 use super::commands::{NvmeCommand, NvmeCompletion};
+use crate::sync::IrqMutex;
 
 // ============================================================================
 // Submission Queue
@@ -27,6 +28,8 @@ pub struct SubmissionQueue {
     doorbell: *mut u32,
     /// キューID
     qid: u16,
+    /// Serializes reservation and publication when multiple CPUs share a queue.
+    submit_lock: IrqMutex<()>,
 }
 
 unsafe impl Send for SubmissionQueue {}
@@ -44,6 +47,7 @@ impl SubmissionQueue {
             tail: AtomicU16::new(0),
             doorbell,
             qid,
+            submit_lock: IrqMutex::new(()),
         }
     }
 
@@ -65,6 +69,7 @@ impl SubmissionQueue {
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
     pub fn submit_no_doorbell(&self, cmd: &NvmeCommand) -> Result<u16, &'static str> {
+        let _submit = self.submit_lock.lock();
         let tail = self.tail.load(Ordering::Acquire);
         let next_tail = (tail + 1) % self.depth;
 
@@ -128,6 +133,8 @@ pub struct CompletionQueue {
     doorbell: *mut u32,
     /// キューID
     qid: u16,
+    /// Serializes CQ head and phase updates across polling CPUs and ISR paths.
+    poll_lock: IrqMutex<()>,
 }
 
 unsafe impl Send for CompletionQueue {}
@@ -151,11 +158,13 @@ impl CompletionQueue {
             phase: AtomicBool::new(true),
             doorbell,
             qid,
+            poll_lock: IrqMutex::new(()),
         }
     }
 
     /// 完了をポーリング
     pub fn poll(&self) -> Option<NvmeCompletion> {
+        let _poll = self.poll_lock.lock();
         let head = self.head.load(Ordering::Acquire);
         let expected_phase = self.phase.load(Ordering::Acquire);
 

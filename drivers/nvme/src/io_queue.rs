@@ -1,25 +1,22 @@
 // ============================================================================
-// src/io/nvme/per_core.rs - Per-Core NVMe Queue Management
+// src/io/nvme/io_queue.rs - Shared NVMe Queue Management
 // ============================================================================
 //!
-//! # コアごとの`NVMe`キュー管理
+//! # 共有可能な `NVMe` I/O キュー管理
 //!
-//! キャッシュライン整列されたコアローカルキューと統計管理。
-//! ロックフリーアクセスで最大スループットを実現。
+//! キャッシュライン整列された hardware queue と統計を管理する。
 //!
 //! ## 特徴
 //! - 64バイトキャッシュライン整列（偽共有防止）
-//! - `UnsafeCell`によるロックフリーアクセス
+//! - 初期化時に一度だけ設定される queue pair
 //! - ドアベルバッチ処理
 //! - 詳細な統計収集
 
-// Allow mutable borrow from &self - intentional for per-core lock-free access.
-// Each core exclusively owns its queue via core affinity (single-threaded access guarantee).
+// QueuePair is installed once before publication and remains immutable thereafter.
 #![allow(clippy::mut_from_ref)]
 use alloc::vec::Vec;
 use core::cell::UnsafeCell;
-use core::ptr;
-use core::sync::atomic::{AtomicBool, AtomicPtr, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 
 use super::commands::{NvmeCommand, NvmeCompletion};
 use super::defs::{DOORBELL_BATCH_THRESHOLD, SECTOR_SIZE, SglDescriptor};
@@ -49,12 +46,9 @@ pub struct NvmeQueueStats {
 }
 
 // ============================================================================
-// Global Registry for ISR Access
+// Deferred Completion Storage
 // ============================================================================
 
-const MAX_CORES: usize = 256;
-static QUEUES: [AtomicPtr<PerCoreNvmeQueue>; MAX_CORES] =
-    [const { AtomicPtr::new(ptr::null_mut()) }; MAX_CORES];
 const MAX_ISR_COMPLETIONS_PER_PASS: usize = 64;
 const DEFERRED_COMPLETION_QUEUE_SIZE: usize = 256;
 
@@ -109,42 +103,23 @@ impl DeferredCompletionQueue {
     }
 }
 
-/// ISR用にキューを登録
-pub fn register_queue(core_id: u32, queue: &PerCoreNvmeQueue) {
-    if (core_id as usize) < MAX_CORES {
-        QUEUES[core_id as usize].store(queue as *const _ as *mut _, Ordering::Release);
-    }
-}
-
-pub fn queue_for_core(core_id: u32) -> Option<&'static PerCoreNvmeQueue> {
-    if (core_id as usize) >= MAX_CORES {
-        return None;
-    }
-    let ptr = QUEUES[core_id as usize].load(Ordering::Acquire);
-    if ptr.is_null() {
-        None
-    } else {
-        Some(unsafe { &*ptr })
-    }
-}
-
 // ============================================================================
-// Per-Core Queue
+// Hardware I/O Queue
 // ============================================================================
 
-/// コアごとのNVMeキュー（キャッシュライン整列、ロックフリー）
+/// NVMe hardware I/O queue（キャッシュライン整列）
 ///
-/// 64バイトアラインメントにより、異なるコア間での
+/// 64バイトアラインメントにより、異なる CPU 間での
 /// 偽共有（false sharing）を防止し、キャッシュ効率を最大化。
 ///
-/// UnsafeCellにより、各コアが自身のキューにロックフリーでアクセス可能。
-/// （コアアフィニティによりレースコンディションは発生しない）
+/// QueuePair is installed before publication. SQ/CQ mutation is serialized in
+/// the queue implementation so this object can be reassigned as CPUs change.
 #[repr(C, align(64))]
-pub struct PerCoreNvmeQueue {
+pub struct NvmeIoQueue {
     /// キューペア（UnsafeCellでロックフリーアクセス）
     inner: UnsafeCell<Option<QueuePair>>,
-    /// コアID
-    core_id: u32,
+    /// Zero-based index in the controller's I/O queue collection.
+    queue_index: u32,
     /// 初期化完了フラグ
     initialized: AtomicBool,
     /// ドアベルバッチカウンタ（保留中のコマンド数）
@@ -153,22 +128,23 @@ pub struct PerCoreNvmeQueue {
     stats: NvmeQueueStats,
     /// Pending Requests for Async I/O (ISR-safe)
     pending_requests: Arc<IrqMutex<PendingRequests>>,
+    /// Serializes CID allocation, SQ publication, and pending registration.
+    submission_lock: IrqMutex<()>,
     /// IRQで拾った完了を通常文脈へ渡す固定長キュー
     deferred_completions: IrqMutex<DeferredCompletionQueue>,
 }
 
-// Safety: PerCoreNvmeQueueは各コア固有のキューとして使用され、
-// コアアフィニティによりシングルスレッドアクセスが保証される。
-// 初期化以外の操作は所有コアからのみ行われる。
-unsafe impl Sync for PerCoreNvmeQueue {}
-unsafe impl Send for PerCoreNvmeQueue {}
+// SAFETY: QueuePair is written only during initialization and published by
+// `initialized`; subsequent SQ/CQ mutation is internally synchronized.
+unsafe impl Sync for NvmeIoQueue {}
+unsafe impl Send for NvmeIoQueue {}
 
-impl PerCoreNvmeQueue {
-    /// 新しいコアキューを作成
-    pub fn new(core_id: u32) -> Self {
+impl NvmeIoQueue {
+    /// 新しい hardware I/O queue を作成する。
+    pub fn new(queue_index: u32) -> Self {
         Self {
             inner: UnsafeCell::new(None),
-            core_id,
+            queue_index,
             initialized: AtomicBool::new(false),
             pending_commands: AtomicU32::new(0),
             stats: NvmeQueueStats {
@@ -183,6 +159,7 @@ impl PerCoreNvmeQueue {
                 _padding: [],
             },
             pending_requests: Arc::new(IrqMutex::new(PendingRequests::new())),
+            submission_lock: IrqMutex::new(()),
             deferred_completions: IrqMutex::new(DeferredCompletionQueue::new()),
         }
     }
@@ -203,10 +180,10 @@ impl PerCoreNvmeQueue {
         self.initialized.load(Ordering::Acquire)
     }
 
-    /// ロックフリーでキューペアにアクセス（所有コアのみ）
+    /// Returns the queue pair after initialization publication.
     ///
     /// # Safety
-    /// 現在のコアがこのPerCoreNvmeQueueの所有者であることを呼び出し側が保証。
+    /// `set_queue_pair` must have completed before this method is called.
     #[inline]
     pub(crate) unsafe fn get_queue_pair(&self) -> Option<&QueuePair> {
         unsafe { (*self.inner.get()).as_ref() }
@@ -215,7 +192,7 @@ impl PerCoreNvmeQueue {
     /// 読み取り操作を発行（ドアベルバッチ対応）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// PRP が controller からアクセス可能で、command completion まで有効であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
@@ -227,6 +204,7 @@ impl PerCoreNvmeQueue {
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         // CIDはSQのtailから取得
@@ -252,7 +230,7 @@ impl PerCoreNvmeQueue {
 
         // 閾値を超えたらドアベルをフラッシュ
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -261,7 +239,7 @@ impl PerCoreNvmeQueue {
     /// 読み取り操作を発行（SGL）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// SGL が controller からアクセス可能な valid descriptor であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
@@ -272,6 +250,7 @@ impl PerCoreNvmeQueue {
         blocks: u16,
         sgl: SglDescriptor,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         let cid = qp.sq().tail();
@@ -292,7 +271,7 @@ impl PerCoreNvmeQueue {
 
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -301,7 +280,7 @@ impl PerCoreNvmeQueue {
     /// 読み取り操作を即時発行（ドアベルを即座に書き込み）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// PRP が controller からアクセス可能で、command completion まで有効であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
@@ -313,6 +292,7 @@ impl PerCoreNvmeQueue {
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         // CIDはSQのtailから取得
@@ -335,7 +315,7 @@ impl PerCoreNvmeQueue {
     /// 書き込み操作を発行（ドアベルバッチ対応）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// PRP が controller からアクセス可能で、command completion まで有効であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
@@ -347,6 +327,7 @@ impl PerCoreNvmeQueue {
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         // CIDはSQのtailから取得
@@ -372,7 +353,7 @@ impl PerCoreNvmeQueue {
 
         // 閾値を超えたらドアベルをフラッシュ
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -381,7 +362,7 @@ impl PerCoreNvmeQueue {
     /// 書き込み操作を発行（SGL）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// SGL が controller からアクセス可能な valid descriptor であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
@@ -392,6 +373,7 @@ impl PerCoreNvmeQueue {
         blocks: u16,
         sgl: SglDescriptor,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         let cid = qp.sq().tail();
@@ -412,7 +394,7 @@ impl PerCoreNvmeQueue {
 
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -421,11 +403,12 @@ impl PerCoreNvmeQueue {
     /// フラッシュコマンドを発行
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// Queue pair initialization must remain valid for the operation.
     /// # Errors
     ///
     /// Returns an error if the device is not ready, times out, or reports a failed completion.
     pub unsafe fn flush(&self, nsid: u32) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         let cid = qp.sq().tail();
@@ -443,7 +426,7 @@ impl PerCoreNvmeQueue {
 
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -452,8 +435,7 @@ impl PerCoreNvmeQueue {
     /// Dataset Management (TRIM) コマンドを発行
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
-    /// prp1は有効な物理アドレスである必要がある。
+    /// `prp1` が controller からアクセス可能で、command completion まで有効であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
@@ -463,6 +445,7 @@ impl PerCoreNvmeQueue {
         nr: u8,
         prp1: u64,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         let cid = qp.sq().tail();
@@ -480,7 +463,7 @@ impl PerCoreNvmeQueue {
 
         let pending = self.pending_commands.fetch_add(1, Ordering::Relaxed) + 1;
         if pending >= DOORBELL_BATCH_THRESHOLD as u32 {
-            unsafe { self.flush_doorbell() };
+            self.flush_doorbell_locked();
         }
 
         Ok(cid)
@@ -489,7 +472,7 @@ impl PerCoreNvmeQueue {
     /// 書き込み操作を即時発行（ドアベルを即座に書き込み）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// PRP が controller からアクセス可能で、command completion まで有効であること。
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the device cannot accept the operation.
@@ -501,6 +484,7 @@ impl PerCoreNvmeQueue {
         prp1: u64,
         prp2: u64,
     ) -> Result<u16, &'static str> {
+        let _submission = self.submission_lock.lock();
         let qp = unsafe { self.get_queue_pair() }.ok_or("Queue not initialized")?;
 
         // CIDはSQのtailから取得
@@ -523,8 +507,13 @@ impl PerCoreNvmeQueue {
     /// 保留中のコマンドをフラッシュ（ドアベル書き込み）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// Queue pair initialization must remain valid for the operation.
     pub unsafe fn flush_doorbell(&self) {
+        let _submission = self.submission_lock.lock();
+        self.flush_doorbell_locked();
+    }
+
+    fn flush_doorbell_locked(&self) {
         if let Some(qp) = unsafe { self.get_queue_pair() } {
             let pending = self.pending_commands.swap(0, Ordering::Relaxed);
             if pending > 0 {
@@ -540,7 +529,7 @@ impl PerCoreNvmeQueue {
     /// 完了をポーリング
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// Queue pair initialization must remain valid for the operation.
     pub unsafe fn poll(&self) -> Option<NvmeCompletion> {
         let qp = unsafe { self.get_queue_pair() }?;
 
@@ -562,7 +551,7 @@ impl PerCoreNvmeQueue {
     /// バッチポーリング（複数の完了を一度に処理）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// Queue pair initialization must remain valid for the operation.
     pub unsafe fn poll_batch(&self, max_completions: usize) -> Vec<NvmeCompletion> {
         let mut completions = Vec::with_capacity(max_completions);
 
@@ -580,7 +569,7 @@ impl PerCoreNvmeQueue {
     /// 高性能ポーリングループ（PAUSE命令による効率化）
     ///
     /// # Safety
-    /// 現在のコアがこのキューの所有者であることを呼び出し側が保証。
+    /// Queue pair initialization must remain valid for the operation.
     pub unsafe fn poll_spin(&self, max_spins: u32) -> Option<NvmeCompletion> {
         for _ in 0..max_spins {
             if let Some(cqe) = unsafe { self.poll() } {
@@ -601,9 +590,9 @@ impl PerCoreNvmeQueue {
         &self.stats
     }
 
-    /// コアIDを取得
-    pub fn core_id(&self) -> u32 {
-        self.core_id
+    /// Zero-based hardware queue index.
+    pub fn queue_index(&self) -> u32 {
+        self.queue_index
     }
 
     /// 保留中のコマンド数を取得
@@ -700,20 +689,14 @@ impl PerCoreNvmeQueue {
 
 /// NVMe Interrupt Handler (ISR context)
 pub fn irq_handler() {
-    // Kernel-owned interrupt routing now dispatches deferred completions by
-    // logical core ID from the executor side instead of maintaining a driver-
-    // local APIC/core mirror in this crate.
-}
-
-pub fn process_deferred_completions_for_core(core_id: u32) -> usize {
-    queue_for_core(core_id)
-        .map(|queue| queue.process_deferred_completions())
-        .unwrap_or(0)
+    // Kernel-owned interrupt routing dispatches deferred completions without a
+    // driver-local CPU identity registry.
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use alloc::boxed::Box;
     use alloc::sync::Arc;
     use alloc::task::Wake;
     use core::sync::atomic::{AtomicUsize, Ordering};
@@ -746,7 +729,7 @@ mod tests {
 
     #[test]
     fn deferred_completion_only_wakes_on_drain() {
-        let queue = PerCoreNvmeQueue::new(0);
+        let queue = NvmeIoQueue::new(0);
         let waker = CountingWaker::new();
         let cid = 7u16;
 
@@ -780,5 +763,41 @@ mod tests {
         assert_eq!(queue.process_deferred_completions(), 1);
         assert_eq!(waker.observed(), 1);
         assert!(queue.check_completion(cid).is_some());
+    }
+
+    #[test]
+    fn shared_queue_serializes_cid_allocation_and_publication() {
+        const DEPTH: usize = 16;
+        let mut submission_entries = Box::new([NvmeCommand::default(); DEPTH]);
+        let mut completion_entries = Box::new([NvmeCompletion::default(); DEPTH]);
+        let mut submission_doorbell = Box::new(0u32);
+        let mut completion_doorbell = Box::new(0u32);
+
+        let queue_pair = unsafe {
+            QueuePair::new(
+                submission_entries.as_mut_ptr(),
+                completion_entries.as_mut_ptr(),
+                DEPTH as u16,
+                submission_doorbell.as_mut() as *mut u32,
+                completion_doorbell.as_mut() as *mut u32,
+                1,
+            )
+        };
+        let queue = Arc::new(NvmeIoQueue::new(0));
+        unsafe { queue.set_queue_pair(queue_pair) };
+
+        let first_queue = queue.clone();
+        let first = std::thread::spawn(move || unsafe { first_queue.flush(1) });
+        let second_queue = queue.clone();
+        let second = std::thread::spawn(move || unsafe { second_queue.flush(1) });
+
+        let mut cids = [
+            first.join().unwrap().unwrap(),
+            second.join().unwrap().unwrap(),
+        ];
+        cids.sort_unstable();
+        assert_eq!(cids, [0, 1]);
+        assert_eq!(submission_entries[0].cid(), 0);
+        assert_eq!(submission_entries[1].cid(), 1);
     }
 }

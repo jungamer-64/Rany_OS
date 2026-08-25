@@ -394,7 +394,7 @@ pub mod io {
             /// Submit a read command (test stub)
             pub unsafe fn submit_read(
                 &self,
-                _core_id: u32,
+                _queue_index: u32,
                 _nsid: u32,
                 _lba: u64,
                 _blocks: u16,
@@ -407,7 +407,7 @@ pub mod io {
             /// Submit a write command (test stub)
             pub unsafe fn submit_write(
                 &self,
-                _core_id: u32,
+                _queue_index: u32,
                 _nsid: u32,
                 _lba: u64,
                 _blocks: u16,
@@ -417,10 +417,10 @@ pub mod io {
                 Err("no-driver")
             }
 
-            pub fn check_completion(&self, _core_id: u32, _cid: u16) -> Option<NvmeCompletion> {
+            pub fn check_completion(&self, _queue_index: u32, _cid: u16) -> Option<NvmeCompletion> {
                 None
             }
-            pub fn register_waker(&self, _core_id: u32, _cid: u16, _waker: core::task::Waker) {}
+            pub fn register_waker(&self, _queue_index: u32, _cid: u16, _waker: core::task::Waker) {}
             pub fn namespace_block_size(&self, _nsid: u32) -> u32 {
                 512
             }
