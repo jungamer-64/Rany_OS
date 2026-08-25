@@ -1,5 +1,6 @@
 use alloc::alloc::{Layout, alloc_zeroed};
 use alloc::boxed::Box;
+use core::cell::UnsafeCell;
 use core::mem::MaybeUninit;
 use core::pin::Pin;
 use core::ptr::NonNull;
@@ -21,20 +22,20 @@ pub(crate) struct CpuDescriptorTables {
     double_fault_stack: IstStack,
     page_fault_stack: IstStack,
     smp_ipi_stack: IstStack,
-    tss: MaybeUninit<TaskStateSegment>,
-    gdt: MaybeUninit<GlobalDescriptorTable>,
-    selectors: MaybeUninit<Selectors>,
+    tss: UnsafeCell<MaybeUninit<TaskStateSegment>>,
+    gdt: UnsafeCell<MaybeUninit<GlobalDescriptorTable>>,
+    selectors: UnsafeCell<MaybeUninit<Selectors>>,
 }
 
 impl CpuDescriptorTables {
     pub(crate) fn allocate() -> Option<Pin<Box<Self>>> {
         let allocation = NonNull::new(unsafe { alloc_zeroed(Layout::new::<Self>()) })?;
-        let mut tables = Pin::from(unsafe { Box::from_raw(allocation.cast::<Self>().as_ptr()) });
-        unsafe { Pin::get_unchecked_mut(tables.as_mut()).initialize() };
+        let tables = Pin::from(unsafe { Box::from_raw(allocation.cast::<Self>().as_ptr()) });
+        unsafe { tables.as_ref().get_ref().initialize() };
         Some(tables)
     }
 
-    unsafe fn initialize(&mut self) {
+    unsafe fn initialize(&self) {
         let mut tss = TaskStateSegment::new();
         tss.interrupt_stack_table[DOUBLE_FAULT_IST_INDEX as usize] =
             VirtAddr::new(self.double_fault_stack_end());
@@ -42,19 +43,34 @@ impl CpuDescriptorTables {
             VirtAddr::new(self.page_fault_stack_end());
         tss.interrupt_stack_table[SMP_IPI_IST_INDEX as usize] =
             VirtAddr::new(self.smp_ipi_stack_end());
-        self.tss.write(tss);
+        let tss_storage = unsafe { &mut *self.tss.get() };
+        tss_storage.write(tss);
 
         let mut gdt = GlobalDescriptorTable::new();
-        let tss_ref = unsafe { &*self.tss.as_ptr() };
+        let tss_storage = unsafe { &*self.tss.get() };
+        let tss_ref = unsafe { tss_storage.assume_init_ref() };
         let code_selector = gdt.append(Descriptor::kernel_code_segment());
         let data_selector = gdt.append(Descriptor::kernel_data_segment());
         let tss_selector = gdt.append(Descriptor::tss_segment(tss_ref));
-        self.gdt.write(gdt);
-        self.selectors.write(Selectors {
+        let gdt_storage = unsafe { &mut *self.gdt.get() };
+        gdt_storage.write(gdt);
+        let selector_storage = unsafe { &mut *self.selectors.get() };
+        selector_storage.write(Selectors {
             code_selector,
             data_selector,
             tss_selector,
         });
+    }
+
+    /// Reconstructs descriptors that hardware may have mutated while loaded.
+    ///
+    /// # Safety
+    ///
+    /// No CPU may have this GDT loaded or retain a reference into these
+    /// descriptor tables. The enclosing `CpuLocal` allocation must remain
+    /// pinned for the entire operation.
+    pub(crate) unsafe fn rearm_physical_generation(&self) {
+        unsafe { self.initialize() };
     }
 
     fn double_fault_stack_end(&self) -> u64 {
@@ -70,11 +86,13 @@ impl CpuDescriptorTables {
     }
 
     fn gdt(&'static self) -> &'static GlobalDescriptorTable {
-        unsafe { &*self.gdt.as_ptr() }
+        let storage = unsafe { &*self.gdt.get() };
+        unsafe { storage.assume_init_ref() }
     }
 
     fn selectors(&self) -> Selectors {
-        unsafe { *self.selectors.as_ptr() }
+        let storage = unsafe { &*self.selectors.get() };
+        unsafe { *storage.assume_init_ref() }
     }
 
     pub(crate) unsafe fn load(&'static self) {

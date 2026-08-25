@@ -218,6 +218,14 @@ impl CpuSlot {
                 }
                 (CpuSlotState::Draining, None, None)
             }
+            (CpuSlotState::Online, CpuStateTransition::DrainRejected(reason)) => (
+                CpuSlotState::Online,
+                Some(CpuFailure {
+                    phase: CpuFailurePhase::Drain,
+                    reason,
+                }),
+                None,
+            ),
             (CpuSlotState::Draining, CpuStateTransition::DrainAborted(reason)) => (
                 CpuSlotState::Online,
                 Some(CpuFailure {
@@ -274,6 +282,7 @@ pub(crate) enum CpuStateTransition {
     StartupReady,
     StartupFailed(CpuFailureReason),
     BeginDrain,
+    DrainRejected(CpuFailureReason),
     DrainAborted(CpuFailureReason),
     DrainFailed(CpuFailureReason),
     DrainComplete,
@@ -290,6 +299,7 @@ impl CpuStateTransition {
             Self::StartupReady => CpuStateTransitionKind::StartupReady,
             Self::StartupFailed(_) => CpuStateTransitionKind::StartupFailed,
             Self::BeginDrain => CpuStateTransitionKind::BeginDrain,
+            Self::DrainRejected(_) => CpuStateTransitionKind::DrainRejected,
             Self::DrainAborted(_) => CpuStateTransitionKind::DrainAborted,
             Self::DrainFailed(_) => CpuStateTransitionKind::DrainFailed,
             Self::DrainComplete => CpuStateTransitionKind::DrainComplete,
@@ -307,6 +317,7 @@ pub(crate) enum CpuStateTransitionKind {
     StartupReady,
     StartupFailed,
     BeginDrain,
+    DrainRejected,
     DrainAborted,
     DrainFailed,
     DrainComplete,
@@ -335,6 +346,19 @@ pub enum CpuBlocker {
     AllocatorCache,
     RcuReader,
     TlbShootdown,
+}
+
+/// Generation-bound CPU-local state that survived a completed physical eject.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuGenerationResource {
+    ControlQueue,
+    ExecutionContext,
+    InterruptContext,
+    PageFault,
+    DeferredWork,
+    Timer,
+    RcuReader,
+    TlbState,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -366,6 +390,10 @@ pub enum CpuTopologyIssue {
     CpuStartupUnavailable {
         id: CpuId,
         failure: CpuStartupFailure,
+    },
+    CpuGenerationNotQuiescent {
+        id: CpuId,
+        resource: CpuGenerationResource,
     },
     PhysicalEjectUnsupported {
         id: CpuId,
@@ -578,6 +606,31 @@ mod tests {
         slot.transition(CpuStateTransition::BeginDrain).unwrap();
         let blockers: Arc<[CpuBlocker]> = Arc::from([CpuBlocker::NetworkQueue { runtime_id: 19 }]);
         slot.transition(CpuStateTransition::DrainAborted(CpuFailureReason::Drain(
+            CpuDrainFailure::Blocked {
+                blockers: blockers.clone(),
+            },
+        )))
+        .unwrap();
+
+        assert_eq!(slot.state, CpuSlotState::Online);
+        assert_eq!(
+            slot.last_failure,
+            Some(CpuFailure {
+                phase: CpuFailurePhase::Drain,
+                reason: CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers }),
+            })
+        );
+    }
+
+    #[test]
+    fn rejected_drain_retains_typed_blockers_without_leaving_online_state() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupReady).unwrap();
+        let blockers: Arc<[CpuBlocker]> = Arc::from([CpuBlocker::PinnedTask { task_id: 41 }]);
+        slot.transition(CpuStateTransition::DrainRejected(CpuFailureReason::Drain(
             CpuDrainFailure::Blocked {
                 blockers: blockers.clone(),
             },

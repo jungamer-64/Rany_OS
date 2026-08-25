@@ -9,7 +9,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::sync::MpscRingBuffer;
 
-use super::CpuId;
+use super::{CpuGenerationResource, CpuId};
 
 const CONTROL_QUEUE_SLOTS: usize = 32;
 const DEFERRED_WAKE_QUEUE_SLOTS: usize = 257;
@@ -264,6 +264,36 @@ impl CpuRemoteAccess {
             .saturating_add(self.deferred_io_completions.len())
             .saturating_add(self.interrupt_wakes.len())
     }
+
+    fn physical_generation_residue(&self) -> Option<CpuGenerationResource> {
+        if !self.control.is_empty() || self.wake_pending.load(Ordering::Acquire) {
+            return Some(CpuGenerationResource::ControlQueue);
+        }
+        if self.interrupt_depth.load(Ordering::Acquire) != 0 {
+            return Some(CpuGenerationResource::InterruptContext);
+        }
+        if self.timer_event_pending.load(Ordering::Acquire)
+            || self.runtime_timer_armed.load(Ordering::Acquire)
+        {
+            return Some(CpuGenerationResource::Timer);
+        }
+        if self.rcu_read_depth.load(Ordering::Acquire) != 0 {
+            return Some(CpuGenerationResource::RcuReader);
+        }
+        if !self.tlb_is_lazy() {
+            return Some(CpuGenerationResource::TlbState);
+        }
+        if self.pending_deferred_work() != 0 {
+            return Some(CpuGenerationResource::DeferredWork);
+        }
+        None
+    }
+
+    fn acknowledge_cold_tlb(&self) {
+        let requested = self.tlb_requested_generation.load(Ordering::SeqCst);
+        self.tlb_observed_generation
+            .store(requested, Ordering::SeqCst);
+    }
 }
 
 struct CpuOwnedState {
@@ -283,6 +313,8 @@ struct CpuTls {
     allocation: NonNull<u8>,
     layout: Layout,
     fs_base: u64,
+    template: boot_proto::TlsInfo,
+    file_size: usize,
 }
 
 // SAFETY: CpuTls owns its allocation. The pointer is only installed into FS
@@ -330,7 +362,27 @@ impl CpuTls {
             allocation,
             layout,
             fs_base,
+            template,
+            file_size,
         }))
+    }
+
+    /// Restores the initial TLS image for a new physical CPU generation.
+    ///
+    /// # Safety
+    ///
+    /// No CPU may have this allocation installed as its FS-backed TLS area.
+    unsafe fn rearm_physical_generation(&self) {
+        unsafe { core::ptr::write_bytes(self.allocation.as_ptr(), 0, self.layout.size()) };
+        if self.file_size != 0 {
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    self.template.start_addr as *const u8,
+                    self.allocation.as_ptr(),
+                    self.file_size,
+                )
+            };
+        }
     }
 }
 
@@ -354,6 +406,8 @@ pub struct CpuLocal {
 // SAFETY: `owned` is only accessed through a `CurrentCpu` token, which is
 // non-Send/non-Sync and can only be acquired for the executing CPU. All
 // cross-CPU access is confined to `CpuRemoteAccess` atomics and its MPSC queue.
+// Descriptor/TLS/owned-state rearming is serialized by CpuRuntime while the
+// slot is firmware-absent, after the prior physical CPU has ceased execution.
 unsafe impl Sync for CpuLocal {}
 
 impl CpuLocal {
@@ -388,6 +442,39 @@ impl CpuLocal {
 
     pub fn remote(&self) -> &CpuRemoteAccess {
         &self.remote
+    }
+
+    /// Rearms state that belongs to one physical incarnation of this CPU slot.
+    ///
+    /// # Safety
+    ///
+    /// The previous physical CPU must be absent and unable to execute with
+    /// this `CpuLocal`; no new CPU may be launched until this call returns.
+    pub(crate) unsafe fn rearm_physical_generation(&self) -> Result<(), CpuGenerationResource> {
+        if let Some(resource) = self.remote.physical_generation_residue() {
+            return Err(resource);
+        }
+
+        let owned = unsafe { &mut *self.owned.get() };
+        if owned.execution.is_some() {
+            return Err(CpuGenerationResource::ExecutionContext);
+        }
+        if owned.page_fault_active {
+            return Err(CpuGenerationResource::PageFault);
+        }
+        owned.task_fuel = 0;
+
+        if let Some(tls) = self.tls.as_ref() {
+            unsafe { tls.rearm_physical_generation() };
+        }
+        unsafe {
+            self.descriptor_tables
+                .as_ref()
+                .get_ref()
+                .rearm_physical_generation()
+        };
+        self.remote.acknowledge_cold_tlb();
+        Ok(())
     }
 
     fn is_self_address(&self, address: usize) -> bool {

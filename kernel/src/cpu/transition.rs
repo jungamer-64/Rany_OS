@@ -492,8 +492,17 @@ async fn try_perform_offline(
             failure: super::CpuStartupFailure::CpuLocalBinding,
         })
     })?;
-    crate::task::prepare_cpu_offline(id)
-        .map_err(|blockers| CpuTransitionError::Busy { blockers })?;
+    if let Err(blockers) = crate::task::prepare_cpu_offline(id) {
+        let reason = CpuFailureReason::Drain(CpuDrainFailure::Blocked {
+            blockers: blockers.clone(),
+        });
+        super::runtime()
+            .drain_rejected(id, reason)
+            .unwrap_or_else(|error| {
+                panic!("CPU {id} drain rejection could not be committed: {error:?}")
+            });
+        return Err(CpuTransitionError::Busy { blockers });
+    }
     if let Err(error) = super::runtime().begin_drain(id) {
         crate::task::publish_cpu_online(id);
         return Err(runtime_error(error));

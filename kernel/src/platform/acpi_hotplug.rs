@@ -683,6 +683,10 @@ async fn report_ost(
     // ACPI defines _OST as optional. Its absence removes the platform-status
     // handshake, but does not revoke the independent _EJ0 eject capability.
     let Some(method) = binding.ost_method.as_ref() else {
+        log::warn!(
+            "CPU firmware object {} has no _OST method; eject status was not reported",
+            binding.path.as_str()
+        );
         return Ok(());
     };
     execute_method(

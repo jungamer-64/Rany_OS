@@ -296,9 +296,17 @@ impl CpuRuntime {
     ) -> Result<CpuId, CpuTopologyIssue> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let (id, metadata_changed) = ensure_possible_slot(&mut state, firmware)?;
-        let slot = &mut state.slots[id.as_usize()];
-        let became_present = if slot.state == CpuSlotState::FirmwareAbsent {
-            slot.transition(CpuStateTransition::FirmwarePresent)
+        let index = id.as_usize();
+        let became_present = if state.slots[index].state == CpuSlotState::FirmwareAbsent {
+            let local = state.locals[index].as_ref().get_ref();
+            // SAFETY: FirmwareAbsent is published only after the drain/park
+            // protocol and firmware-confirmed eject complete. The transition
+            // worker serializes discovery with launch, so no replacement CPU
+            // can use this stable CpuLocal until FirmwarePresent is committed.
+            unsafe { local.rearm_physical_generation() }
+                .map_err(|resource| CpuTopologyIssue::CpuGenerationNotQuiescent { id, resource })?;
+            state.slots[index]
+                .transition(CpuStateTransition::FirmwarePresent)
                 .map_err(map_state_error)?;
             true
         } else {
@@ -345,6 +353,14 @@ impl CpuRuntime {
 
     pub(crate) fn begin_drain(&self, id: CpuId) -> Result<(), CpuRuntimeError> {
         self.transition(id, CpuStateTransition::BeginDrain)
+    }
+
+    pub(crate) fn drain_rejected(
+        &self,
+        id: CpuId,
+        reason: CpuFailureReason,
+    ) -> Result<(), CpuRuntimeError> {
+        self.transition(id, CpuStateTransition::DrainRejected(reason))
     }
 
     pub(crate) fn drain_aborted(
