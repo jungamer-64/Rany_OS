@@ -17,10 +17,8 @@ fn exchange_heap_after_global_heap() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     use crate::domain::quota::quota_manager;
-    use crate::domain::{
-        create_domain, current_domain, set_current_domain, set_domain_resource_limits,
-        terminate_domain,
-    };
+    use crate::domain::{create_domain, set_domain_resource_limits, terminate_domain};
+    use crate::task::{ExecutionContext, TaskId};
 
     #[repr(align(4096))]
     struct LocalHeap([u8; 256 * 1024]);
@@ -40,8 +38,13 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     set_domain_resource_limits(domain, 100, 2 * 1024 * 1024, 0)
         .expect("set_domain_resource_limits failed");
 
-    let prev = current_domain();
-    set_current_domain(domain);
+    let current = crate::cpu::CurrentCpu::acquire().expect("test requires a bound CPU");
+    let cpu = current.id();
+    let execution = current.enter_execution(ExecutionContext::for_task(
+        cpu,
+        TaskId::from_raw(0x4845_4150),
+        domain,
+    ));
 
     let before = quota_manager()
         .get_stats(domain)
@@ -80,6 +83,6 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
         .memory_used;
     assert_eq!(after, before, "quota usage should return after dealloc");
 
-    set_current_domain(prev);
+    drop(execution);
     let _ = terminate_domain(domain);
 }
