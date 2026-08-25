@@ -41,6 +41,7 @@ pub enum NamespaceBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CpuNamespaceBinding {
     pub path: AmlPath,
+    pub processor_id: Option<u8>,
     pub uid: Option<NamespaceBinding>,
     pub mat: Option<NamespaceBinding>,
     pub proximity_domain: Option<NamespaceBinding>,
@@ -207,6 +208,10 @@ fn bind_cpu_device(
 
     Ok(CpuNamespaceBinding {
         path: path.clone(),
+        processor_id: match namespace.get(path) {
+            Some(AmlObject::Processor(processor)) => Some(processor.processor_id),
+            _ => None,
+        },
         uid: bind_value_or_method(namespace, &uid_path)?,
         mat: bind_value_or_method(namespace, &mat_path)?,
         proximity_domain: bind_value_or_method(namespace, &pxm_path)?,
