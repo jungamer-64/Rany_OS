@@ -48,7 +48,7 @@ pub fn validate_dma_region(start: u64, size: u64) -> Result<(), IommuError> {
     // Protection is provided by:
     //   1. The frame allocator (kernel pages are not re-allocated for DMA)
     //   2. Individual page protection via register_protected_page() (page tables, stacks)
-    //   3. The range_overlaps_protected() check above (bitmap + region list)
+    //   3. The authoritative range registry checked above
 
     let max_phys = crate::mm::phys::frame_allocator::pmm_managed_end().unwrap_or(0);
     if max_phys == 0 {
