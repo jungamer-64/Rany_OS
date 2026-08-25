@@ -1,8 +1,15 @@
+mod qmp;
+
+pub use qmp::QmpError;
+
 use std::fmt;
+use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant};
+
+use qmp::{HotpluggedCpu, QmpClient};
 
 #[derive(Debug, Clone)]
 pub struct RunConfig {
@@ -10,7 +17,8 @@ pub struct RunConfig {
     pub case_filter: Option<String>,
     pub timeout_secs: u64,
     pub memory_mb: u64,
-    pub smp: u8,
+    pub smp: u16,
+    pub max_cpus: u16,
     pub cpu: String,
     pub extra_args: Vec<String>,
 }
@@ -18,12 +26,19 @@ pub struct RunConfig {
 impl RunConfig {
     #[must_use]
     pub fn for_profile(profile: impl Into<String>) -> Self {
+        let profile = profile.into();
+        let (smp, max_cpus) = if profile == "cpu-hotplug" {
+            (1, 2)
+        } else {
+            (2, 2)
+        };
         Self {
-            profile: profile.into(),
+            profile,
             case_filter: None,
             timeout_secs: 120,
             memory_mb: 1024,
-            smp: 2,
+            smp,
+            max_cpus,
             cpu: String::from("qemu64,+rdtscp,+rdrand"),
             extra_args: Vec::new(),
         }
@@ -125,7 +140,16 @@ pub enum RunError {
     FirmwareMissing(Box<str>),
     InvalidAccel(Box<str>),
     AccelUnavailable(Box<str>),
+    InvalidCpuTopology {
+        initial_cpus: u16,
+        max_cpus: u16,
+    },
     QemuLaunch(std::io::Error),
+    Qmp {
+        source: Box<QmpError>,
+        log_path: Box<PathBuf>,
+        qemu_stderr_path: Box<PathBuf>,
+    },
     Timeout {
         timeout_secs: u64,
         log_path: Box<PathBuf>,
@@ -142,7 +166,24 @@ impl fmt::Display for RunError {
             Self::FirmwareMissing(msg) => write!(f, "{msg}"),
             Self::InvalidAccel(msg) => write!(f, "{msg}"),
             Self::AccelUnavailable(msg) => write!(f, "{msg}"),
+            Self::InvalidCpuTopology {
+                initial_cpus,
+                max_cpus,
+            } => write!(
+                f,
+                "invalid CPU topology: initial CPUs must be in 1..={max_cpus}, max CPUs must be at most 256 (got initial={initial_cpus}, max={max_cpus})"
+            ),
             Self::QemuLaunch(err) => write!(f, "failed to launch qemu-system-x86_64: {err}"),
+            Self::Qmp {
+                source,
+                log_path,
+                qemu_stderr_path,
+            } => write!(
+                f,
+                "CPU hotplug QMP protocol failed: {source} (serial log: {}, qemu stderr log: {})",
+                log_path.display(),
+                qemu_stderr_path.display()
+            ),
             Self::Timeout {
                 timeout_secs,
                 log_path,
@@ -305,7 +346,7 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if config.profile != "boot-smoke" {
+    if !matches!(config.profile.as_str(), "boot-smoke" | "cpu-hotplug") {
         parts.push(String::from("qemu_no_if=1"));
     }
     if config.profile == "step9-heavy" {
@@ -805,6 +846,95 @@ fn detect_fullboot_result(log_path: &Path) -> Option<bool> {
     None
 }
 
+fn serial_contains(log_path: &Path, marker: &str) -> bool {
+    std::fs::read(log_path)
+        .ok()
+        .is_some_and(|bytes| String::from_utf8_lossy(&bytes).contains(marker))
+}
+
+const CPU_HOTPLUG_READY: &str = "[kernel-test] cpu-hotplug ready";
+const CPU_HOTPLUG_EJECT_READY: &str = "[kernel-test] cpu-hotplug eject-ready";
+const QMP_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+const QMP_OPERATION_TIMEOUT: Duration = Duration::from_secs(30);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuHotplugRunPhase {
+    AwaitingAdd,
+    AwaitingDelete,
+    Complete,
+}
+
+struct CpuHotplugRun {
+    client: QmpClient,
+    phase: CpuHotplugRunPhase,
+    added_cpu: Option<HotpluggedCpu>,
+}
+
+impl CpuHotplugRun {
+    const fn new(client: QmpClient) -> Self {
+        Self {
+            client,
+            phase: CpuHotplugRunPhase::AwaitingAdd,
+            added_cpu: None,
+        }
+    }
+
+    fn advance(&mut self, log_path: &Path, run_deadline: Instant) -> Result<(), QmpError> {
+        if self.phase == CpuHotplugRunPhase::AwaitingAdd
+            && serial_contains(log_path, CPU_HOTPLUG_READY)
+        {
+            let deadline = qmp_operation_deadline(run_deadline);
+            let cpu = self
+                .client
+                .add_first_available_cpu("rany-cpu-hotplug-1", deadline)?;
+            eprintln!("QMP added CPU device '{}'", cpu.device_id);
+            self.added_cpu = Some(cpu);
+            self.phase = CpuHotplugRunPhase::AwaitingDelete;
+        }
+
+        if self.phase == CpuHotplugRunPhase::AwaitingDelete
+            && serial_contains(log_path, CPU_HOTPLUG_EJECT_READY)
+        {
+            let cpu = self
+                .added_cpu
+                .as_ref()
+                .expect("added CPU must exist before the delete phase");
+            let deadline = qmp_operation_deadline(run_deadline);
+            self.client.request_cpu_delete(cpu, deadline)?;
+            self.client.wait_for_device_deleted(cpu, deadline)?;
+            eprintln!("QMP observed DEVICE_DELETED for '{}'", cpu.device_id);
+            self.phase = CpuHotplugRunPhase::Complete;
+        }
+        Ok(())
+    }
+
+    const fn is_complete(&self) -> bool {
+        matches!(self.phase, CpuHotplugRunPhase::Complete)
+    }
+}
+
+fn qmp_operation_deadline(run_deadline: Instant) -> Instant {
+    let operation_deadline = Instant::now() + QMP_OPERATION_TIMEOUT;
+    operation_deadline.min(run_deadline)
+}
+
+fn reserve_qmp_address() -> Result<SocketAddr, RunError> {
+    let listener = TcpListener::bind(("127.0.0.1", 0)).map_err(RunError::QemuLaunch)?;
+    let address = listener.local_addr().map_err(RunError::QemuLaunch)?;
+    drop(listener);
+    Ok(address)
+}
+
+fn validate_cpu_topology(config: &RunConfig) -> Result<(), RunError> {
+    if config.smp == 0 || config.smp > config.max_cpus || config.max_cpus > 256 {
+        return Err(RunError::InvalidCpuTopology {
+            initial_cpus: config.smp,
+            max_cpus: config.max_cpus,
+        });
+    }
+    Ok(())
+}
+
 fn make_report(
     profile: String,
     artifact_path: PathBuf,
@@ -830,9 +960,12 @@ fn poll_qemu(
     log_path: PathBuf,
     qemu_stderr_path: PathBuf,
     mut child: std::process::Child,
+    qmp_client: Option<QmpClient>,
 ) -> Result<RunReport, RunError> {
     let start = Instant::now();
     let timeout = Duration::from_secs(config.timeout_secs);
+    let run_deadline = start + timeout;
+    let mut hotplug = qmp_client.map(CpuHotplugRun::new);
 
     loop {
         if start.elapsed() > timeout {
@@ -845,7 +978,34 @@ fn poll_qemu(
             });
         }
 
+        if let Some(hotplug) = hotplug.as_mut()
+            && let Err(source) = hotplug.advance(&log_path, run_deadline)
+        {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(RunError::Qmp {
+                source: Box::new(source),
+                log_path: Box::new(log_path),
+                qemu_stderr_path: Box::new(qemu_stderr_path),
+            });
+        }
+
         if let Some(success) = detect_fullboot_result(&log_path) {
+            if success && hotplug.as_ref().is_some_and(|run| !run.is_complete()) {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::Qmp {
+                    source: Box::new(QmpError::Protocol {
+                        operation: "CPU hotplug run",
+                        detail: String::from(
+                            "guest reported success before DEVICE_DELETED was acknowledged",
+                        )
+                        .into_boxed_str(),
+                    }),
+                    log_path: Box::new(log_path),
+                    qemu_stderr_path: Box::new(qemu_stderr_path),
+                });
+            }
             let _ = child.kill();
             let _ = child.wait();
             let host_exit_code = if success { 33 } else { 35 };
@@ -894,6 +1054,7 @@ fn poll_qemu(
 ///
 /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
+    validate_cpu_topology(config)?;
     ensure_qemu_available()?;
     let accel = resolve_fullboot_accel()?;
     let image = package_fullboot_image(config).map_err(|err| RunError::Build(Box::new(err)))?;
@@ -931,6 +1092,11 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     } else {
         None
     };
+    let qmp_address = if config.profile == "cpu-hotplug" {
+        Some(reserve_qmp_address()?)
+    } else {
+        None
+    };
 
     let mut qemu_cmd = Command::new("qemu-system-x86_64");
     eprintln!(
@@ -948,7 +1114,7 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg("-m")
         .arg(format!("{}M", config.memory_mb))
         .arg("-smp")
-        .arg(config.smp.to_string())
+        .arg(format!("cpus={},maxcpus={}", config.smp, config.max_cpus))
         .arg("-nic")
         .arg("none")
         .arg("-display")
@@ -967,6 +1133,12 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg(fat_arg)
         .stdout(Stdio::null())
         .stderr(Stdio::from(qemu_stderr_file));
+
+    if let Some(address) = qmp_address {
+        qemu_cmd
+            .arg("-qmp")
+            .arg(format!("tcp:{address},server=on,wait=off"));
+    }
 
     if let Some(storage_disk) = &storage_disk_path {
         qemu_cmd
@@ -995,13 +1167,29 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         qemu_cmd.arg(extra);
     }
 
-    let child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
+    let mut child = qemu_cmd.spawn().map_err(RunError::QemuLaunch)?;
+    let qmp_client = match qmp_address {
+        Some(address) => match QmpClient::connect(address, Instant::now() + QMP_CONNECT_TIMEOUT) {
+            Ok(client) => Some(client),
+            Err(source) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::Qmp {
+                    source: Box::new(source),
+                    log_path: Box::new(log_path),
+                    qemu_stderr_path: Box::new(qemu_stderr_path),
+                });
+            }
+        },
+        None => None,
+    };
     poll_qemu(
         config,
         image.kernel_payload_path,
         log_path,
         qemu_stderr_path,
         child,
+        qmp_client,
     )
 }
 
@@ -1026,6 +1214,17 @@ mod tests {
 
         assert!(cmdline.contains("run_integration=driver_domain"));
         assert!(cmdline.contains("qemu_no_if=1"));
+    }
+
+    #[test]
+    fn cpu_hotplug_cmdline_keeps_sci_delivery_enabled() {
+        let cfg = RunConfig::for_profile("cpu-hotplug");
+        let cmdline = kernel_cmdline(&cfg);
+
+        assert!(cmdline.contains("run_integration=cpu-hotplug"));
+        assert!(!cmdline.contains("qemu_no_if=1"));
+        assert_eq!(cfg.smp, 1);
+        assert_eq!(cfg.max_cpus, 2);
     }
 
     #[test]

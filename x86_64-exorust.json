@@ -20,7 +20,7 @@
   "relro-level": "off",
   "executables": true,
   "crt-objects-fallback": "false",
-  "rustc-abi": "x86-softfloat",
+  "rustc-abi": "softfloat",
   "stack-probes": {
     "kind": "inline"
   },

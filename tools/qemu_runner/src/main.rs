@@ -14,10 +14,20 @@ fn main() {
     let mut config = RunConfig::for_profile(profile);
     config.case_filter = args.next();
 
-    if let Ok(v) = std::env::var("QEMU_TEST_TIMEOUT_SECS") {
-        if let Ok(parsed) = v.parse::<u64>() {
-            config.timeout_secs = parsed;
-        }
+    if let Ok(v) = std::env::var("QEMU_TEST_TIMEOUT_SECS")
+        && let Ok(parsed) = v.parse::<u64>()
+    {
+        config.timeout_secs = parsed;
+    }
+    if let Ok(v) = std::env::var("QEMU_TEST_SMP")
+        && let Ok(parsed) = v.parse::<u16>()
+    {
+        config.smp = parsed;
+    }
+    if let Ok(v) = std::env::var("QEMU_TEST_MAX_CPUS")
+        && let Ok(parsed) = v.parse::<u16>()
+    {
+        config.max_cpus = parsed;
     }
 
     match run_fullboot(&config) {

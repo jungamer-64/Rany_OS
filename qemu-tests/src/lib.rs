@@ -18,10 +18,10 @@ fn env_u64(key: &str, default: u64) -> u64 {
 }
 
 #[cfg(test)]
-fn env_u8(key: &str, default: u8) -> u8 {
+fn env_u16(key: &str, default: u16) -> u16 {
     std::env::var(key)
         .ok()
-        .and_then(|v| v.parse::<u8>().ok())
+        .and_then(|v| v.parse::<u16>().ok())
         .unwrap_or(default)
 }
 
@@ -41,7 +41,14 @@ fn base_config(profile: &str) -> RunConfig {
     };
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
-    cfg.smp = env_u8("QEMU_TEST_SMP", 4);
+    let default_smp = if profile == "cpu-hotplug" { 1 } else { 4 };
+    let default_max_cpus = if profile == "cpu-hotplug" {
+        2
+    } else {
+        default_smp
+    };
+    cfg.smp = env_u16("QEMU_TEST_SMP", default_smp);
+    cfg.max_cpus = env_u16("QEMU_TEST_MAX_CPUS", default_max_cpus);
     cfg.cpu =
         std::env::var("QEMU_TEST_CPU").unwrap_or_else(|_| String::from("qemu64,+rdtscp,+rdrand"));
     cfg.case_filter = std::env::var("QEMU_TEST_CASE_FILTER").ok();
@@ -73,7 +80,14 @@ fn fullboot_pr_required() {
     let only_profile = std::env::var("QEMU_TEST_PROFILE_ONLY").ok();
     let mut ran_any = false;
     // Keep PR-required set deterministic in current qemu_no_if fullboot runs.
-    for profile in ["boot-smoke", "storage", "driver_domain", "iommu", "network"] {
+    for profile in [
+        "boot-smoke",
+        "storage",
+        "driver_domain",
+        "iommu",
+        "network",
+        "cpu-hotplug",
+    ] {
         if let Some(only) = only_profile.as_deref() {
             if only != profile {
                 continue;
