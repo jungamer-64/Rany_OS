@@ -24,6 +24,9 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Mutex, RwLock};
 
+use crate::cpu::{CpuId, CurrentCpu};
+use crate::task::TaskId;
+
 // =============================================================================
 // 定数
 // =============================================================================
@@ -161,19 +164,19 @@ impl CallStack {
 #[derive(Debug, Clone)]
 pub struct ProfileSample {
     pub timestamp: u64,
-    pub cpu_id: u32,
-    pub task_id: u64,
+    pub cpu: CpuId,
+    pub task: Option<TaskId>,
     pub mode: ProfileMode,
     pub value: u64,
     pub stack: Option<CallStack>,
 }
 
 impl ProfileSample {
-    pub fn new(mode: ProfileMode, value: u64) -> Self {
+    pub fn new(cpu: CpuId, task: Option<TaskId>, mode: ProfileMode, value: u64) -> Self {
         Self {
             timestamp: rdtsc(),
-            cpu_id: 0,
-            task_id: 0,
+            cpu,
+            task,
             mode,
             value,
             stack: None,
@@ -339,7 +342,12 @@ impl CpuProfiler {
             return;
         }
 
-        let sample = ProfileSample::new(ProfileMode::Cpu, 1).with_stack();
+        let Some(current) = CurrentCpu::acquire() else {
+            self.dropped_samples.fetch_add(1, Ordering::Relaxed);
+            return;
+        };
+        let task = current.execution().map(|context| context.subject.task);
+        let sample = ProfileSample::new(current.id(), task, ProfileMode::Cpu, 1).with_stack();
 
         let mut samples = self.samples.lock();
         if samples.len() < MAX_SAMPLES {
