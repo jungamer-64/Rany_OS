@@ -651,8 +651,26 @@ async fn eject_cpu(
             log::warn!("firmware eject method for CPU {id} failed: {error:?}");
             Ok(())
         }
-        (_, Err(error)) => {
-            panic!("CPU {id} firmware eject outcome is unknown because _STA failed: {error:?}")
+        (eject_result, Err(mut error)) => {
+            error.detail = alloc::format!(
+                "CPU {id} _STA verification failed after _EJ0; the physical outcome is unknown: {}",
+                error.detail
+            );
+            crate::cpu::fail_eject(authority, error.clone())
+                .await
+                .map_err(map_transition_error)?;
+            report_ost(
+                service,
+                binding,
+                EjectOstStatus::Failure,
+                environment,
+                notifications,
+            )
+            .await?;
+            log::warn!(
+                "firmware eject verification for CPU {id} failed; _EJ0 result={eject_result:?}, error={error:?}"
+            );
+            Ok(())
         }
     }
 }
