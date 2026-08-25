@@ -14,8 +14,8 @@ fn test_msi_allocation() {
 
     assert!(result.is_ok());
     let alloc = result.unwrap();
-    assert!(alloc.vector >= MSI_VECTORS_START);
-    assert!(alloc.vector <= MSI_VECTORS_END);
+    assert!(alloc.vector >= EXTERNAL_VECTORS_START);
+    assert!(alloc.vector <= EXTERNAL_VECTORS_END);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -32,6 +32,30 @@ fn test_gsi_allocation() {
     );
 
     assert!(result.is_ok());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn a_gsi_cannot_be_granted_to_two_route_owners() {
+    let manager = InterruptManager::new();
+    manager.init();
+    let first = manager
+        .allocate_gsi_vector(9, "first".into(), TriggerMode::Level, Polarity::ActiveLow)
+        .unwrap();
+
+    assert!(matches!(
+        manager.allocate_gsi_vector(
+            9,
+            "second".into(),
+            TriggerMode::Level,
+            Polarity::ActiveLow,
+        ),
+        Err(InterruptError::GsiInUse {
+            gsi: 9,
+            vector,
+        })
+        if vector == first.vector
+    ));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -53,7 +77,7 @@ fn test_vector_free() {
         .unwrap();
 
     // 空いているベクタが割り当てられる
-    assert!(alloc2.vector >= MSI_VECTORS_START);
+    assert!(alloc2.vector >= EXTERNAL_VECTORS_START);
 }
 
 // ========================================================================

@@ -27,5 +27,5 @@ pub use state::{
     FirmwareCpuIdentity, FirmwareError, FirmwareErrorKind, PhysicalHotplugStatus,
 };
 pub(crate) use state::{CpuStateTransition, CpuStateTransitionError};
-pub(crate) use transition::{CpuEjectAuthority, commit_eject, fail_eject, prepare_eject};
+pub(crate) use transition::{commit_eject, fail_eject, prepare_eject};
 pub use transition::{offline, online};

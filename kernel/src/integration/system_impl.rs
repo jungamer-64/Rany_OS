@@ -297,6 +297,22 @@ impl SystemIntegration {
                                             continue;
                                         }
                                     };
+                                    if let Err(error) =
+                                        crate::io::interrupt_manager::register_handler(
+                                            vector,
+                                            alloc::boxed::Box::new(|| {
+                                                crate::interrupts::dispatch_shared_pci_handlers();
+                                            }),
+                                        )
+                                    {
+                                        crate::io::interrupt_manager::free_vector(vector);
+                                        self.log(&alloc::format!(
+                                            "    MSI handler registration failed for {}: {:?}",
+                                            dev_name,
+                                            error
+                                        ));
+                                        continue;
+                                    }
                                     let program_result = unsafe {
                                         super::interrupt_routing::program_msi(
                                             pci_dev.bdf.bus(),
@@ -308,6 +324,7 @@ impl SystemIntegration {
                                         )
                                     };
                                     if let Err(error) = program_result {
+                                        crate::io::interrupt_manager::unregister_handler(vector);
                                         crate::io::interrupt_manager::free_vector(vector);
                                         self.log(&alloc::format!(
                                             "    MSI programming failed for {}: {:?}",
@@ -317,12 +334,6 @@ impl SystemIntegration {
                                         continue;
                                     }
                                     let _ = crate::platform::pci::disable_intx(pci_dev);
-                                    crate::io::interrupt_manager::register_handler(
-                                        vector,
-                                        alloc::boxed::Box::new(|| {
-                                            crate::interrupts::dispatch_shared_pci_handlers();
-                                        }),
-                                    );
                                     self.interrupt_router.add_msi_route(*dev_id, vector);
                                     self.log(&alloc::format!(
                                         "    MSI enabled: {} {:02x}:{:02x}.{} -> vector {}",

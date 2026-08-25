@@ -361,6 +361,7 @@ pub enum FirmwareErrorKind {
     Namespace,
     OperationRegion,
     EventDelivery,
+    Resource,
     TimedOut,
 }
 

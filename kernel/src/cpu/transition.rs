@@ -358,6 +358,7 @@ async fn transition_worker() {
                     ),
                 };
                 let result = perform_finish_eject(permit, EjectOutcome::PresentOffline(error));
+                log::warn!("CPU {id} eject authority was abandoned and reconciled offline");
                 log_transition_failure(id, "abandon-eject", &result);
             }
         }
@@ -418,12 +419,9 @@ fn perform_finish_eject(
         EjectOutcome::FirmwareAbsent => super::runtime()
             .eject_complete(permit.id)
             .map_err(runtime_error),
-        EjectOutcome::PresentOffline(error) => {
-            super::runtime()
-                .eject_failed(permit.id, CpuFailureReason::Firmware(error.clone()))
-                .map_err(runtime_error)?;
-            Err(CpuTransitionError::Firmware(error))
-        }
+        EjectOutcome::PresentOffline(error) => super::runtime()
+            .eject_failed(permit.id, CpuFailureReason::Firmware(error))
+            .map_err(runtime_error),
     }
 }
 

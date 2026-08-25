@@ -29,16 +29,10 @@ use x86_64::structures::idt::InterruptStackFrame;
 mod mask_ops;
 pub use mask_ops::*;
 
-/// ユーザー割り込みベクタ範囲
-const USER_VECTORS_END: u8 = 254;
-
-/// MSI/MSI-X用ベクタ範囲
+/// IDT-backed external-device vector range shared by MSI/MSI-X and GSI routes.
 pub const NVME_VECTOR: u8 = 48; // NVMe専用ベクタ (0x30)
-pub const MSI_VECTORS_START: u8 = 0x60;
-pub const MSI_VECTORS_END: u8 = 0x6F;
-
-/// レガシー割り込み用ベクタ範囲
-const LEGACY_VECTORS_START: u8 = 32;
+pub const EXTERNAL_VECTORS_START: u8 = 0x60;
+pub const EXTERNAL_VECTORS_END: u8 = 0x6F;
 
 /// APIC Timer vector
 ///
@@ -282,12 +276,16 @@ pub enum InterruptError {
     NoAvailableVector,
     /// ベクタが既に使用中
     VectorInUse,
+    /// A GSI already has an owner and cannot be aliased to a second handler.
+    GsiInUse { gsi: u32, vector: u8 },
     /// 無効なベクタ
     InvalidVector,
     /// 無効なGSI
     InvalidGsi,
     /// ハードウェアエラー
     HardwareError,
+    /// A direct ISR consumer already owns this vector.
+    HandlerInUse { vector: u8 },
     /// CPU topology cannot provide the requested online destination.
     CpuNotOnline(crate::cpu::CpuId),
     /// Direct MSI delivery cannot represent this destination without an IOMMU
@@ -365,7 +363,7 @@ impl InterruptManager {
         let _route_allocation = self.route_allocation_gate.lock();
         let target_apic_id = online_apic_id(target_cpu)?;
         // MSI範囲から空きベクタを探す
-        for vector in MSI_VECTORS_START..=MSI_VECTORS_END {
+        for vector in EXTERNAL_VECTORS_START..=EXTERNAL_VECTORS_END {
             if self.try_allocate_vector(vector) {
                 let mut config = InterruptConfig {
                     vector,
@@ -456,26 +454,18 @@ impl InterruptManager {
         trigger_mode: TriggerMode,
         polarity: Polarity,
     ) -> Result<VectorAllocation, InterruptError> {
+        let _route_allocation = self.route_allocation_gate.lock();
         let target_apic_id = online_apic_id(crate::cpu::CpuId::BOOTSTRAP)?;
-        // 既存のマッピングを確認
+        // A GSI is a device-visible route with one lifecycle owner. Returning
+        // the existing vector would grant a second caller authority to free or
+        // reconfigure the first caller's route.
         if let Some(&vector) = self.gsi_to_vector.read().get(&gsi) {
-            let config = self
-                .allocations
-                .read()
-                .get(&vector)
-                .map(|a| a.config.clone())
-                .ok_or(InterruptError::InvalidVector)?;
-            return Ok(VectorAllocation { vector, config });
+            return Err(InterruptError::GsiInUse { gsi, vector });
         }
 
-        // レガシー範囲から割り当て
-        let vector = if gsi < 16 {
-            // IRQ 0-15 は固定マッピング
-            LEGACY_VECTORS_START + gsi as u8
-        } else {
-            // その他のGSIは動的割り当て
-            self.find_free_vector(LEGACY_VECTORS_START, USER_VECTORS_END)?
-        };
+        // GSI identity is independent from the IDT vector. Every allocated
+        // route uses the range whose entry points perform direct dispatch.
+        let vector = self.find_free_vector(EXTERNAL_VECTORS_START, EXTERNAL_VECTORS_END)?;
 
         if !self.try_allocate_vector(vector) {
             return Err(InterruptError::VectorInUse);
@@ -539,6 +529,7 @@ impl InterruptManager {
 
     /// ベクタを解放
     pub fn free_vector(&self, vector: u8) {
+        let _route_allocation = self.route_allocation_gate.lock();
         self.mark_vector_free(vector);
         self.allocations.write().remove(&vector);
 

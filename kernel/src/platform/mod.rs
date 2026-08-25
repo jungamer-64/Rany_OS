@@ -1,5 +1,6 @@
 //! Provider-backed platform boundary.
 
+pub mod acpi_hotplug;
 pub mod apic;
 pub mod firmware;
 pub mod pci;

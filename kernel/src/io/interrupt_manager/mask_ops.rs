@@ -266,11 +266,20 @@ pub(crate) fn direct_handlers() -> &'static IrqMutex<Vec<Option<InterruptHandler
 ///
 /// ベクタに対応するハンドラを登録する。このハンドラはISR内で直接呼び出されるため、
 /// 実行時間は極力短くし、ブロックする操作を行ってはならない。
-pub fn register_handler(vector: u8, handler: InterruptHandler) {
+///
+/// # Errors
+///
+/// Returns a typed error when the vector is invalid or already has an owner.
+pub fn register_handler(vector: u8, handler: InterruptHandler) -> Result<(), InterruptError> {
     let mut handlers = direct_handlers().lock();
-    if (vector as usize) < handlers.len() {
-        handlers[vector as usize] = Some(handler);
+    let destination = handlers
+        .get_mut(vector as usize)
+        .ok_or(InterruptError::InvalidVector)?;
+    if destination.is_some() {
+        return Err(InterruptError::HandlerInUse { vector });
     }
+    *destination = Some(handler);
+    Ok(())
 }
 
 /// 直接割り込みハンドラを解除する。

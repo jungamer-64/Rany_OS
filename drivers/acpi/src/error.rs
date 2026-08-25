@@ -76,6 +76,11 @@ impl AmlError {
         }
     }
 
+    /// Constructs an error reported by a platform OperationRegion backend.
+    pub fn operation_region(detail: impl Into<String>) -> Self {
+        Self::new(AmlErrorKind::OperationRegion, detail)
+    }
+
     pub(crate) fn object(kind: AmlErrorKind, object: Arc<str>, detail: impl Into<String>) -> Self {
         Self {
             kind,

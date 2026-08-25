@@ -478,9 +478,9 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
 
-    coordinator.set_integration_ready(retry_system_integration_if_needed(
-        coordinator.integration_ready(),
-    ));
+    let integration_ready = retry_system_integration_if_needed(coordinator.integration_ready());
+    coordinator.set_integration_ready(integration_ready);
+    crate::platform::acpi_hotplug::initialize();
 
     match crate::io::iommu::vendors::intel::controller::init_global::start_runtime_services() {
         Ok(0) => {}

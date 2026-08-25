@@ -205,54 +205,54 @@ fn init_idt() {
             as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
 
-    // MSI shared range handlers (0x60..=0x6F)
+    // External-device shared range handlers (0x60..=0x6F)
     idt[0x60].set_handler_fn(handler_to_x86!(
-        msi_vector_0x60_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x60_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x61].set_handler_fn(handler_to_x86!(
-        msi_vector_0x61_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x61_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x62].set_handler_fn(handler_to_x86!(
-        msi_vector_0x62_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x62_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x63].set_handler_fn(handler_to_x86!(
-        msi_vector_0x63_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x63_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x64].set_handler_fn(handler_to_x86!(
-        msi_vector_0x64_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x64_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x65].set_handler_fn(handler_to_x86!(
-        msi_vector_0x65_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x65_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x66].set_handler_fn(handler_to_x86!(
-        msi_vector_0x66_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x66_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x67].set_handler_fn(handler_to_x86!(
-        msi_vector_0x67_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x67_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x68].set_handler_fn(handler_to_x86!(
-        msi_vector_0x68_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x68_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x69].set_handler_fn(handler_to_x86!(
-        msi_vector_0x69_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x69_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6A].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6a_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6a_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6B].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6b_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6b_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6C].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6c_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6c_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6D].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6d_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6d_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6E].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6e_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6e_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
     idt[0x6F].set_handler_fn(handler_to_x86!(
-        msi_vector_0x6f_handler as extern "x86-interrupt" fn(InterruptStackFrame)
+        external_vector_0x6f_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
 
     // PIC2 の IRQ ハンドラ（動的デバイス用）
@@ -795,7 +795,7 @@ define_interrupt!(
 );
 
 #[inline]
-fn handle_msi_vector(vector: u8) {
+fn handle_external_vector(vector: u8) {
     crate::task::interrupt_waker::wake_from_interrupt(
         crate::task::interrupt_waker::InterruptSource::Irq(vector),
     );
@@ -805,32 +805,32 @@ fn handle_msi_vector(vector: u8) {
     crate::io::interrupt_manager::send_eoi();
 }
 
-macro_rules! define_msi_vector_handler {
+macro_rules! define_external_vector_handler {
     ($name:ident, $vector:expr) => {
         define_interrupt!(
             fn $name(_stack_frame: InterruptStackFrame) {
-                handle_msi_vector($vector);
+                handle_external_vector($vector);
             }
         );
     };
 }
 
-define_msi_vector_handler!(msi_vector_0x60_handler, 0x60);
-define_msi_vector_handler!(msi_vector_0x61_handler, 0x61);
-define_msi_vector_handler!(msi_vector_0x62_handler, 0x62);
-define_msi_vector_handler!(msi_vector_0x63_handler, 0x63);
-define_msi_vector_handler!(msi_vector_0x64_handler, 0x64);
-define_msi_vector_handler!(msi_vector_0x65_handler, 0x65);
-define_msi_vector_handler!(msi_vector_0x66_handler, 0x66);
-define_msi_vector_handler!(msi_vector_0x67_handler, 0x67);
-define_msi_vector_handler!(msi_vector_0x68_handler, 0x68);
-define_msi_vector_handler!(msi_vector_0x69_handler, 0x69);
-define_msi_vector_handler!(msi_vector_0x6a_handler, 0x6A);
-define_msi_vector_handler!(msi_vector_0x6b_handler, 0x6B);
-define_msi_vector_handler!(msi_vector_0x6c_handler, 0x6C);
-define_msi_vector_handler!(msi_vector_0x6d_handler, 0x6D);
-define_msi_vector_handler!(msi_vector_0x6e_handler, 0x6E);
-define_msi_vector_handler!(msi_vector_0x6f_handler, 0x6F);
+define_external_vector_handler!(external_vector_0x60_handler, 0x60);
+define_external_vector_handler!(external_vector_0x61_handler, 0x61);
+define_external_vector_handler!(external_vector_0x62_handler, 0x62);
+define_external_vector_handler!(external_vector_0x63_handler, 0x63);
+define_external_vector_handler!(external_vector_0x64_handler, 0x64);
+define_external_vector_handler!(external_vector_0x65_handler, 0x65);
+define_external_vector_handler!(external_vector_0x66_handler, 0x66);
+define_external_vector_handler!(external_vector_0x67_handler, 0x67);
+define_external_vector_handler!(external_vector_0x68_handler, 0x68);
+define_external_vector_handler!(external_vector_0x69_handler, 0x69);
+define_external_vector_handler!(external_vector_0x6a_handler, 0x6A);
+define_external_vector_handler!(external_vector_0x6b_handler, 0x6B);
+define_external_vector_handler!(external_vector_0x6c_handler, 0x6C);
+define_external_vector_handler!(external_vector_0x6d_handler, 0x6D);
+define_external_vector_handler!(external_vector_0x6e_handler, 0x6E);
+define_external_vector_handler!(external_vector_0x6f_handler, 0x6F);
 
 // ============================================================================
 // PCI IRQ Handlers (IRQ 9, 10, 11)
@@ -913,7 +913,11 @@ define_interrupt!(
 /// PCI 割り込みをディスパッチ
 ///
 /// 同じ IRQ を共有する可能性のある複数のデバイスをチェックする
-fn dispatch_pci_interrupt(_irq: u8) {
+fn dispatch_pci_interrupt(irq: u8) {
+    let vector = PIC1_OFFSET + irq;
+    if crate::io::interrupt_manager::try_dispatch_direct(vector) {
+        return;
+    }
     // Shared PCI driver work is deferred to non-ISR context to avoid lock inversion
     // with driver paths that may hold allocator/device locks while interrupts fire.
     dispatch_shared_pci_handlers();
