@@ -37,10 +37,16 @@ pub enum AmlInstruction {
     LoadArgument(u8),
     LoadLocal(u8),
     StoreLocal(u8),
+    IncrementLocal(u8),
     LoadName(AmlPath),
     StoreName(AmlPath),
+    CreateName(AmlPath),
+    LoadPackageElement(AmlPath),
+    StorePackageElement(AmlPath),
     Discard,
     Equal,
+    Less,
+    LogicalAnd,
     BitAnd,
     BitOr,
     LogicalNot,
@@ -62,7 +68,6 @@ pub enum AmlInstruction {
     },
     Notify {
         object: AmlPath,
-        value: u64,
     },
     RegionRead {
         region: AmlPath,
@@ -125,31 +130,63 @@ pub enum VmProgress {
 
 #[derive(Debug, Default)]
 pub struct VmEnvironment {
-    mutex_owners: BTreeMap<AmlPath, u64>,
+    mutex_owners: BTreeMap<AmlPath, MutexOwner>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct MutexOwner {
+    vm: u64,
+    depth: u32,
 }
 
 impl VmEnvironment {
-    fn acquire(&mut self, path: &AmlPath, owner: u64) -> bool {
-        match self.mutex_owners.get(path).copied() {
+    fn acquire(&mut self, path: &AmlPath, owner: u64) -> Result<bool, AmlError> {
+        match self.mutex_owners.get_mut(path) {
             None => {
-                self.mutex_owners.insert(path.clone(), owner);
-                true
+                self.mutex_owners.insert(
+                    path.clone(),
+                    MutexOwner {
+                        vm: owner,
+                        depth: 1,
+                    },
+                );
+                Ok(true)
             }
-            Some(current) if current == owner => true,
-            Some(_) => false,
+            Some(current) if current.vm == owner => {
+                current.depth = current.depth.checked_add(1).ok_or_else(|| {
+                    AmlError::object(
+                        AmlErrorKind::Mutex,
+                        Arc::from(path.as_str()),
+                        "AML mutex acquisition depth overflowed",
+                    )
+                })?;
+                Ok(true)
+            }
+            Some(_) => Ok(false),
         }
     }
 
     fn release(&mut self, path: &AmlPath, owner: u64) -> Result<(), AmlError> {
-        if self.mutex_owners.get(path).copied() != Some(owner) {
-            return Err(AmlError::object(
-                AmlErrorKind::Mutex,
-                Arc::from(path.as_str()),
-                "AML method attempted to release a mutex it does not own",
-            ));
+        match self.mutex_owners.get_mut(path) {
+            Some(current) if current.vm == owner && current.depth > 1 => {
+                current.depth -= 1;
+                return Ok(());
+            }
+            Some(current) if current.vm == owner => {}
+            _ => {
+                return Err(AmlError::object(
+                    AmlErrorKind::Mutex,
+                    Arc::from(path.as_str()),
+                    "AML method attempted to release a mutex it does not own",
+                ));
+            }
         }
         self.mutex_owners.remove(path);
         Ok(())
+    }
+
+    fn release_all(&mut self, owner: u64) {
+        self.mutex_owners.retain(|_, current| current.vm != owner);
     }
 }
 
@@ -158,6 +195,7 @@ struct Frame {
     pc: usize,
     arguments: [AmlValue; 7],
     locals: [AmlValue; 8],
+    named_values: BTreeMap<AmlPath, AmlValue>,
 }
 
 impl Frame {
@@ -167,6 +205,7 @@ impl Frame {
             pc: 0,
             arguments: core::array::from_fn(|_| AmlValue::None),
             locals: core::array::from_fn(|_| AmlValue::None),
+            named_values: BTreeMap::new(),
         };
         for (destination, source) in frame.arguments.iter_mut().zip(arguments.iter()) {
             *destination = source.clone();
@@ -227,6 +266,19 @@ impl AmlVm {
     /// stack state, missing namespace objects, mutex violations, or failed
     /// OperationRegion access.
     pub fn resume(
+        &mut self,
+        now_tick: u64,
+        environment: &mut VmEnvironment,
+        regions: Option<&dyn OperationRegionHandler>,
+    ) -> Result<VmProgress, AmlError> {
+        let result = self.resume_inner(now_tick, environment, regions);
+        if result.is_err() || matches!(&result, Ok(VmProgress::Complete(_))) {
+            environment.release_all(self.id);
+        }
+        result
+    }
+
+    fn resume_inner(
         &mut self,
         now_tick: u64,
         environment: &mut VmEnvironment,
@@ -319,13 +371,81 @@ impl AmlVm {
                         .ok_or_else(|| invalid_vm("AML local index is out of range"))?;
                     *destination = value;
                 }
+                AmlInstruction::IncrementLocal(index) => {
+                    let destination = self
+                        .frames
+                        .last_mut()
+                        .ok_or_else(|| invalid_vm("AML local has no call frame"))?
+                        .locals
+                        .get_mut(usize::from(index))
+                        .ok_or_else(|| invalid_vm("AML local index is out of range"))?;
+                    *destination = AmlValue::Integer(
+                        destination
+                            .as_integer()?
+                            .checked_add(1)
+                            .ok_or_else(|| invalid_vm("AML Increment overflowed"))?,
+                    );
+                }
                 AmlInstruction::LoadName(path) => {
-                    let value = self.read_named_value(&path, regions)?;
+                    let value = match self
+                        .frames
+                        .last()
+                        .and_then(|frame| frame.named_values.get(&path))
+                        .cloned()
+                    {
+                        Some(value) => value,
+                        None => self.read_named_value(&path, regions)?,
+                    };
                     self.values.push(value);
                 }
                 AmlInstruction::StoreName(path) => {
                     let value = self.pop_value()?.as_integer()?;
-                    self.write_named_integer(&path, value, regions)?;
+                    let dynamic = self
+                        .frames
+                        .last_mut()
+                        .and_then(|frame| frame.named_values.get_mut(&path));
+                    if let Some(destination) = dynamic {
+                        *destination = AmlValue::Integer(value);
+                    } else {
+                        self.write_named_integer(&path, value, regions)?;
+                    }
+                }
+                AmlInstruction::CreateName(path) => {
+                    let value = self.pop_value()?;
+                    self.consume_allocation(
+                        path.as_str()
+                            .len()
+                            .saturating_add(core::mem::size_of::<AmlValue>()),
+                    )?;
+                    let frame = self
+                        .frames
+                        .last_mut()
+                        .ok_or_else(|| invalid_vm("AML named value has no call frame"))?;
+                    if frame.named_values.insert(path.clone(), value).is_some() {
+                        return Err(AmlError::object(
+                            AmlErrorKind::MalformedEncoding,
+                            Arc::from(path.as_str()),
+                            "AML method created the same named value twice",
+                        ));
+                    }
+                }
+                AmlInstruction::LoadPackageElement(path) => {
+                    let index = usize::try_from(self.pop_value()?.as_integer()?)
+                        .map_err(|_| invalid_vm("AML package index exceeds usize"))?;
+                    let value = self.package_element(&path, index)?.clone();
+                    self.values.push(value);
+                }
+                AmlInstruction::StorePackageElement(path) => {
+                    let index = usize::try_from(self.pop_value()?.as_integer()?)
+                        .map_err(|_| invalid_vm("AML package index exceeds usize"))?;
+                    let value = self.pop_value()?;
+                    let package_len = self.package(&path)?.len();
+                    self.consume_allocation(package_len)?;
+                    let package = self.package_mut(&path)?;
+                    let destination = package
+                        .get_mut(index)
+                        .ok_or_else(|| invalid_vm("AML package index is out of range"))?;
+                    *destination = value;
                 }
                 AmlInstruction::Discard => {
                     let _ = self.pop_value()?;
@@ -335,6 +455,17 @@ impl AmlVm {
                     let left = self.pop_value()?;
                     self.values
                         .push(AmlValue::Integer(u64::from(left == right)));
+                }
+                AmlInstruction::Less => {
+                    let right = self.pop_value()?.as_integer()?;
+                    let left = self.pop_value()?.as_integer()?;
+                    self.values.push(AmlValue::Integer(u64::from(left < right)));
+                }
+                AmlInstruction::LogicalAnd => {
+                    let right = self.pop_value()?.truthy()?;
+                    let left = self.pop_value()?.truthy()?;
+                    self.values
+                        .push(AmlValue::Integer(u64::from(left && right)));
                 }
                 AmlInstruction::BitAnd => self.binary_integer(|left, right| left & right)?,
                 AmlInstruction::BitOr => self.binary_integer(|left, right| left | right)?,
@@ -379,7 +510,7 @@ impl AmlVm {
                     mutex,
                     timeout_millis,
                 } => {
-                    if environment.acquire(&mutex, self.id) {
+                    if environment.acquire(&mutex, self.id)? {
                         self.waiting = None;
                     } else {
                         let frame = self
@@ -403,7 +534,8 @@ impl AmlVm {
                     }
                 }
                 AmlInstruction::Release { mutex } => environment.release(&mutex, self.id)?,
-                AmlInstruction::Notify { object, value } => {
+                AmlInstruction::Notify { object } => {
+                    let value = self.pop_value()?.as_integer()?;
                     return Ok(VmProgress::Notify { object, value });
                 }
                 AmlInstruction::RegionRead {
@@ -507,6 +639,52 @@ impl AmlVm {
         let left = self.pop_value()?.as_integer()?;
         self.values.push(AmlValue::Integer(operation(left, right)));
         Ok(())
+    }
+
+    fn package(&self, path: &AmlPath) -> Result<&[AmlValue], AmlError> {
+        match self
+            .frames
+            .last()
+            .and_then(|frame| frame.named_values.get(path))
+        {
+            Some(AmlValue::Package(values)) => Ok(values),
+            Some(_) => Err(AmlError::object(
+                AmlErrorKind::InvalidObjectType,
+                Arc::from(path.as_str()),
+                "AML named value is not a package",
+            )),
+            None => Err(AmlError::object(
+                AmlErrorKind::MissingObject,
+                Arc::from(path.as_str()),
+                "AML method-local package is missing",
+            )),
+        }
+    }
+
+    fn package_mut(&mut self, path: &AmlPath) -> Result<&mut [AmlValue], AmlError> {
+        match self
+            .frames
+            .last_mut()
+            .and_then(|frame| frame.named_values.get_mut(path))
+        {
+            Some(AmlValue::Package(values)) => Ok(Arc::make_mut(values)),
+            Some(_) => Err(AmlError::object(
+                AmlErrorKind::InvalidObjectType,
+                Arc::from(path.as_str()),
+                "AML named value is not a package",
+            )),
+            None => Err(AmlError::object(
+                AmlErrorKind::MissingObject,
+                Arc::from(path.as_str()),
+                "AML method-local package is missing",
+            )),
+        }
+    }
+
+    fn package_element(&self, path: &AmlPath, index: usize) -> Result<&AmlValue, AmlError> {
+        self.package(path)?
+            .get(index)
+            .ok_or_else(|| invalid_vm("AML package index is out of range"))
     }
 
     fn read_named_value(
@@ -777,27 +955,38 @@ fn compile_method(
                         "AML compilation allocation budget exhausted",
                     )
                 })?;
-            MethodCompiler::new(namespace, scope, bytes).compile()
+            MethodCompiler::new(namespace, scope, bytes, &mut budget.allocation_units).compile()
         }
     }
 }
 
-struct MethodCompiler<'a> {
-    namespace: &'a AmlNamespace,
+struct MethodCompiler<'namespace, 'budget> {
+    namespace: &'namespace AmlNamespace,
     scope: AmlPath,
-    bytes: &'a [u8],
+    bytes: &'namespace [u8],
     cursor: usize,
     instructions: Vec<AmlInstruction>,
+    method_names: BTreeSet<AmlPath>,
+    break_jumps: Vec<Vec<usize>>,
+    allocation_units: &'budget mut usize,
 }
 
-impl<'a> MethodCompiler<'a> {
-    fn new(namespace: &'a AmlNamespace, scope: AmlPath, bytes: &'a [u8]) -> Self {
+impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
+    fn new(
+        namespace: &'namespace AmlNamespace,
+        scope: AmlPath,
+        bytes: &'namespace [u8],
+        allocation_units: &'budget mut usize,
+    ) -> Self {
         Self {
             namespace,
             scope,
             bytes,
             cursor: 0,
             instructions: Vec::new(),
+            method_names: BTreeSet::new(),
+            break_jumps: Vec::new(),
+            allocation_units,
         }
     }
 
@@ -809,6 +998,7 @@ impl<'a> MethodCompiler<'a> {
     fn term_list(&mut self, end: usize) -> Result<(), AmlError> {
         while self.cursor < end {
             match self.peek()? {
+                0x08 => self.name_op()?,
                 0xa3 => self.cursor += 1,
                 0xa4 => {
                     self.cursor += 1;
@@ -816,7 +1006,11 @@ impl<'a> MethodCompiler<'a> {
                     self.instructions.push(AmlInstruction::Return);
                 }
                 0x70 => self.store()?,
+                0x75 => self.increment()?,
+                0x86 => self.notify()?,
                 0xa0 => self.if_op()?,
+                0xa2 => self.while_op()?,
+                0xa5 => self.break_op()?,
                 0x5b => self.extended_statement()?,
                 _ => {
                     self.term_argument()?;
@@ -831,10 +1025,46 @@ impl<'a> MethodCompiler<'a> {
         }
     }
 
+    fn name_op(&mut self) -> Result<(), AmlError> {
+        self.cursor += 1;
+        let path = self.name_string()?;
+        if self.namespace.get(&path).is_some() || !self.method_names.insert(path.clone()) {
+            return Err(AmlError::object(
+                AmlErrorKind::MalformedEncoding,
+                Arc::from(path.as_str()),
+                "AML method-local name collides with an existing object",
+            ));
+        }
+        let value = self.data_object()?;
+        self.instructions.push(AmlInstruction::Push(value));
+        self.instructions.push(AmlInstruction::CreateName(path));
+        Ok(())
+    }
+
     fn store(&mut self) -> Result<(), AmlError> {
         self.cursor += 1;
         self.term_argument()?;
         self.target()
+    }
+
+    fn increment(&mut self) -> Result<(), AmlError> {
+        self.cursor += 1;
+        match self.byte()? {
+            local @ 0x60..=0x67 => {
+                self.instructions
+                    .push(AmlInstruction::IncrementLocal(local - 0x60));
+                Ok(())
+            }
+            opcode => Err(AmlError::opcode(u16::from(opcode))),
+        }
+    }
+
+    fn notify(&mut self) -> Result<(), AmlError> {
+        self.cursor += 1;
+        let object = self.name_string()?;
+        self.term_argument()?;
+        self.instructions.push(AmlInstruction::Notify { object });
+        Ok(())
     }
 
     fn if_op(&mut self) -> Result<(), AmlError> {
@@ -859,6 +1089,40 @@ impl<'a> MethodCompiler<'a> {
             let exit = self.instructions.len();
             self.patch_jump(false_jump, exit)
         }
+    }
+
+    fn while_op(&mut self) -> Result<(), AmlError> {
+        self.cursor += 1;
+        let body_end = self.package_end()?;
+        let loop_start = self.instructions.len();
+        self.term_argument()?;
+        let condition_exit = self.instructions.len();
+        self.instructions
+            .push(AmlInstruction::JumpIfFalse(usize::MAX));
+        self.break_jumps.push(Vec::new());
+        self.term_list(body_end)?;
+        self.instructions.push(AmlInstruction::Jump(loop_start));
+        let exit = self.instructions.len();
+        self.patch_jump(condition_exit, exit)?;
+        let breaks = self
+            .break_jumps
+            .pop()
+            .ok_or_else(|| invalid_vm("AML compiler loop context disappeared"))?;
+        for jump in breaks {
+            self.patch_jump(jump, exit)?;
+        }
+        Ok(())
+    }
+
+    fn break_op(&mut self) -> Result<(), AmlError> {
+        self.cursor += 1;
+        let jump = self.instructions.len();
+        self.instructions.push(AmlInstruction::Jump(usize::MAX));
+        self.break_jumps
+            .last_mut()
+            .ok_or_else(|| invalid_vm("AML Break appears outside While"))?
+            .push(jump);
+        Ok(())
     }
 
     fn extended_statement(&mut self) -> Result<(), AmlError> {
@@ -911,6 +1175,20 @@ impl<'a> MethodCompiler<'a> {
                 self.instructions.push(AmlInstruction::LogicalNot);
                 Ok(())
             }
+            0x83 => {
+                self.cursor += 1;
+                let package = self.index_name()?;
+                self.instructions
+                    .push(AmlInstruction::LoadPackageElement(package));
+                Ok(())
+            }
+            0x90 => {
+                self.cursor += 1;
+                self.term_argument()?;
+                self.term_argument()?;
+                self.instructions.push(AmlInstruction::LogicalAnd);
+                Ok(())
+            }
             0x93 => {
                 self.cursor += 1;
                 self.term_argument()?;
@@ -918,8 +1196,19 @@ impl<'a> MethodCompiler<'a> {
                 self.instructions.push(AmlInstruction::Equal);
                 Ok(())
             }
+            0x95 => {
+                self.cursor += 1;
+                self.term_argument()?;
+                self.term_argument()?;
+                self.instructions.push(AmlInstruction::Less);
+                Ok(())
+            }
             value if is_name_string_start(value) => {
                 let path = self.name_string()?;
+                if self.method_names.contains(&path) {
+                    self.instructions.push(AmlInstruction::LoadName(path));
+                    return Ok(());
+                }
                 match self.namespace.get(&path) {
                     Some(AmlObject::Method(method)) => {
                         for _ in 0..method.argument_count {
@@ -962,6 +1251,12 @@ impl<'a> MethodCompiler<'a> {
                 self.instructions.push(AmlInstruction::Discard);
                 Ok(())
             }
+            0x88 => {
+                let package = self.index_name()?;
+                self.instructions
+                    .push(AmlInstruction::StorePackageElement(package));
+                Ok(())
+            }
             value if is_name_string_start(value) => {
                 let path = self.name_string()?;
                 self.instructions.push(AmlInstruction::StoreName(path));
@@ -982,6 +1277,44 @@ impl<'a> MethodCompiler<'a> {
             0x0e => Ok(AmlValue::Integer(self.u64()?)),
             opcode => Err(AmlError::opcode(u16::from(opcode))),
         }
+    }
+
+    fn data_object(&mut self) -> Result<AmlValue, AmlError> {
+        match self.peek()? {
+            0x00 | 0x01 | 0xff | 0x0a | 0x0b | 0x0c | 0x0e => self.literal(),
+            0x12 => self.package_object(),
+            opcode => Err(AmlError::opcode(u16::from(opcode))),
+        }
+    }
+
+    fn package_object(&mut self) -> Result<AmlValue, AmlError> {
+        self.cursor += 1;
+        let end = self.package_end()?;
+        let count = usize::from(self.byte()?);
+        self.consume_compiler_allocation(count)?;
+        let mut values = Vec::with_capacity(count);
+        while values.len() < count && self.cursor < end {
+            values.push(self.data_object()?);
+        }
+        values.resize(count, AmlValue::None);
+        if self.cursor != end {
+            return Err(invalid_vm("AML package initializer crossed its boundary"));
+        }
+        Ok(AmlValue::Package(values.into()))
+    }
+
+    fn index_name(&mut self) -> Result<AmlPath, AmlError> {
+        if self.byte()? != 0x88 {
+            return Err(invalid_vm("AML DerefOf requires an Index expression"));
+        }
+        let package = self.name_string()?;
+        self.term_argument()?;
+        if self.byte()? != 0x00 {
+            return Err(invalid_vm(
+                "AML package Index requires a NullName result target",
+            ));
+        }
+        Ok(package)
     }
 
     fn name_string(&mut self) -> Result<AmlPath, AmlError> {
@@ -1014,13 +1347,17 @@ impl<'a> MethodCompiler<'a> {
             segments.push(self.name_segment()?);
         }
         let candidate = build_path(&base, &segments)?;
-        if !upward_search || segment_count != 1 || self.namespace.get(&candidate).is_some() {
+        if !upward_search
+            || segment_count != 1
+            || self.namespace.get(&candidate).is_some()
+            || self.method_names.contains(&candidate)
+        {
             return Ok(candidate);
         }
         while base != AmlPath::root() {
             base = base.parent();
             let candidate = build_path(&base, &segments)?;
-            if self.namespace.get(&candidate).is_some() {
+            if self.namespace.get(&candidate).is_some() || self.method_names.contains(&candidate) {
                 return Ok(candidate);
             }
         }
@@ -1103,6 +1440,16 @@ impl<'a> MethodCompiler<'a> {
         bytes
             .try_into()
             .map_err(|_| invalid_vm("AML integer has invalid width"))
+    }
+
+    fn consume_compiler_allocation(&mut self, units: usize) -> Result<(), AmlError> {
+        *self.allocation_units = self.allocation_units.checked_sub(units).ok_or_else(|| {
+            AmlError::new(
+                AmlErrorKind::AllocationBudgetExhausted,
+                "AML compilation allocation budget exhausted",
+            )
+        })?;
+        Ok(())
     }
 }
 
@@ -1232,6 +1579,120 @@ mod tests {
         ]
     }
 
+    // Black-box conformance fixtures captured from the ACPI tables emitted by
+    // the QEMU 8.2.2 Q35 machine. Only the CTFY/CSCN method bodies are retained
+    // as firmware input vectors; the runtime implementation is independent.
+    // The producing QEMU source package identifies its project license as GPL-2.0.
+    const Q35_CTFY_BODY: &[u8] = &[
+        0xa0, 0x0a, 0x93, 0x68, 0x00, 0x86, 0x43, 0x30, 0x30, 0x30, 0x69, 0xa0, 0x0a, 0x93, 0x68,
+        0x01, 0x86, 0x43, 0x30, 0x30, 0x31, 0x69, 0xa0, 0x0b, 0x93, 0x68, 0x0a, 0x02, 0x86, 0x43,
+        0x30, 0x30, 0x32, 0x69, 0xa0, 0x0b, 0x93, 0x68, 0x0a, 0x03, 0x86, 0x43, 0x30, 0x30, 0x33,
+        0x69,
+    ];
+
+    const Q35_CSCN_BODY: &[u8] = &[
+        0x5b, 0x23, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52,
+        0x45, 0x53, 0x43, 0x50, 0x4c, 0x4b, 0xff, 0xff, 0x08, 0x43, 0x4e, 0x45, 0x57, 0x12, 0x02,
+        0xff, 0x70, 0x00, 0x63, 0x70, 0x01, 0x64, 0xa2, 0x45, 0x12, 0x93, 0x64, 0x01, 0x70, 0x00,
+        0x64, 0x70, 0x01, 0x60, 0x70, 0x00, 0x61, 0xa2, 0x4d, 0x0c, 0x90, 0x93, 0x60, 0x01, 0x95,
+        0x63, 0x0a, 0x04, 0x70, 0x00, 0x60, 0x70, 0x63, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f,
+        0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x53, 0x45, 0x4c, 0x70, 0x00, 0x5c,
+        0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43,
+        0x43, 0x4d, 0x44, 0xa0, 0x17, 0x95, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43,
+        0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x44, 0x41, 0x54, 0x63, 0xa5, 0xa0, 0x09, 0x93,
+        0x61, 0x0a, 0xff, 0x70, 0x01, 0x64, 0xa5, 0x70, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f,
+        0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x44, 0x41, 0x54, 0x63, 0xa0, 0x24,
+        0x93, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45,
+        0x53, 0x43, 0x49, 0x4e, 0x53, 0x01, 0x70, 0x63, 0x88, 0x43, 0x4e, 0x45, 0x57, 0x61, 0x00,
+        0x75, 0x61, 0x70, 0x01, 0x60, 0xa1, 0x37, 0xa0, 0x35, 0x93, 0x5c, 0x2f, 0x04, 0x5f, 0x53,
+        0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x52, 0x4d, 0x56, 0x01,
+        0x43, 0x54, 0x46, 0x59, 0x63, 0x0a, 0x03, 0x70, 0x01, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42,
+        0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x52, 0x4d, 0x56, 0x70, 0x01,
+        0x60, 0x75, 0x63, 0x70, 0x00, 0x62, 0xa2, 0x45, 0x04, 0x95, 0x62, 0x61, 0x70, 0x83, 0x88,
+        0x43, 0x4e, 0x45, 0x57, 0x62, 0x00, 0x63, 0x43, 0x54, 0x46, 0x59, 0x63, 0x01, 0x70, 0x63,
+        0x5b, 0x31, 0x70, 0x63, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43, 0x49, 0x30,
+        0x50, 0x52, 0x45, 0x53, 0x43, 0x53, 0x45, 0x4c, 0x70, 0x01, 0x5c, 0x2f, 0x04, 0x5f, 0x53,
+        0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50, 0x52, 0x45, 0x53, 0x43, 0x49, 0x4e, 0x53, 0x75,
+        0x62, 0x5b, 0x27, 0x5c, 0x2f, 0x04, 0x5f, 0x53, 0x42, 0x5f, 0x50, 0x43, 0x49, 0x30, 0x50,
+        0x52, 0x45, 0x53, 0x43, 0x50, 0x4c, 0x4b,
+    ];
+
+    struct CpuScanIo {
+        selected: AtomicU32,
+        event: AtomicU8,
+    }
+
+    impl OperationRegionHandler for CpuScanIo {
+        fn read(
+            &self,
+            space: OperationRegionSpace,
+            base: u64,
+            region_length: u64,
+            offset: u64,
+            width: u8,
+        ) -> Result<u64, AmlError> {
+            assert_eq!(space, OperationRegionSpace::SystemIo);
+            assert_eq!(base, 0x0cd8);
+            assert_eq!(region_length, 0x0c);
+            let selected = self.selected.load(Ordering::SeqCst);
+            let event = self.event.load(Ordering::SeqCst);
+            match (offset, width) {
+                (0, 32) => Ok(u64::from(selected)),
+                (4, 8) => Ok(if selected <= 2 {
+                    match event {
+                        1 => 1 << 1,
+                        3 => 1 << 2,
+                        _ => 0,
+                    }
+                } else {
+                    0
+                }),
+                (5, 8) => Ok(0),
+                (8, 32) => Ok(2),
+                _ => Err(AmlError::operation_region(
+                    "unexpected CPU scan OperationRegion read",
+                )),
+            }
+        }
+
+        fn write(
+            &self,
+            space: OperationRegionSpace,
+            base: u64,
+            region_length: u64,
+            offset: u64,
+            width: u8,
+            value: u64,
+        ) -> Result<(), AmlError> {
+            assert_eq!(space, OperationRegionSpace::SystemIo);
+            assert_eq!(base, 0x0cd8);
+            assert_eq!(region_length, 0x0c);
+            match (offset, width) {
+                (0, 32) => self.selected.store(
+                    u32::try_from(value)
+                        .map_err(|_| AmlError::operation_region("CPU selector exceeds u32"))?,
+                    Ordering::SeqCst,
+                ),
+                (4, 8) => match value {
+                    2 if self.event.load(Ordering::SeqCst) == 1 => {
+                        self.event.store(0, Ordering::SeqCst);
+                    }
+                    4 if self.event.load(Ordering::SeqCst) == 3 => {
+                        self.event.store(0, Ordering::SeqCst);
+                    }
+                    _ => {}
+                },
+                (5, 8) if value == 0 => {}
+                _ => {
+                    return Err(AmlError::operation_region(
+                        "unexpected CPU scan OperationRegion write",
+                    ));
+                }
+            }
+            Ok(())
+        }
+    }
+
     #[test]
     fn instruction_budget_exhaustion_is_typed() {
         let (namespace, method) = method_namespace(alloc::vec![AmlInstruction::Jump(0)]);
@@ -1247,6 +1708,102 @@ mod tests {
             .resume(0, &mut VmEnvironment::default(), None)
             .unwrap_err();
         assert_eq!(error.kind, AmlErrorKind::InstructionBudgetExhausted);
+    }
+
+    #[test]
+    fn bytecode_compilation_reserves_allocation_budget_before_decode() {
+        let method = path("\\TEST");
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(
+                method.clone(),
+                AmlObject::Method(AmlMethod {
+                    argument_count: 0,
+                    serialized: false,
+                    sync_level: 0,
+                    body: AmlMethodBody::Bytecode(Arc::from(&[0xa4, 0x00][..])),
+                }),
+            )
+            .unwrap();
+        let budget = AmlBudget {
+            instructions: 10,
+            loops: 10,
+            recursion: 4,
+            allocation_units: 0,
+            deadline_tick: 100,
+        };
+        let Err(error) = AmlVm::new(1, Arc::new(namespace), &method, &[], budget) else {
+            panic!("zero allocation budget unexpectedly admitted AML compilation");
+        };
+        assert_eq!(error.kind, AmlErrorKind::AllocationBudgetExhausted);
+    }
+
+    #[test]
+    fn failed_invocation_releases_its_mutex_authority() {
+        let mutex = path("\\LOCK");
+        let failing = path("\\FAIL");
+        let succeeding = path("\\NEXT");
+        let mut namespace = AmlNamespace::default();
+        namespace
+            .insert(mutex.clone(), AmlObject::Mutex { sync_level: 0 })
+            .unwrap();
+        namespace
+            .insert(
+                failing.clone(),
+                AmlObject::Method(AmlMethod::instructions(
+                    0,
+                    alloc::vec![
+                        AmlInstruction::Acquire {
+                            mutex: mutex.clone(),
+                            timeout_millis: 10,
+                        },
+                        AmlInstruction::LoadName(path("\\MISS")),
+                    ],
+                )),
+            )
+            .unwrap();
+        namespace
+            .insert(
+                succeeding.clone(),
+                AmlObject::Method(AmlMethod::instructions(
+                    0,
+                    alloc::vec![
+                        AmlInstruction::Acquire {
+                            mutex: mutex.clone(),
+                            timeout_millis: 10,
+                        },
+                        AmlInstruction::Release { mutex },
+                    ],
+                )),
+            )
+            .unwrap();
+        let namespace = Arc::new(namespace);
+        let mut environment = VmEnvironment::default();
+        let mut vm = AmlVm::new(
+            20,
+            namespace.clone(),
+            &failing,
+            &[],
+            AmlBudget::firmware_method(100),
+        )
+        .unwrap();
+        assert_eq!(
+            vm.resume(0, &mut environment, None).unwrap_err().kind,
+            AmlErrorKind::MissingObject
+        );
+
+        let mut vm = AmlVm::new(
+            21,
+            namespace,
+            &succeeding,
+            &[],
+            AmlBudget::firmware_method(100),
+        )
+        .unwrap();
+        assert_eq!(
+            vm.resume(0, &mut environment, None).unwrap(),
+            VmProgress::Complete(AmlValue::None)
+        );
     }
 
     #[test]
@@ -1531,5 +2088,184 @@ mod tests {
         assert_eq!(io.selected.load(Ordering::SeqCst), 2);
         assert_eq!(io.command.load(Ordering::SeqCst), 2);
         assert_eq!(io.data.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn q35_gpe_scan_yields_typed_insert_and_remove_notifications() {
+        let mut namespace = AmlNamespace::default();
+        let region = path("\\_SB_.PCI0.PRES.PRST");
+        namespace
+            .insert(
+                region.clone(),
+                AmlObject::OperationRegion(super::super::AmlOperationRegion {
+                    space: OperationRegionSpace::SystemIo,
+                    offset: 0x0cd8,
+                    length: 0x0c,
+                }),
+            )
+            .unwrap();
+        for (name, bit_offset, bit_length, access, update_rule) in [
+            (
+                "\\_SB_.PCI0.PRES.CSEL",
+                0,
+                32,
+                AmlFieldAccess::DWord,
+                AmlFieldUpdateRule::Preserve,
+            ),
+            (
+                "\\_SB_.PCI0.PRES.CINS",
+                33,
+                1,
+                AmlFieldAccess::Byte,
+                AmlFieldUpdateRule::WriteAsZeros,
+            ),
+            (
+                "\\_SB_.PCI0.PRES.CRMV",
+                34,
+                1,
+                AmlFieldAccess::Byte,
+                AmlFieldUpdateRule::WriteAsZeros,
+            ),
+            (
+                "\\_SB_.PCI0.PRES.CCMD",
+                40,
+                8,
+                AmlFieldAccess::Byte,
+                AmlFieldUpdateRule::WriteAsZeros,
+            ),
+            (
+                "\\_SB_.PCI0.PRES.CDAT",
+                64,
+                32,
+                AmlFieldAccess::DWord,
+                AmlFieldUpdateRule::Preserve,
+            ),
+        ] {
+            namespace
+                .insert(
+                    path(name),
+                    AmlObject::Field(AmlField {
+                        region: region.clone(),
+                        bit_offset,
+                        bit_length,
+                        access,
+                        lock: false,
+                        update_rule,
+                    }),
+                )
+                .unwrap();
+        }
+        namespace
+            .insert(
+                path("\\_SB_.PCI0.PRES.CPLK"),
+                AmlObject::Mutex { sync_level: 0 },
+            )
+            .unwrap();
+        for slot in 0..4u8 {
+            namespace
+                .insert(
+                    path(match slot {
+                        0 => "\\_SB_.CPUS.C000",
+                        1 => "\\_SB_.CPUS.C001",
+                        2 => "\\_SB_.CPUS.C002",
+                        _ => "\\_SB_.CPUS.C003",
+                    }),
+                    AmlObject::Processor(super::super::AmlProcessor {
+                        processor_id: slot,
+                        pblk_address: 0,
+                        pblk_length: 0,
+                    }),
+                )
+                .unwrap();
+        }
+        namespace
+            .insert(
+                path("\\_SB_.CPUS.CTFY"),
+                AmlObject::Method(AmlMethod {
+                    argument_count: 2,
+                    serialized: false,
+                    sync_level: 0,
+                    body: AmlMethodBody::Bytecode(Arc::from(Q35_CTFY_BODY)),
+                }),
+            )
+            .unwrap();
+        namespace
+            .insert(
+                path("\\_SB_.CPUS.CSCN"),
+                AmlObject::Method(AmlMethod {
+                    argument_count: 0,
+                    serialized: true,
+                    sync_level: 0,
+                    body: AmlMethodBody::Bytecode(Arc::from(Q35_CSCN_BODY)),
+                }),
+            )
+            .unwrap();
+        let gpe_method = path("\\_GPE._E02");
+        namespace
+            .insert(
+                gpe_method.clone(),
+                AmlObject::Method(AmlMethod {
+                    argument_count: 0,
+                    serialized: false,
+                    sync_level: 0,
+                    body: AmlMethodBody::Bytecode(Arc::from(
+                        &[
+                            b'\\', 0x2f, 0x03, b'_', b'S', b'B', b'_', b'C', b'P', b'U', b'S',
+                            b'C', b'S', b'C', b'N',
+                        ][..],
+                    )),
+                }),
+            )
+            .unwrap();
+        let namespace = Arc::new(namespace);
+        let io = CpuScanIo {
+            selected: AtomicU32::new(0),
+            event: AtomicU8::new(1),
+        };
+        let mut environment = VmEnvironment::default();
+
+        let mut vm = AmlVm::new(
+            10,
+            namespace.clone(),
+            &gpe_method,
+            &[],
+            AmlBudget::firmware_method(100),
+        )
+        .unwrap();
+        assert_eq!(
+            vm.resume(0, &mut environment, Some(&io)).unwrap(),
+            VmProgress::Notify {
+                object: path("\\_SB_.CPUS.C002"),
+                value: 1,
+            }
+        );
+        assert_eq!(
+            vm.resume(0, &mut environment, Some(&io)).unwrap(),
+            VmProgress::Complete(AmlValue::None)
+        );
+        assert_eq!(io.event.load(Ordering::SeqCst), 0);
+
+        io.event.store(3, Ordering::SeqCst);
+        io.selected.store(0, Ordering::SeqCst);
+        let mut vm = AmlVm::new(
+            11,
+            namespace,
+            &gpe_method,
+            &[],
+            AmlBudget::firmware_method(100),
+        )
+        .unwrap();
+        assert_eq!(
+            vm.resume(0, &mut environment, Some(&io)).unwrap(),
+            VmProgress::Notify {
+                object: path("\\_SB_.CPUS.C002"),
+                value: 3,
+            }
+        );
+        assert_eq!(
+            vm.resume(0, &mut environment, Some(&io)).unwrap(),
+            VmProgress::Complete(AmlValue::None)
+        );
+        assert_eq!(io.event.load(Ordering::SeqCst), 0);
     }
 }
