@@ -24,7 +24,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-13
+        toolchain: nightly-2026-08-23
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -94,7 +94,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-11
+        toolchain: nightly-2026-08-23
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -124,7 +124,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-11
+        toolchain: nightly-2026-08-23
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -172,7 +172,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-11
+        toolchain: nightly-2026-08-23
         components: rustfmt, clippy, rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -230,7 +230,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-11
+        toolchain: nightly-2026-08-23
         components: rust-src
 
     - name: Install build dependencies
@@ -343,7 +343,9 @@ jobs:
     - uses: actions/checkout@v4
     
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@631a55b12751854ce901bb631d5902ceb48146f7 # stable
+      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      with:
+        toolchain: nightly-2026-08-23
     
     - name: Install cargo-audit
       run: cargo install cargo-audit
@@ -367,7 +369,7 @@ jobs:
     - name: Install Rust toolchain
       uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
       with:
-        toolchain: nightly-2026-03-11
+        toolchain: nightly-2026-08-23
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies

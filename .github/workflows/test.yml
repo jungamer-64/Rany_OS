@@ -16,7 +16,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-03-13
+          toolchain: nightly-2026-08-23
           components: rustfmt, clippy
 
       - name: Cache cargo
@@ -58,7 +58,7 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
         with:
-          toolchain: nightly-2026-03-11
+          toolchain: nightly-2026-08-23
           components: clippy
 
       - name: Try running serena_audit
