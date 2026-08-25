@@ -380,12 +380,6 @@ pub mod collections;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub mod mm;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod console;
 pub mod cpu;
 #[cfg(any(
@@ -486,6 +480,12 @@ pub mod kapi;
     feature = "qemu-test-export"
 ))]
 pub mod loader;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub mod mm;
 #[cfg(any(
     not(any(test, feature = "bench")),
     feature = "full_mm_tests",
