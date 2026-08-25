@@ -40,6 +40,8 @@ pub mod regs {
     pub const IEADDR: u64 = 0xA8;
     /// Invalidation event upper address register
     pub const IEUADDR: u64 = 0xAC;
+    /// Interrupt remapping table address register
+    pub const IRTA: u64 = 0xB8;
 }
 
 /// Global command bits
@@ -52,6 +54,8 @@ pub mod gcmd_bits {
     pub const GCMD_QIE: u32 = 1 << 26;
     /// Interrupt remapping enable
     pub const GCMD_IRE: u32 = 1 << 25;
+    /// Set interrupt remapping table pointer
+    pub const GCMD_SIRTP: u32 = 1 << 24;
 }
 
 /// Global status bits
@@ -62,6 +66,10 @@ pub mod gsts_bits {
     pub const GSTS_RTPS: u32 = 1 << 30;
     /// Queued invalidation enable status
     pub const GSTS_QIES: u32 = 1 << 26;
+    /// Interrupt remapping enable status
+    pub const GSTS_IRES: u32 = 1 << 25;
+    /// Interrupt remapping table pointer status
+    pub const GSTS_IRTPS: u32 = 1 << 24;
 }
 
 /// Context Command register bits
@@ -101,6 +109,10 @@ pub mod ecap_bits {
     pub const ECAP_QI: u64 = 1 << 1;
     /// Device-TLB support
     pub const ECAP_DT: u64 = 1 << 2;
+    /// Interrupt remapping support
+    pub const ECAP_IR: u64 = 1 << 3;
+    /// Extended interrupt mode support
+    pub const ECAP_EIM: u64 = 1 << 4;
     /// Interrupt Remapping Table Offset (bits 8-17)
     pub const ECAP_IRO_MASK: u64 = 0x3FF << 8;
     /// Scalable Mode Translation Support

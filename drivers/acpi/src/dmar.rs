@@ -12,6 +12,21 @@ pub struct DmarInfo {
     pub rmrr_regions: Vec<RmrrRegion>,
 }
 
+impl DmarInfo {
+    const INTERRUPT_REMAPPING: u8 = 1 << 0;
+    const X2APIC_OPT_OUT: u8 = 1 << 1;
+
+    /// Returns whether firmware permits interrupt remapping for this host.
+    pub const fn supports_interrupt_remapping(&self) -> bool {
+        self.flags & Self::INTERRUPT_REMAPPING != 0
+    }
+
+    /// Returns whether firmware requires the operating system to avoid x2APIC mode.
+    pub const fn x2apic_opt_out(&self) -> bool {
+        self.flags & Self::X2APIC_OPT_OUT != 0
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DrhdUnit {
     pub segment: u16,

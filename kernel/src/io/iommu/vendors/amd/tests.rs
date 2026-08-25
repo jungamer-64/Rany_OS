@@ -512,13 +512,13 @@ use super::irt::{AmdInterruptRemapTable, AmdIrte, AmdUnitIrt, encode_remap_msi};
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_wave5_irt_entry_construction() {
-    let irte = AmdIrte::fixed(0x42, 0x0A, false, None);
+    let irte = AmdIrte::fixed(0x42, crate::cpu::ApicId::new(0x0A), false, None);
     assert!(irte.is_present());
     assert_eq!(irte.vector(), 0x42);
     assert_eq!(irte.destination(), 0x0A);
     assert!(!irte.is_logical());
 
-    let irte_logical = AmdIrte::fixed(0xFF, 0xDEAD, true, None);
+    let irte_logical = AmdIrte::fixed(0xFF, crate::cpu::ApicId::new(0xDEAD), true, None);
     assert!(irte_logical.is_logical());
     assert_eq!(irte_logical.vector(), 0xFF);
     assert_eq!(irte_logical.destination(), 0xDEAD);
@@ -538,8 +538,11 @@ fn test_wave5_irt_alloc_free() {
     assert_ne!(h1, h2);
     assert_ne!(h0, h2);
 
-    irt.set_entry(h0, AmdIrte::fixed(0x30, 1, false, None))
-        .unwrap();
+    irt.set_entry(
+        h0,
+        AmdIrte::fixed(0x30, crate::cpu::ApicId::new(1), false, None),
+    )
+    .unwrap();
     irt.free(h0).unwrap();
     irt.free(h1).unwrap();
     irt.free(h2).unwrap();
@@ -582,7 +585,9 @@ fn test_wave5_map_interrupt_returns_handle() {
     } else {
         panic!("no IRT slot for unit 0");
     }
-    let handle = driver.map_interrupt(0, 0, 1, 0, 0x42, 0x0A, false).unwrap();
+    let handle = driver
+        .map_interrupt(0, 0, 1, 0, 0x42, crate::cpu::ApicId::new(0x0A), false)
+        .unwrap();
     assert!(handle < 16); // 2^4 = 16 entries
 }
 

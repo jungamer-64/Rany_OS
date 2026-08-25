@@ -10,8 +10,30 @@ use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
 use super::IommuController;
+use super::qi_ops::InvalidationOps;
+use crate::cpu::ApicId;
 use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
+
+const INTERRUPT_REMAP_ENTRY_COUNT: usize = 256;
+const INTERRUPT_REMAP_TABLE_SIZE_ENCODING: u64 = 7;
+const IRTA_EXTENDED_INTERRUPT_MODE: u64 = 1 << 11;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum InterruptRemapMode {
+    XApic,
+    X2Apic,
+}
+
+impl InterruptRemapMode {
+    const fn is_extended(self) -> bool {
+        matches!(self, Self::X2Apic)
+    }
+
+    const fn supports_destination(self, destination: u32) -> bool {
+        self.is_extended() || destination <= u8::MAX as u32
+    }
+}
 
 /// Interrupt Remapping Entry (128-bit)
 #[repr(C, align(16))]
@@ -28,7 +50,7 @@ impl InterruptRemapEntry {
 
     pub fn fixed(
         vector: u8,
-        dest_id: u32,
+        destination: ApicId,
         logical: bool,
         sid: Option<u16>, // RID/BDF
     ) -> Self {
@@ -43,9 +65,8 @@ impl InterruptRemapEntry {
         lo &= !(1 << 15);
         // Vector (bits 31:16)
         lo |= (vector as u64) << 16;
-        // DestID (bits 63:32)
-        // Note: This requires EIME=1 in IRTA register (32-bit Destination ID).
-        lo |= (dest_id as u64) << 32;
+        // DestID (bits 63:32). EIME decides whether hardware consumes 8 or 32 bits.
+        lo |= u64::from(destination.as_u32()) << 32;
 
         let mut hi = 0;
         if let Some(rid) = sid {
@@ -71,6 +92,13 @@ pub struct InterruptRemapTable {
 }
 
 impl InterruptRemapTable {
+    fn new() -> Result<Self, IommuError> {
+        Ok(Self {
+            table: HardwareTable::new(INTERRUPT_REMAP_ENTRY_COUNT, None)?,
+            bitmap: alloc::vec![0; INTERRUPT_REMAP_ENTRY_COUNT.div_ceil(u64::BITS as usize)],
+        })
+    }
+
     pub fn allocate(&mut self) -> Option<u16> {
         // Find first free bit
         for (i, &word) in self.bitmap.iter().enumerate() {
@@ -135,6 +163,22 @@ impl InterruptRemapTable {
     }
 }
 
+fn interrupt_remap_table_address(
+    physical_address: u64,
+    mode: InterruptRemapMode,
+) -> Result<u64, IommuError> {
+    if !physical_address.is_multiple_of(4096) {
+        return Err(IommuError::InvalidAlignment);
+    }
+    Ok(physical_address
+        | INTERRUPT_REMAP_TABLE_SIZE_ENCODING
+        | if mode.is_extended() {
+            IRTA_EXTENDED_INTERRUPT_MODE
+        } else {
+            0
+        })
+}
+
 pub trait InterruptRemapper {
     /// Check if interrupt remapping is enabled
     fn is_interrupt_remapping_enabled(&self) -> bool;
@@ -146,7 +190,7 @@ pub trait InterruptRemapper {
         device: u8,
         function: u8,
         vector: u8,
-        dest_id: u32,
+        destination: ApicId,
         logical: bool,
     ) -> Result<u16, IommuError>;
 }
@@ -165,9 +209,20 @@ impl InterruptRemapper for IommuController {
         device: u8,
         function: u8,
         vector: u8,
-        dest_id: u32,
+        destination: ApicId,
         logical: bool,
     ) -> Result<u16, IommuError> {
+        if !self.is_interrupt_remapping_enabled() {
+            return Err(IommuError::NotSupported);
+        }
+        let mode = if self.ir_extended_mode.load(Ordering::Acquire) {
+            InterruptRemapMode::X2Apic
+        } else {
+            InterruptRemapMode::XApic
+        };
+        if !mode.supports_destination(destination.as_u32()) {
+            return Err(IommuError::NotSupported);
+        }
         let mut guard = self
             .interrupt_remap_table
             .lock()
@@ -177,7 +232,7 @@ impl InterruptRemapper for IommuController {
         let index = irt.allocate().ok_or(IommuError::HardwareError)?;
 
         let rid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
-        let entry = InterruptRemapEntry::fixed(vector, dest_id, logical, Some(rid));
+        let entry = InterruptRemapEntry::fixed(vector, destination, logical, Some(rid));
         irt.set(index, entry);
 
         // Security: Invalidate IEC after allocating IRTE to ensure hardware sees the new entry.
@@ -189,5 +244,122 @@ impl InterruptRemapper for IommuController {
         }
 
         Ok(index)
+    }
+}
+
+impl IommuController {
+    pub(crate) fn supports_interrupt_remapping(&self) -> bool {
+        self.ecap & crate::io::iommu::vendors::intel::registers::ecap_bits::ECAP_IR != 0
+    }
+
+    pub(crate) fn supports_extended_interrupt_mode(&self) -> bool {
+        self.ecap & crate::io::iommu::vendors::intel::registers::ecap_bits::ECAP_EIM != 0
+    }
+
+    pub(crate) fn prepare_interrupt_remapping(
+        &mut self,
+        mode: InterruptRemapMode,
+    ) -> Result<(), IommuError> {
+        if !self.supports_interrupt_remapping() || !self.is_queued_invalidation_enabled() {
+            return Err(IommuError::NotSupported);
+        }
+        if mode.is_extended() && !self.supports_extended_interrupt_mode() {
+            return Err(IommuError::NotSupported);
+        }
+
+        let table = InterruptRemapTable::new()?;
+        let mut slot = self
+            .interrupt_remap_table
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        if slot.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+        *slot = Some(table);
+        self.ir_extended_mode
+            .store(mode.is_extended(), Ordering::Release);
+        Ok(())
+    }
+
+    pub(crate) unsafe fn enable_interrupt_remapping(&self) -> Result<(), IommuError> {
+        if self.is_interrupt_remapping_enabled() {
+            return Ok(());
+        }
+        if !self.is_queued_invalidation_enabled() {
+            return Err(IommuError::NotSupported);
+        }
+
+        let mode = if self.ir_extended_mode.load(Ordering::Acquire) {
+            InterruptRemapMode::X2Apic
+        } else {
+            InterruptRemapMode::XApic
+        };
+        let table_address = {
+            let table = self
+                .interrupt_remap_table
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
+            let table = table.as_ref().ok_or(IommuError::NotInitialized)?;
+            interrupt_remap_table_address(table.table.phys_addr(), mode)?
+        };
+
+        use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
+        use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits, regs};
+
+        self.write64(regs::IRTA, table_address);
+        self.write_gcmd_with_state(gcmd_bits::GCMD_SIRTP);
+        self.wait_for_condition(
+            || self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS != 0,
+            100_000,
+            false,
+        )?;
+        self.invalidate_iec(true, 0)?;
+
+        self.write_gcmd_with_state(gcmd_bits::GCMD_IRE);
+        self.wait_for_condition(
+            || self.read32(regs::GSTS) & gsts_bits::GSTS_IRES != 0,
+            100_000,
+            false,
+        )?;
+        self.ir_enabled.store(true, Ordering::Release);
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn irta_encodes_table_size_and_destination_mode() {
+        assert_eq!(
+            interrupt_remap_table_address(0x1234_5000, InterruptRemapMode::XApic),
+            Ok(0x1234_5007)
+        );
+        assert_eq!(
+            interrupt_remap_table_address(0x1234_5000, InterruptRemapMode::X2Apic),
+            Ok(0x1234_5807)
+        );
+    }
+
+    #[test]
+    fn irta_rejects_misaligned_table() {
+        assert_eq!(
+            interrupt_remap_table_address(0x1234_5001, InterruptRemapMode::X2Apic),
+            Err(IommuError::InvalidAlignment)
+        );
+    }
+
+    #[test]
+    fn irte_preserves_full_x2apic_destination() {
+        let entry = InterruptRemapEntry::fixed(0x40, ApicId::new(0xfedc_ba98), false, None);
+        assert_eq!(entry.lo >> 32, 0xfedc_ba98);
+    }
+
+    #[test]
+    fn destination_width_follows_interrupt_remap_mode() {
+        assert!(InterruptRemapMode::XApic.supports_destination(255));
+        assert!(!InterruptRemapMode::XApic.supports_destination(256));
+        assert!(InterruptRemapMode::X2Apic.supports_destination(u32::MAX));
     }
 }

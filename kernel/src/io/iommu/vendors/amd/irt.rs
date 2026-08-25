@@ -14,6 +14,7 @@
 use alloc::vec;
 use alloc::vec::Vec;
 
+use crate::cpu::ApicId;
 use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
 use crate::io::iommu::types::IommuError;
 
@@ -59,17 +60,17 @@ impl AmdIrte {
     /// Build a fixed-delivery IRTE.
     ///
     /// `vector`: interrupt vector (0-255).
-    /// `dest_id`: APIC destination ID.
+    /// `destination`: APIC destination ID.
     /// `logical`: true for logical destination mode.
     /// `sid`: optional source device ID (BDF) for validation.
-    pub fn fixed(vector: u8, dest_id: u32, logical: bool, sid: Option<u16>) -> Self {
+    pub fn fixed(vector: u8, destination: ApicId, logical: bool, sid: Option<u16>) -> Self {
         let mut lo: u64 = IRTE_REMAP_EN;
         if logical {
             lo |= IRTE_DM_LOGICAL;
         }
         // IntType = 0b000 (Fixed) — already zero.
         lo |= (vector as u64) << IRTE_VECTOR_SHIFT;
-        lo |= (dest_id as u64) << IRTE_DESTINATION_SHIFT;
+        lo |= u64::from(destination.as_u32()) << IRTE_DESTINATION_SHIFT;
 
         let mut hi: u64 = 0;
         if let Some(devid) = sid {

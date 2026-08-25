@@ -104,7 +104,7 @@ impl IntelIommuDriver {
         device: u8,
         function: u8,
         vector: u8,
-        dest_id: u32,
+        destination: crate::cpu::ApicId,
         logical: bool,
     ) -> Result<u16, IommuError> {
         let registry = self.registry()?;
@@ -120,7 +120,7 @@ impl IntelIommuDriver {
             return Err(IommuError::NotSupported);
         }
 
-        controller.allocate_irte(segment, bus, device, function, vector, dest_id, logical)
+        controller.allocate_irte(segment, bus, device, function, vector, destination, logical)
     }
 
     pub(crate) fn get_remap_msi_message(&self, handle: u16) -> (u64, u32) {

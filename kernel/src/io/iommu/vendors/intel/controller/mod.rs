@@ -123,6 +123,8 @@ pub struct IommuController {
     pub(crate) interrupt_remap_table: PoisonLock<Option<InterruptRemapTable>>,
     /// Interrupt remapping enabled
     pub(crate) ir_enabled: AtomicBool,
+    /// Whether IRTE destination IDs are interpreted as full-width x2APIC IDs.
+    pub(crate) ir_extended_mode: AtomicBool,
     /// Queued Invalidation Queue (optional)
     pub(crate) invalidation_queue: PoisonLock<Option<InvalidationQueue>>,
     /// Queued Invalidation enabled
@@ -175,6 +177,7 @@ impl IommuController {
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
             ir_enabled: AtomicBool::new(false),
+            ir_extended_mode: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),
@@ -214,6 +217,7 @@ impl IommuController {
             enabled: AtomicBool::new(false),
             interrupt_remap_table: PoisonLock::new(None),
             ir_enabled: AtomicBool::new(false),
+            ir_extended_mode: AtomicBool::new(false),
             invalidation_queue: PoisonLock::new(None),
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),

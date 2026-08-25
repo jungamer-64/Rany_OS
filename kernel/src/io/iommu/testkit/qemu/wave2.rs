@@ -870,22 +870,21 @@ pub fn wave2_init_iova_poisoned_proceeds_with_best_effort_smoke() -> bool {
     }
 }
 
-pub fn wave2_init_interrupt_remapping_poisoned_proceeds_with_best_effort_smoke() -> bool {
+pub fn wave2_init_interrupt_remapping_rejects_poisoned_state_smoke() -> bool {
     let mut ctrl = IommuController::new(0x0, 0);
-    ctrl.ecap |= ecap_bits::ECAP_IR;
+    ctrl.ecap |= ecap_bits::ECAP_IR | ecap_bits::ECAP_QI;
+    ctrl.qi_enabled
+        .store(true, core::sync::atomic::Ordering::Release);
 
     crate::sync::set_panicking(true);
     if let Ok(_g) = ctrl.interrupt_remap_table.lock() {}
     crate::sync::set_panicking(false);
 
-    if ctrl.init_interrupt_remapping(4).is_err() {
-        return false;
-    }
-
-    match ctrl.interrupt_remap_table.lock() {
-        Ok(g) => g.is_some(),
-        Err(poisoned) => poisoned.into_inner().is_some(),
-    }
+    ctrl.prepare_interrupt_remapping(
+        crate::io::iommu::vendors::intel::controller::ir::InterruptRemapMode::XApic,
+    )
+    .err()
+        == Some(IommuError::Poisoned)
 }
 
 pub fn wave2_enable_queued_invalidation_poisoned_returns_hw_error_smoke() -> bool {

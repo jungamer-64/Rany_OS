@@ -380,13 +380,17 @@ impl InterruptManager {
                 let bus = ((device_bdf >> 8) & 0xFF) as u8;
                 let dev = ((device_bdf >> 3) & 0x1F) as u8;
                 let func = (device_bdf & 0x7) as u8;
-                let dest_id = target_apic_id.as_u32();
-
                 match crate::io::iommu::api::map_interrupt(
-                    0, bus, dev, func, vector, dest_id, false,
+                    0,
+                    bus,
+                    dev,
+                    func,
+                    vector,
+                    target_apic_id,
+                    false,
                 ) {
                     Ok(handle) => config.ir_handle = Some(handle),
-                    Err(_) if u8::try_from(dest_id).is_ok() => {}
+                    Err(_) if u8::try_from(target_apic_id.as_u32()).is_ok() => {}
                     Err(_) => {
                         self.mark_vector_free(vector);
                         return Err(InterruptError::DestinationRequiresInterruptRemapping(

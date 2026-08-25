@@ -8,6 +8,7 @@ use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
 use super::security::SecurityNotifier;
+use crate::cpu::ApicId;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::vendors::amd::AmdIommuDriver;
@@ -69,15 +70,15 @@ impl IommuBackend {
         device: u8,
         function: u8,
         vector: u8,
-        dest_id: u32,
+        destination: ApicId,
         logical: bool,
     ) -> Result<u16, IommuError> {
         match self {
             Self::Intel(driver) => {
-                driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
+                driver.map_interrupt(segment, bus, device, function, vector, destination, logical)
             }
             Self::Amd(driver) => {
-                driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
+                driver.map_interrupt(segment, bus, device, function, vector, destination, logical)
             }
         }
     }

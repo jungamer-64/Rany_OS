@@ -22,6 +22,7 @@ use super::dma::DomainManager;
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
 use super::iova::IovaManager;
+use super::ir::InterruptRemapMode;
 use super::qi_init::QIManager;
 use super::qi_ops::InvalidationOps;
 
@@ -204,6 +205,7 @@ unsafe fn init_controllers_from_drhd(
 
             init_controller_iova(&mut controller);
             init_controller_qi(&mut controller);
+            init_controller_interrupt_remapping(&mut controller, &dmar_info);
         }
 
         controllers.push(Arc::new(controller));
@@ -243,6 +245,54 @@ unsafe fn init_controller_qi(controller: &mut IommuController) {
             log::info!("Queued Invalidation enabled for controller");
         }
     }
+}
+
+unsafe fn init_controller_interrupt_remapping(
+    controller: &mut IommuController,
+    dmar: &acpi_driver::dmar::DmarInfo,
+) {
+    if !dmar.supports_interrupt_remapping() {
+        log::info!("DMAR does not advertise interrupt remapping");
+        return;
+    }
+    if !controller.supports_interrupt_remapping() {
+        log::warn!("DMAR advertises interrupt remapping but the VT-d unit does not support it");
+        return;
+    }
+    if !controller.is_queued_invalidation_enabled() {
+        log::warn!("VT-d interrupt remapping requires queued invalidation; leaving it disabled");
+        return;
+    }
+
+    let apic_mode = match crate::drivers::apic::local_apic() {
+        Ok(apic) => apic.mode(),
+        Err(error) => {
+            log::warn!("local APIC mode is unavailable for VT-d interrupt remapping: {error:?}");
+            return;
+        }
+    };
+    let mode = match apic_mode {
+        crate::drivers::apic::ApicMode::XApic => InterruptRemapMode::XApic,
+        crate::drivers::apic::ApicMode::X2Apic => {
+            if !controller.supports_extended_interrupt_mode() {
+                log::warn!(
+                    "x2APIC is active but the VT-d unit cannot interpret full-width destinations"
+                );
+                return;
+            }
+            InterruptRemapMode::X2Apic
+        }
+    };
+
+    if let Err(error) = controller.prepare_interrupt_remapping(mode) {
+        log::warn!("failed to prepare VT-d interrupt remapping: {error:?}");
+        return;
+    }
+    if let Err(error) = unsafe { controller.enable_interrupt_remapping() } {
+        log::warn!("failed to enable VT-d interrupt remapping: {error:?}");
+        return;
+    }
+    log::info!("VT-d interrupt remapping enabled in {mode:?} mode");
 }
 
 /// Build reserved memory regions from the DMAR RMRR entries.

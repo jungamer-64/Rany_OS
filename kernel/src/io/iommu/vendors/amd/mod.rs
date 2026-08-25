@@ -498,7 +498,7 @@ impl AmdIommuDriver {
         device: u8,
         function: u8,
         vector: u8,
-        dest_id: u32,
+        destination: crate::cpu::ApicId,
         logical: bool,
     ) -> Result<u16, IommuError> {
         let devid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
@@ -517,7 +517,7 @@ impl AmdIommuDriver {
         let mut irt = irt_lock.lock().map_err(|_| IommuError::Poisoned)?;
         let handle = irt.table.allocate()?;
 
-        let irte = irt::AmdIrte::fixed(vector, dest_id, logical, Some(devid));
+        let irte = irt::AmdIrte::fixed(vector, destination, logical, Some(devid));
         if let Err(e) = irt.table.set_entry(handle, irte) {
             let _ = irt.table.free(handle);
             return Err(e);

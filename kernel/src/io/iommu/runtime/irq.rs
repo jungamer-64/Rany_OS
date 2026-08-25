@@ -7,6 +7,7 @@
 //! Provides functions to map interrupts via the IOMMU (Interrupt Remapping/IR).
 
 use super::registry::get_iommu_driver;
+use crate::cpu::ApicId;
 use crate::io::iommu::types::IommuError;
 
 // ============================================================================
@@ -40,11 +41,11 @@ pub fn map_interrupt(
     device: u8,
     function: u8,
     vector: u8,
-    dest_id: u32,
+    destination: ApicId,
     logical: bool,
 ) -> Result<u16, IommuError> {
     let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.map_interrupt(segment, bus, device, function, vector, dest_id, logical)
+    driver.map_interrupt(segment, bus, device, function, vector, destination, logical)
 }
 
 /// Generate MSI Address and Data for a Remapped Interrupt
