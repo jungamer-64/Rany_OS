@@ -271,6 +271,17 @@ impl TableCatalog {
             .filter(move |table| table.header.signature == signature)
     }
 
+    /// Parses the SCI interrupt and fixed GPE register blocks from the FADT.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the FADT is missing, a register descriptor is
+    /// truncated or malformed, or the described GPE number space exceeds the
+    /// AML `_Exx`/`_Lxx` namespace.
+    pub fn fixed_events(&self) -> Result<FixedEventDescription, AcpiError> {
+        parse_fadt_fixed_events(self.required(TableSignature::FACP)?.bytes())
+    }
+
     /// Parses all MADT processor entries without truncating x2APIC IDs.
     ///
     /// # Errors
@@ -365,6 +376,83 @@ impl TableCatalog {
             )
         })
     }
+}
+
+/// Address space used by an ACPI Generic Address Structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GenericAddressSpace {
+    SystemMemory,
+    SystemIo,
+    Other(u8),
+}
+
+impl From<u8> for GenericAddressSpace {
+    fn from(value: u8) -> Self {
+        match value {
+            0 => Self::SystemMemory,
+            1 => Self::SystemIo,
+            value => Self::Other(value),
+        }
+    }
+}
+
+/// Access width encoded by an ACPI Generic Address Structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RegisterAccessSize {
+    Undefined,
+    Byte,
+    Word,
+    Dword,
+    Qword,
+}
+
+impl RegisterAccessSize {
+    fn parse(value: u8) -> Result<Self, AcpiError> {
+        match value {
+            0 => Ok(Self::Undefined),
+            1 => Ok(Self::Byte),
+            2 => Ok(Self::Word),
+            3 => Ok(Self::Dword),
+            4 => Ok(Self::Qword),
+            _ => Err(table_encoding_error(
+                *b"FACP",
+                "FADT Generic Address Structure has a reserved access size",
+            )),
+        }
+    }
+}
+
+/// Validated ACPI Generic Address Structure.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GenericAddress {
+    pub address_space: GenericAddressSpace,
+    pub bit_width: u8,
+    pub bit_offset: u8,
+    pub access_size: RegisterAccessSize,
+    pub address: u64,
+}
+
+/// One fixed GPE status/enable register pair described by the FADT.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GpeRegisterBlock {
+    pub address: GenericAddress,
+    /// Bytes in one half of the block. Status occupies the first half and
+    /// enable registers occupy the second half.
+    pub register_bytes: u8,
+    pub base_number: u16,
+}
+
+impl GpeRegisterBlock {
+    pub const fn number_count(self) -> u16 {
+        self.register_bytes as u16 * 8
+    }
+}
+
+/// Fixed-event hardware needed by the SCI dispatch path.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FixedEventDescription {
+    pub sci_interrupt: u16,
+    pub gpe_blocks: Vec<GpeRegisterBlock>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -710,6 +798,163 @@ fn parse_nfit_spa_ranges(bytes: &[u8]) -> Result<Vec<NfitSpaRange>, AcpiError> {
     Ok(ranges)
 }
 
+const FADT_SCI_INTERRUPT_OFFSET: usize = 46;
+const FADT_GPE0_BLOCK_OFFSET: usize = 80;
+const FADT_GPE1_BLOCK_OFFSET: usize = 84;
+const FADT_GPE0_LENGTH_OFFSET: usize = 92;
+const FADT_GPE1_LENGTH_OFFSET: usize = 93;
+const FADT_GPE1_BASE_OFFSET: usize = 94;
+const FADT_X_GPE0_BLOCK_OFFSET: usize = 220;
+const FADT_X_GPE1_BLOCK_OFFSET: usize = 232;
+const GENERIC_ADDRESS_LENGTH: usize = 12;
+
+fn parse_fadt_fixed_events(bytes: &[u8]) -> Result<FixedEventDescription, AcpiError> {
+    let sci_interrupt = read_u16(bytes, FADT_SCI_INTERRUPT_OFFSET)?;
+    let gpe0_length = *bytes
+        .get(FADT_GPE0_LENGTH_OFFSET)
+        .ok_or_else(|| table_length_error(*b"FACP", "FADT is too short for GPE0_BLK_LEN"))?;
+    let gpe1_length = *bytes
+        .get(FADT_GPE1_LENGTH_OFFSET)
+        .ok_or_else(|| table_length_error(*b"FACP", "FADT is too short for GPE1_BLK_LEN"))?;
+    let gpe1_base = u16::from(
+        *bytes
+            .get(FADT_GPE1_BASE_OFFSET)
+            .ok_or_else(|| table_length_error(*b"FACP", "FADT is too short for GPE1_BASE"))?,
+    );
+
+    let mut gpe_blocks = Vec::with_capacity(2);
+    if let Some(block) = parse_fadt_gpe_block(
+        bytes,
+        FADT_GPE0_BLOCK_OFFSET,
+        FADT_X_GPE0_BLOCK_OFFSET,
+        gpe0_length,
+        0,
+    )? {
+        gpe_blocks.push(block);
+    }
+    if let Some(block) = parse_fadt_gpe_block(
+        bytes,
+        FADT_GPE1_BLOCK_OFFSET,
+        FADT_X_GPE1_BLOCK_OFFSET,
+        gpe1_length,
+        gpe1_base,
+    )? {
+        if let Some(gpe0) = gpe_blocks.first()
+            && block.base_number < gpe0.number_count()
+        {
+            return Err(table_encoding_error(
+                *b"FACP",
+                "FADT GPE1 number space overlaps GPE0",
+            ));
+        }
+        gpe_blocks.push(block);
+    }
+
+    Ok(FixedEventDescription {
+        sci_interrupt,
+        gpe_blocks,
+    })
+}
+
+fn parse_fadt_gpe_block(
+    bytes: &[u8],
+    legacy_address_offset: usize,
+    extended_address_offset: usize,
+    total_bytes: u8,
+    base_number: u16,
+) -> Result<Option<GpeRegisterBlock>, AcpiError> {
+    if total_bytes == 0 {
+        return Ok(None);
+    }
+    if !total_bytes.is_multiple_of(2) {
+        return Err(table_encoding_error(
+            *b"FACP",
+            "FADT GPE register block length must contain equal status and enable halves",
+        ));
+    }
+
+    let register_bytes = total_bytes / 2;
+    let number_count = u16::from(register_bytes) * 8;
+    if base_number
+        .checked_add(number_count)
+        .is_none_or(|end| end > 256)
+    {
+        return Err(AcpiError::table(
+            AcpiErrorKind::CapacityExceeded,
+            *b"FACP",
+            "FADT GPE block exceeds the AML event-method number space",
+        ));
+    }
+
+    let extended = bytes
+        .get(extended_address_offset..extended_address_offset + GENERIC_ADDRESS_LENGTH)
+        .map(parse_generic_address)
+        .transpose()?;
+    let address = match extended {
+        Some(address) if address.address != 0 => {
+            if address.bit_offset != 0 {
+                return Err(table_encoding_error(
+                    *b"FACP",
+                    "FADT GPE register block has a non-zero bit offset",
+                ));
+            }
+            let expected_width = total_bytes.checked_mul(8).ok_or_else(|| {
+                AcpiError::table(
+                    AcpiErrorKind::CapacityExceeded,
+                    *b"FACP",
+                    "FADT GPE register width exceeds Generic Address Structure capacity",
+                )
+            })?;
+            if address.bit_width != 0 && address.bit_width != expected_width {
+                return Err(table_encoding_error(
+                    *b"FACP",
+                    "FADT GPE Generic Address Structure width disagrees with block length",
+                ));
+            }
+            address
+        }
+        _ => {
+            let address = u64::from(read_u32(bytes, legacy_address_offset)?);
+            if address == 0 {
+                return Err(AcpiError::table(
+                    AcpiErrorKind::InvalidAddress,
+                    *b"FACP",
+                    "FADT declares a GPE register block without an address",
+                ));
+            }
+            GenericAddress {
+                address_space: GenericAddressSpace::SystemIo,
+                bit_width: 0,
+                bit_offset: 0,
+                access_size: RegisterAccessSize::Byte,
+                address,
+            }
+        }
+    };
+
+    Ok(Some(GpeRegisterBlock {
+        address,
+        register_bytes,
+        base_number,
+    }))
+}
+
+fn parse_generic_address(bytes: &[u8]) -> Result<GenericAddress, AcpiError> {
+    if bytes.len() != GENERIC_ADDRESS_LENGTH {
+        return Err(table_length_error(
+            *b"FACP",
+            "FADT Generic Address Structure is truncated",
+        ));
+    }
+    Ok(GenericAddress {
+        address_space: GenericAddressSpace::from(bytes[0]),
+        bit_width: bytes[1],
+        bit_offset: bytes[2],
+        access_size: RegisterAccessSize::parse(bytes[3])?,
+        address: read_u64(bytes, 4)?,
+    })
+}
+
 unsafe fn read_table(
     memory: &impl AcpiMemory,
     physical_address: u64,
@@ -840,6 +1085,63 @@ mod tests {
         assert_eq!(
             parse_madt(&bytes).unwrap_err().kind,
             AcpiErrorKind::InvalidLength
+        );
+    }
+
+    #[test]
+    fn fadt_prefers_extended_gpe_registers_and_preserves_sparse_numbering() {
+        let mut bytes = alloc::vec![0u8; 244];
+        bytes[0..4].copy_from_slice(b"FACP");
+        bytes[FADT_SCI_INTERRUPT_OFFSET..FADT_SCI_INTERRUPT_OFFSET + 2]
+            .copy_from_slice(&9u16.to_le_bytes());
+        bytes[FADT_GPE0_BLOCK_OFFSET..FADT_GPE0_BLOCK_OFFSET + 4]
+            .copy_from_slice(&0x1020u32.to_le_bytes());
+        bytes[FADT_GPE1_BLOCK_OFFSET..FADT_GPE1_BLOCK_OFFSET + 4]
+            .copy_from_slice(&0x1040u32.to_le_bytes());
+        bytes[FADT_GPE0_LENGTH_OFFSET] = 8;
+        bytes[FADT_GPE1_LENGTH_OFFSET] = 4;
+        bytes[FADT_GPE1_BASE_OFFSET] = 64;
+        bytes[FADT_X_GPE0_BLOCK_OFFSET] = 1;
+        bytes[FADT_X_GPE0_BLOCK_OFFSET + 1] = 64;
+        bytes[FADT_X_GPE0_BLOCK_OFFSET + 3] = 1;
+        bytes[FADT_X_GPE0_BLOCK_OFFSET + 4..FADT_X_GPE0_BLOCK_OFFSET + 12]
+            .copy_from_slice(&0x2020u64.to_le_bytes());
+
+        let fixed = parse_fadt_fixed_events(&bytes).unwrap();
+        assert_eq!(fixed.sci_interrupt, 9);
+        assert_eq!(fixed.gpe_blocks.len(), 2);
+        assert_eq!(
+            fixed.gpe_blocks[0],
+            GpeRegisterBlock {
+                address: GenericAddress {
+                    address_space: GenericAddressSpace::SystemIo,
+                    bit_width: 64,
+                    bit_offset: 0,
+                    access_size: RegisterAccessSize::Byte,
+                    address: 0x2020,
+                },
+                register_bytes: 4,
+                base_number: 0,
+            }
+        );
+        assert_eq!(fixed.gpe_blocks[1].base_number, 64);
+        assert_eq!(fixed.gpe_blocks[1].address.address, 0x1040);
+    }
+
+    #[test]
+    fn fadt_rejects_overlapping_gpe_number_spaces() {
+        let mut bytes = alloc::vec![0u8; 95];
+        bytes[FADT_GPE0_BLOCK_OFFSET..FADT_GPE0_BLOCK_OFFSET + 4]
+            .copy_from_slice(&0x1020u32.to_le_bytes());
+        bytes[FADT_GPE1_BLOCK_OFFSET..FADT_GPE1_BLOCK_OFFSET + 4]
+            .copy_from_slice(&0x1040u32.to_le_bytes());
+        bytes[FADT_GPE0_LENGTH_OFFSET] = 8;
+        bytes[FADT_GPE1_LENGTH_OFFSET] = 4;
+        bytes[FADT_GPE1_BASE_OFFSET] = 16;
+
+        assert_eq!(
+            parse_fadt_fixed_events(&bytes).unwrap_err().kind,
+            AcpiErrorKind::InvalidEncoding
         );
     }
 
