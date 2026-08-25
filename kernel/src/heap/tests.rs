@@ -39,9 +39,7 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
         .expect("set_domain_resource_limits failed");
 
     let current = crate::cpu::CurrentCpu::acquire().expect("test requires a bound CPU");
-    let cpu = current.id();
     let execution = current.enter_execution(ExecutionContext::for_task(
-        cpu,
         TaskId::from_raw(0x4845_4150),
         domain,
     ));

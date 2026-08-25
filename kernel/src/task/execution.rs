@@ -1,4 +1,4 @@
-use crate::cpu::{CpuId, CurrentCpu};
+use crate::cpu::CurrentCpu;
 use crate::domain::{DomainCredentials, DomainId};
 use crate::security::CapabilitySet;
 
@@ -30,20 +30,18 @@ impl Subject {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ExecutionContext {
-    pub cpu: CpuId,
     pub subject: Subject,
 }
 
 impl ExecutionContext {
-    pub fn for_task(cpu: CpuId, task: TaskId, domain: DomainId) -> Self {
+    pub fn for_task(task: TaskId, domain: DomainId) -> Self {
         Self {
-            cpu,
             subject: Subject::for_task(domain, task),
         }
     }
 
     pub fn with_domain(self, domain: DomainId) -> Self {
-        Self::for_task(self.cpu, self.subject.task, domain)
+        Self::for_task(self.subject.task, domain)
     }
 }
 

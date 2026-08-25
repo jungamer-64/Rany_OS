@@ -11,7 +11,6 @@ mod fs_tests {
         let current = crate::cpu::CurrentCpu::acquire().expect("test CPU-local state");
         let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
         current.enter_execution(ExecutionContext {
-            cpu: current.id(),
             subject: Subject {
                 domain: domain_id,
                 task: TaskId::new(),

@@ -354,7 +354,7 @@ impl TaskRuntime {
             return false;
         }
 
-        let execution = ExecutionContext::for_task(cpu, record.id, record.domain);
+        let execution = ExecutionContext::for_task(record.id, record.domain);
         let execution_guard = current.enter_execution(execution);
         let waker = create_waker(record.id);
         let mut context = Context::from_waker(&waker);
