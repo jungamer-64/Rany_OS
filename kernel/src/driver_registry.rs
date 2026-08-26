@@ -121,11 +121,6 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
         return Err(KapiError::PermissionDenied);
     }
 
-    let handle = resolve_single_driver_handle_for_domain(owner)?;
-    if !driver_registry().has_irq_handler(handle) {
-        return Err(KapiError::NotSupported);
-    }
-
     let stop = Arc::new(AtomicBool::new(false));
     {
         let mut bindings = IRQ_BINDINGS.lock().unwrap_or_else(|e| e.into_inner());
@@ -156,6 +151,9 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
                     break;
                 }
 
+                let Ok(handle) = resolve_single_driver_handle_for_domain(owner) else {
+                    continue;
+                };
                 let _ = driver_registry().dispatch_irq(handle, vector as u32);
             }
 
@@ -259,20 +257,38 @@ fn cleanup_msix_for_driver_handle(_handle: DriverHandle) {}
 // Driver Registry
 // ============================================================================
 
+pub(crate) fn enter_driver_execution_domain(
+    owner: crate::domain::DomainId,
+) -> Result<Option<crate::cpu::ExecutionContextGuard>, DriverError> {
+    if crate::task::current_subject().domain == owner {
+        return Ok(None);
+    }
+    crate::task::enter_domain(owner)
+        .map(Some)
+        .map_err(|_| DriverError::ExecutionContextUnavailable)
+}
+
 /// Registered driver entry
 struct DriverEntry {
     /// The driver instance
     driver: Box<dyn Driver>,
+    /// Domain whose authority applies while invoking this driver.
+    owner: crate::domain::DomainId,
     /// Current state
     state: DriverState,
 }
 
 impl DriverEntry {
-    fn new(driver: Box<dyn Driver>) -> Self {
+    fn new(owner: crate::domain::DomainId, driver: Box<dyn Driver>) -> Self {
         Self {
             driver,
+            owner,
             state: DriverState::Registered,
         }
+    }
+
+    fn enter_owner(&self) -> Result<Option<crate::cpu::ExecutionContextGuard>, DriverError> {
+        enter_driver_execution_domain(self.owner)
     }
 }
 
@@ -300,6 +316,14 @@ impl DriverRegistry {
     ///
     /// Returns `Err(DriverError::Poisoned)` if the registry lock is poisoned.
     pub fn register(&self, driver: Box<dyn Driver>) -> Result<DriverHandle, DriverError> {
+        self.register_owned(crate::domain::DomainId::KERNEL, driver)
+    }
+
+    pub(crate) fn register_owned(
+        &self,
+        owner: crate::domain::DomainId,
+        driver: Box<dyn Driver>,
+    ) -> Result<DriverHandle, DriverError> {
         let mut drivers = self.drivers.lock().map_err(|_| {
             log::error!("[DRIVER] Registry lock is poisoned during register!");
             DriverError::Poisoned
@@ -312,7 +336,7 @@ impl DriverRegistry {
             driver.driver_type()
         );
 
-        drivers.push(DriverEntry::new(driver));
+        drivers.push(DriverEntry::new(owner, driver));
         Ok(DriverHandle(id))
     }
 
@@ -330,6 +354,7 @@ impl DriverRegistry {
 
         log::info!("[DRIVER] Probing driver: {}\n", entry.driver.name());
 
+        let _owner_guard = entry.enter_owner()?;
         match entry.driver.probe() {
             Ok(()) => {
                 entry.state = DriverState::Probed;
@@ -359,6 +384,7 @@ impl DriverRegistry {
 
             log::info!("[DRIVER] Starting driver: {}\n", entry.driver.name());
 
+            let _owner_guard = entry.enter_owner()?;
             match entry.driver.start() {
                 Ok(()) => {
                     entry.state = DriverState::Running;
@@ -395,6 +421,7 @@ impl DriverRegistry {
 
             log::info!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
 
+            let _owner_guard = entry.enter_owner()?;
             match entry.driver.stop() {
                 Ok(()) => {
                     entry.state = DriverState::Stopped;
@@ -612,6 +639,7 @@ impl DriverRegistry {
         crate::provider_registry::provider_registry().unregister_driver(handle);
 
         // Try to remove driver resources first
+        let _owner_guard = entry.enter_owner()?;
         let _ = entry.driver.remove();
 
         // Replace the driver with a null implementation and mark removed
@@ -620,19 +648,6 @@ impl DriverRegistry {
 
         log::info!("[DRIVER] Unregistered driver: {}\n", old_name);
         Ok(())
-    }
-
-    pub(crate) fn has_irq_handler(&self, handle: DriverHandle) -> bool {
-        match self.drivers.lock() {
-            Ok(drivers) => drivers
-                .get(handle.0)
-                .map(|entry| entry.driver.has_irq_handler())
-                .unwrap_or(false),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (has_irq_handler)");
-                false
-            }
-        }
     }
 
     pub(crate) fn dispatch_irq(&self, handle: DriverHandle, irq: u32) -> bool {
@@ -644,6 +659,10 @@ impl DriverRegistry {
                 if entry.state != DriverState::Running {
                     return false;
                 }
+                let Ok(_owner_guard) = entry.enter_owner() else {
+                    log::error!("[DRIVER] IRQ dispatch has no execution context");
+                    return false;
+                };
                 entry.driver.handle_irq(irq)
             }
             Err(_) => {
@@ -662,12 +681,20 @@ impl DriverRegistry {
         }
     }
 
+    pub(crate) fn driver_owner(&self, handle: DriverHandle) -> Option<crate::domain::DomainId> {
+        self.drivers
+            .lock()
+            .ok()
+            .and_then(|drivers| drivers.get(handle.0).map(|entry| entry.owner))
+    }
+
     pub(crate) fn export_live_state(
         &self,
         handle: DriverHandle,
     ) -> Result<Option<DriverStateBlob>, DriverError> {
         let drivers = self.drivers.lock().map_err(|_| DriverError::Poisoned)?;
         let entry = drivers.get(handle.0).ok_or(DriverError::NotFound)?;
+        let _owner_guard = entry.enter_owner()?;
         entry
             .driver
             .export_live_state()
@@ -755,6 +782,8 @@ pub enum DriverError {
     StopFailed,
     /// Registry lock is poisoned (previous holder panicked)
     Poisoned,
+    /// The current CPU has no execution context for entering the driver owner domain.
+    ExecutionContextUnavailable,
 }
 
 impl fmt::Display for DriverError {
@@ -766,6 +795,9 @@ impl fmt::Display for DriverError {
             Self::StartFailed => write!(f, "driver start failed"),
             Self::StopFailed => write!(f, "driver stop failed"),
             Self::Poisoned => write!(f, "registry lock poisoned (holder panicked)"),
+            Self::ExecutionContextUnavailable => {
+                write!(f, "driver execution context unavailable")
+            }
         }
     }
 }

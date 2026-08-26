@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{PacketPayloadView, append_payload};
+use crate::net::payload::PacketPayloadView;
 use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
@@ -351,7 +351,7 @@ impl FragmentBuffer {
         let mut segments = self.segments;
         segments.sort_unstable_by_key(|segment| segment.offset);
         for segment in segments {
-            append_payload(&mut packet, segment.payload);
+            packet = packet.try_append(segment.payload).ok()?;
         }
         Some(packet)
     }
@@ -502,7 +502,10 @@ impl FragmentReassembler {
                         else {
                             continue;
                         };
-                        append_payload(&mut quoted, prefix);
+                        let Ok(combined) = quoted.try_append(prefix) else {
+                            continue;
+                        };
+                        quoted = combined;
                     }
                     expired_with_first.push((key.src, quoted));
                 }

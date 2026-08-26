@@ -481,7 +481,7 @@ impl PacketRef {
                 self,
             ));
         };
-        let packet = ManuallyDrop::new(self);
+        let _packet = ManuallyDrop::new(self);
 
         Ok(PacketFront::Prefix {
             front: unsafe { Self::from_opaque_parts_with_meta(front_storage, vtable, meta) },
@@ -802,6 +802,142 @@ impl PacketPayload {
                 }
                 segments.insert(0, packet);
                 PacketSegmentStorage::Many(segments)
+            }
+        };
+        Ok(Self { storage, total_len })
+    }
+
+    pub fn try_append(
+        self,
+        other: Self,
+    ) -> Result<Self, PacketPayloadOwnershipError<(Self, Self)>> {
+        let Some(total) = self.total_len().checked_add(other.total_len()) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::LengthOverflow,
+                (self, other),
+            ));
+        };
+        let Some(total_len) = PacketByteCount::new(total) else {
+            return Err(PacketPayloadOwnershipError::new(
+                PacketPayloadError::LengthOverflow,
+                (self, other),
+            ));
+        };
+        let Self {
+            storage: left,
+            total_len: left_len,
+        } = self;
+        let Self {
+            storage: right,
+            total_len: right_len,
+        } = other;
+
+        let allocation_failed = |left, right| {
+            PacketPayloadOwnershipError::new(
+                PacketPayloadError::AllocationFailed,
+                (
+                    Self {
+                        storage: left,
+                        total_len: left_len,
+                    },
+                    Self {
+                        storage: right,
+                        total_len: right_len,
+                    },
+                ),
+            )
+        };
+        let storage = match (left, right) {
+            (PacketSegmentStorage::One(first), PacketSegmentStorage::One(second)) => {
+                PacketSegmentStorage::Pair([first, second])
+            }
+            (PacketSegmentStorage::One(first), PacketSegmentStorage::Pair(pair)) => {
+                let mut segments = Vec::new();
+                if segments.try_reserve_exact(3).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::One(first),
+                        PacketSegmentStorage::Pair(pair),
+                    ));
+                }
+                segments.push(first);
+                segments.extend(pair);
+                PacketSegmentStorage::Many(segments)
+            }
+            (PacketSegmentStorage::Pair(pair), PacketSegmentStorage::One(last)) => {
+                let mut segments = Vec::new();
+                if segments.try_reserve_exact(3).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Pair(pair),
+                        PacketSegmentStorage::One(last),
+                    ));
+                }
+                segments.extend(pair);
+                segments.push(last);
+                PacketSegmentStorage::Many(segments)
+            }
+            (PacketSegmentStorage::One(first), PacketSegmentStorage::Many(mut right)) => {
+                if right.try_reserve(1).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::One(first),
+                        PacketSegmentStorage::Many(right),
+                    ));
+                }
+                right.insert(0, first);
+                PacketSegmentStorage::Many(right)
+            }
+            (PacketSegmentStorage::Many(mut left), PacketSegmentStorage::One(last)) => {
+                if left.try_reserve(1).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Many(left),
+                        PacketSegmentStorage::One(last),
+                    ));
+                }
+                left.push(last);
+                PacketSegmentStorage::Many(left)
+            }
+            (PacketSegmentStorage::Pair(left_pair), PacketSegmentStorage::Pair(right_pair)) => {
+                let mut segments = Vec::new();
+                if segments.try_reserve_exact(4).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Pair(left_pair),
+                        PacketSegmentStorage::Pair(right_pair),
+                    ));
+                }
+                segments.extend(left_pair);
+                segments.extend(right_pair);
+                PacketSegmentStorage::Many(segments)
+            }
+            (PacketSegmentStorage::Pair(pair), PacketSegmentStorage::Many(mut right)) => {
+                if right.try_reserve(2).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Pair(pair),
+                        PacketSegmentStorage::Many(right),
+                    ));
+                }
+                let [first, second] = pair;
+                right.insert(0, second);
+                right.insert(0, first);
+                PacketSegmentStorage::Many(right)
+            }
+            (PacketSegmentStorage::Many(mut left), PacketSegmentStorage::Pair(pair)) => {
+                if left.try_reserve(2).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Many(left),
+                        PacketSegmentStorage::Pair(pair),
+                    ));
+                }
+                left.extend(pair);
+                PacketSegmentStorage::Many(left)
+            }
+            (PacketSegmentStorage::Many(mut left), PacketSegmentStorage::Many(mut right)) => {
+                if left.try_reserve(right.len()).is_err() {
+                    return Err(allocation_failed(
+                        PacketSegmentStorage::Many(left),
+                        PacketSegmentStorage::Many(right),
+                    ));
+                }
+                left.append(&mut right);
+                PacketSegmentStorage::Many(left)
             }
         };
         Ok(Self { storage, total_len })
@@ -1329,9 +1465,8 @@ mod packet_ref_tests {
         unsafe { dma_state_ref(storage) }.len
     }
 
-    unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
+    unsafe fn dma_resize(storage: &mut PacketRefStorage, len: usize) -> bool {
         let state = unsafe { dma_state_mut(storage) };
-        let len = len.get();
         if len > dma_backing(state).dma.size().saturating_sub(state.offset) {
             return false;
         }
@@ -1340,7 +1475,8 @@ mod packet_ref_tests {
     }
 
     unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
-        dma_backing(unsafe { dma_state_ref(storage) }).dma.size()
+        let state = unsafe { dma_state_ref(storage) };
+        dma_backing(state).dma.size().saturating_sub(state.offset)
     }
 
     unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
@@ -1432,8 +1568,8 @@ mod packet_ref_tests {
         data_ptr: dma_data_ptr,
         data_mut_ptr: dma_data_mut_ptr,
         len: dma_len,
-        set_len: dma_set_len,
-        capacity: dma_capacity,
+        resize: dma_resize,
+        data_capacity: dma_capacity,
         phys_addr: dma_phys,
         device_address: dma_device,
         headroom: dma_headroom,
@@ -1486,12 +1622,14 @@ mod packet_ref_tests {
         let mut packet = make_dma_packet();
         assert_eq!(packet.len(), 7);
         assert_eq!(packet.data(), b"packet!");
-        assert_eq!(packet.capacity(), 64);
+        assert_eq!(packet.data_capacity(), 64);
         assert_eq!(packet.phys_addr().as_u64(), 0x3000);
         assert_eq!(packet.device_address(), 0x4000);
 
-        assert!(packet.set_len(PacketByteCount::new(6).expect("non-empty packet")));
-        assert!(packet.advance(PacketByteCount::new(1).expect("non-empty advance")));
+        packet.try_resize(6).expect("packet resize succeeds");
+        packet
+            .try_advance(PacketByteCount::new(1).expect("non-empty advance"))
+            .expect("packet advance succeeds");
         assert_eq!(packet.len(), 5);
         assert_eq!(packet.data(), b"acket");
         assert_eq!(packet.phys_addr().as_u64(), 0x3001);
@@ -1512,7 +1650,7 @@ mod packet_ref_tests {
         let packet = make_dma_packet();
         let len = PacketByteCount::new(packet.len()).expect("non-empty packet");
 
-        match packet.take_front(len).expect("exact split succeeds") {
+        match packet.try_take_front(len).expect("exact split succeeds") {
             PacketFront::Whole(packet) => {
                 assert_eq!(packet.data(), b"packet!");
                 drop(packet);
@@ -1530,7 +1668,7 @@ mod packet_ref_tests {
         let packet = make_dma_packet();
         let len = PacketByteCount::new(3).expect("non-empty prefix");
 
-        let (front, remainder) = match packet.take_front(len).expect("prefix split succeeds") {
+        let (front, remainder) = match packet.try_take_front(len).expect("prefix split succeeds") {
             PacketFront::Prefix { front, remainder } => (front, remainder),
             PacketFront::Whole(_) => panic!("prefix split must produce two windows"),
         };
@@ -1554,7 +1692,7 @@ mod packet_ref_tests {
         let len = PacketByteCount::new(packet.len() + 1).expect("non-empty invalid length");
 
         assert_eq!(
-            packet.take_front(len).err(),
+            packet.try_take_front(len).err().map(|error| error.cause()),
             Some(PacketWindowError::OutOfBounds)
         );
         assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);

@@ -14,6 +14,22 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::types::{InterfaceScope, NetworkError};
 use kernel_api::resource::net::PacketPayload;
 
+#[derive(Debug)]
+pub struct RawPayloadSendError {
+    cause: EndpointError,
+    payload: PacketPayload,
+}
+
+impl RawPayloadSendError {
+    pub const fn cause(&self) -> EndpointError {
+        self.cause
+    }
+
+    pub fn into_parts(self) -> (EndpointError, PacketPayload) {
+        (self.cause, self.payload)
+    }
+}
+
 fn resolve_raw_interface(
     runtime: NetRuntimeHandle,
     scope: InterfaceScope,
@@ -142,21 +158,59 @@ impl RawEndpoint {
         self.socket.try_recv_raw_payload()
     }
 
-    pub async fn send_payload(&self, payload: PacketPayload) -> Result<(), EndpointError> {
-        let scope = self
-            .socket
-            .with_inner(|inner| inner.scope)
-            .ok_or(EndpointError::Internal)?;
+    pub async fn send_payload(&self, payload: PacketPayload) -> Result<(), RawPayloadSendError> {
+        let scope = match self.socket.with_inner(|inner| inner.scope) {
+            Some(scope) => scope,
+            None => {
+                return Err(RawPayloadSendError {
+                    cause: EndpointError::Internal,
+                    payload,
+                });
+            }
+        };
         let runtime = self.socket.runtime();
-        let if_id =
-            resolve_raw_interface(runtime, scope, &payload).map_err(network_error_to_socket)?;
-        let stack_lock =
-            crate::net::runtime::stack::stack_in(runtime).map_err(|_| EndpointError::Internal)?;
-        let mut guard = stack_lock.lock().map_err(|_| EndpointError::Internal)?;
-        let stack = guard.as_mut().ok_or(EndpointError::NotFound)?;
+        let if_id = match resolve_raw_interface(runtime, scope, &payload) {
+            Ok(if_id) => if_id,
+            Err(cause) => {
+                return Err(RawPayloadSendError {
+                    cause: network_error_to_socket(cause),
+                    payload,
+                });
+            }
+        };
+        let stack_lock = match crate::net::runtime::stack::stack_in(runtime) {
+            Ok(stack) => stack,
+            Err(_) => {
+                return Err(RawPayloadSendError {
+                    cause: EndpointError::Internal,
+                    payload,
+                });
+            }
+        };
+        let mut guard = match stack_lock.lock() {
+            Ok(guard) => guard,
+            Err(_) => {
+                return Err(RawPayloadSendError {
+                    cause: EndpointError::Internal,
+                    payload,
+                });
+            }
+        };
+        let Some(stack) = guard.as_mut() else {
+            return Err(RawPayloadSendError {
+                cause: EndpointError::NotFound,
+                payload,
+            });
+        };
         stack
             .send_raw_ip_payload_on(if_id, payload)
-            .map_err(network_error_to_socket)
+            .map_err(|error| {
+                let (cause, payload) = error.into_parts();
+                RawPayloadSendError {
+                    cause: network_error_to_socket(cause),
+                    payload,
+                }
+            })
     }
 
     pub fn close(&self) -> Result<(), EndpointError> {

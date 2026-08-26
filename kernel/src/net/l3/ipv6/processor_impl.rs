@@ -5,7 +5,7 @@
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
-use crate::net::payload::{GeneratedPacketWriter, OwnedPayloadBounds, append_payload};
+use crate::net::payload::{GeneratedPacketWriter, OwnedPayloadBounds};
 use kernel_api::resource::net::PacketPayload;
 
 struct Ipv6UpperLayerIngress {
@@ -96,11 +96,11 @@ impl Ipv6Processor {
             // Check hop limit
             if packet.hop_limit() == 0 {
                 self.stats.record_hop_limit_exceeded();
-                return Ipv6ProcessResult::HopLimitExceeded(
-                    src,
-                    dst,
-                    PacketPayload::single(packet_ref),
-                );
+                let Ok(payload) = PacketPayload::try_single(packet_ref) else {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                };
+                return Ipv6ProcessResult::HopLimitExceeded(src, dst, payload);
             }
 
             // Walk extension headers with fragment awareness.
@@ -132,18 +132,19 @@ impl Ipv6Processor {
                         self.stats.record_dropped();
                         return Ipv6ProcessResult::Dropped;
                     }
-                    return Ipv6ProcessResult::ParameterProblem(
-                        code,
-                        pointer,
-                        src,
-                        dst,
-                        PacketPayload::single(packet_ref),
-                    );
+                    let Ok(payload) = PacketPayload::try_single(packet_ref) else {
+                        self.stats.record_header_error();
+                        return Ipv6ProcessResult::Error;
+                    };
+                    return Ipv6ProcessResult::ParameterProblem(code, pointer, src, dst, payload);
                 }
             }
         };
 
-        let original = PacketPayload::single(packet_ref);
+        let Ok(original) = PacketPayload::try_single(packet_ref) else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
         let Some(bounds) =
             OwnedPayloadBounds::checked(&original, ingress.payload_offset, ingress.payload_len)
         else {
@@ -209,11 +210,11 @@ impl Ipv6Processor {
             }
 
             if packet.hop_limit() == 0 {
-                return Ipv6ProcessResult::HopLimitExceeded(
-                    src,
-                    dst,
-                    PacketPayload::single(packet_ref),
-                );
+                let Ok(payload) = PacketPayload::try_single(packet_ref) else {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                };
+                return Ipv6ProcessResult::HopLimitExceeded(src, dst, payload);
             }
 
             match skip_extension_headers_fraginfo(raw_packet) {
@@ -223,23 +224,15 @@ impl Ipv6Processor {
                     frag_payload,
                 } => {
                     let unfrag_len = unfragmentable.len();
-                    let quoted_unfragmentable = if unfrag_len == 0 {
-                        PacketPayload::default()
-                    } else if let Some(payload) =
+                    let Some(quoted_unfragmentable) =
                         generated_ipv6_header_payload(&raw_packet[..unfrag_len])
-                    {
-                        payload
-                    } else {
+                    else {
                         self.stats.record_header_error();
                         return Ipv6ProcessResult::Error;
                     };
-                    let reassembly_unfragmentable = if unfrag_len == 0 {
-                        None
-                    } else if let Some(payload) =
+                    let Some(reassembly_unfragmentable) =
                         generated_ipv6_header_payload(&raw_packet[..unfrag_len])
-                    {
-                        Some(payload)
-                    } else {
+                    else {
                         self.stats.record_header_error();
                         return Ipv6ProcessResult::Error;
                     };
@@ -253,7 +246,7 @@ impl Ipv6Processor {
                         src,
                         dst,
                         quoted_unfragmentable,
-                        reassembly_unfragmentable,
+                        Some(reassembly_unfragmentable),
                         frag_payload_offset,
                         frag_payload.len(),
                         frag_header,
@@ -268,19 +261,20 @@ impl Ipv6Processor {
                         self.stats.record_dropped();
                         return Ipv6ProcessResult::Dropped;
                     }
-                    return Ipv6ProcessResult::ParameterProblem(
-                        code,
-                        pointer,
-                        src,
-                        dst,
-                        PacketPayload::single(packet_ref),
-                    );
+                    let Ok(payload) = PacketPayload::try_single(packet_ref) else {
+                        self.stats.record_header_error();
+                        return Ipv6ProcessResult::Error;
+                    };
+                    return Ipv6ProcessResult::ParameterProblem(code, pointer, src, dst, payload);
                 }
                 _ => return Ipv6ProcessResult::Error,
             }
         };
 
-        let original = PacketPayload::single(packet_ref);
+        let Ok(original) = PacketPayload::try_single(packet_ref) else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
+        };
         let (
             src,
             dst,
@@ -330,7 +324,7 @@ impl Ipv6Processor {
                 }
             }
             Err(error) => {
-                let mut quoted = quoted_unfragmentable;
+                let quoted = quoted_unfragmentable;
                 let mut frag_bytes = [0u8; 8];
                 frag_bytes[0] = frag_header.next_header;
                 let off_and_flags = (frag_header.fragment_offset << 3)
@@ -341,7 +335,10 @@ impl Ipv6Processor {
                     self.stats.record_header_error();
                     return Ipv6ProcessResult::Error;
                 };
-                append_payload(&mut quoted, frag_header_payload);
+                let Ok(quoted) = quoted.try_append(frag_header_payload) else {
+                    self.stats.record_header_error();
+                    return Ipv6ProcessResult::Error;
+                };
                 Ipv6ProcessResult::ReassemblyError(error, src, dst, quoted)
             }
         }

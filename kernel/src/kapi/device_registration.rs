@@ -59,29 +59,43 @@ pub(crate) fn authorize_dma_device_for_current_subject(
     let bound_locator = if caller == DomainId::KERNEL {
         None
     } else {
-        let manager = crate::driver_domain::driver_domain_manager();
-        let Some(driver_domain_id) = manager.find_by_domain(caller) else {
-            authorize_pci_locator_for_domain(caller, device_id, None)?;
-            unreachable!("non-kernel domains without a bound driver device must be rejected");
-        };
-        Some(
-            manager
-                .with_cell(driver_domain_id, |cell| {
-                    cell.abi_driver_context.pci_location()
-                })
-                .map_err(|err| {
-                    log::error!(
-                        "[KAPI][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
-                        caller,
-                        err
-                    );
-                    KapiError::PermissionDenied
-                })?,
-        )
+        Some(bound_pci_locator_for_driver_domain(caller)?)
     };
 
     authorize_pci_locator_for_domain(caller, device_id, bound_locator)?;
     Ok(unpack_device_id(device_id))
+}
+
+fn bound_pci_locator_for_driver_domain(caller: DomainId) -> Result<PackedPciLocation, KapiError> {
+    let manager = crate::driver_domain::driver_domain_manager();
+    let Some(driver_domain_id) = manager.find_by_domain(caller) else {
+        return Err(KapiError::PermissionDenied);
+    };
+    let locator = manager
+        .with_cell(driver_domain_id, |cell| {
+            cell.abi_driver_context.pci_location()
+        })
+        .map_err(|err| {
+            log::error!(
+                "[KAPI][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
+                caller,
+                err
+            );
+            KapiError::PermissionDenied
+        })?;
+    if locator.is_null() {
+        return Err(KapiError::NotSupported);
+    }
+    Ok(locator)
+}
+
+pub(crate) fn dma_device_for_driver_domain(caller: DomainId) -> Result<IommuDeviceId, KapiError> {
+    if caller == DomainId::KERNEL {
+        return Err(KapiError::PermissionDenied);
+    }
+    Ok(unpack_device_id(bound_pci_locator_for_driver_domain(
+        caller,
+    )?))
 }
 
 pub(crate) fn current_driver_domain() -> Result<DomainId, KapiError> {
@@ -140,7 +154,9 @@ pub(crate) fn register_netdev_port_for_current_subject(
     registration: &AbiNetPortRegistration,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
-    crate::resource_registry::net::register_port(owner, registration).map_err(map_registry_error)
+    let dma_device = dma_device_for_driver_domain(owner)?;
+    crate::resource_registry::net::register_port(owner, dma_device, registration)
+        .map_err(map_registry_error)
 }
 
 pub(crate) fn unregister_netdev_port_for_current_subject(handle: u64) -> Result<(), KapiError> {

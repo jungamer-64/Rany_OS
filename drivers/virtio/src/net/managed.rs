@@ -7,24 +7,18 @@ use crate::defs::{VringAvailHeader, VringDesc, VringUsedHeader, status};
 use crate::dma::VirtioDmaBuffer;
 use crate::transport::VirtioTransport;
 use alloc::boxed::Box;
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::num::NonZeroU16;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
-use core::task::Waker;
 use exorust_sync::{IrqPoisonLock, PoisonLock};
-use kernel_api::netdev::{NetDeviceInfo, NetPortStats, NetTxMeta, TxSubmission};
+use kernel_api::netdev::{
+    NET_RX_FLAG_IP_CSUM_VERIFIED, NET_RX_FLAG_L4_CSUM_VERIFIED, NetDeviceInfo, NetPortStats,
+    TxLeaseId,
+};
 use kernel_api::resource::net::PacketByteCount;
 
 const DEFAULT_MTU: u32 = 1500;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetCompletionKind {
-    Rx,
-    Tx,
-}
-
-pub type NetCompletionHandler = fn(u8, NetCompletionKind, u16, u32) -> bool;
 
 pub struct ManagedNetVirtQueue {
     inner: IrqPoisonLock<CoreNetVirtQueue>,
@@ -77,6 +71,10 @@ impl ManagedNetVirtQueue {
         self.with_core(|inner| inner.vq.queue_index())
     }
 
+    pub fn max_tx_segments(&self) -> u16 {
+        self.with_core(|inner| inner.vq.queue_size().saturating_sub(1))
+    }
+
     pub fn notify(&self, transport: &dyn VirtioTransport) {
         self.with_core(|inner| inner.notify(transport));
     }
@@ -110,13 +108,21 @@ impl ManagedNetVirtQueue {
 
     /// # Errors
     ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn add_tx_submission(
+    /// Returns an error if the iterator is empty, does not match
+    /// `segment_count`, exceeds the negotiated queue capacity, or descriptors
+    /// cannot be acquired.
+    pub fn add_tx_segments<I>(
         &self,
-        submission: TxSubmission<'_>,
+        segment_count: usize,
+        segments: I,
         header: VirtioNetHeader,
-    ) -> Result<u16, VirtioNetError> {
-        self.with_core(|inner| unsafe { inner.add_tx_buffer_chain(&header, submission.segments()) })
+    ) -> Result<u16, VirtioNetError>
+    where
+        I: Iterator<Item = (u64, PacketByteCount)>,
+    {
+        self.with_core(|inner| unsafe {
+            inner.add_tx_buffer_segments(&header, segment_count, segments)
+        })
     }
 
     /// # Errors
@@ -130,25 +136,8 @@ impl ManagedNetVirtQueue {
         self.with_core(|inner| unsafe { inner.add_rx_buffer(phys_addr, buffer_len) })
     }
 
-    pub fn process_used_with<F>(&self, mut on_complete: F) -> usize
-    where
-        F: FnMut(u16, u32),
-    {
-        let mut count = 0;
-        {
-            let inner = self.inner.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some((desc_idx, len)) = inner.poll_complete() {
-                on_complete(desc_idx, len);
-                count += 1;
-            }
-        }
-        count
-    }
-
-    pub fn process_used(&self) -> Vec<(u16, u32)> {
-        let mut completed = Vec::new();
-        let _ = self.process_used_with(|desc_idx, len| completed.push((desc_idx, len)));
-        completed
+    pub fn poll_used_one(&self) -> Option<(u16, u32)> {
+        self.with_core(CoreNetVirtQueue::poll_complete)
     }
 
     pub fn free_desc_chain(&self, head: u16) {
@@ -172,11 +161,10 @@ pub struct VirtioNetDevice {
     transport: Arc<dyn VirtioTransport>,
     runtime: Arc<dyn NetRuntime>,
     core: CoreNetDevice,
-    virtio_index: u8,
     net_if_id: PoisonLock<Option<u16>>,
     rx_queues: Vec<ManagedNetVirtQueue>,
     tx_queues: Vec<ManagedNetVirtQueue>,
-    completion_handler: PoisonLock<Option<NetCompletionHandler>>,
+    queue_msix_table: Option<u16>,
     initialized: AtomicBool,
     link_up: AtomicBool,
     rx_packets: AtomicU32,
@@ -190,19 +178,18 @@ unsafe impl Sync for VirtioNetDevice {}
 
 impl VirtioNetDevice {
     pub fn new(
-        index: u8,
         transport: Box<dyn VirtioTransport>,
         runtime: Arc<dyn NetRuntime>,
+        queue_msix_table: Option<u16>,
     ) -> Self {
         Self {
             transport: Arc::from(transport),
             runtime,
             core: CoreNetDevice::new(),
-            virtio_index: index,
             net_if_id: PoisonLock::new(None),
             rx_queues: Vec::new(),
             tx_queues: Vec::new(),
-            completion_handler: PoisonLock::new(None),
+            queue_msix_table,
             initialized: AtomicBool::new(false),
             link_up: AtomicBool::new(false),
             rx_packets: AtomicU32::new(0),
@@ -216,8 +203,21 @@ impl VirtioNetDevice {
     ///
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub fn init(&mut self) -> Result<(), VirtioNetError> {
-        self.core.init(self.transport.as_ref())?;
-        self.setup_queues()?;
+        if let Err(err) = self.core.init(self.transport.as_ref()) {
+            self.runtime.log(
+                log::Level::Error,
+                format_args!("virtio-net feature negotiation failed: {err:?}"),
+            );
+            return Err(err.into());
+        }
+        if let Err(err) = self.setup_queues() {
+            self.runtime.log(
+                log::Level::Error,
+                format_args!("virtio-net queue setup failed: {err:?}"),
+            );
+            return Err(err);
+        }
+        self.set_interrupts_enabled_all(true);
         self.transport.add_status(status::VIRTIO_STATUS_DRIVER_OK);
 
         self.link_up.store(
@@ -239,9 +239,7 @@ impl VirtioNetDevice {
     }
 
     pub fn handle_interrupt(&self) {
-        if let Some(runtime) = crate::net::virtio_net_runtime(self.virtio_index) {
-            let _ = runtime.schedule_event(kernel_api::netdev::NetDriverEvent::Interrupt);
-        }
+        self.runtime.schedule_interrupt();
     }
 
     pub fn process_interrupt_deferred(&self) {
@@ -282,6 +280,15 @@ impl VirtioNetDevice {
         self.core.get_pair_count() as u16
     }
 
+    pub fn max_tx_segments(&self) -> NonZeroU16 {
+        self.tx_queues
+            .iter()
+            .map(ManagedNetVirtQueue::max_tx_segments)
+            .min()
+            .and_then(NonZeroU16::new)
+            .unwrap_or(NonZeroU16::MIN)
+    }
+
     pub fn mtu(&self) -> u32 {
         let mtu = self.core.config.mtu as u32;
         if mtu == 0 { DEFAULT_MTU } else { mtu }
@@ -295,34 +302,32 @@ impl VirtioNetDevice {
         *self.net_if_id.lock().unwrap_or_else(|e| e.into_inner())
     }
 
-    pub fn set_completion_handler(&self, handler: Option<NetCompletionHandler>) {
-        *self
-            .completion_handler
-            .lock()
-            .unwrap_or_else(|e| e.into_inner()) = handler;
-    }
-
+    /// Submit a validated DMA segment stream without allocating an adapter
+    /// descriptor vector.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the request is invalid or the device cannot accept the operation.
-    pub fn enqueue_send_submission(
+    /// Returns an error if the request is invalid or the device cannot accept
+    /// the operation.
+    pub fn enqueue_send_segments<I>(
         &self,
-        submission: TxSubmission<'_>,
-        _meta: NetTxMeta,
-    ) -> Result<(), VirtioNetError> {
+        lease_id: TxLeaseId,
+        segment_count: usize,
+        segments: I,
+    ) -> Result<(), VirtioNetError>
+    where
+        I: Iterator<Item = (u64, PacketByteCount)>,
+    {
         let Some(tx_queue) = self.tx_queues.first() else {
             return Err(VirtioNetError::NotInitialized);
         };
 
-        match tx_queue.add_tx_submission(submission, VirtioNetHeader::new_tx()) {
+        match tx_queue.add_tx_segments(segment_count, segments, VirtioNetHeader::new_tx()) {
             Ok(desc_idx) => {
                 if let Some(tracker) = self.core.tx_trackers.get(0) {
-                    tracker.put(
-                        desc_idx,
-                        TxInflight {
-                            lease_id: submission.lease_id(),
-                        },
-                    );
+                    tracker
+                        .put(desc_idx, TxInflight { lease_id })
+                        .map_err(|_| VirtioNetError::DeviceError)?;
                 }
                 tx_queue.notify(self.transport.as_ref());
                 Ok(())
@@ -340,6 +345,21 @@ impl VirtioNetDevice {
         }
     }
 
+    /// Revokes device access before releasing any RX or TX in-flight state.
+    pub fn quiesce(&self) {
+        self.initialized.store(false, Ordering::Release);
+        self.link_up.store(false, Ordering::Release);
+        self.set_interrupts_enabled_all(false);
+        self.transport.reset();
+        core::sync::atomic::fence(Ordering::SeqCst);
+        for tracker in &self.core.rx_trackers {
+            tracker.clear();
+        }
+        for tracker in &self.core.tx_trackers {
+            tracker.clear();
+        }
+    }
+
     pub fn is_ready(&self) -> bool {
         self.initialized.load(Ordering::Acquire)
     }
@@ -349,9 +369,6 @@ impl VirtioNetDevice {
     }
 
     pub fn publish_link_state(&self) {
-        if let Some(runtime) = crate::net::virtio_net_runtime(self.virtio_index) {
-            let _ = runtime.update_link(self.link_up());
-        }
         self.runtime.update_link(self.link_up());
     }
 
@@ -380,6 +397,7 @@ impl VirtioNetDevice {
             if_id: self.net_if_id(),
             driver_name: "virtio-net",
             queue_pairs: self.queue_pairs(),
+            max_tx_segments: self.max_tx_segments(),
             mtu: self.mtu(),
             mac: kernel_api::netdev::MacAddress::from_octets(
                 mac[0], mac[1], mac[2], mac[3], mac[4], mac[5],
@@ -411,9 +429,22 @@ impl VirtioNetDevice {
         &mut self,
         queue_index: u16,
     ) -> Result<ManagedNetVirtQueue, VirtioNetError> {
-        let (queue_size, layout) = self
+        let (queue_size, layout) = match self
             .core
-            .prepare_queue(self.transport.as_ref(), queue_index)?;
+            .prepare_queue(self.transport.as_ref(), queue_index)
+        {
+            Ok(prepared) => prepared,
+            Err(err) => {
+                self.runtime.log(
+                    log::Level::Error,
+                    format_args!(
+                        "virtio-net queue {queue_index} unavailable (device queues={}): {err:?}",
+                        self.transport.get_num_queues()
+                    ),
+                );
+                return Err(err.into());
+            }
+        };
         let buffer = self
             .runtime
             .alloc_dma(layout.total_size, NetDmaPurpose::QueueMemory)?;
@@ -436,6 +467,12 @@ impl VirtioNetDevice {
             self.core.rx_trackers.push(InflightTracker::new(queue_size));
         } else {
             self.core.tx_trackers.push(InflightTracker::new(queue_size));
+        }
+
+        if let Some(table_index) = self.queue_msix_table {
+            self.transport
+                .configure_msix(queue_index, table_index)
+                .map_err(|_| VirtioNetError::DeviceError)?;
         }
 
         self.core.commit_queue(
@@ -476,75 +513,52 @@ impl VirtioNetDevice {
         for (pair_idx, rx_queue) in self.rx_queues.iter().enumerate() {
             let queue_index = rx_queue.queue_index();
 
-            for (desc_idx, len) in rx_queue.process_used() {
-                if self.handle_scheduler_completion(NetCompletionKind::Rx, desc_idx, len) {
-                    rx_queue.free_desc_chain(desc_idx);
-                    continue;
-                }
-
+            let mut processed = 0usize;
+            // LOOP_PROOF: mode=condition; reason=RX completion work is bounded by the maximum queue size per deferred pass.;
+            while processed < super::MAX_VIRTIO_COMPLETIONS_PER_PASS {
+                let Some((desc_idx, len)) = rx_queue.poll_used_one() else {
+                    break;
+                };
+                processed += 1;
                 let Some(tracker) = self.core.rx_trackers.get(pair_idx) else {
                     rx_queue.free_desc_chain(desc_idx);
                     continue;
                 };
 
-                let Some(mut inflight) = tracker.take(desc_idx) else {
+                let Some(inflight) = tracker.take(desc_idx) else {
                     rx_queue.free_desc_chain(desc_idx);
                     continue;
                 };
-
-                if let Some(mapping) = inflight.dma_mapping.take() {
-                    self.runtime.release_dma_mapping(mapping);
-                }
 
                 self.rx_packets.fetch_add(1, Ordering::Relaxed);
                 self.rx_bytes.fetch_add(len, Ordering::Relaxed);
 
                 let header_len = VirtioNetHeader::SIZE;
-                let packet_len = core::cmp::min(len as usize, inflight.packet.capacity());
-                let Some(packet_byte_count) = PacketByteCount::new(packet_len) else {
+                let region = inflight.buffer.writable_region();
+                let packet_len = len as usize;
+                if packet_len > region.writable_len() || packet_len < header_len {
                     rx_queue.free_desc_chain(desc_idx);
                     continue;
+                }
+                // SAFETY: the used-ring completion transfers device write
+                // authority back to the driver, and the checked completion
+                // length proves the fixed header is initialized.
+                let header = unsafe {
+                    core::ptr::read_unaligned(region.cpu_ptr().cast::<VirtioNetHeader>())
                 };
-                if !inflight.packet.set_len(packet_byte_count) {
-                    rx_queue.free_desc_chain(desc_idx);
-                    continue;
-                }
-                if inflight.packet.data().len() >= header_len {
-                    let header = unsafe {
-                        core::ptr::read_unaligned(
-                            inflight.packet.data().as_ptr() as *const VirtioNetHeader
-                        )
-                    };
-                    if (header.flags & VirtioNetHeader::F_DATA_VALID) != 0 {
-                        let meta = inflight.packet.meta_mut();
-                        meta.set_l4_csum_verified();
-                        meta.set_ip_csum_verified();
-                    }
-                }
-                let payload_len = packet_len.saturating_sub(header_len);
-
-                if let Some(runtime) = crate::net::virtio_net_runtime(self.virtio_index) {
-                    let Some(layout) = kernel_api::netdev::NetRxFrameLayout::new(
-                        packet_byte_count,
-                        header_len,
-                        payload_len,
-                    ) else {
-                        rx_queue.free_desc_chain(desc_idx);
-                        continue;
-                    };
-                    let _ = runtime.submit_rx(
-                        inflight.packet,
-                        kernel_api::netdev::NetRxMeta::new(queue_index, layout, 0),
-                    );
+                let flags = if (header.flags & VirtioNetHeader::F_DATA_VALID) != 0 {
+                    NET_RX_FLAG_IP_CSUM_VERIFIED | NET_RX_FLAG_L4_CSUM_VERIFIED
                 } else {
-                    self.runtime.receive_packet(
-                        queue_index,
-                        inflight.packet,
-                        header_len,
-                        payload_len,
-                    );
-                }
-
+                    0
+                };
+                let payload_len = packet_len.saturating_sub(header_len);
+                self.runtime.receive_packet(
+                    queue_index,
+                    inflight.buffer,
+                    header_len,
+                    payload_len,
+                    flags,
+                );
                 rx_queue.free_desc_chain(desc_idx);
                 rx_queue.with_core(|inner| {
                     let _ =
@@ -559,12 +573,13 @@ impl VirtioNetDevice {
         for (pair_idx, tx_queue) in self.tx_queues.iter().enumerate() {
             let queue_index = tx_queue.queue_index();
 
-            for (desc_idx, len) in tx_queue.process_used() {
-                if self.handle_scheduler_completion(NetCompletionKind::Tx, desc_idx, len) {
-                    tx_queue.free_desc_chain(desc_idx);
-                    continue;
-                }
-
+            let mut processed = 0usize;
+            // LOOP_PROOF: mode=condition; reason=TX completion work is bounded by the maximum queue size per deferred pass.;
+            while processed < super::MAX_VIRTIO_COMPLETIONS_PER_PASS {
+                let Some((desc_idx, len)) = tx_queue.poll_used_one() else {
+                    break;
+                };
+                processed += 1;
                 let Some(tracker) = self.core.tx_trackers.get(pair_idx) else {
                     tx_queue.free_desc_chain(desc_idx);
                     continue;
@@ -583,18 +598,5 @@ impl VirtioNetDevice {
                 tx_queue.free_desc_chain(desc_idx);
             }
         }
-    }
-
-    fn handle_scheduler_completion(
-        &self,
-        kind: NetCompletionKind,
-        desc_idx: u16,
-        len: u32,
-    ) -> bool {
-        self.completion_handler
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .map(|handler| handler(self.virtio_index, kind, desc_idx, len))
-            .unwrap_or(false)
     }
 }

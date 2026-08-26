@@ -225,21 +225,22 @@ impl TcpSegmentBuilder {
                 )
                 .ok_or(EndpointError::ResourceExhausted)?;
                 write_header(packet.data_mut());
-                Ok(PacketPayload::Single(packet))
+                PacketPayload::try_single(packet).map_err(|_| EndpointError::ResourceExhausted)
             }
             TcpSegmentPayload::Packet(mut payload) => {
-                let can_retreat = if let PacketPayload::Single(ref mut packet) = payload {
-                    packet.retreat(
-                        PacketByteCount::new(header_len).expect("TCP header length is non-zero"),
-                    )
+                let can_retreat = if payload.segments().len() == 1 {
+                    payload.segments_mut()[0]
+                        .try_retreat(
+                            PacketByteCount::new(header_len)
+                                .expect("TCP header length is non-zero"),
+                        )
+                        .is_ok()
                 } else {
                     false
                 };
 
                 if can_retreat {
-                    if let PacketPayload::Single(ref mut packet) = payload {
-                        write_header(packet.data_mut());
-                    }
+                    write_header(payload.segments_mut()[0].data_mut());
                     Ok(payload)
                 } else {
                     let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
@@ -248,7 +249,9 @@ impl TcpSegmentBuilder {
                     )
                     .ok_or(EndpointError::ResourceExhausted)?;
                     write_header(header_packet.data_mut());
-                    Ok(payload.prepend(header_packet))
+                    payload
+                        .try_prepend(header_packet)
+                        .map_err(|_| EndpointError::ResourceExhausted)
                 }
             }
         }

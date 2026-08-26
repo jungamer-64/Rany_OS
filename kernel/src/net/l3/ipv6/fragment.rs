@@ -29,7 +29,7 @@ use alloc::vec::Vec;
 
 use super::Ipv6Address;
 use super::Ipv6ReassemblyError;
-use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, append_payload};
+use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
 // =====================================================
@@ -505,7 +505,7 @@ impl Ipv6FragmentBuffer {
         let mut payload_segments = self.segments;
         payload_segments.sort_unstable_by_key(|segment| segment.offset);
         for segment in payload_segments {
-            append_payload(&mut reassembled, segment.payload);
+            reassembled = reassembled.try_append(segment.payload).ok()?;
         }
 
         Some(reassembled)
@@ -661,7 +661,10 @@ impl Ipv6FragmentReassembler {
                                 .is_some()
                             {
                                 if let Some(header_payload) = header_writer.finish() {
-                                    append_payload(&mut quoted, header_payload);
+                                    let Ok(combined) = quoted.try_append(header_payload) else {
+                                        continue;
+                                    };
+                                    quoted = combined;
                                 }
                             }
                         }
@@ -683,7 +686,10 @@ impl Ipv6FragmentReassembler {
                         else {
                             continue;
                         };
-                        append_payload(&mut quoted, prefix);
+                        let Ok(combined) = quoted.try_append(prefix) else {
+                            continue;
+                        };
+                        quoted = combined;
                     }
                     expired_with_first.push((key.src, key.dst, quoted, None));
                 }

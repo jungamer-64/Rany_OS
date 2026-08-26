@@ -26,7 +26,7 @@ pub fn wave8_tls_base64_decode_smoke() -> bool {
     } else {
         false
     };
-    hello_ok && matches!(empty, Some(ref v) if v.is_empty())
+    hello_ok && empty.is_none()
 }
 
 pub fn wave8_tls_tls_version_smoke() -> bool {

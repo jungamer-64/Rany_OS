@@ -4,31 +4,25 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::cmp;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
     AbiError, AbiIoCompletion, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind,
     AbiNetPortInfo, AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats,
-    AbiNetRxFrameLayout, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiPacketRefRaw,
-    DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
-    PackedPciLocation, pack_version,
+    AbiNetRxFrameLayout, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiRxLease,
+    AbiRxLeaseGuard, AbiTxDeviceOutcome, DRIVER_ABI_VERSION, DriverCapabilities, DriverContext,
+    DriverVTable, DriverVTableFns, PackedPciLocation, pack_version,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::DriverType;
-use kernel_api::netdev::{
-    NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NetDevicePort, NetTxMeta, NetTxSegment,
-    NonEmptyTxSegments, TxSubmission,
-};
-use kernel_api::resource::net::PacketRef;
+use kernel_api::netdev::{NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NetPortId, TxLeaseId};
 use kernel_api::service::kernel;
 use spin::Mutex;
 
 use crate::blk::{get_virtio_blk_device_at_index, init_virtio_blk_with_transport_at_index};
 use crate::defs::VirtioDeviceType;
 use crate::net::{
-    NetDmaDirection, NetDmaMappingToken, NetDmaPurpose, NetRuntime, VirtioNetDriverAdapter,
-    VirtioNetError, handle_virtio_net_interrupt_for_index, init_virtio_net_with_transport_at_index,
-    with_virtio_net_at_index,
+    NetDmaPurpose, NetRuntime, RxDmaLease, VirtioNetError, handle_virtio_net_interrupt_for_index,
+    init_virtio_net_with_transport_at_index, with_virtio_net_at_index,
 };
 use crate::transport::{VirtioMmioTransport, VirtioPciTransport, VirtioTransport};
 
@@ -39,6 +33,7 @@ const PCI_CAP_VENDOR_SPECIFIC: u8 = 0x09;
 const PCI_BAR0: u8 = 0x10;
 const PCI_BAR_MAP_SIZE: usize = 0x20_000;
 const PORT_INDEX: u8 = 0;
+const NET_PORT_ID: u64 = 0x0001_0000 | PORT_INDEX as u64;
 const BLOCK_DEVICE_ID: u64 = 0x0001_0000_0000_0000;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -51,6 +46,14 @@ enum VirtioStandaloneKind {
 struct MappedBar {
     bar: u8,
     handle: AbiMmioHandle,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StandaloneRegistration {
+    Idle,
+    Registering,
+    Registered(u64),
+    Unregistering(u64),
 }
 
 struct StandaloneNetRuntime {
@@ -92,11 +95,19 @@ impl StandaloneNetRuntime {
 
 struct VirtioStandaloneState {
     kind: VirtioStandaloneKind,
+    pci_locator: PackedPciLocation,
     mapped_bars: Vec<MappedBar>,
     net_runtime: Option<StandaloneNetRuntimeHandle>,
-    netdev_handle: Option<u64>,
-    block_handle: Option<u64>,
+    interrupt: StandaloneInterrupt,
+    registration: StandaloneRegistration,
     block_pending: BTreeMap<u16, u64>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StandaloneInterrupt {
+    None,
+    Bound { vector: u32 },
+    Unbound,
 }
 
 static VIRTIO_STANDALONE_STATE: Mutex<Option<VirtioStandaloneState>> = Mutex::new(None);
@@ -283,60 +294,55 @@ impl NetRuntime for StandaloneNetRuntime {
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError> {
         kernel::instance()
             .alloc_dma_for_device(size, self.pci_locator)
-            .map_err(|_| VirtioNetError::DeviceError)
+            .map_err(|err| {
+                let message = alloc::format!(
+                    "virtio-net DMA allocation failed: size={size} device={:?} error={err:?}",
+                    self.pci_locator
+                );
+                (kernel_api().log)(log::Level::Error as u32, message.as_ptr(), message.len());
+                VirtioNetError::DeviceError
+            })
     }
 
-    fn alloc_packet(&self) -> Option<PacketRef> {
+    fn lease_rx_buffer(&self) -> Option<RxDmaLease> {
         let runtime = self.runtime()?;
-        let mut raw = AbiPacketRefRaw::default();
-        if (runtime.alloc_packet)(runtime.runtime_cookie, &mut raw) != 0 || raw.is_null() {
-            None
-        } else {
-            Some(raw.into_packet())
-        }
+        AbiRxLeaseGuard::acquire(runtime)
+            .ok()
+            .map(RxDmaLease::from_abi)
     }
-
-    fn map_packet(
-        &self,
-        packet: &PacketRef,
-        _direction: NetDmaDirection,
-    ) -> Result<NetDmaMappingToken, VirtioNetError> {
-        Ok(NetDmaMappingToken::direct(packet.device_address()))
-    }
-
-    fn release_dma_mapping(&self, _mapping: NetDmaMappingToken) {}
 
     fn receive_packet(
         &self,
         queue_index: u16,
-        packet: PacketRef,
+        buffer: RxDmaLease,
         header_len: usize,
         payload_len: usize,
+        flags: u32,
     ) {
-        let Some(runtime) = self.runtime() else {
-            return;
-        };
-        let mut raw = AbiPacketRefRaw::from_packet(packet);
         let Some(layout) =
             AbiNetRxFrameLayout::new(header_len + payload_len, header_len, payload_len)
         else {
             return;
         };
-        let meta = AbiNetRxMeta::new(queue_index, layout, 0);
-        let _ = (runtime.submit_rx_packet)(runtime.runtime_cookie, &mut raw, meta);
+        let meta = AbiNetRxMeta::new(queue_index, layout, flags);
+        let _ = buffer.submit(meta);
     }
 
-    fn transmit_complete(&self, _queue_index: u16, lease_id: u64) {
+    fn transmit_complete(&self, _queue_index: u16, lease_id: TxLeaseId) {
         if let Some(runtime) = self.runtime() {
-            let _ = (runtime.complete_tx_lease)(runtime.runtime_cookie, lease_id, 0);
+            let _ = (runtime.complete_tx_lease)(
+                runtime.runtime_cookie,
+                lease_id.get(),
+                AbiTxDeviceOutcome::TRANSMITTED,
+            );
         }
     }
 
-    fn schedule_wake(&self, queue_index: u16) {
+    fn schedule_interrupt(&self) {
         if let Some(runtime) = self.runtime() {
             let event = AbiNetDriverEvent {
-                kind: AbiNetDriverEventKind::QueueWake as u32,
-                queue_index,
+                kind: AbiNetDriverEventKind::Interrupt as u32,
+                queue_index: 0,
                 _padding: 0,
             };
             let _ = (runtime.schedule_event)(runtime.runtime_cookie, event);
@@ -350,14 +356,16 @@ impl NetRuntime for StandaloneNetRuntime {
     }
 
     fn log(&self, level: log::Level, msg: core::fmt::Arguments) {
+        let msg = alloc::format!("{}", msg);
         if let Some(runtime) = self.runtime() {
-            let msg = alloc::format!("{}", msg);
             (runtime.log)(
                 runtime.runtime_cookie,
                 level as u32,
                 msg.as_ptr(),
                 msg.len(),
             );
+        } else {
+            (kernel_api().log)(level as u32, msg.as_ptr(), msg.len());
         }
     }
 }
@@ -396,7 +404,7 @@ extern "C" fn netdev_bind(_opaque: u64, if_id: u16) -> i32 {
 extern "C" fn netdev_submit_tx_chain(
     _opaque: u64,
     submission: *const AbiNetTxSubmission,
-    meta: AbiNetTxMeta,
+    _meta: AbiNetTxMeta,
 ) -> i32 {
     if submission.is_null() {
         return AbiError::InvalidParam as i32;
@@ -405,27 +413,17 @@ extern "C" fn netdev_submit_tx_chain(
     let Some(abi_segments) = submission.segments() else {
         return AbiError::InvalidParam as i32;
     };
-    let mut segments = Vec::with_capacity(abi_segments.count());
-    for segment in abi_segments.iter() {
-        let Some(segment) =
-            NetTxSegment::from_dma(segment.cpu_ptr(), segment.device_addr(), segment.len())
-        else {
-            return AbiError::InvalidParam as i32;
-        };
-        segments.push(segment);
-    }
-    let Some(non_empty_segments) = NonEmptyTxSegments::new(&segments) else {
+    let Some(lease_id) = submission.lease_id() else {
         return AbiError::InvalidParam as i32;
     };
-    let tx = TxSubmission::new(submission.lease_id(), non_empty_segments);
-    let tx_meta = NetTxMeta {
-        queue_index: meta.has_queue_index.then_some(meta.queue_index),
-        flags: meta.flags,
-        vlan_tag: meta.has_vlan_tag.then_some(meta.vlan_tag),
-        completion: Default::default(),
-    };
     with_virtio_net_at_index(PORT_INDEX, |device| {
-        match device.enqueue_send_submission(tx, tx_meta) {
+        match device.enqueue_send_segments(
+            lease_id,
+            abi_segments.count(),
+            abi_segments
+                .iter()
+                .map(|segment| (segment.device_addr(), segment.len())),
+        ) {
             Ok(()) => AbiError::Success as i32,
             Err(_) => AbiError::DeviceBusy as i32,
         }
@@ -471,20 +469,25 @@ extern "C" fn netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 {
     .unwrap_or(AbiError::NotInitialized as i32)
 }
 
-extern "C" fn netdev_stop(_opaque: u64) {
+extern "C" fn netdev_stop(_opaque: u64) -> i32 {
+    if with_virtio_net_at_index(PORT_INDEX, |device| device.quiesce()).is_none() {
+        return AbiError::NotInitialized as i32;
+    }
     if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_ref()
         && let Some(runtime) = state.net_runtime.as_ref()
     {
         (*runtime).install_runtime(AbiNetPortRuntime::new(
             0,
-            empty_alloc_packet,
-            empty_submit_rx_packet,
+            empty_lease_rx_buffer,
+            empty_release_rx_buffer,
+            empty_submit_rx_buffer,
             empty_complete_tx_lease,
             empty_schedule_event,
             empty_update_link,
             empty_log,
         ));
     }
+    AbiError::Success as i32
 }
 
 extern "C" fn netdev_set_interrupts_enabled(_opaque: u64, enabled: bool) -> i32 {
@@ -499,19 +502,27 @@ extern "C" fn netdev_set_interrupts_enabled(_opaque: u64, enabled: bool) -> i32 
     }
 }
 
-extern "C" fn empty_alloc_packet(_cookie: u64, _out: *mut AbiPacketRefRaw) -> i32 {
+extern "C" fn empty_lease_rx_buffer(_cookie: u64, _out: *mut AbiRxLease) -> i32 {
     AbiError::NotInitialized as i32
 }
 
-extern "C" fn empty_submit_rx_packet(
+extern "C" fn empty_release_rx_buffer(_cookie: u64, _lease: *mut AbiRxLease) -> i32 {
+    AbiError::NotInitialized as i32
+}
+
+extern "C" fn empty_submit_rx_buffer(
     _cookie: u64,
-    _packet: *mut AbiPacketRefRaw,
+    _lease: *mut AbiRxLease,
     _meta: AbiNetRxMeta,
 ) -> i32 {
     AbiError::NotInitialized as i32
 }
 
-extern "C" fn empty_complete_tx_lease(_cookie: u64, _lease_id: u64, _status: i32) -> i32 {
+extern "C" fn empty_complete_tx_lease(
+    _cookie: u64,
+    _lease_id: u64,
+    _outcome: AbiTxDeviceOutcome,
+) -> i32 {
     AbiError::NotInitialized as i32
 }
 
@@ -525,14 +536,15 @@ extern "C" fn empty_update_link(_cookie: u64, _up: bool) -> i32 {
 
 extern "C" fn empty_log(_cookie: u64, _level: u32, _msg: *const u8, _len: usize) {}
 
-fn netdev_registration() -> AbiNetPortRegistration {
-    let adapter = VirtioNetDriverAdapter::new(PORT_INDEX);
-    let info = adapter.info();
-    AbiNetPortRegistration::new(
+fn netdev_registration() -> Option<AbiNetPortRegistration> {
+    let info = with_virtio_net_at_index(PORT_INDEX, |device| {
+        device.info_snapshot(NetPortId::new(NET_PORT_ID))
+    })?;
+    Some(AbiNetPortRegistration::new(
         AbiNetPortInfo {
             port_id: info.port_id.as_u64(),
-            queue_pairs: cmp::max(1, info.queue_pairs),
-            reserved_queue: 0,
+            queue_pairs: info.queue_pairs.max(1),
+            max_tx_segments: info.max_tx_segments.get(),
             mtu: info.mtu,
             flags: info.flags | NETDEV_FLAG_ADMIN_UP | NETDEV_FLAG_HEALTHY,
             mac: *info.mac.as_bytes(),
@@ -551,7 +563,7 @@ fn netdev_registration() -> AbiNetPortRegistration {
             stop: netdev_stop,
             set_interrupts_enabled: netdev_set_interrupts_enabled,
         },
-    )
+    ))
 }
 
 extern "C" fn block_submit(
@@ -673,13 +685,42 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
         return AbiError::DeviceNotFound as i32;
     };
     let pci_locator = ctx.pci_location();
+    let interrupt = if kind == VirtioStandaloneKind::Net && transport.supports_msix() {
+        let Some(vector) = kernel::instance()
+            .enable_msix(pci_locator, 1)
+            .ok()
+            .and_then(|vectors| vectors.into_iter().next())
+        else {
+            for mapped in &mapped_bars {
+                let _ = (kernel_api().unmap_mmio)(&mapped.handle);
+            }
+            return AbiError::IoError as i32;
+        };
+        let bind_status = (kernel_api().irq_bind)(vector.vector, 0);
+        if !AbiError::from_raw(bind_status).is_success() {
+            let _ = kernel::instance().disable_msix(pci_locator);
+            for mapped in &mapped_bars {
+                let _ = (kernel_api().unmap_mmio)(&mapped.handle);
+            }
+            return bind_status;
+        }
+        Some((vector.vector, vector.table_index))
+    } else {
+        None
+    };
 
     let result = match kind {
         VirtioStandaloneKind::Net => {
             let runtime = Arc::new(StandaloneNetRuntime::new(pci_locator));
             let runtime_handle = StandaloneNetRuntimeHandle::new(runtime.as_ref());
-            let init =
-                unsafe { init_virtio_net_with_transport_at_index(PORT_INDEX, transport, runtime) };
+            let init = unsafe {
+                init_virtio_net_with_transport_at_index(
+                    PORT_INDEX,
+                    transport,
+                    runtime,
+                    interrupt.map(|(_, table_index)| table_index),
+                )
+            };
             init.map(|_| Some(runtime_handle)).map_err(|_| ())
         }
         VirtioStandaloneKind::Block => {
@@ -694,6 +735,10 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
     let net_runtime = match result {
         Ok(runtime) => runtime,
         Err(()) => {
+            if let Some((vector, _)) = interrupt {
+                let _ = (kernel_api().irq_unbind)(vector);
+                let _ = kernel::instance().disable_msix(pci_locator);
+            }
             for mapped in &mapped_bars {
                 let _ = (kernel_api().unmap_mmio)(&mapped.handle);
             }
@@ -703,67 +748,176 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
 
     *VIRTIO_STANDALONE_STATE.lock() = Some(VirtioStandaloneState {
         kind,
+        pci_locator,
         mapped_bars,
         net_runtime,
-        netdev_handle: None,
-        block_handle: None,
+        interrupt: interrupt.map_or(StandaloneInterrupt::None, |(vector, _)| {
+            StandaloneInterrupt::Bound { vector }
+        }),
+        registration: StandaloneRegistration::Idle,
         block_pending: BTreeMap::new(),
     });
     AbiError::Success as i32
 }
 
 extern "C" fn virtio_start(_ctx: *mut DriverContext) -> i32 {
-    let mut guard = VIRTIO_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_mut() else {
-        return AbiError::NotInitialized as i32;
-    };
-    match state.kind {
-        VirtioStandaloneKind::Net => {
-            if state.netdev_handle.is_some() {
-                return AbiError::Success as i32;
+    let kind = {
+        let mut guard = VIRTIO_STANDALONE_STATE.lock();
+        let Some(state) = guard.as_mut() else {
+            return AbiError::NotInitialized as i32;
+        };
+        match state.registration {
+            StandaloneRegistration::Registered(_) => return AbiError::Success as i32,
+            StandaloneRegistration::Registering | StandaloneRegistration::Unregistering(_) => {
+                return AbiError::DeviceBusy as i32;
             }
-            let registration = netdev_registration();
-            let mut handle = 0u64;
-            let status = (kernel_api().register_netdev_port)(&registration, &mut handle);
-            if status == 0 {
-                state.netdev_handle = Some(handle);
+            StandaloneRegistration::Idle => {
+                state.registration = StandaloneRegistration::Registering;
+                state.kind
             }
-            status
         }
-        VirtioStandaloneKind::Block => {
-            if state.block_handle.is_some() {
-                return AbiError::Success as i32;
-            }
-            let Some(registration) = block_registration() else {
+    };
+
+    let mut handle = 0u64;
+    let status = match kind {
+        VirtioStandaloneKind::Net => {
+            let Some(registration) = netdev_registration() else {
+                if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_mut() {
+                    state.registration = StandaloneRegistration::Idle;
+                }
                 return AbiError::NotInitialized as i32;
             };
-            let mut handle = 0u64;
-            let status = (kernel_api().register_block_device)(&registration, &mut handle);
-            if status == 0 {
-                state.block_handle = Some(handle);
-            }
-            status
+            (kernel_api().register_netdev_port)(&registration, &mut handle)
+        }
+        VirtioStandaloneKind::Block => {
+            let Some(registration) = block_registration() else {
+                if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_mut() {
+                    state.registration = StandaloneRegistration::Idle;
+                }
+                return AbiError::NotInitialized as i32;
+            };
+            (kernel_api().register_block_device)(&registration, &mut handle)
         }
         VirtioStandaloneKind::Unsupported => AbiError::NotSupported as i32,
+    };
+
+    let mut orphaned_registration = None;
+    {
+        let mut guard = VIRTIO_STANDALONE_STATE.lock();
+        if let Some(state) = guard.as_mut()
+            && state.kind == kind
+            && state.registration == StandaloneRegistration::Registering
+        {
+            state.registration = if status == AbiError::Success as i32 {
+                StandaloneRegistration::Registered(handle)
+            } else {
+                StandaloneRegistration::Idle
+            };
+        } else if status == AbiError::Success as i32 {
+            orphaned_registration = Some((kind, handle));
+        }
     }
+
+    if let Some((kind, handle)) = orphaned_registration {
+        match kind {
+            VirtioStandaloneKind::Net => {
+                let _ = (kernel_api().unregister_netdev_port)(handle);
+            }
+            VirtioStandaloneKind::Block => {
+                let _ = (kernel_api().unregister_block_device)(handle);
+            }
+            VirtioStandaloneKind::Unsupported => {}
+        }
+        return AbiError::NotInitialized as i32;
+    }
+
+    status
 }
 
 extern "C" fn virtio_stop(_ctx: *mut DriverContext) -> i32 {
-    let mut guard = VIRTIO_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_mut() else {
-        return AbiError::Success as i32;
+    let registration = {
+        let mut guard = VIRTIO_STANDALONE_STATE.lock();
+        let Some(state) = guard.as_mut() else {
+            return AbiError::Success as i32;
+        };
+        match state.registration {
+            StandaloneRegistration::Idle => None,
+            StandaloneRegistration::Registering | StandaloneRegistration::Unregistering(_) => {
+                return AbiError::DeviceBusy as i32;
+            }
+            StandaloneRegistration::Registered(handle) => {
+                state.registration = StandaloneRegistration::Unregistering(handle);
+                Some((state.kind, handle))
+            }
+        }
     };
-    if let Some(handle) = state.netdev_handle.take() {
-        let _ = (kernel_api().unregister_netdev_port)(handle);
+
+    if let Some((kind, handle)) = registration {
+        let status = match kind {
+            VirtioStandaloneKind::Net => (kernel_api().unregister_netdev_port)(handle),
+            VirtioStandaloneKind::Block => (kernel_api().unregister_block_device)(handle),
+            VirtioStandaloneKind::Unsupported => AbiError::NotSupported as i32,
+        };
+
+        if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_mut()
+            && state.kind == kind
+            && state.registration == StandaloneRegistration::Unregistering(handle)
+        {
+            state.registration = if AbiError::from_raw(status).is_success() {
+                StandaloneRegistration::Idle
+            } else {
+                StandaloneRegistration::Registered(handle)
+            };
+        }
+        if !AbiError::from_raw(status).is_success() {
+            return status;
+        }
     }
-    if let Some(handle) = state.block_handle.take() {
-        let _ = (kernel_api().unregister_block_device)(handle);
+
+    release_standalone_interrupt()
+}
+
+fn release_standalone_interrupt() -> i32 {
+    loop {
+        let action = {
+            let guard = VIRTIO_STANDALONE_STATE.lock();
+            let Some(state) = guard.as_ref() else {
+                return AbiError::Success as i32;
+            };
+            (state.pci_locator, state.interrupt)
+        };
+        match action.1 {
+            StandaloneInterrupt::None => return AbiError::Success as i32,
+            StandaloneInterrupt::Bound { vector } => {
+                let status = (kernel_api().irq_unbind)(vector);
+                if !AbiError::from_raw(status).is_success() {
+                    return status;
+                }
+                if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_mut()
+                    && state.interrupt == action.1
+                {
+                    state.interrupt = StandaloneInterrupt::Unbound;
+                }
+            }
+            StandaloneInterrupt::Unbound => {
+                if kernel::instance().disable_msix(action.0).is_err() {
+                    return AbiError::IoError as i32;
+                }
+                if let Some(state) = VIRTIO_STANDALONE_STATE.lock().as_mut()
+                    && state.interrupt == StandaloneInterrupt::Unbound
+                {
+                    state.interrupt = StandaloneInterrupt::None;
+                }
+            }
+        }
     }
-    AbiError::Success as i32
 }
 
 extern "C" fn virtio_remove(ctx: *mut DriverContext) -> i32 {
-    let _ = virtio_stop(ctx);
+    let status = virtio_stop(ctx);
+    if status != AbiError::Success as i32 {
+        return status;
+    }
     if let Some(state) = VIRTIO_STANDALONE_STATE.lock().take() {
         for mapped in &state.mapped_bars {
             let _ = (kernel_api().unmap_mmio)(&mapped.handle);
@@ -773,11 +927,14 @@ extern "C" fn virtio_remove(ctx: *mut DriverContext) -> i32 {
 }
 
 extern "C" fn virtio_handle_irq(_ctx: *mut DriverContext) -> bool {
-    let guard = VIRTIO_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_ref() else {
+    let kind = VIRTIO_STANDALONE_STATE
+        .lock()
+        .as_ref()
+        .map(|state| state.kind);
+    let Some(kind) = kind else {
         return false;
     };
-    match state.kind {
+    match kind {
         VirtioStandaloneKind::Net => {
             handle_virtio_net_interrupt_for_index(PORT_INDEX);
             true

@@ -47,9 +47,9 @@ fn calculate_abi_hash(content: &str) -> u64 {
             "pub struct DriverCapabilities",
             "pub struct AbiDmaSlice",
             "pub struct AbiMmioHandle",
-            "pub struct AbiPacketRefStorage",
-            "pub struct AbiPacketRefVTable",
-            "pub struct AbiPacketRefRaw",
+            "pub struct AbiRxWritableRegion",
+            "pub struct AbiRxLease",
+            "pub struct AbiTxDeviceOutcome",
             "pub struct AbiNetRxFrameLayout",
             "pub struct AbiNetRxMeta",
             "pub struct AbiNetTxSegment",
@@ -71,9 +71,9 @@ fn calculate_abi_hash(content: &str) -> u64 {
     extract_and_hash_decl(content, "pub struct DriverCapabilities", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiDmaSlice", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiMmioHandle", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiPacketRefStorage", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiPacketRefVTable", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiPacketRefRaw", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiRxWritableRegion", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiRxLease", &mut hasher);
+    extract_and_hash_decl(content, "pub struct AbiTxDeviceOutcome", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiNetRxFrameLayout", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiNetRxMeta", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiNetTxSegment", &mut hasher);

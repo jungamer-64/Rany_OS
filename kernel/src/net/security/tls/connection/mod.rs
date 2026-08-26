@@ -9,7 +9,7 @@ pub(crate) use super::{
 };
 pub(crate) use crate::net::payload::{
     GeneratedPacketWriter, MutablePayloadBounds, OwnedPayloadBounds, PacketPayloadView,
-    PayloadRange, PayloadSpanMut, PayloadSpanRef, append_payload,
+    PayloadRange, PayloadSpanMut, PayloadSpanRef,
 };
 pub(crate) use crate::net::security::ecdh;
 pub(crate) use kernel_api::resource::net::PacketPayload;
@@ -54,7 +54,7 @@ pub struct TlsEstablishedSession {
 }
 
 pub struct TlsInboundPlaintext {
-    pub application_data: PacketPayload,
+    pub application_data: Option<PacketPayload>,
     pub key_update: KeyUpdateAction,
 }
 

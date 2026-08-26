@@ -539,7 +539,9 @@ impl RuntimeCommandHandler {
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
-                let _ = endpoint.deliver_raw_payload(ingress_if_id, PacketPayload::single(packet));
+                if let Ok(payload) = PacketPayload::try_single(packet) {
+                    let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
+                }
                 return EventHandleResult::Success;
             }
         }

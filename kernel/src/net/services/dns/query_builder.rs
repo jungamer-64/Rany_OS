@@ -176,9 +176,11 @@ impl DnsClient {
         prefix
             .write_u16_be(message.total_len() as u16)
             .ok_or("Buffer too small for TCP length prefix")?;
-        let mut payload = prefix.finish().ok_or("Incomplete DNS TCP prefix")?;
-        crate::net::payload::append_payload(&mut payload, message);
-        Ok(payload)
+        prefix
+            .finish()
+            .ok_or("Incomplete DNS TCP prefix")?
+            .try_append(message)
+            .map_err(|_| "DNS TCP payload allocation failed")
     }
 
     /// Check if a DNS query should be retried based on attempt count and elapsed time

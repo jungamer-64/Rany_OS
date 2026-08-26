@@ -4,9 +4,8 @@
 
 use super::super::{NegotiatedCipherSuite, ServerPublicKey, TlsBytes, TlsError, TlsResult};
 use super::record::TlsRecordPacket;
-use crate::net::payload::append_payload;
 use crate::net::security::ecdh;
-use kernel_api::resource::net::{PacketPayload, PacketPayloadFront, PacketWindowError};
+use kernel_api::resource::net::{PacketPayload, PacketPayloadFront};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TlsClientRandom([u8; 32]);
@@ -192,39 +191,50 @@ impl TlsSeqNo {
 }
 
 pub(super) struct TlsRecordIngressQueue {
-    payload: PacketPayload,
+    payload: Option<PacketPayload>,
 }
 
 impl Default for TlsRecordIngressQueue {
     fn default() -> Self {
-        Self {
-            payload: PacketPayload::default(),
-        }
+        Self { payload: None }
     }
 }
 
 impl TlsRecordIngressQueue {
-    pub(super) fn push(&mut self, payload: PacketPayload) {
-        append_payload(&mut self.payload, payload);
+    pub(super) fn push(&mut self, payload: PacketPayload) -> TlsResult<()> {
+        let Some(queued) = self.payload.take() else {
+            self.payload = Some(payload);
+            return Ok(());
+        };
+        match queued.try_append(payload) {
+            Ok(combined) => {
+                self.payload = Some(combined);
+                Ok(())
+            }
+            Err(error) => {
+                let (queued, _incoming) = error.into_owner();
+                self.payload = Some(queued);
+                Err(TlsError::DecodeError)
+            }
+        }
     }
 
     pub(super) fn pop_ready_record(&mut self) -> TlsResult<Option<TlsRecordPacket>> {
-        let Some(len) = TlsRecordPacket::ready_len(&self.payload)? else {
+        let Some(queued) = self.payload.as_ref() else {
             return Ok(None);
         };
-        let queued = core::mem::take(&mut self.payload);
-        let record = match queued.take_front(len) {
+        let Some(len) = TlsRecordPacket::ready_len(queued)? else {
+            return Ok(None);
+        };
+        let queued = self.payload.take().ok_or(TlsError::DecodeError)?;
+        let record = match queued.try_take_front(len) {
             Ok(PacketPayloadFront::Whole(record)) => record,
             Ok(PacketPayloadFront::Prefix { front, remainder }) => {
-                self.payload = remainder;
+                self.payload = Some(remainder);
                 front
             }
-            Err(PacketWindowError::BackendSplitUnsupported) => {
-                self.payload = PacketPayload::default();
-                return Err(TlsError::DecodeError);
-            }
-            Err(PacketWindowError::Empty | PacketWindowError::OutOfBounds) => {
-                self.payload = PacketPayload::default();
+            Err(error) => {
+                self.payload = Some(error.into_owner());
                 return Err(TlsError::DecodeError);
             }
         };

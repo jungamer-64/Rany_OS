@@ -59,7 +59,10 @@ impl Ipv4Processor {
                 packet.protocol(),
             )
         };
-        let original = PacketPayload::single(packet_ref);
+        let Ok(original) = PacketPayload::try_single(packet_ref) else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
         if protocol == IpProtocol::Tcp || protocol == IpProtocol::Udp {
             let fragment_offset = header.fragment_offset();
             let payload_len = total_len.saturating_sub(header_len);

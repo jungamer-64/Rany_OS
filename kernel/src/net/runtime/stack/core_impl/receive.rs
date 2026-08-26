@@ -158,10 +158,9 @@ impl NetworkStack {
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
         if let Some(endpoint) = raw_endpoint.as_ref() {
             if let Some(packet) = ip_packet.take() {
-                let _ = endpoint.deliver_raw_payload(
-                    ingress_if_id,
-                    kernel_api::resource::net::PacketPayload::single(packet),
-                );
+                if let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet) {
+                    let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
+                }
                 return;
             }
         }
@@ -253,7 +252,11 @@ impl NetworkStack {
                         return;
                     }
                     if let Some(fragment_header) = writer.finish() {
-                        crate::net::payload::append_payload(&mut quoted, fragment_header);
+                        let Ok(combined) = quoted.try_append(fragment_header) else {
+                            self.record_rx_error_on(ingress_if_id);
+                            return;
+                        };
+                        quoted = combined;
                     } else {
                         self.record_rx_error_on(ingress_if_id);
                         return;

@@ -21,7 +21,7 @@ use kernel_api::service::netdev::{
     MacAddress as PortMacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
     NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
     NetPortRuntimeHandle, NetPortStats, NetRxFrameLayout, NetRxMeta, NetTxMeta, PrimaryPortPolicy,
-    TxSubmission,
+    TxDeviceOutcome, TxSubmission,
 };
 
 macro_rules! run_case {
@@ -268,10 +268,13 @@ pub fn runtime_udp_concrete_ingress_interface_is_preserved_smoke() -> bool {
     };
     packet.data_mut().copy_from_slice(&datagram);
     let processor = UdpProcessor::new();
+    let Ok(payload) = PacketPayload::try_single(packet) else {
+        return false;
+    };
     if processor.process_payload_on(
         runtime,
         if_id,
-        PacketPayload::single(packet),
+        payload,
         Ipv4Address::new([10, 23, 0, 1]),
         Ipv4Address::new([10, 23, 0, 2]),
         64,
@@ -326,7 +329,22 @@ impl QemuFakePortState {
             .ok_or("fake port runtime is not installed")?;
         let frame_len = PacketByteCount::new(packet.len()).ok_or("empty fake RX frame")?;
         let layout = NetRxFrameLayout::whole_payload(frame_len).ok_or("invalid fake RX layout")?;
-        runtime.submit_rx(packet, NetRxMeta::new(0, layout, 0))
+        let buffer = runtime
+            .lease_rx_buffer()
+            .ok_or("fake port could not lease an RX buffer")?;
+        let region = buffer.writable_region();
+        if packet.len() > region.writable_len() {
+            return Err("fake RX frame exceeds writable DMA region");
+        }
+        // SAFETY: the runtime lease grants this driver exclusive write authority
+        // over the advertised region until `complete` consumes the lease.
+        unsafe {
+            core::ptr::copy_nonoverlapping(packet.data().as_ptr(), region.cpu_ptr(), packet.len());
+        }
+        let received = buffer
+            .complete(NetRxMeta::new(0, layout, 0))
+            .map_err(|_| "fake RX completion layout is invalid")?;
+        runtime.submit_rx(received)
     }
 }
 
@@ -351,10 +369,19 @@ impl NetDevicePort for QemuFakePort {
 
     fn submit_tx_chain(
         &self,
-        _submission: TxSubmission<'_>,
+        submission: TxSubmission<'_>,
         _meta: NetTxMeta,
     ) -> Result<(), &'static str> {
         self.state.tx_packets.fetch_add(1, Ordering::Relaxed);
+        let runtime = self
+            .state
+            .runtime
+            .lock()
+            .map_err(|_| "fake port runtime lock poisoned")?
+            .ok_or("fake port runtime is not installed")?;
+        runtime
+            .complete_tx_lease(submission.lease_id(), TxDeviceOutcome::Transmitted)
+            .expect("accepted fake-port TX lease must complete exactly once");
         Ok(())
     }
 
@@ -370,7 +397,9 @@ impl NetDevicePort for QemuFakePort {
         }
     }
 
-    fn stop(&self) {}
+    fn stop(&self) -> Result<(), &'static str> {
+        Ok(())
+    }
 }
 
 fn register_qemu_fake_port(
@@ -383,6 +412,7 @@ fn register_qemu_fake_port(
         port_id: NetPortId::new(port_id),
         driver_name: "qemu-fake-net",
         queue_pairs: 4,
+        max_tx_segments: core::num::NonZeroU16::new(8).expect("non-zero fake TX segment limit"),
         mtu: crate::net::runtime::stack::MTU as u32,
         mac: PortMacAddress::new(mac),
         flags: NETDEV_FLAG_ADMIN_UP | NETDEV_FLAG_HEALTHY | NETDEV_FLAG_LINK_UP,
@@ -415,7 +445,9 @@ fn register_qemu_fake_port(
 
 fn allocate_frame(runtime: crate::net::runtime::NetRuntimeHandle, len: usize) -> Option<PacketRef> {
     let mut packet = crate::net::datapath::mempool::alloc_packet_in(runtime)?;
-    packet.set_len(PacketByteCount::new(len)?).then_some(packet)
+    PacketByteCount::new(len)?;
+    packet.try_resize(len).ok()?;
+    Some(packet)
 }
 
 struct Ipv4FrameSpec<'a> {
@@ -893,7 +925,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_a)
             .map_or(0, |stats| stats.rx_packets);
     (stopped_rx_after == stopped_rx_before).then_some(())?;
-    let stopped_tx = PacketPayload::single(build_ipv4_frame(
+    let stopped_tx = PacketPayload::try_single(build_ipv4_frame(
         runtime,
         Ipv4FrameSpec {
             dst_mac: mac_a,
@@ -906,13 +938,15 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             more_fragments: false,
             payload: &echo,
         },
-    )?);
-    (!crate::net::runtime::device::transmit_packet_in(
+    )?)
+    .ok()?;
+    crate::net::runtime::device::transmit_packet_in(
         runtime,
         if_a,
         stopped_tx,
         NetTxMeta::default(),
-    ))
+    )
+    .is_err()
     .then_some(())?;
     log::info!(target: "qemu::net", "stopped interface RX and TX rejection verified");
 
@@ -963,8 +997,12 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     (tx_b_after > tx_b_before).then_some(())?;
     log::info!(target: "qemu::net", "secondary reply TX verified");
 
-    crate::net::runtime::device::unregister_port_in(runtime, if_b).then_some(())?;
-    crate::net::runtime::device::unregister_port_in(runtime, if_a).then_some(())?;
+    crate::net::runtime::device::unregister_port_in(runtime, if_b)
+        .ok()?
+        .then_some(())?;
+    crate::net::runtime::device::unregister_port_in(runtime, if_a)
+        .ok()?
+        .then_some(())?;
     Some(())
 }
 

@@ -11,6 +11,15 @@ pub fn register_exports_driver_with_context(
     exports: *const DriverExportsV1,
     ctx: AbiDriverContext,
 ) -> Result<DriverHandle, DriverError> {
+    register_exports_driver_owned_with_context(exports, ctx, crate::domain::DomainId::KERNEL)
+}
+
+pub(crate) fn register_exports_driver_owned_with_context(
+    exports: *const DriverExportsV1,
+    ctx: AbiDriverContext,
+    owner: crate::domain::DomainId,
+) -> Result<DriverHandle, DriverError> {
+    let _owner_guard = super::enter_driver_execution_domain(owner)?;
     let prepared = prepare_driver_exports(exports, true)?;
     let res = register_abi_driver_with_fini_and_context(
         prepared.entry,
@@ -18,6 +27,7 @@ pub fn register_exports_driver_with_context(
         prepared.providers,
         prepared.state_hooks,
         ctx,
+        owner,
     );
     if res.is_err() {
         if let Some(fini) = prepared.fini {
@@ -33,9 +43,10 @@ pub(crate) fn register_abi_driver_with_fini_and_context(
     provider_descriptors: Vec<ProviderDescriptorV1>,
     state_hooks: AbiDriverStateHooks,
     ctx: AbiDriverContext,
+    owner: crate::domain::DomainId,
 ) -> Result<DriverHandle, DriverError> {
     let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors, state_hooks, ctx)?;
-    DRIVER_REGISTRY.register(abi_driver)
+    DRIVER_REGISTRY.register_owned(owner, abi_driver)
 }
 
 /// Register a driver implemented as an ABI vtable
@@ -59,6 +70,29 @@ pub fn register_abi_driver_with_context(
         providers,
         AbiDriverStateHooks::default(),
         ctx,
+        crate::domain::DomainId::KERNEL,
+    )
+}
+
+pub(crate) fn register_abi_driver_owned_with_context(
+    entry: AbiEntryFn,
+    ctx: AbiDriverContext,
+    owner: crate::domain::DomainId,
+) -> Result<DriverHandle, DriverError> {
+    let _owner_guard = super::enter_driver_execution_domain(owner)?;
+    let vtable_ptr = entry();
+    if vtable_ptr.is_null() {
+        return Err(DriverError::InvalidState);
+    }
+
+    let providers = super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
+    register_abi_driver_with_fini_and_context(
+        entry,
+        None,
+        providers,
+        AbiDriverStateHooks::default(),
+        ctx,
+        owner,
     )
 }
 
@@ -73,6 +107,10 @@ pub(crate) fn update_abi_driver_with_fini(
     entry: AbiEntryFn,
     exports_fini: Option<extern "C" fn() -> i32>,
 ) -> Result<(), DriverError> {
+    let owner = DRIVER_REGISTRY
+        .driver_owner(handle)
+        .ok_or(DriverError::NotFound)?;
+    let _owner_guard = super::enter_driver_execution_domain(owner)?;
     let vtable_ptr = entry();
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
@@ -101,6 +139,10 @@ pub(crate) fn update_prepared_abi_driver(
     prepared: PreparedDriverExports,
     state: Option<DriverStateBlob>,
 ) -> Result<(), DriverError> {
+    let owner = DRIVER_REGISTRY
+        .driver_owner(handle)
+        .ok_or(DriverError::NotFound)?;
+    let _owner_guard = super::enter_driver_execution_domain(owner)?;
     let mut abi_driver = build_abi_driver(
         prepared.entry,
         prepared.fini,

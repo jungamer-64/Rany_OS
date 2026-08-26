@@ -169,10 +169,16 @@ fn map_bar(base_phys: u64, bar_size: u64) -> Option<u64> {
     let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
     let phys_start = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
 
-    if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(virt_start) {
-        if pte.is_present() && pte.phys_addr() == phys_start {
-            return Some(base_virt);
-        }
+    let last_offset = map_size.checked_sub(1)?;
+    let last_virt =
+        crate::mm::virt::higher_half::VirtAddr::new(base_virt.checked_add(last_offset)?);
+    let last_phys = base_phys.checked_add(last_offset)?;
+    if crate::mm::virt::higher_half::global_translate(virt_start)
+        .is_some_and(|mapped| mapped.as_u64() == base_phys)
+        && crate::mm::virt::higher_half::global_translate(last_virt)
+            .is_some_and(|mapped| mapped.as_u64() == last_phys)
+    {
+        return Some(base_virt);
     }
 
     let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
@@ -228,15 +234,22 @@ unsafe fn program_table_entry(
     table_index: u16,
     allocation: &VectorAllocation,
 ) -> KapiResult<()> {
-    let entry = unsafe { &mut *table_base.add(table_index as usize) };
+    let entry = unsafe { table_base.add(table_index as usize) };
     let address = allocation
         .config
         .msi_address()
         .map_err(map_interrupt_error)?;
-    entry.msg_addr_lo = address as u32;
-    entry.msg_addr_hi = (address >> 32) as u32;
-    entry.msg_data = allocation.config.msi_data();
-    entry.vector_ctrl = 0;
+    unsafe {
+        // MSI-X table storage is device MMIO. Program the entry while masked,
+        // publish address/data in order, then unmask it with volatile accesses.
+        core::ptr::addr_of_mut!((*entry).vector_ctrl).write_volatile(1);
+        core::ptr::addr_of_mut!((*entry).msg_addr_lo).write_volatile(address as u32);
+        core::ptr::addr_of_mut!((*entry).msg_addr_hi).write_volatile((address >> 32) as u32);
+        core::ptr::addr_of_mut!((*entry).msg_data).write_volatile(allocation.config.msi_data());
+        core::sync::atomic::fence(core::sync::atomic::Ordering::SeqCst);
+        core::ptr::addr_of_mut!((*entry).vector_ctrl).write_volatile(0);
+        let _ = core::ptr::addr_of!((*entry).vector_ctrl).read_volatile();
+    }
     Ok(())
 }
 

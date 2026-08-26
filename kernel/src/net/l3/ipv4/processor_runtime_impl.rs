@@ -78,7 +78,10 @@ impl Ipv4Processor {
             }
         };
 
-        let original = PacketPayload::single(packet_ref);
+        let Ok(original) = PacketPayload::try_single(packet_ref) else {
+            self.stats.rx_errors += 1;
+            return Ipv4ProcessResult::Error;
+        };
         let Some(bounds) =
             OwnedPayloadBounds::checked(&original, ingress.payload_offset, ingress.payload_len)
         else {

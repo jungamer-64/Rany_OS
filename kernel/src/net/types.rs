@@ -12,6 +12,7 @@
 //! 両者間の変換は `From`/`Into` トレイトで提供される。
 
 use crate::net::runtime::manager::NetIfId;
+use kernel_api::resource::net::PacketPayload;
 
 /// Common Network Errors
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -35,6 +36,26 @@ pub enum NetworkError {
     NetworkUnreachable,
     /// Transmit operation failed
     TransmitFailed,
+}
+
+#[derive(Debug)]
+pub struct NetworkPayloadError {
+    cause: NetworkError,
+    payload: PacketPayload,
+}
+
+impl NetworkPayloadError {
+    pub const fn new(cause: NetworkError, payload: PacketPayload) -> Self {
+        Self { cause, payload }
+    }
+
+    pub const fn cause(&self) -> NetworkError {
+        self.cause
+    }
+
+    pub fn into_parts(self) -> (NetworkError, PacketPayload) {
+        (self.cause, self.payload)
+    }
 }
 
 /// Interface selection policy for socket and raw network operations.

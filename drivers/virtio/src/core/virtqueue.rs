@@ -71,15 +71,17 @@ impl VirtQueue {
 
         for i in 0..queue_size {
             unsafe {
-                *desc_table.add(i as usize) = VringDesc::default();
+                desc_table
+                    .add(i as usize)
+                    .write_volatile(VringDesc::default());
             }
         }
 
         unsafe {
-            (*avail_ring).flags = 0;
-            (*avail_ring).idx = 0;
-            (*used_ring).flags = 0;
-            (*used_ring).idx = 0;
+            core::ptr::addr_of_mut!((*avail_ring).flags).write_volatile(0);
+            core::ptr::addr_of_mut!((*avail_ring).idx).write_volatile(0);
+            core::ptr::addr_of_mut!((*used_ring).flags).write_volatile(0);
+            core::ptr::addr_of_mut!((*used_ring).idx).write_volatile(0);
         }
 
         let b0 = if queue_size >= 64 {
@@ -196,16 +198,17 @@ impl VirtQueue {
     }
 
     pub unsafe fn submit_avail(&self, head: u16) {
-        core::sync::atomic::fence(Ordering::Release);
         let avail = self.avail_ring.as_ptr();
-        let idx = unsafe { (*avail).idx };
+        let idx = unsafe { core::ptr::addr_of!((*avail).idx).read_volatile() };
         let ring_ptr = unsafe { (avail as *mut u16).add(2) };
         unsafe {
-            *ring_ptr.add((idx % self.queue_size) as usize) = head;
+            ring_ptr
+                .add((idx % self.queue_size) as usize)
+                .write_volatile(head);
         }
         core::sync::atomic::fence(Ordering::Release);
         unsafe {
-            (*avail).idx = idx.wrapping_add(1);
+            core::ptr::addr_of_mut!((*avail).idx).write_volatile(idx.wrapping_add(1));
         }
     }
 
@@ -237,30 +240,36 @@ impl VirtQueue {
             crate::defs::avail_flags::VRING_AVAIL_F_NO_INTERRUPT
         };
         unsafe {
-            (*self.avail_ring.as_ptr()).flags = flags;
+            core::ptr::addr_of_mut!((*self.avail_ring.as_ptr()).flags).write_volatile(flags);
         }
         core::sync::atomic::fence(Ordering::SeqCst);
     }
 
     pub fn poll_complete(&self) -> Option<(u16, u32)> {
-        core::sync::atomic::fence(Ordering::Acquire);
-        let used = unsafe { self.used_ring.as_ref() };
         let last_used = self.last_used_idx.load(Ordering::Acquire);
-        if last_used == used.idx {
+        let used_idx =
+            unsafe { core::ptr::addr_of!((*self.used_ring.as_ptr()).idx).read_volatile() };
+        if last_used == used_idx {
             return None;
         }
+        core::sync::atomic::fence(Ordering::Acquire);
         let ring_ptr =
             unsafe { (self.used_ring.as_ptr() as *const u8).add(4) as *const VringUsedElem };
-        let elem = unsafe { *ring_ptr.add((last_used % self.queue_size) as usize) };
+        let elem = unsafe {
+            ring_ptr
+                .add((last_used % self.queue_size) as usize)
+                .read_volatile()
+        };
         self.last_used_idx
             .store(last_used.wrapping_add(1), Ordering::Release);
         Some((elem.id as u16, elem.len))
     }
 
     pub fn has_pending(&self) -> bool {
-        let used = unsafe { self.used_ring.as_ref() };
         let last_used = self.last_used_idx.load(Ordering::Acquire);
-        last_used != used.idx
+        let used_idx =
+            unsafe { core::ptr::addr_of!((*self.used_ring.as_ptr()).idx).read_volatile() };
+        last_used != used_idx
     }
 
     pub fn get_desc_mut(&self, idx: u16) -> &mut VringDesc {

@@ -214,14 +214,14 @@ pub trait KernelServices: Send + Sync {
     fn net_tcp_connection_recv_payload(
         &self,
         connection: TcpConnection,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<PacketPayload>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = KapiResult<crate::resource::net::TcpReceiveOutcome>> + Send>>;
 
     /// Send a packet-backed payload through a TCP connection.
     fn net_tcp_connection_send_payload(
         &self,
         connection: TcpConnection,
         payload: PacketPayload,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::resource::net::PayloadSendError>> + Send>>;
     /// Create a raw (packet-oriented) endpoint.
     /// # Errors
     ///
@@ -245,7 +245,7 @@ pub trait KernelServices: Send + Sync {
         &self,
         endpoint: RawEndpoint,
         payload: PacketPayload,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = Result<(), crate::resource::net::PayloadSendError>> + Send>>;
     // ========================================================================
     // Filesystem
     // ========================================================================
@@ -936,7 +936,8 @@ mod standalone {
         fn net_tcp_connection_recv_payload(
             &self,
             connection: TcpConnection,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<PacketPayload>> + Send>> {
+        ) -> Pin<Box<dyn Future<Output = KapiResult<crate::resource::net::TcpReceiveOutcome>> + Send>>
+        {
             let _ = connection;
             unsupported_future()
         }
@@ -945,9 +946,15 @@ mod standalone {
             &self,
             connection: TcpConnection,
             payload: PacketPayload,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-            let _ = (connection, payload);
-            unsupported_future()
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::resource::net::PayloadSendError>> + Send>>
+        {
+            let _ = connection;
+            Box::pin(async move {
+                Err(crate::resource::net::PayloadSendError::new(
+                    KapiError::NotSupported,
+                    payload,
+                ))
+            })
         }
 
         fn net_raw_endpoint_open(&self, scope: InterfaceScope) -> KapiResult<RawEndpoint> {
@@ -972,9 +979,15 @@ mod standalone {
             &self,
             endpoint: RawEndpoint,
             payload: PacketPayload,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-            let _ = (endpoint, payload);
-            unsupported_future()
+        ) -> Pin<Box<dyn Future<Output = Result<(), crate::resource::net::PayloadSendError>> + Send>>
+        {
+            let _ = endpoint;
+            Box::pin(async move {
+                Err(crate::resource::net::PayloadSendError::new(
+                    KapiError::NotSupported,
+                    payload,
+                ))
+            })
         }
 
         fn fs_open_with_token(

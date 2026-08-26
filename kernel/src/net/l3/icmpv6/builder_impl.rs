@@ -65,15 +65,13 @@ impl Icmpv6Builder {
         message[3] = 0;
         message[4..6].copy_from_slice(&identifier.to_be_bytes());
         message[6..8].copy_from_slice(&sequence.to_be_bytes());
-        if !packet.set_len(kernel_api::resource::net::PacketByteCount::new(
-            ICMPV6_ECHO_HEADER_SIZE,
-        )?) {
+        if packet.try_resize(ICMPV6_ECHO_HEADER_SIZE).is_err() {
             return None;
         }
 
-        let mut message_payload = PacketPayload::single(packet);
+        let mut message_payload = PacketPayload::try_single(packet).ok()?;
         if payload_len > 0 {
-            crate::net::payload::append_payload(&mut message_payload, payload);
+            message_payload = message_payload.try_append(payload).ok()?;
         }
 
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
@@ -163,16 +161,16 @@ impl Icmpv6Builder {
         let arg_bytes = arg.to_be_bytes();
         message[4..8].copy_from_slice(&arg_bytes);
 
-        if !packet.set_len(kernel_api::resource::net::PacketByteCount::new(8)?) {
+        if packet.try_resize(8).is_err() {
             return None;
         }
 
-        let mut message_payload = PacketPayload::single(packet);
+        let mut message_payload = PacketPayload::try_single(packet).ok()?;
         if max_trigger > 0 {
             let bounds =
                 crate::net::payload::OwnedPayloadBounds::checked(&trigger_packet, 0, max_trigger)?;
             let trigger_payload = bounds.take_from(trigger_packet)?.into_payload().ok()?;
-            crate::net::payload::append_payload(&mut message_payload, trigger_payload);
+            message_payload = message_payload.try_append(trigger_payload).ok()?;
         }
 
         // Compute checksum

@@ -9,7 +9,6 @@ use super::{
     AlertDescription, ContentType, GeneratedPacketWriter, HandshakeType, KeyUpdateRequest,
     MutablePayloadBounds, OwnedPayloadBounds, PacketPayload, PacketPayloadView, PayloadRange,
     PayloadSpanMut, PayloadSpanRef, TlsBytes, TlsConnectionCore, TlsError, TlsResult,
-    append_payload,
 };
 use crate::net::security::tls::crypto::aes_gcm::AesGcmKey;
 use crate::net::security::tls::crypto::hkdf::{
@@ -25,6 +24,24 @@ use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketByteCount};
 
 const TLS13_MAX_PLAINTEXT_LEN: usize = 16 * 1024;
 const TLS13_MAX_CIPHERTEXT_LEN: usize = TLS13_MAX_PLAINTEXT_LEN + 256;
+
+fn append_plaintext(target: &mut Option<PacketPayload>, payload: PacketPayload) -> TlsResult<()> {
+    let Some(current) = target.take() else {
+        *target = Some(payload);
+        return Ok(());
+    };
+    match current.try_append(payload) {
+        Ok(combined) => {
+            *target = Some(combined);
+            Ok(())
+        }
+        Err(error) => {
+            let (current, _incoming) = error.into_owner();
+            *target = Some(current);
+            Err(TlsError::DecodeError)
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TlsPlaintextLen(usize);
@@ -462,7 +479,7 @@ impl TlsConnectionCore {
     pub(super) fn consume_tls_record_payload(
         &mut self,
         record: TlsRecordPacket,
-        plaintext: &mut PacketPayload,
+        plaintext: &mut Option<PacketPayload>,
     ) -> TlsResult<()> {
         let header = record.header();
 
@@ -475,7 +492,7 @@ impl TlsConnectionCore {
                 match inner.content_type() {
                     ContentType::ApplicationData => {
                         let owned = encrypted.into_plaintext_payload(inner)?;
-                        append_payload(plaintext, owned);
+                        append_plaintext(plaintext, owned)?;
                     }
                     ContentType::Handshake => {
                         let inner_span = encrypted.plaintext_span(inner)?;
@@ -495,9 +512,12 @@ impl TlsConnectionCore {
         Ok(())
     }
 
-    pub fn process_incoming_payload(&mut self, payload: PacketPayload) -> TlsResult<PacketPayload> {
-        self.record.ingress.push(payload);
-        let mut plaintext = PacketPayload::default();
+    pub fn process_incoming_payload(
+        &mut self,
+        payload: PacketPayload,
+    ) -> TlsResult<Option<PacketPayload>> {
+        self.record.ingress.push(payload)?;
+        let mut plaintext = None;
 
         loop {
             let Some(record) = self.record.ingress.pop_ready_record()? else {
@@ -528,7 +548,7 @@ impl TlsConnectionCore {
     pub(super) fn dispatch_tls13_inner_content(
         &mut self,
         decrypted: PacketPayload,
-        plaintext: &mut PacketPayload,
+        plaintext: &mut Option<PacketPayload>,
     ) -> TlsResult<()> {
         if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
             match inner.content_type() {
@@ -539,7 +559,7 @@ impl TlsConnectionCore {
                         .take_from(decrypted)
                         .and_then(|window| window.into_payload().ok())
                         .ok_or(TlsError::DecodeError)?;
-                    append_payload(plaintext, inner_payload);
+                    append_plaintext(plaintext, inner_payload)?;
                 }
                 ContentType::Handshake => {
                     let bounds = OwnedPayloadBounds::checked(&decrypted, 0, inner.content_len())
@@ -638,7 +658,7 @@ impl TlsConnectionCore {
             encrypted_len_bytes[0],
             encrypted_len_bytes[1],
         ];
-        let mut record = {
+        let record = {
             let mut writer =
                 GeneratedPacketWriter::new(record_header.len(), DEFAULT_PACKET_HEADROOM)
                     .ok_or(TlsError::DecodeError)?;
@@ -647,32 +667,31 @@ impl TlsConnectionCore {
                 .ok_or(TlsError::DecodeError)?;
             writer.finish().ok_or(TlsError::DecodeError)?
         };
-        append_payload(&mut record, ciphertext);
+        let record = record
+            .try_append(ciphertext)
+            .map_err(|_| TlsError::DecodeError)?;
         let mut tag_writer = GeneratedPacketWriter::new(auth_tag.len(), DEFAULT_PACKET_HEADROOM)
             .ok_or(TlsError::DecodeError)?;
         tag_writer
             .write_generated_bytes(auth_tag.as_bytes())
             .ok_or(TlsError::DecodeError)?;
-        append_payload(
-            &mut record,
-            tag_writer.finish().ok_or(TlsError::DecodeError)?,
-        );
-        Ok(record)
+        record
+            .try_append(tag_writer.finish().ok_or(TlsError::DecodeError)?)
+            .map_err(|_| TlsError::DecodeError)
     }
 
     pub(crate) fn tls13_encrypt_application_payload(
         &mut self,
-        mut payload: PacketPayload,
+        payload: PacketPayload,
     ) -> TlsResult<PacketPayload> {
         let mut content_type =
             GeneratedPacketWriter::new(1, DEFAULT_PACKET_HEADROOM).ok_or(TlsError::DecodeError)?;
         content_type
             .write_generated_bytes(&[ContentType::ApplicationData as u8])
             .ok_or(TlsError::DecodeError)?;
-        append_payload(
-            &mut payload,
-            content_type.finish().ok_or(TlsError::DecodeError)?,
-        );
+        let payload = payload
+            .try_append(content_type.finish().ok_or(TlsError::DecodeError)?)
+            .map_err(|_| TlsError::DecodeError)?;
         self.tls13_encrypt_owned_inner(payload, TlsRecordEpoch::Application)
     }
 
@@ -873,15 +892,17 @@ impl TlsConnectionCore {
         let Some(beta) = payload(b"beta") else {
             return false;
         };
-        let Ok(mut first) = conn.tls13_encrypt_application_payload(alpha) else {
+        let Ok(first) = conn.tls13_encrypt_application_payload(alpha) else {
             return false;
         };
         let Ok(second) = conn.tls13_encrypt_application_payload(beta) else {
             return false;
         };
-        append_payload(&mut first, second);
+        let Ok(first) = first.try_append(second) else {
+            return false;
+        };
 
-        let Ok(plaintext) = conn.process_incoming_payload(first) else {
+        let Ok(Some(plaintext)) = conn.process_incoming_payload(first) else {
             return false;
         };
         payload_matches(&plaintext, b"alphabeta") && matches!(conn.record.read_seq.current(), Ok(2))
@@ -892,7 +913,6 @@ impl TlsConnectionCore {
 mod tests {
     use super::*;
     use alloc::vec::Vec;
-    use kernel_api::resource::net::PacketChain;
 
     fn test_payload(data: &[u8]) -> PacketPayload {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
@@ -952,7 +972,7 @@ mod tests {
         if start < bytes.len() {
             segments.extend(test_payload(&bytes[start..]).into_segments());
         }
-        PacketPayload::chain(PacketChain::from_segments(segments))
+        PacketPayload::try_from_segments(segments).expect("fragmented test payload is non-empty")
     }
 
     fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
@@ -984,17 +1004,20 @@ mod tests {
             TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
         establish_loopback_record_keys(&mut conn);
 
-        let mut first = conn
+        let first = conn
             .tls13_encrypt_application_payload(test_payload(b"alpha"))
             .expect("first record encrypts");
         let second = conn
             .tls13_encrypt_application_payload(test_payload(b"beta"))
             .expect("second record encrypts");
-        append_payload(&mut first, second);
+        let first = first
+            .try_append(second)
+            .expect("two encrypted records form a payload");
 
         let plaintext = conn
             .process_incoming_payload(first)
-            .expect("coalesced encrypted records decrypt");
+            .expect("coalesced encrypted records decrypt")
+            .expect("application records produce plaintext");
 
         assert!(payload_matches(&plaintext, b"alphabeta"));
         assert!(matches!(conn.record.read_seq.current(), Ok(2)));

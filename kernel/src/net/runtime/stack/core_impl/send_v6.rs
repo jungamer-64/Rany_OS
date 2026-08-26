@@ -19,9 +19,8 @@ fn set_packet_visible_len(
 ) -> Result<(), crate::net::types::NetworkError> {
     let len = PacketByteCount::new(len).ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
     packet
-        .set_len(len)
-        .then_some(())
-        .ok_or(crate::net::types::NetworkError::BufferTooSmall)
+        .try_resize(len.get())
+        .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)
 }
 
 fn payload_checksum(view: &crate::net::payload::PacketPayloadView<'_>, initial: u32) -> u16 {
@@ -129,9 +128,12 @@ impl NetworkStack {
             drop(frame);
             set_packet_visible_len(&mut packet, frame_len)?;
 
-            let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
-            crate::net::payload::append_payload(&mut frame_payload, payload);
-            if self.transmit_packet_on(if_id, frame_payload) {
+            let frame_payload = kernel_api::resource::net::PacketPayload::try_single(packet)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            let frame_payload = frame_payload
+                .try_append(payload)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            if self.transmit_packet_on(if_id, frame_payload).is_ok() {
                 return Ok(());
             }
             return Err(crate::net::types::NetworkError::TransmitFailed);
@@ -383,10 +385,9 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                    let payload = if payload_len == 0 {
-                        kernel_api::resource::net::PacketPayload::single(packet)
-                    } else {
-                        icmpv6_payload.prepend(packet)
+                    let Ok(payload) = icmpv6_payload.try_prepend(packet) else {
+                        self.stats().record_dropped();
+                        return;
                     };
                     let _ = self.transmit_packet_on(if_id, payload);
                 }
@@ -447,12 +448,13 @@ impl NetworkStack {
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                    let payload = if payload_len == 0 {
-                        kernel_api::resource::net::PacketPayload::single(packet)
-                    } else {
-                        icmpv6_payload.prepend(packet)
+                    let Ok(payload) = icmpv6_payload.try_prepend(packet) else {
+                        self.stats().record_dropped();
+                        return;
                     };
-                    self.transmit_packet_on(if_id, payload);
+                    // This generated control response is best-effort and has
+                    // no transport owner that could retry a rejected frame.
+                    drop(self.transmit_packet_on(if_id, payload));
                 }
             }
         }
@@ -560,9 +562,12 @@ impl NetworkStack {
         header.set_length(total_len_u16);
         header.set_checksum(0);
 
-        let mut udp_payload = kernel_api::resource::net::PacketPayload::single(header_packet);
+        let udp_payload = kernel_api::resource::net::PacketPayload::try_single(header_packet)
+            .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
         let payload = pending_data.take().expect("IPv6 UDP payload already moved");
-        crate::net::payload::append_payload(&mut udp_payload, payload);
+        let mut udp_payload = udp_payload
+            .try_append(payload)
+            .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
         let pseudo = crate::net::l3::ipv6::ipv6_pseudo_header_checksum(
             &resolved_src,
             &dst,
@@ -832,10 +837,11 @@ impl NetworkStack {
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
                         if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                            let _ = self.transmit_packet_on(
-                                if_id,
-                                kernel_api::resource::net::PacketPayload::single(packet),
-                            );
+                            if let Ok(payload) =
+                                kernel_api::resource::net::PacketPayload::try_single(packet)
+                            {
+                                let _ = self.transmit_packet_on(if_id, payload);
+                            }
                         }
                     }
                 }
@@ -920,10 +926,11 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                        let _ = self.transmit_packet_on(
-                            if_id,
-                            kernel_api::resource::net::PacketPayload::single(packet),
-                        );
+                        if let Ok(payload) =
+                            kernel_api::resource::net::PacketPayload::try_single(packet)
+                        {
+                            let _ = self.transmit_packet_on(if_id, payload);
+                        }
                     }
                 }
             }

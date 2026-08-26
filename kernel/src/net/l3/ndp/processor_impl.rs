@@ -748,7 +748,7 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        Some(PacketPayload::single(packet))
+        PacketPayload::try_single(packet).ok()
     }
 
     /// Build a Neighbor Advertisement message
@@ -793,7 +793,7 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        Some(PacketPayload::single(packet))
+        PacketPayload::try_single(packet).ok()
     }
 
     /// Build a Router Solicitation message
@@ -823,7 +823,7 @@ impl NdpProcessor {
         msg[2] = cksum_bytes[0];
         msg[3] = cksum_bytes[1];
 
-        Some(PacketPayload::single(packet))
+        PacketPayload::try_single(packet).ok()
     }
 
     /// Resolve an IPv6 address to MAC address

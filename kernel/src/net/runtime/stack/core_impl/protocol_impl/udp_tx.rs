@@ -158,13 +158,17 @@ impl NetworkStack {
         header.set_length(total_len_u16);
         header.set_checksum(0);
 
-        let mut udp_payload = kernel_api::resource::net::PacketPayload::single(header_packet);
-        crate::net::payload::append_payload(
-            &mut udp_payload,
+        let Ok(udp_payload) = kernel_api::resource::net::PacketPayload::try_single(header_packet)
+        else {
+            return false;
+        };
+        let Ok(mut udp_payload) = udp_payload.try_append(
             pending_payload
                 .take()
                 .expect("resolved UDP payload must exist"),
-        );
+        ) else {
+            return false;
+        };
         let pseudo = crate::net::l3::ipv4::pseudo_header_checksum(
             src_ip,
             dst_ip,

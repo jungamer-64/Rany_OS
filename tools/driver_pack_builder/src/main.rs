@@ -2,6 +2,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use kernel_api::abi::driver::{DRIVER_ABI_VERSION, KERNEL_API_ABI_VERSION};
+
 const DRIVER_PACK_MAGIC: [u8; 8] = *b"EXDRV\0\0\0";
 const DRIVER_PACK_VERSION: u32 = 1;
 const DRIVER_MANIFEST_VERSION: u32 = 1;
@@ -47,8 +49,6 @@ struct Config {
     name: String,
     input: PathBuf,
     output: PathBuf,
-    driver_abi_version: u32,
-    kernel_api_min_version: u32,
     pci_vendor_id: u16,
     pci_device_id: u16,
     pci_class: u8,
@@ -59,7 +59,6 @@ struct Config {
 fn usage() -> ! {
     eprintln!(
         "usage: driver_pack_builder --name NAME --input PATH --output PATH \\
-    [--driver-abi-version N] [--kernel-api-min-version N] \\
     [--pci-vendor-id N --pci-device-id N] \\
     [--pci-class N --pci-subclass N --pci-prog-if N]"
     );
@@ -115,31 +114,13 @@ fn validate_pci_selector(
 }
 
 fn parse_args() -> Config {
-    let mut cfg = Config {
-        driver_abi_version: 2,
-        kernel_api_min_version: 4,
-        ..Config::default()
-    };
+    let mut cfg = Config::default();
     let mut args = env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--name" => cfg.name = args.next().unwrap_or_else(|| usage()),
             "--input" => cfg.input = PathBuf::from(args.next().unwrap_or_else(|| usage())),
             "--output" => cfg.output = PathBuf::from(args.next().unwrap_or_else(|| usage())),
-            "--driver-abi-version" => {
-                cfg.driver_abi_version = parse_numeric(&args.next().unwrap_or_else(|| usage()))
-                    .unwrap_or_else(|err| {
-                        eprintln!("invalid --driver-abi-version: {err}");
-                        usage()
-                    });
-            }
-            "--kernel-api-min-version" => {
-                cfg.kernel_api_min_version = parse_numeric(&args.next().unwrap_or_else(|| usage()))
-                    .unwrap_or_else(|err| {
-                        eprintln!("invalid --kernel-api-min-version: {err}");
-                        usage()
-                    });
-            }
             "--pci-vendor-id" => {
                 cfg.pci_vendor_id = parse_numeric(&args.next().unwrap_or_else(|| usage()))
                     .unwrap_or_else(|err| {
@@ -242,8 +223,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         reserved0: 0,
         name: name_bytes,
         driver_version: 0,
-        driver_abi_version: cfg.driver_abi_version,
-        kernel_api_min_version: cfg.kernel_api_min_version,
+        driver_abi_version: DRIVER_ABI_VERSION as u32,
+        kernel_api_min_version: KERNEL_API_ABI_VERSION,
         required_caps: 0,
         pci_vendor_id: cfg.pci_vendor_id,
         pci_device_id: cfg.pci_device_id,

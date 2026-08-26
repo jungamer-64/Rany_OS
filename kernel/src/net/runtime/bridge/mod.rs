@@ -101,18 +101,20 @@ pub fn transmit_from_stack_in(
     if_id: NetIfId,
     payload: kernel_api::resource::net::PacketPayload,
     meta: kernel_api::service::netdev::NetTxMeta,
-) -> bool {
+    completion_id: Option<u64>,
+) -> Result<(), kernel_api::resource::net::PacketPayload> {
     let packet_len = payload.total_len();
-    let sent = device::transmit_packet_in(runtime, if_id, payload, meta);
+    let admitted =
+        device::transmit_packet_observed_in(runtime, if_id, payload, meta, completion_id);
     let observability = observability_in(runtime);
 
-    if sent {
+    if admitted.is_ok() {
         record_stack_glue_if_tx_in(runtime, if_id);
         observability.counters().record_tx(packet_len);
         observability
             .trace()
             .push(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
-        true
+        admitted
     } else {
         observability.counters().record_error();
         observability.trace().push(
@@ -120,7 +122,7 @@ pub fn transmit_from_stack_in(
             NetEventKind::Error,
             "device tx enqueue failed",
         );
-        false
+        admitted
     }
 }
 
@@ -153,11 +155,13 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     let Some(frame_len) = PacketByteCount::new(frame_len) else {
         return;
     };
-    if !packet.set_len(frame_len) {
+    if packet.try_resize(frame_len.get()).is_err() {
         return;
     }
     if header_size > 0
-        && !packet.advance(PacketByteCount::new(header_size).expect("positive header size"))
+        && packet
+            .try_advance(PacketByteCount::new(header_size).expect("positive header size"))
+            .is_err()
     {
         return;
     }

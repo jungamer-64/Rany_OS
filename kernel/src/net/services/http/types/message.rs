@@ -6,7 +6,7 @@ use super::{
     ConnectionDirective, HttpHeader, HttpHeaderName, HttpHeaderValue, HttpMethod, HttpRequestUri,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef, append_payload};
+use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef};
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
@@ -34,9 +34,13 @@ fn write_headers(writer: &mut GeneratedPacketWriter, headers: &[HttpHeader]) -> 
     Some(())
 }
 
-fn append_optional_body(target: &mut PacketPayload, body: Option<PacketPayload>) {
-    if let Some(body) = body {
-        append_payload(target, body);
+fn append_optional_body(
+    target: PacketPayload,
+    body: Option<PacketPayload>,
+) -> Option<PacketPayload> {
+    match body {
+        Some(body) => target.try_append(body).ok(),
+        None => Some(target),
     }
 }
 
@@ -156,9 +160,8 @@ impl HttpRequest {
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut payload = request_head_payload(&self)?;
-        append_optional_body(&mut payload, self.body);
-        Some(payload)
+        let payload = request_head_payload(&self)?;
+        append_optional_body(payload, self.body)
     }
 }
 
@@ -266,7 +269,7 @@ pub struct HttpResponse {
     pub status_code: HttpStatusCode,
     pub reason_phrase: String,
     pub headers: Vec<HttpHeader>,
-    pub body: PacketPayload,
+    pub body: Option<PacketPayload>,
 }
 
 impl HttpResponse {
@@ -276,7 +279,7 @@ impl HttpResponse {
             status_code,
             reason_phrase: reason_phrase.to_string(),
             headers: Vec::new(),
-            body: PacketPayload::default(),
+            body: None,
         }
     }
 
@@ -294,14 +297,13 @@ impl HttpResponse {
         let value = HttpHeaderValue::from_string(payload.total_len().to_string())?;
         self.headers
             .push(HttpHeader::new(HttpHeaderName::ContentLength, value));
-        self.body = payload;
+        self.body = Some(payload);
         Some(self)
     }
 
     pub fn into_payload(self) -> Option<PacketPayload> {
-        let mut payload = response_head_payload(&self)?;
-        append_payload(&mut payload, self.body);
-        Some(payload)
+        let payload = response_head_payload(&self)?;
+        append_optional_body(payload, self.body)
     }
 }
 

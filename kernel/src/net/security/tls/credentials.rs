@@ -157,7 +157,7 @@ fn store_tls_key_material(parts: &[&[u8]]) -> Option<PacketPayload> {
         .iter()
         .try_fold(0usize, |acc, part| acc.checked_add(part.len()))?;
     if total_len == 0 {
-        return Some(PacketPayload::default());
+        return None;
     }
     let mut packet = crate::net::payload::alloc_packet_with_headroom(total_len, 0)?;
     let mut offset = 0usize;
@@ -166,7 +166,7 @@ fn store_tls_key_material(parts: &[&[u8]]) -> Option<PacketPayload> {
         packet.data_mut()[offset..end].copy_from_slice(part);
         offset = end;
     }
-    Some(PacketPayload::single(packet))
+    PacketPayload::try_single(packet).ok()
 }
 
 fn store_tls_bytes(data: &[u8]) -> Option<PacketPayload> {

@@ -331,6 +331,9 @@ dependencies = [
 [[package]]
 name = "driver_pack_builder"
 version = "0.1.0"
+dependencies = [
+ "kernel_api",
+]
 
 [[package]]
 name = "ed25519-compact"

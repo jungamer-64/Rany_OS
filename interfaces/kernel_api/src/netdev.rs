@@ -116,6 +116,9 @@ pub struct NetRxMeta {
     flags: u32,
 }
 
+pub const NET_RX_FLAG_IP_CSUM_VERIFIED: u32 = 1 << 0;
+pub const NET_RX_FLAG_L4_CSUM_VERIFIED: u32 = 1 << 1;
+
 impl NetRxMeta {
     pub const fn new(queue_index: u16, layout: NetRxFrameLayout, flags: u32) -> Self {
         Self {
@@ -208,14 +211,21 @@ unsafe impl Sync for NetTxSegment {}
 #[repr(C)]
 struct NetTxSegmentDescriptor {
     cpu_ptr: NonNull<u8>,
+    physical_addr: NonZeroU64,
     device_addr: NonZeroU64,
     len: PacketByteCount,
 }
 
 impl NetTxSegment {
-    pub fn from_dma(cpu_ptr: *const u8, device_addr: u64, len: PacketByteCount) -> Option<Self> {
+    pub fn from_dma(
+        cpu_ptr: *const u8,
+        physical_addr: u64,
+        device_addr: u64,
+        len: PacketByteCount,
+    ) -> Option<Self> {
         Some(Self(NetTxSegmentDescriptor {
             cpu_ptr: NonNull::new(cpu_ptr.cast_mut())?,
+            physical_addr: NonZeroU64::new(physical_addr)?,
             device_addr: NonZeroU64::new(device_addr)?,
             len,
         }))
@@ -227,6 +237,10 @@ impl NetTxSegment {
 
     pub const fn device_addr(&self) -> NonZeroU64 {
         self.0.device_addr
+    }
+
+    pub const fn physical_addr(&self) -> NonZeroU64 {
+        self.0.physical_addr
     }
 
     pub const fn len(&self) -> PacketByteCount {
@@ -430,6 +444,10 @@ impl RxBuffer {
 
     pub const fn writable_region(&self) -> RxWritableRegion {
         self.region
+    }
+
+    pub fn physical_addr(&self) -> u64 {
+        self.packet.phys_addr().as_u64()
     }
 
     pub fn complete(mut self, meta: NetRxMeta) -> Result<ReceivedPacket, RxCompletionError> {
@@ -651,7 +669,14 @@ pub trait NetDevicePort: Send + Sync {
 
     fn stats(&self) -> NetPortStats;
 
-    fn stop(&self);
+    /// Stops new DMA work and returns only after every device access to
+    /// previously accepted buffers has been quiesced or revoked.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when DMA quiescence cannot be proven. The runtime must
+    /// quarantine outstanding leases after such a failure.
+    fn stop(&self) -> Result<(), &'static str>;
 }
 
 pub struct NetPortRegistration {
@@ -711,7 +736,141 @@ pub fn instance() -> &'static dyn NetDeviceServices {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::resource::net::{PacketRefStorage, PacketRefVTable, PacketWindowError};
     use alloc::vec;
+
+    const RX_TEST_BACKING_LEN: usize = 32;
+    const RX_TEST_HEADROOM: usize = 8;
+
+    #[derive(Clone, Copy)]
+    struct RxTestPacketState {
+        base: *mut u8,
+        offset: usize,
+        len: usize,
+        backing_len: usize,
+    }
+
+    unsafe fn rx_test_state(storage: &PacketRefStorage) -> &RxTestPacketState {
+        unsafe { storage.as_state_ref::<RxTestPacketState>() }
+    }
+
+    unsafe fn rx_test_state_mut(storage: &mut PacketRefStorage) -> &mut RxTestPacketState {
+        unsafe { storage.as_state_mut::<RxTestPacketState>() }
+    }
+
+    unsafe fn rx_test_data_ptr(storage: &PacketRefStorage) -> *const u8 {
+        let state = unsafe { rx_test_state(storage) };
+        unsafe { state.base.add(state.offset) }
+    }
+
+    unsafe fn rx_test_data_mut_ptr(storage: &mut PacketRefStorage) -> *mut u8 {
+        let state = unsafe { rx_test_state_mut(storage) };
+        unsafe { state.base.add(state.offset) }
+    }
+
+    unsafe fn rx_test_len(storage: &PacketRefStorage) -> usize {
+        unsafe { rx_test_state(storage) }.len
+    }
+
+    unsafe fn rx_test_resize(storage: &mut PacketRefStorage, len: usize) -> bool {
+        let state = unsafe { rx_test_state_mut(storage) };
+        if len > state.backing_len.saturating_sub(state.offset) {
+            return false;
+        }
+        state.len = len;
+        true
+    }
+
+    unsafe fn rx_test_data_capacity(storage: &PacketRefStorage) -> usize {
+        let state = unsafe { rx_test_state(storage) };
+        state.backing_len.saturating_sub(state.offset)
+    }
+
+    unsafe fn rx_test_phys_addr(storage: &PacketRefStorage) -> u64 {
+        0x7000 + unsafe { rx_test_state(storage) }.offset as u64
+    }
+
+    unsafe fn rx_test_device_address(storage: &PacketRefStorage) -> u64 {
+        0x8000 + unsafe { rx_test_state(storage) }.offset as u64
+    }
+
+    unsafe fn rx_test_headroom(storage: &PacketRefStorage) -> usize {
+        unsafe { rx_test_state(storage) }.offset
+    }
+
+    unsafe fn rx_test_advance(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
+        let state = unsafe { rx_test_state_mut(storage) };
+        if size.get() > state.len {
+            return false;
+        }
+        state.offset += size.get();
+        state.len -= size.get();
+        true
+    }
+
+    unsafe fn rx_test_retreat(storage: &mut PacketRefStorage, size: PacketByteCount) -> bool {
+        let state = unsafe { rx_test_state_mut(storage) };
+        if size.get() > state.offset {
+            return false;
+        }
+        let Some(len) = state.len.checked_add(size.get()) else {
+            return false;
+        };
+        let offset = state.offset - size.get();
+        if len > state.backing_len.saturating_sub(offset) {
+            return false;
+        }
+        state.offset = offset;
+        state.len = len;
+        true
+    }
+
+    unsafe fn rx_test_split_front(
+        _storage: &PacketRefStorage,
+        _len: PacketByteCount,
+    ) -> Option<(PacketRefStorage, PacketRefStorage)> {
+        None
+    }
+
+    unsafe fn rx_test_drop(storage: &mut PacketRefStorage) {
+        let state = unsafe { rx_test_state_mut(storage) };
+        let raw = state.base.cast::<[u8; RX_TEST_BACKING_LEN]>();
+        unsafe { drop(Box::from_raw(raw)) };
+    }
+
+    static RX_TEST_VTABLE: PacketRefVTable = PacketRefVTable {
+        data_ptr: rx_test_data_ptr,
+        data_mut_ptr: rx_test_data_mut_ptr,
+        len: rx_test_len,
+        resize: rx_test_resize,
+        data_capacity: rx_test_data_capacity,
+        phys_addr: rx_test_phys_addr,
+        device_address: rx_test_device_address,
+        headroom: rx_test_headroom,
+        advance: rx_test_advance,
+        retreat: rx_test_retreat,
+        split_front: rx_test_split_front,
+        drop_storage: rx_test_drop,
+    };
+
+    fn make_rx_test_packet() -> PacketRef {
+        let base = Box::into_raw(Box::new([0xCC; RX_TEST_BACKING_LEN])).cast::<u8>();
+        let state = RxTestPacketState {
+            base,
+            offset: RX_TEST_HEADROOM,
+            len: 0,
+            backing_len: RX_TEST_BACKING_LEN,
+        };
+        unsafe {
+            PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &RX_TEST_VTABLE)
+        }
+    }
+
+    fn rx_meta(frame_len: usize) -> NetRxMeta {
+        let frame_len = PacketByteCount::new(frame_len).expect("non-empty RX frame");
+        let layout = NetRxFrameLayout::whole_payload(frame_len).expect("valid RX frame layout");
+        NetRxMeta::new(0, layout, 0)
+    }
 
     struct FakeServices {
         devices: Vec<NetDeviceInfo>,
@@ -753,7 +912,9 @@ mod tests {
             self.stats
         }
 
-        fn stop(&self) {}
+        fn stop(&self) -> Result<(), &'static str> {
+            Ok(())
+        }
     }
 
     #[test]
@@ -814,13 +975,15 @@ mod tests {
         static BYTES: [u8; 8] = [0; 8];
         let len = PacketByteCount::new(8).expect("non-zero length");
 
-        assert!(NetTxSegment::from_dma(core::ptr::null(), 1, len).is_none());
-        assert!(NetTxSegment::from_dma(BYTES.as_ptr(), 0, len).is_none());
+        assert!(NetTxSegment::from_dma(core::ptr::null(), 1, 2, len).is_none());
+        assert!(NetTxSegment::from_dma(BYTES.as_ptr(), 0, 2, len).is_none());
+        assert!(NetTxSegment::from_dma(BYTES.as_ptr(), 1, 0, len).is_none());
         assert!(PacketByteCount::new(0).is_none());
 
-        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, len).expect("valid descriptor");
+        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, 2, len).expect("valid descriptor");
         assert_eq!(segment.cpu_ptr(), BYTES.as_ptr());
-        assert_eq!(segment.device_addr().get(), 1);
+        assert_eq!(segment.physical_addr().get(), 1);
+        assert_eq!(segment.device_addr().get(), 2);
         assert_eq!(segment.len().get(), 8);
     }
 
@@ -828,14 +991,15 @@ mod tests {
     fn tx_submission_requires_non_empty_segments() {
         static BYTES: [u8; 1] = [0; 1];
         let len = PacketByteCount::new(1).expect("non-zero length");
-        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, len).expect("valid descriptor");
+        let segment = NetTxSegment::from_dma(BYTES.as_ptr(), 1, 2, len).expect("valid descriptor");
 
         assert!(NonEmptyTxSegments::new(&[]).is_none());
         let segments = [segment];
         let non_empty = NonEmptyTxSegments::new(&segments).expect("non-empty slice");
-        let submission = TxSubmission::new(7, non_empty);
+        let lease_id = TxLeaseId::new(7).expect("non-zero lease");
+        let submission = TxSubmission::new(lease_id, non_empty);
 
-        assert_eq!(submission.lease_id(), 7);
+        assert_eq!(submission.lease_id(), lease_id);
         assert_eq!(submission.segments().len(), 1);
     }
 
@@ -850,5 +1014,76 @@ mod tests {
         assert_eq!(layout.frame_len().get(), 8);
         assert_eq!(layout.header_len(), 3);
         assert_eq!(layout.payload_len(), 5);
+    }
+
+    #[test]
+    fn rx_writable_region_excludes_headroom_and_accepts_last_dma_byte() {
+        let buffer = RxBuffer::try_from_empty_packet(make_rx_test_packet())
+            .expect("empty packet becomes an RX buffer");
+        let region = buffer.writable_region();
+
+        assert_eq!(
+            region.writable_len(),
+            RX_TEST_BACKING_LEN - RX_TEST_HEADROOM
+        );
+        assert_eq!(region.device_addr().get(), 0x8000 + RX_TEST_HEADROOM as u64);
+        // SAFETY: this test acts as the device while `buffer` exclusively owns
+        // the unpublished writable region and writes within its exact bounds.
+        unsafe {
+            region.cpu_ptr().write_bytes(0x5A, region.writable_len());
+            region.cpu_ptr().add(region.writable_len() - 1).write(0xA5);
+        }
+
+        let received = buffer
+            .complete(rx_meta(region.writable_len()))
+            .expect("a full-span DMA frame is valid");
+        let (packet, _) = received.into_parts();
+        assert_eq!(packet.len(), region.writable_len());
+        assert_eq!(packet.data()[region.writable_len() - 1], 0xA5);
+    }
+
+    #[test]
+    fn rx_completion_rejects_oversized_frame_and_returns_buffer() {
+        let buffer = RxBuffer::try_from_empty_packet(make_rx_test_packet())
+            .expect("empty packet becomes an RX buffer");
+        let writable_len = buffer.writable_region().writable_len();
+
+        let error = buffer
+            .complete(rx_meta(writable_len + 1))
+            .expect_err("oversized DMA completion must be rejected");
+        assert_eq!(error.cause(), RxCompletionErrorCause::FrameTooLarge);
+        assert_eq!(
+            error.into_buffer().writable_region().writable_len(),
+            writable_len
+        );
+    }
+
+    #[test]
+    fn rx_publishes_only_written_prefix_and_software_growth_zeroes_tail() {
+        let buffer = RxBuffer::try_from_empty_packet(make_rx_test_packet())
+            .expect("empty packet becomes an RX buffer");
+        let region = buffer.writable_region();
+        // SAFETY: this test acts as the device while `buffer` exclusively owns
+        // the unpublished writable region. Bytes after the frame deliberately
+        // remain at the backing sentinel value and must not become visible.
+        unsafe {
+            region.cpu_ptr().write(0x11);
+            region.cpu_ptr().add(1).write(0x22);
+            region.cpu_ptr().add(2).write(0x33);
+        }
+
+        let received = buffer
+            .complete(rx_meta(3))
+            .expect("device-written prefix is valid");
+        let (mut packet, _) = received.into_parts();
+        assert_eq!(packet.data(), &[0x11, 0x22, 0x33]);
+        assert_eq!(packet.tailroom(), region.writable_len() - 3);
+
+        packet.try_resize(6).expect("software growth fits backing");
+        assert_eq!(packet.data(), &[0x11, 0x22, 0x33, 0, 0, 0]);
+        assert_eq!(
+            packet.try_resize(region.writable_len() + 1),
+            Err(PacketWindowError::OutOfBounds)
+        );
     }
 }

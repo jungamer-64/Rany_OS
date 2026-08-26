@@ -65,16 +65,27 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - NIC は事前に確保された packet / DMA buffer へ直接読み書きする。
 - protocol 層は `Vec<u8>` への統合を前提にせず、packet-backed payload を運ぶ。
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
+- `PacketPayload` は常に非空であり、空 segment、総長 overflow、3 segment 以上の storage allocation failure を fallible constructor で区別する。構築・prepend・split に失敗した場合は input owner を error とともに返す。
+- `PacketRef` が安全に公開するのは初期化済みの可視領域だけとする。`data_capacity`、`headroom`、`tailroom` は別の数量であり、software growth が新たに可視化する byte は初期化してから公開する。
 - network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`
   facade や byte-slice TX surface を再導入しない。
 
-### 3.2 Normative: adaptive polling は baseline の一部
+### 3.2 Normative: RX DMA authority と TX lease を分離する
+
+- RX posting は `RxBuffer` が持つ `RxWritableRegion { cpu_ptr, device_addr, writable_len }` だけを driver へ委譲する。`writable_len` は backing の現在の data origin から末尾までであり、headroom を含めない。
+- completion は device が書き終えた frame layout を検証して `ReceivedPacket` へ一方向に遷移する。frame length より後ろの tail は初期化済みデータとして公開しない。
+- TX queue の受理は DMA read authority の取得を意味し、driver は buffer を参照しなくなった後に exactly-once completion を返す。拒否は buffer を一切保持していないことを意味する。
+- TX lease は `Queued -> Submitting -> DeviceOwned -> Released(outcome)` の順序を持つ。同期 completion、重複 completion、reset を同じ state transition で扱い、caller 向け送信通知と DMA lease の解放を同一視しない。
+- completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別する。stop/reset で DMA authority の安全な失効を証明できない owner は再利用せず quarantine する。
+- device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP/IP はこの上限へ分割し、分割不能な RAW frame は未消費の payload owner を typed error で返す。
+
+### 3.3 Normative: adaptive polling は baseline の一部
 
 - 低トラフィック時は interrupt-driven を使い、省電力と簡潔な待機を維持する。
 - 高トラフィック時は hybrid / busy polling に移行し、receive livelock と interrupt overhead を抑える。
 - polling / interrupt 切替は datapath や driver 層の追加オプションではなく、network runtime の標準的な振る舞いとして扱う。
 
-### 3.3 Canonical target: batch / scatter-gather / offload を packet-native に統合する
+### 3.4 Canonical target: batch / scatter-gather / offload を packet-native に統合する
 
 - batch processing は packet queue / endpoint / driver submission と整合した形で設計する。
 - scatter-gather は「複数 buffer を単一 owner に畳んでから送る」前処理ではなく、descriptor chaining を含む native submission として扱う。
@@ -96,15 +107,16 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
 - runtime / device / driver の TX 境界は `PacketRef` 単体ではなく `PacketPayload` を正規送信単位として扱う。
+- TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
+- TCP retransmit は同じ packet backing を `Ready` / `InFlight` 間で移動する。ACK が DMA completion より先に到着しても completion までは owner を保持し、未送信または outcome 不明の completion は再送可能な ownership へ戻す。
+- 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 
-### 4.3 implementation pending
+### 4.3 Validation boundary
 
-次の項目は採択済みだが、現実装との乖離が残り得る。
-
-- TCP の全経路で packet-backed payload を end-to-end で維持すること
-- reassembly / retransmit / diagnostics まで含めた zero-copy ownership model の全面統一
-- driver/runtime/public surface での語彙統一（packet pool / payload / endpoint / batch / scope）
+- ownership state、RX frame publication、TCP reassembly/retransmit、driver completion は unit / integration test で検証する。
+- QEMU の VirtIO case は RX posting、TX used-ring completion、buffer recycle を含む integration boundary であり、実 NIC throughput の証拠ではない。
+- `>= 10Gbps` は実 NIC と明示した workload で測定するまで達成済みと扱わない。
 
 ## 5. Reading guide
 

@@ -6,7 +6,7 @@ use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use core::sync::atomic::Ordering;
 
-use crate::net::payload::{GeneratedPacketWriter, append_payload};
+use crate::net::payload::GeneratedPacketWriter;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::http::types::{
     ConnectionDirective, HttpInboundRequest, HttpMethod, HttpVersion,
@@ -493,11 +493,12 @@ fn build_payload_response(
     writer
         .write_generated_bytes(head.as_bytes())
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    let mut payload = writer
+    let payload = writer
         .finish()
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    append_payload(&mut payload, body);
-    Ok(payload)
+    payload
+        .try_append(body)
+        .map_err(|_| HttpResponseBuildError::AllocationFailed)
 }
 
 fn build_custom_response_with_headers(

@@ -74,7 +74,9 @@ pub(crate) fn leaked_test_packet(cap: usize) -> PacketRef {
 pub(crate) fn leaked_test_packet_with_data(data: &[u8]) -> PacketRef {
     let cap = data.len().max(1);
     let mut packet = leaked_test_packet(cap);
-    assert!(packet.set_len(PacketByteCount::new(data.len()).expect("non-empty test packet")));
+    packet
+        .try_resize(data.len())
+        .expect("test packet fits its backing");
     packet.data_mut()[..data.len()].copy_from_slice(data);
     packet
 }

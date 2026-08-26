@@ -20,7 +20,7 @@ Accepted ADR を優先してください。
 | --- | --- | --- | --- |
 | syscall 相当の direct call latency | `< 100ns` | micro benchmark / TSC | Canonical target |
 | task handoff / context switch | `< 500ns` | executor benchmark / runtime trace | Canonical target |
-| network throughput | `>= 10Gbps` | datapath benchmark / end-to-end network test | Canonical target |
+| network throughput | `>= 10Gbps` | packet-identity/allocation benchmark plus real-NIC end-to-end measurement | Canonical target; real-NIC evidence required |
 | local allocator latency | `< 50ns` per-core fast path | allocator micro benchmark | Canonical target |
 | TLB miss rate | `< 0.1%` under SAS-oriented workload | PMU / `perf stat` / profiler | Canonical target |
 
@@ -29,14 +29,15 @@ Accepted ADR を優先してください。
 ### 1. Kernel benchmark harness
 
 - 実装:
-  [../../kernel/src/benchmark/mod.rs](../../kernel/src/benchmark/mod.rs)
-- TSC ベースの micro benchmark、throughput benchmark、summary 出力を持つ。
+  [../../kernel/src/test/benchmark.rs](../../kernel/src/test/benchmark.rs)
+- TSC ベースの micro benchmark、throughput benchmark、summary 出力を持つ。network datapath の測定では packet backing identity、steady-state allocation delta、処理 byte 数を同じ record に含める。
 
 ### 2. Runtime / full-boot validation
 
 - 実装:
   [../../kernel/src/test/benchmark.rs](../../kernel/src/test/benchmark.rs)
 - full-boot や runtime dispatch と組み合わせて、boot 後の統合測定を行う。
+- QEMU VirtIO の RX/TX/recycle case は ownership と integration の gate であり、その測定値だけから実 NIC の `>= 10Gbps` 達成を主張しない。
 
 ### 3. Graphics / device-specific benches
 

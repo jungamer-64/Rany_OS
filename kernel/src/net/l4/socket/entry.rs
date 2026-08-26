@@ -225,6 +225,32 @@ impl Socket {
         pushed
     }
 
+    pub fn try_push_payload(&self, payload: PacketPayload) -> Result<usize, PacketPayload> {
+        let mut owner = Some(payload);
+        let result = self.with_inner_mut(|inner| {
+            let payload = owner.take().expect("TCP receive payload owner is present");
+            let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
+            if let Some(remainder) = remainder {
+                return Err(remainder);
+            }
+            if pushed > 0 {
+                if let Some(tcp) = inner.tcp_mut() {
+                    tcp.stats.record_rx_segment(pushed);
+                }
+                inner.recv_waker.wake();
+            }
+            Ok(pushed)
+        });
+        let result = match result {
+            Some(result) => result,
+            None => Err(owner.expect("missing socket preserves the payload owner")),
+        };
+        if let Ok(pushed) = result {
+            Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
+        }
+        result
+    }
+
     pub fn push_payload_with_remainder(
         &self,
         payload: PacketPayload,
@@ -250,21 +276,33 @@ impl Socket {
         addr: EndpointAddr,
         ttl: u8,
         payload: PacketPayload,
-    ) -> SocketResult<()> {
-        self.with_inner_mut(|inner| {
-            if !inner.is_udp_bound() {
-                return Err(EndpointError::NotConnected);
-            }
-            let Some(udp) = inner.udp_mut() else {
-                return Err(EndpointError::InvalidArgument);
-            };
-            udp.ttl = ttl;
-            udp.pending_packets.push_back((if_id, addr, ttl, payload));
-            inner.recv_waker.wake();
-            Ok(())
+    ) -> Result<(), (EndpointError, PacketPayload)> {
+        let mut owner = Some(payload);
+        let result = self
+            .with_inner_mut(|inner| {
+                if !inner.is_udp_bound() {
+                    return Err(EndpointError::NotConnected);
+                }
+                let Some(udp) = inner.udp_mut() else {
+                    return Err(EndpointError::InvalidArgument);
+                };
+                udp.ttl = ttl;
+                udp.pending_packets.push_back((
+                    if_id,
+                    addr,
+                    ttl,
+                    owner.take().expect("accepted UDP payload owner is present"),
+                ));
+                inner.recv_waker.wake();
+                Ok(())
+            })
+            .unwrap_or(Err(EndpointError::NotFound));
+        result.map_err(|error| {
+            (
+                error,
+                owner.expect("rejected UDP delivery preserves the payload owner"),
+            )
         })
-        .unwrap_or(Err(EndpointError::NotFound))?;
-        Ok(())
     }
 
     pub fn try_recv_raw_payload(&self) -> SocketResult<(PacketPayload, NetIfId)> {

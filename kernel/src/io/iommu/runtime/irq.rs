@@ -22,15 +22,14 @@ const MSI_BASE_ADDRESS: u64 = 0xFEE0_0000;
 /// Bits [19:5] contain handle[14:0].
 const MSI_HANDLE_LOW_SHIFT: u8 = 5;
 
-/// Shift for the high bit of the interrupt handle in MSI address.
-/// Bit [3] contains handle[15] (SHV bit in VT-d terminology).
-const MSI_HANDLE_HIGH_SHIFT: u8 = 3;
-
 /// Mask for the lower 15 bits of the interrupt handle.
 const MSI_HANDLE_LOW_MASK: u64 = 0x7FFF;
 
-/// Mask for the high bit (bit 15) of the interrupt handle.
-const MSI_HANDLE_HIGH_MASK: u64 = 1;
+/// Position of interrupt handle bit 15 in the remappable MSI address.
+const MSI_HANDLE_HIGH: u64 = 1 << 2;
+
+/// Marks an MSI request as using the interrupt-remappable message format.
+const MSI_INTERRUPT_FORMAT: u64 = 1 << 4;
 
 /// Map an interrupt for a device using Interrupt Remapping
 ///
@@ -60,22 +59,44 @@ pub fn map_interrupt(
 /// ```text
 /// Bits [31:20]: 0xFEE (LAPIC base)
 /// Bits [19:5]:  handle[14:0] - lower 15 bits of interrupt handle
-/// Bit  [4]:     Reserved (0)
-/// Bit  [3]:     handle[15] - high bit of handle (SHV in VT-d)
-/// Bits [2:0]:   Reserved (0)
+/// Bit  [4]:     Interrupt Format (1 = remappable)
+/// Bit  [3]:     Sub-handle Valid (0 for one IRTE per message)
+/// Bit  [2]:     handle[15]
+/// Bits [1:0]:   Reserved (0)
 /// ```
 pub fn get_remap_msi_message(handle: u16) -> (u64, u32) {
     if let Some(driver) = get_iommu_driver() {
         return driver.get_remap_msi_message(handle);
     }
 
-    // Fallback to Intel VT-d MSI/MSI-X format if no driver is registered.
-    let handle = handle as u64;
-    let index_low = handle & MSI_HANDLE_LOW_MASK;
-    let index_high = (handle >> 15) & MSI_HANDLE_HIGH_MASK;
-    let address = MSI_BASE_ADDRESS
-        | (index_low << MSI_HANDLE_LOW_SHIFT)
-        | (index_high << MSI_HANDLE_HIGH_SHIFT);
-    let data = 0;
-    (address, data)
+    encode_remappable_msi_message(handle)
+}
+
+pub(crate) fn encode_remappable_msi_message(handle: u16) -> (u64, u32) {
+    let handle = u64::from(handle);
+    let handle_high = if handle & (1 << 15) != 0 {
+        MSI_HANDLE_HIGH
+    } else {
+        0
+    };
+    (
+        MSI_BASE_ADDRESS
+            | MSI_INTERRUPT_FORMAT
+            | handle_high
+            | ((handle & MSI_HANDLE_LOW_MASK) << MSI_HANDLE_LOW_SHIFT),
+        0,
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::encode_remappable_msi_message;
+
+    #[test]
+    fn remappable_msi_message_sets_interrupt_format_and_index() {
+        assert_eq!(encode_remappable_msi_message(0), (0xFEE0_0010, 0));
+        assert_eq!(encode_remappable_msi_message(255), (0xFEE0_1FF0, 0));
+        assert_eq!(encode_remappable_msi_message(0x8000), (0xFEE0_0014, 0));
+        assert_eq!(encode_remappable_msi_message(0xffff), (0xFEEF_FFF4, 0));
+    }
 }

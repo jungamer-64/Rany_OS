@@ -5,7 +5,7 @@
 //!
 //! TcpConnectionState, TcpControlBlock, TcbTable, tcp_flags
 
-use crate::sync::PoisonRwLock;
+use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, AtomicUsize, Ordering};
 
@@ -39,6 +39,7 @@ pub struct TcpControlBlock {
     remote: EndpointAddr,
     state: TcpTcbState,
     pending_error: Option<EndpointError>,
+    ooo: super::ooo_queue::ConnectionOooQueue,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -483,6 +484,7 @@ impl TcpControlBlock {
             remote,
             state: TcpTcbState::Closed,
             pending_error: None,
+            ooo: super::ooo_queue::ConnectionOooQueue::new(),
         }
     }
 
@@ -718,7 +720,7 @@ impl TcpControlBlock {
 const TCB_BUCKET_COUNT: usize = 1024;
 
 pub struct TcbTable {
-    storage: PoisonRwLock<Option<TcbStorage>>,
+    storage: PoisonLock<Option<TcbStorage>>,
     seq_counter: AtomicU32,
     pub current_tick: AtomicU64,
     total_count: AtomicUsize,
@@ -846,7 +848,7 @@ impl TcbStorage {
 impl TcbTable {
     pub const fn new() -> Self {
         Self {
-            storage: PoisonRwLock::new(None),
+            storage: PoisonLock::new(None),
             seq_counter: AtomicU32::new(0),
             current_tick: AtomicU64::new(0),
             total_count: AtomicUsize::new(0),
@@ -1003,7 +1005,7 @@ impl TcbTable {
     fn scavenge_fin_wait_2(&self, current_tick: u64) {
         const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
         const MAX_SCAVENGE_FIN_WAIT_2: usize = 128;
-        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
         };
@@ -1029,7 +1031,7 @@ impl TcbTable {
         use super::retransmit::retransmit_queue_push;
         use super::segment::TcpSegmentBuilder;
         use crate::net::l4::socket::lookup_socket_in;
-        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
         };
@@ -1091,7 +1093,7 @@ impl TcbTable {
     fn scavenge_time_wait(&self, current_tick: u64) {
         const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
         const MAX_SCAVENGE_TIME_WAIT: usize = 256;
-        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
         };
@@ -1130,7 +1132,7 @@ impl TcbTable {
             (SYN_RECV_TIMEOUT_TICKS, 8) // 低・中負荷時
         };
 
-        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
             return;
         };
@@ -1176,7 +1178,7 @@ impl TcbTable {
             }
         }
         let key = TcpFlowKey::new(entry.if_id, entry.local, entry.remote);
-        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let storage = shard.get_or_insert_with(TcbStorage::new);
         let is_syn_recv = entry.is_syn_received();
         match storage.insert(key, entry) {
@@ -1208,7 +1210,7 @@ impl TcbTable {
     where
         F: FnOnce(&TcpControlBlock) -> R,
     {
-        let shard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        let shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         shard
             .as_ref()?
             .get(TcpFlowKey::new(if_id, local, remote))
@@ -1219,13 +1221,38 @@ impl TcbTable {
     where
         F: FnOnce(&TcpControlBlock) -> R,
     {
-        let shard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        let shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         shard
             .as_ref()?
             .entries
             .iter()
             .find(|bucket_entry| bucket_entry.entry.socket_id == socket_id)
             .map(|bucket_entry| f(&bucket_entry.entry))
+    }
+
+    pub(in crate::net::l4::tcp) fn read_ooo_queue<R>(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        read: impl FnOnce(&super::ooo_queue::ConnectionOooQueue) -> R,
+    ) -> Option<R> {
+        self.read(if_id, local, remote, |entry| read(&entry.ooo))
+    }
+
+    pub(in crate::net::l4::tcp) fn mutate_ooo_queue<R>(
+        &self,
+        if_id: NetIfId,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+        mutate: impl FnOnce(&mut super::ooo_queue::ConnectionOooQueue) -> R,
+    ) -> Option<R> {
+        let mut result = None;
+        self.mutate_entry(if_id, local, remote, |entry| {
+            result = Some(mutate(&mut entry.ooo));
+        })
+        .then_some(())?;
+        result
     }
 
     fn mutate_entry<F>(
@@ -1238,7 +1265,7 @@ impl TcbTable {
     where
         F: FnOnce(&mut TcpControlBlock),
     {
-        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(storage) = shard.as_mut() else {
             return false;
         };
@@ -1264,7 +1291,7 @@ impl TcbTable {
     where
         F: FnOnce(&mut TcpControlBlock),
     {
-        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(storage) = shard.as_mut() else {
             return false;
         };
@@ -1765,7 +1792,7 @@ impl TcbTable {
         local: EndpointAddr,
         remote: EndpointAddr,
     ) -> Option<TcpControlBlock> {
-        let mut shard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let storage = shard.as_mut()?;
         if let Some(entry) = storage.remove(TcpFlowKey::new(if_id, local, remote)) {
             self.total_count.fetch_sub(1, Ordering::Relaxed);
@@ -1779,7 +1806,7 @@ impl TcbTable {
     }
 
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {
-        let mut guard = self.storage.write().unwrap_or_else(|e| e.into_inner());
+        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(storage) = guard.as_mut() {
             if let Some(entry) = storage.remove_by_socket_id(socket_id) {
                 self.total_count.fetch_sub(1, Ordering::Relaxed);
@@ -1794,7 +1821,7 @@ impl TcbTable {
 
     pub fn list_connections(&self) -> alloc::vec::Vec<TcpConnectionSnapshot> {
         let mut result = alloc::vec::Vec::new();
-        let guard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        let guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(storage) = guard.as_ref() {
             result.extend(storage.entries.iter().map(|bucket_entry| {
                 let entry = &bucket_entry.entry;
@@ -1838,7 +1865,7 @@ impl TcbTable {
     where
         F: FnMut(&TcpControlBlock),
     {
-        let guard = self.storage.read().unwrap_or_else(|e| e.into_inner());
+        let guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(storage) = guard.as_ref() {
             for bucket_entry in &storage.entries {
                 let entry = &bucket_entry.entry;

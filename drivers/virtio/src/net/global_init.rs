@@ -1,56 +1,27 @@
-use super::managed::{NetCompletionHandler, VirtioNetDevice};
+use super::managed::VirtioNetDevice;
 use super::{NetRuntime, VirtioNetError};
-use crate::transport::{VirtioMmioTransport, VirtioTransport};
+use crate::transport::VirtioTransport;
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use exorust_sync::PoisonRwLock;
-use kernel_api::netdev::{
-    MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRuntimeHandle,
-    NetPortStats, NetTxMeta, TxSubmission,
-};
 
-const VIRTIO_PORT_ID_BASE: u64 = 0x0001_0000;
-
-pub struct VirtioNetRegistryState {
+struct VirtioNetRegistryState {
     devices: PoisonRwLock<BTreeMap<u8, Arc<VirtioNetDevice>>>,
-    runtimes: PoisonRwLock<BTreeMap<u8, NetPortRuntimeHandle>>,
 }
 
 impl VirtioNetRegistryState {
     pub const fn new() -> Self {
         Self {
             devices: PoisonRwLock::new(BTreeMap::new()),
-            runtimes: PoisonRwLock::new(BTreeMap::new()),
         }
     }
 }
 
-pub(crate) static VIRTIO_NET_REGISTRY: VirtioNetRegistryState = VirtioNetRegistryState::new();
+static VIRTIO_NET_REGISTRY: VirtioNetRegistryState = VirtioNetRegistryState::new();
 
 fn registry_state() -> &'static VirtioNetRegistryState {
     &VIRTIO_NET_REGISTRY
-}
-
-fn virtio_port_id(index: u8) -> NetPortId {
-    NetPortId::new(VIRTIO_PORT_ID_BASE | index as u64)
-}
-
-pub(crate) fn virtio_net_runtime(index: u8) -> Option<NetPortRuntimeHandle> {
-    registry_state()
-        .runtimes
-        .read()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(&index)
-        .copied()
-}
-
-fn install_virtio_net_runtime(index: u8, runtime: NetPortRuntimeHandle) {
-    registry_state()
-        .runtimes
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(index, runtime);
 }
 
 fn install_virtio_net_device(index: u8, device: Arc<VirtioNetDevice>) {
@@ -61,195 +32,39 @@ fn install_virtio_net_device(index: u8, device: Arc<VirtioNetDevice>) {
         .insert(index, device);
 }
 
-pub fn with_virtio_net_at_index<F, R>(index: u8, f: F) -> Option<R>
+pub(crate) fn with_virtio_net_at_index<F, R>(index: u8, f: F) -> Option<R>
 where
     F: FnOnce(&VirtioNetDevice) -> R,
 {
-    let devices = registry_state()
+    let device = registry_state()
         .devices
         .read()
-        .unwrap_or_else(|e| e.into_inner());
-    devices.get(&index).map(|device| f(device.as_ref()))
-}
-
-pub fn for_each_virtio_net<F>(mut f: F)
-where
-    F: FnMut(u8, &VirtioNetDevice),
-{
-    let devices = registry_state()
-        .devices
-        .read()
-        .unwrap_or_else(|e| e.into_inner());
-    for (index, device) in devices.iter() {
-        f(*index, device.as_ref());
-    }
-}
-
-pub fn bind_virtio_net_interface(index: u8, if_id: u16) -> bool {
-    with_virtio_net_at_index(index, |device| device.set_net_if_id(if_id)).is_some()
-}
-
-pub fn set_virtio_net_completion_handler(index: u8, handler: Option<NetCompletionHandler>) -> bool {
-    with_virtio_net_at_index(index, |device| device.set_completion_handler(handler)).is_some()
-}
-
-fn process_device_events(index: u8) -> Result<(), &'static str> {
-    with_virtio_net_at_index(index, |device| {
-        device.process_interrupt_deferred();
-        device.refill_rx_queues();
-    })
-    .ok_or("VirtIO-Net device removed")
-}
-
-fn set_device_interrupts_enabled(index: u8, enabled: bool) -> Result<(), &'static str> {
-    with_virtio_net_at_index(index, |device| device.set_interrupts_enabled_all(enabled))
-        .ok_or("VirtIO-Net device not initialized")
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct VirtioNetDriverAdapter {
-    index: u8,
-}
-
-impl VirtioNetDriverAdapter {
-    pub const fn new(index: u8) -> Self {
-        Self { index }
-    }
-
-    fn default_info(&self) -> NetDeviceInfo {
-        NetDeviceInfo {
-            port_id: virtio_port_id(self.index),
-            if_id: None,
-            driver_name: "virtio-net",
-            queue_pairs: 1,
-            mtu: 1500,
-            mac: MacAddress::from_octets(0x02, 0x00, 0x00, 0x00, 0x00, 0x01),
-            flags: 0,
-        }
-    }
-}
-
-impl NetDevicePort for VirtioNetDriverAdapter {
-    fn info(&self) -> NetDeviceInfo {
-        with_virtio_net_at_index(self.index, |device| {
-            device.info_snapshot(virtio_port_id(self.index))
-        })
-        .unwrap_or_else(|| self.default_info())
-    }
-
-    fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
-        install_virtio_net_runtime(self.index, runtime);
-        with_virtio_net_at_index(self.index, VirtioNetDevice::publish_link_state)
-            .ok_or("VirtIO-Net device not initialized")?;
-        Ok(())
-    }
-
-    fn bind(&self, if_id: u16) -> Result<(), &'static str> {
-        if bind_virtio_net_interface(self.index, if_id) {
-            Ok(())
-        } else {
-            Err("VirtIO-Net device not initialized for binding")
-        }
-    }
-
-    fn submit_tx_chain(
-        &self,
-        submission: TxSubmission<'_>,
-        meta: NetTxMeta,
-    ) -> Result<(), &'static str> {
-        with_virtio_net_at_index(self.index, |device| {
-            device
-                .enqueue_send_submission(submission, meta)
-                .map_err(|err| match err {
-                    VirtioNetError::QueueFull => "TX queue full",
-                    _ => "enqueue_send_submission failed",
-                })
-        })
-        .unwrap_or(Err("VirtIO-Net device not initialized"))
-    }
-
-    fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
-        set_device_interrupts_enabled(self.index, enabled)
-    }
-
-    fn poll(&self, _if_id: u16) -> Result<(), &'static str> {
-        process_device_events(self.index)
-    }
-
-    fn handle_event(&self, _if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
-        match event {
-            NetDriverEvent::Interrupt | NetDriverEvent::QueueWake { .. } | NetDriverEvent::Poll => {
-                process_device_events(self.index)
-            }
-        }
-    }
-
-    fn stats(&self) -> NetPortStats {
-        with_virtio_net_at_index(self.index, |device| device.net_port_stats()).unwrap_or_default()
-    }
-
-    fn stop(&self) {
-        registry_state()
-            .runtimes
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&self.index);
-    }
-}
-
-pub fn virtio_net_driver_adapter(index: u8) -> Arc<dyn NetDevicePort> {
-    Arc::new(VirtioNetDriverAdapter::new(index))
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&index)
+        .cloned()?;
+    Some(f(device.as_ref()))
 }
 
 /// # Errors
 ///
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub unsafe fn init_virtio_net_for_device_at_index(
-    index: u8,
-    base_addr: usize,
-    runtime: Arc<dyn NetRuntime>,
-) -> Result<(), VirtioNetError> {
-    let transport =
-        unsafe { VirtioMmioTransport::new(base_addr).map_err(|_| VirtioNetError::DeviceError)? };
-    let mut device = VirtioNetDevice::new(index, Box::new(transport), runtime);
-    device.init()?;
-    install_virtio_net_device(index, Arc::new(device));
-    Ok(())
-}
-
-/// # Errors
-///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub unsafe fn init_virtio_net_with_transport_at_index(
+pub(crate) unsafe fn init_virtio_net_with_transport_at_index(
     index: u8,
     transport: Box<dyn VirtioTransport>,
     runtime: Arc<dyn NetRuntime>,
+    queue_msix_table: Option<u16>,
 ) -> Result<(), VirtioNetError> {
-    let mut device = VirtioNetDevice::new(index, transport, runtime);
+    let mut device = VirtioNetDevice::new(transport, runtime, queue_msix_table);
     device.init()?;
     install_virtio_net_device(index, Arc::new(device));
     Ok(())
 }
 
-pub fn handle_virtio_net_interrupt_for_index(index: u8) {
+pub(crate) fn handle_virtio_net_interrupt_for_index(index: u8) {
     let _ = with_virtio_net_at_index(index, |device| {
         device.ack_interrupt();
         device.handle_interrupt();
     });
-}
-
-#[cfg(test)]
-pub(crate) fn clear_virtio_net_devices_for_tests() {
-    registry_state()
-        .devices
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
-    registry_state()
-        .runtimes
-        .write()
-        .unwrap_or_else(|e| e.into_inner())
-        .clear();
 }
 
 #[cfg(test)]
@@ -358,61 +173,61 @@ mod tests {
             })
         }
 
-        fn alloc_packet(&self) -> Option<PacketRef> {
+        fn lease_rx_buffer(&self) -> Option<crate::net::RxDmaLease> {
             None
         }
-        fn map_packet(
-            &self,
-            _packet: &PacketRef,
-            _direction: super::super::NetDmaDirection,
-        ) -> Result<super::super::NetDmaMappingToken, VirtioNetError> {
-            Err(VirtioNetError::DeviceError)
-        }
-        fn release_dma_mapping(&self, _mapping: super::super::NetDmaMappingToken) {}
         fn receive_packet(
             &self,
             _queue_index: u16,
-            _packet: PacketRef,
+            _buffer: crate::net::RxDmaLease,
             _header_len: usize,
             _payload_len: usize,
+            _flags: u32,
         ) {
         }
         fn transmit_complete(&self, _queue_index: u16, _lease_id: kernel_api::netdev::TxLeaseId) {}
-        fn schedule_wake(&self, _queue_index: u16) {}
+        fn schedule_interrupt(&self) {}
         fn update_link(&self, _up: bool) {}
         fn log(&self, _level: log::Level, _msg: core::fmt::Arguments) {}
     }
 
     #[test]
     fn registry_tracks_multiple_device_indices() {
-        clear_virtio_net_devices_for_tests();
+        registry_state()
+            .devices
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
 
         let runtime0: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             0,
-            Arc::new(VirtioNetDevice::new(0, Box::new(NoopTransport), runtime0)),
+            Arc::new(VirtioNetDevice::new(
+                Box::new(NoopTransport),
+                runtime0,
+                None,
+            )),
         );
         let runtime3: Arc<dyn NetRuntime> = Arc::new(NoopRuntime);
         install_virtio_net_device(
             3,
-            Arc::new(VirtioNetDevice::new(3, Box::new(NoopTransport), runtime3)),
+            Arc::new(VirtioNetDevice::new(
+                Box::new(NoopTransport),
+                runtime3,
+                None,
+            )),
         );
 
-        let mut seen = Vec::new();
-        for_each_virtio_net(|index, _| seen.push(index));
-        seen.sort_unstable();
+        let seen = registry_state()
+            .devices
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .keys()
+            .copied()
+            .collect::<Vec<_>>();
 
         assert_eq!(seen, vec![0, 3]);
         assert!(with_virtio_net_at_index(0, |_| ()).is_some());
         assert!(with_virtio_net_at_index(3, |_| ()).is_some());
-    }
-
-    #[test]
-    fn driver_adapter_reports_missing_device_as_uninitialized() {
-        clear_virtio_net_devices_for_tests();
-
-        let info = virtio_net_driver_adapter(9).info();
-        assert_eq!(info.port_id, NetPortId::new(VIRTIO_PORT_ID_BASE | 9));
-        assert_eq!(info.flags, 0);
     }
 }

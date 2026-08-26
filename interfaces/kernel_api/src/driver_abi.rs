@@ -40,6 +40,11 @@
 //! only pass C-compatible types across the ABI boundary.
 
 use crate::resource::net::PacketByteCount;
+use core::num::NonZeroU64;
+use core::sync::atomic::AtomicBool;
+
+#[path = "driver_abi/export_macro.rs"]
+mod export_macro;
 
 // ============================================================================
 // ABI Version
@@ -49,17 +54,7 @@ use crate::resource::net::PacketByteCount;
 ///
 /// Increment this when making breaking changes to the vtable layout.
 /// Drivers compiled with a different ABI version will be rejected.
-/// Current ABI version for compatibility checking.
-///
-/// Increment this when making breaking changes to the vtable layout.
-/// Drivers compiled with a different ABI version will be rejected.
-#[path = "driver_abi/export_macro.rs"]
-mod export_macro;
-use alloc::boxed::Box;
-use core::mem::{MaybeUninit, align_of, size_of};
-use core::ptr;
-use core::sync::atomic::AtomicBool;
-pub const DRIVER_ABI_VERSION: u64 = 4;
+pub const DRIVER_ABI_VERSION: u64 = 6;
 
 // Include the generated type hash
 include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
@@ -861,17 +856,20 @@ pub struct AbiNetTxSubmission {
 }
 
 impl AbiNetTxSubmission {
-    pub fn new(lease_id: u64, segments: &[AbiNetTxSegment]) -> Option<Self> {
+    pub fn new(
+        lease_id: crate::service::netdev::TxLeaseId,
+        segments: &[AbiNetTxSegment],
+    ) -> Option<Self> {
         AbiNetTxSegments::new(segments)?;
         Some(Self {
-            lease_id,
+            lease_id: lease_id.get(),
             segments_ptr: segments.as_ptr(),
             segments_len: segments.len(),
         })
     }
 
-    pub const fn lease_id(self) -> u64 {
-        self.lease_id
+    pub const fn lease_id(self) -> Option<crate::service::netdev::TxLeaseId> {
+        crate::service::netdev::TxLeaseId::new(self.lease_id)
     }
 
     pub fn segments(&self) -> Option<AbiNetTxSegments<'_>> {
@@ -895,7 +893,8 @@ mod tests {
         let valid = AbiNetTxSegment::from_checked_parts(BYTES.as_ptr(), 0x1000, valid_len)
             .expect("valid ABI segment");
 
-        assert!(AbiNetTxSubmission::new(1, &[]).is_none());
+        let lease_id = crate::service::netdev::TxLeaseId::new(1).expect("non-zero lease");
+        assert!(AbiNetTxSubmission::new(lease_id, &[]).is_none());
 
         let null_cpu = [AbiNetTxSegment {
             cpu_ptr: core::ptr::null(),
@@ -925,8 +924,10 @@ mod tests {
         assert!(raw_invalid.segments().is_none());
 
         let valid_segments = [valid];
-        let submission = AbiNetTxSubmission::new(9, &valid_segments).expect("valid ABI submission");
-        assert_eq!(submission.lease_id(), 9);
+        let lease_id = crate::service::netdev::TxLeaseId::new(9).expect("non-zero lease");
+        let submission =
+            AbiNetTxSubmission::new(lease_id, &valid_segments).expect("valid ABI submission");
+        assert_eq!(submission.lease_id(), Some(lease_id));
         assert_eq!(
             submission.segments().expect("validated segments").count(),
             1
@@ -960,7 +961,9 @@ mod tests {
             SECOND.len()
         );
 
-        let submission = AbiNetTxSubmission::new(11, &segments).expect("fragmented submission");
+        let lease_id = crate::service::netdev::TxLeaseId::new(11).expect("non-zero lease");
+        let submission =
+            AbiNetTxSubmission::new(lease_id, &segments).expect("fragmented submission");
         let submitted = submission
             .segments()
             .expect("validated submission segments");
@@ -999,7 +1002,7 @@ pub struct AbiNetPortStats {
 pub struct AbiNetPortInfo {
     pub port_id: u64,
     pub queue_pairs: u16,
-    pub reserved_queue: u16,
+    pub max_tx_segments: u16,
     pub mtu: u32,
     pub flags: u32,
     pub mac: [u8; 6],
@@ -1008,96 +1011,99 @@ pub struct AbiNetPortInfo {
     pub name_len: usize,
 }
 
-pub const ABI_PACKET_REF_STORAGE_WORDS: usize = 5;
-
 #[repr(C)]
-#[derive(Clone, Copy, Default)]
-pub struct AbiPacketRefStorage {
-    pub words: [usize; ABI_PACKET_REF_STORAGE_WORDS],
-}
-
-impl AbiPacketRefStorage {
-    pub const fn zeroed() -> Self {
-        Self {
-            words: [0; ABI_PACKET_REF_STORAGE_WORDS],
-        }
-    }
-
-    /// # Safety
-    /// `T` must fit into the inline storage and not require stronger alignment.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `T` is larger than the inline storage or requires stricter
-    /// alignment than the storage provides.
-    pub unsafe fn from_state<T>(state: T) -> Self {
-        assert!(size_of::<T>() <= size_of::<Self>());
-        assert!(align_of::<T>() <= align_of::<Self>());
-        let mut storage = MaybeUninit::<Self>::zeroed();
-        unsafe {
-            storage.as_mut_ptr().cast::<T>().write(state);
-            storage.assume_init()
-        }
-    }
-
-    /// # Safety
-    /// The storage must currently contain a valid `T`.
-    pub unsafe fn as_state_ref<T>(&self) -> &T {
-        debug_assert!(size_of::<T>() <= size_of::<Self>());
-        debug_assert!(align_of::<T>() <= align_of::<Self>());
-        unsafe { &*ptr::from_ref(self).cast::<T>() }
-    }
-
-    /// # Safety
-    /// The storage must currently contain a valid `T`.
-    pub unsafe fn as_state_mut<T>(&mut self) -> &mut T {
-        debug_assert!(size_of::<T>() <= size_of::<Self>());
-        debug_assert!(align_of::<T>() <= align_of::<Self>());
-        unsafe { &mut *ptr::from_mut(self).cast::<T>() }
-    }
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AbiRxWritableRegion {
+    pub cpu_ptr: *mut u8,
+    pub device_addr: u64,
+    pub writable_len: usize,
 }
 
 #[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AbiPacketRefVTable {
-    pub data_ptr: extern "C" fn(storage: *const AbiPacketRefStorage) -> *const u8,
-    pub data_mut_ptr: extern "C" fn(storage: *mut AbiPacketRefStorage) -> *mut u8,
-    pub len: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
-    pub set_len: extern "C" fn(storage: *mut AbiPacketRefStorage, len: usize) -> bool,
-    pub capacity: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
-    pub phys_addr: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
-    pub device_address: extern "C" fn(storage: *const AbiPacketRefStorage) -> u64,
-    pub headroom: extern "C" fn(storage: *const AbiPacketRefStorage) -> usize,
-    pub advance: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize) -> bool,
-    pub retreat: extern "C" fn(storage: *mut AbiPacketRefStorage, size: usize) -> bool,
-    pub drop: extern "C" fn(storage: *mut AbiPacketRefStorage),
-    pub reserved: [u64; 4],
-}
-
-#[repr(C)]
-pub struct AbiPacketRefRaw {
-    pub storage: AbiPacketRefStorage,
-    pub vtable: *const AbiPacketRefVTable,
+pub struct AbiRxLease {
+    lease_id: u64,
+    region: AbiRxWritableRegion,
     pub reserved: [u64; 2],
 }
 
-impl Default for AbiPacketRefRaw {
+impl Default for AbiRxLease {
     fn default() -> Self {
         Self {
-            storage: AbiPacketRefStorage::zeroed(),
-            vtable: ptr::null(),
+            lease_id: 0,
+            region: AbiRxWritableRegion::default(),
             reserved: [0; 2],
         }
     }
 }
 
-unsafe impl Send for AbiPacketRefRaw {}
+unsafe impl Send for AbiRxLease {}
 
-impl Drop for AbiPacketRefRaw {
-    fn drop(&mut self) {
-        if !self.vtable.is_null() {
-            unsafe { ((*self.vtable).drop)(&mut self.storage) };
-            self.vtable = ptr::null();
+impl AbiRxLease {
+    pub fn new(lease_id: NonZeroU64, region: AbiRxWritableRegion) -> Option<Self> {
+        if region.cpu_ptr.is_null() || region.device_addr == 0 || region.writable_len == 0 {
+            return None;
+        }
+        Some(Self {
+            lease_id: lease_id.get(),
+            region,
+            reserved: [0; 2],
+        })
+    }
+
+    pub const fn lease_id(&self) -> Option<NonZeroU64> {
+        NonZeroU64::new(self.lease_id)
+    }
+
+    pub const fn writable_region(&self) -> Option<AbiRxWritableRegion> {
+        if self.lease_id == 0
+            || self.region.cpu_ptr.is_null()
+            || self.region.device_addr == 0
+            || self.region.writable_len == 0
+        {
+            None
+        } else {
+            Some(self.region)
+        }
+    }
+
+    /// # Safety
+    /// `ptr` must be null or point to a valid `AbiRxLease` slot.
+    pub unsafe fn take(ptr: *mut Self) -> Option<Self> {
+        if ptr.is_null() {
+            return None;
+        }
+        let slot = unsafe { &mut *ptr };
+        if slot.lease_id().is_none() {
+            None
+        } else {
+            Some(core::mem::take(slot))
+        }
+    }
+}
+
+#[repr(transparent)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AbiTxDeviceOutcome(u32);
+
+impl AbiTxDeviceOutcome {
+    pub const TRANSMITTED: Self = Self(0);
+    pub const NOT_TRANSMITTED: Self = Self(1);
+    pub const OUTCOME_UNKNOWN: Self = Self(2);
+
+    pub const fn from_outcome(outcome: crate::service::netdev::TxDeviceOutcome) -> Self {
+        match outcome {
+            crate::service::netdev::TxDeviceOutcome::Transmitted => Self::TRANSMITTED,
+            crate::service::netdev::TxDeviceOutcome::NotTransmitted => Self::NOT_TRANSMITTED,
+            crate::service::netdev::TxDeviceOutcome::OutcomeUnknown => Self::OUTCOME_UNKNOWN,
+        }
+    }
+
+    pub const fn into_outcome(self) -> Option<crate::service::netdev::TxDeviceOutcome> {
+        match self.0 {
+            0 => Some(crate::service::netdev::TxDeviceOutcome::Transmitted),
+            1 => Some(crate::service::netdev::TxDeviceOutcome::NotTransmitted),
+            2 => Some(crate::service::netdev::TxDeviceOutcome::OutcomeUnknown),
+            _ => None,
         }
     }
 }
@@ -1107,22 +1113,25 @@ impl Drop for AbiPacketRefRaw {
 pub struct AbiNetPortRuntime {
     pub abi_size: u64,
     pub runtime_cookie: u64,
-    pub alloc_packet: extern "C" fn(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32,
-    pub submit_rx_packet:
-        extern "C" fn(runtime_cookie: u64, packet: *mut AbiPacketRefRaw, meta: AbiNetRxMeta) -> i32,
-    pub complete_tx_lease: extern "C" fn(runtime_cookie: u64, lease_id: u64, status: i32) -> i32,
+    pub lease_rx_buffer: extern "C" fn(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32,
+    pub release_rx_buffer: extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease) -> i32,
+    pub submit_rx_buffer:
+        extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease, meta: AbiNetRxMeta) -> i32,
+    pub complete_tx_lease:
+        extern "C" fn(runtime_cookie: u64, lease_id: u64, outcome: AbiTxDeviceOutcome) -> i32,
     pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
     pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
     pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
-    pub reserved: [u64; 2],
+    pub reserved: [u64; 1],
 }
 
 impl AbiNetPortRuntime {
     pub const fn new(
         runtime_cookie: u64,
-        alloc_packet: extern "C" fn(u64, *mut AbiPacketRefRaw) -> i32,
-        submit_rx_packet: extern "C" fn(u64, *mut AbiPacketRefRaw, AbiNetRxMeta) -> i32,
-        complete_tx_lease: extern "C" fn(u64, u64, i32) -> i32,
+        lease_rx_buffer: extern "C" fn(u64, *mut AbiRxLease) -> i32,
+        release_rx_buffer: extern "C" fn(u64, *mut AbiRxLease) -> i32,
+        submit_rx_buffer: extern "C" fn(u64, *mut AbiRxLease, AbiNetRxMeta) -> i32,
+        complete_tx_lease: extern "C" fn(u64, u64, AbiTxDeviceOutcome) -> i32,
         schedule_event: extern "C" fn(u64, AbiNetDriverEvent) -> i32,
         update_link: extern "C" fn(u64, bool) -> i32,
         log: extern "C" fn(u64, u32, *const u8, usize),
@@ -1131,13 +1140,85 @@ impl AbiNetPortRuntime {
             // ABI header size recorded as u64 to avoid truncation on large targets.
             abi_size: core::mem::size_of::<Self>() as u64,
             runtime_cookie,
-            alloc_packet,
-            submit_rx_packet,
+            lease_rx_buffer,
+            release_rx_buffer,
+            submit_rx_buffer,
             complete_tx_lease,
             schedule_event,
             update_link,
             log,
-            reserved: [0; 2],
+            reserved: [0; 1],
+        }
+    }
+}
+
+/// Driver-side ownership guard for one kernel-owned RX DMA lease.
+///
+/// Dropping the guard returns the lease through the runtime that issued it.
+/// Submitting a completed frame consumes the same authority and prevents a
+/// second release.
+pub struct AbiRxLeaseGuard {
+    runtime: AbiNetPortRuntime,
+    lease: AbiRxLease,
+}
+
+unsafe impl Send for AbiRxLeaseGuard {}
+
+impl core::fmt::Debug for AbiRxLeaseGuard {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("AbiRxLeaseGuard")
+            .field("lease_id", &self.lease.lease_id())
+            .field("region", &self.lease.writable_region())
+            .finish()
+    }
+}
+
+impl AbiRxLeaseGuard {
+    /// Acquire one RX DMA lease from `runtime`.
+    ///
+    /// # Errors
+    ///
+    /// Returns the runtime's typed ABI error, or `InvalidParam` if a successful
+    /// callback did not publish a valid non-empty lease.
+    pub fn acquire(runtime: AbiNetPortRuntime) -> Result<Self, AbiError> {
+        let mut lease = AbiRxLease::default();
+        let status = AbiError::from_raw((runtime.lease_rx_buffer)(
+            runtime.runtime_cookie,
+            &mut lease,
+        ));
+        if !status.is_success() {
+            if lease.lease_id().is_some() {
+                let _ = (runtime.release_rx_buffer)(runtime.runtime_cookie, &mut lease);
+            }
+            return Err(status);
+        }
+        if lease.writable_region().is_none() {
+            if lease.lease_id().is_some() {
+                let _ = (runtime.release_rx_buffer)(runtime.runtime_cookie, &mut lease);
+            }
+            return Err(AbiError::InvalidParam);
+        }
+        Ok(Self { runtime, lease })
+    }
+
+    pub const fn writable_region(&self) -> AbiRxWritableRegion {
+        self.lease.region
+    }
+
+    /// Publish the exact device-written frame layout and consume this lease.
+    pub fn submit(mut self, meta: AbiNetRxMeta) -> AbiError {
+        AbiError::from_raw((self.runtime.submit_rx_buffer)(
+            self.runtime.runtime_cookie,
+            &mut self.lease,
+            meta,
+        ))
+    }
+}
+
+impl Drop for AbiRxLeaseGuard {
+    fn drop(&mut self) {
+        if self.lease.lease_id().is_some() {
+            let _ = (self.runtime.release_rx_buffer)(self.runtime.runtime_cookie, &mut self.lease);
         }
     }
 }
@@ -1158,7 +1239,7 @@ pub struct AbiNetPortRegistration {
     pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
     pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
-    pub stop: extern "C" fn(opaque: u64),
+    pub stop: extern "C" fn(opaque: u64) -> i32,
     pub set_interrupts_enabled: extern "C" fn(opaque: u64, enabled: bool) -> i32,
     pub reserved: [u64; 3],
 }
@@ -1171,7 +1252,7 @@ pub struct AbiNetPortOps {
     pub poll: extern "C" fn(u64, u16) -> i32,
     pub handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
     pub stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
-    pub stop: extern "C" fn(u64),
+    pub stop: extern "C" fn(u64) -> i32,
     pub set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
 }
 
@@ -1191,240 +1272,6 @@ impl AbiNetPortRegistration {
             set_interrupts_enabled: ops.set_interrupts_enabled,
             reserved: [0; 3],
         }
-    }
-}
-
-struct AbiPacketBoxState {
-    packet: *mut crate::resource::net::PacketRef,
-}
-
-unsafe fn abi_packet_state_ref(storage: &AbiPacketRefStorage) -> &crate::resource::net::PacketRef {
-    let state = unsafe { storage.as_state_ref::<AbiPacketBoxState>() };
-    unsafe { &*state.packet }
-}
-
-unsafe fn abi_packet_state_mut(
-    storage: &mut AbiPacketRefStorage,
-) -> &mut crate::resource::net::PacketRef {
-    let state = unsafe { storage.as_state_mut::<AbiPacketBoxState>() };
-    unsafe { &mut *state.packet }
-}
-
-extern "C" fn abi_packet_data_ptr(storage: *const AbiPacketRefStorage) -> *const u8 {
-    if storage.is_null() {
-        return ptr::null();
-    }
-    unsafe { abi_packet_state_ref(&*storage).data().as_ptr() }
-}
-
-extern "C" fn abi_packet_data_mut_ptr(storage: *mut AbiPacketRefStorage) -> *mut u8 {
-    if storage.is_null() {
-        return ptr::null_mut();
-    }
-    unsafe { abi_packet_state_mut(&mut *storage).data_mut().as_mut_ptr() }
-}
-
-extern "C" fn abi_packet_len(storage: *const AbiPacketRefStorage) -> usize {
-    if storage.is_null() {
-        return 0;
-    }
-    unsafe { abi_packet_state_ref(&*storage).len() }
-}
-
-extern "C" fn abi_packet_set_len(storage: *mut AbiPacketRefStorage, len: usize) -> bool {
-    if storage.is_null() {
-        return false;
-    }
-    let Some(len) = crate::resource::net::PacketByteCount::new(len) else {
-        return false;
-    };
-    unsafe { abi_packet_state_mut(&mut *storage).set_len(len) }
-}
-
-extern "C" fn abi_packet_capacity(storage: *const AbiPacketRefStorage) -> usize {
-    if storage.is_null() {
-        return 0;
-    }
-    unsafe { abi_packet_state_ref(&*storage).capacity() }
-}
-
-extern "C" fn abi_packet_phys_addr(storage: *const AbiPacketRefStorage) -> u64 {
-    if storage.is_null() {
-        return 0;
-    }
-    unsafe { abi_packet_state_ref(&*storage).phys_addr().as_u64() }
-}
-
-extern "C" fn abi_packet_device_address(storage: *const AbiPacketRefStorage) -> u64 {
-    if storage.is_null() {
-        return 0;
-    }
-    unsafe { abi_packet_state_ref(&*storage).device_address() }
-}
-
-extern "C" fn abi_packet_headroom(storage: *const AbiPacketRefStorage) -> usize {
-    if storage.is_null() {
-        return 0;
-    }
-    unsafe { abi_packet_state_ref(&*storage).headroom() }
-}
-
-extern "C" fn abi_packet_advance(storage: *mut AbiPacketRefStorage, size: usize) -> bool {
-    if storage.is_null() {
-        return false;
-    }
-    let Some(size) = crate::resource::net::PacketByteCount::new(size) else {
-        return false;
-    };
-    unsafe { abi_packet_state_mut(&mut *storage).advance(size) }
-}
-
-extern "C" fn abi_packet_retreat(storage: *mut AbiPacketRefStorage, size: usize) -> bool {
-    if storage.is_null() {
-        return false;
-    }
-    let Some(size) = crate::resource::net::PacketByteCount::new(size) else {
-        return false;
-    };
-    unsafe { abi_packet_state_mut(&mut *storage).retreat(size) }
-}
-
-extern "C" fn abi_packet_drop(storage: *mut AbiPacketRefStorage) {
-    if storage.is_null() {
-        return;
-    }
-    let state = unsafe { (&mut *storage).as_state_mut::<AbiPacketBoxState>() };
-    if !state.packet.is_null() {
-        unsafe {
-            drop(Box::from_raw(state.packet));
-        }
-        state.packet = ptr::null_mut();
-    }
-}
-
-static ABI_PACKET_REF_VTABLE: AbiPacketRefVTable = AbiPacketRefVTable {
-    data_ptr: abi_packet_data_ptr,
-    data_mut_ptr: abi_packet_data_mut_ptr,
-    len: abi_packet_len,
-    set_len: abi_packet_set_len,
-    capacity: abi_packet_capacity,
-    phys_addr: abi_packet_phys_addr,
-    device_address: abi_packet_device_address,
-    headroom: abi_packet_headroom,
-    advance: abi_packet_advance,
-    retreat: abi_packet_retreat,
-    drop: abi_packet_drop,
-    reserved: [0; 4],
-};
-
-impl AbiPacketRefRaw {
-    pub fn is_null(&self) -> bool {
-        self.vtable.is_null()
-    }
-
-    pub fn from_packet(packet: crate::resource::net::PacketRef) -> Self {
-        let state = AbiPacketBoxState {
-            packet: Box::into_raw(Box::new(packet)),
-        };
-        Self {
-            storage: unsafe { AbiPacketRefStorage::from_state(state) },
-            vtable: &ABI_PACKET_REF_VTABLE,
-            reserved: [0; 2],
-        }
-    }
-
-    /// # Safety
-    /// `ptr` must point to a valid `AbiPacketRefRaw` value or be null.
-    /// This function dereferences a raw pointer and is therefore unsafe.
-    pub unsafe fn take(ptr: *mut Self) -> Option<Self> {
-        if ptr.is_null() {
-            return None;
-        }
-        let slot = unsafe { &mut *ptr };
-        if slot.is_null() {
-            None
-        } else {
-            Some(core::mem::take(slot))
-        }
-    }
-
-    pub fn into_packet(mut self) -> crate::resource::net::PacketRef {
-        let packet = unsafe {
-            let state = self.storage.as_state_mut::<AbiPacketBoxState>();
-            let packet = Box::from_raw(state.packet);
-            state.packet = ptr::null_mut();
-            *packet
-        };
-        self.vtable = ptr::null();
-        packet
-    }
-
-    pub fn len(&self) -> usize {
-        if self.vtable.is_null() {
-            0
-        } else {
-            unsafe { ((*self.vtable).len)(&self.storage) }
-        }
-    }
-
-    /// Return true when the packet reference reports zero length.
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.len() == 0
-    }
-
-    #[must_use]
-    pub fn set_len(&mut self, len: crate::resource::net::PacketByteCount) -> bool {
-        if !self.vtable.is_null() {
-            return unsafe { ((*self.vtable).set_len)(&mut self.storage, len.get()) };
-        }
-        false
-    }
-
-    pub fn capacity(&self) -> usize {
-        if self.vtable.is_null() {
-            0
-        } else {
-            unsafe { ((*self.vtable).capacity)(&self.storage) }
-        }
-    }
-
-    pub fn headroom(&self) -> usize {
-        if self.vtable.is_null() {
-            0
-        } else {
-            unsafe { ((*self.vtable).headroom)(&self.storage) }
-        }
-    }
-
-    pub fn device_address(&self) -> u64 {
-        if self.vtable.is_null() {
-            0
-        } else {
-            unsafe { ((*self.vtable).device_address)(&self.storage) }
-        }
-    }
-
-    pub fn data(&self) -> &[u8] {
-        if self.vtable.is_null() {
-            return unsafe {
-                core::slice::from_raw_parts(core::ptr::NonNull::<u8>::dangling().as_ptr(), 0)
-            };
-        }
-        let ptr = unsafe { ((*self.vtable).data_ptr)(&self.storage) };
-        let len = unsafe { ((*self.vtable).len)(&self.storage) };
-        unsafe { core::slice::from_raw_parts(ptr, len) }
-    }
-
-    pub fn data_mut(&mut self) -> &mut [u8] {
-        if self.vtable.is_null() {
-            return unsafe {
-                core::slice::from_raw_parts_mut(core::ptr::NonNull::<u8>::dangling().as_ptr(), 0)
-            };
-        }
-        let ptr = unsafe { ((*self.vtable).data_mut_ptr)(&mut self.storage) };
-        let len = unsafe { ((*self.vtable).len)(&self.storage) };
-        unsafe { core::slice::from_raw_parts_mut(ptr, len) }
     }
 }
 

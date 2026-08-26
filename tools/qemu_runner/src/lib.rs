@@ -6,6 +6,7 @@ use std::fmt;
 use std::net::{SocketAddr, TcpListener};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use std::sync::{Mutex, OnceLock};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -373,7 +374,9 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if config.profile != "boot-smoke" && cpu_hotplug_mode(&config.profile).is_none() {
+    if !matches!(config.profile.as_str(), "boot-smoke" | "network")
+        && cpu_hotplug_mode(&config.profile).is_none()
+    {
         parts.push(String::from("qemu_no_if=1"));
     }
     if config.profile == "step9-heavy" {
@@ -397,8 +400,12 @@ fn profile_needs_storage_disk(profile: &str) -> bool {
 fn profile_needs_boot_artifacts(profile: &str) -> bool {
     matches!(
         profile,
-        "storage" | "driver_domain" | "iommu" | "pr-required" | "nightly-required"
+        "storage" | "driver_domain" | "iommu" | "network" | "pr-required" | "nightly-required"
     )
+}
+
+fn profile_needs_virtio_net(profile: &str) -> bool {
+    profile == "network"
 }
 
 fn profile_needs_driver_domain_cells(profile: &str) -> bool {
@@ -442,6 +449,10 @@ fn copy_cells_dir(src_dir: &Path, dst_dir: &Path) -> Result<usize, BuildError> {
 }
 
 fn ensure_runtime_boot_artifact_assets(root: &Path) -> Result<(), BuildError> {
+    static BUILD_LOCK: Mutex<()> = Mutex::new(());
+    static BUILT_FOR_PROCESS: OnceLock<()> = OnceLock::new();
+
+    let _build_guard = BUILD_LOCK.lock().unwrap_or_else(|error| error.into_inner());
     let boot_artifacts_dir = root
         .join("target")
         .join("x86_64-exorust")
@@ -453,9 +464,18 @@ fn ensure_runtime_boot_artifact_assets(root: &Path) -> Result<(), BuildError> {
     let cell_v2 = cells_dir.join("driver_cell_probe_v2.cell");
     let driver_probe = drivers_dir.join("driver_cell_probe.cell");
     let driver_probe_pci = drivers_dir.join("driver_cell_probe_pci.cell");
-    let have_assets =
-        driver_probe.exists() && driver_probe_pci.exists() && cell_v1.exists() && cell_v2.exists();
-    if have_assets {
+    let virtio_net = drivers_dir.join("virtio_driver_1000.cell");
+    let mlx5 = drivers_dir.join("mlx5_driver_1011.cell");
+    let required = [
+        &driver_probe,
+        &driver_probe_pci,
+        &cell_v1,
+        &cell_v2,
+        &virtio_net,
+        &mlx5,
+    ];
+
+    if BUILT_FOR_PROCESS.get().is_some() && required.iter().all(|path| path.is_file()) {
         return Ok(());
     }
 
@@ -470,14 +490,14 @@ fn ensure_runtime_boot_artifact_assets(root: &Path) -> Result<(), BuildError> {
         ],
     )?;
 
-    if driver_probe.exists() && driver_probe_pci.exists() && cell_v1.exists() && cell_v2.exists() {
-        Ok(())
-    } else {
-        Err(BuildError::ArtifactMissing {
+    if let Some(missing) = required.into_iter().find(|path| !path.is_file()) {
+        return Err(BuildError::ArtifactMissing {
             step: "build runtime boot artifact assets",
-            path: boot_artifacts_dir,
-        })
+            path: missing.to_path_buf(),
+        });
     }
+    let _ = BUILT_FOR_PROCESS.set(());
+    Ok(())
 }
 
 fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
@@ -703,18 +723,16 @@ pub fn package_fullboot_image(config: &RunConfig) -> Result<PackagedImage, Build
     if needs_boot_artifacts {
         ensure_runtime_boot_artifact_assets(&root)?;
     }
-    let boot_artifacts_src = {
-        let primary = kernel_fat_root.join("boot_artifacts");
-        let release_boot_artifacts = root
-            .join("target")
+    let boot_artifacts_src = if needs_boot_artifacts {
+        root.join("target")
             .join("x86_64-exorust")
             .join("release")
-            .join("boot_artifacts");
+            .join("boot_artifacts")
+    } else {
+        let primary = kernel_fat_root.join("boot_artifacts");
         let debug_boot_artifacts = kernel_out_dir.join("boot_artifacts");
         if primary.exists() {
             primary
-        } else if release_boot_artifacts.exists() {
-            release_boot_artifacts
         } else {
             debug_boot_artifacts
         }
@@ -1309,6 +1327,14 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
             .arg("hda-duplex");
     }
 
+    if profile_needs_virtio_net(&config.profile) {
+        qemu_cmd
+            .arg("-netdev")
+            .arg("user,id=net0")
+            .arg("-device")
+            .arg("virtio-net-pci,netdev=net0,iommu_platform=on,disable-legacy=on");
+    }
+
     qemu_cmd
         .arg("-device")
         .arg(iommu_device_arg(&config.profile));
@@ -1398,8 +1424,12 @@ mod tests {
     }
 
     #[test]
-    fn network_profile_uses_kernel_fake_ports_without_driver_artifacts() {
-        assert!(!profile_needs_boot_artifacts("network"));
+    fn network_profile_boots_standalone_virtio_net_with_interrupts() {
+        let cfg = RunConfig::for_profile("network");
+
+        assert!(profile_needs_boot_artifacts("network"));
+        assert!(profile_needs_virtio_net("network"));
+        assert!(!kernel_cmdline(&cfg).contains("qemu_no_if=1"));
         assert!(profile_needs_boot_artifacts("driver_domain"));
         assert!(profile_needs_boot_artifacts("pr-required"));
     }

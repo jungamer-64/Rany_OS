@@ -5,7 +5,7 @@
 use crate::net::l3::ipv4::IpProtocol;
 use alloc::vec::Vec;
 use kernel_api::resource::net::{
-    PacketByteCount, PacketChain, PacketPayload, PacketPayloadFront, PacketRef, PacketWindowError,
+    PacketByteCount, PacketPayload, PacketPayloadFront, PacketRef, PacketWindowError,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -472,19 +472,35 @@ impl OwnedPayloadWindow {
         self.payload
     }
 
-    pub fn into_payload(self) -> Result<PacketPayload, PacketWindowError> {
+    pub fn into_payload(
+        self,
+    ) -> Result<PacketPayload, kernel_api::resource::net::PacketPayloadOwnershipError<PacketPayload>>
+    {
         let offset = self.range.offset();
         let len = self.range.total_len();
         if len == 0 {
-            return Ok(PacketPayload::default());
+            return Err(kernel_api::resource::net::PacketPayloadOwnershipError::new(
+                kernel_api::resource::net::PacketPayloadError::EmptyPayload,
+                self.payload,
+            ));
         }
 
         let payload = if offset == 0 {
             self.payload
         } else {
-            let prefix_len = PacketByteCount::new(offset).ok_or(PacketWindowError::Empty)?;
-            match self.payload.take_front(prefix_len)? {
-                PacketPayloadFront::Whole(_) => return Err(PacketWindowError::OutOfBounds),
+            let Some(prefix_len) = PacketByteCount::new(offset) else {
+                return Err(kernel_api::resource::net::PacketPayloadOwnershipError::new(
+                    kernel_api::resource::net::PacketPayloadError::EmptyPayload,
+                    self.payload,
+                ));
+            };
+            match self.payload.try_take_front(prefix_len)? {
+                PacketPayloadFront::Whole(payload) => {
+                    return Err(kernel_api::resource::net::PacketPayloadOwnershipError::new(
+                        kernel_api::resource::net::PacketPayloadError::OutOfBounds,
+                        payload,
+                    ));
+                }
                 PacketPayloadFront::Prefix { remainder, .. } => remainder,
             }
         };
@@ -493,8 +509,13 @@ impl OwnedPayloadWindow {
             return Ok(payload);
         }
 
-        let front_len = PacketByteCount::new(len).ok_or(PacketWindowError::Empty)?;
-        match payload.take_front(front_len)? {
+        let Some(front_len) = PacketByteCount::new(len) else {
+            return Err(kernel_api::resource::net::PacketPayloadOwnershipError::new(
+                kernel_api::resource::net::PacketPayloadError::EmptyPayload,
+                payload,
+            ));
+        };
+        match payload.try_take_front(front_len)? {
             PacketPayloadFront::Whole(payload) => Ok(payload),
             PacketPayloadFront::Prefix { front, .. } => Ok(front),
         }
@@ -541,36 +562,17 @@ impl GeneratedPacketWriter {
     }
 
     pub fn finish(self) -> Option<PacketPayload> {
-        (self.offset == self.packet.len()).then(|| PacketPayload::single(self.packet))
+        if self.offset != self.packet.len() {
+            return None;
+        }
+        PacketPayload::try_single(self.packet).ok()
     }
 }
 
-pub fn append_payload(target: &mut PacketPayload, payload: PacketPayload) {
-    if payload.is_empty() {
-        return;
-    }
-    if target.is_empty() {
-        *target = payload;
-        return;
-    }
-
-    let mut segments = core::mem::take(target).into_segments();
-    segments.extend(payload.into_segments());
-    *target = if segments.len() == 1 {
-        PacketPayload::single(segments.remove(0))
-    } else {
-        PacketPayload::chain(kernel_api::resource::net::PacketChain::from_segments(
-            segments,
-        ))
-    };
-}
-
-pub fn packet_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
-    match segments.len() {
-        0 => PacketPayload::default(),
-        1 => PacketPayload::single(segments.remove(0)),
-        _ => PacketPayload::chain(PacketChain::from_segments(segments)),
-    }
+pub fn packet_payload_from_segments(
+    segments: Vec<PacketRef>,
+) -> Result<PacketPayload, kernel_api::resource::net::PacketPayloadOwnershipError<Vec<PacketRef>>> {
+    PacketPayload::try_from_segments(segments)
 }
 
 pub struct PacketPayloadView<'a> {
@@ -601,37 +603,21 @@ impl<'a> PacketPayloadView<'a> {
     }
 
     pub fn first_byte(&self) -> Option<u8> {
-        match self.payload {
-            PacketPayload::Single(packet) => packet.data().first().copied(),
-            PacketPayload::Chain(chain) => chain
-                .segments()
-                .iter()
-                .find_map(|segment| segment.data().first().copied()),
-        }
+        self.payload
+            .segments()
+            .iter()
+            .find_map(|segment| segment.data().first().copied())
     }
 
     pub fn first_segment(&self) -> Option<&'a PacketRef> {
-        match self.payload {
-            PacketPayload::Single(packet) => Some(packet),
-            PacketPayload::Chain(chain) => chain.segments().first(),
-        }
+        self.payload.segments().first()
     }
 
     pub fn for_each_chunk(&self, mut f: impl FnMut(&[u8])) {
-        match self.payload {
-            PacketPayload::Single(packet) => {
-                let data = packet.data();
-                if !data.is_empty() {
-                    f(data);
-                }
-            }
-            PacketPayload::Chain(chain) => {
-                for segment in chain.segments() {
-                    let data = segment.data();
-                    if !data.is_empty() {
-                        f(data);
-                    }
-                }
+        for segment in self.payload.segments() {
+            let data = segment.data();
+            if !data.is_empty() {
+                f(data);
             }
         }
     }
@@ -839,14 +825,11 @@ impl<'a> PacketPayloadCursor<'a> {
 }
 
 pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
-    let visible_len = PacketByteCount::new(len)?;
+    PacketByteCount::new(len)?;
     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
         let available_headroom = packet.headroom();
-        let capacity = packet.capacity().saturating_sub(available_headroom);
-        if headroom <= available_headroom && len <= capacity {
-            if !packet.set_len(visible_len) {
-                return None;
-            }
+        if headroom <= available_headroom && len <= packet.data_capacity() {
+            packet.try_resize(len).ok()?;
             return Some(packet);
         }
     }
@@ -855,9 +838,7 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
     let dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(dma_len)?;
     let mut packet =
         crate::net::datapath::mempool::packet_ref_from_dma_slice_with_headroom(dma_buf, headroom)?;
-    if !packet.set_len(visible_len) {
-        return None;
-    }
+    packet.try_resize(len).ok()?;
     Some(packet)
 }
 
@@ -952,7 +933,8 @@ mod tests {
 
     #[test]
     fn trim_ascii_whitespace_rejects_invalid_span_instead_of_widening() {
-        let payload = PacketPayload::default();
+        let payload = PacketPayload::try_single(test_packet_with_contents(b"x"))
+            .expect("test payload is non-empty");
         let span = PayloadSpanRef {
             payload: &payload,
             offset: usize::MAX,
@@ -979,13 +961,16 @@ mod tests {
 
     #[test]
     fn payload_bound_window_rejects_out_of_bounds_request() {
-        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
+            .expect("test payload is non-empty");
 
         let bounds = OwnedPayloadBounds::checked(&payload, 4, 0).expect("empty tail bounds");
         assert!(bounds.take_from(payload).is_some());
-        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
+            .expect("test payload is non-empty");
         assert!(PayloadRange::checked(&payload, 5, 0).is_none());
-        let payload = PacketPayload::single(test_packet_with_contents(b"abcd"));
+        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
+            .expect("test payload is non-empty");
         assert!(PayloadRange::checked(&payload, 3, 2).is_none());
     }
 
@@ -1002,10 +987,11 @@ mod tests {
 
     #[test]
     fn packet_payload_take_front_splits_single_packet() {
-        let payload = PacketPayload::single(test_packet_with_contents(b"abcdef"));
+        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcdef"))
+            .expect("test payload is non-empty");
         let len = PacketByteCount::new(3).expect("non-empty prefix");
 
-        let (front, remainder) = match payload.take_front(len).expect("single split") {
+        let (front, remainder) = match payload.try_take_front(len).expect("single split") {
             PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
             PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
         };
@@ -1016,13 +1002,14 @@ mod tests {
 
     #[test]
     fn packet_payload_take_front_splits_on_chain_boundary() {
-        let payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+        let payload = PacketPayload::try_from_segments(alloc::vec![
             test_packet_with_contents(b"abc"),
             test_packet_with_contents(b"def"),
-        ]));
+        ])
+        .expect("test segments are non-empty");
         let len = PacketByteCount::new(3).expect("non-empty prefix");
 
-        let (front, remainder) = match payload.take_front(len).expect("chain boundary split") {
+        let (front, remainder) = match payload.try_take_front(len).expect("chain boundary split") {
             PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
             PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
         };
@@ -1033,13 +1020,14 @@ mod tests {
 
     #[test]
     fn packet_payload_take_front_splits_inside_chain_segment() {
-        let payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+        let payload = PacketPayload::try_from_segments(alloc::vec![
             test_packet_with_contents(b"abc"),
             test_packet_with_contents(b"defgh"),
-        ]));
+        ])
+        .expect("test segments are non-empty");
         let len = PacketByteCount::new(5).expect("non-empty prefix");
 
-        let (front, remainder) = match payload.take_front(len).expect("middle segment split") {
+        let (front, remainder) = match payload.try_take_front(len).expect("middle segment split") {
             PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
             PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
         };
@@ -1050,7 +1038,8 @@ mod tests {
 
     #[test]
     fn owned_payload_window_takes_bounds_from_same_payload() {
-        let source = PacketPayload::single(test_packet_with_contents(b"abcdef"));
+        let source = PacketPayload::try_single(test_packet_with_contents(b"abcdef"))
+            .expect("test payload is non-empty");
 
         let bounds = OwnedPayloadBounds::checked(&source, 3, 3).expect("same-payload bounds");
         let taken = bounds
@@ -1064,10 +1053,11 @@ mod tests {
 
     #[test]
     fn payload_span_mut_mutates_only_checked_range() {
-        let mut payload = PacketPayload::chain(PacketChain::from_segments(alloc::vec![
+        let mut payload = PacketPayload::try_pair(
             test_packet_with_contents(b"abcd"),
             test_packet_with_contents(b"efgh"),
-        ]));
+        )
+        .expect("test segments are non-empty");
         let bounds = MutablePayloadBounds::checked(&payload, 2, 4).expect("cross-segment bounds");
         let mut span = bounds.open(&mut payload).expect("mutable span");
 
@@ -1082,7 +1072,8 @@ mod tests {
 
     #[test]
     fn owned_payload_window_rejects_bounds_against_target_payload() {
-        let shorter_payload = PacketPayload::single(test_packet_with_contents(b"xy"));
+        let shorter_payload = PacketPayload::try_single(test_packet_with_contents(b"xy"))
+            .expect("test payload is non-empty");
 
         assert!(
             PayloadRange::checked(&shorter_payload, 3, 3).is_none(),

@@ -2,13 +2,14 @@
 // interfaces/kernel_api/src/resource/net.rs - Network resource ABI
 // ============================================================================
 
-use crate::KapiResult;
 use crate::service::kernel;
+use crate::{KapiError, KapiResult};
 
 pub use crate::types_impl::{
-    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketChain,
-    PacketFront, PacketMeta, PacketPayload, PacketPayloadFront, PacketRef, PacketRefStorage,
-    PacketRefVTable, PacketType, PacketWindowError, PhysicalAddress,
+    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketFront,
+    PacketMeta, PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadFront,
+    PacketPayloadOwnershipError, PacketRef, PacketRefStorage, PacketRefVTable, PacketSegments,
+    PacketType, PacketWindowError, PhysicalAddress,
 };
 
 /// # Errors
@@ -51,7 +52,9 @@ pub async fn tcp_acceptor_next_connection(acceptor: &TcpAcceptor) -> KapiResult<
 /// # Errors
 ///
 /// Returns an error if the request is invalid or the required state cannot be read.
-pub async fn tcp_connection_recv_payload(connection: &TcpConnection) -> KapiResult<PacketPayload> {
+pub async fn tcp_connection_recv_payload(
+    connection: &TcpConnection,
+) -> KapiResult<TcpReceiveOutcome> {
     kernel::instance()
         .net_tcp_connection_recv_payload(TcpConnection::from_raw_parts(
             connection.id,
@@ -66,7 +69,7 @@ pub async fn tcp_connection_recv_payload(connection: &TcpConnection) -> KapiResu
 pub async fn tcp_connection_send_payload(
     connection: &TcpConnection,
     payload: PacketPayload,
-) -> KapiResult<()> {
+) -> Result<(), PayloadSendError> {
     kernel::instance()
         .net_tcp_connection_send_payload(
             TcpConnection::from_raw_parts(connection.id, connection.default_scope),
@@ -100,13 +103,37 @@ pub async fn raw_endpoint_recv_payload(endpoint: &RawEndpoint) -> KapiResult<Pac
 pub async fn raw_endpoint_send_payload(
     endpoint: &RawEndpoint,
     payload: PacketPayload,
-) -> KapiResult<()> {
+) -> Result<(), PayloadSendError> {
     kernel::instance()
         .net_raw_endpoint_send_payload(
             RawEndpoint::from_raw_parts(endpoint.id, endpoint.default_scope),
             payload,
         )
         .await
+}
+
+pub enum TcpReceiveOutcome {
+    Payload(PacketPayload),
+    EndOfStream,
+}
+
+pub struct PayloadSendError {
+    cause: KapiError,
+    payload: PacketPayload,
+}
+
+impl PayloadSendError {
+    pub const fn new(cause: KapiError, payload: PacketPayload) -> Self {
+        Self { cause, payload }
+    }
+
+    pub const fn cause(&self) -> KapiError {
+        self.cause
+    }
+
+    pub fn into_parts(self) -> (KapiError, PacketPayload) {
+        (self.cause, self.payload)
+    }
 }
 
 #[derive(Default)]

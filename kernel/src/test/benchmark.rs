@@ -340,6 +340,7 @@ pub fn bench_ipc() -> TestResult {
 pub fn bench_network() -> TestResult {
     use crate::net::l2::ethernet::{EtherType, EthernetFrame, MacAddress};
     use crate::net::l3::ipv4::{Ipv4Address, Ipv4Packet};
+    use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
     const ITERATIONS: usize = 10000;
 
@@ -399,6 +400,41 @@ pub fn bench_network() -> TestResult {
         core::hint::black_box(equal);
     }
     mac_cmp.report();
+
+    // Packet ownership handoff. The packet is allocated before the measured
+    // steady-state loop so PacketPayload::One construction and destruction can
+    // be observed independently from pool admission.
+    let mut packet = crate::net::payload::alloc_packet_with_headroom(256, DEFAULT_PACKET_HEADROOM)
+        .expect("network benchmark packet allocation");
+    packet.data_mut().fill(0x5a);
+    let backing = packet.as_ptr();
+    let pool_allocations_before = crate::net::datapath::mempool::net_mempool()
+        .map(crate::net::datapath::mempool::Mempool::stats)
+        .map_or(0, |stats| stats.alloc_count);
+    let mut packet_handoff = BenchmarkResult::new("packet_payload_owner_handoff_256b");
+    let mut backing_identity_preserved = true;
+    for _ in 0..ITERATIONS {
+        let start = rdtsc();
+        let payload =
+            PacketPayload::try_single(packet).expect("benchmark packet remains a non-empty owner");
+        let mut segments = payload.into_segments();
+        packet = segments.next().expect("single payload returns one owner");
+        backing_identity_preserved &= packet.as_ptr() == backing;
+        let end = rdtsc();
+        packet_handoff.record(end - start);
+    }
+    let pool_allocations_after = crate::net::datapath::mempool::net_mempool()
+        .map(crate::net::datapath::mempool::Mempool::stats)
+        .map_or(0, |stats| stats.alloc_count);
+    packet_handoff.report();
+    log::info!(
+        "  Zero-copy record: backing_identity_preserved={} packet_pool_allocation_delta={} bytes={} cycles={}\n",
+        backing_identity_preserved,
+        pool_allocations_after.saturating_sub(pool_allocations_before),
+        256usize.saturating_mul(ITERATIONS),
+        packet_handoff.total_cycles,
+    );
+    core::hint::black_box(packet);
 
     log::info!("[BENCH] Network benchmark completed\n\n");
 

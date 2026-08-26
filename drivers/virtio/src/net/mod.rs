@@ -3,9 +3,10 @@
 // ============================================================================
 
 use core::ptr::NonNull;
+use kernel_api::abi::driver::{AbiError, AbiNetRxMeta, AbiRxLeaseGuard};
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::netdev::{NetTxSegment, TxLeaseId};
-use kernel_api::resource::net::PacketRef;
+use kernel_api::resource::net::PacketByteCount;
 
 pub mod device;
 pub mod features;
@@ -13,15 +14,65 @@ mod global_init;
 pub mod inflight;
 pub mod managed;
 
-pub use global_init::*;
+pub(crate) use global_init::{
+    handle_virtio_net_interrupt_for_index, init_virtio_net_with_transport_at_index,
+    with_virtio_net_at_index,
+};
 pub use inflight::InflightTracker;
-pub use managed::{ManagedNetVirtQueue, NetCompletionHandler, NetCompletionKind, VirtioNetDevice};
+pub use managed::{ManagedNetVirtQueue, VirtioNetDevice};
+
+pub(crate) const MAX_VIRTIO_COMPLETIONS_PER_PASS: usize = 256;
+
+/// Device-writable span associated with an owned RX DMA lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RxDmaRegion {
+    cpu_ptr: *mut u8,
+    device_addr: u64,
+    writable_len: usize,
+}
+
+impl RxDmaRegion {
+    pub const fn cpu_ptr(self) -> *mut u8 {
+        self.cpu_ptr
+    }
+
+    pub const fn device_addr(self) -> u64 {
+        self.device_addr
+    }
+
+    pub const fn writable_len(self) -> usize {
+        self.writable_len
+    }
+}
+
+#[derive(Debug)]
+pub struct RxDmaLease {
+    lease: AbiRxLeaseGuard,
+}
+
+impl RxDmaLease {
+    pub(crate) fn from_abi(lease: AbiRxLeaseGuard) -> Self {
+        Self { lease }
+    }
+
+    pub fn writable_region(&self) -> RxDmaRegion {
+        let region = self.lease.writable_region();
+        RxDmaRegion {
+            cpu_ptr: region.cpu_ptr,
+            device_addr: region.device_addr,
+            writable_len: region.writable_len,
+        }
+    }
+
+    pub(crate) fn submit(self, meta: AbiNetRxMeta) -> AbiError {
+        self.lease.submit(meta)
+    }
+}
 
 /// In-flight RX packet state.
 #[derive(Debug)]
 pub struct RxInflight {
-    pub packet: PacketRef,
-    pub dma_mapping: Option<NetDmaMappingToken>,
+    pub buffer: RxDmaLease,
 }
 
 /// In-flight TX packet state.
@@ -30,64 +81,11 @@ pub struct TxInflight {
     pub lease_id: TxLeaseId,
 }
 
-/// Opaque DMA mapping token returned by the runtime.
-///
-/// The driver core only uses the hardware-visible device address and passes the
-/// token back to the runtime for teardown.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct NetDmaMappingToken {
-    device_addr: u64,
-    release_key: Option<u64>,
-    mapped_len: u64,
-}
-
-impl NetDmaMappingToken {
-    pub fn direct(device_addr: u64) -> Self {
-        Self {
-            device_addr,
-            release_key: None,
-            mapped_len: 0,
-        }
-    }
-
-    pub fn mapped(device_addr: u64, release_key: u64, mapped_len: u64) -> Self {
-        Self {
-            device_addr,
-            release_key: Some(release_key),
-            mapped_len,
-        }
-    }
-
-    pub fn device_address(&self) -> u64 {
-        self.device_addr
-    }
-
-    pub fn release_key(&self) -> Option<u64> {
-        self.release_key
-    }
-
-    pub fn mapped_len(&self) -> u64 {
-        self.mapped_len
-    }
-
-    pub fn requires_unmap(&self) -> bool {
-        self.release_key.is_some()
-    }
-}
-
 /// Runtime DMA allocation purpose for virtio-net queue-owned memory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NetDmaPurpose {
     QueueMemory,
     TxHeaders,
-}
-
-/// DMA direction for IOMMU mapping.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NetDmaDirection {
-    ToDevice,
-    FromDevice,
-    Bidirectional,
 }
 
 /// Kernel-owned allocation hooks used by the portable virtio-net core.
@@ -101,35 +99,23 @@ pub trait NetRuntime: Send + Sync {
         purpose: NetDmaPurpose,
     ) -> Result<DmaSlice<CpuOwned>, VirtioNetError>;
 
-    fn alloc_packet(&self) -> Option<PacketRef>;
-
-    /// Map a packet for DMA access by the device (IOMMU support).
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    fn map_packet(
-        &self,
-        packet: &PacketRef,
-        direction: NetDmaDirection,
-    ) -> Result<NetDmaMappingToken, VirtioNetError>;
-
-    /// Release a DMA mapping previously returned by `map_packet()`.
-    fn release_dma_mapping(&self, mapping: NetDmaMappingToken);
+    fn lease_rx_buffer(&self) -> Option<RxDmaLease>;
 
     /// Called when a packet has been received.
     fn receive_packet(
         &self,
         queue_index: u16,
-        packet: PacketRef,
+        buffer: RxDmaLease,
         header_len: usize,
         payload_len: usize,
+        flags: u32,
     );
 
     /// Called when a packet transmission is complete.
     fn transmit_complete(&self, queue_index: u16, lease_id: TxLeaseId);
 
-    /// Schedule a waker for a queue event.
-    fn schedule_wake(&self, queue_index: u16);
+    /// Defer interrupt processing to the port runtime.
+    fn schedule_interrupt(&self);
 
     /// Publish a physical link-state transition to the registered port runtime.
     fn update_link(&self, up: bool);
@@ -221,25 +207,40 @@ impl NetVirtQueue {
         header: &VirtioNetHeader,
         segments: &[NetTxSegment],
     ) -> Result<u16, VirtioNetError> {
-        if segments.is_empty() {
-            return Err(VirtioNetError::DeviceError);
+        unsafe {
+            self.add_tx_buffer_segments(
+                header,
+                segments.len(),
+                segments
+                    .iter()
+                    .map(|segment| (segment.device_addr().get(), segment.len())),
+            )
         }
+    }
 
-        let desc_idx = self.vq.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
-        let mut data_descs = alloc::vec::Vec::with_capacity(segments.len());
-        for _ in segments {
-            let Some(desc) = self.vq.alloc_desc() else {
-                self.vq.free_desc(desc_idx);
-                for allocated in data_descs {
-                    self.vq.free_desc(allocated);
-                }
-                return Err(VirtioNetError::QueueFull);
-            };
-            data_descs.push(desc);
+    /// Add a checked iterator of caller-retained DMA segments to the TX queue.
+    ///
+    /// # Safety
+    ///
+    /// Every yielded DMA range must remain device-readable until the used-ring
+    /// completion for the returned descriptor head.
+    pub unsafe fn add_tx_buffer_segments<I>(
+        &self,
+        header: &VirtioNetHeader,
+        segment_count: usize,
+        mut segments: I,
+    ) -> Result<u16, VirtioNetError>
+    where
+        I: Iterator<Item = (u64, PacketByteCount)>,
+    {
+        if segment_count == 0 || segment_count > usize::from(self.vq.queue_size().saturating_sub(1))
+        {
+            return Err(VirtioNetError::DeviceError);
         }
 
         let header_ptr = self.tx_headers.ok_or(VirtioNetError::DeviceError)?;
         let header_dma_base = self.tx_header_phys.ok_or(VirtioNetError::DeviceError)?;
+        let desc_idx = self.vq.alloc_desc().ok_or(VirtioNetError::QueueFull)?;
 
         let header_slot = unsafe { &mut *header_ptr.as_ptr().add(desc_idx as usize) };
         *header_slot = *header;
@@ -247,20 +248,34 @@ impl NetVirtQueue {
         let header_desc = self.vq.get_desc_mut(desc_idx);
         header_desc.addr = header_dma_base + (desc_idx as u64 * VirtioNetHeader::SIZE as u64);
         header_desc.len = VirtioNetHeader::SIZE as u32;
-        header_desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
-        header_desc.next = data_descs[0];
+        header_desc.flags = 0;
+        header_desc.next = 0;
 
-        for (index, segment) in segments.iter().enumerate() {
-            let desc = self.vq.get_desc_mut(data_descs[index]);
-            desc.addr = segment.device_addr().get();
-            desc.len = segment.len().get() as u32;
-            if index + 1 < data_descs.len() {
-                desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
-                desc.next = data_descs[index + 1];
-            } else {
-                desc.flags = 0;
-                desc.next = 0;
-            }
+        let mut previous = desc_idx;
+        for _ in 0..segment_count {
+            let Some((device_addr, len)) = segments.next() else {
+                self.vq.free_desc_chain(desc_idx);
+                return Err(VirtioNetError::DeviceError);
+            };
+            let Some(current) = self.vq.alloc_desc() else {
+                self.vq.free_desc_chain(desc_idx);
+                return Err(VirtioNetError::QueueFull);
+            };
+            let desc = self.vq.get_desc_mut(current);
+            desc.addr = device_addr;
+            desc.len = len.get() as u32;
+            desc.flags = 0;
+            desc.next = 0;
+
+            let previous_desc = self.vq.get_desc_mut(previous);
+            previous_desc.flags = crate::defs::vring_flags::VRING_DESC_F_NEXT;
+            previous_desc.next = current;
+            previous = current;
+        }
+
+        if segments.next().is_some() {
+            self.vq.free_desc_chain(desc_idx);
+            return Err(VirtioNetError::DeviceError);
         }
 
         unsafe {

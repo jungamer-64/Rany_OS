@@ -55,6 +55,7 @@ pub enum RuntimeGroup {
 
 enum RuntimeTestBody {
     Sync(fn(Option<&str>) -> RuntimeTestResult),
+    NetworkRuntime,
     CpuHotplugLifecycle,
     CpuHotplugSparse,
 }
@@ -170,10 +171,30 @@ fn iommu_integration_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
     }
 }
 
-fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
+async fn cpu_hotplug_runtime_suite() -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
-        let summary = crate::qemu_tests::run_network_runtime_suite(case_filter);
+        return crate::qemu_tests::run_cpu_hotplug_runtime_suite().await;
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("cpu hotplug runtime requires qemu-test-export")
+}
+
+async fn cpu_hotplug_sparse_runtime_suite() -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        return crate::qemu_tests::run_cpu_hotplug_sparse_runtime_suite().await;
+    }
+
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("sparse cpu hotplug runtime requires qemu-test-export")
+}
+
+async fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        let summary = crate::qemu_tests::run_network_runtime_suite(case_filter).await;
         if summary.failed > 0 {
             return RuntimeTestResult::fail("network runtime failures");
         }
@@ -256,7 +277,7 @@ static CASES: &[RuntimeTestCase] = &[
     },
     RuntimeTestCase {
         id: "network.runtime_suite",
-        body: RuntimeTestBody::Sync(network_runtime_suite),
+        body: RuntimeTestBody::NetworkRuntime,
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Network,
     },
@@ -373,12 +394,9 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
         selected_any = true;
         let result = match case.body {
             RuntimeTestBody::Sync(run) => run(nested_case_filter),
-            RuntimeTestBody::CpuHotplugLifecycle => {
-                crate::qemu_tests::run_cpu_hotplug_runtime_suite().await
-            }
-            RuntimeTestBody::CpuHotplugSparse => {
-                crate::qemu_tests::run_cpu_hotplug_sparse_runtime_suite().await
-            }
+            RuntimeTestBody::NetworkRuntime => network_runtime_suite(nested_case_filter).await,
+            RuntimeTestBody::CpuHotplugLifecycle => cpu_hotplug_runtime_suite().await,
+            RuntimeTestBody::CpuHotplugSparse => cpu_hotplug_sparse_runtime_suite().await,
         };
         log_case_result(case.id, result);
 

@@ -16,9 +16,21 @@ fn set_packet_visible_len(
 ) -> Result<(), crate::net::types::NetworkError> {
     let len = PacketByteCount::new(len).ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
     packet
-        .set_len(len)
-        .then_some(())
-        .ok_or(crate::net::types::NetworkError::BufferTooSmall)
+        .try_resize(len.get())
+        .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)
+}
+
+fn raw_payload_from_rejected_ethernet_frame(frame: PacketPayload) -> PacketPayload {
+    let header_len = PacketByteCount::new(14).expect("Ethernet header length is non-zero");
+    match frame
+        .try_take_front(header_len)
+        .expect("raw frames are constructed as an Ethernet header followed by the caller payload")
+    {
+        kernel_api::resource::net::PacketPayloadFront::Prefix { remainder, .. } => remainder,
+        kernel_api::resource::net::PacketPayloadFront::Whole(_) => {
+            unreachable!("raw Ethernet frame always contains an IP payload")
+        }
+    }
 }
 
 mod global_instance;
@@ -170,16 +182,22 @@ impl NetworkStack {
         &mut self,
         if_id: NetIfId,
         payload: PacketPayload,
-    ) -> Result<(), crate::net::types::NetworkError> {
+    ) -> Result<(), crate::net::types::NetworkPayloadError> {
         let view = PacketPayloadView::new(&payload);
         let Some(version) = view.first_byte().map(|byte| byte >> 4) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::BufferTooSmall,
+                payload,
+            ));
         };
 
         match version {
             4 => self.send_raw_ipv4_payload_on(if_id, payload),
             6 => self.send_raw_ipv6_payload_on(if_id, payload),
-            _ => Err(crate::net::types::NetworkError::InvalidAddress),
+            _ => Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::InvalidAddress,
+                payload,
+            )),
         }
     }
 
@@ -187,66 +205,71 @@ impl NetworkStack {
         &mut self,
         if_id: NetIfId,
         payload: PacketPayload,
-    ) -> Result<(), crate::net::types::NetworkError> {
+    ) -> Result<(), crate::net::types::NetworkPayloadError> {
         let payload_view = PacketPayloadView::new(&payload);
-        let Some(fixed) = payload_view.read_array::<20>(0) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        };
-        if (fixed[0] >> 4) != 4 {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
-        }
-
-        let ihl = ((fixed[0] & 0x0f) as usize) * 4;
-        if !(20..=60).contains(&ihl) {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
-        }
-
-        let Some(header_storage) = payload_view.read_fixed_bytes::<60>(0, ihl) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        };
-        let header = header_storage.as_slice();
-
-        let total_len = u16::from_be_bytes([header[2], header[3]]) as usize;
-        if total_len < ihl || total_len != payload_view.total_len() {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
-        }
-
-        if u16::from_be_bytes([header[10], header[11]])
-            != crate::net::l3::ipv4::calculate_ip_checksum(&header[..ihl])
-        {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
-        }
-
-        let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
-            header[12], header[13], header[14], header[15],
-        ]);
-        let dst_ip = crate::net::l3::ipv4::Ipv4Address::new([
-            header[16], header[17], header[18], header[19],
-        ]);
-        let protocol = header[9];
-
-        let (src_port, dst_port, tcp_flags) = match protocol {
-            6 if total_len >= ihl + 14 => {
-                let ports = payload_view
-                    .read_array::<14>(ihl)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-                (
-                    u16::from_be_bytes([ports[0], ports[1]]),
-                    u16::from_be_bytes([ports[2], ports[3]]),
-                    ports[13],
-                )
+        let parsed = (|| {
+            let fixed = payload_view
+                .read_array::<20>(0)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            if (fixed[0] >> 4) != 4 {
+                return Err(crate::net::types::NetworkError::InvalidAddress);
             }
-            17 if total_len >= ihl + 4 => {
-                let ports = payload_view
-                    .read_array::<4>(ihl)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-                (
-                    u16::from_be_bytes([ports[0], ports[1]]),
-                    u16::from_be_bytes([ports[2], ports[3]]),
-                    0,
-                )
+            let ihl = ((fixed[0] & 0x0f) as usize) * 4;
+            if !(20..=60).contains(&ihl) {
+                return Err(crate::net::types::NetworkError::InvalidAddress);
             }
-            _ => (0, 0, 0),
+            let header_storage = payload_view
+                .read_fixed_bytes::<60>(0, ihl)
+                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+            let header = header_storage.as_slice();
+            let total_len = u16::from_be_bytes([header[2], header[3]]) as usize;
+            if total_len < ihl || total_len != payload_view.total_len() {
+                return Err(crate::net::types::NetworkError::InvalidAddress);
+            }
+            if u16::from_be_bytes([header[10], header[11]])
+                != crate::net::l3::ipv4::calculate_ip_checksum(&header[..ihl])
+            {
+                return Err(crate::net::types::NetworkError::InvalidAddress);
+            }
+            let src_ip = crate::net::l3::ipv4::Ipv4Address::new([
+                header[12], header[13], header[14], header[15],
+            ]);
+            let dst_ip = crate::net::l3::ipv4::Ipv4Address::new([
+                header[16], header[17], header[18], header[19],
+            ]);
+            let protocol = header[9];
+            let (src_port, dst_port, tcp_flags) = match protocol {
+                6 if total_len >= ihl + 14 => {
+                    let ports = payload_view
+                        .read_array::<14>(ihl)
+                        .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                    (
+                        u16::from_be_bytes([ports[0], ports[1]]),
+                        u16::from_be_bytes([ports[2], ports[3]]),
+                        ports[13],
+                    )
+                }
+                17 if total_len >= ihl + 4 => {
+                    let ports = payload_view
+                        .read_array::<4>(ihl)
+                        .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                    (
+                        u16::from_be_bytes([ports[0], ports[1]]),
+                        u16::from_be_bytes([ports[2], ports[3]]),
+                        0,
+                    )
+                }
+                _ => (0, 0, 0),
+            };
+            Ok((
+                src_ip, dst_ip, protocol, header[8], src_port, dst_port, tcp_flags,
+            ))
+        })();
+        let (src_ip, dst_ip, protocol, ttl, src_port, dst_port, tcp_flags) = match parsed {
+            Ok(parsed) => parsed,
+            Err(cause) => {
+                return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
+            }
         };
 
         if !crate::net::security::firewall::check_egress_in(
@@ -259,10 +282,18 @@ impl NetworkStack {
             tcp_flags,
         ) {
             self.stats().record_dropped();
-            return Err(crate::net::types::NetworkError::PermissionDenied);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::PermissionDenied,
+                payload,
+            ));
         }
 
-        let (config, _) = self.resolve_ipv4_egress_on(if_id, Some(src_ip))?;
+        let (config, _) = match self.resolve_ipv4_egress_on(if_id, Some(src_ip)) {
+            Ok(egress) => egress,
+            Err(cause) => {
+                return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
+            }
+        };
         let current_time = self.current_time();
         let mut pending_payload = Some(payload);
         let dst_mac = if dst_ip.is_loopback() {
@@ -273,7 +304,7 @@ impl NetworkStack {
                     src_ip,
                     dst_ip,
                     IpProtocol::from(protocol),
-                    header[8],
+                    ttl,
                     pending_payload
                         .take()
                         .expect("pending raw IPv4 payload must exist"),
@@ -281,22 +312,55 @@ impl NetworkStack {
                 );
             }) {
                 Some(mac) => mac,
-                None => return Err(crate::net::types::NetworkError::ArpResolutionPending),
+                None => {
+                    return match pending_payload.take() {
+                        Some(payload) => Err(crate::net::types::NetworkPayloadError::new(
+                            crate::net::types::NetworkError::ArpResolutionPending,
+                            payload,
+                        )),
+                        None => Ok(()),
+                    };
+                }
             }
         };
 
-        let packet = self.build_ethernet_header_packet(config.mac, dst_mac, EtherType::Ipv4)?;
-        let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
-        crate::net::payload::append_payload(
-            &mut frame_payload,
-            pending_payload
-                .take()
-                .expect("resolved raw IPv4 payload must exist"),
-        );
-        if self.transmit_packet_on(if_id, frame_payload) {
-            Ok(())
-        } else {
-            Err(crate::net::types::NetworkError::TransmitFailed)
+        let raw_payload = pending_payload
+            .take()
+            .expect("resolved raw IPv4 payload must exist");
+        let packet = match self.build_ethernet_header_packet(config.mac, dst_mac, EtherType::Ipv4) {
+            Ok(packet) => packet,
+            Err(cause) => {
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    cause,
+                    raw_payload,
+                ));
+            }
+        };
+        let frame_header = match kernel_api::resource::net::PacketPayload::try_single(packet) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    crate::net::types::NetworkError::BufferTooSmall,
+                    raw_payload,
+                ));
+            }
+        };
+        let frame_payload = match frame_header.try_append(raw_payload) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let (_header, raw_payload) = error.into_owner();
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    crate::net::types::NetworkError::ResourceExhausted,
+                    raw_payload,
+                ));
+            }
+        };
+        match self.transmit_packet_on(if_id, frame_payload) {
+            Ok(()) => Ok(()),
+            Err(frame_payload) => Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::TransmitFailed,
+                raw_payload_from_rejected_ethernet_frame(frame_payload),
+            )),
         }
     }
 
@@ -304,18 +368,27 @@ impl NetworkStack {
         &mut self,
         if_id: NetIfId,
         payload: PacketPayload,
-    ) -> Result<(), crate::net::types::NetworkError> {
+    ) -> Result<(), crate::net::types::NetworkPayloadError> {
         let payload_view = PacketPayloadView::new(&payload);
         let Some(header) = payload_view.read_array::<40>(0) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::BufferTooSmall,
+                payload,
+            ));
         };
         if (header[0] >> 4) != 6 {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::InvalidAddress,
+                payload,
+            ));
         }
 
         let total_len = IPV6_HEADER_SIZE + u16::from_be_bytes([header[4], header[5]]) as usize;
         if total_len != payload_view.total_len() {
-            return Err(crate::net::types::NetworkError::InvalidAddress);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::InvalidAddress,
+                payload,
+            ));
         }
 
         let src_ip = crate::net::l3::ipv6::Ipv6Address::new([
@@ -330,7 +403,12 @@ impl NetworkStack {
         ]);
         let next_header = header[6];
 
-        let (config, _) = self.resolve_ipv6_egress_on(if_id, Some(src_ip), dst_ip)?;
+        let (config, _) = match self.resolve_ipv6_egress_on(if_id, Some(src_ip), dst_ip) {
+            Ok(egress) => egress,
+            Err(cause) => {
+                return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
+            }
+        };
         let dst_mac = if dst_ip.is_multicast() {
             MacAddress::new(dst_ip.multicast_mac())
         } else {
@@ -344,9 +422,17 @@ impl NetworkStack {
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
                     let solicited = dst_ip.solicited_node();
                     self.send_ipv6_icmpv6_raw_on(ns_if_id, &our_ll, &solicited, ns_msg);
-                    return Err(crate::net::types::NetworkError::ArpResolutionPending);
+                    return Err(crate::net::types::NetworkPayloadError::new(
+                        crate::net::types::NetworkError::ArpResolutionPending,
+                        payload,
+                    ));
                 }
-                None => return Err(crate::net::types::NetworkError::NetworkUnreachable),
+                None => {
+                    return Err(crate::net::types::NetworkPayloadError::new(
+                        crate::net::types::NetworkError::NetworkUnreachable,
+                        payload,
+                    ));
+                }
             }
         };
 
@@ -355,7 +441,7 @@ impl NetworkStack {
             6 if total_len >= transport_offset + 14 => {
                 let ports = payload_view
                     .read_array::<14>(transport_offset)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                    .expect("validated IPv6 TCP header remains readable");
                 (
                     u16::from_be_bytes([ports[0], ports[1]]),
                     u16::from_be_bytes([ports[2], ports[3]]),
@@ -365,7 +451,7 @@ impl NetworkStack {
             17 if total_len >= transport_offset + 4 => {
                 let ports = payload_view
                     .read_array::<4>(transport_offset)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                    .expect("validated IPv6 UDP header remains readable");
                 (
                     u16::from_be_bytes([ports[0], ports[1]]),
                     u16::from_be_bytes([ports[2], ports[3]]),
@@ -385,16 +471,43 @@ impl NetworkStack {
             tcp_flags,
         ) {
             self.stats().record_dropped();
-            return Err(crate::net::types::NetworkError::PermissionDenied);
+            return Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::PermissionDenied,
+                payload,
+            ));
         }
 
-        let packet = self.build_ethernet_header_packet(config.mac, dst_mac, EtherType::Ipv6)?;
-        let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
-        crate::net::payload::append_payload(&mut frame_payload, payload);
-        if self.transmit_packet_on(if_id, frame_payload) {
-            Ok(())
-        } else {
-            Err(crate::net::types::NetworkError::TransmitFailed)
+        let packet = match self.build_ethernet_header_packet(config.mac, dst_mac, EtherType::Ipv6) {
+            Ok(packet) => packet,
+            Err(cause) => {
+                return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
+            }
+        };
+        let frame_header = match kernel_api::resource::net::PacketPayload::try_single(packet) {
+            Ok(payload) => payload,
+            Err(_) => {
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    crate::net::types::NetworkError::BufferTooSmall,
+                    payload,
+                ));
+            }
+        };
+        let frame_payload = match frame_header.try_append(payload) {
+            Ok(payload) => payload,
+            Err(error) => {
+                let (_header, raw_payload) = error.into_owner();
+                return Err(crate::net::types::NetworkPayloadError::new(
+                    crate::net::types::NetworkError::ResourceExhausted,
+                    raw_payload,
+                ));
+            }
+        };
+        match self.transmit_packet_on(if_id, frame_payload) {
+            Ok(()) => Ok(()),
+            Err(frame_payload) => Err(crate::net::types::NetworkPayloadError::new(
+                crate::net::types::NetworkError::TransmitFailed,
+                raw_payload_from_rejected_ethernet_frame(frame_payload),
+            )),
         }
     }
 
@@ -411,7 +524,7 @@ impl NetworkStack {
             reconciled_primary: None,
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             transmit_fn: crate::net::runtime::bridge::transmit_from_stack_in,
-            pending_tx_meta: None,
+            pending_tx_completion_id: None,
             current_time: AtomicU64::new(0),
         }
     }
@@ -479,14 +592,14 @@ impl NetworkStack {
         }
     }
 
-    pub fn with_pending_tx_meta<R>(
+    pub fn with_pending_tx_completion<R>(
         &mut self,
-        meta: kernel_api::service::netdev::NetTxMeta,
+        completion_id: u64,
         f: impl FnOnce(&mut Self) -> R,
     ) -> R {
-        let previous = self.pending_tx_meta.replace(meta);
+        let previous = self.pending_tx_completion_id.replace(completion_id);
         let result = f(self);
-        self.pending_tx_meta = previous;
+        self.pending_tx_completion_id = previous;
         result
     }
 
@@ -494,16 +607,39 @@ impl NetworkStack {
         &self,
         if_id: NetIfId,
         payload: kernel_api::resource::net::PacketPayload,
-    ) -> bool {
-        let meta = self.pending_tx_meta.unwrap_or_default();
+    ) -> Result<(), kernel_api::resource::net::PacketPayload> {
         let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
-        if (self.transmit_fn)(self.runtime, if_id, payload, meta) {
-            self.record_tx_success_on(if_id, packet_len);
-            return true;
+        match (self.transmit_fn)(
+            self.runtime,
+            if_id,
+            payload,
+            kernel_api::service::netdev::NetTxMeta::default(),
+            self.pending_tx_completion_id,
+        ) {
+            Ok(()) => {
+                self.record_tx_success_on(if_id, packet_len);
+                Ok(())
+            }
+            Err(payload) => {
+                self.record_tx_error_on(if_id);
+                let Some(completion_id) = self.pending_tx_completion_id else {
+                    return Err(payload);
+                };
+                let result = Err("device TX request was not admitted");
+                let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
+                    self.runtime,
+                    completion_id,
+                    payload,
+                    kernel_api::service::netdev::TxDeviceOutcome::NotTransmitted,
+                );
+                let _ = crate::net::runtime::device::complete_tx_request_in(
+                    self.runtime,
+                    completion_id,
+                    result,
+                );
+                Ok(())
+            }
         }
-
-        self.record_tx_error_on(if_id);
-        false
     }
 
     fn record_tx_success_on(&self, if_id: NetIfId, packet_len: usize) {
@@ -533,7 +669,6 @@ impl NetworkStack {
         }
 
         let runtime = self.runtime;
-        let meta = self.pending_tx_meta.unwrap_or_default();
         let frame_len = fragments
             .iter()
             .try_fold(0usize, |acc, fragment| acc.checked_add(fragment.frame_len))
@@ -544,24 +679,23 @@ impl NetworkStack {
             runtime,
             owners,
             remaining_leases,
-            meta.device_completion_ticket().map(|ticket| ticket.get()),
+            self.pending_tx_completion_id,
         );
 
-        let mut request_meta = meta;
-        request_meta.completion = kernel_api::service::netdev::TxCompletionMode::QueueAcceptance;
         let mut requests: Vec<crate::net::runtime::device::TxRequest> = Vec::new();
         for fragment in fragments {
             let Some(request) = crate::net::runtime::device::register_grouped_tx_payload_lease_in(
                 runtime,
+                if_id,
                 fragment.lease,
                 group_id,
-                request_meta,
+                kernel_api::service::netdev::NetTxMeta::default(),
             ) else {
                 for request in requests {
-                    let _ = crate::net::runtime::device::complete_tx_lease_in(
+                    let _ = crate::net::runtime::device::reject_registered_tx_lease_in(
                         runtime,
                         request.lease_id,
-                        Err("fragment TX request registration failed"),
+                        "fragment TX request registration failed",
                     );
                 }
                 crate::net::runtime::device::unregister_tx_owner_group_in(runtime, group_id);
@@ -578,10 +712,10 @@ impl NetworkStack {
                 continue;
             }
             for request in pending {
-                let _ = crate::net::runtime::device::complete_tx_lease_in(
+                let _ = crate::net::runtime::device::reject_registered_tx_lease_in(
                     runtime,
                     request.lease_id,
-                    Err("fragment TX request cancelled"),
+                    "fragment TX request cancelled",
                 );
             }
             self.record_tx_error_on(if_id);
@@ -735,10 +869,13 @@ impl NetworkStack {
                 false,
                 0,
             )?;
-            let mut frame_payload = kernel_api::resource::net::PacketPayload::single(packet);
-            crate::net::payload::append_payload(&mut frame_payload, payload);
+            let frame_payload = kernel_api::resource::net::PacketPayload::try_single(packet)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
+            let frame_payload = frame_payload
+                .try_append(payload)
+                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
 
-            if self.transmit_packet_on(if_id, frame_payload) {
+            if self.transmit_packet_on(if_id, frame_payload).is_ok() {
                 return Ok(());
             }
             return Err(crate::net::types::NetworkError::TransmitFailed);

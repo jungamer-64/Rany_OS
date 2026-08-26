@@ -138,8 +138,6 @@ echo "[driver_cell_probe_fixtures] building staged PCI probe pack"
     --name driver_cell_probe_pci \
     --input "$DEPLOY_DIR/driver_cell_probe_v1.cell" \
     --output "$DEPLOY_DIR/driver_cell_probe_pci.cell" \
-    --driver-abi-version 2 \
-    --kernel-api-min-version 3 \
     --pci-class 0x04 \
     --pci-subclass 0x03 \
     --pci-prog-if 0x00)

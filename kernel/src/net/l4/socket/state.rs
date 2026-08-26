@@ -82,7 +82,7 @@ pub(crate) struct TcpSocketEntry {
 }
 
 pub(crate) struct QueuedPayload {
-    payload: PacketPayload,
+    payload: Option<PacketPayload>,
 }
 
 pub(crate) struct TcpSendBuffer {
@@ -92,11 +92,13 @@ pub(crate) struct TcpSendBuffer {
 
 impl QueuedPayload {
     pub fn new(payload: PacketPayload) -> Self {
-        Self { payload }
+        Self {
+            payload: Some(payload),
+        }
     }
 
     fn remaining_len(&self) -> usize {
-        self.payload.total_len()
+        self.payload.as_ref().map_or(0, PacketPayload::total_len)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
@@ -104,7 +106,7 @@ impl QueuedPayload {
     }
 
     fn into_remaining_payload(self) -> Option<PacketPayload> {
-        Some(self.payload)
+        self.payload
     }
 
     fn take_front(&mut self, len: usize) -> Option<PacketPayload> {
@@ -113,11 +115,11 @@ impl QueuedPayload {
         }
 
         let count = PacketByteCount::new(len)?;
-        let payload = core::mem::take(&mut self.payload);
-        match payload.take_front(count).ok()? {
+        let payload = self.payload.take()?;
+        match payload.try_take_front(count).ok()? {
             PacketPayloadFront::Whole(front) => Some(front),
             PacketPayloadFront::Prefix { front, remainder } => {
-                self.payload = remainder;
+                self.payload = Some(remainder);
                 Some(front)
             }
         }
@@ -145,14 +147,15 @@ impl TcpSendBuffer {
         self.len = 0;
     }
 
-    fn push(&mut self, payload: PacketPayload, limit: usize) -> SocketResult<()> {
+    fn push(
+        &mut self,
+        payload: PacketPayload,
+        limit: usize,
+    ) -> Result<(), (EndpointError, PacketPayload)> {
         let payload_len = payload.total_len();
         let available = limit.saturating_sub(self.len);
-        if payload_len == 0 {
-            return Ok(());
-        }
         if payload_len > available {
-            return Err(EndpointError::BufferFull);
+            return Err((EndpointError::BufferFull, payload));
         }
         self.len = self.len.saturating_add(payload_len);
         self.chunks.push_back(QueuedPayload::new(payload));
@@ -186,7 +189,7 @@ impl TcpSendBuffer {
         }
 
         self.len = self.len.saturating_sub(take);
-        Some(packet_payload_from_segments(segments))
+        packet_payload_from_segments(segments).ok()
     }
 }
 
@@ -484,10 +487,13 @@ impl SocketState {
     }
 
     #[inline]
-    pub fn send_payload(&mut self, payload: PacketPayload) -> SocketResult<()> {
+    pub fn send_payload(
+        &mut self,
+        payload: PacketPayload,
+    ) -> Result<(), (EndpointError, PacketPayload)> {
         let limit = self.send_buffer_limit;
         let Some(tcp) = self.tcp_mut() else {
-            return Err(EndpointError::InvalidArgument);
+            return Err((EndpointError::InvalidArgument, payload));
         };
         tcp.send_buffer.push(payload, limit)
     }

@@ -264,7 +264,7 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
     let manager = driver_domain_manager();
 
     // 状態チェック
-    let (cell_id, abi_driver_context) = manager.with_cell(id, |cell| {
+    let (cell_id, abi_driver_context, owner) = manager.with_cell(id, |cell| {
         if cell.state != DriverDomainState::Loaded && cell.state != DriverDomainState::Stopped {
             return Err(DriverDomainError::InvalidStateTransition {
                 from: cell.state,
@@ -275,6 +275,9 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
             cell.cell_id
                 .ok_or(DriverDomainError::LoadFailed("Cell not loaded".into()))?,
             cell.abi_driver_context,
+            cell.domain_id.ok_or(DriverDomainError::LoadFailed(
+                "Driver domain authority not established".into(),
+            ))?,
         ))
     })??;
 
@@ -285,19 +288,22 @@ pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError>
 
     // ドライバをCellから登録
     crate::io::log::early_print("[DCELL] start: register_driver_from_cell begin\n");
-    let handle =
-        match crate::loader::register_driver_from_cell_with_context(cell_id, abi_driver_context) {
-            Ok(h) => h,
-            Err(e) => {
-                let msg = format!("{}", e);
-                manager
-                    .with_cell_mut(id, |cell| {
-                        cell.transition_to(DriverDomainState::Faulted);
-                    })
-                    .ok();
-                return Err(DriverDomainError::DriverInitFailed(msg));
-            }
-        };
+    let handle = match crate::loader::register_driver_from_cell_with_context(
+        cell_id,
+        abi_driver_context,
+        owner,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            let msg = format!("{}", e);
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
+            return Err(DriverDomainError::DriverInitFailed(msg));
+        }
+    };
     crate::io::log::early_print("[DCELL] start: register_driver_from_cell done\n");
 
     // ドライバをprobe + start

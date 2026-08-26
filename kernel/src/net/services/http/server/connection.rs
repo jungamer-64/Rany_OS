@@ -159,15 +159,13 @@ fn process_received_payload(
     saw_payload: &mut bool,
 ) -> ReceiveLoopControl {
     let len = payload.total_len();
-    if len == 0 {
-        return ReceiveLoopControl::Break;
-    }
-
     *saw_payload = true;
     super::http_runtime_in(runtime)
         .bytes_rx
         .fetch_add(len as u64, Ordering::Relaxed);
-    parser.push_payload(payload);
+    if parser.push_payload(payload).is_err() {
+        return ReceiveLoopControl::Break;
+    }
 
     if let Some(plan) = plan_from_buffered_payload(runtime, parser) {
         return ReceiveLoopControl::Return(match plan {

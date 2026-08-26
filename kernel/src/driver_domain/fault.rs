@@ -392,28 +392,34 @@ fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
     }
 
     // セルからドライバを再登録
-    let (cell_id, abi_driver_context) = manager.with_cell(id, |cell| {
+    let (cell_id, abi_driver_context, owner) = manager.with_cell(id, |cell| {
         Ok((
             cell.cell_id.ok_or(DriverDomainError::LoadFailed(
                 "No cell loaded for restart".into(),
             ))?,
             cell.abi_driver_context,
+            cell.domain_id.ok_or(DriverDomainError::LoadFailed(
+                "Driver domain authority not established".into(),
+            ))?,
         ))
     })??;
 
-    let handle =
-        match crate::loader::register_driver_from_cell_with_context(cell_id, abi_driver_context) {
-            Ok(h) => h,
-            Err(e) => {
-                let msg = format!("{}", e);
-                manager
-                    .with_cell_mut(id, |cell| {
-                        cell.transition_to(DriverDomainState::Faulted);
-                    })
-                    .ok();
-                return Err(DriverDomainError::DriverInitFailed(msg));
-            }
-        };
+    let handle = match crate::loader::register_driver_from_cell_with_context(
+        cell_id,
+        abi_driver_context,
+        owner,
+    ) {
+        Ok(h) => h,
+        Err(e) => {
+            let msg = format!("{}", e);
+            manager
+                .with_cell_mut(id, |cell| {
+                    cell.transition_to(DriverDomainState::Faulted);
+                })
+                .ok();
+            return Err(DriverDomainError::DriverInitFailed(msg));
+        }
+    };
 
     // probe + start
     let registry = crate::driver_registry::driver_registry();

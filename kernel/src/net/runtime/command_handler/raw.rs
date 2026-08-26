@@ -14,7 +14,6 @@ use crate::net::runtime::command::{
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::stack::NetworkStack;
 use crate::net::types::NetworkError;
-use kernel_api::service::netdev::{NetTxMeta, TxCompletionMode, TxCompletionTicket};
 
 fn finish_raw_send(
     reply: CommandReplyTicket<Result<(), EndpointError>>,
@@ -28,33 +27,26 @@ fn finish_raw_send(
     handled
 }
 
-fn tx_meta(completion_id: Option<u64>) -> Option<NetTxMeta> {
-    completion_id.and_then(|completion_id| {
-        Some(NetTxMeta {
-            completion: TxCompletionMode::DeviceCompletion(TxCompletionTicket::new(completion_id)?),
-            ..NetTxMeta::default()
-        })
-    })
-}
-
-fn send_bool_with_tx_meta(
+fn send_bool_with_tx_completion(
     stack: &mut NetworkStack,
     completion_id: Option<u64>,
     send: impl FnOnce(&mut NetworkStack) -> bool,
 ) -> bool {
-    match tx_meta(completion_id) {
-        Some(meta) => stack.with_pending_tx_meta(meta, send),
+    match completion_id {
+        Some(completion_id) => stack.with_pending_tx_completion(completion_id, send),
         None => send(stack),
     }
 }
 
-fn send_result_with_tx_meta(
+fn send_result_with_tx_completion(
     stack: &mut NetworkStack,
     completion_id: Option<u64>,
     send: impl FnOnce(&mut NetworkStack) -> Result<(), NetworkError>,
 ) -> bool {
-    match tx_meta(completion_id) {
-        Some(meta) => stack.with_pending_tx_meta(meta, send).is_ok(),
+    match completion_id {
+        Some(completion_id) => stack
+            .with_pending_tx_completion(completion_id, send)
+            .is_ok(),
         None => send(stack).is_ok(),
     }
 }
@@ -94,23 +86,25 @@ impl RuntimeCommandHandler {
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);
-                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| match src {
-                        RawIpv4Source::Auto => stack.send_udp_raw_payload_on_auto_ttl(
-                            if_id,
-                            dst,
-                            ports,
-                            payload.take().expect("raw UDP payload already moved"),
-                            ttl,
-                        ),
-                        RawIpv4Source::Addr(src_ip) => stack.send_udp_raw_payload_on_with_src_ttl(
-                            if_id,
-                            Ipv4Address::new(src_ip),
-                            dst,
-                            ports,
-                            payload.take().expect("raw UDP payload already moved"),
-                            ttl,
-                        ),
-                    });
+                    let sent =
+                        send_bool_with_tx_completion(stack, completion_id, |stack| match src {
+                            RawIpv4Source::Auto => stack.send_udp_raw_payload_on_auto_ttl(
+                                if_id,
+                                dst,
+                                ports,
+                                payload.take().expect("raw UDP payload already moved"),
+                                ttl,
+                            ),
+                            RawIpv4Source::Addr(src_ip) => stack
+                                .send_udp_raw_payload_on_with_src_ttl(
+                                    if_id,
+                                    Ipv4Address::new(src_ip),
+                                    dst,
+                                    ports,
+                                    payload.take().expect("raw UDP payload already moved"),
+                                    ttl,
+                                ),
+                        });
                     let result = if sent {
                         Ok(())
                     } else {
@@ -135,7 +129,7 @@ impl RuntimeCommandHandler {
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);
-                    let sent = send_bool_with_tx_meta(stack, completion_id, |stack| {
+                    let sent = send_bool_with_tx_completion(stack, completion_id, |stack| {
                         stack.send_tcp_payload_on(
                             if_id,
                             resolved_src,
@@ -169,7 +163,7 @@ impl RuntimeCommandHandler {
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);
-                    let sent = send_result_with_tx_meta(stack, completion_id, |stack| {
+                    let sent = send_result_with_tx_completion(stack, completion_id, |stack| {
                         stack.send_udp_v6_payload_on_with_ttl(
                             if_id,
                             src,
@@ -205,7 +199,7 @@ impl RuntimeCommandHandler {
                         return finish_raw_send(reply, Err(EndpointError::NetworkUnreachable));
                     };
                     let mut payload = Some(payload);
-                    let sent = send_result_with_tx_meta(stack, completion_id, |stack| {
+                    let sent = send_result_with_tx_completion(stack, completion_id, |stack| {
                         stack.send_tcp_v6_payload_on(
                             if_id,
                             resolved_src,

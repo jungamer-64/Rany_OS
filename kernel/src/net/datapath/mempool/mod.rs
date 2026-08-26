@@ -143,6 +143,10 @@ impl PacketWindow {
         self.capacity
     }
 
+    fn data_capacity(&self) -> usize {
+        self.capacity - self.offset
+    }
+
     fn set_len(&mut self, len: usize) -> bool {
         if len > self.capacity - self.offset {
             return false;
@@ -306,15 +310,16 @@ unsafe fn pooled_len(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe { pooled_state_ref(storage).window.len() }
 }
-unsafe fn pooled_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
+unsafe fn pooled_resize(storage: &mut PacketRefStorage, len: usize) -> bool {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
     unsafe {
         let state = pooled_state_mut(storage);
-        state.window.set_len(len.get())
+        state.window.set_len(len)
     }
 }
-unsafe fn pooled_capacity(_: &PacketRefStorage) -> usize {
-    DEFAULT_BUFFER_SIZE
+unsafe fn pooled_data_capacity(storage: &PacketRefStorage) -> usize {
+    // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
+    unsafe { pooled_state_ref(storage).window.data_capacity() }
 }
 unsafe fn pooled_headroom(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through POOLED_PACKET_VTABLE.
@@ -387,8 +392,8 @@ static POOLED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: pooled_data_ptr,
     data_mut_ptr: pooled_data_mut_ptr,
     len: pooled_len,
-    set_len: pooled_set_len,
-    capacity: pooled_capacity,
+    resize: pooled_resize,
+    data_capacity: pooled_data_capacity,
     phys_addr: pooled_phys_addr,
     device_address: pooled_device_address,
     headroom: pooled_headroom,
@@ -428,16 +433,16 @@ unsafe fn dma_len(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe { dma_state_ref(storage).window.len() }
 }
-unsafe fn dma_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
+unsafe fn dma_resize(storage: &mut PacketRefStorage, len: usize) -> bool {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
     unsafe {
         let state = dma_state_mut(storage);
-        state.window.set_len(len.get())
+        state.window.set_len(len)
     }
 }
-unsafe fn dma_capacity(storage: &PacketRefStorage) -> usize {
+unsafe fn dma_data_capacity(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
-    unsafe { dma_state_ref(storage).window.capacity() }
+    unsafe { dma_state_ref(storage).window.data_capacity() }
 }
 unsafe fn dma_headroom(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through DMA_PACKET_VTABLE.
@@ -513,8 +518,8 @@ static DMA_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: dma_data_ptr,
     data_mut_ptr: dma_data_mut_ptr,
     len: dma_len,
-    set_len: dma_set_len,
-    capacity: dma_capacity,
+    resize: dma_resize,
+    data_capacity: dma_data_capacity,
     phys_addr: dma_phys_addr,
     device_address: dma_device_address,
     headroom: dma_headroom,
@@ -560,17 +565,17 @@ unsafe fn borrowed_len(storage: &PacketRefStorage) -> usize {
     unsafe { borrowed_state_ref(storage).window.len() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_set_len(storage: &mut PacketRefStorage, len: PacketByteCount) -> bool {
+unsafe fn borrowed_resize(storage: &mut PacketRefStorage, len: usize) -> bool {
     // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
     unsafe {
         let state = borrowed_state_mut(storage);
-        state.window.set_len(len.get())
+        state.window.set_len(len)
     }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
-unsafe fn borrowed_capacity(storage: &PacketRefStorage) -> usize {
+unsafe fn borrowed_data_capacity(storage: &PacketRefStorage) -> usize {
     // SAFETY: this function is only called through BORROWED_PACKET_VTABLE.
-    unsafe { borrowed_state_ref(storage).window.capacity() }
+    unsafe { borrowed_state_ref(storage).window.data_capacity() }
 }
 #[cfg(any(test, feature = "qemu-test-export"))]
 unsafe fn borrowed_headroom(storage: &PacketRefStorage) -> usize {
@@ -634,8 +639,8 @@ static BORROWED_PACKET_VTABLE: PacketRefVTable = PacketRefVTable {
     data_ptr: borrowed_data_ptr,
     data_mut_ptr: borrowed_data_mut_ptr,
     len: borrowed_len,
-    set_len: borrowed_set_len,
-    capacity: borrowed_capacity,
+    resize: borrowed_resize,
+    data_capacity: borrowed_data_capacity,
     phys_addr: borrowed_phys_addr,
     device_address: borrowed_device_address,
     headroom: borrowed_headroom,
@@ -892,15 +897,10 @@ impl Mempool {
         buffer: NonNull<PacketBuffer>,
         pool: &'static Mempool,
     ) -> PacketRef {
-        // SECURITY: previous packet からの information leak を防ぐため buffer 全体をクリアする。
-        unsafe {
-            core::ptr::write_bytes(
-                buffer.as_ref().data.as_ptr() as *mut u8,
-                0,
-                DEFAULT_BUFFER_SIZE,
-            );
-            buffer.as_ref().meta.ref_count.store(1, Ordering::Release);
-        }
+        // SAFETY: the free-list hands out this buffer exclusively. PacketRef
+        // growth initializes only bytes that become software-visible, while RX
+        // completion publishes only the device-written prefix.
+        unsafe { buffer.as_ref().meta.ref_count.store(1, Ordering::Release) };
         new_pooled_packet_ref(buffer, pool)
     }
 

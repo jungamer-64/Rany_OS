@@ -8,7 +8,8 @@ fn der_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
     let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len(), 0)
         .expect("test payload allocation succeeds");
     packet.data_mut().copy_from_slice(data);
-    kernel_api::resource::net::PacketPayload::single(packet)
+    kernel_api::resource::net::PacketPayload::try_single(packet)
+        .expect("DER test packet is non-empty")
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

@@ -30,6 +30,21 @@ pub enum TcpError {
     PermissionDenied,
 }
 
+pub struct TcpPayloadSendError {
+    cause: TcpError,
+    payload: PacketPayload,
+}
+
+impl TcpPayloadSendError {
+    pub const fn cause(&self) -> TcpError {
+        self.cause
+    }
+
+    pub fn into_parts(self) -> (TcpError, PacketPayload) {
+        (self.cause, self.payload)
+    }
+}
+
 fn tcp_error_from_socket(error: EndpointError) -> TcpError {
     match error {
         EndpointError::NotConnected => TcpError::ConnectionClosed,
@@ -393,7 +408,10 @@ impl TcpConnection {
         }
     }
 
-    pub async fn send_payload(&mut self, payload: PacketPayload) -> Result<(), TcpError> {
+    pub async fn send_payload(
+        &mut self,
+        payload: PacketPayload,
+    ) -> Result<(), TcpPayloadSendError> {
         SendPayloadFuture {
             connection: self,
             payload: Some(payload),
@@ -631,7 +649,7 @@ pub(crate) struct SendPayloadFuture<'a> {
 }
 
 impl<'a> Future for SendPayloadFuture<'a> {
-    type Output = Result<(), TcpError>;
+    type Output = Result<(), TcpPayloadSendError>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         enum SendOutcome {
@@ -640,37 +658,35 @@ impl<'a> Future for SendPayloadFuture<'a> {
                 payload: PacketPayload,
                 has_queued_data: bool,
             },
-            Ready(Result<(), TcpError>),
+            Ready(TcpError),
         }
 
         let this = &mut *self;
         let Some(payload) = this.payload.take() else {
-            return Poll::Ready(Err(TcpError::InvalidState));
+            panic!("TCP send future polled after completion");
         };
         let runtime = this.connection.runtime;
         let payload_len = payload.total_len();
-        if payload_len == 0 {
-            return Poll::Ready(Ok(()));
-        }
+        let mut owner = Some(payload);
 
         let outcome =
             this.connection
                 .socket
                 .with_inner_mut(|inner| {
                     if let Some(err) = inner.last_error.take() {
-                        return SendOutcome::Ready(Err(tcp_error_from_socket(err)));
+                        return SendOutcome::Ready(tcp_error_from_socket(err));
                     }
 
                     if inner.is_tcp_closing_or_closed() {
-                        return SendOutcome::Ready(Err(TcpError::ConnectionClosed));
+                        return SendOutcome::Ready(TcpError::ConnectionClosed);
                     }
 
                     if !matches!(inner.tcp_state(), Some(TcpSocketState::Connected)) {
-                        return SendOutcome::Ready(Err(TcpError::InvalidState));
+                        return SendOutcome::Ready(TcpError::InvalidState);
                     }
 
                     if payload_len > inner.send_buffer_limit {
-                        return SendOutcome::Ready(Err(TcpError::BufferFull));
+                        return SendOutcome::Ready(TcpError::BufferFull);
                     }
 
                     let queued_bytes = inner.send_payload_bytes();
@@ -686,22 +702,29 @@ impl<'a> Future for SendPayloadFuture<'a> {
                         let has_queued_data = inner.has_send_data();
                         inner.send_waker.register(cx.waker());
                         return SendOutcome::Pending {
-                            payload,
+                            payload: owner
+                                .take()
+                                .expect("pending TCP send preserves the payload owner"),
                             has_queued_data,
                         };
                     }
 
-                    match inner.send_payload(payload) {
+                    match inner
+                        .send_payload(owner.take().expect("admitted TCP send owns the payload"))
+                    {
                         Ok(()) => {
                             if let Some(tcp) = inner.tcp_mut() {
                                 tcp.stats.record_tx_enqueued(payload_len);
                             }
                             SendOutcome::Enqueued
                         }
-                        Err(err) => SendOutcome::Ready(Err(tcp_error_from_socket(err))),
+                        Err((err, payload)) => {
+                            owner = Some(payload);
+                            SendOutcome::Ready(tcp_error_from_socket(err))
+                        }
                     }
                 })
-                .unwrap_or(SendOutcome::Ready(Err(TcpError::InvalidState)));
+                .unwrap_or(SendOutcome::Ready(TcpError::InvalidState));
 
         match outcome {
             SendOutcome::Enqueued => {
@@ -724,7 +747,10 @@ impl<'a> Future for SendPayloadFuture<'a> {
                 this.payload = Some(payload);
                 Poll::Pending
             }
-            SendOutcome::Ready(result) => Poll::Ready(result),
+            SendOutcome::Ready(cause) => Poll::Ready(Err(TcpPayloadSendError {
+                cause,
+                payload: owner.expect("rejected TCP send preserves the payload owner"),
+            })),
         }
     }
 }

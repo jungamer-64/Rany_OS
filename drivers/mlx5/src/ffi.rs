@@ -19,12 +19,11 @@ use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegist
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout,
-    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiPacketRefRaw, DriverContext, KernelApiV4,
-    PackedPciLocation,
+    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiRxLeaseGuard, AbiTxDeviceOutcome,
+    DriverContext, KernelApiV4, PackedPciLocation,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
-use kernel_api::resource::net::PacketByteCount;
 use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, TxLeaseId};
 use spin::Mutex;
 
@@ -512,7 +511,7 @@ struct Mlx5StandaloneState {
     tx_errors: u64,
     rx_errors: u64,
     tx_slots: Vec<Vec<Option<TxLeaseId>>>,
-    rx_slots: Vec<Vec<Option<AbiPacketRefRaw>>>,
+    rx_slots: Vec<Vec<Option<AbiRxLeaseGuard>>>,
 }
 
 static MLX5_STANDALONE_STATE: Mutex<Option<Mlx5StandaloneState>> = Mutex::new(None);
@@ -547,17 +546,8 @@ fn init_slot_ring<T>() -> Vec<Option<T>> {
     ring
 }
 
-fn allocate_runtime_packet(runtime: AbiNetPortRuntime) -> Result<AbiPacketRefRaw, AbiError> {
-    let mut packet = AbiPacketRefRaw::default();
-    let status = (runtime.alloc_packet)(runtime.runtime_cookie, &mut packet);
-    let status = AbiError::from_raw(status);
-    if status.is_success() && !packet.is_null() {
-        Ok(packet)
-    } else if status.is_success() {
-        Err(AbiError::OutOfMemory)
-    } else {
-        Err(status)
-    }
+fn lease_runtime_rx_buffer(runtime: AbiNetPortRuntime) -> Result<AbiRxLeaseGuard, AbiError> {
+    AbiRxLeaseGuard::acquire(runtime)
 }
 
 fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
@@ -574,17 +564,6 @@ fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
     );
 }
 
-fn set_abi_packet_len(packet: &mut AbiPacketRefRaw, len: usize) -> Result<(), AbiError> {
-    let Some(len) = PacketByteCount::new(len) else {
-        return Err(AbiError::InvalidParam);
-    };
-    if packet.set_len(len) {
-        Ok(())
-    } else {
-        Err(AbiError::InvalidParam)
-    }
-}
-
 fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
     let Some(runtime) = state.runtime else {
         return Err(AbiError::NotInitialized);
@@ -595,21 +574,17 @@ fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
             if state.rx_slots[rq_index][slot].is_some() {
                 continue;
             }
-            let mut packet = allocate_runtime_packet(runtime)?;
-            let buffer_size = packet.capacity().saturating_sub(packet.headroom());
-            if buffer_size == 0 {
-                return Err(AbiError::OutOfMemory);
-            }
-            set_abi_packet_len(&mut packet, buffer_size)?;
-            let device_addr = packet.device_address();
-            let virt_addr = packet.data_mut().as_ptr() as u64;
-            let size = buffer_size as u32;
+            let buffer = lease_runtime_rx_buffer(runtime)?;
+            let region = buffer.writable_region();
+            let device_addr = region.device_addr;
+            let virt_addr = region.cpu_ptr as u64;
+            let size = u32::try_from(region.writable_len).map_err(|_| AbiError::InvalidParam)?;
             match unsafe {
                 state
                     .device
                     .post_receive(rq_index, device_addr, virt_addr, size)
             } {
-                Ok(_) => state.rx_slots[rq_index][slot] = Some(packet),
+                Ok(_) => state.rx_slots[rq_index][slot] = Some(buffer),
                 Err(err) => {
                     log::warn!(
                         target: "mlx5",
@@ -625,6 +600,40 @@ fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
     }
 
     Ok(())
+}
+
+fn replenish_rx_slot(
+    state: &mut Mlx5StandaloneState,
+    runtime: AbiNetPortRuntime,
+    rq_index: usize,
+    slot: usize,
+) {
+    let Ok(buffer) = lease_runtime_rx_buffer(runtime) else {
+        state.rx_errors = state.rx_errors.saturating_add(1);
+        return;
+    };
+    let region = buffer.writable_region();
+    let Ok(len) = u32::try_from(region.writable_len) else {
+        state.rx_errors = state.rx_errors.saturating_add(1);
+        return;
+    };
+    match unsafe {
+        state
+            .device
+            .post_receive(rq_index, region.device_addr, region.cpu_ptr as u64, len)
+    } {
+        Ok(_) => state.rx_slots[rq_index][slot] = Some(buffer),
+        Err(err) => {
+            state.rx_errors = state.rx_errors.saturating_add(1);
+            log::warn!(
+                target: "mlx5",
+                "RX repost failed at rq={} slot={} with {:?}",
+                rq_index,
+                slot,
+                err
+            );
+        }
+    }
 }
 
 fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
@@ -649,93 +658,40 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
             };
             let slot = rx_info.slot_index as usize;
 
-            let Some(mut packet) = state.rx_slots[rq_index][slot].take() else {
+            let Some(buffer) = state.rx_slots[rq_index][slot].take() else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
                 continue;
             };
 
             if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                if let Ok(mut replacement) = allocate_runtime_packet(runtime) {
-                    let len = replacement
-                        .capacity()
-                        .saturating_sub(replacement.headroom());
-                    if set_abi_packet_len(&mut replacement, len).is_ok() {
-                        let _ = unsafe {
-                            state.device.post_receive(
-                                rq_index,
-                                replacement.device_address(),
-                                replacement.data_mut().as_ptr() as u64,
-                                len as u32,
-                            )
-                        };
-                        state.rx_slots[rq_index][slot] = Some(replacement);
-                    } else {
-                        state.rx_errors = state.rx_errors.saturating_add(1);
-                    }
-                }
+                replenish_rx_slot(state, runtime, rq_index, slot);
                 continue;
             }
 
-            let byte_count = cmp::min(
-                cqe.byte_count as usize,
-                packet.capacity().saturating_sub(packet.headroom()),
-            );
-            if set_abi_packet_len(&mut packet, byte_count).is_err() {
+            let region = buffer.writable_region();
+            let byte_count = cqe.byte_count as usize;
+            if byte_count > region.writable_len {
                 state.rx_errors = state.rx_errors.saturating_add(1);
+                replenish_rx_slot(state, runtime, rq_index, slot);
                 continue;
             }
             let Some(rx_layout) = AbiNetRxFrameLayout::whole_payload(byte_count) else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
+                replenish_rx_slot(state, runtime, rq_index, slot);
                 continue;
             };
-            let status = (runtime.submit_rx_packet)(
-                runtime.runtime_cookie,
-                &mut packet,
-                AbiNetRxMeta::new(rq_index as u16, rx_layout, 0),
-            );
-            if AbiError::from_raw(status).is_success() {
+            let status = buffer.submit(AbiNetRxMeta::new(rq_index as u16, rx_layout, 0));
+            if status.is_success() {
                 state.rx_packets = state.rx_packets.saturating_add(1);
             } else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
             }
 
-            match allocate_runtime_packet(runtime) {
-                Ok(mut replacement) => {
-                    let len = replacement
-                        .capacity()
-                        .saturating_sub(replacement.headroom());
-                    if set_abi_packet_len(&mut replacement, len).is_err() {
-                        state.rx_errors = state.rx_errors.saturating_add(1);
-                        continue;
-                    }
-                    match unsafe {
-                        state.device.post_receive(
-                            rq_index,
-                            replacement.device_address(),
-                            replacement.data_mut().as_ptr() as u64,
-                            len as u32,
-                        )
-                    } {
-                        Ok(_) => state.rx_slots[rq_index][slot] = Some(replacement),
-                        Err(err) => {
-                            state.rx_errors = state.rx_errors.saturating_add(1);
-                            log::warn!(
-                                target: "mlx5",
-                                "RX repost failed at rq={} slot={} with {:?}",
-                                rq_index,
-                                slot,
-                                err
-                            );
-                        }
-                    }
-                }
-                Err(_) => state.rx_errors = state.rx_errors.saturating_add(1),
-            }
+            replenish_rx_slot(state, runtime, rq_index, slot);
         }
     }
 }
-
 fn poll_tx_locked(state: &mut Mlx5StandaloneState) {
     for sq_index in 0..state.tx_slots.len() {
         let Some(tx_cq_index) = state.device.tx_cq_index_for_sq(sq_index) else {
@@ -750,12 +706,16 @@ fn poll_tx_locked(state: &mut Mlx5StandaloneState) {
                 .process_tx_completions(sq_index, cqe.wqe_counter);
             if let Some(lease_id) = state.tx_slots[sq_index][slot].take() {
                 if let Some(runtime) = state.runtime {
-                    let status = if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
-                        AbiError::IoError as i32
+                    let outcome = if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
+                        AbiTxDeviceOutcome::NOT_TRANSMITTED
                     } else {
-                        AbiError::Success as i32
+                        AbiTxDeviceOutcome::TRANSMITTED
                     };
-                    let _ = (runtime.complete_tx_lease)(runtime.runtime_cookie, lease_id, status);
+                    let _ = (runtime.complete_tx_lease)(
+                        runtime.runtime_cookie,
+                        lease_id.get(),
+                        outcome,
+                    );
                 }
             }
             if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
@@ -907,30 +867,45 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         options.vlan_tag = meta.vlan_tag;
     }
 
-    let mut dma_segments = Vec::with_capacity(segments.count());
+    let mut dma_segments = [crate::wq::DmaSegment {
+        device_addr: 0,
+        virt_addr: 0,
+        len: 0,
+    }; 2];
+    let mut dma_segment_count = 0usize;
     for segment in segments.iter() {
+        if dma_segment_count == dma_segments.len() {
+            return AbiError::InvalidParam as i32;
+        }
         let segment_len = segment.len().get();
         let Ok(len) = u32::try_from(segment_len) else {
             return AbiError::InvalidParam as i32;
         };
-        dma_segments.push(crate::wq::DmaSegment {
+        dma_segments[dma_segment_count] = crate::wq::DmaSegment {
             device_addr: segment.device_addr(),
             virt_addr: segment.cpu_ptr() as u64,
             len,
-        });
+        };
+        dma_segment_count += 1;
     }
-    if dma_segments.is_empty() {
+    if dma_segment_count == 0 {
         return AbiError::InvalidParam as i32;
     }
 
     match unsafe {
-        state
-            .device
-            .transmit_segments(sq_index, &dma_segments, total_len, options)
+        state.device.transmit_segments(
+            sq_index,
+            &dma_segments[..dma_segment_count],
+            total_len,
+            options,
+        )
     } {
         Ok(wqe_idx) => {
             let slot = (wqe_idx as usize) % (MLX5_WQ_DEPTH as usize);
-            state.tx_slots[sq_index][slot] = Some(submission.lease_id());
+            let Some(lease_id) = submission.lease_id() else {
+                return AbiError::InvalidParam as i32;
+            };
+            state.tx_slots[sq_index][slot] = Some(lease_id);
             state.tx_packets = state.tx_packets.saturating_add(1);
             schedule_runtime_poll_locked(state);
             AbiError::Success as i32
@@ -983,12 +958,26 @@ extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 
     AbiError::Success as i32
 }
 
-extern "C" fn mlx5_netdev_stop(_opaque: u64) {
+extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
     let mut guard = MLX5_STANDALONE_STATE.lock();
     if let Some(state) = guard.as_mut() {
+        if state.device.is_active() && unsafe { state.device.disable_hca_hw() }.is_err() {
+            return AbiError::IoError as i32;
+        }
+        for queue in &mut state.rx_slots {
+            for buffer in queue {
+                let _ = buffer.take();
+            }
+        }
+        for queue in &mut state.tx_slots {
+            for lease in queue {
+                let _ = lease.take();
+            }
+        }
         state.runtime = None;
         state.poll_generation = state.poll_generation.wrapping_add(1);
     }
+    AbiError::Success as i32
 }
 
 extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -> i32 {
@@ -1000,7 +989,7 @@ fn netdev_registration(state: &Mlx5StandaloneState) -> AbiNetPortRegistration {
         AbiNetPortInfo {
             port_id: 0x0002_0000,
             queue_pairs: cmp::max(state.device.num_rqs(), state.device.num_sqs()) as u16,
-            reserved_queue: 0,
+            max_tx_segments: 2,
             mtu: state.device.port(0).map(|port| port.mtu()).unwrap_or(1500),
             flags: port_flags(&state.device),
             mac: reported_mac(&state.device),
@@ -1116,7 +1105,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let mut tx_slots = Vec::with_capacity(device.num_sqs());
             tx_slots.resize_with(device.num_sqs(), init_slot_ring::<TxLeaseId>);
             let mut rx_slots = Vec::with_capacity(device.num_rqs());
-            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<AbiPacketRefRaw>);
+            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<AbiRxLeaseGuard>);
 
             let last_link_up = device
                 .port(0)

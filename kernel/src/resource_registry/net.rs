@@ -2,9 +2,10 @@ use super::*;
 
 pub(crate) fn register_port(
     owner: DomainId,
+    dma_device: crate::io::iommu::types::DeviceId,
     registration: &AbiNetPortRegistration,
 ) -> Result<u64, AbiErrorCode> {
-    NETDEV_PORTS.register(owner, registration)
+    NETDEV_PORTS.register(owner, dma_device, registration)
 }
 
 pub(crate) fn unregister_port(owner: DomainId, handle: u64) -> Result<(), AbiErrorCode> {

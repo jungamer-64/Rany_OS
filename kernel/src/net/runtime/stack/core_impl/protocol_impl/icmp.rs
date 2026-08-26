@@ -139,9 +139,14 @@ impl NetworkStack {
                         return false;
                     }
 
-                    let mut frame_payload =
-                        kernel_api::resource::net::PacketPayload::single(packet);
-                    crate::net::payload::append_payload(&mut frame_payload, echo_data);
+                    let Ok(frame_payload) =
+                        kernel_api::resource::net::PacketPayload::try_single(packet)
+                    else {
+                        return false;
+                    };
+                    let Ok(mut frame_payload) = frame_payload.try_append(echo_data) else {
+                        return false;
+                    };
                     let Some(icmp_span) = crate::net::payload::PayloadRange::checked(
                         &frame_payload,
                         EthernetHeader::SIZE + 20,
@@ -156,7 +161,7 @@ impl NetworkStack {
                     let first = &mut frame_payload.segments_mut()[0];
                     first.data_mut()[EthernetHeader::SIZE + 20 + 2..EthernetHeader::SIZE + 20 + 4]
                         .copy_from_slice(&checksum.to_be_bytes());
-                    return self.transmit_packet_on(if_id, frame_payload);
+                    return self.transmit_packet_on(if_id, frame_payload).is_ok();
                 }
             }
         }
@@ -317,10 +322,11 @@ impl NetworkStack {
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
                     if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                        let _ = self.transmit_packet_on(
-                            if_id,
-                            kernel_api::resource::net::PacketPayload::single(packet),
-                        );
+                        if let Ok(payload) =
+                            kernel_api::resource::net::PacketPayload::try_single(packet)
+                        {
+                            let _ = self.transmit_packet_on(if_id, payload);
+                        }
                     }
                 }
             }
@@ -851,7 +857,7 @@ impl NetworkStack {
         // Build directly into a packet-backed frame.
         if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet_in(self.runtime) {
             // 新規割り当てのPacketRefはlen=0なので、書き込み前にcapacityまで拡張する
-            let cap = packet.capacity();
+            let cap = packet.data_capacity();
             if set_packet_visible_len(&mut packet, cap).is_err() {
                 return Err(());
             }
@@ -881,21 +887,22 @@ impl NetworkStack {
                         let send_time = self.current_time();
                         drop(frame);
 
-                        if set_packet_visible_len(&mut packet, total_len).is_ok()
-                            && self.transmit_packet_on(
-                                if_id,
-                                kernel_api::resource::net::PacketPayload::single(packet),
-                            )
-                        {
-                            log::info!(
-                                "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
-                                target.as_bytes()[0],
-                                target.as_bytes()[1],
-                                target.as_bytes()[2],
-                                target.as_bytes()[3],
-                                sequence
-                            );
-                            return Ok(send_time);
+                        if set_packet_visible_len(&mut packet, total_len).is_ok() {
+                            if let Ok(payload) =
+                                kernel_api::resource::net::PacketPayload::try_single(packet)
+                            {
+                                if self.transmit_packet_on(if_id, payload).is_ok() {
+                                    log::info!(
+                                        "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
+                                        target.as_bytes()[0],
+                                        target.as_bytes()[1],
+                                        target.as_bytes()[2],
+                                        target.as_bytes()[3],
+                                        sequence
+                                    );
+                                    return Ok(send_time);
+                                }
+                            }
                         }
                     }
                 }

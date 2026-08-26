@@ -249,7 +249,7 @@ This document lists deprecated symbols and recent removals that still matter for
   - `Vec<DnsRecord>` response/cache ownership (`parse_* -> Vec<DnsRecord>`, `DnsCacheEntry.records-only` cache entries) ❌ **removed**
     - Migration: Use `DnsResponseView { payload, records }` and cache response payload ownership alongside record metadata.
   - `PacketRef`-only TX callback / queue / driver submit path (`TransmitFn`, runtime device queue, `NetDevicePort::submit_tx(PacketRef, ...)`) ❌ **removed**
-    - Migration: Use `PacketPayload` as the canonical TX unit. Single-segment frames should pass `PacketPayload::single(packet)`; scatter-gather send paths should forward `PacketPayload::Chain` unchanged.
+    - Migration: Use non-empty `PacketPayload` as the canonical TX unit. Construct it through `try_single`, `try_pair`, or `try_from_segments`; fallible construction returns the unconsumed packet owners.
 
 - `kernel/src/io/iommu/runtime/command/queue.rs`
   - `CommandQueue::submit_sync()` ❌ **removed**

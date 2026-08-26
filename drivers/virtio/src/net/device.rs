@@ -7,7 +7,6 @@ use crate::net::*;
 use crate::transport::TransportError;
 use crate::transport::VirtioTransport;
 
-const MAX_VIRTIO_COMPLETIONS_PER_PASS: usize = 256;
 const MAX_VIRTIO_RX_REFILLS_PER_PASS: usize = 128;
 
 #[derive(Debug, Default)]
@@ -72,13 +71,28 @@ impl VirtioNetDevice {
     }
 
     pub fn read_config(&mut self, transport: &dyn VirtioTransport) {
-        let mut mac = [0u8; 6];
-        for i in 0..6 {
-            mac[i] = transport.read_config_u8(i);
+        if self.accepted_features & VIRTIO_NET_F_MAC != 0 {
+            let mut mac = [0u8; 6];
+            for (i, octet) in mac.iter_mut().enumerate() {
+                *octet = transport.read_config_u8(i);
+            }
+            self.config.mac = mac;
         }
-        self.config.mac = mac;
-        self.config.max_queues = transport.read_config_u16(8);
-        self.config.mtu = transport.read_config_u16(10);
+
+        let advertised_pairs = if self.accepted_features & VIRTIO_NET_F_MQ != 0 {
+            transport.read_config_u16(8)
+        } else {
+            1
+        };
+        self.config.max_queues = Self::active_queue_pairs(
+            self.accepted_features,
+            advertised_pairs,
+            transport.get_num_queues(),
+        );
+
+        if self.accepted_features & VIRTIO_NET_F_MTU != 0 {
+            self.config.mtu = transport.read_config_u16(10);
+        }
     }
 
     pub fn link_up(&self, transport: &dyn VirtioTransport) -> bool {
@@ -90,7 +104,17 @@ impl VirtioNetDevice {
 
     /// Get the number of queue pairs to use.
     pub fn get_pair_count(&self) -> usize {
-        core::cmp::max(self.config.max_queues as usize, 1)
+        self.config.max_queues as usize
+    }
+
+    fn active_queue_pairs(features: u64, advertised_pairs: u16, device_queues: u16) -> u16 {
+        let requested_pairs = if features & VIRTIO_NET_F_MQ != 0 {
+            advertised_pairs.max(1)
+        } else {
+            1
+        };
+        let available_pairs = (device_queues / 2).max(1);
+        requested_pairs.min(available_pairs)
     }
 
     /// Calculate queue size based on device maximum.
@@ -172,7 +196,6 @@ impl VirtioNetDevice {
     /// Process completions on an RX queue.
     pub fn process_rx_completions<F>(
         &self,
-        runtime: &dyn NetRuntime,
         queue_index: u16,
         vq: &NetVirtQueue,
         mut handler: F,
@@ -193,11 +216,7 @@ impl VirtioNetDevice {
                 break;
             };
             processed += 1;
-            if let Some(mut inflight) = tracker.take(desc_idx) {
-                if let Some(mapping) = inflight.dma_mapping.take() {
-                    runtime.release_dma_mapping(mapping);
-                }
-
+            if let Some(inflight) = tracker.take(desc_idx) {
                 handler(desc_idx, inflight, len);
                 vq.free_desc_chain(desc_idx);
                 count += 1;
@@ -245,33 +264,46 @@ impl VirtioNetDevice {
             return Ok(false);
         }
 
-        let packet = match runtime.alloc_packet() {
-            Some(p) => p,
+        let buffer = match runtime.lease_rx_buffer() {
+            Some(buffer) => buffer,
             None => return Ok(false),
         };
 
-        let len = packet.capacity();
-        let dma_mapping = runtime.map_packet(&packet, NetDmaDirection::FromDevice)?;
-        let device_addr = dma_mapping.device_address();
-        let inflight_mapping = dma_mapping.requires_unmap().then_some(dma_mapping);
+        let region = buffer.writable_region();
+        let len = region.writable_len();
+        let device_addr = region.device_addr();
 
         match unsafe { vq.add_rx_buffer(device_addr, len) } {
             Ok(desc_idx) => {
-                tracker.put(
-                    desc_idx,
-                    RxInflight {
-                        packet,
-                        dma_mapping: inflight_mapping,
-                    },
-                );
+                tracker
+                    .put(desc_idx, RxInflight { buffer })
+                    .map_err(|_| VirtioNetError::DeviceError)?;
                 Ok(true)
             }
-            Err(e) => {
-                if dma_mapping.requires_unmap() {
-                    runtime.release_dma_mapping(dma_mapping);
-                }
-                Err(e)
-            }
+            Err(e) => Err(e),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::VirtioNetDevice;
+    use crate::net::features::VIRTIO_NET_F_MQ;
+
+    #[test]
+    fn queue_pairs_ignore_mq_configuration_without_the_negotiated_feature() {
+        assert_eq!(VirtioNetDevice::active_queue_pairs(0, 8, 17), 1);
+    }
+
+    #[test]
+    fn queue_pairs_do_not_exceed_the_transport_queue_set() {
+        assert_eq!(
+            VirtioNetDevice::active_queue_pairs(VIRTIO_NET_F_MQ, 2, 3),
+            1
+        );
+        assert_eq!(
+            VirtioNetDevice::active_queue_pairs(VIRTIO_NET_F_MQ, 8, 9),
+            4
+        );
     }
 }

@@ -249,15 +249,18 @@ impl KernelServices for ExoKernel {
     fn net_tcp_connection_recv_payload(
         &self,
         stream: kernel_api::resource::net::TcpConnection,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<kernel_api::resource::net::PacketPayload>> + Send>>
-    {
+    ) -> Pin<
+        Box<dyn Future<Output = KapiResult<kernel_api::resource::net::TcpReceiveOutcome>> + Send>,
+    > {
         Box::pin(async move {
             let fd = crate::net::l4::types::SocketId::from_raw(stream.id() as u32);
             let socket = lookup_socket(fd)?;
             let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_socket(socket);
             match connection.recv_payload().await {
-                Some(payload) => Ok(payload),
-                None => Ok(kernel_api::resource::net::PacketPayload::default()),
+                Some(payload) => Ok(kernel_api::resource::net::TcpReceiveOutcome::Payload(
+                    payload,
+                )),
+                None => Ok(kernel_api::resource::net::TcpReceiveOutcome::EndOfStream),
             }
         })
     }
@@ -266,15 +269,23 @@ impl KernelServices for ExoKernel {
         &self,
         stream: kernel_api::resource::net::TcpConnection,
         payload: kernel_api::resource::net::PacketPayload,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), kernel_api::resource::net::PayloadSendError>> + Send>>
+    {
         Box::pin(async move {
             let fd = crate::net::l4::types::SocketId::from_raw(stream.id() as u32);
-            let socket = lookup_socket(fd)?;
+            let socket = match lookup_socket(fd) {
+                Ok(socket) => socket,
+                Err(cause) => {
+                    return Err(kernel_api::resource::net::PayloadSendError::new(
+                        cause, payload,
+                    ));
+                }
+            };
             let mut connection = crate::net::l4::tcp::TcpConnection::from_retained_socket(socket);
-            connection
-                .send_payload(payload)
-                .await
-                .map_err(tcp_error_to_kapi)
+            connection.send_payload(payload).await.map_err(|error| {
+                let (cause, payload) = error.into_parts();
+                kernel_api::resource::net::PayloadSendError::new(tcp_error_to_kapi(cause), payload)
+            })
         })
     }
 
@@ -350,7 +361,8 @@ impl KernelServices for ExoKernel {
         &self,
         endpoint: kernel_api::resource::net::RawEndpoint,
         payload: kernel_api::resource::net::PacketPayload,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = Result<(), kernel_api::resource::net::PayloadSendError>> + Send>>
+    {
         // Security: Check for CAP_NET_RAW capability
         let caller = current_subject().domain.as_u64();
         if !crate::security::capability::manager()
@@ -360,18 +372,34 @@ impl KernelServices for ExoKernel {
                 "[KAPI][SECURITY] Domain {} tried to send raw without CAP_NET_RAW",
                 caller
             );
-            return Box::pin(async { Err(KapiError::PermissionDenied) });
+            return Box::pin(async move {
+                Err(kernel_api::resource::net::PayloadSendError::new(
+                    KapiError::PermissionDenied,
+                    payload,
+                ))
+            });
         }
 
         Box::pin(async move {
             let resolved_scope = endpoint.default_scope();
             let fd = crate::net::l4::types::SocketId::from_raw(endpoint.id() as u32);
-            let socket = lookup_socket(fd)?;
+            let socket = match lookup_socket(fd) {
+                Ok(socket) => socket,
+                Err(cause) => {
+                    return Err(kernel_api::resource::net::PayloadSendError::new(
+                        cause, payload,
+                    ));
+                }
+            };
             let raw = crate::net::l4::raw::RawEndpoint::from_retained_socket(socket);
             raw.set_scope(stack_scope(resolved_scope));
-            raw.send_payload(payload)
-                .await
-                .map_err(endpoint_error_to_kapi)
+            raw.send_payload(payload).await.map_err(|error| {
+                let (cause, payload) = error.into_parts();
+                kernel_api::resource::net::PayloadSendError::new(
+                    endpoint_error_to_kapi(cause),
+                    payload,
+                )
+            })
         })
     }
 

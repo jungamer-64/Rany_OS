@@ -15,10 +15,10 @@ pub fn test_mempool_allocation() -> TestResult {
         None => return TestResult::Failed(String::from("Failed to allocate packet")),
     };
 
-    if packet.capacity() < 1518 {
+    if packet.data_capacity() < 1518 {
         return TestResult::Failed(alloc::format!(
             "Packet capacity too small: {} < 1518",
-            packet.capacity()
+            packet.data_capacity()
         ));
     }
 
@@ -232,7 +232,10 @@ pub fn test_packet_payload_view() -> TestResult {
     };
     packet.data_mut().copy_from_slice(data);
 
-    let payload = PacketPayload::single(packet);
+    let payload = match PacketPayload::try_single(packet) {
+        Ok(payload) => payload,
+        Err(_) => return TestResult::Failed(String::from("Packet payload must be non-empty")),
+    };
     let view = PacketPayloadView::new(&payload);
     if view.total_len() != data.len() {
         return TestResult::Failed(alloc::format!(

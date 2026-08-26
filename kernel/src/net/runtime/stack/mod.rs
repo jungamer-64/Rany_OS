@@ -143,7 +143,13 @@ impl NetworkStats {
 /// The callback should return `true` if the packet was successfully queued
 /// for transmission; `false` indicates failure and will usually result in the
 /// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(NetRuntimeHandle, NetIfId, PacketPayload, NetTxMeta) -> bool;
+pub type TransmitFn = fn(
+    NetRuntimeHandle,
+    NetIfId,
+    PacketPayload,
+    NetTxMeta,
+    Option<u64>,
+) -> Result<(), PacketPayload>;
 
 // ICMP Redirect Cache Entry
 #[derive(Debug)]
@@ -278,8 +284,8 @@ pub struct NetworkStack {
     timeout_wheel: TimeoutWheel,
     /// Canonical device transmit boundary shared by every core-local stack.
     transmit_fn: TransmitFn,
-    /// One-shot TX metadata applied to the next frame emitted by raw/global commands.
-    pending_tx_meta: Option<NetTxMeta>,
+    /// Completion observer for the next frame, separate from DMA metadata.
+    pending_tx_completion_id: Option<u64>,
     /// Current timestamp (ticks)
     current_time: AtomicU64,
 }

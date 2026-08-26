@@ -148,7 +148,7 @@ pub struct NetRuntimeContext {
     pub(crate) tx_owner_group_next_id: AtomicU64,
     pub(crate) tx_owner_groups: PoisonLock<BTreeMap<u64, TxOwnerGroupState>>,
     pub(crate) tx_lease_next_id: AtomicU64,
-    pub(crate) tx_leases: PoisonLock<BTreeMap<u64, TxLeaseState>>,
+    pub(crate) tx_leases: PoisonLock<BTreeMap<kernel_api::netdev::TxLeaseId, TxLeaseState>>,
     pub(crate) packet_pool: Mempool,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,

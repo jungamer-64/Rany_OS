@@ -517,12 +517,14 @@ impl EthernetProcessor {
             return EthernetIngress::Error;
         };
         if offset > 0
-            && !packet.advance(PacketByteCount::new(offset).expect("positive Ethernet offset"))
+            && packet
+                .try_advance(PacketByteCount::new(offset).expect("positive Ethernet offset"))
+                .is_err()
         {
             self.stats.rx_errors += 1;
             return EthernetIngress::Error;
         }
-        if !packet.set_len(len) {
+        if packet.try_resize(len.get()).is_err() {
             self.stats.rx_errors += 1;
             return EthernetIngress::Error;
         }

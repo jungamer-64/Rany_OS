@@ -4,7 +4,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::num::NonZeroUsize;
+use core::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::domain::DomainId;
@@ -14,6 +14,7 @@ use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoRequest, IoRequestId, IoResult,
     PollHandler, hybrid_coordinator, io_scheduler,
 };
+use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::net::runtime::device::{self as net_device_runtime};
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::{PoisonLock, PoisonRwLock};
@@ -24,15 +25,16 @@ use kernel_api::abi::driver::{
     AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
     AbiNetPortInfo, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxMeta,
     AbiNetTxMeta, AbiNetTxSegment, AbiNetTxSubmission, AbiNvmeNamespaceInfo,
-    AbiNvmeNamespaceRegistration, AbiPacketRefRaw,
+    AbiNvmeNamespaceRegistration, AbiRxLease, AbiRxWritableRegion, AbiTxDeviceOutcome,
 };
 use kernel_api::resource::net::PacketByteCount;
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
     NetPortRuntimeHandle, NetPortStats, NetRxFrameLayout, NetRxMeta, NetTxMeta, PrimaryPortPolicy,
-    TxSubmission,
+    RxBuffer, TxLeaseId, TxSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
+use x86_64::PhysAddr;
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 
@@ -402,6 +404,189 @@ fn leak_driver_name(info: &AbiNetPortInfo) -> &'static str {
 struct NetRuntimeState {
     runtime: NetPortRuntimeHandle,
     table: AbiNetPortRuntime,
+    rx_leases: PoisonLock<RxLeaseTable>,
+    dma_mappings: Arc<NetPacketDmaMappings>,
+}
+
+const NET_PACKET_DMA_PAGE_SIZE: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
+
+#[derive(Clone, Copy)]
+struct NetPacketDmaPage {
+    physical_base: u64,
+    device_base: u64,
+}
+
+struct NetPacketDmaMappings {
+    device: IommuDeviceId,
+    pages: PoisonLock<Vec<NetPacketDmaPage>>,
+}
+
+impl NetPacketDmaMappings {
+    fn new(device: IommuDeviceId) -> Self {
+        Self {
+            device,
+            pages: PoisonLock::new(Vec::new()),
+        }
+    }
+
+    fn map_region(&self, physical_addr: u64, len: usize) -> Result<u64, &'static str> {
+        let len = u64::try_from(len).map_err(|_| "network DMA length does not fit u64")?;
+        if physical_addr == 0 || len == 0 {
+            return Err("network DMA region is empty");
+        }
+        let physical_end = physical_addr
+            .checked_add(len - 1)
+            .ok_or("network DMA region overflow")?;
+        let physical_base = physical_addr & !(NET_PACKET_DMA_PAGE_SIZE - 1);
+        if physical_end >= physical_base + NET_PACKET_DMA_PAGE_SIZE {
+            return Err("network packet segment crosses a DMA page");
+        }
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Ok(physical_addr);
+        }
+
+        let offset = physical_addr - physical_base;
+        let mut pages = self.pages.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(mapping) = pages
+            .iter()
+            .find(|mapping| mapping.physical_base == physical_base)
+        {
+            return mapping
+                .device_base
+                .checked_add(offset)
+                .ok_or("network DMA device address overflow");
+        }
+
+        pages
+            .try_reserve(1)
+            .map_err(|_| "network DMA mapping registry allocation failed")?;
+        // SAFETY: packet-pool buffers own this aligned physical page for the
+        // lifetime of the port mapping cache. The device mapping is revoked
+        // only after the port has quiesced DMA.
+        let device_base = unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(
+                &self.device,
+                PhysAddr::new(physical_base),
+                NET_PACKET_DMA_PAGE_SIZE,
+                true,
+                true,
+            )
+        }
+        .map_err(|_| "network packet page IOMMU mapping failed")?;
+        pages.push(NetPacketDmaPage {
+            physical_base,
+            device_base,
+        });
+        device_base
+            .checked_add(offset)
+            .ok_or("network DMA device address overflow")
+    }
+
+    fn revoke_all(&self) -> Result<(), &'static str> {
+        let mut pages = self.pages.lock().unwrap_or_else(|error| error.into_inner());
+        let mut failed = false;
+        let mut index = pages.len();
+        while index != 0 {
+            index -= 1;
+            let mapping = pages[index];
+            if crate::io::iommu::api::unmap_for_device(
+                &self.device,
+                mapping.device_base,
+                NET_PACKET_DMA_PAGE_SIZE,
+            )
+            .is_ok()
+            {
+                pages.swap_remove(index);
+            } else {
+                failed = true;
+            }
+        }
+        if failed {
+            Err("network packet IOMMU mappings could not be revoked")
+        } else {
+            Ok(())
+        }
+    }
+}
+
+impl Drop for NetPacketDmaMappings {
+    fn drop(&mut self) {
+        let _ = self.revoke_all();
+    }
+}
+
+const ABI_RX_LEASE_INDEX_BITS: u32 = 16;
+const ABI_RX_LEASE_INDEX_MASK: u64 = (1_u64 << ABI_RX_LEASE_INDEX_BITS) - 1;
+const ABI_RX_LEASE_GENERATION_MASK: u64 = (1_u64 << (64 - ABI_RX_LEASE_INDEX_BITS)) - 1;
+const ABI_RX_LEASE_SLOT_LIMIT: usize = u16::MAX as usize;
+
+struct RxLeaseSlot {
+    generation: u64,
+    buffer: Option<RxBuffer>,
+}
+
+#[derive(Default)]
+struct RxLeaseTable {
+    slots: Vec<RxLeaseSlot>,
+    free: Vec<u16>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RxLeaseAdmissionError {
+    Exhausted,
+    Allocation,
+}
+
+impl RxLeaseTable {
+    fn admit(&mut self, buffer: RxBuffer) -> Result<NonZeroU64, RxLeaseAdmissionError> {
+        let index = if let Some(index) = self.free.pop() {
+            usize::from(index)
+        } else {
+            if self.slots.len() == ABI_RX_LEASE_SLOT_LIMIT {
+                return Err(RxLeaseAdmissionError::Exhausted);
+            }
+            self.slots
+                .try_reserve(1)
+                .map_err(|_| RxLeaseAdmissionError::Allocation)?;
+            self.free
+                .try_reserve(1)
+                .map_err(|_| RxLeaseAdmissionError::Allocation)?;
+            let index = self.slots.len();
+            self.slots.push(RxLeaseSlot {
+                generation: 0,
+                buffer: None,
+            });
+            index
+        };
+
+        let slot = &mut self.slots[index];
+        debug_assert!(slot.buffer.is_none());
+        slot.generation = slot.generation.wrapping_add(1) & ABI_RX_LEASE_GENERATION_MASK;
+        if slot.generation == 0 {
+            slot.generation = 1;
+        }
+        slot.buffer = Some(buffer);
+        let raw = (slot.generation << ABI_RX_LEASE_INDEX_BITS) | ((index as u64) + 1);
+        Ok(NonZeroU64::new(raw).expect("RX lease generation and index are non-zero"))
+    }
+
+    fn claim(&mut self, lease_id: NonZeroU64) -> Option<RxBuffer> {
+        let raw = lease_id.get();
+        let encoded_index = raw & ABI_RX_LEASE_INDEX_MASK;
+        if encoded_index == 0 {
+            return None;
+        }
+        let index = usize::try_from(encoded_index - 1).ok()?;
+        let generation = raw >> ABI_RX_LEASE_INDEX_BITS;
+        let slot = self.slots.get_mut(index)?;
+        if slot.generation != generation {
+            return None;
+        }
+        let free_index = u16::try_from(index).ok()?;
+        let buffer = slot.buffer.take()?;
+        self.free.push(free_index);
+        Some(buffer)
+    }
 }
 
 #[repr(transparent)]
@@ -436,37 +621,103 @@ impl NetRuntimeStateCookie {
     }
 }
 
-extern "C" fn runtime_alloc_packet(runtime_cookie: u64, out_packet: *mut AbiPacketRefRaw) -> i32 {
-    if out_packet.is_null() {
+extern "C" fn runtime_lease_rx_buffer(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32 {
+    if out_lease.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
     let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
         return AbiErrorCode::InvalidParam as i32;
     };
     cookie.with_state(|state| {
-        let Some(packet) = state.runtime.alloc_packet() else {
+        let Some(buffer) = state.runtime.lease_rx_buffer() else {
             return AbiErrorCode::OutOfMemory as i32;
         };
+        let writable = buffer.writable_region();
+        let device_addr = match state
+            .dma_mappings
+            .map_region(buffer.physical_addr(), writable.writable_len())
+        {
+            Ok(device_addr) => device_addr,
+            Err(_) => return AbiErrorCode::IoError as i32,
+        };
+        let region = AbiRxWritableRegion {
+            cpu_ptr: writable.cpu_ptr(),
+            device_addr,
+            writable_len: writable.writable_len(),
+        };
+        let lease_id = match state
+            .rx_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .admit(buffer)
+        {
+            Ok(lease_id) => lease_id,
+            Err(RxLeaseAdmissionError::Exhausted) => return AbiErrorCode::DeviceBusy as i32,
+            Err(RxLeaseAdmissionError::Allocation) => return AbiErrorCode::OutOfMemory as i32,
+        };
+        let Some(lease) = AbiRxLease::new(lease_id, region) else {
+            let _ = state
+                .rx_leases
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .claim(lease_id);
+            return AbiErrorCode::InvalidParam as i32;
+        };
         unsafe {
-            *out_packet = AbiPacketRefRaw::from_packet(packet);
+            *out_lease = lease;
         }
         AbiErrorCode::Success as i32
     })
 }
 
-extern "C" fn runtime_submit_rx_packet(
-    runtime_cookie: u64,
-    packet: *mut AbiPacketRefRaw,
-    meta: AbiNetRxMeta,
-) -> i32 {
-    let Some(packet) = (unsafe { AbiPacketRefRaw::take(packet) }) else {
-        return AbiErrorCode::InvalidParam as i32;
-    };
+extern "C" fn runtime_release_rx_buffer(runtime_cookie: u64, lease: *mut AbiRxLease) -> i32 {
     let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
         return AbiErrorCode::InvalidParam as i32;
     };
+    let Some(lease) = (unsafe { AbiRxLease::take(lease) }) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(lease_id) = lease.lease_id() else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    cookie.with_state(|state| {
+        match state
+            .rx_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .claim(lease_id)
+        {
+            Some(_) => AbiErrorCode::Success as i32,
+            None => AbiErrorCode::InvalidParam as i32,
+        }
+    })
+}
+
+extern "C" fn runtime_submit_rx_buffer(
+    runtime_cookie: u64,
+    lease: *mut AbiRxLease,
+    meta: AbiNetRxMeta,
+) -> i32 {
+    let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(lease) = (unsafe { AbiRxLease::take(lease) }) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(lease_id) = lease.lease_id() else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(buffer) = cookie.with_state(|state| {
+        state
+            .rx_leases
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .claim(lease_id)
+    }) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
     let layout = meta.layout();
-    if !layout.is_valid() || layout.frame_len() != packet.len() {
+    if !layout.is_valid() {
         return AbiErrorCode::InvalidParam as i32;
     }
     let Some(frame_len) = PacketByteCount::new(layout.frame_len()) else {
@@ -478,12 +729,14 @@ extern "C" fn runtime_submit_rx_packet(
         return AbiErrorCode::InvalidParam as i32;
     };
     let rx_meta = NetRxMeta::new(meta.queue_index(), rx_layout, meta.flags());
-    cookie.with_state(
-        |state| match state.runtime.submit_rx(packet.into_packet(), rx_meta) {
-            Ok(()) => AbiErrorCode::Success as i32,
-            Err(_) => AbiErrorCode::IoError as i32,
-        },
-    )
+    let received = match buffer.complete(rx_meta) {
+        Ok(received) => received,
+        Err(_) => return AbiErrorCode::InvalidParam as i32,
+    };
+    cookie.with_state(|state| match state.runtime.submit_rx(received) {
+        Ok(()) => AbiErrorCode::Success as i32,
+        Err(_) => AbiErrorCode::IoError as i32,
+    })
 }
 
 extern "C" fn runtime_schedule_event(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32 {
@@ -503,17 +756,22 @@ extern "C" fn runtime_schedule_event(runtime_cookie: u64, event: AbiNetDriverEve
     })
 }
 
-extern "C" fn runtime_complete_tx_lease(runtime_cookie: u64, lease_id: u64, status: i32) -> i32 {
+extern "C" fn runtime_complete_tx_lease(
+    runtime_cookie: u64,
+    lease_id: u64,
+    outcome: AbiTxDeviceOutcome,
+) -> i32 {
     let Some(cookie) = NetRuntimeStateCookie::from_raw(runtime_cookie) else {
         return AbiErrorCode::InvalidParam as i32;
     };
-    let result = if AbiErrorCode::from_raw(status).is_success() {
-        Ok(())
-    } else {
-        Err("standalone netdev device completion failed")
+    let Some(lease_id) = TxLeaseId::new(lease_id) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(outcome) = outcome.into_outcome() else {
+        return AbiErrorCode::InvalidParam as i32;
     };
     cookie.with_state(
-        |state| match state.runtime.complete_tx_lease(lease_id, result) {
+        |state| match state.runtime.complete_tx_lease(lease_id, outcome) {
             Ok(()) => AbiErrorCode::Success as i32,
             Err(_) => AbiErrorCode::DeviceNotFound as i32,
         },
@@ -558,6 +816,9 @@ struct NetdevPortAdapter {
     registration: AbiNetPortRegistration,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
+    max_tx_segments: NonZeroU16,
+    tx_abi_scratch: PoisonLock<Vec<AbiNetTxSegment>>,
+    dma_mappings: Arc<NetPacketDmaMappings>,
 }
 
 unsafe impl Send for NetdevPortAdapter {}
@@ -567,11 +828,22 @@ impl NetdevPortAdapter {
     fn new(
         registration: &AbiNetPortRegistration,
         driver_name: &'static str,
+        dma_device: IommuDeviceId,
     ) -> Result<Self, AbiErrorCode> {
+        let Some(max_tx_segments) = NonZeroU16::new(registration.info.max_tx_segments) else {
+            return Err(AbiErrorCode::InvalidParam);
+        };
+        let mut tx_abi_scratch = Vec::new();
+        tx_abi_scratch
+            .try_reserve_exact(usize::from(max_tx_segments.get()))
+            .map_err(|_| AbiErrorCode::OutOfMemory)?;
         Ok(Self {
             registration: *registration,
             driver_name,
             runtime_state: PoisonLock::new(None),
+            max_tx_segments,
+            tx_abi_scratch: PoisonLock::new(tx_abi_scratch),
+            dma_mappings: Arc::new(NetPacketDmaMappings::new(dma_device)),
         })
     }
 }
@@ -584,6 +856,7 @@ impl NetDevicePort for NetdevPortAdapter {
             if_id: None,
             driver_name: self.driver_name,
             queue_pairs: info.queue_pairs,
+            max_tx_segments: self.max_tx_segments,
             mtu: info.mtu,
             mac: MacAddress(info.mac),
             flags: info.flags,
@@ -595,13 +868,16 @@ impl NetDevicePort for NetdevPortAdapter {
             runtime,
             table: AbiNetPortRuntime::new(
                 0,
-                runtime_alloc_packet,
-                runtime_submit_rx_packet,
+                runtime_lease_rx_buffer,
+                runtime_release_rx_buffer,
+                runtime_submit_rx_buffer,
                 runtime_complete_tx_lease,
                 runtime_schedule_event,
                 runtime_update_link,
                 runtime_log,
             ),
+            rx_leases: PoisonLock::new(RxLeaseTable::default()),
+            dma_mappings: Arc::clone(&self.dma_mappings),
         });
         state.table.runtime_cookie = NetRuntimeStateCookie::from_state(&mut state).as_raw();
         let table_ptr = &state.table as *const AbiNetPortRuntime;
@@ -627,18 +903,23 @@ impl NetDevicePort for NetdevPortAdapter {
         submission: TxSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
-        let abi_segments: Vec<AbiNetTxSegment> = submission
-            .segments()
-            .iter()
-            .map(|segment| {
-                AbiNetTxSegment::from_checked_parts(
-                    segment.cpu_ptr(),
-                    segment.device_addr().get(),
-                    segment.len(),
-                )
-                .expect("NetTxSegment already validates ABI descriptor invariants")
-            })
-            .collect();
+        let mut abi_segments = self
+            .tx_abi_scratch
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        abi_segments.clear();
+        if submission.segments().len() > abi_segments.capacity() {
+            return Err("standalone netdev TX segment limit exceeded");
+        }
+        for segment in submission.segments() {
+            let device_addr = self
+                .dma_mappings
+                .map_region(segment.physical_addr().get(), segment.len().get())?;
+            abi_segments.push(
+                AbiNetTxSegment::from_checked_parts(segment.cpu_ptr(), device_addr, segment.len())
+                    .expect("NetTxSegment already validates ABI descriptor invariants"),
+            );
+        }
         let abi_submission = AbiNetTxSubmission::new(submission.lease_id(), &abi_segments)
             .ok_or("standalone netdev empty tx submission")?;
         let abi_meta = AbiNetTxMeta {
@@ -721,13 +1002,18 @@ impl NetDevicePort for NetdevPortAdapter {
         }
     }
 
-    fn stop(&self) {
-        (self.registration.stop)(self.registration.opaque);
+    fn stop(&self) -> Result<(), &'static str> {
+        let status = (self.registration.stop)(self.registration.opaque);
+        if !AbiErrorCode::from_raw(status).is_success() {
+            return Err("standalone netdev could not prove DMA quiescence");
+        }
+        self.dma_mappings.revoke_all()?;
         let _ = self
             .runtime_state
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .take();
+        Ok(())
     }
 }
 
@@ -752,10 +1038,12 @@ impl NetdevBridgeRegistry {
     fn register(
         &self,
         owner: DomainId,
+        dma_device: IommuDeviceId,
         registration: &AbiNetPortRegistration,
     ) -> Result<u64, AbiErrorCode> {
         let name = leak_driver_name(&registration.info);
-        let adapter: Box<dyn NetDevicePort> = Box::new(NetdevPortAdapter::new(registration, name)?);
+        let adapter: Box<dyn NetDevicePort> =
+            Box::new(NetdevPortAdapter::new(registration, name, dma_device)?);
         let info = adapter.info();
         let runtime = crate::net::runtime::default_runtime();
         let if_id = net_device_runtime::register_port_in(
@@ -783,10 +1071,14 @@ impl NetdevBridgeRegistry {
             entries.remove(&handle)
         };
         if let Some(entry) = entry {
-            let _ = net_device_runtime::unregister_port_in(
+            match net_device_runtime::unregister_port_in(
                 crate::net::runtime::default_runtime(),
                 entry.if_id,
-            );
+            ) {
+                Ok(true) => {}
+                Ok(false) => return Err(AbiErrorCode::DeviceNotFound),
+                Err(_) => return Err(AbiErrorCode::IoError),
+            }
         }
         Ok(())
     }
@@ -913,7 +1205,9 @@ mod tests {
         AbiErrorCode::Success as i32
     }
 
-    extern "C" fn test_net_stop(_opaque: u64) {}
+    extern "C" fn test_net_stop(_opaque: u64) -> i32 {
+        AbiErrorCode::Success as i32
+    }
 
     extern "C" fn test_net_set_interrupts_enabled(_opaque: u64, enabled: bool) -> i32 {
         TEST_NET_INTERRUPT_CALLS.fetch_add(1, Ordering::Relaxed);
@@ -1042,7 +1336,17 @@ mod tests {
         TEST_NET_INTERRUPTS_ENABLED.store(true, Ordering::Release);
 
         let registration = test_net_registration(2);
-        let adapter = NetdevPortAdapter::new(&registration, "test-net").expect("v3 adapter");
+        let adapter = NetdevPortAdapter::new(
+            &registration,
+            "test-net",
+            IommuDeviceId {
+                segment: 0,
+                bus: 0,
+                device: 2,
+                function: 0,
+            },
+        )
+        .expect("v3 adapter");
 
         assert_eq!(adapter.set_interrupts_enabled(false), Ok(()));
         assert_eq!(TEST_NET_INTERRUPT_CALLS.load(Ordering::Relaxed), 1);

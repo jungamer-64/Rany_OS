@@ -998,7 +998,8 @@ fn test_cert_payload() -> kernel_api::resource::net::PacketPayload {
     let mut packet =
         crate::net::payload::alloc_packet_with_headroom(TEST_CERT_DER.len(), 0).unwrap();
     packet.data_mut().copy_from_slice(&TEST_CERT_DER);
-    kernel_api::resource::net::PacketPayload::single(packet)
+    kernel_api::resource::net::PacketPayload::try_single(packet)
+        .expect("test certificate packet is non-empty")
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -1008,7 +1009,8 @@ pub mod qemu_tests {
     fn der_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
         let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len(), 0).unwrap();
         packet.data_mut().copy_from_slice(data);
-        kernel_api::resource::net::PacketPayload::single(packet)
+        kernel_api::resource::net::PacketPayload::try_single(packet)
+            .expect("DER test packet is non-empty")
     }
 
     pub fn x509_der_parse_tag_length_smoke() -> bool {

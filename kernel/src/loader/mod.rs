@@ -29,7 +29,8 @@ pub use signature::{
 };
 
 use crate::driver_registry::{
-    DriverHandle, register_abi_driver_with_context, register_exports_driver_with_context,
+    DriverHandle, register_abi_driver_owned_with_context,
+    register_exports_driver_owned_with_context,
 };
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -581,6 +582,7 @@ fn record_driver_handle(cell_id: CellId, handle: DriverHandle) {
 pub(crate) fn register_driver_from_cell_with_context(
     cell_id: CellId,
     ctx: AbiDriverContext,
+    owner: crate::domain::DomainId,
 ) -> Result<DriverHandle, LoadError> {
     crate::io::log::early_print("[LDR] regdrv: begin\n");
     let exports_addr = with_registry(|r| {
@@ -594,7 +596,7 @@ pub(crate) fn register_driver_from_cell_with_context(
     if let Some(addr) = exports_addr {
         crate::io::log::early_print("[LDR] regdrv: exports path\n");
         let exports_ptr = addr as *const DriverExportsV1;
-        match register_exports_driver_with_context(exports_ptr, ctx) {
+        match register_exports_driver_owned_with_context(exports_ptr, ctx, owner) {
             Ok(handle) => {
                 crate::io::log::early_print("[LDR] regdrv: exports registered\n");
                 record_driver_handle(cell_id, handle);
@@ -635,7 +637,7 @@ pub(crate) fn register_driver_from_cell_with_context(
     let entry_fn: kernel_api::abi::driver::DriverEntryFn =
         unsafe { core::mem::transmute(entry_addr) };
 
-    match register_abi_driver_with_context(entry_fn, ctx) {
+    match register_abi_driver_owned_with_context(entry_fn, ctx, owner) {
         Ok(handle) => {
             crate::io::log::early_print("[LDR] regdrv: abi registered\n");
             record_driver_handle(cell_id, handle);

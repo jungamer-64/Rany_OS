@@ -373,14 +373,16 @@ impl SystemIntegration {
         let devices = crate::platform::pci::scan_all_devices();
         let mut started = 0usize;
         for dev in devices {
-            let Some(bar0) = dev.bars[0] else {
-                continue;
-            };
             dev.enable_bus_master();
             dev.enable_memory_space();
-            let bar0_virt =
-                crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(bar0.base()))
-                    .as_u64();
+            let bar0_virt = dev.bars[0]
+                .map(|bar0| {
+                    crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(
+                        bar0.base(),
+                    ))
+                    .as_u64()
+                })
+                .unwrap_or(0);
             let mut ctx = kernel_api::abi::driver::DriverContext::for_pci(
                 bar0_virt,
                 dev.interrupt_line as u32,

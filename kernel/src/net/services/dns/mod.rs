@@ -483,7 +483,7 @@ pub enum DnsRecordData {
 #[derive(Debug)]
 pub struct DnsCacheEntry {
     /// 応答 payload ownership
-    pub response: PacketPayload,
+    pub response: Option<PacketPayload>,
     /// packet-backed レコード metadata
     pub records: Vec<DnsRecordMeta>,
     /// キャッシュ時刻 (tick)
@@ -580,7 +580,7 @@ impl DnsCache {
         self.entries.insert(
             name,
             DnsCacheEntry {
-                response,
+                response: Some(response),
                 records,
                 cached_at: current_tick,
                 min_ttl,
@@ -601,7 +601,7 @@ impl DnsCache {
         self.entries.insert(
             name,
             DnsCacheEntry {
-                response: PacketPayload::default(),
+                response: None,
                 records: Vec::new(),
                 cached_at: current_tick,
                 min_ttl: ttl_secs,

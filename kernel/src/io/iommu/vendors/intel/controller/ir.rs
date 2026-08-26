@@ -53,6 +53,7 @@ impl InterruptRemapEntry {
         destination: ApicId,
         logical: bool,
         sid: Option<u16>, // RID/BDF
+        mode: InterruptRemapMode,
     ) -> Self {
         // P=1 (bit 0)
         let mut lo = 1;
@@ -65,15 +66,19 @@ impl InterruptRemapEntry {
         lo &= !(1 << 15);
         // Vector (bits 31:16)
         lo |= (vector as u64) << 16;
-        // DestID (bits 63:32). EIME decides whether hardware consumes 8 or 32 bits.
-        lo |= u64::from(destination.as_u32()) << 32;
+        // DestID (bits 63:32). In xAPIC mode the 8-bit destination occupies
+        // bits 47:40; extended mode consumes the full 32-bit field.
+        let destination = match mode {
+            InterruptRemapMode::XApic => destination.as_u32() << 8,
+            InterruptRemapMode::X2Apic => destination.as_u32(),
+        };
+        lo |= u64::from(destination) << 32;
 
         let mut hi = 0;
         if let Some(rid) = sid {
-            // SVT=1 (Source Validation Type: Verify SID) - bits 81:80 of IRTE (bits 17:16 of hi)
-            hi |= 1 << 16;
-            // SQ=0 (Source-id Qualifier: Exact match) - bits 83:82 of IRTE (bits 19:18 of hi)
-            // (hi |= 0 << 18 is implicit)
+            // SQ=0 (Source-id Qualifier: exact match), bits 17:16 of hi.
+            // SVT=1 (Source Validation Type: verify SID), bits 19:18 of hi.
+            hi |= 1 << 18;
             // SID (Source ID) - bits 79:64 of IRTE (bits 15:0 of hi)
             hi |= rid as u64;
         }
@@ -232,7 +237,7 @@ impl InterruptRemapper for IommuController {
         let index = irt.allocate().ok_or(IommuError::HardwareError)?;
 
         let rid = ((bus as u16) << 8) | ((device as u16) << 3) | (function as u16);
-        let entry = InterruptRemapEntry::fixed(vector, destination, logical, Some(rid));
+        let entry = InterruptRemapEntry::fixed(vector, destination, logical, Some(rid), mode);
         irt.set(index, entry);
 
         // Security: Invalidate IEC after allocating IRTE to ensure hardware sees the new entry.
@@ -352,8 +357,29 @@ mod tests {
 
     #[test]
     fn irte_preserves_full_x2apic_destination() {
-        let entry = InterruptRemapEntry::fixed(0x40, ApicId::new(0xfedc_ba98), false, None);
+        let entry = InterruptRemapEntry::fixed(
+            0x40,
+            ApicId::new(0xfedc_ba98),
+            false,
+            None,
+            InterruptRemapMode::X2Apic,
+        );
         assert_eq!(entry.lo >> 32, 0xfedc_ba98);
+    }
+
+    #[test]
+    fn irte_places_xapic_destination_and_source_validation_fields() {
+        let entry = InterruptRemapEntry::fixed(
+            0x41,
+            ApicId::new(0x5a),
+            false,
+            Some(0x1234),
+            InterruptRemapMode::XApic,
+        );
+        assert_eq!(entry.lo >> 32, 0x5a00);
+        assert_eq!(entry.hi & 0xffff, 0x1234);
+        assert_eq!((entry.hi >> 16) & 0b11, 0);
+        assert_eq!((entry.hi >> 18) & 0b11, 1);
     }
 
     #[test]

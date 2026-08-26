@@ -179,9 +179,12 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
-        let Ok(udp_segment) = packet.into_payload() else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+        let udp_segment = match packet.into_payload() {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                return Err((UdpResult::Invalid, error.into_owner()));
+            }
         };
         let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &udp_segment,
@@ -189,25 +192,28 @@ impl UdpProcessor {
             length - UdpHeader::SIZE,
         ) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+            return Err((UdpResult::Invalid, udp_segment));
         };
-        let Some(udp_payload) = bounds
+        let window = bounds
             .take_from(udp_segment)
-            .and_then(|window| window.into_payload().ok())
-        else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+            .expect("UDP bounds were checked against the same payload");
+        let udp_payload = match window.into_payload() {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                return Err((UdpResult::Invalid, error.into_owner()));
+            }
         };
 
-        if endpoint
-            .deliver_udp_payload(if_id, src, ttl, udp_payload)
-            .is_ok()
-        {
-            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        } else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            Err((UdpResult::Invalid, PacketPayload::default()))
+        match endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload) {
+            Ok(()) => {
+                self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err((_, payload)) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                Err((UdpResult::Invalid, payload))
+            }
         }
     }
 
@@ -270,9 +276,12 @@ impl UdpProcessor {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
-        let Ok(udp_segment) = packet.into_payload() else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+        let udp_segment = match packet.into_payload() {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                return Err((UdpResult::Invalid, error.into_owner()));
+            }
         };
         let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &udp_segment,
@@ -280,25 +289,28 @@ impl UdpProcessor {
             length - UdpHeader::SIZE,
         ) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+            return Err((UdpResult::Invalid, udp_segment));
         };
-        let Some(udp_payload) = bounds
+        let window = bounds
             .take_from(udp_segment)
-            .and_then(|window| window.into_payload().ok())
-        else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            return Err((UdpResult::Invalid, PacketPayload::default()));
+            .expect("UDP bounds were checked against the same payload");
+        let udp_payload = match window.into_payload() {
+            Ok(payload) => payload,
+            Err(error) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                return Err((UdpResult::Invalid, error.into_owner()));
+            }
         };
 
-        if endpoint
-            .deliver_udp_payload(if_id, src, ttl, udp_payload)
-            .is_ok()
-        {
-            self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
-            Ok(())
-        } else {
-            self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
-            Err((UdpResult::Invalid, PacketPayload::default()))
+        match endpoint.deliver_udp_payload(if_id, src, ttl, udp_payload) {
+            Ok(()) => {
+                self.stats.rx_datagrams.fetch_add(1, Ordering::Relaxed);
+                Ok(())
+            }
+            Err((_, payload)) => {
+                self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
+                Err((UdpResult::Invalid, payload))
+            }
         }
     }
 

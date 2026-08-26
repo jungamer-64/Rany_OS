@@ -331,7 +331,7 @@ struct TcpOptionsScratch {
 }
 
 impl TcpOptionsScratch {
-    fn parse(segment: PacketPayload) -> Option<(ParsedTcpHeader, Self, PacketPayload)> {
+    fn parse(segment: PacketPayload) -> Option<(ParsedTcpHeader, Self, Option<PacketPayload>)> {
         let view = PacketPayloadView::new(&segment);
         let header = view.read_array::<20>(0)?;
         let data_off_flags = u16::from_be_bytes([header[12], header[13]]);
@@ -351,9 +351,16 @@ impl TcpOptionsScratch {
         }
 
         let payload_len = view.total_len().saturating_sub(data_offset);
-        let bounds =
-            crate::net::payload::OwnedPayloadBounds::checked(&segment, data_offset, payload_len)?;
-        let payload = bounds.take_from(segment)?.into_payload().ok()?;
+        let payload = if payload_len == 0 {
+            None
+        } else {
+            let bounds = crate::net::payload::OwnedPayloadBounds::checked(
+                &segment,
+                data_offset,
+                payload_len,
+            )?;
+            Some(bounds.take_from(segment)?.into_payload().ok()?)
+        };
 
         Some((
             ParsedTcpHeader {
@@ -382,7 +389,7 @@ fn process_parsed_tcp_segment(
     ingress_if_id: NetIfId,
     header: ParsedTcpHeader,
     options: &[u8],
-    data_payload: PacketPayload,
+    data_payload: Option<PacketPayload>,
 ) {
     if let Some(tcb) = tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
         TcpControlBlockSnapshot::from(entry)
@@ -390,7 +397,7 @@ fn process_parsed_tcp_segment(
         tcp_table_in(runtime).update_peer_window(ingress_if_id, local, remote, header.window);
 
         let mut data_payload = data_payload;
-        let payload_len = data_payload.total_len();
+        let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
 
         // Sequence validation is performed in process_tcp_with_tcb (L1124) which
         // correctly excludes SYN-SENT state. The fast-path below already requires
@@ -402,13 +409,16 @@ fn process_parsed_tcp_segment(
             && payload_len > 0
             && (base_flags == tcp_flags::ACK || base_flags == (tcp_flags::ACK | tcp_flags::PSH));
         if can_try_fast_path {
-            match try_fast_path(runtime, &tcb, header.ack_num, options, data_payload) {
+            let payload = data_payload
+                .take()
+                .expect("fast path requires a non-empty TCP payload");
+            match try_fast_path(runtime, &tcb, header.ack_num, options, payload) {
                 Ok(()) => {
                     FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
                     return;
                 }
                 Err(payload) => {
-                    data_payload = payload;
+                    data_payload = Some(payload);
                 }
             }
         }
@@ -486,7 +496,7 @@ fn process_parsed_tcp_segment(
                     let _ = push_to_accept_queue(runtime, local.port(), ingress_if_id, accepted);
                 }
 
-                if !data_payload.is_empty() {
+                if let Some(data_payload) = data_payload {
                     if let Some(snapshot) =
                         tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
                             TcpControlBlockSnapshot::from(entry)
@@ -501,7 +511,7 @@ fn process_parsed_tcp_segment(
                             header.window,
                             header.urgent_ptr,
                             options,
-                            data_payload,
+                            Some(data_payload),
                         );
                     }
                 }
@@ -518,7 +528,7 @@ fn process_parsed_tcp_segment(
             header.flags,
             header.seq_num,
             header.ack_num,
-            data_payload.total_len(),
+            data_payload.as_ref().map_or(0, PacketPayload::total_len),
         );
     } else if !is_rst {
         // RFC 9293 Section 3.10.7.1: Incoming segment (e.g. FIN, DATA) on CLOSED connection
@@ -530,7 +540,7 @@ fn process_parsed_tcp_segment(
             header.flags,
             header.seq_num,
             header.ack_num,
-            data_payload.total_len(),
+            data_payload.as_ref().map_or(0, PacketPayload::total_len),
         );
     }
 }
@@ -585,10 +595,7 @@ fn try_fast_path(
         if !can_accept {
             return Err(data_payload);
         }
-        let pushed = socket.push_payload(data_payload);
-        if pushed < payload_len {
-            return Err(PacketPayload::default());
-        }
+        socket.try_push_payload(data_payload)?;
     } else {
         return Err(data_payload);
     }
@@ -886,14 +893,14 @@ fn handle_synchronized_segment(
     window: u16,
     urgent_ptr: u16,
     options: &[u8],
-    data_payload: PacketPayload,
+    data_payload: Option<PacketPayload>,
 ) {
     let is_rst = (flags & tcp_flags::RST) != 0;
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_ack = (flags & tcp_flags::ACK) != 0;
     let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_urg = (flags & tcp_flags::URG) != 0;
-    let payload_len = data_payload.total_len();
+    let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
 
     // 0. Parse TCP Options (SACK / Timestamps)
     if !options.is_empty() {
@@ -997,10 +1004,10 @@ fn handle_data_received_with_delayed_ack(
     runtime: NetRuntimeHandle,
     tcb: TcpControlBlockSnapshot,
     mut seq_num: u32,
-    mut data_payload: PacketPayload,
+    mut data_payload: Option<PacketPayload>,
     fin: bool,
 ) {
-    let mut payload_len = data_payload.total_len() as u32;
+    let mut payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len) as u32;
 
     // --- PARTIAL OVERLAP HANDLING (RFC 793) ---
     // If the segment starts before rcv_nxt but contains new data after it,
@@ -1013,7 +1020,7 @@ fn handle_data_received_with_delayed_ack(
             if fin && skip == payload_len as usize {
                 seq_num = tcb.rcv_nxt;
                 payload_len = 0;
-                data_payload = PacketPayload::default();
+                data_payload = None;
             } else {
                 // Entirely old, just send ACK
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
@@ -1021,8 +1028,12 @@ fn handle_data_received_with_delayed_ack(
             }
         } else {
             // Trim prefix
+            let Some(payload) = data_payload.as_ref() else {
+                send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
+                return;
+            };
             let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-                &data_payload,
+                payload,
                 skip,
                 payload_len as usize - skip,
             ) else {
@@ -1030,13 +1041,17 @@ fn handle_data_received_with_delayed_ack(
                 return;
             };
             let Some(trimmed) = bounds
-                .take_from(data_payload)
+                .take_from(
+                    data_payload
+                        .take()
+                        .expect("partial overlap requires a payload owner"),
+                )
                 .and_then(|window| window.into_payload().ok())
             else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };
-            data_payload = trimmed;
+            data_payload = Some(trimmed);
             payload_len -= skip as u32;
             seq_num = tcb.rcv_nxt;
         }
@@ -1063,7 +1078,10 @@ fn handle_data_received_with_delayed_ack(
     // ソケットの受信バッファにデータ追加
     if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
         if payload_len > 0 {
-            let (pushed, _remainder) = socket.push_payload_with_remainder(data_payload);
+            let payload = data_payload
+                .take()
+                .expect("positive TCP payload length requires an owner");
+            let (pushed, _remainder) = socket.push_payload_with_remainder(payload);
             new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
 
             // RFC 1122: If some data could not be accepted, we MUST NOT advance
@@ -1145,9 +1163,9 @@ fn process_tcp_with_tcb(
     window: u16,
     urgent_ptr: u16,
     options: &[u8],
-    data_payload: PacketPayload,
+    data_payload: Option<PacketPayload>,
 ) {
-    let payload_len = data_payload.total_len();
+    let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
 
     // RFC 7323 Section 3.2 & Section 5.8: Timestamps and PAWS
     if tcb.ts_enabled && (flags & tcp_flags::RST) == 0 {
@@ -1472,7 +1490,7 @@ fn process_tcp_new_connection(
     ack_num: u32,
     _urgent_ptr: u16,
     options: &[u8],
-    data_payload: PacketPayload,
+    data_payload: Option<PacketPayload>,
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
     let is_rst = (flags & tcp_flags::RST) != 0;
@@ -1496,7 +1514,7 @@ fn process_tcp_new_connection(
             flags,
             seq_num,
             ack_num,
-            data_payload.total_len(),
+            data_payload.as_ref().map_or(0, PacketPayload::total_len),
         );
         return;
     }

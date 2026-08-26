@@ -72,26 +72,48 @@ impl DnsClient {
     ) -> Result<DnsResponseView, (DnsNameOwned, &'static str)> {
         async fn read_exact_payload(
             connection: &mut crate::net::l4::tcp::TcpConnection,
-            stash: &mut kernel_api::resource::net::PacketPayload,
+            stash: &mut Option<kernel_api::resource::net::PacketPayload>,
             len: usize,
         ) -> Result<Option<kernel_api::resource::net::PacketPayload>, &'static str> {
-            while stash.total_len() < len {
+            while stash.as_ref().map_or(0, |payload| payload.total_len()) < len {
                 let Some(payload) = connection.recv_payload().await else {
                     break;
                 };
-                if payload.total_len() == 0 {
-                    break;
+                let Some(queued) = stash.take() else {
+                    *stash = Some(payload);
+                    continue;
+                };
+                match queued.try_append(payload) {
+                    Ok(combined) => *stash = Some(combined),
+                    Err(error) => {
+                        let (queued, _incoming) = error.into_owner();
+                        *stash = Some(queued);
+                        return Err("TCP receive payload allocation failed");
+                    }
                 }
-                crate::net::payload::append_payload(stash, payload);
             }
-            if stash.total_len() < len {
+            let Some(queued) = stash.take() else {
+                return Ok(None);
+            };
+            if queued.total_len() < len {
+                *stash = Some(queued);
                 return Ok(None);
             }
-            if stash.total_len() != len {
-                return Err("TCP payload record boundary requires whole-payload ownership");
+            let count = kernel_api::resource::net::PacketByteCount::new(len)
+                .ok_or("TCP record length must be non-zero")?;
+            match queued.try_take_front(count) {
+                Ok(kernel_api::resource::net::PacketPayloadFront::Whole(payload)) => {
+                    Ok(Some(payload))
+                }
+                Ok(kernel_api::resource::net::PacketPayloadFront::Prefix { front, remainder }) => {
+                    *stash = Some(remainder);
+                    Ok(Some(front))
+                }
+                Err(error) => {
+                    *stash = Some(error.into_owner());
+                    Err("TCP payload split failed")
+                }
             }
-            let owned_stash = core::mem::take(stash);
-            Ok(Some(owned_stash))
         }
 
         let dest = Self::endpoint_addr_for_server(server);
@@ -118,7 +140,7 @@ impl DnsClient {
             return Err((name, "TCP write drain failed"));
         }
 
-        let mut stash = kernel_api::resource::net::PacketPayload::default();
+        let mut stash = None;
 
         // Read 2-byte length prefix
         let len_payload = match read_exact_payload(&mut connection, &mut stash, 2).await {

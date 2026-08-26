@@ -82,10 +82,11 @@ impl NetworkStack {
                         let frame_len = frame.as_bytes().len();
                         drop(frame);
                         if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                            let _ = self.transmit_packet_on(
-                                if_id,
-                                kernel_api::resource::net::PacketPayload::single(packet),
-                            );
+                            if let Ok(payload) =
+                                kernel_api::resource::net::PacketPayload::try_single(packet)
+                            {
+                                let _ = self.transmit_packet_on(if_id, payload);
+                            }
                         }
                     }
                 }

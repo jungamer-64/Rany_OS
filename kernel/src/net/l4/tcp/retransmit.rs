@@ -9,7 +9,8 @@ use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use kernel_api::resource::net::{PacketChain, PacketPayload, PacketRef};
+use kernel_api::resource::net::PacketPayload;
+use kernel_api::service::netdev::TxDeviceOutcome;
 
 use super::segment::send_tcp_segment_payload_with_completion_in;
 use super::tcb::TcpFlowKey;
@@ -345,7 +346,7 @@ impl RetransmitQueue {
         &mut self,
         completion_id: u64,
         payload: PacketPayload,
-        result: Result<(), &'static str>,
+        _outcome: TxDeviceOutcome,
         current_tick: u64,
     ) {
         let Some(index) = self.unacked.iter().position(|seg| {
@@ -363,7 +364,7 @@ impl RetransmitQueue {
             self.unacked[index].data,
             RetransmitPayloadState::InFlight { acked: true, .. }
         );
-        if result.is_ok() && acked {
+        if acked {
             let seg = self
                 .unacked
                 .remove(index)
@@ -433,14 +434,6 @@ impl RetransmitRuntimeState {
     pub(crate) fn init_timer_wheel(&self) {
         let mut timer_wheel = self.timer_wheel.lock().unwrap_or_else(|e| e.into_inner());
         *timer_wheel = Some(TimingWheel::new());
-    }
-}
-
-fn build_payload_from_segments(mut segments: Vec<PacketRef>) -> PacketPayload {
-    match segments.len() {
-        0 => PacketPayload::default(),
-        1 => PacketPayload::single(segments.remove(0)),
-        _ => PacketPayload::chain(PacketChain::from_segments(segments)),
     }
 }
 
@@ -557,19 +550,18 @@ pub fn retransmit_queue_transmit_ready(
 pub(crate) fn complete_tx_owner(
     runtime: NetRuntimeHandle,
     completion_id: u64,
-    keepalive: Vec<PacketRef>,
-    result: Result<(), &'static str>,
+    payload: PacketPayload,
+    outcome: TxDeviceOutcome,
 ) -> bool {
     let Some(key) = unregister_tcp_tx_return_target(runtime, completion_id) else {
         return false;
     };
     let idx = retransmit_shard_index(key);
-    let payload = build_payload_from_segments(keepalive);
     let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
     let state = tcp_runtime_in(runtime).retransmit();
     let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
     if let Some(queue) = queues.get_mut(&key) {
-        queue.complete_inflight(completion_id, payload, result, current_tick);
+        queue.complete_inflight(completion_id, payload, outcome, current_tick);
         if queue.is_empty() {
             queues.remove(&key);
             cancel_retransmit_timer(runtime, key);
@@ -721,5 +713,70 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
                 schedule_retransmit_timer(runtime, key, deadline);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+
+    fn test_payload(bytes: &[u8]) -> PacketPayload {
+        let mut packet =
+            crate::net::payload::alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM)
+                .expect("test packet allocation");
+        packet.data_mut().copy_from_slice(bytes);
+        PacketPayload::try_single(packet).expect("test payload is non-empty")
+    }
+
+    fn take_ready_payload(queue: &mut RetransmitQueue, completion_id: u64) -> PacketPayload {
+        let state = core::mem::replace(
+            &mut queue.unacked[0].data,
+            RetransmitPayloadState::InFlight {
+                completion_id,
+                acked: false,
+            },
+        );
+        match state {
+            RetransmitPayloadState::Ready(payload) => payload,
+            RetransmitPayloadState::InFlight { .. } => panic!("segment was already in flight"),
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn completion_restores_the_same_packet_backing_for_retransmission() {
+        let mut queue = RetransmitQueue::new();
+        queue.push(100, 4, test_payload(b"data"), 10);
+        let payload = take_ready_payload(&mut queue, 7);
+        let backing = payload.segments()[0].as_ptr();
+
+        queue.complete_inflight(7, payload, TxDeviceOutcome::OutcomeUnknown, 20);
+
+        let RetransmitPayloadState::Ready(payload) = &queue.unacked[0].data else {
+            panic!("completion must restore retransmittable ownership");
+        };
+        assert_eq!(payload.segments()[0].as_ptr(), backing);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn ack_before_completion_keeps_owner_until_dma_completion() {
+        let mut queue = RetransmitQueue::new();
+        queue.push(100, 4, test_payload(b"data"), 10);
+        let payload = take_ready_payload(&mut queue, 9);
+
+        assert!(queue.ack_received(104, 15));
+        assert_eq!(queue.unacked.len(), 1);
+        assert!(matches!(
+            queue.unacked[0].data,
+            RetransmitPayloadState::InFlight {
+                completion_id: 9,
+                acked: true
+            }
+        ));
+
+        queue.complete_inflight(9, payload, TxDeviceOutcome::Transmitted, 20);
+        assert!(queue.is_empty());
     }
 }

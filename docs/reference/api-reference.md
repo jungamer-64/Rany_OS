@@ -302,7 +302,8 @@ let completed: Buffer = virtqueue.poll().await;
 ```rust
 // packet-backed payload を受信・移動する
 let packet: PacketRef = obtain_packet_from_pool()?;
-let payload = PacketPayload::single(packet);
+let payload = PacketPayload::try_single(packet)
+    .map_err(|error| (error.cause(), error.into_owner()))?;
 submit_payload(payload).await?;
 ```
 
@@ -326,8 +327,14 @@ submit_payload(payload).await?;
 ```rust
 // handle-first の KAPI で packet-backed payload を受け渡す
 let connection = tcp_connection_dial(remote, scope).await?;
-let payload: PacketPayload = tcp_connection_recv_payload(&connection).await?;
-tcp_connection_send_payload(&connection, payload).await?;
+let payload = match tcp_connection_recv_payload(&connection).await? {
+    TcpReceiveOutcome::Payload(payload) => payload,
+    TcpReceiveOutcome::EndOfStream => return Ok(()),
+};
+if let Err(error) = tcp_connection_send_payload(&connection, payload).await {
+    let (cause, payload) = error.into_parts();
+    recover_unsent_payload(cause, payload)?;
+}
 ```
 
 #### batch / scatter-gather / polling

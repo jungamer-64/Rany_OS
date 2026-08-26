@@ -73,7 +73,6 @@ impl TcpRuntimeState {
             return Err(error);
         }
 
-        self.ooo.reset();
         self.retransmit.init_timer_wheel();
         Ok(())
     }

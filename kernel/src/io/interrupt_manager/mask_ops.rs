@@ -81,7 +81,10 @@ impl InterruptQueue {
     /// ISRコンテキストから呼び出し可能。ロックを取得しない。
     #[inline]
     pub fn push(&self, vector: u8) -> bool {
-        self.buffer.push(vector).is_ok()
+        // A maskable interrupt may run concurrently with a producer on
+        // another CPU. The waiting MPSC path can spin behind that producer's
+        // reserved-but-uncommitted slot, which is not a bounded ISR action.
+        self.buffer.try_push(vector).is_ok()
     }
 
     /// 割り込みイベントをキューから取得（Executor用）
@@ -297,9 +300,16 @@ pub fn unregister_handler(vector: u8) {
 /// # Returns
 /// ハンドラが実行された場合は `true`
 pub fn try_dispatch_direct(vector: u8) -> bool {
+    // ISR dispatch must never initialize this registry: initialization
+    // allocates the fixed handler table and may deadlock if the interrupt
+    // preempted an allocator owner. Registration establishes the table in
+    // task context before a direct handler can become reachable.
+    let Some(registry) = DIRECT_HANDLERS.get() else {
+        return false;
+    };
     // try_lockを使用することで、万が一の再入時のデッドロックも回避
     // (ただしIrqMutexは割り込みを無効化するため、通常は再入しない)
-    if let Some(handlers) = direct_handlers().try_lock() {
+    if let Some(handlers) = registry.try_lock() {
         if let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref()) {
             handler();
             return true;

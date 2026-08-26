@@ -78,7 +78,9 @@ async fn receive_plain_response(
             return Ok(None);
         };
 
-        parser.push_payload(in_payload);
+        parser
+            .push_payload(in_payload)
+            .map_err(HttpClientError::ParseError)?;
         if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
             return Ok(Some(response));
         }
@@ -104,11 +106,12 @@ async fn receive_tls_response(
             send_payload(connection, payload).await?;
         }
 
-        if inbound.application_data.is_empty() {
+        let Some(application_data) = inbound.application_data else {
             continue;
-        }
-
-        parser.push_payload(inbound.application_data);
+        };
+        parser
+            .push_payload(application_data)
+            .map_err(HttpClientError::ParseError)?;
         if let Some(response) = parser.try_parse().map_err(HttpClientError::ParseError)? {
             return Ok(Some(response));
         }

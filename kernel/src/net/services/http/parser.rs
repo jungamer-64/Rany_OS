@@ -6,7 +6,7 @@ use super::types::{
     HttpBodyView, HttpHeaderView, HttpInboundRequest, HttpInboundResponse, HttpMethod,
     HttpStatusCode, HttpVersion,
 };
-use crate::net::payload::{PayloadSpanRef, append_payload};
+use crate::net::payload::PayloadSpanRef;
 use alloc::vec::Vec;
 use kernel_api::resource::net::PacketPayload;
 
@@ -35,7 +35,7 @@ enum ParseState {
 }
 
 pub struct HttpParser {
-    buffer: PacketPayload,
+    buffer: Option<PacketPayload>,
     state: ParseState,
 }
 
@@ -51,20 +51,38 @@ fn trim_span(span: PayloadSpanRef<'_>) -> Result<PayloadSpanRef<'_>, HttpParseEr
 impl HttpParser {
     pub fn new() -> Self {
         Self {
-            buffer: PacketPayload::default(),
+            buffer: None,
             state: ParseState::SearchingHeaders { search_from: 0 },
         }
     }
 
-    pub fn push_payload(&mut self, payload: PacketPayload) {
-        append_payload(&mut self.buffer, payload);
+    pub fn push_payload(&mut self, payload: PacketPayload) -> Result<(), HttpParseError> {
+        let Some(buffer) = self.buffer.take() else {
+            self.buffer = Some(payload);
+            return Ok(());
+        };
+        match buffer.try_append(payload) {
+            Ok(combined) => {
+                self.buffer = Some(combined);
+                Ok(())
+            }
+            Err(error) => {
+                let (buffer, _incoming) = error.into_owner();
+                self.buffer = Some(buffer);
+                Err(HttpParseError::InvalidFormat)
+            }
+        }
     }
 
     pub fn try_parse_request(&mut self) -> Result<Option<HttpInboundRequest>, HttpParseError> {
         let Some(header_end) = self.read_message_span()? else {
             return Ok(None);
         };
-        let full = PayloadSpanRef::from_payload(&self.buffer);
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or(HttpParseError::IncompleteMessage)?;
+        let full = PayloadSpanRef::from_payload(buffer);
 
         let (method, uri, version, request_line_end) =
             self.parse_request_line(&full, header_end)?;
@@ -108,7 +126,11 @@ impl HttpParser {
         let Some(header_end) = self.read_message_span()? else {
             return Ok(None);
         };
-        let full = PayloadSpanRef::from_payload(&self.buffer);
+        let buffer = self
+            .buffer
+            .as_ref()
+            .ok_or(HttpParseError::IncompleteMessage)?;
+        let full = PayloadSpanRef::from_payload(buffer);
 
         let (version, status_code, reason_phrase, status_line_end) =
             self.parse_status_line(&full, header_end)?;
@@ -132,11 +154,14 @@ impl HttpParser {
     }
 
     fn read_message_span(&mut self) -> Result<Option<usize>, HttpParseError> {
-        if self.buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
+        let Some(buffer) = self.buffer.as_ref() else {
+            return Ok(None);
+        };
+        if buffer.total_len() > MAX_TOTAL_MESSAGE_SIZE {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let full = PayloadSpanRef::from_payload(&self.buffer);
+        let full = PayloadSpanRef::from_payload(buffer);
 
         match self.state {
             ParseState::HeaderFound { header_end } => Ok(Some(header_end)),
@@ -164,22 +189,38 @@ impl HttpParser {
         &mut self,
         consumed_len: usize,
     ) -> Result<PacketPayload, HttpParseError> {
-        let total_len = self.buffer.total_len();
+        let total_len = self
+            .buffer
+            .as_ref()
+            .ok_or(HttpParseError::IncompleteMessage)?
+            .total_len();
         if consumed_len > total_len {
             return Err(HttpParseError::InvalidFormat);
         }
 
-        let original = core::mem::take(&mut self.buffer);
+        let original = self
+            .buffer
+            .take()
+            .ok_or(HttpParseError::IncompleteMessage)?;
         self.state = ParseState::SearchingHeaders { search_from: 0 };
 
         if consumed_len == total_len {
             return Ok(original);
         }
 
-        if consumed_len != total_len {
-            return Err(HttpParseError::InvalidFormat);
+        let count = kernel_api::resource::net::PacketByteCount::new(consumed_len)
+            .ok_or(HttpParseError::InvalidFormat)?;
+        match original.try_take_front(count) {
+            Ok(kernel_api::resource::net::PacketPayloadFront::Prefix { front, remainder }) => {
+                self.buffer = Some(remainder);
+                Ok(front)
+            }
+            Ok(kernel_api::resource::net::PacketPayloadFront::Whole(payload)) => Ok(payload),
+            Err(error) => {
+                self.buffer = Some(error.into_owner());
+                Err(HttpParseError::InvalidFormat)
+            }
         }
-        Ok(original)
     }
 
     fn parse_request_line(
