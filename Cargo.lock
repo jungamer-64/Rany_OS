@@ -877,7 +877,6 @@ version = "0.1.0"
 dependencies = [
  "exorust_sync",
  "hal",
- "kernel_api",
  "spin",
  "x86_64",
 ]
