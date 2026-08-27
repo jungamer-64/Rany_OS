@@ -22,9 +22,6 @@ pub use pci_driver::{
     CorrectableErrors,
     DeliveryMode,
     DeviceId,
-    // ECAM
-    EcamAccess,
-    EcamManager,
     HotPlugController,
     HotPlugEvent,
     MsiCapability,

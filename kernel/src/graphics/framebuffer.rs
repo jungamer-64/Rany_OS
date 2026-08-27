@@ -309,15 +309,7 @@ impl Framebuffer {
 
     /// Ensure scratch_u8 has at least `capacity` bytes
     fn ensure_scratch_u8(&mut self, capacity: usize) {
-        if self.scratch_u8.capacity() < capacity {
-            // Correctly reserve from current length
-            self.scratch_u8.reserve(capacity - self.scratch_u8.len());
-        }
-        // Safety: We have ensured capacity >= capacity. The caller MUST overwrite
-        // all bytes up to `capacity` before reading.
-        unsafe {
-            self.scratch_u8.set_len(capacity);
-        }
+        self.scratch_u8.resize(capacity, 0);
     }
 
     /// Write a slice of bytes to MMIO region efficiently.

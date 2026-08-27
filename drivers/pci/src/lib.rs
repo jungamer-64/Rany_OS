@@ -37,7 +37,6 @@ pub mod traits;
 pub mod types;
 
 // Access methods
-pub mod ecam;
 pub mod legacy;
 
 // Bus scanning
@@ -63,10 +62,6 @@ pub use bus::{
     PciBusScanner, PciDeviceInfo, find_by_class, find_by_id, find_virtio_devices, init,
     scan_all_devices,
 };
-pub use ecam::{EcamAccess, EcamManager};
-// Removed deprecated re-exports `LegacyPciAccessor`, `get_legacy_accessor`, and the
-// top-level `pci_read*`/`pci_write` helpers.
-// Migration: use `pci_driver::EcamAccess` or explicit `pci_driver::legacy::*` APIs instead.
 pub use msi::{
     DeliveryMode, MsiCapability, MsiConfig, MsixCapability, MsixTableEntry, TriggerMode,
     allocate_vector, allocate_vectors, disable_intx, enable_intx, setup_msi, setup_msix,

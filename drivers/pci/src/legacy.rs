@@ -198,9 +198,7 @@ pub fn pci_read8(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
 
 /// グローバルアクセサを取得（内部利用限定）
 ///
-/// NOTE: External callers should prefer ECAM APIs (`EcamAccess`) or
-/// `pci_driver`'s modern accessors. This function's visibility is intentionally
-/// restricted to crate-local use to avoid propagating legacy I/O accessors.
+/// The bus scanner borrows the serialized configuration mechanism.
 #[doc(hidden)]
 pub(crate) fn get_legacy_accessor() -> &'static LegacyPciAccessor {
     &GLOBAL_LEGACY_ACCESSOR
