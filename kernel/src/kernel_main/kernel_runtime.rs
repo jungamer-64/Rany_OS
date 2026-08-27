@@ -44,12 +44,13 @@ impl AsyncBootStage {
 
     const fn ap_round_robin_slot(self) -> Option<usize> {
         match self {
-            Self::Platform => None,
+            // Platform setup and the PIT -> local APIC handoff both own
+            // bootstrap-CPU hardware state; finalization cannot run on an AP.
+            Self::Platform | Self::Finalizer => None,
             Self::Graphics => Some(0),
             Self::CoreServices => Some(1),
             Self::Driver => Some(2),
             Self::PostDriver => Some(3),
-            Self::Finalizer => Some(4),
         }
     }
 }
@@ -96,14 +97,14 @@ fn async_boot_stage_target_cpu_with_candidates(
     online: &crate::cpu::CpuSet,
     topology_candidates: &[crate::cpu::CpuId],
 ) -> crate::cpu::CpuId {
-    if online.len() <= 1 || matches!(stage, AsyncBootStage::Platform) {
+    if online.len() <= 1 {
         return crate::cpu::CpuId::BOOTSTRAP;
     }
 
-    let ap_candidates = normalized_async_boot_ap_candidates(online, topology_candidates);
     let Some(slot) = stage.ap_round_robin_slot() else {
         return crate::cpu::CpuId::BOOTSTRAP;
     };
+    let ap_candidates = normalized_async_boot_ap_candidates(online, topology_candidates);
     if ap_candidates.is_empty() {
         crate::cpu::CpuId::BOOTSTRAP
     } else {
@@ -1147,7 +1148,7 @@ mod tests {
                 &online,
                 &topology_candidates,
             ),
-            cpu(2)
+            cpu(0)
         );
     }
 
@@ -1191,15 +1192,15 @@ mod tests {
                 &online,
                 &topology_candidates,
             ),
-            cpu(2)
+            cpu(0)
         );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn async_boot_stage_target_cpu_keeps_finalizer_off_bsp_when_aps_exist() {
+    fn async_boot_stage_target_cpu_keeps_timer_handoff_on_bsp() {
         let online = online(&[0, 7]);
-        assert_ne!(
+        assert_eq!(
             async_boot_stage_target_cpu_with_candidates(AsyncBootStage::Finalizer, &online, &[]),
             crate::cpu::CpuId::BOOTSTRAP
         );

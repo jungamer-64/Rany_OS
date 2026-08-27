@@ -55,6 +55,12 @@ enum TaskRunState {
     Blocked { last_cpu: CpuId },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PollFinalization {
+    Completed(crate::domain::DomainId),
+    Requeued(CpuId),
+}
+
 struct TaskRecord {
     id: TaskId,
     domain: crate::domain::DomainId,
@@ -126,40 +132,30 @@ impl SchedulerState {
         Ok(())
     }
 
-    fn drain_wakes(&mut self) {
-        while let Some(id) = super::waker::pop_woken_task() {
-            let Some(state) = self.tasks.get(&id).map(|entry| entry.state) else {
-                continue;
-            };
-            match state {
-                TaskRunState::Ready { .. } => {}
-                TaskRunState::Running { cpu, .. } => {
-                    if let Some(entry) = self.tasks.get_mut(&id) {
-                        entry.state = TaskRunState::Running {
-                            cpu,
-                            wake: PollWakeState::Woken,
-                        };
-                    }
-                }
-                TaskRunState::Blocked { .. } => {
-                    let placement = match self.tasks.get(&id) {
-                        Some(entry) => entry.record.placement,
-                        None => continue,
-                    };
-                    let Ok(cpu) = self.select_target(placement) else {
-                        continue;
-                    };
-                    if let Some(entry) = self.tasks.get_mut(&id) {
-                        entry.state = TaskRunState::Ready { cpu };
-                    }
-                    let _ = self.enqueue(id, cpu);
-                }
+    /// Returns the CPU to notify after publishing the ready state. A wake
+    /// during poll is deferred to finish_poll so a future is never polled twice.
+    fn apply_wake(&mut self, id: TaskId) -> Option<CpuId> {
+        match self.tasks.get(&id)?.state {
+            TaskRunState::Ready { .. } => None,
+            TaskRunState::Running { cpu, .. } => {
+                self.tasks.get_mut(&id)?.state = TaskRunState::Running {
+                    cpu,
+                    wake: PollWakeState::Woken,
+                };
+                None
+            }
+            TaskRunState::Blocked { .. } => {
+                let placement = self.tasks.get(&id)?.record.placement;
+                let cpu = self.select_target(placement).ok()?;
+                self.enqueue(id, cpu)
+                    .expect("selected wake target has an online run queue");
+                self.tasks.get_mut(&id)?.state = TaskRunState::Ready { cpu };
+                Some(cpu)
             }
         }
     }
 
     fn take_ready(&mut self, cpu: CpuId) -> Option<Arc<TaskRecord>> {
-        self.drain_wakes();
         let queue = self.queues.get_mut(&cpu)?;
         while let Some(id) = queue.pop_front() {
             let Some(entry) = self.tasks.get_mut(&id) else {
@@ -177,12 +173,7 @@ impl SchedulerState {
         None
     }
 
-    fn finish_poll(
-        &mut self,
-        id: TaskId,
-        cpu: CpuId,
-        poll: Poll<()>,
-    ) -> Option<crate::domain::DomainId> {
+    fn finish_poll(&mut self, id: TaskId, cpu: CpuId, poll: Poll<()>) -> Option<PollFinalization> {
         let state = self.tasks.get(&id).map(|entry| entry.state)?;
         let TaskRunState::Running {
             cpu: running_cpu,
@@ -196,7 +187,10 @@ impl SchedulerState {
         }
 
         match poll {
-            Poll::Ready(()) => self.tasks.remove(&id).map(|entry| entry.record.domain),
+            Poll::Ready(()) => self
+                .tasks
+                .remove(&id)
+                .map(|entry| PollFinalization::Completed(entry.record.domain)),
             Poll::Pending => {
                 if wake == PollWakeState::Woken {
                     let placement = self.tasks.get(&id)?.record.placement;
@@ -204,7 +198,9 @@ impl SchedulerState {
                         if let Some(entry) = self.tasks.get_mut(&id) {
                             entry.state = TaskRunState::Ready { cpu: target };
                         }
-                        let _ = self.enqueue(id, target);
+                        self.enqueue(id, target)
+                            .expect("selected reschedule target has an online run queue");
+                        return Some(PollFinalization::Requeued(target));
                     } else if let Some(entry) = self.tasks.get_mut(&id) {
                         entry.state = TaskRunState::Blocked { last_cpu: cpu };
                     }
@@ -335,6 +331,19 @@ impl TaskRuntime {
             return false;
         };
         let cpu = current.id();
+        loop {
+            let target = {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                // The state lock also serializes the MPSC queue's consumer.
+                let Some(id) = super::waker::pop_woken_task() else {
+                    break;
+                };
+                state.apply_wake(id)
+            };
+            if let Some(target) = target {
+                notify_target(target);
+            }
+        }
         let record = {
             self.state
                 .lock()
@@ -375,13 +384,17 @@ impl TaskRuntime {
         self.poll_count.fetch_add(1, Ordering::Relaxed);
         drop(execution_guard);
 
-        let completed_domain = self
+        let finalization = self
             .state
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .finish_poll(record.id, cpu, poll);
-        if let Some(domain) = completed_domain {
-            crate::domain::remove_task_from_domain(domain, record.id.as_u64());
+        match finalization {
+            Some(PollFinalization::Completed(domain)) => {
+                crate::domain::remove_task_from_domain(domain, record.id.as_u64());
+            }
+            Some(PollFinalization::Requeued(target)) => notify_target(target),
+            None => {}
         }
         true
     }
@@ -516,8 +529,12 @@ fn run_scheduler_loop(park_policy: ParkPolicy) {
         }
         crate::sync::process_deferred_wakes();
         crate::sync::process_deferred_waker_queue_wakes();
+        crate::interrupts::poll_timer_events();
         super::interrupt_waker::process_interrupt_events();
         crate::io::io_scheduler::process_deferred_completions_local();
+        // Timer IRQs only advance the clock. Expired sleep/timeout wakers must
+        // be delivered outside interrupt context before selecting ready work.
+        super::process_pending_timer_wakers();
         if park_requested {
             crate::mm::sync::rcu::rcu_note_context_switch();
             return;
@@ -577,6 +594,13 @@ fn notify_target(cpu: CpuId) {
         let remote = local.remote();
         let _ = remote.send(crate::cpu::CpuControlMessage::WakeExecutor);
         remote.request_wake();
+        if CurrentCpu::acquire().is_some_and(|current| current.id() != cpu) {
+            // No scheduler lock is held here: resolving the destination takes
+            // the CPU lifecycle lock. A queue entry alone cannot wake HLT.
+            if let Err(error) = crate::cpu::send_ipi(cpu, crate::cpu::IpiKind::ExecutorWake) {
+                log::warn!("scheduler could not wake CPU {cpu}: {error:?}");
+            }
+        }
     }
 }
 
@@ -643,6 +667,44 @@ mod tests {
             scheduler.select_target(TaskPlacement::Pinned(offline)),
             Err(SpawnError::CpuOffline(offline))
         );
+    }
+
+    #[test]
+    fn wake_reports_notification_only_after_a_task_becomes_ready() {
+        let cpu_runtime = sparse_runtime();
+        let mut scheduler = SchedulerState::from_snapshot(&cpu_runtime.snapshot());
+        let cpu = CpuId::try_from(2usize).unwrap();
+        let id = TaskId::new();
+        scheduler.tasks.insert(
+            id,
+            TaskEntry {
+                record: Arc::new(TaskRecord {
+                    id,
+                    domain: crate::domain::DomainId::KERNEL,
+                    placement: TaskPlacement::Pinned(cpu),
+                    future: PoisonLock::new(Box::pin(async {})),
+                }),
+                state: TaskRunState::Blocked { last_cpu: cpu },
+            },
+        );
+
+        assert_eq!(scheduler.apply_wake(id), Some(cpu));
+        assert_eq!(scheduler.apply_wake(id), None);
+        assert_eq!(scheduler.take_ready(cpu).map(|task| task.id), Some(id));
+        // A synchronous wake during poll cannot admit a second poll until
+        // the first one has relinquished the future.
+        assert_eq!(scheduler.apply_wake(id), None);
+        assert!(scheduler.take_ready(cpu).is_none());
+        assert_eq!(
+            scheduler.finish_poll(id, cpu, Poll::Pending),
+            Some(PollFinalization::Requeued(cpu))
+        );
+        assert_eq!(scheduler.take_ready(cpu).map(|task| task.id), Some(id));
+        assert_eq!(
+            scheduler.finish_poll(id, cpu, Poll::Ready(())),
+            Some(PollFinalization::Completed(crate::domain::DomainId::KERNEL))
+        );
+        assert_eq!(scheduler.apply_wake(id), None);
     }
 
     #[test]
