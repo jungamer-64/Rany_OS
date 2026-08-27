@@ -1,7 +1,7 @@
 use core::fmt;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-use hal::port_io::PortU8;
+use hal::{IoPort, MappedMmio};
 
 const APIC_BASE_MSR: u32 = 0x1b;
 const APIC_GLOBAL_ENABLE: u64 = 1 << 11;
@@ -129,33 +129,51 @@ enum Register {
 
 #[derive(Debug)]
 pub struct XApic {
-    base: u64,
+    physical_base: u64,
+    registers: MappedMmio,
 }
 
 impl XApic {
-    fn new(base: u64) -> Result<Self, LocalApicError> {
-        if base == 0 || !base.is_multiple_of(4096) {
+    fn new(base: u64, registers: MappedMmio) -> Result<Self, LocalApicError> {
+        if base == 0 || !base.is_multiple_of(4096) || registers.len() < 4096 {
             return Err(LocalApicError::InvalidMmioBase { base });
         }
-        Ok(Self { base })
-    }
-
-    fn register(&self, register: Register) -> hal::MmioReg<u32> {
-        hal::MmioReg::new(self.base as usize, register as usize)
+        registers
+            .region()
+            .read_only::<u32>(0)
+            .map_err(|_| LocalApicError::InvalidMmioBase { base })?;
+        Ok(Self {
+            physical_base: base,
+            registers,
+        })
     }
 
     fn read(&self, register: Register) -> u32 {
-        self.register(register).read()
+        self.registers
+            .region()
+            .read_only::<u32>(register as usize)
+            .expect("local APIC register offsets fit the mapped page")
+            .read()
     }
 
     fn write(&self, register: Register, value: u32) {
-        self.register(register).write(value);
+        let mut register = self
+            .registers
+            .region()
+            .write_only::<u32>(register as usize)
+            .expect("local APIC register offsets fit the mapped page");
+        register.write(value);
     }
 
     fn in_service_vectors(&self) -> InServiceVectors {
         let mut banks = [0; 8];
         for (bank, bits) in banks.iter_mut().enumerate() {
-            *bits = hal::MmioReg::<u32>::new(self.base as usize, 0x100 + bank * 0x10).read();
+            *bits = self
+                .registers
+                .region()
+                .read_only::<u32>(0x100 + bank * 0x10)
+                .expect("local APIC in-service registers fit the mapped page")
+                .read();
         }
         InServiceVectors { banks }
     }
@@ -278,7 +296,10 @@ impl LocalApic {
     ///
     /// Returns an error when APIC support is absent or the xAPIC MMIO base is
     /// invalid.
-    pub(super) fn detect(policy: ApicModePolicy) -> Result<Self, LocalApicError> {
+    pub(super) fn detect(
+        policy: ApicModePolicy,
+        map_xapic: impl FnOnce(u64) -> Result<MappedMmio, LocalApicError>,
+    ) -> Result<Self, LocalApicError> {
         let features = core::arch::x86_64::__cpuid(1);
         if features.edx & (1 << 9) == 0 {
             return Err(LocalApicError::Unsupported);
@@ -286,7 +307,10 @@ impl LocalApic {
         let apic_base = unsafe { read_msr(APIC_BASE_MSR) };
         let backend = match select_mode(policy, features.ecx & (1 << 21) != 0) {
             ApicMode::X2Apic => Backend::X2Apic(X2Apic),
-            ApicMode::XApic => Backend::XApic(XApic::new(apic_base & APIC_BASE_MASK)?),
+            ApicMode::XApic => {
+                let physical_base = apic_base & APIC_BASE_MASK;
+                Backend::XApic(XApic::new(physical_base, map_xapic(physical_base)?)?)
+            }
         };
         Ok(Self {
             backend,
@@ -323,7 +347,7 @@ impl LocalApic {
         match self.backend {
             Backend::XApic(ref xapic) => {
                 apic_base &= !APIC_X2_ENABLE;
-                if apic_base & APIC_BASE_MASK != xapic.base {
+                if apic_base & APIC_BASE_MASK != xapic.physical_base {
                     return Err(LocalApicError::InvalidMmioBase {
                         base: apic_base & APIC_BASE_MASK,
                     });
@@ -426,10 +450,12 @@ impl LocalApic {
     ///
     /// Returns [`LocalApicError::TimerNotCalibrated`] if the PIT does not
     /// complete within the bounded wait or the measured APIC tick rate is zero.
-    pub fn calibrate_timer(&self) -> Result<(), LocalApicError> {
-        let mut pit_command = PortU8::new(0x43);
-        let mut pit_data = PortU8::new(0x42);
-        let mut pit_gate = PortU8::new(0x61);
+    pub fn calibrate_timer(
+        &self,
+        mut pit_command: IoPort<'_, u8>,
+        mut pit_data: IoPort<'_, u8>,
+        mut pit_gate: IoPort<'_, u8>,
+    ) -> Result<(), LocalApicError> {
         let original_gate = pit_gate.read();
         pit_gate.write(original_gate | 1);
         pit_command.write(0xb0);

@@ -470,8 +470,8 @@ pub static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
 /// # Errors
 ///
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub fn init_pcie_ext(base_addr: u64) -> PcieResult<()> {
-    let config = PCIE_EXT_CONFIG.call_once(|| PcieConfig::new(base_addr, 0, 0, 255));
+pub fn init_pcie_ext(registers: hal::MappedMmio) -> PcieResult<()> {
+    let config = PCIE_EXT_CONFIG.call_once(|| PcieConfig::new(registers, 0, 0, 255));
     PCIE_EXT_MANAGER.call_once(|| {
         let manager = PcieExtManager::new(config);
         manager.scan_bus(0);

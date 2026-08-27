@@ -19,8 +19,8 @@ use crate::types::BdfAddress;
 /// PCIe設定空間へのメモリマップドアクセスを提供します。
 /// ACPIのMCFGテーブルからベースアドレスを取得して初期化します。
 pub struct EcamAccess {
-    /// ECAMベースアドレス（物理アドレス、仮想アドレスにマッピング済み想定）
-    base_address: u64,
+    /// Process-lifetime ECAM mapping owned by this accessor.
+    registers: hal::MappedMmio,
     /// PCIセグメントグループ番号
     segment: u16,
     /// 対応する開始バス番号
@@ -33,13 +33,13 @@ impl EcamAccess {
     /// 新しいECAMアクセスを作成
     ///
     /// # Arguments
-    /// * `base_address` - ECAMベースアドレス（MCFGテーブルから取得）
+    /// * `registers` - validated ECAM mapping capability
     /// * `segment` - PCIセグメントグループ番号（通常0）
     /// * `start_bus` - 開始バス番号
     /// * `end_bus` - 終了バス番号
-    pub const fn new(base_address: u64, segment: u16, start_bus: u8, end_bus: u8) -> Self {
+    pub const fn new(registers: hal::MappedMmio, segment: u16, start_bus: u8, end_bus: u8) -> Self {
         Self {
-            base_address,
+            registers,
             segment,
             start_bus,
             end_bus,
@@ -61,11 +61,6 @@ impl EcamAccess {
         self.end_bus
     }
 
-    /// ベースアドレスを取得
-    pub const fn base_address(&self) -> u64 {
-        self.base_address
-    }
-
     /// BDFアドレスがこのECAM範囲内かどうかを確認
     pub fn contains(&self, bdf: BdfAddress) -> bool {
         bdf.bus.0 >= self.start_bus && bdf.bus.0 <= self.end_bus
@@ -75,68 +70,77 @@ impl EcamAccess {
     ///
     /// ECAM アドレス計算:
     /// Address = Base + ((Bus - StartBus) << 20) + (Device << 15) + (Function << 12) + Offset
-    fn config_address(&self, bdf: BdfAddress, offset: u16) -> Option<u64> {
+    fn config_offset(&self, bdf: BdfAddress, offset: u16) -> Option<usize> {
         if !self.contains(bdf) {
             return None;
         }
 
-        let bus_offset = (bdf.bus.0 - self.start_bus) as u64;
-        let device_offset = (bdf.device.0 & 0x1F) as u64;
-        let function_offset = (bdf.function.0 & 0x07) as u64;
-        let register_offset = (offset & 0xFFF) as u64;
+        let bus_offset = usize::from(bdf.bus.0 - self.start_bus);
+        let device_offset = usize::from(bdf.device.0 & 0x1F);
+        let function_offset = usize::from(bdf.function.0 & 0x07);
+        let register_offset = usize::from(offset & 0xFFF);
 
-        let addr = self.base_address
-            + (bus_offset << 20)
-            + (device_offset << 15)
-            + (function_offset << 12)
-            + register_offset;
-
-        Some(addr)
+        (bus_offset << 20)
+            .checked_add(device_offset << 15)?
+            .checked_add(function_offset << 12)?
+            .checked_add(register_offset)
     }
 }
 
 impl ConfigSpaceAccessor for EcamAccess {
     fn read8(&self, bdf: BdfAddress, offset: u16) -> u8 {
-        self.config_address(bdf, offset)
-            .map(|addr| hal::mmio::mmio_read_u8(addr as usize))
+        self.config_offset(bdf, offset)
+            .and_then(|offset| self.registers.region().read_only::<u8>(offset).ok())
+            .map(|register| register.read())
             .unwrap_or(0xFF)
     }
 
     fn read16(&self, bdf: BdfAddress, offset: u16) -> u16 {
         // 16ビット境界にアラインメント
         let aligned_offset = offset & !1;
-        self.config_address(bdf, aligned_offset)
-            .map(|addr| hal::mmio::mmio_read_u16(addr as usize))
+        self.config_offset(bdf, aligned_offset)
+            .and_then(|offset| self.registers.region().read_only::<u16>(offset).ok())
+            .map(|register| register.read())
             .unwrap_or(0xFFFF)
     }
 
     fn read32(&self, bdf: BdfAddress, offset: u16) -> u32 {
         // 32ビット境界にアラインメント
         let aligned_offset = offset & !3;
-        self.config_address(bdf, aligned_offset)
-            .map(|addr| hal::mmio::mmio_read_u32(addr as usize))
+        self.config_offset(bdf, aligned_offset)
+            .and_then(|offset| self.registers.region().read_only::<u32>(offset).ok())
+            .map(|register| register.read())
             .unwrap_or(0xFFFF_FFFF)
     }
 
     fn write8(&self, bdf: BdfAddress, offset: u16, value: u8) {
-        if let Some(addr) = self.config_address(bdf, offset) {
-            hal::mmio::mmio_write_u8(addr as usize, value);
+        if let Some(mut register) = self
+            .config_offset(bdf, offset)
+            .and_then(|offset| self.registers.region().write_only::<u8>(offset).ok())
+        {
+            register.write(value);
         }
     }
 
     fn write16(&self, bdf: BdfAddress, offset: u16, value: u16) {
         // 16ビット境界にアラインメント
         let aligned_offset = offset & !1;
-        if let Some(addr) = self.config_address(bdf, aligned_offset) {
-            hal::mmio::mmio_write_u16(addr as usize, value);
+        if let Some(mut register) = self
+            .config_offset(bdf, aligned_offset)
+            .and_then(|offset| self.registers.region().write_only::<u16>(offset).ok())
+        {
+            register.write(value);
         }
     }
 
     fn write32(&self, bdf: BdfAddress, offset: u16, value: u32) {
         // 32ビット境界にアラインメント
         let aligned_offset = offset & !3;
-        if let Some(addr) = self.config_address(bdf, aligned_offset) {
-            hal::mmio::mmio_write_u32(addr as usize, value);
+        if let Some(mut register) = self
+            .config_offset(bdf, aligned_offset)
+            .and_then(|offset| self.registers.region().write_only::<u32>(offset).ok())
+        {
+            register.write(value);
         }
     }
 }
@@ -158,9 +162,8 @@ pub struct EcamManager {
 impl EcamManager {
     /// 新しいECAMマネージャを作成
     pub const fn new() -> Self {
-        const NONE: Option<EcamAccess> = None;
         Self {
-            regions: [NONE; 16],
+            regions: [const { None }; 16],
             count: 0,
         }
     }

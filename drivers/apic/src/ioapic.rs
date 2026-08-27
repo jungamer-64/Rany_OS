@@ -14,9 +14,9 @@ const IOAPICID: u8 = 0x00;
 const IOAPICVER: u8 = 0x01;
 const IOREDTBL_BASE: u8 = 0x10;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct IoApicDescriptor {
-    pub mapped_address: u64,
+#[derive(Debug)]
+pub struct IoApicResource {
+    pub registers: hal::MappedMmio,
     pub global_interrupt_base: u32,
 }
 
@@ -44,7 +44,8 @@ impl IoApicDestination {
 pub enum IoApicError {
     NotInitialized,
     EmptyTopology,
-    InvalidAddress { address: u64 },
+    InvalidRegisterMapping(hal::MmioAccessError),
+    GlobalInterruptRangeOverflow,
     OverlappingGlobalInterruptRange { first: u32, second: u32 },
     GlobalInterruptUnroutable { gsi: u32 },
     DestinationRequiresInterruptRemapping { destination: ApicDestination },
@@ -55,8 +56,11 @@ impl fmt::Display for IoApicError {
         match self {
             Self::NotInitialized => formatter.write_str("I/O APIC topology is not initialized"),
             Self::EmptyTopology => formatter.write_str("I/O APIC topology is empty"),
-            Self::InvalidAddress { address } => {
-                write!(formatter, "invalid I/O APIC address {address:#x}")
+            Self::InvalidRegisterMapping(error) => {
+                write!(formatter, "invalid I/O APIC register mapping: {error:?}")
+            }
+            Self::GlobalInterruptRangeOverflow => {
+                formatter.write_str("I/O APIC GSI range overflows")
             }
             Self::OverlappingGlobalInterruptRange { first, second } => write!(
                 formatter,
@@ -165,46 +169,66 @@ impl RedirectionEntry {
 
 #[derive(Debug)]
 pub struct IoApic {
-    mapped_address: u64,
+    registers: hal::MappedMmio,
     global_interrupt_base: u32,
     redirection_count: u32,
 }
 
 impl IoApic {
-    fn discover(descriptor: IoApicDescriptor) -> Result<Self, IoApicError> {
-        if descriptor.mapped_address == 0 {
-            return Err(IoApicError::InvalidAddress {
-                address: descriptor.mapped_address,
-            });
-        }
+    fn discover(resource: IoApicResource) -> Result<Self, IoApicError> {
+        resource
+            .registers
+            .region()
+            .write_only::<u32>(IOREGSEL)
+            .map_err(IoApicError::InvalidRegisterMapping)?;
+        resource
+            .registers
+            .region()
+            .read_write::<u32>(IOWIN)
+            .map_err(IoApicError::InvalidRegisterMapping)?;
         let provisional = Self {
-            mapped_address: descriptor.mapped_address,
-            global_interrupt_base: descriptor.global_interrupt_base,
+            registers: resource.registers,
+            global_interrupt_base: resource.global_interrupt_base,
             redirection_count: 0,
         };
         let redirection_count = ((provisional.read(IOAPICVER) >> 16) & 0xff) + 1;
+        provisional
+            .global_interrupt_base
+            .checked_add(redirection_count)
+            .ok_or(IoApicError::GlobalInterruptRangeOverflow)?;
         Ok(Self {
             redirection_count,
             ..provisional
         })
     }
 
-    fn select(&self) -> hal::MmioReg<u32> {
-        hal::MmioReg::from_addr(self.mapped_address as usize + IOREGSEL)
-    }
-
-    fn window(&self) -> hal::MmioReg<u32> {
-        hal::MmioReg::from_addr(self.mapped_address as usize + IOWIN)
-    }
-
     fn read(&self, register: u8) -> u32 {
-        self.select().write(u32::from(register));
-        self.window().read()
+        let mut selector = self
+            .registers
+            .region()
+            .write_only::<u32>(IOREGSEL)
+            .expect("I/O APIC selector fits its mapped register page");
+        selector.write(u32::from(register));
+        self.registers
+            .region()
+            .read_only::<u32>(IOWIN)
+            .expect("I/O APIC window fits its mapped register page")
+            .read()
     }
 
     fn write(&self, register: u8, value: u32) {
-        self.select().write(u32::from(register));
-        self.window().write(value);
+        let mut selector = self
+            .registers
+            .region()
+            .write_only::<u32>(IOREGSEL)
+            .expect("I/O APIC selector fits its mapped register page");
+        selector.write(u32::from(register));
+        let mut window = self
+            .registers
+            .region()
+            .write_only::<u32>(IOWIN)
+            .expect("I/O APIC window fits its mapped register page");
+        window.write(value);
     }
 
     fn contains(&self, gsi: u32) -> bool {
@@ -262,13 +286,12 @@ impl IoApicSet {
     ///
     /// Returns an error for empty input, invalid mappings, or overlapping GSI
     /// ownership.
-    pub fn discover(descriptors: &[IoApicDescriptor]) -> Result<Self, IoApicError> {
-        if descriptors.is_empty() {
+    pub fn discover(resources: Vec<IoApicResource>) -> Result<Self, IoApicError> {
+        if resources.is_empty() {
             return Err(IoApicError::EmptyTopology);
         }
-        let mut controllers = descriptors
-            .iter()
-            .copied()
+        let mut controllers = resources
+            .into_iter()
             .map(IoApic::discover)
             .collect::<Result<Vec<_>, _>>()?;
         controllers.sort_by_key(IoApic::global_interrupt_base);
@@ -335,10 +358,10 @@ static IO_APICS: Once<IrqPoisonLock<IoApicSet>> = Once::new();
 /// Returns an error if discovery fails. A previously installed topology is
 /// returned unchanged.
 pub fn initialize_io_apics(
-    descriptors: &[IoApicDescriptor],
+    resources: Vec<IoApicResource>,
 ) -> Result<IrqPoisonLockGuard<'static, IoApicSet>, IoApicError> {
     if IO_APICS.get().is_none() {
-        let topology = IoApicSet::discover(descriptors)?;
+        let topology = IoApicSet::discover(resources)?;
         IO_APICS.call_once(|| IrqPoisonLock::new(topology));
     }
     io_apics()

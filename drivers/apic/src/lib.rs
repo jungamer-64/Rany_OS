@@ -4,8 +4,8 @@ mod ioapic;
 mod local;
 
 pub use ioapic::{
-    IoApic, IoApicDescriptor, IoApicDestination, IoApicError, IoApicSet, Polarity,
-    RedirectionEntry, TriggerMode, initialize_io_apics, io_apics,
+    IoApic, IoApicDestination, IoApicError, IoApicResource, IoApicSet, Polarity, RedirectionEntry,
+    TriggerMode, initialize_io_apics, io_apics,
 };
 pub use local::{
     ApicDeliveryTarget, ApicDestination, ApicMode, ApicModePolicy, InServiceVectors, LocalApic,
@@ -41,8 +41,9 @@ pub fn local_apic() -> Result<&'static LocalApic, LocalApicError> {
 /// xAPIC MMIO base is invalid, or per-CPU initialization fails.
 pub fn initialize_bootstrap_cpu(
     policy: ApicModePolicy,
+    map_xapic: impl FnOnce(u64) -> Result<hal::MappedMmio, LocalApicError>,
 ) -> Result<&'static LocalApic, LocalApicError> {
-    let selected = LOCAL_APIC.call_once(|| LocalApic::detect(policy));
+    let selected = LOCAL_APIC.call_once(|| LocalApic::detect(policy, map_xapic));
     let apic = match selected {
         Ok(apic) => apic,
         Err(error) => return Err(*error),

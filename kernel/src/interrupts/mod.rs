@@ -548,9 +548,29 @@ fn ensure_runtime_timer_calibrated() -> Result<(), RuntimeTimerError> {
         return Err(RuntimeTimerError::CalibrationRequiresBootstrapCpu);
     }
     let apic = crate::drivers::apic::local_apic().map_err(RuntimeTimerError::LocalApic)?;
+    // The bootstrap timer owner holds the channel-2 reference ports across
+    // calibration. Interrupt-time and concurrent recalibration cannot overlap.
+    static REFERENCE_PORTS: crate::sync::IrqPoisonLock<[hal::IoPortRange; 3]> = {
+        // SAFETY: these fixed PIT channel-2 resources belong to bootstrap
+        // timer calibration. No register access occurs during construction.
+        let command = unsafe { hal::IoPortRange::single(0x43) };
+        // SAFETY: the PIT channel-2 data port belongs to the same timer owner.
+        let data = unsafe { hal::IoPortRange::single(0x42) };
+        // SAFETY: this timer owner controls the channel-2 gate while calibrating.
+        let gate = unsafe { hal::IoPortRange::single(0x61) };
+        crate::sync::IrqPoisonLock::new([command, data, gate])
+    };
+    let mut ports = REFERENCE_PORTS
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let [command, data, gate] = &mut *ports;
     if apic.ticks_per_ms() == 0 {
-        apic.calibrate_timer()
-            .map_err(RuntimeTimerError::LocalApic)?;
+        apic.calibrate_timer(
+            command.first().expect("allocated PIT command port"),
+            data.first().expect("allocated PIT data port"),
+            gate.first().expect("allocated PIT gate port"),
+        )
+        .map_err(RuntimeTimerError::LocalApic)?;
     }
     Ok(())
 }

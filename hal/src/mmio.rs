@@ -1,164 +1,368 @@
 //! Architecture primitives for explicitly authorized device-memory access.
 //!
-//! The bare-address register API has been removed. Callers must migrate to a
-//! region capability that establishes range, alignment, and lifetime before a
-//! volatile access is possible.
+//! Mappings retain their resource owner. Borrowed regions and registers cannot
+//! survive that owner, and register derivation validates width, bounds, and
+//! alignment before any volatile access.
 
-// ============================================================================
-// Non-Temporal (Streaming) Store Functions
-// ============================================================================
-//
-// These functions bypass the CPU cache and write directly to memory using
-// Write-Combining buffers. They are optimal for VRAM writes where the data
-// will not be read back immediately.
-//
-// IMPORTANT: For maximum performance, the destination memory should be mapped
-// with Write-Combining (WC) page attribute via PAT/MTRR.
+use alloc::sync::Arc;
+use core::fmt;
+use core::marker::PhantomData;
+use core::num::NonZeroUsize;
 
-/// Memory fence for streaming stores. Ensures all preceding streaming stores
-/// are globally visible before any subsequent loads or stores.
+mod sealed {
+    pub trait MmioValue {}
+    pub trait Access {}
+}
+
+/// A primitive value whose complete bit domain is valid for MMIO access.
+pub trait MmioValue: sealed::MmioValue + Copy {
+    /// Required alignment of the hardware access.
+    const ALIGN: usize;
+    /// Width of the hardware access in bytes.
+    const WIDTH: usize;
+}
+
+macro_rules! impl_mmio_value {
+    ($value:ty) => {
+        impl sealed::MmioValue for $value {}
+
+        impl MmioValue for $value {
+            const ALIGN: usize = core::mem::align_of::<Self>();
+            const WIDTH: usize = core::mem::size_of::<Self>();
+        }
+    };
+}
+
+impl_mmio_value!(u8);
+impl_mmio_value!(u16);
+impl_mmio_value!(u32);
+impl_mmio_value!(u64);
+
+/// Register access is limited to reads.
+#[derive(Debug)]
+pub enum ReadOnly {}
+
+/// Register access is limited to writes.
+#[derive(Debug)]
+pub enum WriteOnly {}
+
+/// Register access permits both reads and writes.
+#[derive(Debug)]
+pub enum ReadWrite {}
+
+impl sealed::Access for ReadOnly {}
+impl sealed::Access for WriteOnly {}
+impl sealed::Access for ReadWrite {}
+
+/// Marker for register access modes that permit reads.
+pub trait Readable: sealed::Access {}
+
+/// Marker for register access modes that permit writes.
+pub trait Writable: sealed::Access {}
+
+impl Readable for ReadOnly {}
+impl Readable for ReadWrite {}
+impl Writable for WriteOnly {}
+impl Writable for ReadWrite {}
+
+/// Failure while establishing a mapped MMIO region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MmioRegionError {
+    /// Address zero cannot identify a live MMIO mapping.
+    NullBase,
+    /// A capability must contain at least one byte.
+    Empty,
+    /// The mapped span exceeds Rust's maximum object size.
+    LengthTooLarge,
+    /// The inclusive address range would wrap.
+    AddressOverflow,
+}
+
+/// Failure while deriving a register from a mapped MMIO region.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MmioAccessError {
+    /// `offset + width` overflowed.
+    OffsetOverflow,
+    /// The complete register is not contained in the mapping.
+    OutOfBounds,
+    /// The resulting register address is not aligned for its width.
+    Misaligned,
+}
+
+/// Owns access to a mapped device register aperture.
+///
+/// The retained owner keeps the mapping live. Splitting attenuates the aperture
+/// into disjoint subranges without creating another mapping or unmap authority.
+pub struct MappedMmio {
+    base: usize,
+    length: NonZeroUsize,
+    owner: Arc<dyn Send + Sync>,
+}
+
+impl fmt::Debug for MappedMmio {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("MappedMmio")
+            .field("base", &format_args!("{:#x}", self.base))
+            .field("length", &self.length)
+            .finish()
+    }
+}
+
+impl MappedMmio {
+    /// Establishes a capability for an externally managed MMIO mapping.
+    ///
+    /// Runtime-checkable range invariants are validated by this constructor.
+    ///
+    /// # Safety
+    ///
+    /// `owner` must retain the mapping of `base..base + length` until its last
+    /// strong reference is dropped. It must not expose a safe unmap, remap, or
+    /// revocation path while that reference exists. The aperture must be device
+    /// memory, not ordinary Rust objects. All naturally aligned integer widths
+    /// exposed by this capability must be permitted by the bus mapping. The
+    /// device protocol must prevent register side effects from violating Rust
+    /// memory safety; DMA publication remains a separate protocol obligation.
+    /// Cache attributes and hardware ordering must match the platform contract.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for a null base, empty or oversized mapping, or an
+    /// address range that would overflow.
+    #[expect(
+        unsafe_code,
+        reason = "mapping lifetime and device validity are external authority"
+    )]
+    pub unsafe fn from_raw_parts(
+        owner: Arc<dyn Send + Sync>,
+        base: usize,
+        length: usize,
+    ) -> Result<Self, MmioRegionError> {
+        let length = validate_mapping_span(base, length)?;
+        Ok(Self {
+            base,
+            length,
+            owner,
+        })
+    }
+
+    /// Returns the size of the authorized mapping in bytes.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.length.get()
+    }
+
+    /// Returns whether the mapping contains no bytes.
+    #[must_use]
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Borrows the aperture; all derived registers retain this borrow.
+    #[must_use]
+    pub fn region(&self) -> MmioRegion<'_> {
+        MmioRegion { mapping: self }
+    }
+
+    /// Consumes an aperture and retains only the requested subrange.
+    ///
+    /// # Errors
+    /// Rejects empty, overflowing, or out-of-bounds ranges without I/O.
+    pub fn into_subregion(self, offset: usize, length: usize) -> Result<Self, MmioAccessError> {
+        let length = NonZeroUsize::new(length).ok_or(MmioAccessError::OutOfBounds)?;
+        let end = offset
+            .checked_add(length.get())
+            .ok_or(MmioAccessError::OffsetOverflow)?;
+        if end > self.length.get() {
+            return Err(MmioAccessError::OutOfBounds);
+        }
+        Ok(Self {
+            base: self.base + offset,
+            length,
+            owner: self.owner,
+        })
+    }
+
+    /// Divides authority into two disjoint, independently owned apertures.
+    ///
+    /// # Errors
+    /// Rejects a split that would leave either aperture empty.
+    pub fn split_at(self, offset: usize) -> Result<(Self, Self), MmioAccessError> {
+        if offset == 0 || offset >= self.length.get() {
+            return Err(MmioAccessError::OutOfBounds);
+        }
+        let left_length = NonZeroUsize::new(offset).ok_or(MmioAccessError::OutOfBounds)?;
+        let right_length =
+            NonZeroUsize::new(self.length.get() - offset).ok_or(MmioAccessError::OutOfBounds)?;
+        let left = Self {
+            base: self.base,
+            length: left_length,
+            owner: Arc::clone(&self.owner),
+        };
+        let right = Self {
+            base: self.base + offset,
+            length: right_length,
+            owner: self.owner,
+        };
+        Ok((left, right))
+    }
+}
+
+/// A register aperture borrowed from its live mapping owner.
+#[derive(Debug)]
+pub struct MmioRegion<'mapping> {
+    mapping: &'mapping MappedMmio,
+}
+
+impl<'mapping> MmioRegion<'mapping> {
+    /// Derives a read-only register at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the register would overflow, exceed the mapping,
+    /// or violate the primitive's alignment.
+    pub fn read_only<T: MmioValue>(
+        &self,
+        offset: usize,
+    ) -> Result<MmioRegister<'mapping, T, ReadOnly>, MmioAccessError> {
+        self.register(offset)
+    }
+
+    /// Derives a write-only register at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the register would overflow, exceed the mapping,
+    /// or violate the primitive's alignment.
+    pub fn write_only<T: MmioValue>(
+        &self,
+        offset: usize,
+    ) -> Result<MmioRegister<'mapping, T, WriteOnly>, MmioAccessError> {
+        self.register(offset)
+    }
+
+    /// Derives a read-write register at `offset`.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the register would overflow, exceed the mapping,
+    /// or violate the primitive's alignment.
+    pub fn read_write<T: MmioValue>(
+        &self,
+        offset: usize,
+    ) -> Result<MmioRegister<'mapping, T, ReadWrite>, MmioAccessError> {
+        self.register(offset)
+    }
+
+    fn register<T: MmioValue, Access: sealed::Access>(
+        &self,
+        offset: usize,
+    ) -> Result<MmioRegister<'mapping, T, Access>, MmioAccessError> {
+        let address = checked_register_address::<T>(self.mapping.base, self.mapping.len(), offset)?;
+        Ok(MmioRegister {
+            address,
+            mapping: self.mapping,
+            value: PhantomData,
+            access: PhantomData,
+        })
+    }
+}
+
+/// Pure geometry check; it deliberately does not claim mapping validity.
+fn validate_mapping_span(base: usize, length: usize) -> Result<NonZeroUsize, MmioRegionError> {
+    if base == 0 {
+        return Err(MmioRegionError::NullBase);
+    }
+    let length = NonZeroUsize::new(length).ok_or(MmioRegionError::Empty)?;
+    if length.get() > isize::MAX as usize {
+        return Err(MmioRegionError::LengthTooLarge);
+    }
+    base.checked_add(length.get() - 1)
+        .ok_or(MmioRegionError::AddressOverflow)?;
+    Ok(length)
+}
+
+fn checked_register_address<T: MmioValue>(
+    base: usize,
+    length: usize,
+    offset: usize,
+) -> Result<usize, MmioAccessError> {
+    let end = offset
+        .checked_add(T::WIDTH)
+        .ok_or(MmioAccessError::OffsetOverflow)?;
+    if end > length {
+        return Err(MmioAccessError::OutOfBounds);
+    }
+    let address = base
+        .checked_add(offset)
+        .ok_or(MmioAccessError::OffsetOverflow)?;
+    if !address.is_multiple_of(T::ALIGN) {
+        return Err(MmioAccessError::Misaligned);
+    }
+    Ok(address)
+}
+
+/// A width- and access-checked register borrowed from an MMIO mapping.
+pub struct MmioRegister<'region, T: MmioValue, Access: sealed::Access> {
+    address: usize,
+    mapping: &'region MappedMmio,
+    value: PhantomData<T>,
+    access: PhantomData<Access>,
+}
+
+macro_rules! register_access {
+    ($value:ty) => {
+        impl<Access: Readable> MmioRegister<'_, $value, Access> {
+            /// Performs one volatile register read; this is not a memory barrier.
+            #[must_use]
+            #[expect(
+                unsafe_code,
+                reason = "volatile access is confined to a checked live mapping"
+            )]
+            pub fn read(&self) -> $value {
+                let _owner = self.mapping;
+                let pointer = core::ptr::without_provenance::<$value>(self.address);
+                // SAFETY: derivation checked bounds/alignment; the borrowed
+                // mapping retains the owner and integer bit patterns are valid.
+                unsafe { core::ptr::read_volatile(pointer) }
+            }
+        }
+        impl<Access: Writable> MmioRegister<'_, $value, Access> {
+            /// Performs one volatile register write; this is not a memory barrier.
+            #[expect(
+                unsafe_code,
+                reason = "volatile access is confined to a checked live mapping"
+            )]
+            pub fn write(&mut self, value: $value) {
+                let _owner = self.mapping;
+                let pointer = core::ptr::without_provenance_mut::<$value>(self.address);
+                // SAFETY: derivation checked bounds/alignment; the borrowed
+                // mapping retains the register aperture for this access.
+                unsafe { core::ptr::write_volatile(pointer, value) }
+            }
+        }
+    };
+}
+
+register_access!(u8);
+register_access!(u16);
+register_access!(u32);
+register_access!(u64);
+
+/// Orders preceding stores, including write-combining stores, before later
+/// stores. This does not order subsequent loads or prove device completion.
 #[inline]
+#[expect(
+    unsafe_code,
+    reason = "x86-64 store ordering requires a hardware instruction even in soft-float builds"
+)]
 pub fn sfence() {
-    // Only use SSE intrinsics when target has SSE enabled at compile time
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "sse"
-    ))]
+    // SAFETY: SFENCE is available on every supported x86-64 CPU and touches no
+    // pointer or SIMD register state. Omitting `nomem` also orders the compiler.
     unsafe {
-        core::arch::x86_64::_mm_sfence();
-    }
-    // Fallback for soft-float targets or non-x86 architectures
-    #[cfg(not(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "sse"
-    )))]
-    {
-        // Use a compiler fence as fallback
-        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        core::arch::asm!("sfence", options(nostack, preserves_flags));
     }
 }
-
-/// Write a 32-bit value using non-temporal store (bypasses cache).
-/// The address must be 4-byte aligned.
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "sse2"
-))]
-#[inline]
-pub fn stream_write_u32(addr: usize, val: u32) {
-    unsafe {
-        let signed = i32::from_ne_bytes(val.to_ne_bytes());
-        core::arch::x86_64::_mm_stream_si32(addr as *mut i32, signed);
-    }
-}
-
-/// Fallback for soft-float targets: use volatile write
-#[cfg(not(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "sse2"
-)))]
-#[inline]
-pub fn stream_write_u32(addr: usize, val: u32) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u32, val);
-    }
-}
-
-/// Write a 64-bit value using non-temporal store (bypasses cache).
-/// The address must be 8-byte aligned.
-#[cfg(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "sse2"
-))]
-#[inline]
-pub fn stream_write_u64(addr: usize, val: u64) {
-    unsafe {
-        let signed = i64::from_ne_bytes(val.to_ne_bytes());
-        core::arch::x86_64::_mm_stream_si64(addr as *mut i64, signed);
-    }
-}
-
-/// Fallback for soft-float targets: use volatile write
-#[cfg(not(all(
-    any(target_arch = "x86", target_arch = "x86_64"),
-    target_feature = "sse2"
-)))]
-#[inline]
-pub fn stream_write_u64(addr: usize, val: u64) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut u64, val);
-    }
-}
-
-/// Write 128 bits (16 bytes) using SSE2 non-temporal store.
-/// The address MUST be 16-byte aligned.
-///
-/// # Safety
-/// - Caller must ensure the address is 16-byte aligned
-/// - Caller must ensure SSE2 is available (standard on `x86_64`)
-///
-/// NOTE: Disabled on no_std targets due to LLVM codegen bug.
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
-#[target_feature(enable = "sse2")]
-#[inline]
-pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
-    use core::arch::x86_64::{__m128i, _mm_loadu_si128, _mm_stream_si128};
-    // SAFETY: Caller ensures SSE2 is available and address is 16-byte aligned
-    unsafe {
-        let v = _mm_loadu_si128(data.as_ptr().cast::<__m128i>());
-        let dst = core::ptr::with_exposed_provenance_mut::<__m128i>(addr);
-        _mm_stream_si128(dst, v);
-    }
-}
-
-/// Fallback for no_std targets - use two 64-bit stores
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "std")))]
-#[inline]
-pub unsafe fn stream_write_128(addr: usize, data: &[u8; 16]) {
-    // Fall back to two 64-bit streaming stores
-    unsafe {
-        let v0 = core::ptr::read_unaligned(data.as_ptr().cast::<u64>());
-        let v1 = core::ptr::read_unaligned(data.as_ptr().add(8).cast::<u64>());
-        stream_write_u64(addr, v0);
-        stream_write_u64(addr + 8, v1);
-    }
-}
-
-/// Write 256 bits (32 bytes) using AVX non-temporal store.
-/// The address MUST be 32-byte aligned.
-///
-/// # Safety
-/// - Caller must ensure the address is 32-byte aligned
-/// - Caller must ensure AVX is available
-///
-/// NOTE: Disabled on no_std targets due to LLVM codegen bug in nightly 2025-11-25 through 2025-12-17.
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), feature = "std"))]
-#[target_feature(enable = "avx")]
-#[inline]
-pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
-    use core::arch::x86_64::{__m256i, _mm256_loadu_si256, _mm256_stream_si256};
-    // SAFETY: Caller ensures AVX is available and address is 32-byte aligned
-    unsafe {
-        let v = _mm256_loadu_si256(data.as_ptr().cast::<__m256i>());
-        let dst = core::ptr::with_exposed_provenance_mut::<__m256i>(addr);
-        _mm256_stream_si256(dst, v);
-    }
-}
-
-/// Fallback for no_std targets - use SSE2 16-byte stores
-#[cfg(all(any(target_arch = "x86", target_arch = "x86_64"), not(feature = "std")))]
-#[inline]
-pub unsafe fn stream_write_256(addr: usize, data: &[u8; 32]) {
-    // Fall back to two 16-byte stores
-    unsafe {
-        stream_write_128(addr, &*(data.as_ptr().cast::<[u8; 16]>()));
-        stream_write_128(addr + 16, &*(data.as_ptr().add(16).cast::<[u8; 16]>()));
-    }
-}
-
-// ============================================================================
-// SIMD Support Level
-// ============================================================================
 
 static SIMD_LEVEL: core::sync::atomic::AtomicU8 = core::sync::atomic::AtomicU8::new(0);
 
@@ -176,6 +380,10 @@ pub mod simd_level {
 /// # Safety
 /// Caller must ensure the CPU supports the specified level.
 /// - level >= 1 requires AVX support
+#[expect(
+    unsafe_code,
+    reason = "CPU and enabled extended-state support must be established by boot code"
+)]
 pub unsafe fn set_simd_level(level: u8) {
     SIMD_LEVEL.store(level, core::sync::atomic::Ordering::Relaxed);
 }
@@ -203,136 +411,66 @@ pub fn bench_debug_print_allowed() -> bool {
     }
 }
 
-/// Fallback for non-x86 architectures: just use volatile writes
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
-    unsafe {
-        for &byte in data {
-            core::ptr::write_volatile(addr as *mut u8, byte);
-            addr += 1;
-        }
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mapping_geometry_rejects_empty_overflow_and_oversize() {
+        assert_eq!(validate_mapping_span(0, 8), Err(MmioRegionError::NullBase));
+        assert_eq!(validate_mapping_span(8, 0), Err(MmioRegionError::Empty));
+        assert_eq!(
+            validate_mapping_span(8, usize::MAX),
+            Err(MmioRegionError::LengthTooLarge)
+        );
+        assert_eq!(
+            validate_mapping_span(usize::MAX, 2),
+            Err(MmioRegionError::AddressOverflow)
+        );
+        assert_eq!(
+            validate_mapping_span(usize::MAX, 1).map(NonZeroUsize::get),
+            Ok(1)
+        );
     }
-}
 
-/// AVX (256-bit) streaming write pass. Returns (updated addr, updated index).
-///
-/// # Safety
-/// Caller must ensure the destination address range is valid for AVX writes.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[inline]
-unsafe fn stream_write_avx_pass(mut addr: usize, data: &[u8], mut i: usize) -> (usize, usize) {
-    let len = data.len();
-    unsafe {
-        // Align to 32 bytes
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i < len && (addr & 31) != 0 {
-            core::ptr::write_volatile(addr as *mut u8, data[i]);
-            addr += 1;
-            i += 1;
-        }
-
-        // Loop unrolling: 4x 32-byte (128 bytes per iteration)
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i + 128 <= len {
-            let ptr = data.as_ptr().add(i);
-            stream_write_256(addr, &*(ptr.cast::<[u8; 32]>()));
-            stream_write_256(addr + 32, &*(ptr.add(32).cast::<[u8; 32]>()));
-            stream_write_256(addr + 64, &*(ptr.add(64).cast::<[u8; 32]>()));
-            stream_write_256(addr + 96, &*(ptr.add(96).cast::<[u8; 32]>()));
-            addr += 128;
-            i += 128;
-        }
-
-        // Handle remaining 32-byte chunks
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i + 32 <= len {
-            let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 32]>();
-            stream_write_256(addr, &*chunk_ptr);
-            addr += 32;
-            i += 32;
-        }
+    #[test]
+    fn registers_require_their_full_width_inside_the_aperture() {
+        assert_eq!(checked_register_address::<u8>(0x1000, 8, 7), Ok(0x1007));
+        assert_eq!(checked_register_address::<u16>(0x1000, 8, 6), Ok(0x1006));
+        assert_eq!(checked_register_address::<u32>(0x1000, 8, 4), Ok(0x1004));
+        assert_eq!(checked_register_address::<u64>(0x1000, 8, 0), Ok(0x1000));
+        assert_eq!(
+            checked_register_address::<u64>(0x1000, 8, 1),
+            Err(MmioAccessError::OutOfBounds)
+        );
+        assert_eq!(
+            checked_register_address::<u8>(0x1000, 8, 8),
+            Err(MmioAccessError::OutOfBounds)
+        );
     }
-    (addr, i)
-}
 
-/// SSE2/trailing streaming write pass. Returns (updated addr, updated index).
-///
-/// # Safety
-/// Caller must ensure the destination address range is valid for writing.
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-#[inline]
-unsafe fn stream_write_trailing(mut addr: usize, data: &[u8], mut i: usize) -> (usize, usize) {
-    let len = data.len();
-    unsafe {
-        // Loop unrolling: 4x 16-byte (64 bytes per iteration)
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i + 64 <= len {
-            let ptr = data.as_ptr().add(i);
-            stream_write_128(addr, &*(ptr.cast::<[u8; 16]>()));
-            stream_write_128(addr + 16, &*(ptr.add(16).cast::<[u8; 16]>()));
-            stream_write_128(addr + 32, &*(ptr.add(32).cast::<[u8; 16]>()));
-            stream_write_128(addr + 48, &*(ptr.add(48).cast::<[u8; 16]>()));
-            addr += 64;
-            i += 64;
-        }
-
-        // Handle remaining 16-byte chunks
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i + 16 <= len {
-            let chunk_ptr = data.as_ptr().add(i).cast::<[u8; 16]>();
-            stream_write_128(addr, &*chunk_ptr);
-            addr += 16;
-            i += 16;
-        }
-
-        // Handle remaining bytes via u64 streaming if possible
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i + 8 <= len {
-            let v = core::ptr::read_unaligned(data.as_ptr().add(i).cast::<u64>());
-            stream_write_u64(addr, v);
-            addr += 8;
-            i += 8;
-        }
-
-        // Handle trailing bytes
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while i < len {
-            core::ptr::write_volatile(addr as *mut u8, data[i]);
-            addr += 1;
-            i += 1;
-        }
+    #[test]
+    fn register_alignment_is_relative_to_the_final_address() {
+        assert_eq!(
+            checked_register_address::<u32>(0x1001, 8, 0),
+            Err(MmioAccessError::Misaligned)
+        );
+        assert_eq!(checked_register_address::<u32>(0x1001, 8, 3), Ok(0x1004));
+        assert_eq!(
+            checked_register_address::<u64>(0x1000, 16, 4),
+            Err(MmioAccessError::Misaligned)
+        );
     }
-    (addr, i)
-}
 
-/// Write a contiguous slice of bytes using streaming stores.
-/// Handles alignment and falls back to volatile writes for unaligned portions.
-///
-/// Automatically uses AVX (256-bit) stores if `set_simd_level` was called with >= 1.
-///
-/// # Safety
-/// - Caller must ensure the destination address range is valid for writing
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-pub unsafe fn stream_write_bytes(mut addr: usize, data: &[u8]) {
-    let mut i = 0usize;
-    let len = data.len();
-    let level = SIMD_LEVEL.load(core::sync::atomic::Ordering::Relaxed);
-
-    unsafe {
-        if level >= simd_level::AVX {
-            (addr, i) = stream_write_avx_pass(addr, data, i);
-        } else {
-            // SSE2 Path: Align to 16 bytes
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while i < len && (addr & 15) != 0 {
-                core::ptr::write_volatile(addr as *mut u8, data[i]);
-                addr += 1;
-                i += 1;
-            }
-        }
-
-        // SSE2 Fallback / Cleanup (also runs if AVX path didn't consume everything or wasn't taken)
-        // If AVX path ran, we are 32-byte aligned, which is also 16-byte aligned.
-        let _ = stream_write_trailing(addr, data, i);
+    #[test]
+    fn register_derivation_checks_offset_and_address_overflow() {
+        assert_eq!(
+            checked_register_address::<u32>(0x1000, 8, usize::MAX),
+            Err(MmioAccessError::OffsetOverflow)
+        );
+        assert_eq!(
+            checked_register_address::<u8>(usize::MAX, 2, 1),
+            Err(MmioAccessError::OffsetOverflow)
+        );
     }
 }

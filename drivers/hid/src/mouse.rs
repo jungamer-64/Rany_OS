@@ -13,7 +13,7 @@
 //! - 割り込みコンテキストでの安全な処理
 use alloc::collections::VecDeque;
 use core::fmt;
-use hal::port_io::PortU8;
+use hal::{IoPort, IoPortRange};
 
 // ============================================================================
 // Error Types
@@ -25,6 +25,8 @@ use hal::port_io::PortU8;
 /// 各エラーにはリカバリーのヒントを含む。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MouseInitError {
+    /// The controller allocation has the wrong register span.
+    InvalidPortRange,
     /// SET_DEFAULTS (0xF6) コマンドが失敗
     SetDefaultsFailed,
 
@@ -41,6 +43,7 @@ pub enum MouseInitError {
 impl fmt::Display for MouseInitError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidPortRange => write!(f, "invalid PS/2 controller port allocation"),
             Self::SetDefaultsFailed => write!(f, "mouse initialization failed"),
             Self::EnableDataFailed => write!(f, "mouse data streaming unavailable"),
             Self::IrqEnableFailed => write!(f, "mouse interrupt enable failed"),
@@ -52,11 +55,6 @@ impl fmt::Display for MouseInitError {
 // ============================================================================
 // Constants
 // ============================================================================
-
-/// PS/2データポート
-const PS2_DATA_PORT: u16 = 0x60;
-/// PS/2ステータス/コマンドポート
-const PS2_STATUS_PORT: u16 = 0x64;
 
 /// コントローラコマンド
 const CMD_READ_CONFIG: u8 = 0x20;
@@ -85,7 +83,7 @@ pub use crate::{MouseButton, MouseEvent};
 // ============================================================================
 
 /// ステータスレジスタを読み取り、書き込み準備ができるまで待機
-fn wait_for_write(status_port: &mut PortU8) {
+fn wait_for_write(status_port: &mut IoPort<'_, u8>) {
     for _ in 0..100000 {
         let status = status_port.read();
         if status & 0x02 == 0 {
@@ -101,10 +99,9 @@ fn wait_for_write(status_port: &mut PortU8) {
 
 /// PS/2 マウスドライバ
 pub struct Mouse {
-    /// データポート
-    data_port: PortU8,
-    /// ステータスポート
-    status_port: PortU8,
+    /// Disjoint data and status allocations avoid authority over port 0x61.
+    data: IoPortRange,
+    status: IoPortRange,
     /// パケットバッファ（標準PS/2マウスは3バイト）
     packet: [u8; 3],
     /// パケットインデックス
@@ -118,17 +115,23 @@ pub struct Mouse {
 }
 
 impl Mouse {
-    /// 新しいマウスドライバを作成
-    pub const fn new() -> Self {
-        Self {
-            data_port: PortU8::new(PS2_DATA_PORT),
-            status_port: PortU8::new(PS2_STATUS_PORT),
+    /// Takes the controller's data and command/status port allocations.
+    ///
+    /// # Errors
+    /// Rejects ranges that contain more than one port before performing I/O.
+    pub fn new(data: IoPortRange, status: IoPortRange) -> Result<Self, MouseInitError> {
+        if data.len() != 1 || status.len() != 1 {
+            return Err(MouseInitError::InvalidPortRange);
+        }
+        Ok(Self {
+            data,
+            status,
             packet: [0; 3],
             packet_index: 0,
             event_queue: VecDeque::new(),
             prev_buttons: 0,
             initialized: false,
-        }
+        })
     }
 
     /// マウスの初期化
@@ -174,22 +177,42 @@ impl Mouse {
 
     /// PS/2コントローラへのコマンド書き込み
     fn write_controller_command(&mut self, cmd: u8) {
-        wait_for_write(&mut self.status_port);
-        self.status_port.write(cmd);
+        let mut status_port = self
+            .status
+            .first::<u8>()
+            .expect("the PS/2 status port is inside the controller range");
+        wait_for_write(&mut status_port);
+        status_port.write(cmd);
     }
 
     /// PS/2データポートへの書き込み
     fn write_data(&mut self, data: u8) {
-        wait_for_write(&mut self.status_port);
-        self.data_port.write(data);
+        let mut status_port = self
+            .status
+            .first::<u8>()
+            .expect("the PS/2 status port is inside the controller range");
+        wait_for_write(&mut status_port);
+        self.data
+            .first::<u8>()
+            .expect("the PS/2 data port begins the controller range")
+            .write(data);
     }
 
     /// PS/2データポートからの読み込み（タイムアウト付き）
     fn read_data_timeout(&mut self) -> Option<u8> {
         for _ in 0..100000 {
-            let status = self.status_port.read();
+            let status = self
+                .status
+                .first::<u8>()
+                .expect("the PS/2 status port is inside the controller range")
+                .read();
             if status & 0x01 != 0 {
-                return Some(self.data_port.read());
+                return Some(
+                    self.data
+                        .first::<u8>()
+                        .expect("the PS/2 data port begins the controller range")
+                        .read(),
+                );
             }
             core::hint::spin_loop();
         }
@@ -288,11 +311,5 @@ impl Mouse {
     /// 初期化されているか
     pub fn is_initialized(&self) -> bool {
         self.initialized
-    }
-}
-
-impl Default for Mouse {
-    fn default() -> Self {
-        Self::new()
     }
 }

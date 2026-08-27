@@ -396,7 +396,16 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
     if BOOT_CPU_INVENTORY.get().is_some() {
         return Ok(());
     }
-    let local_apic = crate::drivers::apic::initialize_bootstrap_cpu(bootstrap_apic_policy()?)
+    let local_apic =
+        crate::drivers::apic::initialize_bootstrap_cpu(bootstrap_apic_policy()?, |base| {
+            let physical = x86_64::PhysAddr::try_new(base)
+                .map_err(|_| LocalApicError::InvalidMmioBase { base })?;
+            // SAFETY: IA32_APIC_BASE identifies the BSP's reserved APIC register
+            // page. The bootstrap owns installation of the single local-APIC
+            // backend, and the platform direct map is retained for kernel lifetime.
+            unsafe { crate::mm::virt::mapping::retain_device_registers(physical, 4096) }
+                .map_err(|_| LocalApicError::InvalidMmioBase { base })
+        })
         .map_err(CpuInitializationError::LocalApic)?;
     let bsp_apic = ApicId::new(local_apic.id());
     super::install_bootstrap(bsp_apic, Some(boot_info.tls_template))

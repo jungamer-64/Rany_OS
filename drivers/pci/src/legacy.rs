@@ -9,8 +9,9 @@
 
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
-use exorust_sync::PoisonLock;
-use hal::port_io::PortU32;
+use exorust_sync::IrqPoisonLock;
+use hal::IoPortRange;
+use spin::Once;
 
 // ============================================================================
 // Constants
@@ -27,21 +28,25 @@ const PCI_CONFIG_DATA: u16 = 0xCFC;
 
 /// Legacy PCI I/O ポートアクセサ（内部状態）
 struct LegacyPciPorts {
-    address_port: PortU32,
-    data_port: PortU32,
+    range: IoPortRange,
 }
 
 impl LegacyPciPorts {
-    const fn new() -> Self {
-        Self {
-            address_port: PortU32::new(PCI_CONFIG_ADDRESS),
-            data_port: PortU32::new(PCI_CONFIG_DATA),
-        }
+    fn new() -> Self {
+        // SAFETY: PCI configuration mechanism #1 reserves CF8-CFF as one
+        // serialized platform resource. `LEGACY_PCI` is its sole owner.
+        let range = unsafe { IoPortRange::from_raw_parts(PCI_CONFIG_ADDRESS, 8) }
+            .expect("the fixed PCI configuration range cannot overflow");
+        Self { range }
     }
 }
 
 /// グローバルな Legacy PCI アクセサ
-static LEGACY_PCI: PoisonLock<LegacyPciPorts> = PoisonLock::new(LegacyPciPorts::new());
+static LEGACY_PCI: Once<IrqPoisonLock<LegacyPciPorts>> = Once::new();
+
+fn legacy_ports() -> &'static IrqPoisonLock<LegacyPciPorts> {
+    LEGACY_PCI.call_once(|| IrqPoisonLock::new(LegacyPciPorts::new()))
+}
 
 /// Legacy PCI Configuration Space アクセサ
 ///
@@ -64,20 +69,25 @@ impl LegacyPciAccessor {
             | 0x80000000 // Enable bit
     }
 
-    /// 32ビット読み取り（内部）
-    fn read_dword(&self, bdf: BdfAddress, offset: u8) -> u32 {
+    /// The address latch and data access form one IRQ/SMP-serialized transaction.
+    fn with_selected<R>(
+        bdf: BdfAddress,
+        offset: u8,
+        access: impl FnOnce(&IoPortRange, u16) -> R,
+    ) -> R {
         let address = Self::make_address(bdf, offset);
-        let mut ports = LEGACY_PCI.lock().unwrap_or_else(|e| e.into_inner());
-        ports.address_port.write(address);
-        ports.data_port.read()
-    }
-
-    /// 32ビット書き込み（内部）
-    fn write_dword(&self, bdf: BdfAddress, offset: u8, value: u32) {
-        let address = Self::make_address(bdf, offset);
-        let mut ports = LEGACY_PCI.lock().unwrap_or_else(|e| e.into_inner());
-        ports.address_port.write(address);
-        ports.data_port.write(value);
+        let ports = legacy_ports()
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut address_port = ports
+            .range
+            .first::<u32>()
+            .expect("the address port is inside the PCI configuration range");
+        address_port.write(address);
+        access(
+            &ports.range,
+            PCI_CONFIG_DATA - PCI_CONFIG_ADDRESS + u16::from(offset & 3),
+        )
     }
 }
 
@@ -86,56 +96,72 @@ impl ConfigSpaceAccessor for LegacyPciAccessor {
         if offset >= 256 {
             return 0xFF;
         }
-        let dword = self.read_dword(bdf, (offset & 0xFC) as u8);
-        let shift = (offset & 3) * 8;
-        (dword >> shift) as u8
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u8>(data)
+                .expect("validated PCI byte lane")
+                .read()
+        })
     }
 
     fn read16(&self, bdf: BdfAddress, offset: u16) -> u16 {
         if offset >= 256 || (offset & 1) != 0 {
             return 0xFFFF;
         }
-        let dword = self.read_dword(bdf, (offset & 0xFC) as u8);
-        let shift = (offset & 2) * 8;
-        (dword >> shift) as u16
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u16>(data)
+                .expect("validated PCI word lane")
+                .read()
+        })
     }
 
     fn read32(&self, bdf: BdfAddress, offset: u16) -> u32 {
         if offset >= 256 || (offset & 3) != 0 {
             return 0xFFFFFFFF;
         }
-        self.read_dword(bdf, offset as u8)
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u32>(data)
+                .expect("validated PCI dword lane")
+                .read()
+        })
     }
 
     fn write8(&self, bdf: BdfAddress, offset: u16, value: u8) {
         if offset >= 256 {
             return;
         }
-        let aligned_offset = (offset & 0xFC) as u8;
-        let shift = (offset & 3) * 8;
-        let mask = !(0xFF << shift);
-        let dword = self.read_dword(bdf, aligned_offset);
-        let new_value = (dword & mask) | ((value as u32) << shift);
-        self.write_dword(bdf, aligned_offset, new_value);
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u8>(data)
+                .expect("validated PCI byte lane")
+                .write(value);
+        });
     }
 
     fn write16(&self, bdf: BdfAddress, offset: u16, value: u16) {
         if offset >= 256 || (offset & 1) != 0 {
             return;
         }
-        let aligned_offset = (offset & 0xFC) as u8;
-        let shift = (offset & 2) * 8;
-        let mask = !(0xFFFF << shift);
-        let dword = self.read_dword(bdf, aligned_offset);
-        let new_value = (dword & mask) | ((value as u32) << shift);
-        self.write_dword(bdf, aligned_offset, new_value);
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u16>(data)
+                .expect("validated PCI word lane")
+                .write(value);
+        });
     }
 
     fn write32(&self, bdf: BdfAddress, offset: u16, value: u32) {
         if offset >= 256 || (offset & 3) != 0 {
             return;
         }
-        self.write_dword(bdf, offset as u8, value);
+        Self::with_selected(bdf, offset as u8, |ports, data| {
+            ports
+                .port::<u32>(data)
+                .expect("validated PCI dword lane")
+                .write(value);
+        });
     }
 }
 

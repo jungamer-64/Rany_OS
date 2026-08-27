@@ -123,16 +123,16 @@ impl PcieBdf {
 
 /// PCIe MMIO コンフィグ空間ベース
 pub struct PcieConfig {
-    base_addr: u64,
+    registers: hal::MappedMmio,
     segment: u16,
     start_bus: u8,
     end_bus: u8,
 }
 
 impl PcieConfig {
-    pub const fn new(base_addr: u64, segment: u16, start_bus: u8, end_bus: u8) -> Self {
+    pub const fn new(registers: hal::MappedMmio, segment: u16, start_bus: u8, end_bus: u8) -> Self {
         Self {
-            base_addr,
+            registers,
             segment,
             start_bus,
             end_bus,
@@ -143,25 +143,30 @@ impl PcieConfig {
         self.segment
     }
 
-    fn get_config_addr(&self, bdf: PcieBdf, offset: u16) -> Option<*mut u32> {
+    fn get_config_offset(&self, bdf: PcieBdf, offset: u16) -> Option<usize> {
         if bdf.bus < self.start_bus || bdf.bus > self.end_bus {
             return None;
         }
 
-        let addr = self.base_addr
-            + ((bdf.bus as u64) << 20)
-            + ((bdf.device as u64) << 15)
-            + ((bdf.function as u64) << 12)
-            + (offset as u64);
-
-        Some(addr as *mut u32)
+        let bus = usize::from(bdf.bus - self.start_bus);
+        let device = usize::from(bdf.device);
+        let function = usize::from(bdf.function);
+        (bus << 20)
+            .checked_add(device << 15)?
+            .checked_add(function << 12)?
+            .checked_add(usize::from(offset))
     }
 
     /// コンフィグ空間から読み取り
     pub fn read32(&self, bdf: PcieBdf, offset: u16) -> Option<u32> {
-        let addr = self.get_config_addr(bdf, offset)?;
-        // Convert the pointer to an address and use the HAL mmio wrapper.
-        Some(hal::mmio::volatile_read::<u32>(addr as usize))
+        let offset = self.get_config_offset(bdf, offset)?;
+        Some(
+            self.registers
+                .region()
+                .read_only::<u32>(offset)
+                .ok()?
+                .read(),
+        )
     }
 
     pub fn read16(&self, bdf: PcieBdf, offset: u16) -> Option<u16> {
@@ -179,9 +184,9 @@ impl PcieConfig {
 
     /// コンフィグ空間に書き込み
     pub fn write32(&self, bdf: PcieBdf, offset: u16, value: u32) -> Option<()> {
-        let addr = self.get_config_addr(bdf, offset)?;
-        // Convert the pointer to an address and use the HAL mmio wrapper.
-        hal::mmio::volatile_write::<u32>(addr as usize, value);
+        let offset = self.get_config_offset(bdf, offset)?;
+        let mut register = self.registers.region().write_only::<u32>(offset).ok()?;
+        register.write(value);
         Some(())
     }
 

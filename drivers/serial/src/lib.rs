@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll, Waker};
 use exorust_sync::IrqPoisonLock;
 
-use hal::port_io::{IoPort, PortU8};
+use hal::{IoPort, IoPortRange};
 use kernel_api::driver::{DeviceId, Driver, DriverType, DriverVersion};
 use kernel_api::error::KapiResult;
 
@@ -109,22 +109,42 @@ pub enum BaudRate {
 }
 
 pub struct SerialPort {
-    base: u16,
+    registers: IrqPoisonLock<SerialRegisters>,
     initialized: AtomicBool,
 }
 
-impl SerialPort {
-    pub const fn new(port: ComPort) -> Self {
-        Self {
-            base: port as u16,
-            initialized: AtomicBool::new(false),
-        }
+/// The lock protects DLAB multiplexing and each status/data transaction from
+/// concurrent interrupt handlers, transmitters, and reconfiguration.
+struct SerialRegisters {
+    ports: IoPortRange,
+}
+
+impl SerialRegisters {
+    fn port_at(&self, offset: u16) -> IoPort<'_, u8> {
+        self.ports
+            .port(offset)
+            .expect("serial register offsets are contained in the UART range")
     }
-    fn port_at<T>(&self, offset: u16) -> IoPort<T>
-    where
-        T: Copy + x86_64::instructions::port::PortRead + x86_64::instructions::port::PortWrite,
-    {
-        IoPort::new(self.base + offset)
+
+    fn line_status(&self) -> LineStatus {
+        LineStatus::from_u8(self.port_at(reg::LSR).read())
+    }
+}
+
+impl SerialPort {
+    /// Takes exclusive ownership of one UART register allocation.
+    ///
+    /// # Errors
+    /// Returns `InvalidPortRange` unless the allocation contains exactly the
+    /// eight UART port numbers. No I/O occurs on failure.
+    pub const fn new(ports: IoPortRange) -> Result<Self, SerialError> {
+        if ports.len() != 8 {
+            return Err(SerialError::InvalidPortRange);
+        }
+        Ok(Self {
+            registers: IrqPoisonLock::new(SerialRegisters { ports }),
+            initialized: AtomicBool::new(false),
+        })
     }
     /// # Errors
     ///
@@ -136,12 +156,16 @@ impl SerialPort {
         stop_bits: StopBits,
         parity: Parity,
     ) -> Result<(), SerialError> {
-        let mut data_port: PortU8 = self.port_at(reg::DATA);
-        let mut ier_port: PortU8 = self.port_at(reg::IER);
-        let mut fcr_port: PortU8 = self.port_at(reg::FCR);
-        let mut lcr_port: PortU8 = self.port_at(reg::LCR);
-        let mut mcr_port: PortU8 = self.port_at(reg::MCR);
-        let mut sr_port: PortU8 = self.port_at(reg::SCRATCH);
+        let registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut data_port = registers.port_at(reg::DATA);
+        let mut ier_port = registers.port_at(reg::IER);
+        let mut fcr_port = registers.port_at(reg::FCR);
+        let mut lcr_port = registers.port_at(reg::LCR);
+        let mut mcr_port = registers.port_at(reg::MCR);
+        let mut sr_port = registers.port_at(reg::SCRATCH);
         ier_port.write(0x00);
         lcr_port.write(1 << 7);
         let divisor = baud_rate as u16;
@@ -164,7 +188,10 @@ impl SerialPort {
         Ok(())
     }
     pub fn line_status(&self) -> LineStatus {
-        LineStatus::from_u8(self.port_at(reg::LSR).read())
+        self.registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .line_status()
     }
     pub fn can_transmit(&self) -> bool {
         self.line_status().is_tx_ready()
@@ -173,11 +200,15 @@ impl SerialPort {
         self.line_status().is_data_ready()
     }
     pub fn send(&self, byte: u8) {
+        let registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while !self.can_transmit() {
+        while !registers.line_status().is_tx_ready() {
             core::hint::spin_loop();
         }
-        self.port_at(reg::DATA).write(byte);
+        registers.port_at(reg::DATA).write(byte);
     }
     pub fn send_str(&self, s: &str) {
         for byte in s.bytes() {
@@ -188,13 +219,21 @@ impl SerialPort {
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub fn try_receive(&self) -> Result<u8, SerialError> {
-        if self.can_receive() {
-            Ok(self.port_at(reg::DATA).read())
+        let registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if registers.line_status().is_data_ready() {
+            Ok(registers.port_at(reg::DATA).read())
         } else {
             Err(SerialError::NoData)
         }
     }
     pub fn set_interrupts(&self, rx: bool, tx: bool) {
+        let registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         let mut flags = 0u8;
         if rx {
             flags |= InterruptEnable::RX_AVAILABLE;
@@ -202,12 +241,13 @@ impl SerialPort {
         if tx {
             flags |= InterruptEnable::TX_EMPTY;
         }
-        self.port_at(reg::IER).write(flags);
+        registers.port_at(reg::IER).write(flags);
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialError {
+    InvalidPortRange,
     InitFailed,
     BufferFull,
     NoData,
@@ -224,9 +264,8 @@ struct RxBuffer {
 }
 impl RxBuffer {
     const fn new() -> Self {
-        const ZERO: AtomicU8 = AtomicU8::new(0);
         Self {
-            buffer: [ZERO; RX_BUFFER_SIZE],
+            buffer: [const { AtomicU8::new(0) }; RX_BUFFER_SIZE],
             head: AtomicUsize::new(0),
             tail: AtomicUsize::new(0),
         }
@@ -260,9 +299,9 @@ pub struct AsyncSerialPort {
 }
 
 impl AsyncSerialPort {
-    pub const fn new(port: ComPort) -> Self {
+    pub const fn new(port: SerialPort) -> Self {
         Self {
-            port: SerialPort::new(port),
+            port,
             rx_buffer: RxBuffer::new(),
             waker: IrqPoisonLock::new(None),
         }
@@ -332,6 +371,11 @@ pub enum InputEvent {
 pub struct LineEditor {
     buffer: Vec<u8>,
     cursor_pos: usize,
+}
+impl Default for LineEditor {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 impl LineEditor {
     pub fn new() -> Self {
@@ -496,13 +540,11 @@ pub async fn read_line_advanced(editor: &mut LineEditor) -> InputEvent {
                     }
                 }
             }
-            0x20..=0x7E => {
-                if editor.insert(byte) {
-                    if editor.cursor() == editor.len() {
-                        port.port.send(byte);
-                    } else {
-                        redraw_from_cursor(port, editor);
-                    }
+            0x20..=0x7E if editor.insert(byte) => {
+                if editor.cursor() == editor.len() {
+                    port.port.send(byte);
+                } else {
+                    redraw_from_cursor(port, editor);
                 }
             }
             _ => {}

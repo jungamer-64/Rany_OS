@@ -15,7 +15,7 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
-use hal::port_io::{PortU8, PortU16};
+use hal::IoPortRange;
 use spin::Mutex;
 
 // ============================================================================
@@ -238,10 +238,10 @@ impl IdentifyData {
 
 /// IDEチャネル
 pub struct IdeChannel {
-    /// ベースI/Oポート
-    io_base: u16,
-    /// コントロールポート
-    control_base: u16,
+    /// ATA command-block port authority.
+    command_ports: IoPortRange,
+    /// ATA control-block port authority.
+    control_port: IoPortRange,
     /// 接続されたデバイス
     devices: [Option<IdentifyData>; 2],
 }

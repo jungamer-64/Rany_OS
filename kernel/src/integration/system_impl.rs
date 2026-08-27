@@ -142,18 +142,27 @@ impl SystemIntegration {
             pcie_ecam.len()
         ));
 
-        let descriptors: Vec<_> = io_apics
+        let resources: Vec<_> = io_apics
             .iter()
-            .map(|apic| crate::drivers::apic::IoApicDescriptor {
-                mapped_address: crate::mm::virt::mapping::phys_to_virt(
-                    x86_64::PhysAddr::new_truncate(u64::from(apic.address)),
-                )
-                .as_u64(),
-                global_interrupt_base: apic.global_interrupt_base,
+            .map(|apic| {
+                let physical = x86_64::PhysAddr::new(u64::from(apic.address));
+                // SAFETY: the direct physical mapping is process-lifetime, and
+                // firmware assigns this register page to the enumerated I/O APIC.
+                let registers =
+                    unsafe { crate::mm::virt::mapping::retain_device_registers(physical, 4096) }
+                        .map_err(|error| {
+                            IntegrationError::InterruptError(alloc::format!(
+                                "invalid I/O APIC mapping: {error:?}"
+                            ))
+                        })?;
+                Ok(crate::drivers::apic::IoApicResource {
+                    registers,
+                    global_interrupt_base: apic.global_interrupt_base,
+                })
             })
-            .collect();
+            .collect::<Result<_, IntegrationError>>()?;
         drop(
-            crate::drivers::apic::initialize_io_apics(&descriptors).map_err(|error| {
+            crate::drivers::apic::initialize_io_apics(resources).map_err(|error| {
                 IntegrationError::InterruptError(alloc::format!(
                     "I/O APIC topology initialization failed: {error:?}"
                 ))

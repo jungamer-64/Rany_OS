@@ -64,12 +64,10 @@ pub async fn read_line() -> String {
                 }
             }
             // Printable ASCII
-            0x20..=0x7E => {
-                if buffer.len() < 255 {
-                    buffer.push(byte);
-                    // Echo the character
-                    port.port.send(byte);
-                }
+            0x20..=0x7E if buffer.len() < 255 => {
+                buffer.push(byte);
+                // Echo the character
+                port.port.send(byte);
             }
             _ => {
                 // Ignore other control characters
@@ -84,7 +82,19 @@ pub async fn read_line() -> String {
 // Global instance and macros
 // ============================================================================
 
-pub(crate) static SERIAL1: AsyncSerialPort = AsyncSerialPort::new(ComPort::Com1);
+pub(crate) static SERIAL1: AsyncSerialPort = {
+    // SAFETY: this static is the serial driver's single COM1 resource owner.
+    // Early-console access must finish before this driver is activated.
+    let ports = match unsafe { IoPortRange::from_raw_parts(ComPort::Com1 as u16, 8) } {
+        Ok(ports) => ports,
+        Err(_) => panic!("invalid fixed COM1 allocation"),
+    };
+    let port = match SerialPort::new(ports) {
+        Ok(port) => port,
+        Err(_) => panic!("invalid fixed UART register width"),
+    };
+    AsyncSerialPort::new(port)
+};
 
 // Removed: deprecated convenience `init()` function. Prefer registering the driver:
 // driver_registry::register_driver(Box::new(SerialDriver::new()));

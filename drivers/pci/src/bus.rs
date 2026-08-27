@@ -406,29 +406,27 @@ impl<'a> PciBusScanner<'a> {
                             prefetchable,
                         });
                     }
-                    0b10 => {
+                    0b10 if i + 1 < 6 => {
                         // 64-bit Memory
-                        if i + 1 < 6 {
-                            let next_bar_offset = config_regs::BAR0 + ((i + 1) as u16 * 4);
-                            let high = self.accessor.read32(bdf, next_bar_offset) as u64;
-                            let low = (bar_value & !0x0F) as u64;
-                            let base = (high << 32) | low;
+                        let next_bar_offset = config_regs::BAR0 + ((i + 1) as u16 * 4);
+                        let high = self.accessor.read32(bdf, next_bar_offset) as u64;
+                        let low = (bar_value & !0x0F) as u64;
+                        let base = (high << 32) | low;
 
-                            // サイズ計算
-                            self.accessor.write32(bdf, next_bar_offset, 0xFFFF_FFFF);
-                            let high_size = self.accessor.read32(bdf, next_bar_offset) as u64;
-                            self.accessor.write32(bdf, next_bar_offset, high as u32);
+                        // サイズ計算
+                        self.accessor.write32(bdf, next_bar_offset, 0xFFFF_FFFF);
+                        let high_size = self.accessor.read32(bdf, next_bar_offset) as u64;
+                        self.accessor.write32(bdf, next_bar_offset, high as u32);
 
-                            let size_64 = (high_size << 32) | ((size_mask & !0x0F) as u64);
-                            let size = !size_64 + 1;
+                        let size_64 = (high_size << 32) | ((size_mask & !0x0F) as u64);
+                        let size = !size_64 + 1;
 
-                            bars[i] = Some(Bar::Memory64 {
-                                base,
-                                size,
-                                prefetchable,
-                            });
-                            i += 1; // 次のBARをスキップ
-                        }
+                        bars[i] = Some(Bar::Memory64 {
+                            base,
+                            size,
+                            prefetchable,
+                        });
+                        i += 1; // 次のBARをスキップ
                     }
                     _ => {}
                 }
