@@ -43,7 +43,7 @@ impl KernelLogger {
     /// 送信バッファが空になるまで待機してから書き込む。
     /// タイムアウト時は書き込みをスキップする。
     #[inline]
-    pub(super) fn write_byte_raw(byte: u8) {
+    pub(super) fn write_byte_raw(&self, byte: u8) {
         #[cfg(all(test, target_os = "linux"))]
         {
             std::eprint!("{}", byte as char);
@@ -53,76 +53,18 @@ impl KernelLogger {
         if !serial_output_enabled() || !panic_output_allowed() {
             return;
         }
-        let mut status_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_LSR_OFFSET);
-        let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE + SERIAL_DATA_OFFSET);
-
-        // 送信バッファが空になるまで待つ（タイムアウト付き）
-        // 可能ならTSC周波数を使った時間ベースの待機を行い、利用できない場合はループカウントでフォールバックします。
-        let mut sent = false;
-
-        // Try time-based wait if TSC frequency is known
-        if let Some(freq) = time::system_clock().tsc_frequency() {
-            // Compute timeout cycles for TX_TIMEOUT_US microseconds (may be 0 for very low freq)
-            let timeout_cycles: u64 = (freq as u64).saturating_mul(TX_TIMEOUT_US) / 1_000_000u64;
-            let start = read_tsc_serialized();
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while (status_port.read() & LSR_TX_EMPTY) == 0 {
-                if read_tsc_serialized().saturating_sub(start) > timeout_cycles {
-                    break;
-                }
-                core::hint::spin_loop();
-            }
-
-            if (status_port.read() & LSR_TX_EMPTY) != 0 {
-                data_port.write(byte);
-                sent = true;
-            }
-        } else {
-            // Fallback to loop-count-based wait (early boot / when time subsystem isn't initialized)
-            let mut timeout = TX_TIMEOUT_LOOPS;
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while (status_port.read() & LSR_TX_EMPTY) == 0 && timeout > 0 {
-                core::hint::spin_loop(); // CPU省電力ヒント
-                timeout -= 1;
-            }
-
-            if timeout > 0 {
-                data_port.write(byte);
-                sent = true;
-            }
-        }
-
-        // If we couldn't send due to timeout, we simply drop the byte. On panic, the caller
-        // may retry or skip. We purposely avoid blocking indefinitely in low-level debug output.
-        let _ = sent;
+        // Output is intentionally lossy. The device owner bounds both lock
+        // acquisition and readiness; panic output never steals a live lock.
+        let _ = self.serial.try_send(byte, TX_TIMEOUT_LOOPS);
     }
 
     /// パニック時にシリアルの状態をできるだけクリーンにする試み（FIFOクリア等）
-    pub(super) fn reset_serial_for_panic() {
-        // Try to clear FIFOs and disable interrupts to leave the port in a known state.
-        let mut fcr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
-        fcr.write(0x07); // enable FIFOs and clear RX/TX
-
-        // In panic mode we must not block on locks - perform direct writes to the
-        // serial registers. This can race with other cores but avoids deadlocks
-        // that would prevent panic output from ever being delivered.
-        if IN_PANIC.load(Ordering::Relaxed) {
-            let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-            ier.write(0x00); // disable serial interrupts (best-effort)
-            return;
-        }
-
-        // Otherwise perform atomic RMW using SERIAL_IO_LOCK
-        let _io_guard = SERIAL_IO_LOCK.lock();
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        ier.write(0x00); // disable serial interrupts
+    pub(super) fn reset_serial_for_panic(&self) {
+        let _ = self.serial.try_quiesce_for_panic();
     }
 
-    /// シリアルポートに直接書き込み（ロックなし、早期ブート/パニック用）
-    ///
-    /// ロックは `Log::log()` 実装側で取得するため、この関数自体はロックを取らない。
-    /// 早期ブート時やパニック時に直接呼び出される。
-    pub(super) fn write_raw(s: &str) {
+    /// シリアルポートへ早期ブート・panic 用の bounded output を行う。
+    pub(super) fn write_raw(&self, s: &str) {
         #[cfg(all(test, target_os = "linux"))]
         {
             std::eprint!("{}", s);
@@ -135,9 +77,9 @@ impl KernelLogger {
         for byte in s.bytes() {
             if byte == b'\n' {
                 // LFをCRLFに変換（ターミナル互換性）
-                Self::write_byte_raw(b'\r');
+                self.write_byte_raw(b'\r');
             }
-            Self::write_byte_raw(byte);
+            self.write_byte_raw(byte);
         }
     }
 
@@ -145,8 +87,8 @@ impl KernelLogger {
     ///
     /// `write_byte_raw`のエイリアス。早期ブート用関数からの呼び出しに使用。
     #[inline]
-    pub(super) fn write_char_raw(c: u8) {
-        Self::write_byte_raw(c);
+    pub(super) fn write_char_raw(&self, c: u8) {
+        self.write_byte_raw(c);
     }
 
     /// ログレベルのプレフィックスを取得

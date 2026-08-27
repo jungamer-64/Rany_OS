@@ -46,7 +46,7 @@ pub fn print(args: core::fmt::Arguments) {
     struct SerialWriter;
     impl core::fmt::Write for SerialWriter {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
-            KernelLogger::write_raw(s);
+            LOGGER.write_raw(s);
             Ok(())
         }
     }

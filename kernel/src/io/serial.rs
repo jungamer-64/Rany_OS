@@ -1,8 +1,6 @@
 // ============================================================================
-// src/io/serial.rs - Serial Port Driver Re-export
+// src/io/serial.rs - Kernel serial console input
 // ============================================================================
-
-pub use serial_driver::*;
 
 /// Read one byte from COM1 for interactive shell input.
 ///
@@ -11,7 +9,7 @@ pub use serial_driver::*;
 pub async fn read_byte_for_shell() -> u8 {
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
-        if let Some(byte) = try_read_byte() {
+        if let Some(byte) = crate::io::log::try_read_serial_byte() {
             return byte;
         }
 

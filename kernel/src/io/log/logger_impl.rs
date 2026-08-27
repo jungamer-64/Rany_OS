@@ -117,7 +117,7 @@ impl<W: Write> Write for LastCharTracker<W> {
 pub(crate) struct SyncLogWriter;
 impl Write for SyncLogWriter {
     fn write_str(&mut self, s: &str) -> core::fmt::Result {
-        KernelLogger::write_raw(s);
+        LOGGER.write_raw(s);
         Ok(())
     }
 }
@@ -147,94 +147,36 @@ pub(crate) fn start_serial_tx() {
     if !serial_output_enabled() {
         return;
     }
-
-    if IN_PANIC.load(Ordering::Relaxed) {
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        let current = ier.read();
-        if (current & 0x02) == 0 {
-            ier.write(current | 0x02);
-        }
-    } else {
-        let _io_guard = SERIAL_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        let current = ier.read();
-        if (current & 0x02) == 0 {
-            ier.write(current | 0x02);
-        }
-    }
-}
-
-pub(crate) fn drain_global_tx_buffer(data_port: &mut PortU8, lsr: &mut PortU8) -> usize {
-    if !serial_output_enabled() {
-        return 0;
-    }
-    let mut tmp = [0u8; LSR_TX_BURST];
-    let n = {
-        let guard = LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
-        guard.peek_bulk(&mut tmp)
-    };
-    if n == 0 {
-        return 0;
-    }
-    let mut i = 0usize;
-    while i < n {
-        if (lsr.read() & LSR_TX_EMPTY) == 0 {
-            break;
-        }
-        data_port.write(tmp[i]);
-        i += 1;
-    }
-    if i > 0 {
-        let mut guard = LOG_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
-        guard.advance_head(i);
-    }
-    i
-}
-
-pub(crate) fn disable_tx_interrupt() {
-    if IN_PANIC.load(Ordering::Relaxed) {
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        let current = ier.read();
-        ier.write(current & !0x02);
-    } else {
-        let _io_guard = SERIAL_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        let current = ier.read();
-        ier.write(current & !0x02);
-    }
+    LOGGER
+        .serial
+        .set_interrupt_mode(SerialInterruptMode::ReceiveAndTransmit);
 }
 
 pub fn handle_serial_interrupt() {
-    let mut iir: PortU8 = IoPort::new(SERIAL_PORT_BASE + 2);
-    let mut lsr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 5);
-    let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE);
-
-    loop {
-        let id = iir.read();
-        if (id & 1) != 0 {
-            break;
-        }
-
-        match id & 0x0E {
-            0x02 => {
-                let total_written = drain_global_tx_buffer(&mut data_port, &mut lsr);
-                if total_written == 0 {
-                    disable_tx_interrupt();
-                }
+    let transmit_enabled = serial_output_enabled() && !IN_PANIC.load(Ordering::Relaxed);
+    let report = LOGGER.serial.service_interrupt(
+        SERIAL_INTERRUPT_BUDGET,
+        |byte| {
+            INPUT_BUFFER
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push_byte(byte)
+        },
+        || {
+            if transmit_enabled {
+                LOG_BUFFER
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .pop_one()
+            } else {
+                None
             }
-            0x04 | 0x0C => {
-                let mut guard = INPUT_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
-                while (lsr.read() & 0x01) != 0 {
-                    let byte = data_port.read();
-                    let _ = guard.push_byte(byte);
-                }
-            }
-            _ => break,
-        }
+        },
+    );
+    if report.dropped_bytes != 0 {
+        DROPPED_SERIAL_INPUT_BYTES.fetch_add(report.dropped_bytes, Ordering::Relaxed);
     }
 }
-
-pub(crate) static LOGGER: KernelLogger = KernelLogger;
 
 pub fn get_dropped_log_bytes() -> usize {
     DROPPED_LOG_BYTES.load(Ordering::Relaxed)
@@ -247,11 +189,31 @@ pub fn read_char() -> Option<u8> {
         .pop_one()
 }
 
+/// Returns a buffered byte, or polls the UART when IRQ delivery has not yet
+/// published one.
+pub fn try_read_serial_byte() -> Option<u8> {
+    read_char().or_else(|| LOGGER.serial.try_receive().ok())
+}
+
+/// Performs bounded best-effort output through the kernel-owned console.
+pub fn write_serial_bytes(bytes: &[u8]) {
+    if !serial_output_enabled() || !panic_output_allowed() {
+        return;
+    }
+    for &byte in bytes {
+        LOGGER.write_byte_raw(byte);
+    }
+}
+
 pub fn has_char() -> bool {
     !INPUT_BUFFER
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .is_empty()
+}
+
+pub fn get_dropped_serial_input_bytes() -> usize {
+    DROPPED_SERIAL_INPUT_BYTES.load(Ordering::Relaxed)
 }
 
 #[cfg(feature = "bench")]
@@ -262,6 +224,7 @@ pub fn bench_clear_buffers() {
         .unwrap_or_else(|e| e.into_inner())
         .clear();
     DROPPED_LOG_BYTES.store(0, Ordering::Relaxed);
+    DROPPED_SERIAL_INPUT_BYTES.store(0, Ordering::Relaxed);
 }
 
 #[cfg(feature = "bench")]
@@ -287,22 +250,7 @@ pub fn bench_total_pending_bytes() -> usize {
 
 pub fn kick_serial_tx() {
     start_serial_tx();
-
     if serial_output_enabled() && !IN_PANIC.load(Ordering::Relaxed) {
-        let _io_guard = SERIAL_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut data_port: PortU8 = IoPort::new(SERIAL_PORT_BASE);
-        let mut lsr: PortU8 = IoPort::new(SERIAL_PORT_BASE + 5);
-        let mut total = 0usize;
-        // LOOP_PROOF: mode=event; reason=Drain loop stops once no more bytes are pending in the global TX buffer for this flush pass.;
-        loop {
-            let n = drain_global_tx_buffer(&mut data_port, &mut lsr);
-            if n == 0 {
-                break;
-            }
-            total += n;
-            if total >= 4096 {
-                break;
-            }
-        }
+        handle_serial_interrupt();
     }
 }

@@ -788,8 +788,7 @@ define_interrupt!(
 define_interrupt!(
     fn com1_interrupt_handler(_stack_frame: InterruptStackFrame) {
         record_interrupt_frame(InterruptVector::Com1 as u8, &_stack_frame);
-        // シリアルポートドライバの割り込みハンドラを呼び出し
-        crate::drivers::serial::dispatch_interrupt();
+        crate::io::log::handle_serial_interrupt();
 
         // Interrupt-Wakerブリッジに通知
         crate::task::interrupt_waker::wake_from_interrupt(

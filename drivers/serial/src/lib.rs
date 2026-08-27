@@ -1,27 +1,15 @@
 #![no_std]
-#![allow(clippy::must_use_candidate)]
-#![allow(clippy::len_without_is_empty)]
+#![forbid(unsafe_code)]
 
-use core::future::Future;
-use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
-use core::task::{Context, Poll, Waker};
+use core::sync::atomic::{AtomicBool, Ordering};
 use exorust_sync::IrqPoisonLock;
 
 use hal::{IoPort, IoPortRange};
 
-#[repr(u16)]
-#[derive(Debug, Clone, Copy)]
-pub enum ComPort {
-    Com1 = 0x3F8,
-    Com2 = 0x2F8,
-    Com3 = 0x3E8,
-    Com4 = 0x2E8,
-}
-
 mod reg {
     pub const DATA: u16 = 0;
     pub const IER: u16 = 1;
+    pub const IIR: u16 = 2;
     pub const FCR: u16 = 2;
     pub const LCR: u16 = 3;
     pub const MCR: u16 = 4;
@@ -56,18 +44,17 @@ pub enum Parity {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub struct LineStatus(u8);
+struct LineStatus(u8);
 
 impl LineStatus {
-    pub const DATA_READY: u8 = 1 << 0;
-    pub const OVERRUN_ERROR: u8 = 1 << 1;
-    pub const PARITY_ERROR: u8 = 1 << 2;
-    pub const FRAMING_ERROR: u8 = 1 << 3;
-    pub const BREAK_INTERRUPT: u8 = 1 << 4;
-    pub const TX_HOLDING_EMPTY: u8 = 1 << 5;
-    pub const TX_EMPTY: u8 = 1 << 6;
-    pub const FIFO_ERROR: u8 = 1 << 7;
-    pub fn from_u8(val: u8) -> Self {
+    const DATA_READY: u8 = 1 << 0;
+    const OVERRUN_ERROR: u8 = 1 << 1;
+    const PARITY_ERROR: u8 = 1 << 2;
+    const FRAMING_ERROR: u8 = 1 << 3;
+    const BREAK_INTERRUPT: u8 = 1 << 4;
+    const TX_HOLDING_EMPTY: u8 = 1 << 5;
+    const FIFO_ERROR: u8 = 1 << 7;
+    fn from_u8(val: u8) -> Self {
         Self(val)
     }
     pub fn is_data_ready(&self) -> bool {
@@ -78,12 +65,10 @@ impl LineStatus {
     }
 }
 
-pub struct InterruptEnable;
+struct InterruptEnable;
 impl InterruptEnable {
-    pub const RX_AVAILABLE: u8 = 1 << 0;
-    pub const TX_EMPTY: u8 = 1 << 1;
-    pub const LINE_STATUS: u8 = 1 << 2;
-    pub const MODEM_STATUS: u8 = 1 << 3;
+    const RX_AVAILABLE: u8 = 1 << 0;
+    const TX_EMPTY: u8 = 1 << 1;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -150,6 +135,9 @@ impl SerialPort {
             .registers
             .lock()
             .unwrap_or_else(|error| error.into_inner());
+        if self.initialized.load(Ordering::Acquire) {
+            return Ok(());
+        }
         let mut data_port = registers.port_at(reg::DATA);
         let mut ier_port = registers.port_at(reg::IER);
         let mut fcr_port = registers.port_at(reg::FCR);
@@ -174,37 +162,37 @@ impl SerialPort {
         if sr_port.read() != 0x55 {
             return Err(SerialError::InitFailed);
         }
-        self.initialized.store(true, Ordering::SeqCst);
+        self.initialized.store(true, Ordering::Release);
         Ok(())
     }
-    pub fn line_status(&self) -> LineStatus {
-        self.registers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .line_status()
-    }
-    pub fn can_transmit(&self) -> bool {
-        self.line_status().is_tx_ready()
-    }
-    pub fn can_receive(&self) -> bool {
-        self.line_status().is_data_ready()
-    }
-    pub fn send(&self, byte: u8) {
-        let registers = self
-            .registers
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while !registers.line_status().is_tx_ready() {
+    /// Attempts one bounded transmit without waiting for another owner of the
+    /// UART transaction lock.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`SerialError::Busy`] if another CPU or the interrupt handler is
+    /// using the UART, or [`SerialError::TransmitTimeout`] when the device does
+    /// not become ready within `spin_budget` observations.
+    pub fn try_send(&self, byte: u8, spin_budget: usize) -> Result<(), SerialError> {
+        let Some(lock_result) = self.registers.try_lock() else {
+            return Err(SerialError::Busy);
+        };
+        let registers = lock_result.unwrap_or_else(|error| error.into_inner());
+        for _ in 0..spin_budget {
+            if registers.line_status().is_tx_ready() {
+                registers.port_at(reg::DATA).write(byte);
+                return Ok(());
+            }
             core::hint::spin_loop();
         }
-        registers.port_at(reg::DATA).write(byte);
-    }
-    pub fn send_str(&self, s: &str) {
-        for byte in s.bytes() {
-            self.send(byte);
+        if registers.line_status().is_tx_ready() {
+            registers.port_at(reg::DATA).write(byte);
+            Ok(())
+        } else {
+            Err(SerialError::TransmitTimeout)
         }
     }
+
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
@@ -219,126 +207,195 @@ impl SerialPort {
             Err(SerialError::NoData)
         }
     }
-    pub fn set_interrupts(&self, rx: bool, tx: bool) {
+    /// Selects the complete interrupt mask in one serialized register write.
+    pub fn set_interrupt_mode(&self, mode: SerialInterruptMode) {
         let registers = self
             .registers
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        let mut flags = 0u8;
-        if rx {
-            flags |= InterruptEnable::RX_AVAILABLE;
+        registers.port_at(reg::IER).write(mode.register_value());
+    }
+
+    /// Best-effort terminal transition used after panic ownership has been
+    /// established. Failure leaves the current hardware state unchanged.
+    #[must_use]
+    pub fn try_quiesce_for_panic(&self) -> bool {
+        let Some(lock_result) = self.registers.try_lock() else {
+            return false;
+        };
+        let registers = lock_result.unwrap_or_else(|error| error.into_inner());
+        registers.port_at(reg::IER).write(0);
+        registers.port_at(reg::FCR).write(0x07);
+        true
+    }
+
+    /// Services UART interrupt causes while holding the sole register
+    /// transaction lock. Received bytes and pending transmit bytes cross the
+    /// driver boundary only through the supplied callbacks.
+    pub fn service_interrupt(
+        &self,
+        budget: SerialInterruptBudget,
+        mut receive: impl FnMut(u8) -> bool,
+        mut next_transmit: impl FnMut() -> Option<u8>,
+    ) -> SerialInterruptReport {
+        let registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut report = SerialInterruptReport::default();
+        let mut causes = 0usize;
+
+        while causes < budget.causes {
+            let interrupt_id = registers.port_at(reg::IIR).read();
+            if (interrupt_id & 1) != 0 {
+                break;
+            }
+            causes += 1;
+
+            match interrupt_id & 0x0e {
+                0x02 => {
+                    while report.transmitted_bytes < budget.transmitted_bytes
+                        && registers.line_status().is_tx_ready()
+                    {
+                        let Some(byte) = next_transmit() else {
+                            registers
+                                .port_at(reg::IER)
+                                .write(SerialInterruptMode::Receive.register_value());
+                            break;
+                        };
+                        registers.port_at(reg::DATA).write(byte);
+                        report.transmitted_bytes += 1;
+                    }
+                }
+                0x04 | 0x0c => {
+                    while report.received_bytes + report.dropped_bytes < budget.received_bytes {
+                        let status = registers.line_status();
+                        if !status.is_data_ready() {
+                            break;
+                        }
+                        let byte = registers.port_at(reg::DATA).read();
+                        if receive(byte) {
+                            report.received_bytes += 1;
+                        } else {
+                            report.dropped_bytes += 1;
+                        }
+                    }
+                }
+                0x06 => {
+                    let status = registers.line_status();
+                    if status.0
+                        & (LineStatus::OVERRUN_ERROR
+                            | LineStatus::PARITY_ERROR
+                            | LineStatus::FRAMING_ERROR
+                            | LineStatus::BREAK_INTERRUPT
+                            | LineStatus::FIFO_ERROR)
+                        != 0
+                    {
+                        report.line_errors += 1;
+                    }
+                }
+                _ => break,
+            }
         }
-        if tx {
-            flags |= InterruptEnable::TX_EMPTY;
-        }
-        registers.port_at(reg::IER).write(flags);
+
+        report.budget_exhausted = causes == budget.causes
+            || report.received_bytes + report.dropped_bytes == budget.received_bytes
+            || report.transmitted_bytes == budget.transmitted_bytes;
+        report
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SerialError {
     InvalidPortRange,
+    InvalidInterruptBudget,
     InitFailed,
-    BufferFull,
     NoData,
-    FramingError,
-    ParityError,
-    OverrunError,
+    Busy,
+    TransmitTimeout,
 }
 
-const RX_BUFFER_SIZE: usize = 256;
-struct RxBuffer {
-    buffer: [AtomicU8; RX_BUFFER_SIZE],
-    head: AtomicUsize,
-    tail: AtomicUsize,
+/// Interrupt sources enabled at the UART.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SerialInterruptMode {
+    Disabled,
+    Receive,
+    ReceiveAndTransmit,
 }
-impl RxBuffer {
-    const fn new() -> Self {
-        Self {
-            buffer: [const { AtomicU8::new(0) }; RX_BUFFER_SIZE],
-            head: AtomicUsize::new(0),
-            tail: AtomicUsize::new(0),
+
+impl SerialInterruptMode {
+    const fn register_value(self) -> u8 {
+        match self {
+            Self::Disabled => 0,
+            Self::Receive => InterruptEnable::RX_AVAILABLE,
+            Self::ReceiveAndTransmit => InterruptEnable::RX_AVAILABLE | InterruptEnable::TX_EMPTY,
         }
-    }
-    fn push(&self, byte: u8) -> bool {
-        let tail = self.tail.load(Ordering::Relaxed);
-        let next_tail = (tail + 1) % RX_BUFFER_SIZE;
-        if next_tail == self.head.load(Ordering::Acquire) {
-            return false;
-        }
-        self.buffer[tail].store(byte, Ordering::Relaxed);
-        self.tail.store(next_tail, Ordering::Release);
-        true
-    }
-    fn pop(&self) -> Option<u8> {
-        let head = self.head.load(Ordering::Relaxed);
-        if head == self.tail.load(Ordering::Acquire) {
-            return None;
-        }
-        let byte = self.buffer[head].load(Ordering::Relaxed);
-        self.head
-            .store((head + 1) % RX_BUFFER_SIZE, Ordering::Release);
-        Some(byte)
     }
 }
 
-pub struct AsyncSerialPort {
-    port: SerialPort,
-    rx_buffer: RxBuffer,
-    waker: IrqPoisonLock<Option<Waker>>,
+/// Finite work admitted to one interrupt service pass.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SerialInterruptBudget {
+    causes: usize,
+    received_bytes: usize,
+    transmitted_bytes: usize,
 }
 
-impl AsyncSerialPort {
-    pub const fn new(port: SerialPort) -> Self {
-        Self {
-            port,
-            rx_buffer: RxBuffer::new(),
-            waker: IrqPoisonLock::new(None),
-        }
-    }
+impl SerialInterruptBudget {
+    /// Creates a non-empty budget for each independently bounded operation.
+    ///
     /// # Errors
     ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub fn init(&self, baud_rate: BaudRate) -> Result<(), SerialError> {
-        self.port
-            .init(baud_rate, DataBits::Bits8, StopBits::Stop1, Parity::None)
-    }
-    pub fn handle_interrupt(&self) {
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Ok(byte) = self.port.try_receive() {
-            self.rx_buffer.push(byte);
+    /// Returns [`SerialError::InvalidInterruptBudget`] when any limit is zero.
+    pub const fn new(
+        causes: usize,
+        received_bytes: usize,
+        transmitted_bytes: usize,
+    ) -> Result<Self, SerialError> {
+        if causes == 0 || received_bytes == 0 || transmitted_bytes == 0 {
+            return Err(SerialError::InvalidInterruptBudget);
         }
-        if let Some(waker) = self.waker.lock().unwrap_or_else(|e| e.into_inner()).take() {
-            waker.wake();
-        }
-    }
-    pub fn send_str(&self, s: &str) {
-        self.port.send_str(s);
-    }
-    pub fn read_byte(&self) -> SerialReadFuture<'_> {
-        SerialReadFuture { port: self }
+        Ok(Self {
+            causes,
+            received_bytes,
+            transmitted_bytes,
+        })
     }
 }
 
-pub struct SerialReadFuture<'a> {
-    port: &'a AsyncSerialPort,
+/// Observable progress made by one bounded interrupt service pass.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SerialInterruptReport {
+    /// Bytes accepted by the receive callback.
+    pub received_bytes: usize,
+    /// Bytes consumed from hardware but rejected by the receive callback.
+    pub dropped_bytes: usize,
+    /// Bytes obtained from the transmit callback and published to hardware.
+    pub transmitted_bytes: usize,
+    /// Line-status causes that reported one or more receive errors.
+    pub line_errors: usize,
+    /// At least one finite work dimension was fully consumed.
+    pub budget_exhausted: bool,
 }
-impl<'a> Future for SerialReadFuture<'a> {
-    type Output = u8;
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if let Some(byte) = self.port.rx_buffer.pop() {
-            return Poll::Ready(byte);
-        }
-        if let Ok(byte) = self.port.port.try_receive() {
-            return Poll::Ready(byte);
-        }
-        *self.port.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
-        if let Some(byte) = self.port.rx_buffer.pop() {
-            return Poll::Ready(byte);
-        }
-        if !x86_64::instructions::interrupts::are_enabled() {
-            cx.waker().wake_by_ref();
-        }
-        Poll::Pending
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn interrupt_budget_rejects_unbounded_dimensions() {
+        assert_eq!(
+            SerialInterruptBudget::new(0, 1, 1),
+            Err(SerialError::InvalidInterruptBudget)
+        );
+        assert_eq!(
+            SerialInterruptBudget::new(1, 0, 1),
+            Err(SerialError::InvalidInterruptBudget)
+        );
+        assert_eq!(
+            SerialInterruptBudget::new(1, 1, 0),
+            Err(SerialError::InvalidInterruptBudget)
+        );
+        assert!(SerialInterruptBudget::new(8, 64, 64).is_ok());
     }
 }

@@ -278,9 +278,7 @@ impl SerialServices for ExoKernel {
             return Err(KapiError::NotFound);
         }
 
-        for &byte in bytes {
-            crate::drivers::serial::write_byte(byte);
-        }
+        crate::io::log::write_serial_bytes(bytes);
 
         Ok(bytes.len())
     }

@@ -21,13 +21,15 @@
 //! ```
 
 use core::fmt::Write;
-use hal::IoPort;
 
 use crate::sync::{IrqPoisonLock, PoisonLock};
-use crate::time;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU16, AtomicUsize, Ordering};
-use hal::port_io::PortU8;
+use hal::IoPortRange;
 use log::{Level, LevelFilter, Log, Metadata, Record, SetLoggerError};
+use serial_driver::{
+    BaudRate, DataBits, Parity, SerialError, SerialInterruptBudget, SerialInterruptMode,
+    SerialPort, StopBits,
+};
 
 // ============================================================================
 // 定数定義
@@ -43,26 +45,17 @@ const LOG_BUFFER_CAPACITY: usize = 16 * 1024;
 // 定数定義
 // ============================================================================
 
-/// シリアルポートベースアドレス (COM1)
-const SERIAL_PORT_BASE: u16 = 0x3F8;
-
-/// シリアルデータレジスタオフセット
-const SERIAL_DATA_OFFSET: u16 = 0;
-
-/// シリアルラインステータスレジスタオフセット  
-const SERIAL_LSR_OFFSET: u16 = 5;
-
-/// 送信バッファ空きビット (LSR bit 5)
-const LSR_TX_EMPTY: u8 = 0x20;
-
 /// 送信待機タイムアウト（ループ回数）
-const TX_TIMEOUT_LOOPS: u32 = 100_000;
-
-/// 送信タイムアウト（マイクロ秒）: TSC周波数が利用可能な場合はこちらを優先して使います
-const TX_TIMEOUT_US: u64 = 100;
+const TX_TIMEOUT_LOOPS: usize = 100_000;
 
 /// 割り込みハンドラが一度に送信する最大バーストサイズ（ISR内のローカルバッファ長）
 const LSR_TX_BURST: usize = 64;
+
+const SERIAL_INTERRUPT_BUDGET: SerialInterruptBudget =
+    match SerialInterruptBudget::new(16, 256, LSR_TX_BURST) {
+        Ok(budget) => budget,
+        Err(_) => panic!("fixed serial interrupt budget must be non-zero"),
+    };
 
 // ============================================================================
 // ログレベル定義
@@ -80,7 +73,10 @@ const MAX_LOG_LEVEL: LevelFilter = LevelFilter::Info;
 // ============================================================================
 
 /// ロガーの初期化状態
-static LOGGER_INITIALIZED: AtomicBool = AtomicBool::new(false);
+const LOGGER_UNINITIALIZED: u8 = 0;
+const LOGGER_INITIALIZING: u8 = 1;
+const LOGGER_READY: u8 = 2;
+static LOGGER_INITIALIZED: AtomicU8 = AtomicU8::new(LOGGER_UNINITIALIZED);
 
 /// 現在のログレベル（実行時変更可能）
 static CURRENT_LOG_LEVEL: AtomicU8 = AtomicU8::new(LevelFilter::Info as u8);
@@ -99,9 +95,6 @@ static SERIAL_OUTPUT_ENABLED: AtomicBool = AtomicBool::new(true);
 /// パニックハンドラからの出力時はデッドロック回避のため
 /// ロックを試行せず直接出力する（try_lockを使用）。
 static SERIAL_LOCK: PoisonLock<()> = PoisonLock::new(());
-
-/// I/Oポート（レジスタ）操作用のIRQセーフ排他
-static SERIAL_IO_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
 
 /// パニック中フラグ（デッドロック回避用）
 static IN_PANIC: AtomicBool = AtomicBool::new(false);
@@ -230,25 +223,11 @@ impl<const N: usize> RingBuffer<N> {
         let tail = self.tail;
         let first = core::cmp::min(to_write, N - tail);
 
-        if first > 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src.as_ptr(),
-                    self.buf.as_mut_ptr().add(tail),
-                    first,
-                );
-            }
-        }
+        self.buf[tail..tail + first].copy_from_slice(&src[..first]);
 
         if to_write > first {
             let second = to_write - first;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    src.as_ptr().add(first),
-                    self.buf.as_mut_ptr(),
-                    second,
-                );
-            }
+            self.buf[..second].copy_from_slice(&src[first..to_write]);
         }
 
         self.tail = (self.tail + to_write) % N;
@@ -288,25 +267,11 @@ impl<const N: usize> RingBuffer<N> {
         let head = self.head;
 
         let first = core::cmp::min(to_read, N - head);
-        if first > 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr().add(head),
-                    dst.as_mut_ptr(),
-                    first,
-                );
-            }
-        }
+        dst[..first].copy_from_slice(&self.buf[head..head + first]);
 
         if to_read > first {
             let second = to_read - first;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr(),
-                    dst.as_mut_ptr().add(first),
-                    second,
-                );
-            }
+            dst[first..to_read].copy_from_slice(&self.buf[..second]);
         }
 
         self.head = (self.head + to_read) % N;
@@ -336,46 +301,14 @@ impl<const N: usize> RingBuffer<N> {
 
         let to_read = core::cmp::min(available, dst.len());
         let first = core::cmp::min(to_read, N - head);
-        if first > 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr().add(head),
-                    dst.as_mut_ptr(),
-                    first,
-                );
-            }
-        }
+        dst[..first].copy_from_slice(&self.buf[head..head + first]);
 
         if to_read > first {
             let second = to_read - first;
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    self.buf.as_ptr(),
-                    dst.as_mut_ptr().add(first),
-                    second,
-                );
-            }
+            dst[first..to_read].copy_from_slice(&self.buf[..second]);
         }
 
         to_read
-    }
-
-    pub fn advance_head(&mut self, n: usize) {
-        if N == 0 || n == 0 {
-            return;
-        }
-
-        self.sanitize_state();
-        let available = self.len();
-        if available == 0 {
-            return;
-        }
-
-        let to_advance = core::cmp::min(n, available);
-        self.head = (self.head + to_advance) % N;
-        if to_advance > 0 {
-            self.full = false;
-        }
     }
 
     #[cfg(feature = "bench")]
@@ -386,9 +319,6 @@ impl<const N: usize> RingBuffer<N> {
     }
 }
 
-unsafe impl<const N: usize> Sync for RingBuffer<N> {}
-unsafe impl<const N: usize> Send for RingBuffer<N> {}
-
 /// 非同期ログバッファ（送信）
 static LOG_BUFFER: IrqPoisonLock<RingBuffer<LOG_BUFFER_CAPACITY>> =
     IrqPoisonLock::new(RingBuffer::new());
@@ -398,6 +328,9 @@ static ASYNC_LOG_ENABLED: AtomicBool = AtomicBool::new(false);
 
 /// 非同期ログで切り捨てられたバイト数
 static DROPPED_LOG_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Received bytes discarded because the bounded input queue was full.
+static DROPPED_SERIAL_INPUT_BYTES: AtomicUsize = AtomicUsize::new(0);
 
 /// 非同期ログを有効化する。
 pub fn enable_async_logging() {
@@ -419,62 +352,61 @@ static INPUT_BUFFER: IrqPoisonLock<RingBuffer<INPUT_BUFFER_CAPACITY>> =
 // シリアルポート初期化
 // ============================================================================
 
-/// シリアルポートが初期化済みかどうか
-static SERIAL_INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-/// シリアルポートを初期化
-pub fn init_serial() {
-    if SERIAL_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return;
-    }
-
-    let base = SERIAL_PORT_BASE;
-    let mut ier: PortU8 = IoPort::new(base + 1);
-    ier.write(0x00);
-    let mut lcr: PortU8 = IoPort::new(base + 3);
-    lcr.write(0x80);
-    let mut dll: PortU8 = IoPort::new(base + 0);
-    let mut dlh: PortU8 = IoPort::new(base + 1);
-    dll.write(0x01);
-    dlh.write(0x00);
-    lcr.write(0x03);
-    let mut fcr: PortU8 = IoPort::new(base + 2);
-    fcr.write(0xC7);
-    let mut mcr: PortU8 = IoPort::new(base + 4);
-    mcr.write(0x0B);
-    mcr.write(0x1E);
-    let mut data: PortU8 = IoPort::new(base);
-    data.write(0xAE);
-    if data.read() != 0xAE {
-        SERIAL_INITIALIZED.store(false, Ordering::SeqCst);
-        return;
-    }
-    mcr.write(0x0F);
+/// Failure while establishing the kernel logging runtime.
+#[derive(Debug)]
+pub enum LogInitError {
+    Serial(SerialError),
+    Logger(SetLoggerError),
 }
 
-/// シリアル割り込みを有効化
-pub fn enable_serial_interrupts() {
-    if IN_PANIC.load(Ordering::Relaxed) {
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        ier.write(0x01);
-    } else {
-        let _io_guard = SERIAL_IO_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut ier: PortU8 = IoPort::new(SERIAL_PORT_BASE + 1);
-        ier.write(0x01);
-    }
+/// Initializes the kernel-owned serial device.
+fn init_serial() -> Result<(), SerialError> {
+    LOGGER.serial.init(
+        BaudRate::Baud115200,
+        DataBits::Bits8,
+        StopBits::Stop1,
+        Parity::None,
+    )
+}
+
+/// Starts IRQ-driven input after the interrupt subsystem is ready.
+pub(crate) fn start_serial_runtime() {
+    LOGGER
+        .serial
+        .set_interrupt_mode(SerialInterruptMode::Receive);
 }
 
 // ============================================================================
 // シリアルロガー実装
 // ============================================================================
 
-/// カーネル用シリアルロガー
-pub(crate) struct KernelLogger;
-
-#[inline(always)]
-fn read_tsc_serialized() -> u64 {
-    unsafe { core::arch::x86_64::_rdtsc() }
+/// Kernel logger and sole runtime owner of the COM1 register allocation.
+pub(crate) struct KernelLogger {
+    serial: SerialPort,
 }
+
+impl KernelLogger {
+    #[expect(
+        unsafe_code,
+        reason = "the platform composition root establishes the fixed COM1 allocation"
+    )]
+    const fn new() -> Self {
+        // SAFETY: COM1 0x3f8..=0x3ff is assigned to this owner for the kernel
+        // lifetime. Pre-Rust boot writes are an earlier, single-core phase of
+        // this same console lifecycle; no other runtime owner is constructed.
+        let ports = match unsafe { IoPortRange::from_raw_parts(0x3f8, 8) } {
+            Ok(ports) => ports,
+            Err(_) => panic!("fixed COM1 allocation must fit the port domain"),
+        };
+        let serial = match SerialPort::new(ports) {
+            Ok(serial) => serial,
+            Err(_) => panic!("fixed COM1 allocation must contain eight ports"),
+        };
+        Self { serial }
+    }
+}
+
+pub(crate) static LOGGER: KernelLogger = KernelLogger::new();
 
 /// グローバルログバッファからデータを読み出す
 pub fn peek_global_log(dst: &mut [u8]) -> usize {
@@ -490,13 +422,27 @@ pub fn get_log_len() -> usize {
 }
 
 /// ロガー初期化
-pub fn init() -> Result<(), SetLoggerError> {
-    init_serial();
-    if LOGGER_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return Ok(());
+pub fn init() -> Result<(), LogInitError> {
+    init_serial().map_err(LogInitError::Serial)?;
+    loop {
+        match LOGGER_INITIALIZED.compare_exchange(
+            LOGGER_UNINITIALIZED,
+            LOGGER_INITIALIZING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => break,
+            Err(LOGGER_READY) => return Ok(()),
+            Err(LOGGER_INITIALIZING) => core::hint::spin_loop(),
+            Err(_) => unreachable!("logger initialization state is closed"),
+        }
     }
-    log::set_logger(&LOGGER)?;
+    if let Err(error) = log::set_logger(&LOGGER) {
+        LOGGER_INITIALIZED.store(LOGGER_UNINITIALIZED, Ordering::Release);
+        return Err(LogInitError::Logger(error));
+    }
     log::set_max_level(MAX_LOG_LEVEL);
+    LOGGER_INITIALIZED.store(LOGGER_READY, Ordering::Release);
     Ok(())
 }
 
@@ -575,9 +521,6 @@ pub(crate) fn panic_output_allowed() -> bool {
 
 pub fn enter_panic_mode() {
     set_in_panic(true);
-    // If the panic interrupted a log write while SERIAL_LOCK was held, later
-    // panic diagnostics must not block forever trying to reacquire it.
-    SERIAL_LOCK.force_unlock();
     if let Some(cpu_id) = current_log_cpu_id() {
         let _ = PANIC_OUTPUT_OWNER.compare_exchange(
             PANIC_OUTPUT_NO_OWNER,
@@ -586,7 +529,7 @@ pub fn enter_panic_mode() {
             Ordering::Acquire,
         );
     }
-    KernelLogger::reset_serial_for_panic();
+    LOGGER.reset_serial_for_panic();
 }
 
 /// Debug-only single-byte serial marker.
@@ -608,27 +551,27 @@ pub fn debug_serial_mark(marker: u8) {
         return;
     };
 
-    KernelLogger::write_char_raw(marker);
+    LOGGER.write_char_raw(marker);
 }
 
 /// 早期ブート出力（文字列）
 ///
 /// 通常時はベストエフォート出力とし、シリアルロックが取れない場合は
-/// 文字列を破損させるより静かにドロップする。panic 時のみ必ずロックを
-/// 取得して整形済みログの一貫性を優先する。
+/// 文字列を破損させるより静かにドロップする。panic 時は device lock を
+/// 奪わず、取得できないバイトを捨てる。
 pub fn early_print(s: &str) {
     if !panic_output_allowed() {
         return;
     }
     let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+        None
     } else {
         let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
             return;
         };
         Some(guard)
     };
-    KernelLogger::write_raw(s);
+    LOGGER.write_raw(s);
 }
 
 /// 早期ブート出力（1文字）
@@ -637,20 +580,19 @@ pub fn early_print_char(c: u8) {
         return;
     }
     let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+        None
     } else {
         let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
             return;
         };
         Some(guard)
     };
-    KernelLogger::write_char_raw(c);
+    LOGGER.write_char_raw(c);
 }
 
 #[inline]
 fn ascii_bytes_to_str(bytes: &[u8]) -> &str {
-    // SAFETY: callers only pass ASCII digit/prefix buffers.
-    unsafe { core::str::from_utf8_unchecked(bytes) }
+    core::str::from_utf8(bytes).expect("early numeric buffers contain only ASCII")
 }
 
 /// 10進数出力
@@ -659,7 +601,7 @@ pub fn early_print_dec(n: u64) {
         return;
     }
     let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+        None
     } else {
         let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
             return;
@@ -682,7 +624,7 @@ pub fn early_print_dec(n: u64) {
         }
     }
 
-    KernelLogger::write_raw(ascii_bytes_to_str(&buf[start..]));
+    LOGGER.write_raw(ascii_bytes_to_str(&buf[start..]));
 }
 
 /// 16進数出力
@@ -691,7 +633,7 @@ pub fn early_print_hex(n: u64) {
         return;
     }
     let _guard = if IN_PANIC.load(Ordering::Relaxed) {
-        Some(SERIAL_LOCK.lock().unwrap_or_else(|e| e.into_inner()))
+        None
     } else {
         let Some(guard) = SERIAL_LOCK.try_lock().ok() else {
             return;
@@ -715,7 +657,7 @@ pub fn early_print_hex(n: u64) {
         shift = shift.saturating_sub(4);
     }
 
-    KernelLogger::write_raw(ascii_bytes_to_str(&buf));
+    LOGGER.write_raw(ascii_bytes_to_str(&buf));
 }
 
 /// 改行直前の空白を除去する

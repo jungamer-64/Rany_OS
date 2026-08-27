@@ -374,13 +374,11 @@ impl SerialCom1Transport {
 
 impl GdbTransport for SerialCom1Transport {
     fn try_read_byte(&self) -> Option<u8> {
-        crate::drivers::serial::try_read_byte()
+        crate::io::log::try_read_serial_byte()
     }
 
     fn write_bytes(&self, bytes: &[u8]) {
-        for b in bytes {
-            crate::drivers::serial::write_byte(*b);
-        }
+        crate::io::log::write_serial_bytes(bytes);
     }
 }
 

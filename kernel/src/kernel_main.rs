@@ -96,8 +96,8 @@ pub(crate) fn ahci_ensure_mapping(
     }
 }
 
-/// Initialize HID (keyboard) and serial port drivers via DriverRegistry.
-pub(crate) fn init_hid_and_serial_drivers() {
+/// Initializes HID drivers and starts the kernel-owned serial IRQ path.
+pub(crate) fn init_hid_drivers() {
     use crate::driver_registry::register_driver;
     use alloc::boxed::Box;
 
@@ -119,20 +119,7 @@ pub(crate) fn init_hid_and_serial_drivers() {
         }
     }
     info!(target: "init", "HID drivers initialized");
-
-    // Serial port
-    info!(target: "init", "Initializing serial port via DriverRegistry");
-    {
-        use crate::drivers::serial::SerialDriver;
-        let serial_handle = register_driver(Box::new(SerialDriver::new()));
-        if let Err(e) = driver_registry::driver_registry()
-            .probe_and_start(serial_handle.expect("Failed to register Serial driver"))
-        {
-            warn!(target: "init", "Serial driver init failed: {:?}", e);
-        } else {
-            info!(target: "init", "Serial driver initialized via DriverRegistry");
-        }
-    }
+    crate::io::log::start_serial_runtime();
 }
 
 /// ネットワークインフラストラクチャの早期初期化（Executor不要）
@@ -855,7 +842,7 @@ fn phase_core_services_base(context: &KernelBootContext) {
 }
 
 fn phase_driver_bringup() -> bool {
-    init_hid_and_serial_drivers();
+    init_hid_drivers();
 
     // 3.5.5 - 3.5.7. Storage and USB controller scanning
     init_nvme_controllers();
