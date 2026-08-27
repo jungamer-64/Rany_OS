@@ -580,6 +580,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
                         header_plus_payload.align(),
                     ),
                 );
+                crate::profiler::record_kernel_heap_allocation();
                 return raw_ptr.add(user_offset);
             }
 

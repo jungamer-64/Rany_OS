@@ -56,6 +56,7 @@ pub enum RuntimeGroup {
 enum RuntimeTestBody {
     Sync(fn(Option<&str>) -> RuntimeTestResult),
     NetworkRuntime,
+    NetworkBenchmark,
     CpuHotplugLifecycle,
     CpuHotplugSparse,
 }
@@ -211,6 +212,13 @@ async fn network_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     }
 }
 
+async fn network_benchmark_suite() -> RuntimeTestResult {
+    match super::benchmark::run_network_benchmarks().await {
+        Ok(()) => RuntimeTestResult::pass(),
+        Err(message) => RuntimeTestResult::fail(message),
+    }
+}
+
 fn driver_domain_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
@@ -279,6 +287,12 @@ static CASES: &[RuntimeTestCase] = &[
         id: "network.runtime_suite",
         body: RuntimeTestBody::NetworkRuntime,
         tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Network,
+    },
+    RuntimeTestCase {
+        id: "network.zero_copy_benchmark",
+        body: RuntimeTestBody::NetworkBenchmark,
+        tier: RuntimeTier::NightlyRequired,
         group: RuntimeGroup::Network,
     },
     RuntimeTestCase {
@@ -367,6 +381,8 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
 
     let mut selected_any = false;
     let mut summary = RuntimeRunSummary::new();
+    let filter_names_top_level_case = case_filter
+        .is_some_and(|filter| CASES.iter().any(|candidate| str_eq(candidate.id, filter)));
 
     for case in CASES {
         if !profile_selects_case(profile, case) {
@@ -376,7 +392,7 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
         let pass_filter_to_inner = case_accepts_nested_filter(profile, case.id);
 
         if let Some(filter) = case_filter {
-            if !pass_filter_to_inner && !str_eq(case.id, filter) {
+            if !str_eq(case.id, filter) && (!pass_filter_to_inner || filter_names_top_level_case) {
                 continue;
             }
         }
@@ -395,6 +411,7 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
         let result = match case.body {
             RuntimeTestBody::Sync(run) => run(nested_case_filter),
             RuntimeTestBody::NetworkRuntime => network_runtime_suite(nested_case_filter).await,
+            RuntimeTestBody::NetworkBenchmark => network_benchmark_suite().await,
             RuntimeTestBody::CpuHotplugLifecycle => cpu_hotplug_runtime_suite().await,
             RuntimeTestBody::CpuHotplugSparse => cpu_hotplug_sparse_runtime_suite().await,
         };

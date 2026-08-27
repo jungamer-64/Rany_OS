@@ -161,12 +161,10 @@ destination.test_filter = ""
 [[case]]
 id = "drivers.hda"
 source = "qemu-suites/drivers"
-classification = "pure"
-tier = "nightly-required"
-root_default = true
-reason = "migrated to crate-local tests"
-destination.kind = "crate-test"
-destination.package = "hda_driver"
+classification = "dropped"
+reason = "driver package was removed from the workspace"
+destination.kind = "dropped"
+destination.package = ""
 destination.test_filter = ""
 
 [[case]]
@@ -268,12 +266,10 @@ destination.test_filter = ""
 [[case]]
 id = "graphics.browser"
 source = "qemu-suites/graphics"
-classification = "pure"
-tier = "nightly-required"
-root_default = true
-reason = "migrated to crate-local tests"
-destination.kind = "crate-test"
-destination.package = "exorust_apps"
+classification = "dropped"
+reason = "application package was removed from the workspace"
+destination.kind = "dropped"
+destination.package = ""
 destination.test_filter = ""
 
 [[case]]

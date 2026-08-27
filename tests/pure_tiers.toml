@@ -13,12 +13,10 @@ packages = [
   "drivers/usb",
   "drivers/nvme",
   "drivers/hid",
-  "drivers/hda",
   "drivers/virtio",
   "drivers/acpi",
   "drivers/time",
   "drivers/mlx5",
-  "apps",
   "tools/cap_harness",
 ]
 
@@ -160,15 +158,6 @@ exact = false
 serial = false
 
 [[package]]
-name = "hda_driver"
-tier = "nightly-required"
-root_default = true
-run_ignored = false
-test_filter = ""
-exact = false
-serial = false
-
-[[package]]
 name = "nvme_driver"
 tier = "nightly-required"
 root_default = true
@@ -179,15 +168,6 @@ serial = false
 
 [[package]]
 name = "mlx5_driver"
-tier = "nightly-required"
-root_default = true
-run_ignored = false
-test_filter = ""
-exact = false
-serial = false
-
-[[package]]
-name = "exorust_apps"
 tier = "nightly-required"
 root_default = true
 run_ignored = false

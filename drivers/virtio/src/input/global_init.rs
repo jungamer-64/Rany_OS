@@ -55,6 +55,6 @@ pub fn handle_virtio_input_interrupt_for_index(index: u8) {
 // Tests
 // ============================================================================
 
-#[cfg(all(test, not(feature = "qemu-test-export")))]
+#[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

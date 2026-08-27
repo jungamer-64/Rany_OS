@@ -30,13 +30,15 @@ Accepted ADR を優先してください。
 
 - 実装:
   [../../kernel/src/test/benchmark.rs](../../kernel/src/test/benchmark.rs)
-- TSC ベースの micro benchmark、throughput benchmark、summary 出力を持つ。network datapath の測定では packet backing identity、steady-state allocation delta、処理 byte 数を同じ record に含める。
+- TSC ベースの micro benchmark、throughput benchmark、summary 出力を持つ。network datapath は `rx_to_udp_endpoint` と `tcp_payload_to_driver_completion` を別々に測定し、packet backing identity、pool 容量差分、packet-pool lease 回数、kernel heap 割当回数の差分、処理 byte 数、cycle throughput を同じ record に含める。
+- heap 差分は allocator 境界の成功回数であり、warmup 後の測定区間に他 CPU / task が行った割当も含む。pool 容量差分がゼロでも heap 無割当の証明にはならない。
 
 ### 2. Runtime / full-boot validation
 
 - 実装:
-  [../../kernel/src/test/benchmark.rs](../../kernel/src/test/benchmark.rs)
-- full-boot や runtime dispatch と組み合わせて、boot 後の統合測定を行う。
+  [../../kernel/src/test/runtime_dispatch.rs](../../kernel/src/test/runtime_dispatch.rs)
+- `cargo run -p qemu_runner -- network network.zero_copy_benchmark` は、fake port の RX buffer completion から UDP endpoint までと、pool-backed TCP segment の構築から TX lease completion 通知までを boot 後の独立 runtime 上で測定する。各 core の protocol command は計測 task が同期的に drain するため、command worker の scheduling / affinity は測定対象外である。RX の区間には device write を模した frame 注入を、TX の区間には実際の TX queue worker の scheduling と fake driver による wire 長・checksum・payload 検査を含み、TCP connection の admission / ACK / 再送は測定対象外である。
+- TCG 上の cycle throughput は変更間の比較値であり、実 NIC throughput の代用ではない。
 - QEMU VirtIO の RX/TX/recycle case は ownership と integration の gate であり、その測定値だけから実 NIC の `>= 10Gbps` 達成を主張しない。
 
 ### 3. Graphics / device-specific benches

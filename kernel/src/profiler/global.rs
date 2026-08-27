@@ -6,6 +6,18 @@ use super::*;
 
 pub(crate) static PROFILER: spin::Once<Profiler> = spin::Once::new();
 
+// Allocator-boundary telemetry must not initialize the profiler, allocate, or
+// capture a stack: those operations can themselves enter the allocator.
+static KERNEL_HEAP_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn record_kernel_heap_allocation() {
+    KERNEL_HEAP_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+}
+
+pub(super) fn kernel_heap_allocations() -> u64 {
+    KERNEL_HEAP_ALLOCATIONS.load(Ordering::Relaxed)
+}
+
 pub fn profiler() -> &'static Profiler {
     PROFILER.call_once(Profiler::new)
 }

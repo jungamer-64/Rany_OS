@@ -498,6 +498,7 @@ impl MemoryProfiler {
     /// 統計を取得
     pub fn stats(&self) -> MemoryProfilerStats {
         MemoryProfilerStats {
+            kernel_heap_allocations: global::kernel_heap_allocations(),
             total_allocated: self.total_allocated.load(Ordering::Relaxed),
             total_freed: self.total_freed.load(Ordering::Relaxed),
             current_allocated: self.current_allocated.load(Ordering::Relaxed),
@@ -517,6 +518,10 @@ impl MemoryProfiler {
 /// メモリプロファイラ統計
 #[derive(Debug, Clone)]
 pub struct MemoryProfilerStats {
+    /// Successful kernel heap allocations since boot, across all CPUs and
+    /// tasks. Independent of profiling sessions; a delta includes concurrent
+    /// background work and is not a per-task attribution or a live-object count.
+    pub kernel_heap_allocations: u64,
     pub total_allocated: u64,
     pub total_freed: u64,
     pub current_allocated: u64,
