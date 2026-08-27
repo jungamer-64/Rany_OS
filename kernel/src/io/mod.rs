@@ -39,15 +39,6 @@ pub(crate) mod usb;
 pub use hal::mmio;
 pub use hal::port_io;
 
-// Commonly used MMIO functions
-pub use mmio::{
-    mmio_read_u8, mmio_read_u16, mmio_read_u32, mmio_read_u64, mmio_write_u8, mmio_write_u16,
-    mmio_write_u32, mmio_write_u64, volatile_read, volatile_write,
-};
-
-// Commonly used port I/O functions
-pub use port_io::{inb, inl, inw, outb, outl, outw};
-
 // ============================================================================
 // Module Aliases (for compatibility)
 // ============================================================================
