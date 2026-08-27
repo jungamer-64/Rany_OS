@@ -201,12 +201,6 @@ pub enum TxDeviceOutcome {
 #[repr(C)]
 pub struct NetTxSegment(NetTxSegmentDescriptor);
 
-// SAFETY: the descriptor carries a read-only packet data pointer plus DMA
-// address and length. The runtime keeps the owning packet lease alive while the
-// descriptor may cross worker queues.
-unsafe impl Send for NetTxSegment {}
-unsafe impl Sync for NetTxSegment {}
-
 #[derive(Debug, PartialEq, Eq)]
 #[repr(C)]
 struct NetTxSegmentDescriptor {
@@ -217,20 +211,6 @@ struct NetTxSegmentDescriptor {
 }
 
 impl NetTxSegment {
-    pub fn from_dma(
-        cpu_ptr: *const u8,
-        physical_addr: u64,
-        device_addr: u64,
-        len: PacketByteCount,
-    ) -> Option<Self> {
-        Some(Self(NetTxSegmentDescriptor {
-            cpu_ptr: NonNull::new(cpu_ptr.cast_mut())?,
-            physical_addr: NonZeroU64::new(physical_addr)?,
-            device_addr: NonZeroU64::new(device_addr)?,
-            len,
-        }))
-    }
-
     pub const fn cpu_ptr(&self) -> *const u8 {
         self.0.cpu_ptr.as_ptr().cast_const()
     }
@@ -448,54 +428,6 @@ impl RxBuffer {
 
     pub fn physical_addr(&self) -> u64 {
         self.packet.phys_addr().as_u64()
-    }
-
-    pub fn complete(mut self, meta: NetRxMeta) -> Result<ReceivedPacket, RxCompletionError> {
-        if meta.layout().frame_len().get() > self.region.writable_len() {
-            return Err(RxCompletionError {
-                cause: RxCompletionErrorCause::FrameTooLarge,
-                buffer: self,
-            });
-        }
-        // SAFETY: the driver may call `complete` only after the device has
-        // stopped writing this buffer. The checked layout bounds the exact
-        // initialized prefix that becomes visible.
-        if unsafe {
-            self.packet
-                .publish_device_written(meta.layout().frame_len())
-        }
-        .is_err()
-        {
-            return Err(RxCompletionError {
-                cause: RxCompletionErrorCause::FrameTooLarge,
-                buffer: self,
-            });
-        }
-        Ok(ReceivedPacket {
-            packet: self.packet,
-            meta,
-        })
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RxCompletionErrorCause {
-    FrameTooLarge,
-}
-
-#[derive(Debug)]
-pub struct RxCompletionError {
-    cause: RxCompletionErrorCause,
-    buffer: RxBuffer,
-}
-
-impl RxCompletionError {
-    pub const fn cause(&self) -> RxCompletionErrorCause {
-        self.cause
-    }
-
-    pub fn into_buffer(self) -> RxBuffer {
-        self.buffer
     }
 }
 

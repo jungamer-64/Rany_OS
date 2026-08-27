@@ -8,8 +8,8 @@ use crate::{KapiError, KapiResult};
 pub use crate::types_impl::{
     DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketFront,
     PacketMeta, PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadFront,
-    PacketPayloadOwnershipError, PacketRef, PacketRefStorage, PacketRefVTable, PacketSegments,
-    PacketType, PacketWindowError, PhysicalAddress,
+    PacketPayloadOwnershipError, PacketRef, PacketSegments, PacketType, PacketWindowError,
+    PhysicalAddress,
 };
 
 /// # Errors

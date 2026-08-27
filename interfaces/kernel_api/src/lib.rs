@@ -20,8 +20,6 @@ pub mod app;
 #[path = "security.rs"]
 pub mod capability;
 
-pub mod dma;
-
 #[path = "driver.rs"]
 pub mod driver;
 

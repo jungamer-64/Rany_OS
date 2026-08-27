@@ -238,12 +238,12 @@ impl<T> PacketPayloadOwnershipError<T> {
 /// Inline opaque storage used by `PacketRef` backings.
 #[derive(Clone, Copy)]
 #[repr(C)]
-pub struct PacketRefStorage {
+pub(crate) struct PacketRefStorage {
     words: [usize; PACKET_REF_STORAGE_WORDS],
 }
 
 impl PacketRefStorage {
-    pub const fn zeroed() -> Self {
+    pub(crate) const fn zeroed() -> Self {
         Self {
             words: [0; PACKET_REF_STORAGE_WORDS],
         }
@@ -259,7 +259,7 @@ impl PacketRefStorage {
     ///
     /// Panics if `T` is larger than the inline storage or requires stricter
     /// alignment than the storage provides.
-    pub unsafe fn from_state<T>(state: T) -> Self {
+    pub(crate) unsafe fn from_state<T>(state: T) -> Self {
         assert!(size_of::<T>() <= size_of::<Self>());
         assert!(align_of::<T>() <= align_of::<Self>());
         let mut storage = MaybeUninit::<Self>::zeroed();
@@ -273,7 +273,7 @@ impl PacketRefStorage {
     ///
     /// # Safety
     /// The storage must currently contain a valid `T`.
-    pub unsafe fn as_state_ref<T>(&self) -> &T {
+    pub(crate) unsafe fn as_state_ref<T>(&self) -> &T {
         debug_assert!(size_of::<T>() <= size_of::<Self>());
         debug_assert!(align_of::<T>() <= align_of::<Self>());
         unsafe { &*ptr::from_ref(self).cast::<T>() }
@@ -283,7 +283,7 @@ impl PacketRefStorage {
     ///
     /// # Safety
     /// The storage must currently contain a valid `T`.
-    pub unsafe fn as_state_mut<T>(&mut self) -> &mut T {
+    pub(crate) unsafe fn as_state_mut<T>(&mut self) -> &mut T {
         debug_assert!(size_of::<T>() <= size_of::<Self>());
         debug_assert!(align_of::<T>() <= align_of::<Self>());
         unsafe { &mut *ptr::from_mut(self).cast::<T>() }
@@ -292,22 +292,22 @@ impl PacketRefStorage {
 
 /// Opaque backing operations for zero-copy packet references.
 #[derive(Clone, Copy)]
-pub struct PacketRefVTable {
-    pub data_ptr: unsafe fn(&PacketRefStorage) -> *const u8,
-    pub data_mut_ptr: unsafe fn(&mut PacketRefStorage) -> *mut u8,
-    pub len: unsafe fn(&PacketRefStorage) -> usize,
-    pub resize: unsafe fn(&mut PacketRefStorage, usize) -> bool,
-    pub data_capacity: unsafe fn(&PacketRefStorage) -> usize,
-    pub phys_addr: unsafe fn(&PacketRefStorage) -> u64,
-    pub device_address: unsafe fn(&PacketRefStorage) -> u64,
-    pub headroom: unsafe fn(&PacketRefStorage) -> usize,
-    pub advance: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
-    pub retreat: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
-    pub split_front: unsafe fn(
+pub(crate) struct PacketRefVTable {
+    pub(crate) data_ptr: unsafe fn(&PacketRefStorage) -> *const u8,
+    pub(crate) data_mut_ptr: unsafe fn(&mut PacketRefStorage) -> *mut u8,
+    pub(crate) len: unsafe fn(&PacketRefStorage) -> usize,
+    pub(crate) resize: unsafe fn(&mut PacketRefStorage, usize) -> bool,
+    pub(crate) data_capacity: unsafe fn(&PacketRefStorage) -> usize,
+    pub(crate) phys_addr: unsafe fn(&PacketRefStorage) -> u64,
+    pub(crate) device_address: unsafe fn(&PacketRefStorage) -> u64,
+    pub(crate) headroom: unsafe fn(&PacketRefStorage) -> usize,
+    pub(crate) advance: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
+    pub(crate) retreat: unsafe fn(&mut PacketRefStorage, PacketByteCount) -> bool,
+    pub(crate) split_front: unsafe fn(
         &PacketRefStorage,
         PacketByteCount,
     ) -> Option<(PacketRefStorage, PacketRefStorage)>,
-    pub drop_storage: unsafe fn(&mut PacketRefStorage),
+    pub(crate) drop_storage: unsafe fn(&mut PacketRefStorage),
 }
 
 pub enum PacketFront {
@@ -339,7 +339,7 @@ impl PacketRef {
     ///
     /// # Safety
     /// `storage` must contain the backing expected by `vtable`.
-    pub unsafe fn from_opaque_parts(
+    pub(crate) unsafe fn from_opaque_parts(
         storage: PacketRefStorage,
         vtable: &'static PacketRefVTable,
     ) -> Self {

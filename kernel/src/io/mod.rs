@@ -50,9 +50,8 @@ pub use hal::port_io;
 // ============================================================================
 
 pub use dma::{
-    CACHE_LINE_SIZE, CacheMode, CpuOwned, DeviceOwned, DmaDirection, DmaState, SgDmaGuard, SgEntry,
-    SliceDmaGuard, TypedDmaBuffer, TypedDmaGuard, TypedDmaSlice, TypedSgList, cache_line_size,
-    flush_cache_range, invalidate_cache_range, writeback_cache_range,
+    CACHE_LINE_SIZE, CacheMode, DmaDirection, cache_line_size, flush_cache_range,
+    invalidate_cache_range, writeback_cache_range,
 };
 
 // ============================================================================
