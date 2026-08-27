@@ -717,14 +717,6 @@ impl PacketPayload {
         }
     }
 
-    pub fn segments_mut(&mut self) -> &mut [PacketRef] {
-        match &mut self.storage {
-            PacketSegmentStorage::One(packet) => core::slice::from_mut(packet),
-            PacketSegmentStorage::Pair(pair) => pair,
-            PacketSegmentStorage::Many(segments) => segments,
-        }
-    }
-
     pub const fn byte_len(&self) -> PacketByteCount {
         self.total_len
     }
