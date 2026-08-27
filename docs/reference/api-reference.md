@@ -309,6 +309,7 @@ submit_payload(payload).await?;
 
 #### TCP / UDP / RAW の読み分け
 
+- `PacketPayload::chunks_mut()` は長さを変えずに初期化済み byte を編集します。`try_prepend_in_place()` は先頭 segment の headroom と総長を検証し、新たに公開したゼロ初期化済み prefix だけを返します。失敗時には payload は変更されません。
 - `RAW endpoint` は packet ownership exchange を直接露出する正規面です。
 - TCP は connection semantics を持ちますが、core の fast path は packet-backed payload queue を中心に整理します。
 - UDP は token-aware bind、packet-native receive / send、scope-aware endpoint を優先します。

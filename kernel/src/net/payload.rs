@@ -739,7 +739,7 @@ impl<'a> PayloadSpanMut<'a> {
         let span_end = self.offset + self.len;
         let mut cursor = 0usize;
 
-        for segment in self.payload.segments_mut() {
+        for segment in self.payload.chunks_mut() {
             let segment_len = segment.len();
             let segment_start = cursor;
             let segment_end = cursor + segment_len;
@@ -752,7 +752,7 @@ impl<'a> PayloadSpanMut<'a> {
             let local_start = span_start.saturating_sub(segment_start);
             let local_end = segment_len.min(span_end.saturating_sub(segment_start));
             if local_start < local_end {
-                f(&mut segment.data_mut()[local_start..local_end]);
+                f(&mut segment[local_start..local_end]);
             }
         }
     }
@@ -824,9 +824,13 @@ impl<'a> PacketPayloadCursor<'a> {
     }
 }
 
-pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
+pub fn alloc_packet_with_headroom_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    len: usize,
+    headroom: usize,
+) -> Option<PacketRef> {
     PacketByteCount::new(len)?;
-    if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet() {
+    if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet_in(runtime) {
         let available_headroom = packet.headroom();
         if headroom <= available_headroom && len <= packet.data_capacity() {
             packet.try_resize(len).ok()?;
@@ -840,6 +844,12 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
         crate::net::datapath::mempool::packet_ref_from_dma_slice_with_headroom(dma_buf, headroom)?;
     packet.try_resize(len).ok()?;
     Some(packet)
+}
+
+/// Allocates from the process-default network runtime. Runtime-owned datapaths
+/// must use [`alloc_packet_with_headroom_in`] so pool ownership stays local.
+pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
+    alloc_packet_with_headroom_in(crate::net::runtime::default_runtime(), len, headroom)
 }
 
 pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PayloadSpanRef<'_>)> {

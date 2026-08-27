@@ -228,19 +228,10 @@ impl TcpSegmentBuilder {
                 PacketPayload::try_single(packet).map_err(|_| EndpointError::ResourceExhausted)
             }
             TcpSegmentPayload::Packet(mut payload) => {
-                let can_retreat = if payload.segments().len() == 1 {
-                    payload.segments_mut()[0]
-                        .try_retreat(
-                            PacketByteCount::new(header_len)
-                                .expect("TCP header length is non-zero"),
-                        )
-                        .is_ok()
-                } else {
-                    false
-                };
-
-                if can_retreat {
-                    write_header(payload.segments_mut()[0].data_mut());
+                if let Ok(header) = payload.try_prepend_in_place(
+                    PacketByteCount::new(header_len).expect("TCP header length is non-zero"),
+                ) {
+                    write_header(header);
                     Ok(payload)
                 } else {
                     let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
@@ -287,8 +278,7 @@ impl TcpSegmentBuilder {
         if payload.total_len() < 20 {
             return;
         }
-        if let Some(first) = payload.segments_mut().first_mut() {
-            let data = first.data_mut();
+        if let Some(data) = payload.chunks_mut().next() {
             if data.len() >= 20 {
                 data[16] = 0;
                 data[17] = 0;
@@ -318,8 +308,7 @@ impl TcpSegmentBuilder {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
         let checksum = !(sum as u16);
-        if let Some(first) = payload.segments_mut().first_mut() {
-            let data = first.data_mut();
+        if let Some(data) = payload.chunks_mut().next() {
             if data.len() >= 20 {
                 data[16..18].copy_from_slice(&checksum.to_be_bytes());
             }
@@ -334,8 +323,7 @@ impl TcpSegmentBuilder {
         if payload.total_len() < 20 {
             return;
         }
-        if let Some(first) = payload.segments_mut().first_mut() {
-            let data = first.data_mut();
+        if let Some(data) = payload.chunks_mut().next() {
             if data.len() >= 20 {
                 data[16] = 0;
                 data[17] = 0;
@@ -369,8 +357,7 @@ impl TcpSegmentBuilder {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
         let checksum = !(sum as u16);
-        if let Some(first) = payload.segments_mut().first_mut() {
-            let data = first.data_mut();
+        if let Some(data) = payload.chunks_mut().next() {
             if data.len() >= 20 {
                 data[16..18].copy_from_slice(&checksum.to_be_bytes());
             }

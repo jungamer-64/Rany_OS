@@ -546,7 +546,8 @@ impl NetworkStack {
         let Ok(total_len_u16) = u16::try_from(total_len) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
-        let mut header_packet = crate::net::payload::alloc_packet_with_headroom(
+        let mut header_packet = crate::net::payload::alloc_packet_with_headroom_in(
+            self.runtime,
             crate::net::l4::udp::UdpHeader::SIZE,
             kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
         )
@@ -579,8 +580,8 @@ impl NetworkStack {
             pseudo,
         );
         let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-        if let Some(first) = udp_payload.segments_mut().first_mut() {
-            first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+        if let Some(first) = udp_payload.chunks_mut().next() {
+            first[6..8].copy_from_slice(&final_checksum.to_be_bytes());
         }
         let path_mtu = self.effective_ipv6_pmtu(if_id, &dst, current_time);
         self.send_ipv6_l4_payload_with_pmtu(

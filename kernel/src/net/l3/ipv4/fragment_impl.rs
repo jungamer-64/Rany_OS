@@ -342,8 +342,7 @@ impl FragmentBuffer {
         header_bytes[10] = (checksum >> 8) as u8;
         header_bytes[11] = (checksum & 0xff) as u8;
 
-        if let Some(first_segment) = header_payload.segments_mut().first_mut() {
-            let data = first_segment.data_mut();
+        if let Some(data) = header_payload.chunks_mut().next() {
             data[..header_len].copy_from_slice(&header_bytes[..header_len]);
         }
 

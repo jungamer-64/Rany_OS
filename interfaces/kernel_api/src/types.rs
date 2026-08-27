@@ -717,6 +717,44 @@ impl PacketPayload {
         }
     }
 
+    /// Edit initialized bytes without changing segment windows or ownership.
+    /// The checked aggregate length remains valid for the entire borrow.
+    pub fn chunks_mut(&mut self) -> impl ExactSizeIterator<Item = &mut [u8]> {
+        let segments = match &mut self.storage {
+            PacketSegmentStorage::One(packet) => core::slice::from_mut(packet),
+            PacketSegmentStorage::Pair(pair) => pair,
+            PacketSegmentStorage::Many(segments) => segments.as_mut_slice(),
+        };
+        segments.iter_mut().map(PacketRef::data_mut)
+    }
+
+    /// Grow into the first segment's headroom without allocating or copying
+    /// existing bytes. Returns only the newly initialized, zero-filled prefix.
+    ///
+    /// # Errors
+    /// `LengthOverflow` rejects an unrepresentable aggregate length;
+    /// `OutOfBounds` rejects insufficient headroom. On failure, all windows,
+    /// bytes and ownership remain unchanged.
+    pub fn try_prepend_in_place(
+        &mut self,
+        len: PacketByteCount,
+    ) -> Result<&mut [u8], PacketPayloadError> {
+        let total_len = self
+            .total_len
+            .0
+            .checked_add(len.get())
+            .map(PacketByteCount)
+            .ok_or(PacketPayloadError::LengthOverflow)?;
+        let first = match &mut self.storage {
+            PacketSegmentStorage::One(packet) => packet,
+            PacketSegmentStorage::Pair(pair) => &mut pair[0],
+            PacketSegmentStorage::Many(segments) => &mut segments[0],
+        };
+        first.try_retreat(len).map_err(map_window_error)?;
+        self.total_len = total_len;
+        Ok(&mut first.data_mut()[..len.get()])
+    }
+
     pub const fn byte_len(&self) -> PacketByteCount {
         self.total_len
     }
@@ -984,12 +1022,12 @@ impl PacketPayload {
                     map_window_error(error.cause()),
                     Self {
                         storage: PacketSegmentStorage::One(error.into_owner()),
-                        total_len: PacketByteCount::new(total).unwrap_or(front_len),
+                        total_len: self.total_len,
                     },
                 )),
             },
             PacketSegmentStorage::Pair([first, second]) => {
-                split_pair(first, second, len, front_len, remainder_len)
+                split_pair(first, second, self.total_len, front_len, remainder_len)
             }
             PacketSegmentStorage::Many(segments) => {
                 split_many(segments, len, front_len, remainder_len)
@@ -1009,12 +1047,12 @@ fn map_window_error(error: PacketWindowError) -> PacketPayloadError {
 fn split_pair(
     first: PacketRef,
     second: PacketRef,
-    len: PacketByteCount,
+    total_len: PacketByteCount,
     front_len: PacketByteCount,
     remainder_len: PacketByteCount,
 ) -> Result<PacketPayloadFront, PacketPayloadOwnershipError<PacketPayload>> {
     let first_len = first.len();
-    if len.get() == first_len {
+    if front_len.get() == first_len {
         return Ok(PacketPayloadFront::Prefix {
             front: PacketPayload {
                 storage: PacketSegmentStorage::One(first),
@@ -1026,8 +1064,8 @@ fn split_pair(
             },
         });
     }
-    if len.get() < first_len {
-        return match first.try_take_front(len) {
+    if front_len.get() < first_len {
+        return match first.try_take_front(front_len) {
             Ok(PacketFront::Prefix { front, remainder }) => Ok(PacketPayloadFront::Prefix {
                 front: PacketPayload {
                     storage: PacketSegmentStorage::One(front),
@@ -1052,21 +1090,19 @@ fn split_pair(
                 map_window_error(error.cause()),
                 PacketPayload {
                     storage: PacketSegmentStorage::Pair([error.into_owner(), second]),
-                    total_len: PacketByteCount::new(first_len + remainder_len.get())
-                        .unwrap_or(remainder_len),
+                    total_len,
                 },
             )),
         };
     }
 
-    let within_second = PacketByteCount::new(len.get() - first_len);
+    let within_second = PacketByteCount::new(front_len.get() - first_len);
     let Some(within_second) = within_second else {
         return Err(PacketPayloadOwnershipError::new(
             PacketPayloadError::OutOfBounds,
             PacketPayload {
                 storage: PacketSegmentStorage::Pair([first, second]),
-                total_len: PacketByteCount::new(first_len + remainder_len.get())
-                    .unwrap_or(remainder_len),
+                total_len,
             },
         ));
     };
@@ -1089,8 +1125,7 @@ fn split_pair(
             map_window_error(error.cause()),
             PacketPayload {
                 storage: PacketSegmentStorage::Pair([first, error.into_owner()]),
-                total_len: PacketByteCount::new(front_len.get() + remainder_len.get())
-                    .unwrap_or(front_len),
+                total_len,
             },
         )),
     }
@@ -1412,16 +1447,16 @@ pub enum NvmeIoResult {
 mod packet_ref_tests {
     use super::*;
     use alloc::boxed::Box;
+    use alloc::sync::Arc;
     use core::ptr::NonNull;
     use core::sync::atomic::{AtomicUsize, Ordering};
-
-    static DMA_RELEASES: AtomicUsize = AtomicUsize::new(0);
 
     struct SharedDmaBuffer {
         dma: Box<crate::dma::DmaSlice<crate::dma::CpuOwned>>,
         phys_addr: u64,
         device_addr: u64,
         ref_count: AtomicUsize,
+        releases: Arc<AtomicUsize>,
     }
 
     #[derive(Clone, Copy)]
@@ -1518,6 +1553,11 @@ mod packet_ref_tests {
         let state = unsafe { storage.as_state_mut::<DmaPacketState>() };
         let backing = state.backing;
         if unsafe { backing.as_ref().ref_count.fetch_sub(1, Ordering::AcqRel) } == 1 {
+            // SAFETY: this is the last live window, so the backing is still
+            // allocated and is exclusively owned until the drop below.
+            unsafe { backing.as_ref() }
+                .releases
+                .fetch_add(1, Ordering::SeqCst);
             unsafe {
                 ptr::drop_in_place(state);
                 drop(Box::from_raw(backing.as_ptr()));
@@ -1574,11 +1614,11 @@ mod packet_ref_tests {
     fn dma_releaser(ptr: *mut u8, size: usize, phys_addr: u64) {
         assert_eq!(size, 64);
         assert_eq!(phys_addr, 0x3000);
-        DMA_RELEASES.fetch_add(1, Ordering::SeqCst);
         let _ = unsafe { Box::from_raw(ptr.cast::<[u8; 64]>()) };
     }
 
-    fn make_dma_packet() -> PacketRef {
+    fn make_dma_packet() -> (PacketRef, Arc<AtomicUsize>) {
+        let releases = Arc::new(AtomicUsize::new(0));
         let mut raw = Box::new([0u8; 64]);
         raw[..7].copy_from_slice(b"packet!");
         let ptr = Box::into_raw(raw).cast::<u8>();
@@ -1598,20 +1638,22 @@ mod packet_ref_tests {
                 phys_addr: 0x3000,
                 device_addr: 0x4000,
                 ref_count: AtomicUsize::new(1),
+                releases: Arc::clone(&releases),
                 dma: Box::new(dma),
             }))),
             offset: 0,
             len: 7,
         };
 
-        unsafe { PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_VTABLE) }
+        let packet = unsafe {
+            PacketRef::from_opaque_parts(PacketRefStorage::from_state(state), &DMA_VTABLE)
+        };
+        (packet, releases)
     }
 
     #[test]
     fn dma_backing_matches_packet_ref_contract() {
-        DMA_RELEASES.store(0, Ordering::SeqCst);
-
-        let mut packet = make_dma_packet();
+        let (mut packet, releases) = make_dma_packet();
         assert_eq!(packet.len(), 7);
         assert_eq!(packet.data(), b"packet!");
         assert_eq!(packet.data_capacity(), 64);
@@ -1632,14 +1674,12 @@ mod packet_ref_tests {
         assert_eq!(packet.device_address(), 0x4001);
 
         drop(packet);
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn packet_ref_take_front_exact_len_keeps_single_owner() {
-        DMA_RELEASES.store(0, Ordering::SeqCst);
-
-        let packet = make_dma_packet();
+        let (packet, releases) = make_dma_packet();
         let len = PacketByteCount::new(packet.len()).expect("non-empty packet");
 
         match packet.try_take_front(len).expect("exact split succeeds") {
@@ -1650,14 +1690,12 @@ mod packet_ref_tests {
             PacketFront::Prefix { .. } => panic!("exact split must not create windows"),
         }
 
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn packet_ref_take_front_splits_disjoint_windows() {
-        DMA_RELEASES.store(0, Ordering::SeqCst);
-
-        let packet = make_dma_packet();
+        let (packet, releases) = make_dma_packet();
         let len = PacketByteCount::new(3).expect("non-empty prefix");
 
         let (front, remainder) = match packet.try_take_front(len).expect("prefix split succeeds") {
@@ -1671,22 +1709,105 @@ mod packet_ref_tests {
         assert_eq!(remainder.device_address(), 0x4003);
 
         drop(front);
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 0);
+        assert_eq!(releases.load(Ordering::SeqCst), 0);
         drop(remainder);
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
     }
 
     #[test]
     fn packet_ref_take_front_rejects_out_of_bounds_len() {
-        DMA_RELEASES.store(0, Ordering::SeqCst);
-
-        let packet = make_dma_packet();
+        let (packet, releases) = make_dma_packet();
         let len = PacketByteCount::new(packet.len() + 1).expect("non-empty invalid length");
 
         assert_eq!(
             packet.try_take_front(len).err().map(|error| error.cause()),
             Some(PacketWindowError::OutOfBounds)
         );
-        assert_eq!(DMA_RELEASES.load(Ordering::SeqCst), 1);
+        assert_eq!(releases.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn payload_headroom_growth_preserves_bytes_and_aggregate_length() {
+        for segment_count in 1..=3 {
+            let mut packets = Vec::new();
+            let mut releases = Vec::new();
+            for _ in 0..segment_count {
+                let (mut packet, released) = make_dma_packet();
+                packet
+                    .try_advance(PacketByteCount::new(3).expect("prefix length"))
+                    .expect("fixture headroom");
+                packets.push(packet);
+                releases.push(released);
+            }
+            let mut payload = PacketPayload::try_from_segments(packets).expect("payload");
+            let prefix = payload
+                .try_prepend_in_place(PacketByteCount::new(3).expect("prefix length"))
+                .expect("headroom is available");
+            assert_eq!(prefix, &[0; 3]);
+            prefix.copy_from_slice(b"hdr");
+            assert_eq!(payload.total_len(), 4 * segment_count + 3);
+            assert_eq!(payload.segments()[0].data(), b"hdrket!");
+            assert_eq!(payload.segments()[0].device_address(), 0x4000);
+            assert_eq!(payload.segments().len(), segment_count);
+            for chunk in payload.chunks_mut() {
+                chunk[chunk.len() - 1] = b'?';
+            }
+            assert_eq!(payload.segments()[0].data(), b"hdrket?");
+            let length_before = payload.total_len();
+            assert_eq!(
+                payload.try_prepend_in_place(PacketByteCount::new(1).expect("prefix length")),
+                Err(PacketPayloadError::OutOfBounds)
+            );
+            assert_eq!(payload.total_len(), length_before);
+            assert_eq!(payload.segments()[0].data(), b"hdrket?");
+            drop(payload);
+            assert!(
+                releases
+                    .iter()
+                    .all(|count| count.load(Ordering::SeqCst) == 1)
+            );
+        }
+    }
+
+    #[test]
+    fn rejected_payload_split_returns_the_complete_owner() {
+        unsafe fn unsplittable(
+            _storage: &PacketRefStorage,
+            _len: PacketByteCount,
+        ) -> Option<(PacketRefStorage, PacketRefStorage)> {
+            None
+        }
+        static UNSPLITTABLE_VTABLE: PacketRefVTable = PacketRefVTable {
+            split_front: unsplittable,
+            ..DMA_VTABLE
+        };
+        // Split attempts inside either member of a pair must return the same
+        // complete payload, not a length derived from a partial split.
+        for take in [3, 10] {
+            let (mut first, first_releases) = make_dma_packet();
+            let (mut second, second_releases) = make_dma_packet();
+            first.vtable = &UNSPLITTABLE_VTABLE;
+            second.vtable = &UNSPLITTABLE_VTABLE;
+            let payload = PacketPayload::try_pair(first, second).expect("pair");
+            let error = payload
+                .try_take_front(PacketByteCount::new(take).expect("split length"))
+                .err()
+                .expect("backend rejects splitting");
+            assert_eq!(error.cause(), PacketPayloadError::BackendSplitUnsupported);
+            let payload = error.into_owner();
+            assert_eq!(payload.total_len(), 14);
+            assert_eq!(payload.segments().len(), 2);
+            assert!(
+                payload
+                    .segments()
+                    .iter()
+                    .all(|packet| packet.data() == b"packet!")
+            );
+            assert_eq!(first_releases.load(Ordering::SeqCst), 0);
+            assert_eq!(second_releases.load(Ordering::SeqCst), 0);
+            drop(payload);
+            assert_eq!(first_releases.load(Ordering::SeqCst), 1);
+            assert_eq!(second_releases.load(Ordering::SeqCst), 1);
+        }
     }
 }

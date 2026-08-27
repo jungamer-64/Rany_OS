@@ -158,9 +158,10 @@ impl NetworkStack {
                         return false;
                     };
                     let checksum = checksum_payload_span(icmp_span, 0);
-                    let first = &mut frame_payload.segments_mut()[0];
-                    first.data_mut()[EthernetHeader::SIZE + 20 + 2..EthernetHeader::SIZE + 20 + 4]
-                        .copy_from_slice(&checksum.to_be_bytes());
+                    if let Some(first) = frame_payload.chunks_mut().next() {
+                        first[EthernetHeader::SIZE + 20 + 2..EthernetHeader::SIZE + 20 + 4]
+                            .copy_from_slice(&checksum.to_be_bytes());
+                    }
                     return self.transmit_packet_on(if_id, frame_payload).is_ok();
                 }
             }

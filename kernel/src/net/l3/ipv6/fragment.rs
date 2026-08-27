@@ -146,9 +146,9 @@ impl Ipv6FragmentBuffer {
 
     fn write_payload_byte(payload: &mut PacketPayload, offset: usize, value: u8) -> bool {
         let mut remaining = offset;
-        for segment in payload.segments_mut() {
+        for segment in payload.chunks_mut() {
             if remaining < segment.len() {
-                segment.data_mut()[remaining] = value;
+                segment[remaining] = value;
                 return true;
             }
             remaining -= segment.len();

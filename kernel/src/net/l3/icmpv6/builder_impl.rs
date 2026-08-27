@@ -76,8 +76,8 @@ impl Icmpv6Builder {
 
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
         let cksum = payload_checksum(&PacketPayloadView::new(&message_payload), pseudo);
-        if let Some(first) = message_payload.segments_mut().first_mut() {
-            first.data_mut()[2..4].copy_from_slice(&cksum.to_be_bytes());
+        if let Some(first) = message_payload.chunks_mut().next() {
+            first[2..4].copy_from_slice(&cksum.to_be_bytes());
         }
 
         Some(message_payload)
@@ -176,10 +176,10 @@ impl Icmpv6Builder {
         // Compute checksum
         let pseudo = ipv6_pseudo_header_checksum(src, dst, IpProtocol::Icmpv6, total_len as u32);
         let cksum = payload_checksum(&PacketPayloadView::new(&message_payload), pseudo);
-        if let Some(first) = message_payload.segments_mut().first_mut() {
+        if let Some(first) = message_payload.chunks_mut().next() {
             let cksum_bytes = cksum.to_be_bytes();
-            first.data_mut()[2] = cksum_bytes[0];
-            first.data_mut()[3] = cksum_bytes[1];
+            first[2] = cksum_bytes[0];
+            first[3] = cksum_bytes[1];
         }
 
         Some(message_payload)

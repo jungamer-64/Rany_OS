@@ -75,8 +75,8 @@ impl IcmpProcessor {
         }
 
         let checksum = packet_payload_checksum(&PacketPayloadView::new(&message), 0);
-        if let Some(first) = message.segments_mut().first_mut() {
-            first.data_mut()[2..4].copy_from_slice(&checksum.to_be_bytes());
+        if let Some(first) = message.chunks_mut().next() {
+            first[2..4].copy_from_slice(&checksum.to_be_bytes());
         }
         Some(message)
     }

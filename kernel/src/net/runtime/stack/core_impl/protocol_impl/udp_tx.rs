@@ -137,7 +137,8 @@ impl NetworkStack {
         let Ok(total_len_u16) = u16::try_from(total_len) else {
             return false;
         };
-        let mut header_packet = match crate::net::payload::alloc_packet_with_headroom(
+        let mut header_packet = match crate::net::payload::alloc_packet_with_headroom_in(
+            self.runtime,
             crate::net::l4::udp::UdpHeader::SIZE,
             kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
         ) {
@@ -177,8 +178,8 @@ impl NetworkStack {
         );
         let checksum = payload_checksum(&PacketPayloadView::new(&udp_payload), pseudo);
         let final_checksum = if checksum == 0 { 0xFFFF } else { checksum };
-        if let Some(first) = udp_payload.segments_mut().first_mut() {
-            first.data_mut()[6..8].copy_from_slice(&final_checksum.to_be_bytes());
+        if let Some(first) = udp_payload.chunks_mut().next() {
+            first[6..8].copy_from_slice(&final_checksum.to_be_bytes());
         }
         self.send_ipv4_l4_payload_with_pmtu(
             if_id,

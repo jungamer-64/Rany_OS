@@ -65,7 +65,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - NIC は事前に確保された packet / DMA buffer へ直接読み書きする。
 - protocol 層は `Vec<u8>` への統合を前提にせず、packet-backed payload を運ぶ。
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
-- `PacketPayload` は常に非空であり、空 segment、総長 overflow、3 segment 以上の storage allocation failure を fallible constructor で区別する。構築・prepend・split に失敗した場合は input owner を error とともに返す。
+- `PacketPayload` は常に非空であり、空 segment、総長 overflow、3 segment 以上の storage allocation failure を fallible constructor で区別する。所有権を消費する構築・prepend・split に失敗した場合は input owner を error とともに返す。
+- payload 内の変更可能な借用は初期化済み byte に限る。segment window と総長は payload が一体として管理し、headroom への in-place prepend は両者を同時に更新する。失敗時には可視領域・内容・所有権を変更しない。
 - `PacketRef` が安全に公開するのは初期化済みの可視領域だけとする。`data_capacity`、`headroom`、`tailroom` は別の数量であり、software growth が新たに可視化する byte は初期化してから公開する。
 - network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`
   facade や byte-slice TX surface を再導入しない。

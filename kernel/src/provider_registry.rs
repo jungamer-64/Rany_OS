@@ -586,6 +586,7 @@ mod tests {
                 if_id: Some(3),
                 driver_name: "fake-net",
                 queue_pairs: 1,
+                max_tx_segments: core::num::NonZeroU16::MIN,
                 mtu: 1500,
                 mac: MacAddress([0x02, 0x00, 0x00, 0x00, 0x00, 0x07]),
                 flags: NETDEV_FLAG_BOUND_PORT | NETDEV_FLAG_PRIMARY,
