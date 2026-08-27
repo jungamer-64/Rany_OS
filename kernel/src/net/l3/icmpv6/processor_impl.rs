@@ -240,7 +240,10 @@ impl Icmpv6Processor {
 
         let echo_data_len = view.total_len() - ICMPV6_ECHO_HEADER_SIZE;
         if echo_data_len > 65535 {
-            log::debug!("Very large ICMPv6 Echo Request payload: {} bytes", echo_data_len);
+            log::debug!(
+                "Very large ICMPv6 Echo Request payload: {} bytes",
+                echo_data_len
+            );
         }
         let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
             &payload,

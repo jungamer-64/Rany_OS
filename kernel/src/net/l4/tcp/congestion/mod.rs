@@ -297,7 +297,8 @@ impl TcpCongestionController {
         _current_time_ms: u64,
         _rtt_sample_ms: u64,
     ) -> CongestionAction {
-        self.controller.on_ack(bytes_acked, is_dup_ack, ack_num, snd_nxt)
+        self.controller
+            .on_ack(bytes_acked, is_dup_ack, ack_num, snd_nxt)
     }
 
     pub fn on_timeout(&mut self, snd_nxt: u32, _current_time_ms: u64) {

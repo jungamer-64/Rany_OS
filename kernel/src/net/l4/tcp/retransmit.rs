@@ -68,7 +68,7 @@ impl RtoCalculator {
         Self {
             srtt: None,
             rttvar: None,
-            rto: 1000,      // 初期値: 1秒 (1000 tick ≒ 1秒)
+            rto: 1000, // 初期値: 1秒 (1000 tick ≒ 1秒)
             // NOTE: RFC 6298 §2.4 SHOULD round up to 1 second, but many implementations
             // (including Linux) use a lower minimum. 200ms is chosen for responsiveness,
             // intentionally deviating from the SHOULD.

@@ -24,7 +24,6 @@ static ARP_FLAP_SUPPRESSED: AtomicU64 = AtomicU64::new(0);
 /// ARP Defend interval (RFC 5227)
 const ARP_DEFEND_INTERVAL_MS: u64 = 10_000;
 
-
 /// ARP MACフラップログのレート制限チェック
 fn check_arp_flap_log_rate(current_time: u64) -> bool {
     let last_reset = ARP_FLAP_LAST_RESET.load(AtomicOrdering::Relaxed);
@@ -113,7 +112,9 @@ impl ArpProcessor {
         if sender_ip == self.local_ip && sender_mac != self.local_mac {
             // Defend our address by sending a gratuitous ARP (RFC 5227 Section 2.4(c))
             let last_defend = self.last_defend_tick.load(AtomicOrdering::Relaxed);
-            if last_defend != u64::MAX && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS {
+            if last_defend != u64::MAX
+                && current_time.saturating_sub(last_defend) < ARP_DEFEND_INTERVAL_MS
+            {
                 // Rate-limited: suppress redundant defensive announcement and log flooding
                 return ArpResult::Ignored;
             }
@@ -124,7 +125,8 @@ impl ArpProcessor {
                 sender_mac,
                 self.local_mac
             );
-            self.last_defend_tick.store(current_time, AtomicOrdering::Relaxed);
+            self.last_defend_tick
+                .store(current_time, AtomicOrdering::Relaxed);
             return ArpResult::SendGratuitous;
         }
 

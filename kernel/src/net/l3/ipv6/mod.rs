@@ -116,7 +116,6 @@ impl Ipv6Address {
         ])
     }
 
-
     /// Get raw bytes
     #[inline]
     pub const fn as_bytes(&self) -> &[u8; 16] {
@@ -917,7 +916,6 @@ fn process_extension_header_options(
     Ok(())
 }
 
-
 /// Walk extension headers returning fragment info if present.
 ///
 /// `raw_packet` is the entire IPv6 packet from byte 0 (fixed header start).
@@ -982,7 +980,9 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
 
                 // Bug 11 Fix: Process HBH and Destination Options TLVs
                 if next_header == EXT_HEADER_HOP_BY_HOP || next_header == EXT_HEADER_DESTINATION {
-                    if let Err(action) = process_extension_header_options(raw_packet, offset, ext_len) {
+                    if let Err(action) =
+                        process_extension_header_options(raw_packet, offset, ext_len)
+                    {
                         return action;
                     }
                 }

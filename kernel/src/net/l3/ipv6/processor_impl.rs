@@ -127,7 +127,11 @@ impl Ipv6Processor {
                     self.stats.record_dropped();
                     return Ipv6ProcessResult::Dropped;
                 }
-                ExtHeaderResult::ParameterProblem { code, pointer, allow_multicast_dst } => {
+                ExtHeaderResult::ParameterProblem {
+                    code,
+                    pointer,
+                    allow_multicast_dst,
+                } => {
                     if !allow_multicast_dst && dst.is_multicast() {
                         self.stats.record_dropped();
                         return Ipv6ProcessResult::Dropped;
@@ -256,7 +260,11 @@ impl Ipv6Processor {
                     self.stats.record_dropped();
                     return Ipv6ProcessResult::Dropped;
                 }
-                ExtHeaderResult::ParameterProblem { code, pointer, allow_multicast_dst } => {
+                ExtHeaderResult::ParameterProblem {
+                    code,
+                    pointer,
+                    allow_multicast_dst,
+                } => {
                     if !allow_multicast_dst && dst.is_multicast() {
                         self.stats.record_dropped();
                         return Ipv6ProcessResult::Dropped;

@@ -655,7 +655,8 @@ impl TcpControlBlock {
     /// RTOタイムアウト発生時の輻輳制御更新 (RFC 6582 §3.2: recover = snd_nxt)
     pub fn on_retransmit_timeout(&mut self, current_time_ms: u64) {
         if let Some(data) = self.state.connection_data_mut() {
-            data.congestion.on_timeout(data.seq.snd_nxt, current_time_ms);
+            data.congestion
+                .on_timeout(data.seq.snd_nxt, current_time_ms);
         }
     }
 
