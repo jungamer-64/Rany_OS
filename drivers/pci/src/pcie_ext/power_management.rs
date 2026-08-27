@@ -467,17 +467,16 @@ impl PcieExtManager {
 pub static PCIE_EXT_CONFIG: spin::Once<PcieConfig> = spin::Once::new();
 pub static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
 
-/// # Errors
-///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub fn init_pcie_ext(registers: hal::MappedMmio) -> PcieResult<()> {
-    let config = PCIE_EXT_CONFIG.call_once(|| PcieConfig::new(registers, 0, 0, 255));
+/// Publishes an owned, validated ECAM window before enumerating its buses.
+pub fn init_pcie_ext(config: PcieConfig) {
+    let config = PCIE_EXT_CONFIG.call_once(|| config);
     PCIE_EXT_MANAGER.call_once(|| {
         let manager = PcieExtManager::new(config);
-        manager.scan_bus(0);
+        for bus in config.buses.first..=config.buses.last {
+            manager.scan_bus(bus);
+        }
         manager
     });
-    Ok(())
 }
 
 pub fn pcie_ext_manager() -> Option<&'static PcieExtManager> {

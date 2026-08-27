@@ -40,6 +40,33 @@ exact = false
 serial = false
 
 [[package]]
+name = "hal"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "apic_driver"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
+name = "ide_driver"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
 name = "security"
 tier = "pr-required"
 root_default = true

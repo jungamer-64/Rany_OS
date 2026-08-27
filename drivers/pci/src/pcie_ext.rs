@@ -51,6 +51,11 @@ pub mod ext_cap_id {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PcieError {
+    InvalidBusRange {
+        first: u8,
+        last: u8,
+    },
+    ConfigMapping(hal::MmioAccessError),
     /// デバイスが見つからない
     DeviceNotFound,
     /// ケイパビリティが見つからない
@@ -125,41 +130,82 @@ impl PcieBdf {
 pub struct PcieConfig {
     registers: hal::MappedMmio,
     segment: u16,
-    start_bus: u8,
-    end_bus: u8,
+    buses: EcamBusRange,
 }
 
+/// ECAM bus numbers are relative to the mapped segment window, while each
+/// function owns exactly 4 KiB. Invalid fields must never alias another BDF.
+#[derive(Debug)]
+struct EcamBusRange {
+    first: u8,
+    last: u8,
+}
+
+#[forbid(unsafe_code)]
+impl EcamBusRange {
+    fn new(first: u8, last: u8) -> PcieResult<Self> {
+        if first > last {
+            return Err(PcieError::InvalidBusRange { first, last });
+        }
+        Ok(Self { first, last })
+    }
+
+    fn byte_length(&self) -> usize {
+        (usize::from(self.last - self.first) + 1) << 20
+    }
+
+    fn config_offset<T: hal::mmio::MmioValue>(&self, bdf: PcieBdf, offset: u16) -> Option<usize> {
+        if bdf.bus < self.first || bdf.bus > self.last || bdf.device >= 32 || bdf.function >= 8 {
+            return None;
+        }
+        let offset = usize::from(offset);
+        if !offset.is_multiple_of(T::ALIGN) || offset.checked_add(T::WIDTH)? > PCIE_CONFIG_SIZE {
+            return None;
+        }
+        Some(
+            (usize::from(bdf.bus - self.first) << 20)
+                | (usize::from(bdf.device) << 15)
+                | (usize::from(bdf.function) << 12)
+                | offset,
+        )
+    }
+}
+
+#[forbid(unsafe_code)]
 impl PcieConfig {
-    pub const fn new(registers: hal::MappedMmio, segment: u16, start_bus: u8, end_bus: u8) -> Self {
-        Self {
+    /// Owns the complete firmware-assigned ECAM bus window.
+    ///
+    /// # Errors
+    /// Rejects reversed bus ranges, truncated mappings and misaligned register
+    /// bases before issuing configuration-space accesses.
+    pub fn new(
+        registers: hal::MappedMmio,
+        segment: u16,
+        start_bus: u8,
+        end_bus: u8,
+    ) -> PcieResult<Self> {
+        let buses = EcamBusRange::new(start_bus, end_bus)?;
+        registers
+            .region()
+            .read_only::<u32>(0)
+            .map_err(PcieError::ConfigMapping)?;
+        let registers = registers
+            .into_subregion(0, buses.byte_length())
+            .map_err(PcieError::ConfigMapping)?;
+        Ok(Self {
             registers,
             segment,
-            start_bus,
-            end_bus,
-        }
+            buses,
+        })
     }
 
     pub const fn segment(&self) -> u16 {
         self.segment
     }
 
-    fn get_config_offset(&self, bdf: PcieBdf, offset: u16) -> Option<usize> {
-        if bdf.bus < self.start_bus || bdf.bus > self.end_bus {
-            return None;
-        }
-
-        let bus = usize::from(bdf.bus - self.start_bus);
-        let device = usize::from(bdf.device);
-        let function = usize::from(bdf.function);
-        (bus << 20)
-            .checked_add(device << 15)?
-            .checked_add(function << 12)?
-            .checked_add(usize::from(offset))
-    }
-
     /// コンフィグ空間から読み取り
     pub fn read32(&self, bdf: PcieBdf, offset: u16) -> Option<u32> {
-        let offset = self.get_config_offset(bdf, offset)?;
+        let offset = self.buses.config_offset::<u32>(bdf, offset)?;
         Some(
             self.registers
                 .region()
@@ -170,44 +216,47 @@ impl PcieConfig {
     }
 
     pub fn read16(&self, bdf: PcieBdf, offset: u16) -> Option<u16> {
-        let word_offset = offset & !1;
-        let value = self.read32(bdf, word_offset & !3)?;
-        let shift = ((offset & 2) * 8) as u32;
-        Some(((value >> shift) & 0xFFFF) as u16)
+        let offset = self.buses.config_offset::<u16>(bdf, offset)?;
+        Some(
+            self.registers
+                .region()
+                .read_only::<u16>(offset)
+                .ok()?
+                .read(),
+        )
     }
 
     pub fn read8(&self, bdf: PcieBdf, offset: u16) -> Option<u8> {
-        let value = self.read32(bdf, offset & !3)?;
-        let shift = ((offset & 3) * 8) as u32;
-        Some(((value >> shift) & 0xFF) as u8)
+        let offset = self.buses.config_offset::<u8>(bdf, offset)?;
+        Some(self.registers.region().read_only::<u8>(offset).ok()?.read())
     }
 
     /// コンフィグ空間に書き込み
     pub fn write32(&self, bdf: PcieBdf, offset: u16, value: u32) -> Option<()> {
-        let offset = self.get_config_offset(bdf, offset)?;
+        let offset = self.buses.config_offset::<u32>(bdf, offset)?;
         let mut register = self.registers.region().write_only::<u32>(offset).ok()?;
         register.write(value);
         Some(())
     }
 
     pub fn write16(&self, bdf: PcieBdf, offset: u16, value: u16) -> Option<()> {
-        let dword_offset = offset & !3;
-        let shift = ((offset & 2) * 8) as u32;
-        let mask = !(0xFFFFu32 << shift);
-
-        let current = self.read32(bdf, dword_offset)?;
-        let new_value = (current & mask) | ((value as u32) << shift);
-        self.write32(bdf, dword_offset, new_value)
+        let offset = self.buses.config_offset::<u16>(bdf, offset)?;
+        self.registers
+            .region()
+            .write_only::<u16>(offset)
+            .ok()?
+            .write(value);
+        Some(())
     }
 
     pub fn write8(&self, bdf: PcieBdf, offset: u16, value: u8) -> Option<()> {
-        let dword_offset = offset & !3;
-        let shift = ((offset & 3) * 8) as u32;
-        let mask = !(0xFFu32 << shift);
-
-        let current = self.read32(bdf, dword_offset)?;
-        let new_value = (current & mask) | ((value as u32) << shift);
-        self.write32(bdf, dword_offset, new_value)
+        let offset = self.buses.config_offset::<u8>(bdf, offset)?;
+        self.registers
+            .region()
+            .write_only::<u8>(offset)
+            .ok()?
+            .write(value);
+        Some(())
     }
 
     /// ケイパビリティを検索
@@ -257,6 +306,66 @@ impl PcieConfig {
 // ============================================================================
 // SR-IOV (Single Root I/O Virtualization)
 // ============================================================================
+
+#[cfg(test)]
+mod configuration_tests {
+    use super::*;
+
+    #[test]
+    fn bus_window_rejects_reversal_and_counts_inclusive_endpoints() {
+        assert!(matches!(
+            EcamBusRange::new(20, 19),
+            Err(PcieError::InvalidBusRange {
+                first: 20,
+                last: 19
+            })
+        ));
+        assert_eq!(EcamBusRange::new(255, 255).unwrap().byte_length(), 1 << 20);
+        assert_eq!(EcamBusRange::new(0, 255).unwrap().byte_length(), 256 << 20);
+    }
+
+    #[test]
+    fn bus_coordinates_are_relative_to_the_firmware_window() {
+        let buses = EcamBusRange::new(64, 65).unwrap();
+        assert_eq!(
+            buses.config_offset::<u32>(PcieBdf::new(64, 0, 0), 0),
+            Some(0)
+        );
+        assert_eq!(
+            buses.config_offset::<u32>(PcieBdf::new(65, 0, 0), 0),
+            Some(1 << 20)
+        );
+        assert_eq!(
+            buses.config_offset::<u8>(PcieBdf::new(65, 31, 7), 4095),
+            Some((2 << 20) - 1)
+        );
+        assert_eq!(buses.config_offset::<u8>(PcieBdf::new(63, 0, 0), 0), None);
+        assert_eq!(buses.config_offset::<u8>(PcieBdf::new(66, 0, 0), 0), None);
+    }
+
+    #[test]
+    fn invalid_device_function_and_register_do_not_alias_adjacent_resources() {
+        let buses = EcamBusRange::new(0, 255).unwrap();
+        assert_eq!(buses.config_offset::<u8>(PcieBdf::new(0, 32, 0), 0), None);
+        assert_eq!(buses.config_offset::<u8>(PcieBdf::new(0, 0, 8), 0), None);
+        assert_eq!(buses.config_offset::<u8>(PcieBdf::new(0, 0, 0), 4096), None);
+        assert_eq!(
+            buses.config_offset::<u32>(PcieBdf::new(0, 0, 0), u16::MAX),
+            None
+        );
+    }
+
+    #[test]
+    fn register_width_is_checked_without_rounding_the_requested_address() {
+        let buses = EcamBusRange::new(0, 0).unwrap();
+        let bdf = PcieBdf::new(0, 0, 0);
+        assert_eq!(buses.config_offset::<u32>(bdf, 4092), Some(4092));
+        assert_eq!(buses.config_offset::<u16>(bdf, 4094), Some(4094));
+        assert_eq!(buses.config_offset::<u16>(bdf, 4095), None);
+        assert_eq!(buses.config_offset::<u32>(bdf, 2), None);
+        assert_eq!(buses.config_offset::<u16>(bdf, 1), None);
+    }
+}
 
 /// SR-IOVケイパビリティ構造
 #[derive(Debug, Clone)]

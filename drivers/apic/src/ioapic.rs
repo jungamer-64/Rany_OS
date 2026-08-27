@@ -1,3 +1,5 @@
+#![forbid(unsafe_code)]
+
 extern crate alloc;
 
 use alloc::vec::Vec;
@@ -46,6 +48,7 @@ pub enum IoApicError {
     EmptyTopology,
     InvalidRegisterMapping(hal::MmioAccessError),
     GlobalInterruptRangeOverflow,
+    InvalidRedirectionCount { count: u32 },
     OverlappingGlobalInterruptRange { first: u32, second: u32 },
     GlobalInterruptUnroutable { gsi: u32 },
     DestinationRequiresInterruptRemapping { destination: ApicDestination },
@@ -61,6 +64,12 @@ impl fmt::Display for IoApicError {
             }
             Self::GlobalInterruptRangeOverflow => {
                 formatter.write_str("I/O APIC GSI range overflows")
+            }
+            Self::InvalidRedirectionCount { count } => {
+                write!(
+                    formatter,
+                    "I/O APIC has {count} entries outside the selector domain"
+                )
             }
             Self::OverlappingGlobalInterruptRange { first, second } => write!(
                 formatter,
@@ -167,11 +176,27 @@ impl RedirectionEntry {
     }
 }
 
-#[derive(Debug)]
 pub struct IoApic {
-    registers: hal::MappedMmio,
+    registers: IrqPoisonLock<IoApicRegisters>,
     global_interrupt_base: u32,
     redirection_count: u32,
+}
+
+impl fmt::Debug for IoApic {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("IoApic")
+            .field("global_interrupt_base", &self.global_interrupt_base)
+            .field("redirection_count", &self.redirection_count)
+            .finish_non_exhaustive()
+    }
+}
+
+/// IOREGSEL/IOWIN are one indirect register transaction, not independent
+/// registers. A multi-register redirection update retains the same lock.
+#[derive(Debug)]
+struct IoApicRegisters {
+    mapping: hal::MappedMmio,
 }
 
 impl IoApic {
@@ -186,51 +211,64 @@ impl IoApic {
             .region()
             .read_write::<u32>(IOWIN)
             .map_err(IoApicError::InvalidRegisterMapping)?;
-        let provisional = Self {
-            registers: resource.registers,
-            global_interrupt_base: resource.global_interrupt_base,
-            redirection_count: 0,
+        let mut registers = IoApicRegisters {
+            mapping: resource.registers,
         };
-        let redirection_count = ((provisional.read(IOAPICVER) >> 16) & 0xff) + 1;
-        provisional
+        let redirection_count = redirection_count(registers.read(IOAPICVER))?;
+        resource
             .global_interrupt_base
             .checked_add(redirection_count)
             .ok_or(IoApicError::GlobalInterruptRangeOverflow)?;
         Ok(Self {
+            registers: IrqPoisonLock::new(registers),
+            global_interrupt_base: resource.global_interrupt_base,
             redirection_count,
-            ..provisional
         })
     }
+}
 
-    fn read(&self, register: u8) -> u32 {
+fn redirection_count(version: u32) -> Result<u32, IoApicError> {
+    let count = ((version >> 16) & 0xff) + 1;
+    // Each entry occupies two selectors from 0x10 through 0xff inclusive.
+    let limit = (u32::from(u8::MAX) + 1 - u32::from(IOREDTBL_BASE)) / 2;
+    if count > limit {
+        return Err(IoApicError::InvalidRedirectionCount { count });
+    }
+    Ok(count)
+}
+
+impl IoApicRegisters {
+    fn read(&mut self, register: u8) -> u32 {
         let mut selector = self
-            .registers
+            .mapping
             .region()
             .write_only::<u32>(IOREGSEL)
             .expect("I/O APIC selector fits its mapped register page");
         selector.write(u32::from(register));
-        self.registers
+        self.mapping
             .region()
             .read_only::<u32>(IOWIN)
             .expect("I/O APIC window fits its mapped register page")
             .read()
     }
 
-    fn write(&self, register: u8, value: u32) {
+    fn write(&mut self, register: u8, value: u32) {
         let mut selector = self
-            .registers
+            .mapping
             .region()
             .write_only::<u32>(IOREGSEL)
             .expect("I/O APIC selector fits its mapped register page");
         selector.write(u32::from(register));
         let mut window = self
-            .registers
+            .mapping
             .region()
             .write_only::<u32>(IOWIN)
             .expect("I/O APIC window fits its mapped register page");
         window.write(value);
     }
+}
 
+impl IoApic {
     fn contains(&self, gsi: u32) -> bool {
         self.global_interrupt_base <= gsi
             && gsi < self.global_interrupt_base + self.redirection_count
@@ -245,24 +283,43 @@ impl IoApic {
     fn write_entry(&self, local_index: u8, entry: RedirectionEntry) {
         let register = IOREDTBL_BASE + local_index * 2;
         let raw = entry.to_raw();
-        self.write(register, raw as u32 | (1 << 16));
-        self.write(register + 1, (raw >> 32) as u32);
-        self.write(register, raw as u32);
+        let mut registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        registers.write(register, raw as u32 | (1 << 16));
+        registers.write(register + 1, (raw >> 32) as u32);
+        registers.write(register, raw as u32);
     }
 
     fn read_entry(&self, local_index: u8) -> RedirectionEntry {
         let register = IOREDTBL_BASE + local_index * 2;
+        let mut registers = self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
         RedirectionEntry::from_raw(
-            u64::from(self.read(register)) | (u64::from(self.read(register + 1)) << 32),
+            u64::from(registers.read(register)) | (u64::from(registers.read(register + 1)) << 32),
         )
     }
 
     pub fn id(&self) -> u8 {
-        ((self.read(IOAPICID) >> 24) & 0xf) as u8
+        ((self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .read(IOAPICID)
+            >> 24)
+            & 0xf) as u8
     }
 
     pub fn version(&self) -> u8 {
-        (self.read(IOAPICVER) & 0xff) as u8
+        (self
+            .registers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .read(IOAPICVER)
+            & 0xff) as u8
     }
 
     pub const fn global_interrupt_base(&self) -> u32 {
@@ -360,10 +417,7 @@ static IO_APICS: Once<IrqPoisonLock<IoApicSet>> = Once::new();
 pub fn initialize_io_apics(
     resources: Vec<IoApicResource>,
 ) -> Result<IrqPoisonLockGuard<'static, IoApicSet>, IoApicError> {
-    if IO_APICS.get().is_none() {
-        let topology = IoApicSet::discover(resources)?;
-        IO_APICS.call_once(|| IrqPoisonLock::new(topology));
-    }
+    IO_APICS.try_call_once(|| IoApicSet::discover(resources).map(IrqPoisonLock::new))?;
     io_apics()
 }
 
@@ -377,4 +431,24 @@ pub fn io_apics() -> Result<IrqPoisonLockGuard<'static, IoApicSet>, IoApicError>
         .get()
         .ok_or(IoApicError::NotInitialized)
         .map(|topology| topology.lock().unwrap_or_else(|error| error.into_inner()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redirection_table_must_fit_indirect_selector_domain() {
+        assert_eq!(redirection_count(0), Ok(1));
+        assert_eq!(redirection_count(23 << 16), Ok(24));
+        assert_eq!(redirection_count(119 << 16), Ok(120));
+        assert_eq!(
+            redirection_count(120 << 16),
+            Err(IoApicError::InvalidRedirectionCount { count: 121 })
+        );
+        assert_eq!(
+            redirection_count(u32::MAX),
+            Err(IoApicError::InvalidRedirectionCount { count: 256 })
+        );
+    }
 }
