@@ -78,19 +78,6 @@ fn map_storage_transport(raw: u32) -> StorageTransport {
     }
 }
 
-fn block_scheduler_device(info: &AbiBlockDeviceInfo, handle: u64) -> IoDeviceId {
-    match info.transport {
-        x if x == AbiBlockTransport::Nvme as u32 => IoDeviceId::Nvme {
-            controller: info.controller_id as u8,
-            namespace: info.namespace_id,
-        },
-        x if x == AbiBlockTransport::Ahci as u32 => IoDeviceId::Ahci {
-            port: info.port_id as u8,
-        },
-        _ => IoDeviceId::Custom(handle as u32),
-    }
-}
-
 #[derive(Clone, Copy)]
 struct BlockDeviceAdapter {
     registration: AbiBlockDeviceRegistration,
@@ -221,7 +208,7 @@ impl BlockBridgeRegistry {
         registration: &AbiBlockDeviceRegistration,
     ) -> Result<u64, AbiErrorCode> {
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
-        let scheduler_device = block_scheduler_device(&registration.info, handle);
+        let scheduler_device = IoDeviceId::RegisteredBlock { handle };
 
         {
             let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());

@@ -103,6 +103,9 @@ pub enum DeviceId {
     },
     /// USB
     Usb { bus: u8, device: u8 },
+    /// One resource-registry registration. Transport-local port or namespace
+    /// numbers cannot identify an independently registered ABI device.
+    RegisteredBlock { handle: u64 },
     /// カスタム
     Custom(u32),
 }

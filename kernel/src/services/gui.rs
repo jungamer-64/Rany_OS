@@ -29,6 +29,40 @@ fn provider_device_id(kind: u8, index: u64) -> u64 {
     ((kind as u64) << 56) | index
 }
 
+fn ahci_storage_device_id(controller: kernel_api::abi::driver::PackedPciLocation, port: u8) -> u64 {
+    // Keep segment/BDF and port below the provider-kind byte. Two HBAs may
+    // implement the same port number without sharing device identity.
+    let index = (u64::from(controller.segment()) << 32)
+        | (u64::from(controller.bus()) << 24)
+        | (u64::from(controller.device()) << 16)
+        | (u64::from(controller.function()) << 8)
+        | u64::from(port);
+    provider_device_id(STORAGE_KIND_AHCI, index)
+}
+
+#[cfg(test)]
+mod storage_identity_tests {
+    use super::ahci_storage_device_id;
+    use kernel_api::abi::driver::PackedPciLocation;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn ahci_identity_encoding_keeps_pci_and_port_fields() {
+        assert_eq!(
+            ahci_storage_device_id(PackedPciLocation::new(0x1234, 0x56, 0x1b, 7), 31),
+            0x0300_1234_561b_071f
+        );
+        assert_eq!(
+            ahci_storage_device_id(PackedPciLocation::new(u16::MAX, u8::MAX, 31, 7), 31),
+            0x0300_ffff_ff1f_071f
+        );
+        assert_ne!(
+            ahci_storage_device_id(PackedPciLocation::new(0, 0, 1, 0), 0),
+            ahci_storage_device_id(PackedPciLocation::new(1, 0, 1, 0), 0)
+        );
+    }
+}
+
 fn map_pixel_format(format: crate::graphics::PixelFormat) -> KapiPixelFormat {
     match format {
         crate::graphics::PixelFormat::Rgba8888 => KapiPixelFormat::Rgb32,
@@ -104,9 +138,9 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
     }
 
     for device in crate::io::io_scheduler::io_scheduler().registered_devices() {
-        if let crate::io::io_scheduler::DeviceId::Ahci { port } = device {
+        if let crate::io::io_scheduler::DeviceId::Ahci { controller, port } = device {
             let info = StorageDeviceInfo {
-                device_id: provider_device_id(STORAGE_KIND_AHCI, port as u64),
+                device_id: ahci_storage_device_id(controller, port),
                 namespace_id: 0,
                 block_size: crate::drivers::ahci::SECTOR_SIZE as u32,
                 max_transfer_blocks: 0,

@@ -159,6 +159,11 @@ pub struct AhciController {
 }
 
 impl AhciController {
+    /// PCI identity retained by this controller's mapping and DMA queues.
+    pub const fn device(&self) -> PackedPciLocation {
+        self.device
+    }
+
     /// Acquires an exclusive controller aperture and enables AHCI mode.
     /// Interrupts remain disabled because the current port owner polls slot 0.
     ///
