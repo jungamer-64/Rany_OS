@@ -310,14 +310,8 @@ pub(crate) fn read_u64_checked(addr: usize) -> Option<u64> {
 // 設計書 8.1: バックトレース解決用
 // ============================================================================
 
-/// シンボルテーブル（リンカスクリプトで提供）
-///
-/// NOTE: __ksym_start/__ksym_end はリンカスクリプトで定義される必要があります。
-/// 現在はダミーのシンボルを提供して、シンボルテーブルが利用できない場合は
-/// gracefulに処理します。
-
-// カーネルシンボルテーブルのダミー定義
-// 実際のシンボルテーブルはリンカスクリプトで上書きされる
+// Reserved section marker. No symbol-table parser is enabled until the image
+// format supplies validated bounds and entry metadata.
 #[cfg(not(test))]
 #[unsafe(no_mangle)]
 #[used]
@@ -333,227 +327,19 @@ unsafe extern "C" {
     static EH_FRAME_END: u8;
 }
 
-// シンボルテーブル境界のダミー（テーブルがない場合は空）
-static mut KSYM_START_ADDR: usize = 0;
-static mut KSYM_END_ADDR: usize = 0;
-
-/// シンボルテーブルエントリ
-#[repr(C)]
-#[derive(Debug, Clone, Copy)]
-pub struct KernelSymbol {
-    /// シンボルのアドレス
-    pub address: usize,
-    /// シンボル名の長さ
-    pub name_len: u16,
-    /// シンボルサイズ
-    pub size: u32,
-    /// シンボルタイプ (0=func, 1=data)
-    pub sym_type: u8,
-    /// パディング
-    _padding: u8,
-    // 名前はこの構造体の直後に続く
-}
-
-/// カーネルシンボルテーブル
-pub struct KernelSymbolTable {
-    /// シンボルの開始アドレス
-    base: usize,
-    /// シンボルテーブルの終了アドレス
-    end: usize,
-    /// シンボル数（キャッシュ）
-    count: usize,
-}
-
-impl KernelSymbolTable {
-    /// シンボルテーブルを初期化
-    pub fn new() -> Option<Self> {
-        unsafe {
-            // ダミーアドレスを使用（実際はリンカスクリプトで設定される）
-            let start = KSYM_START_ADDR;
-            let end = KSYM_END_ADDR;
-
-            if start == 0 || end == 0 || end <= start {
-                return None;
-            }
-
-            // シンボル数をカウント
-            let mut offset = 0;
-            let mut count = 0;
-            while start + offset < end {
-                let sym = &*((start + offset) as *const KernelSymbol);
-                let entry_size = core::mem::size_of::<KernelSymbol>() + sym.name_len as usize;
-                // 8バイトアライメント
-                let aligned_size = (entry_size + 7) & !7;
-                offset += aligned_size;
-                count += 1;
-            }
-
-            Some(Self {
-                base: start,
-                end,
-                count,
-            })
-        }
-    }
-
-    /// アドレスからシンボルを検索
-    pub fn lookup(&self, address: usize) -> Option<(&KernelSymbol, &str)> {
-        let mut best_match: Option<(&KernelSymbol, &str)> = None;
-        let mut best_distance = usize::MAX;
-
-        let mut offset = 0;
-        while self.base + offset < self.end {
-            let (sym, name, aligned_size) = match self.symbol_at(offset) {
-                Some(value) => value,
-                None => break,
-            };
-
-            // アドレスがこのシンボルの範囲内かチェック
-            if address >= sym.address {
-                let distance = address - sym.address;
-
-                // サイズが分かる場合は範囲内かチェック
-                if sym.size > 0 && distance < sym.size as usize {
-                    return Some((sym, name));
-                }
-
-                // 最も近いシンボルを記録
-                if distance < best_distance {
-                    best_distance = distance;
-                    best_match = Some((sym, name));
-                }
-            }
-
-            // 次のエントリへ
-            offset += aligned_size;
-        }
-
-        // 距離が大きすぎる場合は無効
-        if best_distance > 0x10000 {
-            return None;
-        }
-
-        best_match
-    }
-
-    /// シンボル数を取得
-    pub fn symbol_count(&self) -> usize {
-        self.count
-    }
-
-    /// イテレータを取得
-    pub fn iter(&self) -> KernelSymbolIter<'_> {
-        KernelSymbolIter {
-            table: self,
-            offset: 0,
-        }
-    }
-
-    /// シンボル名をアドレスから読み取る
-    fn read_symbol_name(&self, sym_end: usize, name_len: usize) -> Option<(&str, usize)> {
-        let name_start = sym_end;
-        let name_end = name_start.checked_add(name_len)?;
-        if name_end > self.end {
-            return None;
-        }
-
-        let name_bytes = unsafe { core::slice::from_raw_parts(name_start as *const u8, name_len) };
-        let name = core::str::from_utf8(name_bytes).ok()?;
-
-        let entry_size = core::mem::size_of::<KernelSymbol>().checked_add(name_len)?;
-        let aligned_size = entry_size.checked_add(7)? & !7;
-        if aligned_size == 0 {
-            return None;
-        }
-
-        Some((name, aligned_size))
-    }
-
-    fn symbol_at(&self, offset: usize) -> Option<(&KernelSymbol, &str, usize)> {
-        let base = self.base.checked_add(offset)?;
-        let sym_end = base.checked_add(core::mem::size_of::<KernelSymbol>())?;
-        if sym_end > self.end {
-            return None;
-        }
-
-        let sym = unsafe { &*(base as *const KernelSymbol) };
-        let (name, aligned_size) = self.read_symbol_name(sym_end, sym.name_len as usize)?;
-
-        Some((sym, name, aligned_size))
-    }
-}
-
-impl Default for KernelSymbolTable {
-    fn default() -> Self {
-        Self::new().unwrap_or(Self {
-            base: 0,
-            end: 0,
-            count: 0,
-        })
-    }
-}
-
-/// シンボルイテレータ
-pub struct KernelSymbolIter<'a> {
-    table: &'a KernelSymbolTable,
-    offset: usize,
-}
-
-impl<'a> Iterator for KernelSymbolIter<'a> {
-    type Item = (&'a KernelSymbol, &'a str);
-
-    fn next(&mut self) -> Option<Self::Item> {
-        if self.table.base + self.offset >= self.table.end {
-            return None;
-        }
-
-        let (sym, name, aligned_size) = self.table.symbol_at(self.offset)?;
-        self.offset += aligned_size;
-        Some((sym, name))
-    }
-}
-
-/// グローバルシンボルテーブル
-static KERNEL_SYMBOLS: spin::Once<Option<KernelSymbolTable>> = spin::Once::new();
-
 /// シンボルテーブルを初期化
 pub fn init_symbol_table() {
-    KERNEL_SYMBOLS.call_once(|| KernelSymbolTable::new());
-
-    if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
-        log::info!(
-            "[UNWIND] Kernel symbol table loaded: {} symbols\n",
-            table.symbol_count()
-        );
-    } else {
-        log::info!("[UNWIND] No kernel symbol table available\n");
-    }
+    log::info!("[UNWIND] No validated kernel symbol table is present\n");
 }
 
-/// シンボル情報を解決(内部)
-fn resolve_symbol(address: usize) -> Option<SymbolInfo> {
-    // まずシンボルテーブルから検索
-    if let Some(Some(table)) = KERNEL_SYMBOLS.get() {
-        if let Some((sym, name)) = table.lookup(address) {
-            return Some(SymbolInfo {
-                name: Some(unsafe {
-                    // 'static ライフタイムに変換（シンボルテーブルは静的）
-                    core::mem::transmute::<&str, &'static str>(name)
-                }),
-                base_address: sym.address,
-                offset: address - sym.address,
-            });
-        }
-    }
-
-    // シンボルテーブルがない場合はNone
+fn resolve_symbol(_address: usize) -> Option<SymbolInfo> {
     None
 }
 
 /// ヘルパー: アドレスからシンボル名（存在する場合）を返す
 /// 診断用に外部から呼べるように公開
-pub fn resolve_symbol_name(address: usize) -> Option<&'static str> {
-    resolve_symbol(address).and_then(|s| s.name)
+pub fn resolve_symbol_name(_address: usize) -> Option<&'static str> {
+    None
 }
 
 /// パニックハンドラ用バックトレース表示
