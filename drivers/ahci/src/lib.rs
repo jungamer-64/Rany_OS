@@ -83,39 +83,3 @@ pub use types::{
     SectorCount,
     SlotNumber,
 };
-
-// ATAPI module - import directly via `ahci_driver::atapi::*`
-
-#[cfg(test)]
-mod tests {
-    use crate::atapi::{ReadCapacityResponse, ScsiCdb12, ScsiOpcode, SenseKey};
-
-    #[test]
-    fn scsi_cdb_read10_smoke() {
-        let cdb = ScsiCdb12::read10(0x12345678, 256);
-        assert_eq!(cdb.opcode, ScsiOpcode::Read10 as u8);
-        assert_eq!(cdb.lba_hi, 0x12);
-        assert_eq!(cdb.lba_mid_hi, 0x34);
-        assert_eq!(cdb.lba_mid_lo, 0x56);
-        assert_eq!(cdb.lba_lo, 0x78);
-        assert_eq!(cdb.length_mid_lo, 0x01);
-        assert_eq!(cdb.length_lo, 0x00);
-    }
-
-    #[test]
-    fn sense_key_smoke() {
-        assert_eq!(SenseKey::from_code(0x00), SenseKey::NoSense);
-        assert_eq!(SenseKey::from_code(0x02), SenseKey::NotReady);
-        assert_eq!(SenseKey::from_code(0x05), SenseKey::IllegalRequest);
-    }
-
-    #[test]
-    fn read_capacity_endianness_smoke() {
-        let response = ReadCapacityResponse {
-            last_lba_be: 0x01020304u32.to_be(),
-            block_length_be: 0x00000800u32.to_be(),
-        };
-        assert_eq!(response.last_lba(), 0x01020304);
-        assert_eq!(response.block_length(), 2048);
-    }
-}

@@ -1,159 +1,410 @@
-//! AHCI Controller Implementation
+//! AHCI controller ownership and per-port capability admission.
 //!
-//! Manages HBA and port initialization.
+//! One controller consumes the complete HBA aperture, attenuates it into a
+//! global register prefix and 32 disjoint port apertures, and is the only
+//! source of queue generations. Port DMA memory remains registry-owned.
 
-extern crate alloc;
+#![deny(unsafe_code, unsafe_op_in_unsafe_fn)]
+#![deny(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
-use alloc::sync::Arc;
-use alloc::vec::Vec;
-use exorust_sync::PoisonLock;
+use core::num::NonZeroUsize;
+
+use hal::{MappedMmio, MmioAccessError};
 use kernel_api::abi::driver::PackedPciLocation;
+use kernel_api::dma::{CpuDmaLease, DmaQueueIdentity};
 
-use super::port::AhciPort;
-use super::types::{
-    AhciResult, GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PX_SSTS,
-    PortNumber,
+use crate::command::DmaAddressWidth;
+use crate::port::{AhciPort, InitializationMemory, OpenCause, PortCloseError, PortOpenError};
+use crate::types::{
+    GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PX_CI, PortNumber,
 };
 
-/// AHCI Controller
+const PORT_COUNT: usize = 32;
+const HBA_REGISTER_BYTES: usize = PORT_BASE as usize + PORT_COUNT * PORT_SIZE as usize;
+const CAP_S64A: u32 = 1 << 31;
+
+/// Failure before the controller aperture has been split.
+#[derive(Debug)]
+pub struct ControllerOpenError {
+    pub cause: ControllerOpenCause,
+    pub mapping: MappedMmio,
+}
+
+/// Runtime-checkable controller acquisition failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerOpenCause {
+    NullDevice,
+    ApertureTooSmall,
+    Registers(MmioAccessError),
+}
+
+/// Port admission may preserve CPU, prepared, or shared DMA ownership.
+#[derive(Debug)]
+pub enum ControllerPortMemory {
+    Cpu(CpuDmaLease),
+    Initialization(InitializationMemory),
+}
+
+/// Failure to attach one controller-owned port.
+#[derive(Debug)]
+pub struct ControllerPortError {
+    pub cause: ControllerPortCause,
+    pub memory: ControllerPortMemory,
+}
+
+/// Port identity/resource failure distinct from the port hardware protocol.
+#[derive(Debug)]
+pub enum ControllerPortCause {
+    InvalidPort,
+    NotImplemented,
+    AlreadyAttached,
+    QueueGenerationExhausted,
+    Open(OpenCause),
+}
+
+/// Partial controller shutdown keeps the failed port resources and all ports
+/// not yet visited. `closed_ports` identifies allocations already reclaimed.
+#[derive(Debug)]
+pub struct ControllerCloseError {
+    pub failed_port: PortNumber,
+    pub closed_ports: u32,
+    pub failure: PortCloseError,
+    pub controller: AhciController,
+}
+
+#[derive(Debug)]
+struct ControllerRegisters(MappedMmio);
+
+impl ControllerRegisters {
+    fn read(&self, offset: u32) -> u32 {
+        self.0
+            .region()
+            .read_only::<u32>(offset as usize)
+            .expect("controller register set was validated before splitting")
+            .read()
+    }
+
+    fn write(&self, offset: u32, value: u32) {
+        self.0
+            .region()
+            .write_only::<u32>(offset as usize)
+            .expect("controller register set was validated before splitting")
+            .write(value);
+    }
+
+    fn enable_ahci(&self) {
+        let control = self.read(GHC_GHC);
+        self.write(GHC_GHC, (control | GHC_AE) & !GHC_IE);
+    }
+
+    fn disable_interrupts(&self) {
+        let control = self.read(GHC_GHC);
+        self.write(GHC_GHC, control & !GHC_IE);
+    }
+}
+
+/// Owns global AHCI registers, disjoint port apertures, and attached ports.
+#[derive(Debug)]
 pub struct AhciController {
-    base: u64,
+    registers: ControllerRegisters,
+    device: PackedPciLocation,
     ports_implemented: u32,
-    ports: Vec<Arc<PoisonLock<AhciPort>>>,
+    port_mappings: [Option<MappedMmio>; PORT_COUNT],
+    ports: [Option<AhciPort>; PORT_COUNT],
     version: u32,
     command_slots: u8,
+    address_width: DmaAddressWidth,
+    next_queue_generation: u64,
 }
 
 impl AhciController {
-    /// # Errors
+    /// Acquires an exclusive controller aperture and enables AHCI mode.
+    /// Interrupts remain disabled because the current port owner polls slot 0.
     ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub fn new(base: u64, device_id: PackedPciLocation) -> AhciResult<Self> {
-        let cap = hal::mmio::mmio_read_u32((base + GHC_CAP as u64) as usize);
-        let pi = hal::mmio::mmio_read_u32((base + GHC_PI as u64) as usize);
-        let vs = hal::mmio::mmio_read_u32((base + GHC_VS as u64) as usize);
-
-        let command_slots = ((cap >> 8) & 0x1F) as u8 + 1;
-        let _version_major = (vs >> 16) & 0xFFFF;
-        let _version_minor = vs & 0xFFFF;
-
-        let mut ports = Vec::new();
-
-        // Initialize ports here, as per the diff's placement
-        for i in 0..32 {
-            if pi & (1 << i) != 0 {
-                // Try to allocate new port. If fails (OOM), we skip it.
-                if let Some(mut port) = AhciPort::new(base, PortNumber::new(i as u8), device_id) {
-                    let ssts = hal::mmio::mmio_read_u32(
-                        (base + PORT_BASE as u64 + (i as u64 * PORT_SIZE as u64) + PX_SSTS as u64)
-                            as usize,
-                    );
-                    let det = ssts & 0x0F;
-
-                    if det == 3 {
-                        // Device detected, init it
-                        // If init fails, we still keep the port structure but maybe not active
-                        if port.init().is_ok() {
-                            ports.push(Arc::new(PoisonLock::new(port)));
-                        }
-                    }
-                }
-            }
+    /// # Safety
+    /// `mapping` must be the complete AHCI BAR for exactly `device`; the PCI
+    /// resource owner must have completed firmware handoff and excluded every
+    /// competing driver. The aperture must remain mapped with correct device
+    /// cache attributes through its retained owner. Bus mastering and coherent
+    /// DMA must describe this device, and reset/replacement must not occur behind
+    /// the returned owner.
+    ///
+    /// # Errors
+    /// Validation failure occurs before AHCI mode is enabled and returns the
+    /// original unsplit mapping.
+    #[expect(
+        unsafe_code,
+        reason = "PCI resource identity and firmware handoff are external facts"
+    )]
+    pub unsafe fn open(
+        mapping: MappedMmio,
+        device: PackedPciLocation,
+    ) -> Result<Self, ControllerOpenError> {
+        if device.is_null() {
+            return Err(ControllerOpenError {
+                cause: ControllerOpenCause::NullDevice,
+                mapping,
+            });
         }
+        if mapping.len() < HBA_REGISTER_BYTES {
+            return Err(ControllerOpenError {
+                cause: ControllerOpenCause::ApertureTooSmall,
+                mapping,
+            });
+        }
+        let read = |offset| {
+            mapping
+                .region()
+                .read_only::<u32>(offset)
+                .map(|register| register.read())
+        };
+        let values = read(GHC_CAP as usize)
+            .and_then(|capability| {
+                read(GHC_PI as usize).map(|ports_implemented| (capability, ports_implemented))
+            })
+            .and_then(|(capability, ports_implemented)| {
+                read(GHC_VS as usize).map(|version| (capability, ports_implemented, version))
+            })
+            .and_then(|values| read(GHC_GHC as usize).map(|_| values))
+            .and_then(|values| {
+                read(PORT_BASE as usize + (PORT_COUNT - 1) * PORT_SIZE as usize + PX_CI as usize)
+                    .map(|_| values)
+            });
+        let (capability, ports_implemented, version) = match values {
+            Ok(values) => values,
+            Err(cause) => {
+                return Err(ControllerOpenError {
+                    cause: ControllerOpenCause::Registers(cause),
+                    mapping,
+                });
+            }
+        };
+
+        let mapping = retain_hba_prefix(mapping);
+        let (global, port_mappings) = split_hba(mapping);
+        let registers = ControllerRegisters(global);
+        registers.enable_ahci();
 
         Ok(Self {
-            base,
-            ports_implemented: pi,
-            ports,
-            version: vs,
-            command_slots,
+            registers,
+            device,
+            ports_implemented,
+            port_mappings,
+            ports: core::array::from_fn(|_| None),
+            version,
+            command_slots: (((capability >> 8) & 0x1f) as u8) + 1,
+            address_width: if capability & CAP_S64A == 0 {
+                DmaAddressWidth::Bits32
+            } else {
+                DmaAddressWidth::Bits64
+            },
+            next_queue_generation: 1,
         })
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub fn init(&mut self) -> AhciResult<()> {
-        let mut ghc = self.read_ghc(GHC_GHC);
-        ghc |= GHC_AE;
-        self.write_ghc(GHC_GHC, ghc);
-
-        // The port initialization logic has been moved to the `new` function based on the diff.
-        // This `init` function now only handles GHC_AE and GHC_IE.
-
-        ghc = self.read_ghc(GHC_GHC);
-        ghc |= GHC_IE;
-        self.write_ghc(GHC_GHC, ghc);
-
-        Ok(())
-    }
-
-    /// Get implemented ports bitmask
-    pub fn ports_implemented(&self) -> u32 {
+    /// Bitmask reported by HBA PI.
+    pub const fn ports_implemented(&self) -> u32 {
         self.ports_implemented
     }
 
-    /// Get AHCI version
-    pub fn version(&self) -> u32 {
+    /// AHCI version register value.
+    pub const fn version(&self) -> u32 {
         self.version
     }
 
-    /// Get maximum command slots
-    pub fn command_slots(&self) -> u8 {
+    /// Number of command slots advertised by CAP.NCS.
+    pub const fn command_slots(&self) -> u8 {
         self.command_slots
     }
 
-    pub fn port(&self, _port: PortNumber) -> Option<Arc<PoisonLock<AhciPort>>> {
-        None
+    /// Returns whether a SATA port is attached to this owner.
+    pub fn contains_port(&self, port: PortNumber) -> bool {
+        self.ports.get(port.as_usize()).is_some_and(Option::is_some)
     }
 
-    // Accessor for ports via index, intended to be used when lock is held or by internal methods
-    pub fn get_port_start_index(&self) -> Option<usize> {
-        // finding first implemented port
-        for i in 0..32 {
-            if (self.ports_implemented & (1 << i)) != 0 {
-                return Some(i);
+    /// Borrows an attached port under the controller's exclusive borrow.
+    pub fn port_mut(&mut self, port: PortNumber) -> Option<&mut AhciPort> {
+        self.ports.get_mut(port.as_usize())?.as_mut()
+    }
+
+    /// Attaches one implemented port using registry-owned metadata memory.
+    /// The controller creates the queue identity and does not reuse a consumed
+    /// generation, including after failed hardware initialization.
+    ///
+    /// # Errors
+    /// Pre-admission errors return the CPU lease. Port initialization errors
+    /// return its exact transition state while the register aperture is restored
+    /// to this controller.
+    pub fn attach_port(
+        &mut self,
+        port: PortNumber,
+        memory: CpuDmaLease,
+        poll_budget: NonZeroUsize,
+    ) -> Result<(), ControllerPortError> {
+        if !port.is_valid() {
+            return Err(port_error(
+                ControllerPortCause::InvalidPort,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        }
+        let bit = 1u32 << u32::from(port.as_u8());
+        if self.ports_implemented & bit == 0 {
+            return Err(port_error(
+                ControllerPortCause::NotImplemented,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        }
+        let index = port.as_usize();
+        if self.ports.get(index).is_some_and(Option::is_some) {
+            return Err(port_error(
+                ControllerPortCause::AlreadyAttached,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        }
+        let Some(next_generation) = self.next_queue_generation.checked_add(1) else {
+            return Err(port_error(
+                ControllerPortCause::QueueGenerationExhausted,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+        let generation = self.next_queue_generation;
+        self.next_queue_generation = next_generation;
+        let Some(queue) = DmaQueueIdentity::new(self.device, u16::from(port.as_u8()), generation)
+        else {
+            return Err(port_error(
+                ControllerPortCause::QueueGenerationExhausted,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+        let Some(port_slot) = self.ports.get_mut(index) else {
+            return Err(port_error(
+                ControllerPortCause::InvalidPort,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+        let Some(mapping_slot) = self.port_mappings.get_mut(index) else {
+            return Err(port_error(
+                ControllerPortCause::InvalidPort,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+        let Some(mapping) = mapping_slot.take() else {
+            return Err(port_error(
+                ControllerPortCause::AlreadyAttached,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+
+        #[expect(
+            unsafe_code,
+            reason = "the controller acquisition binds each attenuated aperture to its queue"
+        )]
+        // SAFETY: `open` established exclusive device ownership and CAP.S64A;
+        // `split_hba` created this port's disjoint aperture, and the controller
+        // is the only queue-generation source. The allocation remains owned by
+        // the registry and is consumed by `AhciPort` on success.
+        let opened =
+            unsafe { AhciPort::attach(mapping, queue, self.address_width, memory, poll_budget) };
+        match opened {
+            Ok(port) => {
+                *port_slot = Some(port);
+                Ok(())
+            }
+            Err(PortOpenError {
+                cause,
+                registers,
+                memory,
+            }) => {
+                *mapping_slot = Some(registers);
+                Err(port_error(
+                    ControllerPortCause::Open(cause),
+                    ControllerPortMemory::Initialization(memory),
+                ))
             }
         }
-        None
     }
 
-    // Helper to run closure on a port
-    pub fn with_port<F, R>(&self, port_num: PortNumber, f: F) -> Option<R>
-    where
-        F: FnOnce(&mut AhciPort) -> R,
-    {
-        if let Some(port_lock) = self.ports.get(port_num.as_usize()) {
-            let mut port = port_lock.lock().unwrap_or_else(|e| e.into_inner());
-            Some(f(&mut *port))
-        } else {
-            None
+    /// Explicitly closes every attached port in ascending hardware order.
+    ///
+    /// # Errors
+    /// The first failed port is returned with its exact resources. Ports already
+    /// closed are recorded in `closed_ports`; all later ports stay in the
+    /// returned controller and have not begun shutdown.
+    #[expect(
+        clippy::result_large_err,
+        reason = "partial shutdown must return all live port owners without a new fallible allocation"
+    )]
+    pub fn close(mut self, poll_budget: NonZeroUsize) -> Result<(), ControllerCloseError> {
+        self.registers.disable_interrupts();
+        let mut closed_ports = 0u32;
+        for index in 0..PORT_COUNT {
+            let Some(port) = self.ports.get_mut(index).and_then(Option::take) else {
+                continue;
+            };
+            if let Err(failure) = port.close(poll_budget) {
+                return Err(ControllerCloseError {
+                    failed_port: PortNumber::new(index as u8),
+                    closed_ports,
+                    failure,
+                    controller: self,
+                });
+            }
+            closed_ports |= 1u32 << index;
         }
-    }
-
-    pub fn read_ghc(&self, offset: u32) -> u32 {
-        hal::mmio::mmio_read_u32((self.base + offset as u64) as usize)
-    }
-
-    pub fn write_ghc(&self, offset: u32, value: u32) {
-        hal::mmio::mmio_write_u32((self.base + offset as u64) as usize, value);
-    }
-
-    pub fn read_port_reg(&self, port: PortNumber, offset: u32) -> u32 {
-        let addr =
-            self.base + PORT_BASE as u64 + (port.as_u8() as u64 * PORT_SIZE as u64) + offset as u64;
-        hal::mmio::mmio_read_u32(addr as usize)
+        Ok(())
     }
 }
 
-/// # Errors
-///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub fn init_from_pci(
-    base_addr: u64,
-    device_id: PackedPciLocation,
-) -> AhciResult<Arc<PoisonLock<AhciController>>> {
-    let mut controller = AhciController::new(base_addr, device_id)?;
-    controller.init()?;
-    Ok(Arc::new(PoisonLock::new(controller)))
+fn port_error(cause: ControllerPortCause, memory: ControllerPortMemory) -> ControllerPortError {
+    ControllerPortError { cause, memory }
+}
+
+fn retain_hba_prefix(mapping: MappedMmio) -> MappedMmio {
+    if mapping.len() == HBA_REGISTER_BYTES {
+        return mapping;
+    }
+    let Ok((prefix, _unused)) = mapping.split_at(HBA_REGISTER_BYTES) else {
+        unreachable!("the caller validated the complete HBA prefix")
+    };
+    prefix
+}
+
+fn split_hba(mapping: MappedMmio) -> (MappedMmio, [Option<MappedMmio>; PORT_COUNT]) {
+    let Ok((global, tail)) = mapping.split_at(PORT_BASE as usize) else {
+        unreachable!("the HBA prefix contains global and port registers")
+    };
+    let mut tail = Some(tail);
+    let mut ports = core::array::from_fn(|_| None);
+    for index in 0..PORT_COUNT {
+        let remaining = tail
+            .take()
+            .expect("one exact port aperture remains for each iteration");
+        let (port, rest) = if index + 1 == PORT_COUNT {
+            (remaining, None)
+        } else {
+            let Ok((port, rest)) = remaining.split_at(PORT_SIZE as usize) else {
+                unreachable!("the HBA prefix was validated before splitting")
+            };
+            (port, Some(rest))
+        };
+        *ports
+            .get_mut(index)
+            .expect("fixed loop range indexes the fixed port array") = Some(port);
+        tail = rest;
+    }
+    (global, ports)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aperture_size_covers_every_port_register_set() {
+        assert_eq!(HBA_REGISTER_BYTES, 0x1100);
+        assert_eq!(
+            PORT_BASE as usize + 31 * PORT_SIZE as usize + PX_CI as usize + 4,
+            0x10bc
+        );
+    }
 }

@@ -1,34 +1,32 @@
-// ============================================================================
-// src/atapi.rs - AHCI ATAPI (CD/DVD) Support (migrated from kernel)
-// ============================================================================
+//! Pure ATAPI packet and response codecs.
 //!
-//! ATAPI support for SATA-connected optical drives (CD/DVD) via AHCI.
-//!
-//! This module was migrated from `kernel/src/io/ahci_atapi.rs` and refactored to
-//! use the `ahci_driver` crate internals (HAL for MMIO, crate-local types, etc.).
-//!
-use alloc::boxed::Box;
+//! This module deliberately owns no registers or DMA memory. An eventual
+//! SATAPI transport must submit these bytes through the same `AhciPort` lease
+//! protocol as SATA commands; byte slices and heap addresses are never device
+//! addresses.
+
+#![forbid(unsafe_code)]
+
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
-use core::ptr;
 
-use crate::{
-    AhciError, AhciResult, CommandHeader, CommandTable, FisRegH2D, FisType,
-    PhysicalRegionDescriptor, PortNumber, SlotNumber,
-};
+/// Logical block size commonly used by data CDs and DVDs.
+pub const CD_SECTOR_SIZE: u32 = 2048;
+/// Sector size used by raw CD audio reads.
+pub const CD_AUDIO_SECTOR_SIZE: u32 = 2352;
 
-// AHCI port register offsets used by ATAPI
-const PX_IS: u32 = 0x10;
-const PX_TFD: u32 = 0x20;
-const PX_CI: u32 = 0x38;
+/// Failure while decoding an ATAPI response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AtapiParseError {
+    /// The response does not contain the complete fixed or declared span.
+    Truncated,
+    /// A declared variable-length response is not a sequence of full records.
+    MalformedLength,
+    /// Capacity for decoded records could not be reserved.
+    Capacity,
+}
 
-// ============================================================================
-// ATAPI Constants
-// ============================================================================
-
-/// ATAPI commands
-const ATA_CMD_PACKET: u8 = 0xA0;
-
+/// SCSI operation codes carried by an ATA PACKET command.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScsiOpcode {
@@ -40,133 +38,118 @@ pub enum ScsiOpcode {
     PreventAllow = 0x1E,
     ReadCapacity = 0x25,
     Read10 = 0x28,
-    Read12 = 0xA8,
     ReadTocPmaAtip = 0x43,
     GetConfiguration = 0x46,
     GetEventStatus = 0x4A,
     ReadDiscInfo = 0x51,
     ModeSense10 = 0x5A,
+    Read12 = 0xA8,
     ReadCd = 0xBE,
 }
 
-pub const CD_SECTOR_SIZE: u32 = 2048;
-pub const CD_AUDIO_SECTOR_SIZE: u32 = 2352;
-
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct ScsiCdb12 {
-    pub opcode: u8,
-    pub flags: u8,
-    pub lba_hi: u8,
-    pub lba_mid_hi: u8,
-    pub lba_mid_lo: u8,
-    pub lba_lo: u8,
-    pub length_hi: u8,
-    pub length_mid_hi: u8,
-    pub length_mid_lo: u8,
-    pub length_lo: u8,
-    pub reserved: u8,
-    pub control: u8,
-}
+/// One validated twelve-byte SCSI command descriptor block.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScsiCdb12([u8; 12]);
 
 impl ScsiCdb12 {
-    pub fn test_unit_ready() -> Self {
-        Self {
-            opcode: ScsiOpcode::TestUnitReady as u8,
-            ..Default::default()
-        }
+    /// Builds TEST UNIT READY.
+    pub const fn test_unit_ready() -> Self {
+        Self::with_opcode(ScsiOpcode::TestUnitReady)
     }
 
-    pub fn inquiry(allocation_length: u8) -> Self {
-        Self {
-            opcode: ScsiOpcode::Inquiry as u8,
-            length_lo: allocation_length,
-            ..Default::default()
-        }
+    /// Builds INQUIRY with the requested response size.
+    pub const fn inquiry(allocation_length: u8) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::Inquiry).0;
+        bytes[4] = allocation_length;
+        Self(bytes)
     }
 
-    pub fn request_sense(allocation_length: u8) -> Self {
-        Self {
-            opcode: ScsiOpcode::RequestSense as u8,
-            length_lo: allocation_length,
-            ..Default::default()
-        }
+    /// Builds REQUEST SENSE with the requested response size.
+    pub const fn request_sense(allocation_length: u8) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::RequestSense).0;
+        bytes[4] = allocation_length;
+        Self(bytes)
     }
 
-    pub fn read_capacity() -> Self {
-        Self {
-            opcode: ScsiOpcode::ReadCapacity as u8,
-            ..Default::default()
-        }
+    /// Builds READ CAPACITY (10).
+    pub const fn read_capacity() -> Self {
+        Self::with_opcode(ScsiOpcode::ReadCapacity)
     }
 
-    pub fn read10(lba: u32, block_count: u16) -> Self {
-        Self {
-            opcode: ScsiOpcode::Read10 as u8,
-            lba_hi: ((lba >> 24) & 0xFF) as u8,
-            lba_mid_hi: ((lba >> 16) & 0xFF) as u8,
-            lba_mid_lo: ((lba >> 8) & 0xFF) as u8,
-            lba_lo: (lba & 0xFF) as u8,
-            length_mid_lo: ((block_count >> 8) & 0xFF) as u8,
-            length_lo: (block_count & 0xFF) as u8,
-            ..Default::default()
-        }
+    /// Builds READ (10).
+    pub const fn read10(lba: u32, block_count: u16) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::Read10).0;
+        let lba = lba.to_be_bytes();
+        bytes[2] = lba[0];
+        bytes[3] = lba[1];
+        bytes[4] = lba[2];
+        bytes[5] = lba[3];
+        let blocks = block_count.to_be_bytes();
+        bytes[7] = blocks[0];
+        bytes[8] = blocks[1];
+        Self(bytes)
     }
 
-    pub fn read12(lba: u32, block_count: u32) -> Self {
-        Self {
-            opcode: ScsiOpcode::Read12 as u8,
-            lba_hi: ((lba >> 24) & 0xFF) as u8,
-            lba_mid_hi: ((lba >> 16) & 0xFF) as u8,
-            lba_mid_lo: ((lba >> 8) & 0xFF) as u8,
-            lba_lo: (lba & 0xFF) as u8,
-            length_hi: ((block_count >> 24) & 0xFF) as u8,
-            length_mid_hi: ((block_count >> 16) & 0xFF) as u8,
-            length_mid_lo: ((block_count >> 8) & 0xFF) as u8,
-            length_lo: (block_count & 0xFF) as u8,
-            ..Default::default()
-        }
+    /// Builds READ (12).
+    pub const fn read12(lba: u32, block_count: u32) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::Read12).0;
+        let lba = lba.to_be_bytes();
+        bytes[2] = lba[0];
+        bytes[3] = lba[1];
+        bytes[4] = lba[2];
+        bytes[5] = lba[3];
+        let blocks = block_count.to_be_bytes();
+        bytes[6] = blocks[0];
+        bytes[7] = blocks[1];
+        bytes[8] = blocks[2];
+        bytes[9] = blocks[3];
+        Self(bytes)
     }
 
-    pub fn read_toc(format: TocFormat, track: u8, allocation_length: u16) -> Self {
-        Self {
-            opcode: ScsiOpcode::ReadTocPmaAtip as u8,
-            flags: (format as u8) << 1,
-            lba_lo: track,
-            length_mid_lo: ((allocation_length >> 8) & 0xFF) as u8,
-            length_lo: (allocation_length & 0xFF) as u8,
-            ..Default::default()
-        }
+    /// Builds READ TOC/PMA/ATIP.
+    pub const fn read_toc(format: TocFormat, track: u8, allocation_length: u16) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::ReadTocPmaAtip).0;
+        bytes[1] = (format as u8) << 1;
+        bytes[6] = track;
+        let allocation_length = allocation_length.to_be_bytes();
+        bytes[7] = allocation_length[0];
+        bytes[8] = allocation_length[1];
+        Self(bytes)
     }
 
-    pub fn start_stop_unit(start: bool, load_eject: bool) -> Self {
-        let mut flags = 0u8;
-        if start {
-            flags |= 0x01;
-        }
-        if load_eject {
-            flags |= 0x02;
-        }
-        Self {
-            opcode: ScsiOpcode::StartStopUnit as u8,
-            length_lo: flags,
-            ..Default::default()
-        }
+    /// Builds START STOP UNIT.
+    pub const fn start_stop_unit(start: bool, load_eject: bool) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::StartStopUnit).0;
+        bytes[4] = (start as u8) | ((load_eject as u8) << 1);
+        Self(bytes)
     }
 
-    pub fn get_configuration(feature: u16, allocation_length: u16) -> Self {
-        Self {
-            opcode: ScsiOpcode::GetConfiguration as u8,
-            flags: 0x02,
-            lba_hi: ((feature >> 8) & 0xFF) as u8,
-            lba_mid_hi: (feature & 0xFF) as u8,
-            length_mid_lo: ((allocation_length >> 8) & 0xFF) as u8,
-            length_lo: (allocation_length & 0xFF) as u8,
-            ..Default::default()
-        }
+    /// Builds GET CONFIGURATION for one starting feature.
+    pub const fn get_configuration(feature: u16, allocation_length: u16) -> Self {
+        let mut bytes = Self::with_opcode(ScsiOpcode::GetConfiguration).0;
+        bytes[1] = 0x02;
+        let feature = feature.to_be_bytes();
+        bytes[2] = feature[0];
+        bytes[3] = feature[1];
+        let allocation_length = allocation_length.to_be_bytes();
+        bytes[7] = allocation_length[0];
+        bytes[8] = allocation_length[1];
+        Self(bytes)
+    }
+
+    /// Returns the exact bytes to place in an AHCI ATAPI command table.
+    pub const fn as_bytes(&self) -> &[u8; 12] {
+        &self.0
+    }
+
+    const fn with_opcode(opcode: ScsiOpcode) -> Self {
+        let mut bytes = [0; 12];
+        bytes[0] = opcode as u8;
+        Self(bytes)
     }
 }
 
+/// Format field for READ TOC/PMA/ATIP.
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TocFormat {
@@ -178,38 +161,7 @@ pub enum TocFormat {
     CdText = 5,
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct InquiryResponse {
-    pub peripheral: u8,
-    pub rmb: u8,
-    pub version: u8,
-    pub response_format: u8,
-    pub additional_length: u8,
-    pub reserved: [u8; 3],
-    pub vendor: [u8; 8],
-    pub product: [u8; 16],
-    pub revision: [u8; 4],
-}
-
-impl InquiryResponse {
-    pub fn device_type(&self) -> AtapiDeviceType {
-        AtapiDeviceType::from_code(self.peripheral & 0x1F)
-    }
-    pub fn is_removable(&self) -> bool {
-        (self.rmb & 0x80) != 0
-    }
-    pub fn vendor_string(&self) -> String {
-        String::from_utf8_lossy(&self.vendor).trim().to_string()
-    }
-    pub fn product_string(&self) -> String {
-        String::from_utf8_lossy(&self.product).trim().to_string()
-    }
-    pub fn revision_string(&self) -> String {
-        String::from_utf8_lossy(&self.revision).trim().to_string()
-    }
-}
-
+/// Peripheral type decoded from INQUIRY.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AtapiDeviceType {
     DirectAccess,
@@ -221,80 +173,109 @@ pub enum AtapiDeviceType {
 }
 
 impl AtapiDeviceType {
-    fn from_code(code: u8) -> Self {
+    const fn from_code(code: u8) -> Self {
         match code {
-            0x00 => AtapiDeviceType::DirectAccess,
-            0x01 => AtapiDeviceType::SequentialAccess,
-            0x05 => AtapiDeviceType::CdDvd,
-            0x07 => AtapiDeviceType::OpticalMemory,
-            0x08 => AtapiDeviceType::MediaChanger,
-            _ => AtapiDeviceType::Unknown(code),
+            0x00 => Self::DirectAccess,
+            0x01 => Self::SequentialAccess,
+            0x05 => Self::CdDvd,
+            0x07 => Self::OpticalMemory,
+            0x08 => Self::MediaChanger,
+            _ => Self::Unknown(code),
         }
     }
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
+/// Validated standard INQUIRY response fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InquiryResponse {
+    device_type: AtapiDeviceType,
+    removable: bool,
+    vendor: [u8; 8],
+    product: [u8; 16],
+    revision: [u8; 4],
+}
+
+impl InquiryResponse {
+    /// Decodes the fixed 36-byte standard INQUIRY prefix.
+    ///
+    /// # Errors
+    /// Returns `Truncated` unless all fixed fields are present.
+    pub fn parse(bytes: &[u8]) -> Result<Self, AtapiParseError> {
+        let prefix = bytes.get(..36).ok_or(AtapiParseError::Truncated)?;
+        let mut vendor = [0; 8];
+        vendor.copy_from_slice(&prefix[8..16]);
+        let mut product = [0; 16];
+        product.copy_from_slice(&prefix[16..32]);
+        let mut revision = [0; 4];
+        revision.copy_from_slice(&prefix[32..36]);
+        Ok(Self {
+            device_type: AtapiDeviceType::from_code(prefix[0] & 0x1f),
+            removable: prefix[1] & 0x80 != 0,
+            vendor,
+            product,
+            revision,
+        })
+    }
+
+    pub const fn device_type(&self) -> AtapiDeviceType {
+        self.device_type
+    }
+
+    pub const fn is_removable(&self) -> bool {
+        self.removable
+    }
+
+    pub fn vendor_string(&self) -> String {
+        String::from_utf8_lossy(&self.vendor).trim().to_string()
+    }
+
+    pub fn product_string(&self) -> String {
+        String::from_utf8_lossy(&self.product).trim().to_string()
+    }
+
+    pub fn revision_string(&self) -> String {
+        String::from_utf8_lossy(&self.revision).trim().to_string()
+    }
+}
+
+/// Validated READ CAPACITY (10) response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadCapacityResponse {
-    pub last_lba_be: u32,
-    pub block_length_be: u32,
+    last_lba: u32,
+    block_length: u32,
 }
 
 impl ReadCapacityResponse {
-    pub fn last_lba(&self) -> u32 {
-        u32::from_be(self.last_lba_be)
+    /// Decodes the complete eight-byte response.
+    ///
+    /// # Errors
+    /// Returns `Truncated` unless both integers are present.
+    pub fn parse(bytes: &[u8]) -> Result<Self, AtapiParseError> {
+        let bytes = bytes.get(..8).ok_or(AtapiParseError::Truncated)?;
+        Ok(Self {
+            last_lba: u32::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            block_length: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        })
     }
-    pub fn block_length(&self) -> u32 {
-        u32::from_be(self.block_length_be)
+
+    pub const fn last_lba(&self) -> u32 {
+        self.last_lba
     }
-    pub fn total_blocks(&self) -> u64 {
-        self.last_lba() as u64 + 1
+
+    pub const fn block_length(&self) -> u32 {
+        self.block_length
     }
-    pub fn total_bytes(&self) -> u64 {
-        self.total_blocks() * self.block_length() as u64
+
+    pub const fn total_blocks(&self) -> u64 {
+        self.last_lba as u64 + 1
+    }
+
+    pub const fn total_bytes(&self) -> u64 {
+        self.total_blocks() * self.block_length as u64
     }
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct SenseData {
-    pub error_code: u8,
-    pub segment_number: u8,
-    pub flags: u8,
-    pub information: [u8; 4],
-    pub additional_length: u8,
-    pub command_specific: [u8; 4],
-    pub asc: u8,
-    pub ascq: u8,
-    pub fru_code: u8,
-    pub sense_key_specific: [u8; 3],
-}
-
-impl SenseData {
-    pub fn sense_key(&self) -> SenseKey {
-        SenseKey::from_code(self.flags & 0x0F)
-    }
-    pub fn asc_ascq(&self) -> (u8, u8) {
-        (self.asc, self.ascq)
-    }
-    pub fn error_description(&self) -> &'static str {
-        match (self.sense_key(), self.asc, self.ascq) {
-            (SenseKey::NoSense, _, _) => "No sense",
-            (SenseKey::NotReady, 0x04, 0x01) => "Becoming ready",
-            (SenseKey::NotReady, 0x04, 0x02) => "Need START command",
-            (SenseKey::NotReady, 0x3A, _) => "Medium not present",
-            (SenseKey::MediumError, _, _) => "Medium error",
-            (SenseKey::HardwareError, _, _) => "Hardware error",
-            (SenseKey::IllegalRequest, _, _) => "Illegal request",
-            (SenseKey::UnitAttention, 0x28, _) => "Medium changed",
-            (SenseKey::UnitAttention, 0x29, _) => "Reset occurred",
-            (SenseKey::DataProtect, _, _) => "Data protect",
-            (SenseKey::AbortedCommand, _, _) => "Aborted command",
-            _ => "Unknown error",
-        }
-    }
-}
-
+/// Decoded fixed-format sense key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SenseKey {
     NoSense,
@@ -316,433 +297,256 @@ pub enum SenseKey {
 }
 
 impl SenseKey {
-    pub(crate) fn from_code(code: u8) -> Self {
+    pub const fn from_code(code: u8) -> Self {
         match code {
-            0x0 => SenseKey::NoSense,
-            0x1 => SenseKey::RecoveredError,
-            0x2 => SenseKey::NotReady,
-            0x3 => SenseKey::MediumError,
-            0x4 => SenseKey::HardwareError,
-            0x5 => SenseKey::IllegalRequest,
-            0x6 => SenseKey::UnitAttention,
-            0x7 => SenseKey::DataProtect,
-            0x8 => SenseKey::BlankCheck,
-            0x9 => SenseKey::VendorSpecific,
-            0xA => SenseKey::CopyAborted,
-            0xB => SenseKey::AbortedCommand,
-            0xC => SenseKey::Obsolete,
-            0xD => SenseKey::VolumeOverflow,
-            0xE => SenseKey::Miscompare,
-            _ => SenseKey::Reserved,
+            0x0 => Self::NoSense,
+            0x1 => Self::RecoveredError,
+            0x2 => Self::NotReady,
+            0x3 => Self::MediumError,
+            0x4 => Self::HardwareError,
+            0x5 => Self::IllegalRequest,
+            0x6 => Self::UnitAttention,
+            0x7 => Self::DataProtect,
+            0x8 => Self::BlankCheck,
+            0x9 => Self::VendorSpecific,
+            0xa => Self::CopyAborted,
+            0xb => Self::AbortedCommand,
+            0xc => Self::Obsolete,
+            0xd => Self::VolumeOverflow,
+            0xe => Self::Miscompare,
+            _ => Self::Reserved,
         }
     }
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct TocHeader {
-    pub data_length_be: u16,
-    pub first_track: u8,
-    pub last_track: u8,
+/// Fields needed to classify a fixed-format REQUEST SENSE response.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SenseData {
+    key: SenseKey,
+    asc: u8,
+    ascq: u8,
 }
 
-impl TocHeader {
-    pub fn data_length(&self) -> u16 {
-        u16::from_be(self.data_length_be)
+impl SenseData {
+    /// Decodes the fixed fields through ASCQ.
+    ///
+    /// # Errors
+    /// Returns `Truncated` unless bytes 0 through 13 are present.
+    pub fn parse(bytes: &[u8]) -> Result<Self, AtapiParseError> {
+        let bytes = bytes.get(..14).ok_or(AtapiParseError::Truncated)?;
+        Ok(Self {
+            key: SenseKey::from_code(bytes[2] & 0x0f),
+            asc: bytes[12],
+            ascq: bytes[13],
+        })
+    }
+
+    pub const fn sense_key(&self) -> SenseKey {
+        self.key
+    }
+
+    pub const fn asc_ascq(&self) -> (u8, u8) {
+        (self.asc, self.ascq)
+    }
+
+    pub const fn error_description(&self) -> &'static str {
+        match (self.key, self.asc, self.ascq) {
+            (SenseKey::NoSense, _, _) => "No sense",
+            (SenseKey::NotReady, 0x04, 0x01) => "Becoming ready",
+            (SenseKey::NotReady, 0x04, 0x02) => "Need START command",
+            (SenseKey::NotReady, 0x3a, _) => "Medium not present",
+            (SenseKey::MediumError, _, _) => "Medium error",
+            (SenseKey::HardwareError, _, _) => "Hardware error",
+            (SenseKey::IllegalRequest, _, _) => "Illegal request",
+            (SenseKey::UnitAttention, 0x28, _) => "Medium changed",
+            (SenseKey::UnitAttention, 0x29, _) => "Reset occurred",
+            (SenseKey::DataProtect, _, _) => "Data protect",
+            (SenseKey::AbortedCommand, _, _) => "Aborted command",
+            _ => "Unknown error",
+        }
     }
 }
 
-#[repr(C, packed)]
-#[derive(Clone, Copy, Debug, Default)]
+/// One validated TOC track descriptor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TocTrackDescriptor {
-    pub reserved1: u8,
-    pub adr_control: u8,
-    pub track_number: u8,
-    pub reserved2: u8,
-    pub track_start_be: u32,
+    adr_control: u8,
+    track_number: u8,
+    track_start: u32,
 }
 
 impl TocTrackDescriptor {
-    pub fn track_start(&self) -> u32 {
-        u32::from_be(self.track_start_be)
+    fn parse(bytes: &[u8]) -> Result<Self, AtapiParseError> {
+        let bytes = bytes.get(..8).ok_or(AtapiParseError::Truncated)?;
+        Ok(Self {
+            adr_control: bytes[1],
+            track_number: bytes[2],
+            track_start: u32::from_be_bytes([bytes[4], bytes[5], bytes[6], bytes[7]]),
+        })
     }
-    pub fn is_data_track(&self) -> bool {
-        (self.adr_control & 0x04) != 0
+
+    pub const fn number(&self) -> u8 {
+        self.track_number
     }
-    pub fn is_audio_track(&self) -> bool {
+
+    pub const fn track_start(&self) -> u32 {
+        self.track_start
+    }
+
+    pub const fn is_data_track(&self) -> bool {
+        self.adr_control & 0x04 != 0
+    }
+
+    pub const fn is_audio_track(&self) -> bool {
         !self.is_data_track()
     }
 }
 
+/// Validated table-of-contents response and its decoded records.
+#[derive(Debug, PartialEq, Eq)]
 pub struct TableOfContents {
-    pub first_track: u8,
-    pub last_track: u8,
-    pub tracks: Vec<TocTrackDescriptor>,
+    first_track: u8,
+    last_track: u8,
+    tracks: Vec<TocTrackDescriptor>,
 }
 
 impl TableOfContents {
-    pub fn track_count(&self) -> u8 {
-        if self.last_track >= self.first_track {
-            self.last_track - self.first_track + 1
-        } else {
-            0
-        }
-    }
-    pub fn get_track(&self, number: u8) -> Option<&TocTrackDescriptor> {
-        self.tracks.iter().find(|t| t.track_number == number)
-    }
-    pub fn lead_out(&self) -> Option<&TocTrackDescriptor> {
-        self.tracks.iter().find(|t| t.track_number == 0xAA)
-    }
-    pub fn total_length_seconds(&self) -> u32 {
-        if let Some(lead_out) = self.lead_out() {
-            lead_out.track_start() / 75
-        } else {
-            0
-        }
-    }
-}
-
-pub struct AtapiPort {
-    port_base: u64,
-    command_list: Box<[CommandHeader; 32]>,
-    command_tables: [Option<Box<CommandTable>>; 32],
-    inquiry_cache: Option<InquiryResponse>,
-}
-
-impl AtapiPort {
-    pub fn new(base: u64, port: PortNumber) -> Self {
-        let port_base = base + 0x100 + (port.as_u8() as u64 * 0x80);
-
-        Self {
-            port_base,
-            command_list: Box::new([CommandHeader::default(); 32]),
-            command_tables: Default::default(),
-            inquiry_cache: None,
-        }
-    }
-
-    /// # Errors
+    /// Decodes a complete READ TOC response.
     ///
-    /// Returns an error if the device is not ready, times out, or reports a failed completion.
-    pub fn packet_command(
-        &mut self,
-        cdb: &ScsiCdb12,
-        buffer: &mut [u8],
-        write: bool,
-    ) -> AhciResult<usize> {
-        let slot = self.find_slot().ok_or(AhciError::NoCommandSlot)?;
-
-        let mut cmd_table = Box::new(CommandTable::default());
-        let cmd_table_addr = cmd_table.as_ref() as *const _ as u64;
-
-        let fis = FisRegH2D {
-            fis_type: FisType::RegH2D as u8,
-            flags: 0x80,
-            command: ATA_CMD_PACKET,
-            feature_lo: if write { 0x00 } else { 0x00 },
-            lba1: (buffer.len() & 0xFF) as u8,
-            lba2: ((buffer.len() >> 8) & 0xFF) as u8,
-            device: 0,
-            ..Default::default()
-        };
-
-        unsafe {
-            ptr::copy_nonoverlapping(
-                &fis as *const _ as *const u8,
-                cmd_table.cfis.as_mut_ptr(),
-                core::mem::size_of::<FisRegH2D>(),
-            )
-        };
-
-        unsafe {
-            ptr::copy_nonoverlapping(
-                cdb as *const _ as *const u8,
-                cmd_table.acmd.as_mut_ptr(),
-                12,
-            )
-        };
-
-        if !buffer.is_empty() {
-            let buffer_addr = buffer.as_ptr() as u64;
-            cmd_table.prdt[0] =
-                PhysicalRegionDescriptor::new(buffer_addr, buffer.len() as u32, true);
+    /// # Errors
+    /// Rejects truncated declarations, non-record-aligned payloads, and record
+    /// capacity exhaustion without publishing a partial table.
+    pub fn parse(bytes: &[u8]) -> Result<Self, AtapiParseError> {
+        let header = bytes.get(..4).ok_or(AtapiParseError::Truncated)?;
+        let declared_after_length = usize::from(u16::from_be_bytes([header[0], header[1]]));
+        let total = declared_after_length
+            .checked_add(2)
+            .ok_or(AtapiParseError::MalformedLength)?;
+        if total < 4 {
+            return Err(AtapiParseError::MalformedLength);
         }
-
-        let header = &mut self.command_list[slot.as_usize()];
-        header.set_flags(5, write, true, false);
-        header.prdtl = if buffer.is_empty() { 0 } else { 1 };
-        header.prdbc = 0;
-        header.set_ctba(cmd_table_addr);
-
-        self.command_tables[slot.as_usize()] = Some(cmd_table);
-
-        self.write_port(PX_CI, 1 << slot.as_u8());
-
-        self.wait_completion(slot)?;
-
-        let transferred = self.command_list[slot.as_usize()].prdbc;
-        Ok(transferred as usize)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn test_unit_ready(&mut self) -> AhciResult<bool> {
-        let cdb = ScsiCdb12::test_unit_ready();
-        let mut buffer = [];
-        match self.packet_command(&cdb, &mut buffer, false) {
-            Ok(_) => Ok(true),
-            Err(AhciError::TaskFileError(_)) => Ok(false),
-            Err(e) => Err(e),
+        let complete = bytes.get(..total).ok_or(AtapiParseError::Truncated)?;
+        let records = complete.get(4..).ok_or(AtapiParseError::MalformedLength)?;
+        if !records.len().is_multiple_of(8) {
+            return Err(AtapiParseError::MalformedLength);
         }
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn inquiry(&mut self) -> AhciResult<InquiryResponse> {
-        if let Some(cached) = &self.inquiry_cache {
-            return Ok(*cached);
+        let mut tracks = Vec::new();
+        tracks
+            .try_reserve_exact(records.len() / 8)
+            .map_err(|_| AtapiParseError::Capacity)?;
+        let (records, remainder) = records.as_chunks::<8>();
+        debug_assert!(remainder.is_empty());
+        for record in records {
+            tracks.push(TocTrackDescriptor::parse(record)?);
         }
-        let cdb = ScsiCdb12::inquiry(36);
-        let mut buffer = [0u8; 36];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        let response = unsafe { ptr::read_unaligned(buffer.as_ptr() as *const InquiryResponse) };
-        self.inquiry_cache = Some(response);
-        Ok(response)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn request_sense(&mut self) -> AhciResult<SenseData> {
-        let cdb = ScsiCdb12::request_sense(18);
-        let mut buffer = [0u8; 18];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const SenseData) })
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read_capacity(&mut self) -> AhciResult<ReadCapacityResponse> {
-        let cdb = ScsiCdb12::read_capacity();
-        let mut buffer = [0u8; 8];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        Ok(unsafe { ptr::read_unaligned(buffer.as_ptr() as *const ReadCapacityResponse) })
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read_sectors(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> {
-        let expected = count as usize * CD_SECTOR_SIZE as usize;
-        if buffer.len() < expected {
-            return Err(AhciError::InvalidParameter);
-        }
-        let cdb = ScsiCdb12::read10(lba, count);
-        self.packet_command(&cdb, &mut buffer[..expected], false)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read_sectors_large(
-        &mut self,
-        lba: u32,
-        count: u32,
-        buffer: &mut [u8],
-    ) -> AhciResult<usize> {
-        let expected = count as usize * CD_SECTOR_SIZE as usize;
-        if buffer.len() < expected {
-            return Err(AhciError::InvalidParameter);
-        }
-        let cdb = ScsiCdb12::read12(lba, count);
-        self.packet_command(&cdb, &mut buffer[..expected], false)
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read_toc(&mut self) -> AhciResult<TableOfContents> {
-        let cdb = ScsiCdb12::read_toc(TocFormat::FormattedToc, 0, 4);
-        let mut header_buf = [0u8; 4];
-        self.packet_command(&cdb, &mut header_buf, false)?;
-        let header = unsafe { ptr::read_unaligned(header_buf.as_ptr() as *const TocHeader) };
-        let data_length = header.data_length();
-        let total_length = (data_length + 2) as usize;
-        let mut toc_buf = alloc::vec![0u8; total_length];
-        let cdb = ScsiCdb12::read_toc(TocFormat::FormattedToc, 0, total_length as u16);
-        self.packet_command(&cdb, &mut toc_buf, false)?;
-        let header = unsafe { ptr::read_unaligned(toc_buf.as_ptr() as *const TocHeader) };
-        let track_data = &toc_buf[4..];
-        let track_count = track_data.len() / 8;
-        let mut tracks = Vec::with_capacity(track_count);
-        for i in 0..track_count {
-            let offset = i * 8;
-            let track = unsafe {
-                ptr::read_unaligned(track_data[offset..].as_ptr() as *const TocTrackDescriptor)
-            };
-            tracks.push(track);
-        }
-        Ok(TableOfContents {
-            first_track: header.first_track,
-            last_track: header.last_track,
+        Ok(Self {
+            first_track: header[2],
+            last_track: header[3],
             tracks,
         })
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn eject(&mut self) -> AhciResult<()> {
-        let cdb = ScsiCdb12::start_stop_unit(false, true);
-        let mut buffer = [];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        Ok(())
+    pub const fn first_track(&self) -> u8 {
+        self.first_track
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn load(&mut self) -> AhciResult<()> {
-        let cdb = ScsiCdb12::start_stop_unit(true, true);
-        let mut buffer = [];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        Ok(())
+    pub const fn last_track(&self) -> u8 {
+        self.last_track
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn spin_up(&mut self) -> AhciResult<()> {
-        let cdb = ScsiCdb12::start_stop_unit(true, false);
-        let mut buffer = [];
-        self.packet_command(&cdb, &mut buffer, false)?;
-        Ok(())
+    pub fn tracks(&self) -> &[TocTrackDescriptor] {
+        &self.tracks
     }
 
-    fn find_slot(&self) -> Option<SlotNumber> {
-        let sact = self.read_port(0x34);
-        let ci = self.read_port(PX_CI);
-        let busy = sact | ci;
-        for i in 0..32 {
-            if (busy & (1 << i)) == 0 {
-                return Some(SlotNumber(i));
-            }
-        }
-        None
+    pub fn track_count(&self) -> usize {
+        self.tracks
+            .iter()
+            .filter(|track| track.track_number != 0xaa)
+            .count()
     }
 
-    fn wait_completion(&self, slot: SlotNumber) -> AhciResult<()> {
-        let slot_mask = 1u32 << slot.as_u8();
-        for _ in 0..100000 {
-            let ci = self.read_port(PX_CI);
-            if (ci & slot_mask) == 0 {
-                let tfd = self.read_port(PX_TFD);
-                let status = (tfd & 0xFF) as u8;
-                let error = ((tfd >> 8) & 0xFF) as u8;
-                if (status & 0x01) != 0 {
-                    return Err(AhciError::TaskFileError(error));
-                }
-                return Ok(());
-            }
-            let is = self.read_port(PX_IS);
-            if (is & (1 << 30)) != 0 {
-                let tfd = self.read_port(PX_TFD);
-                let error = ((tfd >> 8) & 0xFF) as u8;
-                return Err(AhciError::TaskFileError(error));
-            }
-        }
-        Err(AhciError::Timeout)
+    pub fn get_track(&self, number: u8) -> Option<&TocTrackDescriptor> {
+        self.tracks
+            .iter()
+            .find(|track| track.track_number == number)
     }
 
-    fn read_port(&self, offset: u32) -> u32 {
-        hal::mmio::mmio_read_u32((self.port_base + offset as u64) as usize)
+    pub fn lead_out(&self) -> Option<&TocTrackDescriptor> {
+        self.get_track(0xaa)
     }
 
-    fn write_port(&self, offset: u32, value: u32) {
-        hal::mmio::mmio_write_u32((self.port_base + offset as u64) as usize, value)
+    pub fn total_length_seconds(&self) -> Option<u32> {
+        self.lead_out().map(|track| track.track_start() / 75)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct CdDvdDriveInfo {
-    pub vendor: String,
-    pub product: String,
-    pub revision: String,
-    pub device_type: AtapiDeviceType,
-    pub removable: bool,
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-pub struct CdDvdDrive {
-    port: AtapiPort,
-    info: Option<CdDvdDriveInfo>,
-}
+    #[test]
+    fn cdbs_use_scsi_byte_positions_and_big_endian_integers() {
+        assert_eq!(
+            ScsiCdb12::read10(0x1234_5678, 0x0100).as_bytes(),
+            &[0x28, 0, 0x12, 0x34, 0x56, 0x78, 0, 0x01, 0, 0, 0, 0]
+        );
+        assert_eq!(
+            ScsiCdb12::read12(0x0102_0304, 0x0506_0708).as_bytes(),
+            &[0xa8, 0, 1, 2, 3, 4, 5, 6, 7, 8, 0, 0]
+        );
+    }
 
-impl CdDvdDrive {
-    pub fn new(base: u64, port_number: PortNumber) -> Self {
-        Self {
-            port: AtapiPort::new(base, port_number),
-            info: None,
-        }
+    #[test]
+    fn fixed_responses_reject_truncation_and_decode_big_endian_values() {
+        assert_eq!(
+            ReadCapacityResponse::parse(&[1, 2, 3]),
+            Err(AtapiParseError::Truncated)
+        );
+        let capacity = ReadCapacityResponse::parse(&[1, 2, 3, 4, 0, 0, 8, 0]);
+        assert_eq!(capacity.map(|value| value.last_lba()), Ok(0x0102_0304));
+        assert_eq!(capacity.map(|value| value.block_length()), Ok(2048));
     }
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub fn init(&mut self) -> AhciResult<()> {
-        let inquiry = self.port.inquiry()?;
-        self.info = Some(CdDvdDriveInfo {
-            vendor: inquiry.vendor_string(),
-            product: inquiry.product_string(),
-            revision: inquiry.revision_string(),
-            device_type: inquiry.device_type(),
-            removable: inquiry.is_removable(),
-        });
-        Ok(())
+
+    #[test]
+    fn inquiry_parsing_copies_only_the_validated_fixed_prefix() {
+        let mut bytes = [0u8; 36];
+        bytes[0] = 0x05;
+        bytes[1] = 0x80;
+        bytes[8..16].copy_from_slice(b"VENDOR  ");
+        bytes[16..32].copy_from_slice(b"OPTICAL DRIVE   ");
+        bytes[32..36].copy_from_slice(b"1.0 ");
+        let inquiry = InquiryResponse::parse(&bytes);
+        assert_eq!(
+            inquiry.map(|value| value.device_type()),
+            Ok(AtapiDeviceType::CdDvd)
+        );
+        assert_eq!(
+            inquiry.map(|value| value.vendor_string()),
+            Ok(String::from("VENDOR"))
+        );
     }
-    pub fn info(&self) -> Option<&CdDvdDriveInfo> {
-        self.info.as_ref()
-    }
-    pub fn is_media_present(&mut self) -> bool {
-        self.port.test_unit_ready().unwrap_or(false)
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn media_capacity(&mut self) -> AhciResult<(u64, u32)> {
-        let cap = self.port.read_capacity()?;
-        Ok((cap.total_blocks(), cap.block_length()))
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read(&mut self, lba: u32, count: u16, buffer: &mut [u8]) -> AhciResult<usize> {
-        self.port.read_sectors(lba, count, buffer)
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn read_toc(&mut self) -> AhciResult<TableOfContents> {
-        self.port.read_toc()
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn eject(&mut self) -> AhciResult<()> {
-        self.port.eject()
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the required device state cannot be read.
-    pub fn load(&mut self) -> AhciResult<()> {
-        self.port.load()
-    }
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub fn last_error(&mut self) -> AhciResult<SenseData> {
-        self.port.request_sense()
+
+    #[test]
+    fn toc_requires_complete_aligned_records() {
+        assert_eq!(
+            TableOfContents::parse(&[0, 3, 1, 1, 0]),
+            Err(AtapiParseError::MalformedLength)
+        );
+        assert_eq!(
+            TableOfContents::parse(&[0, 10, 1, 1, 0, 4, 1, 0, 0, 0]),
+            Err(AtapiParseError::Truncated)
+        );
+
+        let bytes = [
+            0, 18, 1, 1, 0, 4, 1, 0, 0, 0, 0, 75, 0, 4, 0xaa, 0, 0, 0, 0x02, 0x31,
+        ];
+        let toc = TableOfContents::parse(&bytes);
+        assert_eq!(toc.as_ref().map(|value| value.track_count()), Ok(1));
+        assert_eq!(
+            toc.as_ref()
+                .ok()
+                .and_then(|value| value.total_length_seconds()),
+            Some(7)
+        );
     }
 }
