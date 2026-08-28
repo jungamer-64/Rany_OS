@@ -38,9 +38,7 @@ impl AhciDriverWrapper {
     }
 
     fn with_controller<R>(f: impl FnOnce(&Arc<PoisonLock<AhciController>>) -> R) -> Option<R> {
-        unsafe {
-            crate::ffi::with_ahci_driver(|driver| driver.controller.as_ref().map(f)).flatten()
-        }
+        crate::ffi::with_ahci_driver(|driver| driver.controller.as_ref().map(f)).flatten()
     }
 
     fn submit_block(

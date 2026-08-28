@@ -6,6 +6,7 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
+use exorust_sync::PoisonLock;
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
     pack_version,
@@ -15,11 +16,14 @@ use kernel_api::driver::DriverType;
 
 use crate::driver_impl::AhciDriverWrapper;
 
-static mut AHCI_DRIVER: Option<AhciDriverWrapper> = None;
+static AHCI_DRIVER: PoisonLock<Option<AhciDriverWrapper>> = PoisonLock::new(None);
 
-pub(crate) unsafe fn with_ahci_driver<R>(f: impl FnOnce(&mut AhciDriverWrapper) -> R) -> Option<R> {
-    let slot = core::ptr::addr_of_mut!(AHCI_DRIVER);
-    unsafe { (*slot).as_mut().map(f) }
+pub(crate) fn with_ahci_driver<R>(f: impl FnOnce(&mut AhciDriverWrapper) -> R) -> Option<R> {
+    AHCI_DRIVER
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .as_mut()
+        .map(f)
 }
 
 // ============================================================================
@@ -33,48 +37,42 @@ extern "C" fn ahci_probe(ctx: *mut DriverContext) -> i32 {
     }
 
     let ctx = unsafe { &mut *ctx };
-    unsafe {
-        core::ptr::write(
-            core::ptr::addr_of_mut!(AHCI_DRIVER),
-            Some(AhciDriverWrapper::new(
-                ctx.device_address,
-                ctx.irq as u8,
-                ctx.pci_location(),
-            )),
-        );
-        match with_ahci_driver(|driver| driver.probe()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    let mut slot = AHCI_DRIVER
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    if slot.is_some() {
+        return -1;
     }
+    let mut driver = AhciDriverWrapper::new(ctx.device_address, ctx.irq as u8, ctx.pci_location());
+    if driver.probe().is_err() {
+        return -1;
+    }
+    *slot = Some(driver);
+    0
 }
 
 /// Start function for AHCI driver.
 extern "C" fn ahci_start(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        match with_ahci_driver(|driver| driver.start()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    match with_ahci_driver(|driver| driver.start()) {
+        Some(Ok(())) => 0,
+        _ => -1,
     }
 }
 
 /// Stop function for AHCI driver.
 extern "C" fn ahci_stop(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        match with_ahci_driver(|driver| driver.stop()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    match with_ahci_driver(|driver| driver.stop()) {
+        Some(Ok(())) => 0,
+        _ => -1,
     }
 }
 
 /// Remove/cleanup function for AHCI driver.
 extern "C" fn ahci_remove(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(AHCI_DRIVER);
-        let _ = core::ptr::replace(slot, None);
-    }
+    let _removed = AHCI_DRIVER
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .take();
     0
 }
 

@@ -12,14 +12,14 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::driver::Driver;
 use kernel_api::driver::DriverType;
+use spin::Mutex;
 
 use crate::driver_impl::UsbDriverWrapper;
 
-static mut USB_DRIVER: Option<UsbDriverWrapper> = None;
+static USB_DRIVER: Mutex<Option<UsbDriverWrapper>> = Mutex::new(None);
 
-unsafe fn with_usb_driver<R>(f: impl FnOnce(&mut UsbDriverWrapper) -> R) -> Option<R> {
-    let slot = core::ptr::addr_of_mut!(USB_DRIVER);
-    unsafe { (*slot).as_mut().map(f) }
+fn with_usb_driver<R>(f: impl FnOnce(&mut UsbDriverWrapper) -> R) -> Option<R> {
+    USB_DRIVER.lock().as_mut().map(f)
 }
 
 // ============================================================================
@@ -33,47 +33,37 @@ extern "C" fn usb_probe(ctx: *mut DriverContext) -> i32 {
     }
 
     let ctx = unsafe { &mut *ctx };
-    unsafe {
-        core::ptr::write(
-            core::ptr::addr_of_mut!(USB_DRIVER),
-            Some(UsbDriverWrapper::new(
-                ctx.device_address,
-                ctx.pci_location(),
-            )),
-        );
-        match with_usb_driver(|driver| driver.probe()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    let mut slot = USB_DRIVER.lock();
+    if slot.is_some() {
+        return -1;
     }
+    let mut driver = UsbDriverWrapper::new(ctx.device_address, ctx.pci_location());
+    if driver.probe().is_err() {
+        return -1;
+    }
+    *slot = Some(driver);
+    0
 }
 
 /// Start function for USB driver.
 extern "C" fn usb_start(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        match with_usb_driver(|driver| driver.start()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    match with_usb_driver(|driver| driver.start()) {
+        Some(Ok(())) => 0,
+        _ => -1,
     }
 }
 
 /// Stop function for USB driver.
 extern "C" fn usb_stop(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        match with_usb_driver(|driver| driver.stop()) {
-            Some(Ok(())) => 0,
-            _ => -1,
-        }
+    match with_usb_driver(|driver| driver.stop()) {
+        Some(Ok(())) => 0,
+        _ => -1,
     }
 }
 
 /// Remove/cleanup function for USB driver.
 extern "C" fn usb_remove(_ctx: *mut DriverContext) -> i32 {
-    unsafe {
-        let slot = core::ptr::addr_of_mut!(USB_DRIVER);
-        let _ = core::ptr::replace(slot, None);
-    }
+    let _removed = USB_DRIVER.lock().take();
     0
 }
 
