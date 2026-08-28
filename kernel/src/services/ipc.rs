@@ -1,21 +1,21 @@
 use super::*;
 
-pub(crate) fn create_channel() -> Result<(ChannelHandle, ChannelHandle), KapiError> {
+pub(super) fn create_channel() -> Result<(ChannelHandle, ChannelHandle), KapiError> {
     let owner = current_subject().domain.as_u64();
     let (writer_id, reader_id) = crate::resource_registry::ipc::create_channel(owner);
     Ok((ChannelHandle::new(writer_id), ChannelHandle::new(reader_id)))
 }
 
-pub(crate) fn close(channel: ChannelHandle) -> Result<(), KapiError> {
+pub(super) fn close(channel: ChannelHandle) -> Result<(), KapiError> {
     let caller = current_subject().domain.as_u64();
     crate::resource_registry::ipc::unregister_channel_owned(channel.id(), caller)
 }
 
-pub(crate) fn current_domain() -> kernel_api::ipc::DomainId {
+pub(super) fn current_domain() -> kernel_api::ipc::DomainId {
     kernel_api::ipc::DomainId::new(current_subject().domain.as_u64())
 }
 
-pub(crate) fn exchange_alloc_raw(
+pub(super) fn exchange_alloc_raw(
     size: usize,
     align: usize,
 ) -> Result<(NonNull<u8>, kernel_api::ipc::DomainId), KapiError> {
@@ -28,7 +28,7 @@ pub(crate) fn exchange_alloc_raw(
     Ok((ptr, kernel_api::ipc::DomainId::new(owner.as_u64())))
 }
 
-pub(crate) fn exchange_dealloc_raw(
+pub(super) fn exchange_dealloc_raw(
     ptr: NonNull<u8>,
     owner: kernel_api::ipc::DomainId,
     size: usize,
@@ -54,7 +54,7 @@ pub(crate) fn exchange_dealloc_raw(
     Ok(())
 }
 
-pub(crate) fn exchange_transfer_raw(
+pub(super) fn exchange_transfer_raw(
     ptr: NonNull<u8>,
     from: kernel_api::ipc::DomainId,
     to: kernel_api::ipc::DomainId,
@@ -71,7 +71,7 @@ pub(crate) fn exchange_transfer_raw(
     .map_err(|_| KapiError::PermissionDenied)
 }
 
-pub(crate) fn send_raw(
+pub(super) fn send_raw(
     channel: ChannelHandle,
     mut raw: kernel_api::abi::driver::AbiRRefRaw,
 ) -> Result<(), KapiError> {
@@ -103,7 +103,7 @@ pub(crate) fn send_raw(
     Ok(())
 }
 
-pub(crate) fn recv_raw(
+pub(super) fn recv_raw(
     channel: ChannelHandle,
 ) -> Result<kernel_api::abi::driver::AbiRRefRaw, KapiError> {
     let caller = current_subject().domain;

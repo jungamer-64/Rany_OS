@@ -508,8 +508,8 @@ ExoShell の公開 namespace は、呼び出し元ドメインの `CapabilitySet
 
 ### runtime / KAPI の補足
 
-- `shell/runtime.rs::list_domains/get_domain` は `kapi/gui.rs::ShellServices` と同様のポリシーを採用し、`CAP_SYS_PTRACE` がない場合は `list_domains` を self のみに絞り、`get_domain(other)` は `None` を返す。
-- `kapi/gui.rs` の運用診断・デバイス列挙（`ShellServices::monitor_info/thermal_info/watchdog_info/power_info`, `GraphicsServices::displays`, `Input/Serial/Storage/NetDeviceServices::devices`）は `CAP_SYS_ADMIN` がない場合、互換維持のため空配列・`None`・マスク済み構造体を返す。
+- `shell/runtime.rs::list_domains/get_domain` は `kernel/src/services/gui.rs::ShellServices` と同様のポリシーを採用し、`CAP_SYS_PTRACE` がない場合は `list_domains` を self のみに絞り、`get_domain(other)` は `None` を返す。
+- `kernel/src/services/gui.rs` の運用診断・デバイス列挙（`ShellServices::monitor_info/thermal_info/watchdog_info/power_info`, `GraphicsServices::displays`, `Input/Serial/Storage/NetDeviceServices::devices`）は `CAP_SYS_ADMIN` がない場合、互換維持のため空配列・`None`・マスク済み構造体を返す。
 
 ---
 

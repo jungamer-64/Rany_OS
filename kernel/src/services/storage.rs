@@ -39,7 +39,7 @@ fn resolve_direct_handle(
     ))
 }
 
-pub(crate) fn open_direct_with_token(
+pub(super) fn open_direct_with_token(
     device_id: u64,
     start_block: u64,
     block_count: u64,
@@ -89,7 +89,7 @@ pub(crate) fn open_direct_with_token(
     ))
 }
 
-pub(crate) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
+pub(super) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
     let id = handle.open_id();
     if id == 0 {
         return Err(KapiError::InvalidHandle);
@@ -107,7 +107,7 @@ pub(crate) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
     }
 }
 
-pub(crate) fn read_blocks_dma(
+pub(super) fn read_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
     buffer: CpuDmaLease,
@@ -121,7 +121,7 @@ pub(crate) fn read_blocks_dma(
     })
 }
 
-pub(crate) fn write_blocks_dma(
+pub(super) fn write_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
     buffer: CpuDmaLease,
@@ -135,7 +135,7 @@ pub(crate) fn write_blocks_dma(
     })
 }
 
-pub(crate) fn flush_direct(
+pub(super) fn flush_direct(
     handle: DirectBlockHandle,
 ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
     Box::pin(async move {
@@ -144,7 +144,7 @@ pub(crate) fn flush_direct(
     })
 }
 
-pub(crate) fn discard_direct(
+pub(super) fn discard_direct(
     handle: DirectBlockHandle,
     block_offset: u64,
     block_count: u64,
@@ -158,7 +158,7 @@ pub(crate) fn discard_direct(
     })
 }
 
-pub(crate) fn block_size(device_id: u64) -> Option<u64> {
+pub(super) fn block_size(device_id: u64) -> Option<u64> {
     let nsid = if device_id == 0 { 1 } else { device_id as u32 };
     crate::resource_registry::nvme::standalone_namespace_info(nsid)
         .map(|info| info.block_size as u64)
@@ -167,7 +167,7 @@ pub(crate) fn block_size(device_id: u64) -> Option<u64> {
         })
 }
 
-pub(crate) fn sgl_max_entries(device_id: u64) -> Option<usize> {
+pub(super) fn sgl_max_entries(device_id: u64) -> Option<usize> {
     let nsid = if device_id == 0 { 1 } else { device_id as u32 };
     crate::resource_registry::nvme::standalone_namespace_info(nsid)
         .map(|info| info.max_sgl_entries as usize)
@@ -179,7 +179,7 @@ pub(crate) fn sgl_max_entries(device_id: u64) -> Option<usize> {
         })
 }
 
-pub(crate) fn submit_rw(request: NvmeRwRequest, io_type: NvmeIoType) -> KapiResult<NvmeIoHandle> {
+pub(super) fn submit_rw(request: NvmeRwRequest, io_type: NvmeIoType) -> KapiResult<NvmeIoHandle> {
     use crate::io::io_scheduler::{DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority};
 
     let device = IoDeviceId::Nvme {
@@ -226,7 +226,7 @@ pub(crate) fn submit_rw(request: NvmeRwRequest, io_type: NvmeIoType) -> KapiResu
     Ok(NvmeIoHandle::new(future.request_id().0))
 }
 
-pub(crate) fn wait_io(handle: NvmeIoHandle) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
+pub(super) fn wait_io(handle: NvmeIoHandle) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
     use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
 
     let request_id = IoRequestId(handle.request_id());
@@ -250,7 +250,7 @@ pub(crate) fn wait_io(handle: NvmeIoHandle) -> Pin<Box<dyn Future<Output = NvmeI
     })
 }
 
-pub(crate) fn register_completion_hook(
+pub(super) fn register_completion_hook(
     handle: NvmeIoHandle,
     hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
 ) {

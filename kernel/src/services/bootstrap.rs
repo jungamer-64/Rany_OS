@@ -1,17 +1,18 @@
-use super::ExoKernel;
+use super::host::KERNEL_SERVICE_HOST;
 
-pub(crate) static EXOKERNEL: ExoKernel = ExoKernel::new();
-
-pub(crate) fn register_builtin_service_providers() {
-    crate::kapi::providers::register_builtin_service_providers(&EXOKERNEL);
+/// Publish the built-in device providers before installing the service entry point.
+pub(crate) fn install_builtin_providers() {
+    super::providers::install_builtin_providers(&KERNEL_SERVICE_HOST);
 }
 
-/// Register the kernel services (call from kmain early in boot)
+/// Publish the kernel implementation for shared service callers.
 ///
 /// # Safety
-/// Must be called exactly once, before any KAPI functions are used.
-pub unsafe fn register_kernel_services() {
+/// Boot must call this exactly once, after installing built-in providers and
+/// before allowing callers to acquire the shared kernel service instance.
+pub(crate) unsafe fn install() {
+    // SAFETY: The caller owns boot ordering; the implementation has image lifetime.
     unsafe {
-        kernel_api::service::kernel::install(&EXOKERNEL);
+        kernel_api::service::kernel::install(&KERNEL_SERVICE_HOST);
     }
 }

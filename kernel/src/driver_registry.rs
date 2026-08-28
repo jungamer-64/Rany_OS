@@ -813,7 +813,7 @@ impl fmt::Display for DriverError {
 // Kernel API Table (DriverExportsV1)
 // ============================================================================
 
-extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
+extern "C" fn kernel_abi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     crate::io::log::early_print("[KAPI] log enter\n");
     if msg_ptr.is_null() || msg_len == 0 {
         crate::io::log::early_print("[KAPI] log empty\n");
@@ -859,7 +859,7 @@ fn dma_queue(request: AbiDmaRequest) -> Result<DmaQueueIdentity, DmaLeaseError> 
 /// # Safety
 /// `out` must be writable and aligned for one `AbiDmaAllocation` for the
 /// duration of this synchronous call.
-unsafe extern "C" fn kapi_dma_allocate(
+unsafe extern "C" fn kernel_abi_dma_allocate(
     size: usize,
     device: u64,
     direction: u8,
@@ -899,7 +899,7 @@ unsafe extern "C" fn kapi_dma_allocate(
 /// aligned response storage. For completion, quiescence, reset, or reconciliation
 /// operations, the caller must have established the hardware fact documented by
 /// the corresponding Rust witness constructor; numeric fields alone are not proof.
-unsafe extern "C" fn kapi_dma_command(
+unsafe extern "C" fn kernel_abi_dma_command(
     lease: u64,
     request: *const AbiDmaRequest,
     out: *mut AbiDmaResponse,
@@ -1056,7 +1056,7 @@ unsafe extern "C" fn kapi_dma_command(
 /// `visitor` must not retain `bytes`, unwind across the ABI, or use `context`
 /// after the synchronous callback returns. Any context pointer it dereferences
 /// must remain valid for the call.
-unsafe extern "C" fn kapi_dma_read(
+unsafe extern "C" fn kernel_abi_dma_read(
     lease: u64,
     context: *mut u8,
     visitor: unsafe extern "C" fn(*mut u8, *const u8, usize),
@@ -1078,9 +1078,9 @@ unsafe extern "C" fn kapi_dma_read(
 /// Mutably visit CPU-owned DMA bytes under registry exclusivity.
 ///
 /// # Safety
-/// The same callback/context conditions as `kapi_dma_read` apply. The callback
+/// The same callback/context conditions as `kernel_abi_dma_read` apply. The callback
 /// must not create an alias or retain the mutable byte pointer.
-unsafe extern "C" fn kapi_dma_write(
+unsafe extern "C" fn kernel_abi_dma_write(
     lease: u64,
     context: *mut u8,
     visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
@@ -1099,7 +1099,7 @@ unsafe extern "C" fn kapi_dma_write(
     )) as i32
 }
 
-extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {
+extern "C" fn kernel_abi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {
     if out.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
@@ -1123,19 +1123,19 @@ extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) ->
     AbiErrorCode::Success as i32
 }
 
-extern "C" fn kapi_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
+extern "C" fn kernel_abi_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
     AbiErrorCode::Success as i32
 }
 
-extern "C" fn kapi_port_read_u8(port: u16) -> u8 {
+extern "C" fn kernel_abi_port_read_u8(port: u16) -> u8 {
     kernel_api::service::kernel::instance().port_read_u8(port)
 }
 
-extern "C" fn kapi_port_write_u8(port: u16, value: u8) {
+extern "C" fn kernel_abi_port_write_u8(port: u16, value: u8) {
     kernel_api::service::kernel::instance().port_write_u8(port, value);
 }
 
-extern "C" fn kapi_enable_msix_raw(
+extern "C" fn kernel_abi_enable_msix_raw(
     device_id: u64,
     requested_count: u16,
     out_vectors: *mut AbiMsixVectorInfo,
@@ -1179,7 +1179,7 @@ extern "C" fn kapi_enable_msix_raw(
     }
 }
 
-extern "C" fn kapi_disable_msix_raw(device_id: u64) -> i32 {
+extern "C" fn kernel_abi_disable_msix_raw(device_id: u64) -> i32 {
     match kernel_api::service::kernel::instance()
         .disable_msix(PackedPciLocation::from_raw(device_id))
     {
@@ -1188,14 +1188,14 @@ extern "C" fn kapi_disable_msix_raw(device_id: u64) -> i32 {
     }
 }
 
-extern "C" fn kapi_irq_bind(irq: u32, cookie: u64) -> i32 {
+extern "C" fn kernel_abi_irq_bind(irq: u32, cookie: u64) -> i32 {
     match bind_irq_for_current_domain(irq, cookie) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
-extern "C" fn kapi_irq_unbind(irq: u32) -> i32 {
+extern "C" fn kernel_abi_irq_unbind(irq: u32) -> i32 {
     match unbind_irq_for_current_domain(irq) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
@@ -1216,7 +1216,7 @@ fn map_kapi_error_to_abi(err: KapiError) -> i32 {
     }
 }
 
-extern "C" fn kapi_register_block_device(
+extern "C" fn kernel_abi_register_block_device(
     registration: *const AbiBlockDeviceRegistration,
     out_handle: *mut u64,
 ) -> i32 {
@@ -1233,14 +1233,14 @@ extern "C" fn kapi_register_block_device(
     }
 }
 
-extern "C" fn kapi_unregister_block_device(handle: u64) -> i32 {
+extern "C" fn kernel_abi_unregister_block_device(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_block_device(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
-extern "C" fn kapi_register_nvme_namespace(
+extern "C" fn kernel_abi_register_nvme_namespace(
     registration: *const AbiNvmeNamespaceRegistration,
     out_handle: *mut u64,
 ) -> i32 {
@@ -1257,14 +1257,14 @@ extern "C" fn kapi_register_nvme_namespace(
     }
 }
 
-extern "C" fn kapi_unregister_nvme_namespace(handle: u64) -> i32 {
+extern "C" fn kernel_abi_unregister_nvme_namespace(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_nvme_namespace(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
-extern "C" fn kapi_register_netdev_port(
+extern "C" fn kernel_abi_register_netdev_port(
     registration: *const AbiNetPortRegistration,
     out_handle: *mut u64,
 ) -> i32 {
@@ -1281,14 +1281,14 @@ extern "C" fn kapi_register_netdev_port(
     }
 }
 
-extern "C" fn kapi_unregister_netdev_port(handle: u64) -> i32 {
+extern "C" fn kernel_abi_unregister_netdev_port(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_netdev_port(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
-extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
+extern "C" fn kernel_abi_heap_alloc(size: usize) -> *mut u8 {
     use core::alloc::Layout;
 
     if size == 0 {
@@ -1304,7 +1304,7 @@ extern "C" fn kapi_heap_alloc(size: usize) -> *mut u8 {
     unsafe { alloc::alloc::alloc(layout) }
 }
 
-extern "C" fn kapi_heap_dealloc(ptr: *mut u8, size: usize) {
+extern "C" fn kernel_abi_heap_dealloc(ptr: *mut u8, size: usize) {
     use core::alloc::Layout;
 
     if ptr.is_null() || size == 0 {
@@ -1316,11 +1316,11 @@ extern "C" fn kapi_heap_dealloc(ptr: *mut u8, size: usize) {
         Err(_) => return,
     };
 
-    // SAFETY: ptrは非null検証済み。layoutはkapi_heap_allocと同一のアライメントで構築。
+    // SAFETY: ptrは非null検証済み。layoutはkernel_abi_heap_allocと同一のアライメントで構築。
     unsafe { alloc::alloc::dealloc(ptr, layout) }
 }
 
-extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
+extern "C" fn kernel_abi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
     if !msg_ptr.is_null() && msg_len > 0 {
         let slice = unsafe { core::slice::from_raw_parts(msg_ptr, msg_len) };
         if let Ok(s) = core::str::from_utf8(slice) {
@@ -1330,7 +1330,7 @@ extern "C" fn kapi_panic_abort(msg_ptr: *const u8, msg_len: usize) -> ! {
     panic!("Cell panic - aborting");
 }
 
-extern "C" fn kapi_current_domain_id() -> u64 {
+extern "C" fn kernel_abi_current_domain_id() -> u64 {
     #[cfg(all(
         test,
         not(feature = "full_mm_tests"),
@@ -1350,7 +1350,7 @@ extern "C" fn kapi_current_domain_id() -> u64 {
     }
 }
 
-extern "C" fn kapi_exchange_alloc_raw(
+extern "C" fn kernel_abi_exchange_alloc_raw(
     size: usize,
     align: usize,
     out_ptr: *mut *mut u8,
@@ -1371,7 +1371,7 @@ extern "C" fn kapi_exchange_alloc_raw(
     }
 }
 
-extern "C" fn kapi_exchange_dealloc_raw(
+extern "C" fn kernel_abi_exchange_dealloc_raw(
     ptr: *mut u8,
     owner: u64,
     size: usize,
@@ -1391,7 +1391,11 @@ extern "C" fn kapi_exchange_dealloc_raw(
     }
 }
 
-extern "C" fn kapi_exchange_transfer_raw(ptr: *mut u8, from_owner: u64, to_owner: u64) -> i32 {
+extern "C" fn kernel_abi_exchange_transfer_raw(
+    ptr: *mut u8,
+    from_owner: u64,
+    to_owner: u64,
+) -> i32 {
     let Some(ptr) = core::ptr::NonNull::new(ptr) else {
         return AbiErrorCode::InvalidParam as i32;
     };
@@ -1405,7 +1409,10 @@ extern "C" fn kapi_exchange_transfer_raw(ptr: *mut u8, from_owner: u64, to_owner
     }
 }
 
-extern "C" fn kapi_ipc_create_channel_raw(out_sender: *mut u64, out_receiver: *mut u64) -> i32 {
+extern "C" fn kernel_abi_ipc_create_channel_raw(
+    out_sender: *mut u64,
+    out_receiver: *mut u64,
+) -> i32 {
     if out_sender.is_null() || out_receiver.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
@@ -1421,14 +1428,14 @@ extern "C" fn kapi_ipc_create_channel_raw(out_sender: *mut u64, out_receiver: *m
     }
 }
 
-extern "C" fn kapi_ipc_close_raw(handle: u64) -> i32 {
+extern "C" fn kernel_abi_ipc_close_raw(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().ipc_close(ChannelHandle::new(handle)) {
         Ok(()) => AbiErrorCode::Success as i32,
         Err(err) => map_kapi_error_to_abi(err),
     }
 }
 
-extern "C" fn kapi_ipc_send_raw(handle: u64, raw: *const AbiRRefRaw) -> i32 {
+extern "C" fn kernel_abi_ipc_send_raw(handle: u64, raw: *const AbiRRefRaw) -> i32 {
     if raw.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
@@ -1439,7 +1446,7 @@ extern "C" fn kapi_ipc_send_raw(handle: u64, raw: *const AbiRRefRaw) -> i32 {
     }
 }
 
-extern "C" fn kapi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
+extern "C" fn kernel_abi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
     if out_raw.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
@@ -1458,37 +1465,37 @@ extern "C" fn kapi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> i32 {
 pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
-    log: kapi_log,
-    dma_allocate: kapi_dma_allocate,
-    dma_command: kapi_dma_command,
-    dma_read: kapi_dma_read,
-    dma_write: kapi_dma_write,
-    map_mmio: kapi_map_mmio,
-    unmap_mmio: kapi_unmap_mmio,
-    port_read_u8: kapi_port_read_u8,
-    port_write_u8: kapi_port_write_u8,
-    irq_bind: kapi_irq_bind,
-    irq_unbind: kapi_irq_unbind,
-    heap_alloc: Some(kapi_heap_alloc),
-    heap_dealloc: Some(kapi_heap_dealloc),
-    panic_abort: Some(kapi_panic_abort),
-    current_domain_id: kapi_current_domain_id,
-    exchange_alloc_raw: kapi_exchange_alloc_raw,
-    exchange_dealloc_raw: kapi_exchange_dealloc_raw,
-    exchange_transfer_raw: kapi_exchange_transfer_raw,
-    ipc_create_channel_raw: kapi_ipc_create_channel_raw,
-    ipc_close_raw: kapi_ipc_close_raw,
-    ipc_send_raw: kapi_ipc_send_raw,
-    ipc_recv_raw: kapi_ipc_recv_raw,
-    register_block_device: kapi_register_block_device,
-    unregister_block_device: kapi_unregister_block_device,
-    register_nvme_namespace: kapi_register_nvme_namespace,
-    unregister_nvme_namespace: kapi_unregister_nvme_namespace,
-    register_netdev_port: kapi_register_netdev_port,
-    unregister_netdev_port: kapi_unregister_netdev_port,
+    log: kernel_abi_log,
+    dma_allocate: kernel_abi_dma_allocate,
+    dma_command: kernel_abi_dma_command,
+    dma_read: kernel_abi_dma_read,
+    dma_write: kernel_abi_dma_write,
+    map_mmio: kernel_abi_map_mmio,
+    unmap_mmio: kernel_abi_unmap_mmio,
+    port_read_u8: kernel_abi_port_read_u8,
+    port_write_u8: kernel_abi_port_write_u8,
+    irq_bind: kernel_abi_irq_bind,
+    irq_unbind: kernel_abi_irq_unbind,
+    heap_alloc: Some(kernel_abi_heap_alloc),
+    heap_dealloc: Some(kernel_abi_heap_dealloc),
+    panic_abort: Some(kernel_abi_panic_abort),
+    current_domain_id: kernel_abi_current_domain_id,
+    exchange_alloc_raw: kernel_abi_exchange_alloc_raw,
+    exchange_dealloc_raw: kernel_abi_exchange_dealloc_raw,
+    exchange_transfer_raw: kernel_abi_exchange_transfer_raw,
+    ipc_create_channel_raw: kernel_abi_ipc_create_channel_raw,
+    ipc_close_raw: kernel_abi_ipc_close_raw,
+    ipc_send_raw: kernel_abi_ipc_send_raw,
+    ipc_recv_raw: kernel_abi_ipc_recv_raw,
+    register_block_device: kernel_abi_register_block_device,
+    unregister_block_device: kernel_abi_unregister_block_device,
+    register_nvme_namespace: kernel_abi_register_nvme_namespace,
+    unregister_nvme_namespace: kernel_abi_unregister_nvme_namespace,
+    register_netdev_port: kernel_abi_register_netdev_port,
+    unregister_netdev_port: kernel_abi_unregister_netdev_port,
     reserved: [0; 2],
-    enable_msix_raw: Some(kapi_enable_msix_raw),
-    disable_msix_raw: Some(kapi_disable_msix_raw),
+    enable_msix_raw: Some(kernel_abi_enable_msix_raw),
+    disable_msix_raw: Some(kernel_abi_disable_msix_raw),
 };
 
 pub(crate) fn kernel_api_v4() -> &'static KernelApiV4 {

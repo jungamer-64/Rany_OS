@@ -1,6 +1,6 @@
 use kernel_api::error::KapiError;
 
-pub(crate) fn stack_scope(
+pub(super) fn stack_scope(
     scope: kernel_api::resource::net::InterfaceScope,
 ) -> crate::net::types::InterfaceScope {
     match scope {
@@ -11,7 +11,7 @@ pub(crate) fn stack_scope(
     }
 }
 
-pub(crate) fn endpoint_addr_from_kapi(
+pub(super) fn endpoint_addr_from_kapi(
     addr: kernel_api::resource::net::NetSocketAddr,
 ) -> crate::net::l4::EndpointAddr {
     match addr {
@@ -24,7 +24,7 @@ pub(crate) fn endpoint_addr_from_kapi(
     }
 }
 
-pub(crate) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> KapiError {
+pub(super) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> KapiError {
     match error {
         crate::net::l4::EndpointError::Timeout => KapiError::Timeout,
         crate::net::l4::EndpointError::PortInUse | crate::net::l4::EndpointError::AddressInUse => {
@@ -36,7 +36,7 @@ pub(crate) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> Ka
     }
 }
 
-pub(crate) fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
+pub(super) fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
     match error {
         crate::net::l4::tcp::TcpError::Timeout => KapiError::Timeout,
         crate::net::l4::tcp::TcpError::AddressInUse | crate::net::l4::tcp::TcpError::BufferFull => {
@@ -48,14 +48,14 @@ pub(crate) fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiErr
     }
 }
 
-pub(crate) fn lookup_socket(
+pub(super) fn lookup_socket(
     fd: crate::net::l4::types::SocketId,
 ) -> Result<crate::net::l4::socket::Socket, KapiError> {
     crate::net::l4::socket::lookup_socket_in(crate::net::runtime::default_runtime(), fd)
         .ok_or(KapiError::InvalidHandle)
 }
 
-pub(crate) fn close_socket_handle(fd: crate::net::l4::types::SocketId) -> Result<(), KapiError> {
+pub(super) fn close_socket_handle(fd: crate::net::l4::types::SocketId) -> Result<(), KapiError> {
     let socket = lookup_socket(fd)?;
     socket.close_immediate().map_err(endpoint_error_to_kapi)?;
     let _ = crate::net::l4::socket::unregister_socket_in(socket.runtime(), fd);

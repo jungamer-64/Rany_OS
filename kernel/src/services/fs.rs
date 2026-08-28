@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn open_with_token(
+pub(super) fn open_with_token(
     path: &str,
     mode: OpenMode,
     token: Option<u64>,
@@ -52,7 +52,7 @@ pub(crate) fn open_with_token(
     Ok(FileHandle::new(handle_id, mode))
 }
 
-pub(crate) fn close(handle: FileHandle) -> Result<(), KapiError> {
+pub(super) fn close(handle: FileHandle) -> Result<(), KapiError> {
     let handle_id = handle.id();
     let caller = current_subject().domain.as_u64();
     match crate::resource_registry::fs::unregister_handle_owned(handle_id, caller) {

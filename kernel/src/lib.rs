@@ -473,12 +473,6 @@ pub mod ipc;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub(crate) mod services;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod loader;
 #[cfg(any(
     not(any(test, feature = "bench")),
@@ -536,6 +530,12 @@ pub mod sas;
     feature = "qemu-test-export"
 ))]
 pub mod security;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+pub(crate) mod services;
 #[cfg(any(
     not(any(test, feature = "bench")),
     feature = "full_mm_tests",

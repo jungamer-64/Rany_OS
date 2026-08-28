@@ -6,7 +6,7 @@
 use super::*;
 use crate::{
     debug, domain, driver_registry, durability, fs, graphics, heap, integration, interrupts, io,
-    kapi, loader, sas, security, task, util,
+    loader, sas, security, services, task, util,
 };
 use log::{debug, error, info, warn};
 
@@ -512,20 +512,22 @@ mod tests {
     }
 }
 
-fn register_spl_kernel_services() {
+fn install_spl_kernel_services() {
     // We are hitting mysterious stack corruption after this function returns,
     // so emit fine-grained diagnostics around every step.
-    log_stack_free_space("before register_kernel_services");
+    log_stack_free_space("before services::install");
     info!(target: "init", "Registering kernel services...");
     log_stack_free_space("after log before call");
 
     // The act of registering kernel services should not require interrupts, and
     // a buggy ISR might be corrupting the stack pointer.  Disable them to
     // diagnose and (temporarily) avoid the issue.
+    // SAFETY: The boot registration sequence has installed the built-in providers
+    // and reaches service publication exactly once before starting service callers.
     interrupts::without_interrupts(|| unsafe {
-        kapi::register_kernel_services();
+        services::install();
     });
-    log_stack_free_space("after register_kernel_services call");
+    log_stack_free_space("after services::install");
 
     info!(target: "init", "Kernel services registered");
     log_stack_free_space("after log after call");
@@ -547,10 +549,10 @@ fn register_runtime_service_boundary() {
         RuntimeRegistrationStep::KernelServices => {
             log_stack_free_space("runtime registration: kernel services");
             info!(target: "init", "Registering builtin kernel service providers...");
-            crate::kapi::register_builtin_service_providers();
+            crate::services::install_builtin_providers();
             info!(target: "init", "Builtin kernel service providers registered");
             info!(target: "init", "Publishing kernel services...");
-            register_spl_kernel_services();
+            install_spl_kernel_services();
             info!(target: "init", "Kernel services published");
         }
     });

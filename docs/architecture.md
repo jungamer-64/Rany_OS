@@ -22,7 +22,7 @@ ExoRust は、次の三原則を採用します。
 - 全コードは Ring 0 で実行される。
 - 直接関数呼び出しは syscall オーバーヘッドを消すが、それ自体は authority を付与しない。
 - 権限の根は Safe Rust 単体ではなく、Capability、署名検証、ローダー方針、IOMMU、Framework 境界の組み合わせで定義する。
-- 危険 API は `kapi` または Framework 経由で公開し、呼び出し時に Capability を検証する。
+- 危険 API は `kernel_api` または Framework 経由で公開し、呼び出し時に Capability を検証する。
 
 ### 1.3 非同期中心主義 (Async-First)
 
@@ -54,7 +54,7 @@ ExoRust は、次の三原則を採用します。
 現行カーネルの正規モジュールグラフは `kernel/src/lib.rs` を起点に管理する。
 
 - ブート経路は `kernel/src/main.rs` -> `kernel/src/boot/` -> `boot::enter()` に集約する。
-- `kernel/src/kapi/` は認可済みの Kernel API 公開境界とする。
+- `interfaces/kernel_api/` が共有サービス契約を定義し、`kernel/src/services/` が呼び出し時の認可とカーネル内部実装への接続を担う。実装型は外部公開しない。
 - `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者とする。
 - `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、cross-tree path include を使わない。
 - `kernel/src/host_support/` は test/bench 専用の軽量差し替え面として本番経路と分離する。

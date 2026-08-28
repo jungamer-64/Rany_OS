@@ -2,8 +2,6 @@ use super::*;
 
 #[cfg(test)]
 mod fs_tests;
-#[cfg(test)]
-pub use self::fs_tests::*;
 #[cfg(all(test, not(feature = "qemu-test-export")))]
 mod nvme_tests;
 
@@ -137,7 +135,7 @@ fn has_sys_admin_capability() -> bool {
         .has_capability(CAP_SYS_ADMIN)
 }
 
-impl GuiServices for ExoKernel {
+impl GuiServices for KernelServiceHost {
     fn request_framebuffer(
         &self,
         access_token: &DomainCapabilities,
@@ -213,7 +211,7 @@ impl GuiServices for ExoKernel {
     }
 }
 
-impl GraphicsServices for ExoKernel {
+impl GraphicsServices for KernelServiceHost {
     fn displays(&self) -> alloc::vec::Vec<DisplayInfo> {
         if !has_sys_admin_capability() {
             return alloc::vec::Vec::new();
@@ -241,7 +239,7 @@ impl GraphicsServices for ExoKernel {
     }
 }
 
-impl InputServices for ExoKernel {
+impl InputServices for KernelServiceHost {
     fn devices(&self) -> alloc::vec::Vec<InputDeviceInfo> {
         if !has_sys_admin_capability() {
             return alloc::vec::Vec::new();
@@ -259,7 +257,7 @@ impl InputServices for ExoKernel {
     }
 }
 
-impl SerialServices for ExoKernel {
+impl SerialServices for KernelServiceHost {
     fn ports(&self) -> alloc::vec::Vec<SerialPortInfo> {
         if !has_sys_admin_capability() {
             return alloc::vec::Vec::new();
@@ -284,7 +282,7 @@ impl SerialServices for ExoKernel {
     }
 }
 
-impl StorageServices for ExoKernel {
+impl StorageServices for KernelServiceHost {
     fn devices(&self) -> alloc::vec::Vec<StorageDeviceInfo> {
         if !has_sys_admin_capability() {
             return alloc::vec::Vec::new();
@@ -294,7 +292,7 @@ impl StorageServices for ExoKernel {
     }
 }
 
-impl NetDeviceServices for ExoKernel {
+impl NetDeviceServices for KernelServiceHost {
     fn devices(&self) -> alloc::vec::Vec<NetDeviceInfo> {
         if !has_sys_admin_capability() {
             return alloc::vec::Vec::new();
@@ -306,8 +304,8 @@ impl NetDeviceServices for ExoKernel {
 
 #[cfg(test)]
 mod gui_input_queue_tests {
-    use super::*;
     use crate::drivers::hid::keyboard::{KeyCode, KeyEvent, KeyState, Modifiers};
+    use crate::services::host::KERNEL_SERVICE_HOST;
     use kernel_api::gui::{GuiServices, InputEvent, KeyState as KapiKeyState};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -321,7 +319,7 @@ mod gui_input_queue_tests {
             raw_scancode: 0x001E,
         });
 
-        let event = EXOKERNEL.poll_input_event();
+        let event = KERNEL_SERVICE_HOST.poll_input_event();
         match event {
             Some(InputEvent::Key(key)) => {
                 assert_eq!(key.scancode, 0x001E);
@@ -343,7 +341,7 @@ use kernel_api::shell::{
     ShellServices, ShellSystemInfo as KapiSystemInfo,
 };
 
-pub(crate) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainState {
+pub(super) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainState {
     match state {
         crate::domain::DomainState::Initializing => KapiDomainState::Initializing,
         crate::domain::DomainState::Running => KapiDomainState::Running,
@@ -353,7 +351,7 @@ pub(crate) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainS
     }
 }
 
-pub(crate) fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static str> {
+pub(super) fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static str> {
     let subject = crate::task::current_subject();
     if subject.domain == target {
         return Ok(());
@@ -367,7 +365,7 @@ pub(crate) fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(
     Err("Permission denied: owner or CAP_KILL required")
 }
 
-impl ShellServices for ExoKernel {
+impl ShellServices for KernelServiceHost {
     fn memory_stats(&self) -> MemoryStats {
         MemoryStats {
             total_kb: crate::heap::total_memory_kb() as usize,

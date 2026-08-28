@@ -332,7 +332,7 @@ fn dma_abi_rejects_invalid_allocation_records() {
     // SAFETY: output storage is valid; a zero-size allocation is deliberately rejected.
     assert_eq!(
         unsafe {
-            super::kapi_dma_allocate(
+            super::kernel_abi_dma_allocate(
                 0,
                 PackedPciLocation::NULL.raw(),
                 kernel_api::dma::DmaDirection::Bidirectional.into_abi(),
@@ -348,7 +348,7 @@ fn dma_abi_rejects_invalid_allocation_records() {
     // SAFETY: null is intentionally invalid output storage.
     assert_eq!(
         unsafe {
-            super::kapi_dma_allocate(
+            super::kernel_abi_dma_allocate(
                 1,
                 PackedPciLocation::NULL.raw(),
                 kernel_api::dma::DmaDirection::Bidirectional.into_abi(),
@@ -359,7 +359,9 @@ fn dma_abi_rejects_invalid_allocation_records() {
     );
     // SAFETY: output is valid; the unrecognized direction must be rejected.
     assert_eq!(
-        unsafe { super::kapi_dma_allocate(1, PackedPciLocation::NULL.raw(), u8::MAX, &mut out,) },
+        unsafe {
+            super::kernel_abi_dma_allocate(1, PackedPciLocation::NULL.raw(), u8::MAX, &mut out)
+        },
         AbiError::InvalidParam as i32
     );
 }
@@ -375,7 +377,7 @@ fn dma_command_rejects_invalid_tokens_and_pointers() {
     let mut response = AbiDmaResponse::default();
     // SAFETY: both records are valid; the lease token is intentionally invalid.
     assert_eq!(
-        unsafe { super::kapi_dma_command(0, &request, &mut response) },
+        unsafe { super::kernel_abi_dma_command(0, &request, &mut response) },
         AbiDmaStatus::StaleLease as i32
     );
 
@@ -384,12 +386,12 @@ fn dma_command_rejects_invalid_tokens_and_pointers() {
         .into_abi();
     // SAFETY: null request is deliberately supplied to exercise validation.
     assert_eq!(
-        unsafe { super::kapi_dma_command(lease, core::ptr::null(), &mut response) },
+        unsafe { super::kernel_abi_dma_command(lease, core::ptr::null(), &mut response) },
         AbiDmaStatus::InvalidRange as i32
     );
     // SAFETY: null response is deliberately supplied to exercise validation.
     assert_eq!(
-        unsafe { super::kapi_dma_command(lease, &request, core::ptr::null_mut()) },
+        unsafe { super::kernel_abi_dma_command(lease, &request, core::ptr::null_mut()) },
         AbiDmaStatus::InvalidRange as i32
     );
 }

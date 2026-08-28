@@ -16,13 +16,13 @@ pub(super) fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     }
 }
 
-pub(crate) fn authorize_pci_locator_for_domain(
+pub(super) fn authorize_pci_locator_for_domain(
     caller: DomainId,
     requested: PackedPciLocation,
     bound_locator: Option<PackedPciLocation>,
 ) -> Result<(), KapiError> {
     if requested.is_null() {
-        log::warn!("[KAPI] alloc_dma_for_device rejected null PCI locator");
+        log::warn!("[kernel-services] alloc_dma_for_device rejected null PCI locator");
         return Err(KapiError::NotSupported);
     }
 
@@ -32,7 +32,7 @@ pub(crate) fn authorize_pci_locator_for_domain(
 
     let Some(bound_locator) = bound_locator else {
         log::error!(
-            "[KAPI][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} without a bound driver device",
+            "[kernel-services][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} without a bound driver device",
             caller,
             requested.raw()
         );
@@ -41,7 +41,7 @@ pub(crate) fn authorize_pci_locator_for_domain(
 
     if bound_locator.is_null() || bound_locator != requested {
         log::error!(
-            "[KAPI][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} but owns 0x{:x}",
+            "[kernel-services][SECURITY] Domain {} requested DMA for PCI locator 0x{:x} but owns 0x{:x}",
             caller,
             requested.raw(),
             bound_locator.raw()
@@ -52,7 +52,7 @@ pub(crate) fn authorize_pci_locator_for_domain(
     Ok(())
 }
 
-pub(crate) fn authorize_dma_device_for_current_subject(
+pub(super) fn authorize_dma_device_for_current_subject(
     device_id: PackedPciLocation,
 ) -> Result<IommuDeviceId, KapiError> {
     let caller = crate::task::current_subject().domain;
@@ -77,7 +77,7 @@ fn bound_pci_locator_for_driver_domain(caller: DomainId) -> Result<PackedPciLoca
         })
         .map_err(|err| {
             log::error!(
-                "[KAPI][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
+                "[kernel-services][SECURITY] Failed to resolve PCI locator for domain {}: {:?}",
                 caller,
                 err
             );
@@ -89,7 +89,7 @@ fn bound_pci_locator_for_driver_domain(caller: DomainId) -> Result<PackedPciLoca
     Ok(locator)
 }
 
-pub(crate) fn dma_device_for_driver_domain(caller: DomainId) -> Result<IommuDeviceId, KapiError> {
+pub(super) fn dma_device_for_driver_domain(caller: DomainId) -> Result<IommuDeviceId, KapiError> {
     if caller == DomainId::KERNEL {
         return Err(KapiError::PermissionDenied);
     }
@@ -98,7 +98,7 @@ pub(crate) fn dma_device_for_driver_domain(caller: DomainId) -> Result<IommuDevi
     )?))
 }
 
-pub(crate) fn current_driver_domain() -> Result<DomainId, KapiError> {
+pub(super) fn current_driver_domain() -> Result<DomainId, KapiError> {
     let domain = crate::task::current_subject().domain;
     if domain == DomainId::KERNEL {
         return Err(KapiError::PermissionDenied);
@@ -123,7 +123,7 @@ fn map_registry_error(error: AbiErrorCode) -> KapiError {
     }
 }
 
-pub(crate) fn register_block_device_for_current_subject(
+pub(super) fn register_block_device_for_current_subject(
     registration: &AbiBlockDeviceRegistration,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
@@ -131,13 +131,13 @@ pub(crate) fn register_block_device_for_current_subject(
         .map_err(map_registry_error)
 }
 
-pub(crate) fn unregister_block_device_for_current_subject(handle: u64) -> Result<(), KapiError> {
+pub(super) fn unregister_block_device_for_current_subject(handle: u64) -> Result<(), KapiError> {
     let owner = current_driver_domain()?;
     crate::resource_registry::storage::unregister_block_device(owner, handle)
         .map_err(map_registry_error)
 }
 
-pub(crate) fn register_nvme_namespace_for_current_subject(
+pub(super) fn register_nvme_namespace_for_current_subject(
     registration: &AbiNvmeNamespaceRegistration,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
@@ -145,12 +145,12 @@ pub(crate) fn register_nvme_namespace_for_current_subject(
         .map_err(map_registry_error)
 }
 
-pub(crate) fn unregister_nvme_namespace_for_current_subject(handle: u64) -> Result<(), KapiError> {
+pub(super) fn unregister_nvme_namespace_for_current_subject(handle: u64) -> Result<(), KapiError> {
     let owner = current_driver_domain()?;
     crate::resource_registry::nvme::unregister_namespace(owner, handle).map_err(map_registry_error)
 }
 
-pub(crate) fn register_netdev_port_for_current_subject(
+pub(super) fn register_netdev_port_for_current_subject(
     registration: &AbiNetPortRegistration,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
@@ -159,7 +159,7 @@ pub(crate) fn register_netdev_port_for_current_subject(
         .map_err(map_registry_error)
 }
 
-pub(crate) fn unregister_netdev_port_for_current_subject(handle: u64) -> Result<(), KapiError> {
+pub(super) fn unregister_netdev_port_for_current_subject(handle: u64) -> Result<(), KapiError> {
     let owner = current_driver_domain()?;
     crate::resource_registry::net::unregister_port(owner, handle).map_err(map_registry_error)
 }

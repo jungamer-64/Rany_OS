@@ -1,24 +1,21 @@
-use super::*;
-use crate::kapi::device_registration::{
+use super::device_registration::{
     authorize_dma_device_for_current_subject, register_block_device_for_current_subject,
     register_netdev_port_for_current_subject, register_nvme_namespace_for_current_subject,
     unregister_block_device_for_current_subject, unregister_netdev_port_for_current_subject,
     unregister_nvme_namespace_for_current_subject,
 };
-use crate::kapi::net::{
+use super::net::{
     close_socket_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_socket,
     stack_scope, tcp_error_to_kapi,
 };
+use super::*;
 use kernel_api::abi::driver::{
     AbiBlockDeviceRegistration, AbiNetPortRegistration, AbiNvmeNamespaceRegistration, AbiRRefRaw,
     PackedPciLocation,
 };
 use kernel_api::msix::MsixVectorInfo;
 
-unsafe impl Send for ExoKernel {}
-unsafe impl Sync for ExoKernel {}
-
-impl KernelServices for ExoKernel {
+impl KernelServices for KernelServiceHost {
     // ========================================================================
     // Task Management
     // ========================================================================
@@ -27,15 +24,15 @@ impl KernelServices for ExoKernel {
         &self,
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
     ) -> Result<TaskHandle, KapiError> {
-        crate::kapi::task::spawn_task(future)
+        super::task::spawn_task(future)
     }
 
     fn current_tick(&self) -> u64 {
-        crate::kapi::task::current_tick()
+        super::task::current_tick()
     }
 
     fn current_task_id(&self) -> u64 {
-        crate::kapi::task::current_task_id()
+        super::task::current_task_id()
     }
 
     // ========================================================================
@@ -281,7 +278,7 @@ impl KernelServices for ExoKernel {
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {
             log::warn!(
-                "[KAPI][SECURITY] Domain {} tried to create a raw endpoint without CAP_NET_RAW",
+                "[kernel-services][SECURITY] Domain {} tried to create a raw endpoint without CAP_NET_RAW",
                 caller
             );
             return Err(KapiError::PermissionDenied);
@@ -322,7 +319,7 @@ impl KernelServices for ExoKernel {
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {
             log::warn!(
-                "[KAPI][SECURITY] Domain {} tried to recv raw without CAP_NET_RAW",
+                "[kernel-services][SECURITY] Domain {} tried to recv raw without CAP_NET_RAW",
                 caller
             );
             return Box::pin(async { Err(KapiError::PermissionDenied) });
@@ -351,7 +348,7 @@ impl KernelServices for ExoKernel {
             .has_capability(caller, crate::security::capability::CAP_NET_RAW)
         {
             log::warn!(
-                "[KAPI][SECURITY] Domain {} tried to send raw without CAP_NET_RAW",
+                "[kernel-services][SECURITY] Domain {} tried to send raw without CAP_NET_RAW",
                 caller
             );
             return Box::pin(async move {
@@ -395,11 +392,11 @@ impl KernelServices for ExoKernel {
         mode: OpenMode,
         token: Option<u64>,
     ) -> Result<FileHandle, KapiError> {
-        crate::kapi::fs::open_with_token(path, mode, token)
+        super::fs::open_with_token(path, mode, token)
     }
 
     fn fs_close(&self, handle: FileHandle) -> Result<(), KapiError> {
-        crate::kapi::fs::close(handle)
+        super::fs::close(handle)
     }
 
     fn nvme_open_direct_with_token(
@@ -409,11 +406,11 @@ impl KernelServices for ExoKernel {
         block_count: u64,
         token: Option<u64>,
     ) -> Result<DirectBlockHandle, KapiError> {
-        crate::kapi::storage::open_direct_with_token(device_id, start_block, block_count, token)
+        super::storage::open_direct_with_token(device_id, start_block, block_count, token)
     }
 
     fn nvme_close_direct(&self, handle: DirectBlockHandle) -> Result<(), KapiError> {
-        crate::kapi::storage::close_direct(handle)
+        super::storage::close_direct(handle)
     }
 
     fn nvme_read_blocks_dma(
@@ -422,7 +419,7 @@ impl KernelServices for ExoKernel {
         block_offset: u64,
         buffer: CpuDmaLease,
     ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
-        crate::kapi::storage::read_blocks_dma(handle, block_offset, buffer)
+        super::storage::read_blocks_dma(handle, block_offset, buffer)
     }
 
     fn nvme_write_blocks_dma(
@@ -431,14 +428,14 @@ impl KernelServices for ExoKernel {
         block_offset: u64,
         buffer: CpuDmaLease,
     ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
-        crate::kapi::storage::write_blocks_dma(handle, block_offset, buffer)
+        super::storage::write_blocks_dma(handle, block_offset, buffer)
     }
 
     fn nvme_flush_direct(
         &self,
         handle: DirectBlockHandle,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-        crate::kapi::storage::flush_direct(handle)
+        super::storage::flush_direct(handle)
     }
 
     fn nvme_discard_direct(
@@ -447,15 +444,15 @@ impl KernelServices for ExoKernel {
         block_offset: u64,
         block_count: u64,
     ) -> Pin<Box<dyn Future<Output = KapiResult<()>> + Send>> {
-        crate::kapi::storage::discard_direct(handle, block_offset, block_count)
+        super::storage::discard_direct(handle, block_offset, block_count)
     }
 
     fn nvme_block_size(&self, device_id: u64) -> Option<u64> {
-        crate::kapi::storage::block_size(device_id)
+        super::storage::block_size(device_id)
     }
 
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
-        crate::kapi::storage::sgl_max_entries(device_id)
+        super::storage::sgl_max_entries(device_id)
     }
 
     fn nvme_submit_rw(
@@ -463,14 +460,14 @@ impl KernelServices for ExoKernel {
         request: NvmeRwRequest,
         io_type: NvmeIoType,
     ) -> KapiResult<NvmeIoHandle> {
-        crate::kapi::storage::submit_rw(request, io_type)
+        super::storage::submit_rw(request, io_type)
     }
 
     fn nvme_wait_io(
         &self,
         handle: NvmeIoHandle,
     ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
-        crate::kapi::storage::wait_io(handle)
+        super::storage::wait_io(handle)
     }
 
     fn nvme_register_completion_hook(
@@ -478,19 +475,19 @@ impl KernelServices for ExoKernel {
         handle: NvmeIoHandle,
         hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
     ) {
-        crate::kapi::storage::register_completion_hook(handle, hook)
+        super::storage::register_completion_hook(handle, hook)
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
-        crate::kapi::ipc::create_channel()
+        super::ipc::create_channel()
     }
 
     fn ipc_close(&self, channel: ChannelHandle) -> Result<(), KapiError> {
-        crate::kapi::ipc::close(channel)
+        super::ipc::close(channel)
     }
 
     fn ipc_current_domain(&self) -> kernel_api::ipc::DomainId {
-        crate::kapi::ipc::current_domain()
+        super::ipc::current_domain()
     }
 
     fn exchange_alloc_raw(
@@ -498,7 +495,7 @@ impl KernelServices for ExoKernel {
         size: usize,
         align: usize,
     ) -> Result<(NonNull<u8>, kernel_api::ipc::DomainId), KapiError> {
-        crate::kapi::ipc::exchange_alloc_raw(size, align)
+        super::ipc::exchange_alloc_raw(size, align)
     }
 
     fn exchange_dealloc_raw(
@@ -508,7 +505,7 @@ impl KernelServices for ExoKernel {
         size: usize,
         align: usize,
     ) -> Result<(), KapiError> {
-        crate::kapi::ipc::exchange_dealloc_raw(ptr, owner, size, align)
+        super::ipc::exchange_dealloc_raw(ptr, owner, size, align)
     }
 
     fn exchange_transfer_raw(
@@ -517,47 +514,47 @@ impl KernelServices for ExoKernel {
         from: kernel_api::ipc::DomainId,
         to: kernel_api::ipc::DomainId,
     ) -> Result<(), KapiError> {
-        crate::kapi::ipc::exchange_transfer_raw(ptr, from, to)
+        super::ipc::exchange_transfer_raw(ptr, from, to)
     }
 
     fn ipc_send_raw(&self, channel: ChannelHandle, raw: AbiRRefRaw) -> Result<(), KapiError> {
-        crate::kapi::ipc::send_raw(channel, raw)
+        super::ipc::send_raw(channel, raw)
     }
 
     fn ipc_recv_raw(&self, channel: ChannelHandle) -> Result<AbiRRefRaw, KapiError> {
-        crate::kapi::ipc::recv_raw(channel)
+        super::ipc::recv_raw(channel)
     }
 
     fn time_service(&self) -> Option<&dyn kernel_api::service::time::TimeService> {
-        crate::kapi::providers::time_service()
+        super::providers::time_service()
     }
 
     fn platform_acpi(&self) -> Option<&dyn kernel_api::service::platform::AcpiServices> {
-        crate::kapi::providers::acpi_service()
+        super::providers::acpi_service()
     }
 
     fn platform_pci(&self) -> Option<&dyn kernel_api::service::platform::PciServices> {
-        crate::kapi::providers::pci_service()
+        super::providers::pci_service()
     }
 
     fn platform_apic(&self) -> Option<&dyn kernel_api::service::platform::ApicServices> {
-        crate::kapi::providers::apic_service()
+        super::providers::apic_service()
     }
 
     fn storage(&self) -> Option<&dyn kernel_api::service::storage::StorageServices> {
-        crate::kapi::providers::storage_service()
+        super::providers::storage_service()
     }
 
     fn netdev(&self) -> Option<&dyn kernel_api::service::netdev::NetDeviceServices> {
-        crate::kapi::providers::netdev_service()
+        super::providers::netdev_service()
     }
 
     fn input(&self) -> Option<&dyn kernel_api::service::input::InputServices> {
-        crate::kapi::providers::input_service()
+        super::providers::input_service()
     }
 
     fn serial(&self) -> Option<&dyn kernel_api::service::serial::SerialServices> {
-        crate::kapi::providers::serial_service()
+        super::providers::serial_service()
     }
 }
 
@@ -565,6 +562,8 @@ impl KernelServices for ExoKernel {
 mod dma_tests {
     use super::*;
     use crate::domain::{DomainCredentials, DomainId};
+    use crate::services::device_registration::authorize_pci_locator_for_domain;
+    use crate::services::host::KERNEL_SERVICE_HOST;
     use crate::task::{ExecutionContext, Subject, TaskId};
     use kernel_api::ipc::{RRef, RRefError};
     use kernel_api::service::kernel::KernelServices;
@@ -647,7 +646,7 @@ mod dma_tests {
 
         let handle = {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .fs_open_with_token("foreign-close-test", OpenMode::Write, None)
                 .expect("owner should open file")
         };
@@ -656,13 +655,13 @@ mod dma_tests {
 
         {
             let _caller_guard = set_current_subject(caller);
-            let err = EXOKERNEL.fs_close(handle).unwrap_err();
+            let err = KERNEL_SERVICE_HOST.fs_close(handle).unwrap_err();
             assert!(matches!(err, KapiError::PermissionDenied));
         }
 
         {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .fs_close(FileHandle::new(handle_id, mode))
                 .expect("owner should still be able to close file");
         }
@@ -674,21 +673,22 @@ mod dma_tests {
         let owner = DomainId::new(910);
         let handle = {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .nvme_open_direct_with_token(0, 0, 1, None)
                 .expect("owner should open direct handle")
         };
 
         {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .nvme_close_direct(handle)
                 .expect("owner should close direct handle");
         }
 
         {
             let _owner_guard = set_current_subject(owner);
-            let err = crate::task::block_on(EXOKERNEL.nvme_flush_direct(handle)).unwrap_err();
+            let err =
+                crate::task::block_on(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
             assert!(matches!(err, KapiError::InvalidHandle));
         }
     }
@@ -700,20 +700,21 @@ mod dma_tests {
         let caller = DomainId::new(912);
         let handle = {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .nvme_open_direct_with_token(0, 0, 1, None)
                 .expect("owner should open direct handle")
         };
 
         {
             let _caller_guard = set_current_subject(caller);
-            let err = crate::task::block_on(EXOKERNEL.nvme_flush_direct(handle)).unwrap_err();
+            let err =
+                crate::task::block_on(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
             assert!(matches!(err, KapiError::PermissionDenied));
         }
 
         {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .nvme_close_direct(handle)
                 .expect("owner should still be able to close direct handle");
         }
@@ -727,7 +728,7 @@ mod dma_tests {
 
         let (sender, receiver) = {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_create_channel()
                 .expect("owner should create channel")
         };
@@ -735,16 +736,16 @@ mod dma_tests {
 
         {
             let _caller_guard = set_current_subject(caller);
-            let err = EXOKERNEL.ipc_close(sender).unwrap_err();
+            let err = KERNEL_SERVICE_HOST.ipc_close(sender).unwrap_err();
             assert!(matches!(err, KapiError::PermissionDenied));
         }
 
         {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_close(ChannelHandle::new(sender_id))
                 .expect("owner should close sender");
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_close(receiver)
                 .expect("owner should close receiver");
         }
@@ -758,7 +759,7 @@ mod dma_tests {
 
         let (sender, receiver) = {
             let _owner_guard = set_current_subject(owner);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_create_channel()
                 .expect("owner should create channel")
         };
@@ -799,10 +800,10 @@ mod dma_tests {
             let value = RRef::<u64>::recv(ChannelHandle::new(receiver_id))
                 .expect("owner should still receive queued value");
             assert_eq!(*value, 42);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_close(ChannelHandle::new(sender_id))
                 .expect("owner should close sender");
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .ipc_close(ChannelHandle::new(receiver_id))
                 .expect("owner should close receiver");
         }

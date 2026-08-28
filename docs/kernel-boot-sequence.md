@@ -24,7 +24,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `kernel/src/boot/` はエントリとブート配線のみを持ち、サブシステム実装詳細を抱え込まない。
 - `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、旧 `filesystems/kernel_fs` への cross-tree path include は使わない。
 - `kernel/src/host_support/` は unit test / bench 専用の軽量差し替え面であり、本番ブート経路とは明確に分離する。
-- `kernel/src/kapi/` は `KernelServices` の正規実装境界であり、boot からは `kapi::register_kernel_services()` / `kapi::register_builtin_service_providers()` のみを呼ぶ。
+- `kernel/src/services/` は `kernel_api` の共有サービス契約を実装するカーネル内部境界であり、実装型と子 module は非公開とする。boot は `services::install_builtin_providers()` で provider を登録した後、`services::install()` で共有サービス入口を公開する。
 - `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者であり、domain/driver teardown はここ経由で handle cleanup を行う。
 
 ## Phase 2: Entry / Early CPU
@@ -62,7 +62,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 実装単位: `AsyncBootCoordinator` と stage task 群
 - Phase 4 で動き始めた executor 上に、残りの boot を高優先度 task 群として展開する。
 - stage 構成:
-  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、`kapi::bootstrap` 経由の kernel services/provider 登録、async logging 切替
+  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、`services` 経由の kernel services/provider 登録、async logging 切替
   - `graphics_task`: framebuffer/text console 初期化
   - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
   - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration

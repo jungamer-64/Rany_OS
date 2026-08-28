@@ -4,10 +4,9 @@
 
 #[cfg(test)]
 mod nvme_tests {
-    use super::*;
     use crate::domain::{DomainCredentials, DomainId};
-    use crate::kapi::EXOKERNEL;
-    use crate::security::capability::{self, CapabilitySet};
+    use crate::security::capability::CapabilitySet;
+    use crate::services::host::KERNEL_SERVICE_HOST;
     use crate::task::{ExecutionContext, Subject, TaskId};
     use kernel_api::service::kernel::KernelServices;
 
@@ -52,7 +51,7 @@ mod nvme_tests {
         // Target opens using token
         let handle = {
             let _target_guard = set_current_subject(target);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .nvme_open_direct_with_token(0, 0, 1, Some(token))
                 .expect("open should succeed")
         };
@@ -77,7 +76,7 @@ mod nvme_tests {
         // Target closes handle
         {
             let _target_guard = set_current_subject(target);
-            assert!(EXOKERNEL.nvme_close_direct(handle).is_ok());
+            assert!(KERNEL_SERVICE_HOST.nvme_close_direct(handle).is_ok());
         }
 
         assert_eq!(

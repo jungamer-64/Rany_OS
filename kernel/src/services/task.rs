@@ -1,6 +1,6 @@
 use super::*;
 
-pub(crate) fn spawn_task(
+pub(super) fn spawn_task(
     future: Pin<Box<dyn Future<Output = ()> + Send>>,
 ) -> Result<TaskHandle, KapiError> {
     let task_id = crate::task::spawn(future, crate::task::TaskPlacement::Any)
@@ -9,10 +9,10 @@ pub(crate) fn spawn_task(
     Ok(TaskHandle::new(task_id))
 }
 
-pub(crate) fn current_tick() -> u64 {
+pub(super) fn current_tick() -> u64 {
     crate::task::current_tick()
 }
 
-pub(crate) fn current_task_id() -> u64 {
+pub(super) fn current_task_id() -> u64 {
     super::current_task_id()
 }

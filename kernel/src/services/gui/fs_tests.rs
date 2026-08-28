@@ -1,11 +1,10 @@
-use super::*;
-
 #[cfg(test)]
 mod fs_tests {
-    use super::*;
     use crate::domain::{DomainCredentials, DomainId};
-    use crate::security::capability::{self, CapabilitySet};
+    use crate::security::capability::CapabilitySet;
+    use crate::services::host::KERNEL_SERVICE_HOST;
     use crate::task::{ExecutionContext, Subject, TaskId};
+    use kernel_api::service::kernel::KernelServices;
 
     pub(super) fn set_current_subject(domain_id: DomainId) -> crate::cpu::ExecutionContextGuard {
         let current = crate::cpu::CurrentCpu::acquire().expect("test CPU-local state");
@@ -48,7 +47,7 @@ mod fs_tests {
         // Target opens using token
         let handle = {
             let _target_guard = set_current_subject(target);
-            EXOKERNEL
+            KERNEL_SERVICE_HOST
                 .fs_open_with_token(
                     "test_token_file",
                     kernel_api::resource::fs::OpenMode::Write,
@@ -77,7 +76,7 @@ mod fs_tests {
         // Close file handle
         {
             let _target_guard = set_current_subject(target);
-            assert!(EXOKERNEL.fs_close(handle).is_ok());
+            assert!(KERNEL_SERVICE_HOST.fs_close(handle).is_ok());
         }
 
         // Now reclaim should succeed
@@ -87,9 +86,4 @@ mod fs_tests {
                 .is_ok()
         );
     }
-}
-
-/// Get a reference to the exokernel (for internal use)
-pub fn exokernel() -> &'static ExoKernel {
-    &EXOKERNEL
 }
