@@ -11,6 +11,7 @@
 extern crate alloc;
 
 mod controller;
+mod identify;
 mod protocol;
 mod provision;
 mod queue;
@@ -20,6 +21,10 @@ pub use controller::{
     AdminQueueInstallError, ControllerAcquire, ControllerAcquireError, ControllerDisableError,
     ControllerDisablePoll, ControllerDisabled, ControllerDisabling, ControllerEnableError,
     ControllerEnableFailure, ControllerEnablePoll, ControllerEnabling, NvmeAdminController,
+};
+pub use identify::{
+    IdentifiedNamespace, IdentifyNamespaceError, IdentifyNamespacePoll, IdentifyNamespaceRequest,
+    IdentifySubmitError, NamespaceIdentifyError, NamespaceInfo, NamespaceParseError,
 };
 
 pub use protocol::{CompletionStatus, IoOpcode, IoTransfer, NvmeCompletion, TransferDirection};

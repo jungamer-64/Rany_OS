@@ -10,6 +10,7 @@ const PAGE_SIZE: u64 = 4096;
 enum AdminOpcode {
     CreateIoSubmissionQueue = 0x01,
     CreateIoCompletionQueue = 0x05,
+    Identify = 0x06,
     SetFeatures = 0x09,
 }
 
@@ -217,6 +218,23 @@ fn encode_prp1(dwords: &mut [u32; COMMAND_DWORDS], address: DmaDeviceAddress) {
 }
 
 impl NvmeCommand {
+    pub(crate) fn identify_namespace(
+        command_id: u16,
+        namespace: u32,
+        address: DmaDeviceAddress,
+    ) -> Option<Self> {
+        if namespace == 0 || !address.get().is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        let mut dwords = [0; COMMAND_DWORDS];
+        dwords[0] = u32::from(AdminOpcode::Identify as u8) | (u32::from(command_id) << 16);
+        dwords[1] = namespace;
+        encode_prp1(&mut dwords, address);
+        // CNS=00h selects the NVM Command Set Identify Namespace data.
+        dwords[10] = 0;
+        Some(Self { dwords })
+    }
+
     pub(crate) fn transfer(
         command_id: u16,
         transfer: IoTransfer,
@@ -326,6 +344,22 @@ mod tests {
         assert!(
             AdminCommand::create_io_submission_queue(1, 1, 1, DmaDeviceAddress::from_abi(0x8001))
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn identify_namespace_requires_a_named_namespace_and_page_buffer() {
+        let command = NvmeCommand::identify_namespace(3, 7, DmaDeviceAddress::from_abi(0x1_0000))
+            .expect("valid identify command");
+        assert_eq!(command.dwords[0], 0x0003_0006);
+        assert_eq!(command.dwords[1], 7);
+        assert_eq!(command.dwords[6], 0x0001_0000);
+        assert_eq!(command.dwords[10], 0);
+        assert!(
+            NvmeCommand::identify_namespace(1, 0, DmaDeviceAddress::from_abi(0x1000)).is_none()
+        );
+        assert!(
+            NvmeCommand::identify_namespace(1, 1, DmaDeviceAddress::from_abi(0x1001)).is_none()
         );
     }
 }

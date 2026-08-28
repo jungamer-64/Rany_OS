@@ -421,6 +421,56 @@ impl NvmeQueue {
         transfer: IoTransfer,
         lease: CpuDmaLease,
     ) -> Result<QueueSubmission, SubmitError> {
+        self.submit_dma(
+            registers,
+            transfer.direction(),
+            transfer.logical_bytes().get(),
+            lease,
+            |command_id, descriptor, prp2| {
+                Some(NvmeCommand::transfer(
+                    command_id,
+                    transfer,
+                    descriptor.device_address(),
+                    prp2,
+                ))
+            },
+        )
+    }
+
+    pub(crate) fn submit_identify_namespace(
+        &self,
+        registers: &NvmeRegisters,
+        namespace: u32,
+        lease: CpuDmaLease,
+    ) -> Result<QueueSubmission, SubmitError> {
+        if namespace == 0 {
+            return Err(SubmitError::Cpu {
+                cause: SubmitFailure::InvalidTransfer,
+                lease,
+            });
+        }
+        self.submit_dma(
+            registers,
+            TransferDirection::Read,
+            PAGE_SIZE,
+            lease,
+            |command_id, descriptor, prp2| {
+                if prp2.is_some() {
+                    return None;
+                }
+                NvmeCommand::identify_namespace(command_id, namespace, descriptor.device_address())
+            },
+        )
+    }
+
+    fn submit_dma(
+        &self,
+        registers: &NvmeRegisters,
+        direction: TransferDirection,
+        logical_bytes: usize,
+        lease: CpuDmaLease,
+        command: impl FnOnce(u16, &DmaDescriptor<'_>, Option<DmaDeviceAddress>) -> Option<NvmeCommand>,
+    ) -> Result<QueueSubmission, SubmitError> {
         let mut doorbell = match registers.submission_doorbell(self.identity.index()) {
             Ok(doorbell) => doorbell,
             Err(cause) => {
@@ -430,8 +480,9 @@ impl NvmeQueue {
                 });
             }
         };
-        if !direction_matches(transfer.direction(), lease.direction())
-            || transfer.logical_bytes().get() > lease.byte_count().get()
+        if !direction_matches(direction, lease.direction())
+            || logical_bytes == 0
+            || logical_bytes > lease.byte_count().get()
         {
             return Err(SubmitError::Cpu {
                 cause: SubmitFailure::InvalidTransfer,
@@ -473,7 +524,7 @@ impl NvmeQueue {
                 });
             }
         };
-        let prp2 = match inline_prp2(&descriptor, transfer.logical_bytes().get()) {
+        let prp2 = match inline_prp2(&descriptor, logical_bytes) {
             Ok(prp2) => prp2,
             Err(cause) => {
                 return Err(SubmitError::Prepared {
@@ -509,8 +560,13 @@ impl NvmeQueue {
                 lease: prepared,
             });
         }
-        let command =
-            NvmeCommand::transfer(command_id, transfer, descriptor.device_address(), prp2);
+        let Some(command) = command(command_id, &descriptor, prp2) else {
+            state.command_ids.release(command_id);
+            return Err(SubmitError::Prepared {
+                cause: SubmitFailure::InvalidTransfer,
+                lease: prepared,
+            });
+        };
         if let Err(cause) = write_submission(&mut self.submission.lock(), state.tail, &command) {
             state.command_ids.release(command_id);
             state.fault = Some(QueueFault::SharedMemory);
