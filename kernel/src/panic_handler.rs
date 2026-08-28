@@ -3,6 +3,7 @@
 // 設計書 8.1: スタックアンワインドとリソース回収
 // ============================================================================
 use crate::graphics::bsod::BsodInfo;
+use core::cell::UnsafeCell;
 use core::fmt::{self, Write};
 use core::mem::MaybeUninit;
 use core::panic::PanicInfo;
@@ -11,12 +12,6 @@ use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 /// 【設計書 8.5.1】Double Panic検出用フラグ
 /// 各CPUコアにパニック中フラグを設置（現在は単一コア想定）
 static PANIC_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
-
-/// パニック状態
-/// 0: 初期状態
-/// 1: 書き込み中 (Locked)
-/// 2: 書き込み完了 (Valid)
-static PANIC_RECORD_STATE: AtomicU8 = AtomicU8::new(0);
 
 const MAX_PANIC_MSG: usize = 1024;
 const MAX_FILE_LEN: usize = 128;
@@ -34,6 +29,18 @@ pub struct PanicRecord {
     pub tick: u64,
 }
 
+impl PanicRecord {
+    const fn empty() -> Self {
+        Self {
+            message: [0; MAX_PANIC_MSG],
+            message_len: 0,
+            domain_id: None,
+            location: None,
+            tick: 0,
+        }
+    }
+}
+
 /// パニック発生場所 (ヒープ割り当てなし)
 #[derive(Clone, Copy)]
 pub struct PanicLocation {
@@ -43,8 +50,65 @@ pub struct PanicLocation {
     pub column: u32,
 }
 
-/// 静的パニックレコードバッファ
-static mut PANIC_RECORD: MaybeUninit<PanicRecord> = MaybeUninit::uninit();
+/// First-writer-wins storage for the allocation-free panic path.
+struct PanicRecordCell {
+    state: AtomicU8,
+    record: UnsafeCell<MaybeUninit<PanicRecord>>,
+}
+
+impl PanicRecordCell {
+    const EMPTY: u8 = 0;
+    const WRITING: u8 = 1;
+    const VALID: u8 = 2;
+
+    const fn new() -> Self {
+        Self {
+            state: AtomicU8::new(Self::EMPTY),
+            record: UnsafeCell::new(MaybeUninit::uninit()),
+        }
+    }
+
+    fn try_capture(
+        &'static self,
+        fill: impl FnOnce(&mut PanicRecord),
+    ) -> Option<&'static PanicRecord> {
+        self.state
+            .compare_exchange(
+                Self::EMPTY,
+                Self::WRITING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .ok()?;
+
+        // SAFETY: the successful state transition grants this caller the only
+        // mutable access. A complete value is installed before a reference is
+        // formed, and readers cannot observe it until the release publication.
+        let record = unsafe {
+            let slot = &mut *self.record.get();
+            slot.write(PanicRecord::empty());
+            slot.assume_init_mut()
+        };
+        fill(record);
+        self.state.store(Self::VALID, Ordering::Release);
+        Some(record)
+    }
+
+    fn get(&'static self) -> Option<&'static PanicRecord> {
+        if self.state.load(Ordering::Acquire) != Self::VALID {
+            return None;
+        }
+        // SAFETY: VALID is release-published only after initialization and the
+        // record is immutable thereafter. Acquire observes every initialized field.
+        Some(unsafe { (&*self.record.get()).assume_init_ref() })
+    }
+}
+
+// SAFETY: the atomic state grants exclusive initialization to one writer and
+// publishes only an immutable, fully initialized record to concurrent readers.
+unsafe impl Sync for PanicRecordCell {}
+
+static PANIC_RECORD: PanicRecordCell = PanicRecordCell::new();
 
 /// パニック統計
 static PANIC_COUNT: AtomicU64 = AtomicU64::new(0);
@@ -68,13 +132,7 @@ impl<'a> Write for PanicBufferWriter<'a> {
         let len = bytes.len().min(remaining);
 
         if len > 0 {
-            unsafe {
-                core::ptr::copy_nonoverlapping(
-                    bytes.as_ptr(),
-                    self.buffer.as_mut_ptr().add(self.offset),
-                    len,
-                );
-            }
+            self.buffer[self.offset..self.offset + len].copy_from_slice(&bytes[..len]);
             self.offset += len;
         }
 
@@ -90,50 +148,35 @@ impl<'a> Write for PanicBufferWriter<'a> {
 /// Capture the panic record into the static buffer (lock-free, first-writer-wins).
 /// Returns a slice to the recorded message or a default fallback.
 fn panic_capture_record(info: &PanicInfo, domain_id: u64) -> &'static [u8] {
-    let mut message_slice: &[u8] = b"Unknown panic";
+    if let Some(record) = PANIC_RECORD.try_capture(|record| {
+        let mut writer = PanicBufferWriter::new(&mut record.message);
+        let _ = write!(writer, "{}", info.message());
+        record.message_len = writer.offset;
 
-    if PANIC_RECORD_STATE
-        .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
-    {
-        unsafe {
-            let record_ptr = core::ptr::addr_of_mut!(PANIC_RECORD) as *mut PanicRecord;
-            let record_ref = &mut *record_ptr;
+        if let Some(loc) = info.location() {
+            let mut file_buf = [0u8; MAX_FILE_LEN];
+            let file_bytes = loc.file().as_bytes();
+            let copy_len = file_bytes.len().min(MAX_FILE_LEN);
+            file_buf[..copy_len].copy_from_slice(&file_bytes[..copy_len]);
 
-            let mut writer = PanicBufferWriter::new(&mut record_ref.message);
-            let _ = write!(writer, "{}", info.message());
-            record_ref.message_len = writer.offset;
-            message_slice = &record_ref.message[..record_ref.message_len];
-
-            if let Some(loc) = info.location() {
-                let mut file_buf = [0u8; MAX_FILE_LEN];
-                let file_bytes = loc.file().as_bytes();
-                let copy_len = file_bytes.len().min(MAX_FILE_LEN);
-                core::ptr::copy_nonoverlapping(
-                    file_bytes.as_ptr(),
-                    file_buf.as_mut_ptr(),
-                    copy_len,
-                );
-
-                record_ref.location = Some(PanicLocation {
-                    file: file_buf,
-                    file_len: copy_len,
-                    line: loc.line(),
-                    column: loc.column(),
-                });
-            } else {
-                record_ref.location = None;
-            }
-
-            record_ref.domain_id = if domain_id > 0 { Some(domain_id) } else { None };
-            record_ref.tick = crate::task::current_tick();
-
-            PANIC_RECORD_STATE.store(2, Ordering::Release);
+            record.location = Some(PanicLocation {
+                file: file_buf,
+                file_len: copy_len,
+                line: loc.line(),
+                column: loc.column(),
+            });
+        } else {
+            record.location = None;
         }
+
+        record.domain_id = if domain_id > 0 { Some(domain_id) } else { None };
+        record.tick = crate::task::current_tick();
+    }) {
+        &record.message[..record.message_len]
     } else {
         crate::io::log::early_print("Concurrent panic detected, skipping record capture.\n");
+        b"Unknown panic"
     }
-    message_slice
 }
 
 /// Output the panic location and message to serial (lock-free).
@@ -194,19 +237,15 @@ fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
     // panic we actually need to diagnose.
     let backtrace = crate::unwind::Backtrace::capture();
 
-    let (file_str, line, col) = unsafe {
-        if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
-            let record_ptr = core::ptr::addr_of!(PANIC_RECORD) as *const PanicRecord;
-            let record = &*record_ptr;
-            if let Some(loc) = &record.location {
-                let f = core::str::from_utf8(&loc.file[..loc.file_len]).unwrap_or("unknown");
-                (Some(f), Some(loc.line), Some(loc.column))
-            } else {
-                (None, None, None)
-            }
+    let (file_str, line, col) = if let Some(record) = PANIC_RECORD.get() {
+        if let Some(loc) = &record.location {
+            let f = core::str::from_utf8(&loc.file[..loc.file_len]).unwrap_or("unknown");
+            (Some(f), Some(loc.line), Some(loc.column))
         } else {
             (None, None, None)
         }
+    } else {
+        (None, None, None)
     };
 
     let msg_str = core::str::from_utf8(message_slice).unwrap_or("Panic error");
@@ -313,17 +352,11 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
 /// パニック統計を取得 (Lock-Free read attempt)
 /// 注意: Stringを返すため、アロケーションが発生します。パニックハンドラ内では使用しないでください。
 pub fn panic_stats() -> PanicStats {
-    let msg = unsafe {
-        if PANIC_RECORD_STATE.load(Ordering::Acquire) == 2 {
-            let record_ptr = core::ptr::addr_of!(PANIC_RECORD) as *const PanicRecord;
-            let record = &*record_ptr;
-            let s = core::str::from_utf8(&record.message[..record.message_len])
-                .unwrap_or("Invalid UTF-8");
-            Some(alloc::string::String::from(s))
-        } else {
-            None
-        }
-    };
+    let msg = PANIC_RECORD.get().map(|record| {
+        let message =
+            core::str::from_utf8(&record.message[..record.message_len]).unwrap_or("Invalid UTF-8");
+        alloc::string::String::from(message)
+    });
 
     PanicStats {
         total_panics: PANIC_COUNT.load(Ordering::Relaxed),
