@@ -203,6 +203,12 @@ pub fn console_print(s: &str) {
 }
 
 /// フレームバッファのロックを強制解除（パニック時用）
+///
+/// # Safety
+/// The caller must be a terminal panic path: the interrupted guard owner and
+/// every ordinary framebuffer user must be unable to resume.
 pub unsafe fn force_unlock_framebuffer() {
-    FRAMEBUFFER.force_unlock();
+    // SAFETY: this boundary is called only by the terminal panic path. The
+    // interrupted framebuffer guard and its execution never resume afterward.
+    unsafe { FRAMEBUFFER.abandon_guard_for_terminal_panic() };
 }

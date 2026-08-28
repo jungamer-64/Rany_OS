@@ -442,6 +442,17 @@ impl<T> PoisonLock<T> {
         self.poisoned.store(false, Ordering::Release);
     }
 
+    /// Abandons an interrupted guard so terminal panic output can proceed.
+    ///
+    /// # Safety
+    /// The execution that owns the current guard must never resume or access
+    /// the protected value again. No second recovery path may call this while a
+    /// replacement guard is live. Violating either condition creates aliased
+    /// mutable access despite the lock bit being clear.
+    pub(crate) unsafe fn abandon_guard_for_terminal_panic(&self) {
+        self.locked.store(false, Ordering::Release);
+    }
+
     /// 内部データへの参照を取得（ロックなし、unsafeのみ）
     ///
     /// # Safety
