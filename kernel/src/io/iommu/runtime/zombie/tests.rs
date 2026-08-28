@@ -72,14 +72,18 @@ fn test_zombie_queue_failed_cleanup() {
 
     // Process with callback that returns false (cleanup failed)
     let count = queue.process_pending(10, |_| false);
-    assert_eq!(count, 2);
+    assert_eq!(count, 0);
 
-    // Stats should show drained but not processed
+    // Failed cleanup retains ownership and remains eligible for reconciliation.
     let stats = queue.stats();
     assert_eq!(stats.total_enqueued, 2);
-    assert_eq!(stats.total_processed, 0); // cleanup failed
-    assert_eq!(stats.total_drained, 2); // but entries are drained
-    assert_eq!(queue.pending_estimate(), 0); // accurate estimate
+    assert_eq!(stats.total_processed, 0);
+    assert_eq!(stats.total_drained, 0);
+    assert_eq!(queue.pending_estimate(), 2);
+
+    let count = queue.process_pending(10, |_| true);
+    assert_eq!(count, 2);
+    assert_eq!(queue.pending_estimate(), 0);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

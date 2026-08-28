@@ -219,6 +219,17 @@ impl ZombieEntry {
         self.state_gen.store(desired, Ordering::Release);
     }
 
+    /// Retain a failed cleanup in the pending state for later reconciliation.
+    fn retain_for_retry(&self) {
+        let current = self.state_gen.load(Ordering::Relaxed);
+        let generation = Self::extract_generation(current);
+        debug_assert_eq!(Self::extract_state(current), ZombieState::Processing);
+        let desired = Self::pack_state_gen(ZombieState::Pending, generation);
+        // Release republishes the unchanged payload before another consumer can
+        // acquire it. The generation remains stable because the slot was not freed.
+        self.state_gen.store(desired, Ordering::Release);
+    }
+
     /// Write payload data to a claimed slot.
     /// SAFETY: Caller must have successfully called try_claim_for_writing().
     unsafe fn write_payload(&self, payload: ZombiePayload) {
@@ -440,11 +451,16 @@ impl ZombieQueue {
                 unsafe { drop_fn(ptr, owner, meta) };
             }
             self.total_processed.fetch_add(1, Ordering::Relaxed);
+            entry.release();
+            self.total_drained.fetch_add(1, Ordering::Relaxed);
+            true
+        } else {
+            // Preserve the raw owner and mapping metadata. Releasing this slot
+            // would lose the only reclamation authority while leaving the IOVA
+            // potentially live.
+            entry.retain_for_retry();
+            false
         }
-
-        entry.release();
-        self.total_drained.fetch_add(1, Ordering::Relaxed);
-        true
     }
 
     pub fn process_pending<F>(&self, max_count: usize, mut callback: F) -> usize

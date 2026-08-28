@@ -501,8 +501,18 @@ impl<T: ?Sized + 'static> Drop for DmaHandle<T> {
                     self.iova
                 );
 
-                // Perform synchronous unmap by taking ownership
-                let _ = self.unmap_sync_internal_in_drop();
+                if let Err(error) = self.unmap_sync_internal_in_drop() {
+                    log::error!(
+                        "[IOMMU][CRITICAL] Synchronous drop unmap failed; leaking backing memory to prevent DMA-after-free (IOVA=0x{:x}, size={}, error={:?})",
+                        self.iova,
+                        self.size,
+                        error
+                    );
+                    // The mapping may still be device-visible. There is no
+                    // caller-visible finalization channel from Drop, so retain
+                    // the allocation permanently instead of freeing it.
+                    core::mem::forget(self.rref.take());
+                }
             } else {
                 // Without a validated non-ISR CPU context, blocking is unsafe.
                 log::error!(
