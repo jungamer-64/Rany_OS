@@ -8,7 +8,7 @@ pub(crate) use core::future::Future;
 pub(crate) use core::pin::Pin;
 pub(crate) use core::ptr::NonNull;
 pub(crate) use kernel_api::KapiResult;
-pub(crate) use kernel_api::dma::{CpuOwned as KapiCpuOwned, DmaSlice};
+pub(crate) use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest, DmaLeaseId};
 pub(crate) use kernel_api::error::KapiError;
 pub(crate) use kernel_api::ipc::ChannelHandle;
 pub(crate) use kernel_api::resource::fs::{FileHandle, OpenMode};
@@ -20,8 +20,6 @@ pub(crate) use kernel_api::service::kernel::KernelServices;
 
 pub(crate) use crate::io::dma;
 pub(crate) use crate::task::{current_subject, current_task_id};
-
-pub(crate) type DmaBuffer = DmaSlice<KapiCpuOwned>;
 
 pub mod bootstrap;
 pub mod device_registration;

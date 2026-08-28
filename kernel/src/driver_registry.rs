@@ -838,6 +838,7 @@ extern "C" fn kapi_alloc_dma_for_device_raw(
     size: usize,
     device_id: u64,
     align: usize,
+    direction: u8,
     out: *mut AbiDmaSlice,
 ) -> i32 {
     if out.is_null() {
@@ -848,7 +849,22 @@ extern "C" fn kapi_alloc_dma_for_device_raw(
         *out = AbiDmaSlice::default();
     }
 
-    if size == 0 || align == 0 || !align.is_power_of_two() {
+    let direction = match direction {
+        value if value == kernel_api::dma::DmaDirection::ToDevice as u8 => {
+            kernel_api::dma::DmaDirection::ToDevice
+        }
+        value if value == kernel_api::dma::DmaDirection::FromDevice as u8 => {
+            kernel_api::dma::DmaDirection::FromDevice
+        }
+        value if value == kernel_api::dma::DmaDirection::Bidirectional as u8 => {
+            kernel_api::dma::DmaDirection::Bidirectional
+        }
+        _ => return AbiErrorCode::InvalidParam as i32,
+    };
+    let Some(request) = kernel_api::dma::DmaAllocationRequest::new(size, direction) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    if align == 0 || !align.is_power_of_two() {
         return AbiErrorCode::InvalidParam as i32;
     }
 
@@ -857,15 +873,32 @@ extern "C" fn kapi_alloc_dma_for_device_raw(
     }
 
     match kernel_api::service::kernel::instance()
-        .alloc_dma_for_device(size, PackedPciLocation::from_raw(device_id))
+        .alloc_dma_for_device(request, PackedPciLocation::from_raw(device_id))
     {
         Ok(buffer) => {
+            let lease = buffer.lease_id();
+            let owner = crate::task::current_subject().domain;
+            let view = match crate::resource_registry::dma::abi_view(lease, owner) {
+                Ok(view) => view,
+                Err(error) => {
+                    match buffer.close() {
+                        Ok(()) => {}
+                        Err(close_error) => log::error!(
+                            "[KAPI][DMA] ABI view failed for lease {:?}: {:?}; close quarantined: {:?}",
+                            lease,
+                            error,
+                            close_error.cause()
+                        ),
+                    }
+                    return AbiErrorCode::IoError as i32;
+                }
+            };
             unsafe {
                 *out = AbiDmaSlice {
-                    dma_handle_id: buffer.dma_handle_id(),
-                    device_addr: buffer.device_address(),
-                    virt_addr: buffer.as_ptr() as usize as u64,
-                    size: buffer.size(),
+                    dma_handle_id: lease.into_abi(),
+                    device_addr: view.device_address.get(),
+                    virt_addr: view.virtual_address,
+                    size: view.byte_count.get(),
                 };
             }
             core::mem::forget(buffer);

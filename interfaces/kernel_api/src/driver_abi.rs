@@ -1331,8 +1331,13 @@ pub struct KernelApiV4 {
 
     pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
 
-    pub alloc_dma_for_device_raw:
-        extern "C" fn(size: usize, device_id: u64, align: usize, out: *mut AbiDmaSlice) -> i32,
+    pub alloc_dma_for_device_raw: extern "C" fn(
+        size: usize,
+        device_id: u64,
+        align: usize,
+        direction: u8,
+        out: *mut AbiDmaSlice,
+    ) -> i32,
     pub release_dma_raw: extern "C" fn(dma_handle_id: u64) -> i32,
 
     pub map_mmio: extern "C" fn(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32,

@@ -348,16 +348,6 @@ impl DeviceDmaContext {
     {
         RRefDmaBuffer::map_kernel_default(self, direction)
     }
-
-    /// 便利なメソッド: TypedDmaBufferを作成
-    pub fn create_buffer<T>(&self, value: T) -> Result<TypedDmaBuffer<T, CpuOwned>, DmaError> {
-        TypedDmaBuffer::new(value).ok_or(DmaError::OutOfMemory)
-    }
-
-    /// 便利なメソッド: TypedDmaSliceを作成
-    pub fn create_slice(&self, size: usize) -> Result<TypedDmaSlice<CpuOwned>, DmaError> {
-        TypedDmaSlice::new(size).ok_or(DmaError::OutOfMemory)
-    }
 }
 
 impl Drop for DeviceDmaContext {
@@ -384,7 +374,3 @@ pub fn cache_line_size() -> usize {
     }
     (((result >> 8) & 0xFF) * 8) as usize
 }
-
-#[cfg(test)]
-#[path = "../../tests.rs"]
-mod tests;

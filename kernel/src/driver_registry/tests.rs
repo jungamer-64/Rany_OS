@@ -332,7 +332,13 @@ fn test_kapi_alloc_dma_raw_rejects_invalid_requests() {
     };
 
     assert_eq!(
-        super::kapi_alloc_dma_for_device_raw(0, PackedPciLocation::NULL.raw(), 1, &mut out),
+        super::kapi_alloc_dma_for_device_raw(
+            0,
+            PackedPciLocation::NULL.raw(),
+            1,
+            kernel_api::dma::DmaDirection::Bidirectional as u8,
+            &mut out,
+        ),
         AbiError::InvalidParam as i32
     );
     assert_eq!(out.dma_handle_id, 0);
@@ -347,7 +353,13 @@ fn test_kapi_alloc_dma_raw_rejects_invalid_requests() {
         size: 14,
     };
     assert_eq!(
-        super::kapi_alloc_dma_for_device_raw(4096, PackedPciLocation::NULL.raw(), 3, &mut out),
+        super::kapi_alloc_dma_for_device_raw(
+            4096,
+            PackedPciLocation::NULL.raw(),
+            3,
+            kernel_api::dma::DmaDirection::Bidirectional as u8,
+            &mut out,
+        ),
         AbiError::InvalidParam as i32
     );
     assert_eq!(out.dma_handle_id, 0);
@@ -366,6 +378,7 @@ fn test_kapi_alloc_dma_raw_rejects_invalid_requests() {
             4096,
             PackedPciLocation::NULL.raw(),
             crate::mm::types::PAGE_SIZE_4K * 2,
+            kernel_api::dma::DmaDirection::Bidirectional as u8,
             &mut out,
         ),
         AbiError::NotSupported as i32

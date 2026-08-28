@@ -53,6 +53,7 @@ extern "C" fn test_kernel_alloc_dma_for_device_raw(
     _size: usize,
     _device_id: u64,
     _align: usize,
+    _direction: u8,
     _out: *mut AbiDmaSlice,
 ) -> i32 {
     -1

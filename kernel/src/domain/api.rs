@@ -115,23 +115,27 @@ pub fn reclaim_domain_resources(domain: DomainId) {
     }
 
     #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-    if count > 0 || cleanup.dma.handles > 0 {
+    if count > 0 || cleanup.dma.released_handles > 0 || cleanup.dma.quarantined_handles > 0 {
         log::info!(
-            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes) from {}\n",
+            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes); quarantined {} DMA handles ({} bytes) from {}\n",
             count,
-            cleanup.dma.handles,
-            cleanup.dma.bytes,
+            cleanup.dma.released_handles,
+            cleanup.dma.released_bytes,
+            cleanup.dma.quarantined_handles,
+            cleanup.dma.quarantined_bytes,
             domain
         );
     }
 
     #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-    if count > 0 || cleanup.dma.handles > 0 {
+    if count > 0 || cleanup.dma.released_handles > 0 || cleanup.dma.quarantined_handles > 0 {
         log::info!(
-            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes) from {}\n",
+            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes); quarantined {} DMA handles ({} bytes) from {}\n",
             count,
-            cleanup.dma.handles,
-            cleanup.dma.bytes,
+            cleanup.dma.released_handles,
+            cleanup.dma.released_bytes,
+            cleanup.dma.quarantined_handles,
+            cleanup.dma.quarantined_bytes,
             domain
         );
     }

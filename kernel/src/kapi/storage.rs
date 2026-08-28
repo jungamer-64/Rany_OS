@@ -110,8 +110,8 @@ pub(crate) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
 pub(crate) fn read_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
-    buffer: DmaBuffer,
-) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+    buffer: CpuDmaLease,
+) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
     Box::pin(async move {
         let direct = resolve_direct_handle(handle)?;
         direct
@@ -124,8 +124,8 @@ pub(crate) fn read_blocks_dma(
 pub(crate) fn write_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
-    buffer: DmaBuffer,
-) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+    buffer: CpuDmaLease,
+) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
     Box::pin(async move {
         let direct = resolve_direct_handle(handle)?;
         direct

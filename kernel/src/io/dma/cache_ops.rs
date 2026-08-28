@@ -1,9 +1,5 @@
 use super::*;
 
-#[cfg(test)]
-static BOXED_COHERENT_DMA_RELEASES: core::sync::atomic::AtomicUsize =
-    core::sync::atomic::AtomicUsize::new(0);
-
 // ============================================================================
 // Cache Range Operations
 // ============================================================================
@@ -342,6 +338,50 @@ impl RRefDmaBytes {
     pub fn into_buffer(self) -> RRefDmaBuffer<[u8]> {
         self.buffer
     }
+
+    /// Visit the initialized logical byte range while the registry guarantees
+    /// CPU ownership of this mapping.
+    pub(crate) fn cpu_bytes(&self) -> Option<&[u8]> {
+        self.buffer
+            .handle
+            .rref
+            .as_deref()
+            .and_then(|bytes| bytes.get(..self.len))
+    }
+
+    /// Mutably visit the initialized logical byte range while the registry
+    /// guarantees exclusive CPU ownership of this mapping.
+    pub(crate) fn cpu_bytes_mut(&mut self) -> Option<&mut [u8]> {
+        self.buffer
+            .handle
+            .rref
+            .as_deref_mut()
+            .and_then(|bytes| bytes.get_mut(..self.len))
+    }
+
+    /// Explicitly unmap while retaining the entire mapping owner on failure.
+    pub(crate) fn try_unmap(self) -> Result<crate::ipc::RRef<[u8]>, RRefDmaBytesUnmapError> {
+        let Self { buffer, len } = self;
+        match buffer.unmap() {
+            Ok(rref) => Ok(rref),
+            Err(error) => Err(RRefDmaBytesUnmapError {
+                buffer: Self {
+                    buffer: RRefDmaBuffer {
+                        handle: error.handle,
+                    },
+                    len,
+                },
+                kind: error.kind,
+            }),
+        }
+    }
+}
+
+/// Failed byte-buffer unmap retaining mapping and allocation ownership.
+#[derive(Debug)]
+pub(crate) struct RRefDmaBytesUnmapError {
+    pub(crate) buffer: RRefDmaBytes,
+    pub(crate) kind: crate::io::iommu::api::UnmapErrorKind,
 }
 
 // ============================================================================
@@ -645,51 +685,6 @@ impl CoherentDmaBuffer {
     pub fn size(&self) -> usize {
         self.size
     }
-
-    /// Export this coherent DMA allocation into the public `kernel_api` DMA
-    /// typestate wrapper without losing the original RAII cleanup path.
-    #[cfg(test)]
-    pub(crate) fn into_kernel_api_dma_slice(
-        self,
-    ) -> kernel_api::dma::DmaSlice<kernel_api::dma::CpuOwned> {
-        let owner = alloc::boxed::Box::new(self);
-        let host_addr = owner.phys_addr.as_u64();
-        let device_addr = owner.device_addr();
-        let virt_addr = owner.ptr.as_ptr();
-        let size = owner.size;
-        let token = alloc::boxed::Box::into_raw(owner) as usize;
-
-        unsafe {
-            kernel_api::dma::DmaSlice::from_internal_parts_unchecked(
-                host_addr,
-                device_addr,
-                virt_addr,
-                size,
-                kernel_api::dma::InternalDmaReclaimer::KernelObject {
-                    token,
-                    releaser: Some(release_boxed_coherent_dma_buffer),
-                },
-            )
-        }
-    }
-}
-
-#[cfg(test)]
-fn release_boxed_coherent_dma_buffer(token: usize) {
-    #[cfg(test)]
-    BOXED_COHERENT_DMA_RELEASES.fetch_add(1, core::sync::atomic::Ordering::SeqCst);
-
-    let _ = unsafe { alloc::boxed::Box::from_raw(token as *mut CoherentDmaBuffer) };
-}
-
-#[cfg(test)]
-pub(crate) fn reset_coherent_dma_export_release_count() {
-    BOXED_COHERENT_DMA_RELEASES.store(0, core::sync::atomic::Ordering::SeqCst);
-}
-
-#[cfg(test)]
-pub(crate) fn coherent_dma_export_release_count() -> usize {
-    BOXED_COHERENT_DMA_RELEASES.load(core::sync::atomic::Ordering::SeqCst)
 }
 
 impl Drop for CoherentDmaBuffer {

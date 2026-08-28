@@ -14,7 +14,11 @@ use crate::abi::driver::{
     AbiBlockDeviceRegistration, AbiNetPortRegistration, AbiNvmeNamespaceRegistration, AbiRRefRaw,
     KernelApiV4, PackedPciLocation,
 };
-use crate::dma::{CpuOwned, DmaSlice};
+use crate::dma::{CpuDmaLease, DmaAllocationRequest};
+#[cfg(any(feature = "cell_runtime", test))]
+use crate::dma::{
+    DmaDeviceAddress, DmaDirection, DmaLeaseAuthority, DmaLeaseError, DmaLeaseId, DmaLeaseState,
+};
 use crate::ipc::{ChannelHandle, DomainId};
 use crate::msix::MsixVectorInfo;
 use crate::resource::fs::{FileHandle, OpenMode};
@@ -82,9 +86,9 @@ pub trait KernelServices: Send + Sync {
     /// - `KapiError::NotSupported` if `device_id` is null or device-scoped DMA is unavailable
     fn alloc_dma_for_device(
         &self,
-        size: usize,
+        request: DmaAllocationRequest,
         device_id: PackedPciLocation,
-    ) -> KapiResult<DmaSlice<CpuOwned>>;
+    ) -> KapiResult<CpuDmaLease>;
 
     /// Enable MSI-X for a PCI device and return the configured table slots.
     /// # Errors
@@ -298,16 +302,16 @@ pub trait KernelServices: Send + Sync {
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaSlice<CpuOwned>,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>>;
+        buffer: CpuDmaLease,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>>;
 
     /// Write blocks from a DMA buffer (buffer returned on completion)
     fn nvme_write_blocks_dma(
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaSlice<CpuOwned>,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>>;
+        buffer: CpuDmaLease,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>>;
 
     /// Flush pending writes for a direct handle
     fn nvme_flush_direct(
@@ -527,29 +531,183 @@ pub fn abi() -> &'static KernelApiV4 {
 }
 
 #[cfg(any(feature = "cell_runtime", test))]
-fn import_dma_slice_from_abi(
-    raw: crate::abi::driver::AbiDmaSlice,
-    releaser: unsafe fn(u64),
-) -> KapiResult<DmaSlice<CpuOwned>> {
-    if raw.dma_handle_id == 0
-        || raw.virt_addr == 0
-        || raw.size == 0
-        || raw.size > isize::MAX as usize
-    {
-        return Err(crate::error::KapiError::IoError);
+struct AbiDmaLeaseAuthority {
+    lease_id: DmaLeaseId,
+    device_address: DmaDeviceAddress,
+    virtual_address: usize,
+    byte_count: crate::dma::DmaByteCount,
+    direction: DmaDirection,
+    release: fn(DmaLeaseId) -> Result<(), DmaLeaseError>,
+    state: core::sync::atomic::AtomicU8,
+}
+
+#[cfg(any(feature = "cell_runtime", test))]
+impl AbiDmaLeaseAuthority {
+    const CPU_OWNED: u8 = 0;
+    const QUARANTINED: u8 = 1;
+    const CLOSED: u8 = 2;
+
+    fn require_cpu_owned(&self) -> Result<(), DmaLeaseError> {
+        if self.state.load(core::sync::atomic::Ordering::Acquire) == Self::CPU_OWNED {
+            Ok(())
+        } else {
+            Err(DmaLeaseError::InvalidState)
+        }
+    }
+}
+
+// SAFETY: Construction validates the ABI owner token, pointer, and length as
+// one registry allocation. CPU visits are locally serialized by the
+// non-Sync CpuDmaLease capability, and failed release moves this bridge to a
+// non-accessible quarantined state without freeing the backing allocation.
+#[cfg(any(feature = "cell_runtime", test))]
+unsafe impl DmaLeaseAuthority for AbiDmaLeaseAuthority {
+    fn lease_id(&self) -> DmaLeaseId {
+        self.lease_id
     }
 
-    // SAFETY: The ABI bridge validated that the raw pointer is non-null and
-    // sized, and the caller supplies the matching handle-based release hook.
-    Ok(unsafe {
-        DmaSlice::from_abi_parts_unchecked(
-            raw.dma_handle_id,
-            raw.device_addr,
-            raw.virt_addr as usize as *mut u8,
-            raw.size,
-            Some(releaser),
-        )
-    })
+    fn device_address(&self) -> DmaDeviceAddress {
+        self.device_address
+    }
+
+    fn byte_count(&self) -> crate::dma::DmaByteCount {
+        self.byte_count
+    }
+
+    fn direction(&self) -> DmaDirection {
+        self.direction
+    }
+
+    fn with_cpu_bytes(&self, visitor: &mut dyn FnMut(&[u8])) -> Result<(), DmaLeaseError> {
+        self.require_cpu_owned()?;
+        // SAFETY: import_dma_lease_from_abi validated a non-null allocation
+        // whose registry lease remains live until explicit release succeeds.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(self.virtual_address as *const u8, self.byte_count.get())
+        };
+        visitor(bytes);
+        Ok(())
+    }
+
+    fn with_cpu_bytes_mut(&self, visitor: &mut dyn FnMut(&mut [u8])) -> Result<(), DmaLeaseError> {
+        self.require_cpu_owned()?;
+        // SAFETY: CpuDmaLease is non-Sync and uniquely owns mutable CPU access;
+        // the stable ABI registry retains the allocation for this lease.
+        let bytes = unsafe {
+            core::slice::from_raw_parts_mut(self.virtual_address as *mut u8, self.byte_count.get())
+        };
+        visitor(bytes);
+        Ok(())
+    }
+
+    fn prepare(&self, _queue: crate::dma::DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn prepared_queue(&self) -> Option<crate::dma::DmaQueueIdentity> {
+        None
+    }
+
+    fn abort_prepared(&self) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn accept(&self) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn complete(
+        &self,
+        _queue: crate::dma::DmaQueueIdentity,
+        _lease: DmaLeaseId,
+    ) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn return_to_cpu(&self) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn mark_outcome_unknown(&self) -> Result<(), DmaLeaseError> {
+        self.state
+            .store(Self::QUARANTINED, core::sync::atomic::Ordering::Release);
+        Ok(())
+    }
+
+    fn revoke_after_reset(
+        &self,
+        _device: PackedPciLocation,
+        _reset_generation: u64,
+    ) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn reconcile(
+        &self,
+        _device: PackedPciLocation,
+        _reset_generation: u64,
+    ) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn close(&self) -> Result<(), DmaLeaseError> {
+        self.require_cpu_owned()?;
+        match (self.release)(self.lease_id) {
+            Ok(()) => {
+                self.state
+                    .store(Self::CLOSED, core::sync::atomic::Ordering::Release);
+                Ok(())
+            }
+            Err(error) => {
+                self.state
+                    .store(Self::QUARANTINED, core::sync::atomic::Ordering::Release);
+                Err(error)
+            }
+        }
+    }
+
+    fn retry_close_after_reconcile(
+        &self,
+        _device: PackedPciLocation,
+        _reset_generation: u64,
+    ) -> Result<(), DmaLeaseError> {
+        Err(DmaLeaseError::NotSupported)
+    }
+
+    fn abandon(&self, _observed_state: DmaLeaseState) {
+        if self.state.load(core::sync::atomic::Ordering::Acquire) != Self::CLOSED {
+            self.state
+                .store(Self::QUARANTINED, core::sync::atomic::Ordering::Release);
+        }
+    }
+}
+
+#[cfg(any(feature = "cell_runtime", test))]
+fn import_dma_lease_from_abi(
+    raw: crate::abi::driver::AbiDmaSlice,
+    direction: DmaDirection,
+    release: fn(DmaLeaseId) -> Result<(), DmaLeaseError>,
+) -> KapiResult<CpuDmaLease> {
+    let lease_id =
+        DmaLeaseId::from_abi(raw.dma_handle_id).ok_or(crate::error::KapiError::IoError)?;
+    let byte_count =
+        crate::dma::DmaByteCount::new(raw.size).ok_or(crate::error::KapiError::IoError)?;
+    let virtual_address = usize::try_from(raw.virt_addr)
+        .ok()
+        .filter(|address| *address != 0)
+        .ok_or(crate::error::KapiError::IoError)?;
+
+    Ok(CpuDmaLease::from_authority(alloc::sync::Arc::new(
+        AbiDmaLeaseAuthority {
+            lease_id,
+            device_address: DmaDeviceAddress::from_abi(raw.device_addr),
+            virtual_address,
+            byte_count,
+            direction,
+            release,
+            state: core::sync::atomic::AtomicU8::new(AbiDmaLeaseAuthority::CPU_OWNED),
+        },
+    )))
 }
 
 #[cfg(feature = "cell_runtime")]
@@ -585,19 +743,29 @@ mod standalone {
         Box::pin(async { Err(KapiError::NotSupported) })
     }
 
-    unsafe fn release_dma_from_abi(dma_handle_id: u64) {
-        let status = (super::abi().release_dma_raw)(dma_handle_id);
-        debug_assert_eq!(status, AbiError::Success as i32);
+    fn release_dma_from_abi(dma_handle_id: DmaLeaseId) -> Result<(), DmaLeaseError> {
+        let status = (super::abi().release_dma_raw)(dma_handle_id.into_abi());
+        if AbiError::from_raw(status).is_success() {
+            Ok(())
+        } else {
+            Err(DmaLeaseError::IommuFailure)
+        }
     }
 
     fn alloc_dma_for_device(
-        size: usize,
+        request: DmaAllocationRequest,
         device_id: PackedPciLocation,
-    ) -> KapiResult<DmaSlice<CpuOwned>> {
+    ) -> KapiResult<CpuDmaLease> {
         let mut raw = AbiDmaSlice::default();
-        let status = (super::abi().alloc_dma_for_device_raw)(size, device_id.raw(), 1, &mut raw);
+        let status = (super::abi().alloc_dma_for_device_raw)(
+            request.byte_count().get(),
+            device_id.raw(),
+            1,
+            request.direction() as u8,
+            &mut raw,
+        );
         if AbiError::from_raw(status).is_success() {
-            super::import_dma_slice_from_abi(raw, release_dma_from_abi)
+            super::import_dma_lease_from_abi(raw, request.direction(), release_dma_from_abi)
         } else {
             Err(map_abi_error(status))
         }
@@ -793,10 +961,10 @@ mod standalone {
 
         fn alloc_dma_for_device(
             &self,
-            size: usize,
+            request: DmaAllocationRequest,
             device_id: PackedPciLocation,
-        ) -> KapiResult<DmaSlice<CpuOwned>> {
-            alloc_dma_for_device(size, device_id)
+        ) -> KapiResult<CpuDmaLease> {
+            alloc_dma_for_device(request, device_id)
         }
 
         fn enable_msix(
@@ -1025,8 +1193,8 @@ mod standalone {
             &self,
             handle: DirectBlockHandle,
             block_offset: u64,
-            buffer: DmaSlice<CpuOwned>,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>> {
+            buffer: CpuDmaLease,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
             let _ = (handle, block_offset, buffer);
             unsupported_future()
         }
@@ -1035,8 +1203,8 @@ mod standalone {
             &self,
             handle: DirectBlockHandle,
             block_offset: u64,
-            buffer: DmaSlice<CpuOwned>,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<DmaSlice<CpuOwned>>> + Send>> {
+            buffer: CpuDmaLease,
+        ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
             let _ = (handle, block_offset, buffer);
             unsupported_future()
         }
@@ -1155,8 +1323,9 @@ mod dma_bridge_tests {
 
     static RELEASED_DMA_HANDLE: AtomicU64 = AtomicU64::new(0);
 
-    unsafe fn record_dma_release(dma_handle_id: u64) {
-        RELEASED_DMA_HANDLE.store(dma_handle_id, Ordering::SeqCst);
+    fn record_dma_release(dma_handle_id: DmaLeaseId) -> Result<(), DmaLeaseError> {
+        RELEASED_DMA_HANDLE.store(dma_handle_id.into_abi(), Ordering::SeqCst);
+        Ok(())
     }
 
     #[test]
@@ -1168,7 +1337,8 @@ mod dma_bridge_tests {
             size: 0,
         };
 
-        let err = import_dma_slice_from_abi(raw, record_dma_release).unwrap_err();
+        let err = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
+            .unwrap_err();
         assert!(matches!(err, crate::error::KapiError::IoError));
     }
 
@@ -1181,12 +1351,13 @@ mod dma_bridge_tests {
             size: 64,
         };
 
-        let err = import_dma_slice_from_abi(raw, record_dma_release).unwrap_err();
+        let err = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
+            .unwrap_err();
         assert!(matches!(err, crate::error::KapiError::IoError));
     }
 
     #[test]
-    fn abi_dma_bridge_keeps_handle_release_local() {
+    fn abi_dma_bridge_requires_observed_close() {
         RELEASED_DMA_HANDLE.store(0, Ordering::SeqCst);
 
         let mut backing = [0u8; 8];
@@ -1199,9 +1370,12 @@ mod dma_bridge_tests {
             size: backing.len(),
         };
 
-        let dma = import_dma_slice_from_abi(raw, record_dma_release).expect("valid ABI DMA slice");
-        assert_eq!(dma.as_slice(), b"dma-test");
-        drop(dma);
+        let dma = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
+            .expect("valid ABI DMA lease");
+        assert_eq!(dma.read(|bytes| bytes == b"dma-test"), Ok(true));
+        assert_eq!(RELEASED_DMA_HANDLE.load(Ordering::SeqCst), 0);
+        dma.close()
+            .expect("explicit close must report release success");
 
         assert_eq!(RELEASED_DMA_HANDLE.load(Ordering::SeqCst), 42);
     }

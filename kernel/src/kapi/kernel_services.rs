@@ -5,7 +5,6 @@ use crate::kapi::device_registration::{
     unregister_block_device_for_current_subject, unregister_netdev_port_for_current_subject,
     unregister_nvme_namespace_for_current_subject,
 };
-use crate::kapi::memory::release_dma_buffer;
 use crate::kapi::net::{
     close_socket_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_socket,
     stack_scope, tcp_error_to_kapi,
@@ -45,39 +44,22 @@ impl KernelServices for ExoKernel {
 
     fn alloc_dma_for_device(
         &self,
-        size: usize,
+        request: DmaAllocationRequest,
         device_id: PackedPciLocation,
-    ) -> Result<DmaBuffer, KapiError> {
-        let caller = current_subject().domain.as_u64();
+    ) -> Result<CpuDmaLease, KapiError> {
+        let caller = current_subject().domain;
         let dev_id = authorize_dma_device_for_current_subject(device_id)?;
-        let ctx = dma::DeviceDmaContext::for_attached_device(dev_id);
-        match ctx.alloc_region(size, dma::DmaMemoryAttributes::MMIO) {
-            Ok(region) => {
-                let slot = region.full_slot();
-                let phys = slot.host_addr();
-                let dev_addr = slot.device_addr();
-                let virt_ptr = slot.as_ptr() as usize;
-
-                let boxed: Box<dyn core::any::Any + Send> = Box::new(region.into_inner());
-                let dma_handle_id =
-                    crate::resource_registry::dma::register_allocation(boxed, phys, size, caller);
-                Ok(unsafe {
-                    // SAFETY: `virt_ptr`/`size` come from a live DMA region that remains owned by
-                    // the kernel registry until the exported handle releaser is invoked.
-                    DmaBuffer::from_internal_parts_unchecked(
-                        phys,
-                        dev_addr,
-                        virt_ptr as *mut u8,
-                        size,
-                        kernel_api::dma::InternalDmaReclaimer::KernelHandle {
-                            dma_handle_id,
-                            releaser: Some(release_dma_buffer),
-                        },
-                    )
-                })
-            }
-            Err(_) => Err(KapiError::OutOfMemory),
-        }
+        crate::resource_registry::dma::allocate(caller, device_id, dev_id, request).map_err(
+            |error| match error {
+                crate::resource_registry::dma::DmaAllocationError::RegistryExhausted
+                | crate::resource_registry::dma::DmaAllocationError::AllocationFailed => {
+                    KapiError::OutOfMemory
+                }
+                crate::resource_registry::dma::DmaAllocationError::MappingFailed => {
+                    KapiError::IoError
+                }
+            },
+        )
     }
 
     fn enable_msix(
@@ -438,8 +420,8 @@ impl KernelServices for ExoKernel {
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaBuffer,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+        buffer: CpuDmaLease,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
         crate::kapi::storage::read_blocks_dma(handle, block_offset, buffer)
     }
 
@@ -447,8 +429,8 @@ impl KernelServices for ExoKernel {
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
-        buffer: DmaBuffer,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<DmaBuffer>> + Send>> {
+        buffer: CpuDmaLease,
+    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
         crate::kapi::storage::write_blocks_dma(handle, block_offset, buffer)
     }
 

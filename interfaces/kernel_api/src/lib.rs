@@ -13,6 +13,7 @@
 extern crate alloc;
 
 pub mod block_io;
+pub mod dma;
 
 #[path = "application.rs"]
 pub mod app;
