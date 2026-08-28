@@ -6,19 +6,13 @@ kernel_api::register_cell_runtime!();
 use kernel_api::abi::driver::DriverVTable;
 
 #[cfg(target_os = "none")]
-const SELECTED_DRIVER_COUNT: usize = (cfg!(feature = "driver-ahci") as usize)
-    + (cfg!(feature = "driver-usb") as usize)
+const SELECTED_DRIVER_COUNT: usize = (cfg!(feature = "driver-usb") as usize)
     + (cfg!(feature = "driver-nvme") as usize)
     + (cfg!(feature = "driver-mlx5") as usize)
     + (cfg!(feature = "driver-virtio") as usize);
 
 #[cfg(target_os = "none")]
 const _: [(); 1] = [(); SELECTED_DRIVER_COUNT];
-
-#[cfg(feature = "driver-ahci")]
-fn selected_driver_vtable() -> *const DriverVTable {
-    ahci_driver::ffi::standalone_driver_vtable()
-}
 
 #[cfg(feature = "driver-usb")]
 fn selected_driver_vtable() -> *const DriverVTable {
@@ -42,7 +36,6 @@ fn selected_driver_vtable() -> *const DriverVTable {
 
 #[cfg(all(
     not(target_os = "none"),
-    not(feature = "driver-ahci"),
     not(feature = "driver-usb"),
     not(feature = "driver-nvme"),
     not(feature = "driver-mlx5"),

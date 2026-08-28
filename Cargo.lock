@@ -900,7 +900,6 @@ dependencies = [
 name = "standalone_driver_wrapper"
 version = "0.1.0"
 dependencies = [
- "ahci_driver",
  "kernel_api",
  "mlx5_driver",
  "nvme_driver",

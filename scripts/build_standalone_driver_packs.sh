@@ -67,6 +67,11 @@ for required in "$CELL_TARGET_SPEC" "$WRAPPER_MANIFEST" "$DRIVER_PACK_BUILDER_MA
     }
 done
 
+case "$DEPLOY_DIR" in
+    "$ROOT_DIR"/target/*/standalone_drivers) ;;
+    *) echo "refusing to replace unexpected deploy directory: $DEPLOY_DIR" >&2; exit 1 ;;
+esac
+rm -rf -- "$DEPLOY_DIR"
 mkdir -p "$DEPLOY_DIR"
 
 find_cdylib() {
@@ -167,15 +172,6 @@ VIRTIO_DEVICE_IDS=(
     "0x1050"
     "0x1052"
 )
-
-build_wrapper_cell "driver-ahci" "ahci_driver.raw.cell"
-build_driver_pack \
-    "ahci_driver" \
-    "ahci_driver.raw.cell" \
-    "ahci_driver.cell" \
-    --pci-class 0x01 \
-    --pci-subclass 0x06 \
-    --pci-prog-if 0x01
 
 build_wrapper_cell "driver-nvme" "nvme_driver.raw.cell"
 build_driver_pack \

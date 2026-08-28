@@ -75,7 +75,6 @@ boot_artifacts_root="target/x86_64-exorust/release/boot_artifacts"
 required_boot_artifact_entries=(
   'drivers/driver_cell_probe.cell'
   'drivers/driver_cell_probe_pci.cell'
-  'drivers/ahci_driver.cell'
   'drivers/nvme_driver.cell'
   'drivers/usb_xhci_driver.cell'
   'drivers/virtio_driver_1000.cell'

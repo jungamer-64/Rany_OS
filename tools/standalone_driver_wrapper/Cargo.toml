@@ -19,7 +19,6 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 kernel_api = { path = "../../interfaces/kernel_api" }
-ahci_driver = { path = "../../drivers/ahci", optional = true }
 usb_driver = { path = "../../drivers/usb", optional = true }
 nvme_driver = { path = "../../drivers/nvme", optional = true }
 mlx5_driver = { path = "../../drivers/mlx5", optional = true }
@@ -28,7 +27,6 @@ virtio_driver = { path = "../../drivers/virtio", optional = true }
 [features]
 default = []
 standalone = ["kernel_api/cell_runtime"]
-driver-ahci = ["dep:ahci_driver"]
 driver-usb = ["dep:usb_driver"]
 driver-nvme = ["dep:nvme_driver"]
 driver-mlx5 = ["dep:mlx5_driver"]
