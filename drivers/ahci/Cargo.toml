@@ -15,21 +15,11 @@ workspace = true
 
 [lib]
 path = "src/lib.rs"
-# Note: `standalone` enables the kernel-backed cell runtime plus the exported
-# driver entry symbol for standalone cell builds.
 
 [dependencies]
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
-spin = "0.10"
-x86_64 = { version = "0.15", default-features = false }
-exorust_sync = { path = "../../libs/sync" }
 
 [features]
 default = []
-# Build as a standalone cell with kernel-provided runtime stubs and exported ABI entry.
-standalone = ["export_driver_entry", "kernel_api/cell_runtime"]
-# Export the C ABI driver entry symbol for standalone loading.
-export_driver_entry = ["kernel_api/export_driver_entry"]
-# Export test functions for QEMU integration tests

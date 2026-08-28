@@ -18,9 +18,6 @@
 
 extern crate alloc;
 
-#[cfg(feature = "standalone")]
-kernel_api::register_cell_runtime!();
-
 mod command;
 pub mod fis;
 pub mod identify;
@@ -28,8 +25,6 @@ pub mod types;
 
 pub mod atapi;
 pub mod controller;
-pub mod driver_impl;
-pub mod ffi;
 pub mod port;
 
 // 主要な型を再エクスポート
