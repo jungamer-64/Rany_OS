@@ -12,8 +12,8 @@ use core::num::NonZeroUsize;
 use core::sync::atomic::{Ordering, fence};
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::dma::{
-    CompletedDmaLease, CpuDmaLease, DmaCloseError, DmaCompletionWitness, DmaDeviceAddress,
-    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaQuiesceWitness, DmaTransitionError,
+    CompletedDmaLease, CpuDmaLease, DmaCompletionWitness, DmaDeviceAddress,
+    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaTransitionError,
     InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease, QuarantinedDmaLease,
     SharedDmaLease,
 };
@@ -133,27 +133,6 @@ pub enum CommandPoll {
     Idle,
     Pending,
     Completed(CommandCompletion),
-}
-
-/// Shutdown preserves partial progress: a live port differs from an already
-/// stopped engine whose DMA registry transition or final unmap failed.
-#[derive(Debug)]
-pub enum PortCloseError {
-    CommandActive(AhciPort),
-    Quarantined {
-        cause: PortFault,
-        registers: MappedMmio,
-        queue: DmaQueueIdentity,
-        memory: SharedDmaLease,
-        transfer: Option<RetainedTransfer>,
-    },
-    StopDeadline(AhciPort),
-    Quiesce {
-        registers: MappedMmio,
-        queue: DmaQueueIdentity,
-        failure: DmaTransitionError<SharedDmaLease>,
-    },
-    Unmap(DmaCloseError),
 }
 
 #[derive(Debug)]
@@ -513,55 +492,6 @@ impl AhciPort {
         }
     }
 
-    /// Stop an idle port, prove both DMA engines stopped, then unmap its RAM.
-    /// `poll_budget` bounds samples independently for CR and FR.
-    ///
-    /// # Errors
-    /// Active/unknown commands return the live resources for their recovery
-    /// owner. Stop, quiescence, and unmap failure retain their distinct states.
-    #[expect(
-        clippy::result_large_err,
-        reason = "returning a live port on failed shutdown must not require a new heap allocation"
-    )]
-    pub fn close(mut self, poll_budget: NonZeroUsize) -> Result<(), PortCloseError> {
-        match self.state {
-            CommandState::Submitted { .. } => return Err(PortCloseError::CommandActive(self)),
-            CommandState::Quarantined { cause, transfer } => {
-                return Err(PortCloseError::Quarantined {
-                    cause,
-                    registers: self.registers.into_mapping(),
-                    queue: self.queue,
-                    memory: self.memory,
-                    transfer,
-                });
-            }
-            CommandState::Idle => {}
-        }
-        if self.registers.stop(poll_budget).is_err() {
-            return Err(PortCloseError::StopDeadline(self));
-        }
-        fence(Ordering::SeqCst);
-        #[expect(
-            unsafe_code,
-            reason = "the AHCI engine stop establishes shared-RAM quiescence"
-        )]
-        // SAFETY: no submitted transfer remains, ST/CR and FRE/FR were all
-        // observed clear, and this exclusive port is the only queue that was
-        // given the metadata address. Consuming self prevents witness replay.
-        let witness =
-            unsafe { DmaQuiesceWitness::after_queue_quiesced(self.queue, self.memory.lease_id()) };
-        let memory = match self.memory.quiesce(witness) {
-            Ok(memory) => memory,
-            Err(failure) => {
-                return Err(PortCloseError::Quiesce {
-                    registers: self.registers.into_mapping(),
-                    queue: self.queue,
-                    failure,
-                });
-            }
-        };
-        memory.close().map_err(PortCloseError::Unmap)
-    }
 }
 
 fn reject_prepared(cause: SubmitCause, prepared: PreparedDmaLease) -> SubmitError {
