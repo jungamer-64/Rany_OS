@@ -501,17 +501,6 @@ pub type DriverEntryFn = extern "C" fn() -> *const DriverVTable;
 // Kernel API (Driver Domain C ABI)
 // ============================================================================
 
-/// ABI-stable DMA slice carrier for standalone driver cells.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AbiDmaSlice {
-    pub dma_handle_id: u64,
-    /// Hardware-visible address (IOVA when IOMMU active, else phys_addr)
-    pub device_addr: u64,
-    pub virt_addr: u64,
-    pub size: usize,
-}
-
 /// ABI-stable MMIO mapping handle for driver domains.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
