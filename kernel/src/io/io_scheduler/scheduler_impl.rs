@@ -2,8 +2,14 @@ use super::*;
 
 mod io_future;
 pub use io_future::*;
+
+impl Default for IoScheduler {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl IoScheduler {
-    /// 新しいI/Oスケジューラを作成
     pub const fn new() -> Self {
         Self {
             queues: [
@@ -13,150 +19,126 @@ impl IoScheduler {
                 PoisonLock::new(VecDeque::new()),
                 PoisonLock::new(VecDeque::new()),
             ],
-            requests: PoisonRwLock::new(BTreeMap::new()),
+            requests: PoisonLock::new(BTreeMap::new()),
             mode_controllers: PoisonRwLock::new(BTreeMap::new()),
             device_ops: PoisonRwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
-            completion_hooks: PoisonLock::new(BTreeMap::new()),
             abandoned_completions: PoisonLock::new(Vec::new()),
+            failed_closes: PoisonLock::new(Vec::new()),
             shutdown: AtomicBool::new(false),
         }
     }
 
-    /// デバイスのモードコントローラを登録
     pub fn register_device(&self, device: DeviceId, thresholds: ModeThresholds) {
-        let controller = Arc::new(DeviceIoModeController::new(device, thresholds));
         self.mode_controllers
             .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(device, controller);
+            .unwrap_or_else(|error| error.into_inner())
+            .insert(
+                device,
+                Arc::new(DeviceIoModeController::new(device, thresholds)),
+            );
     }
 
-    /// デバイス操作ハンドラを登録（依存逆転）
-    ///
-    /// 具体デバイスは起動時にこのメソッドで登録し、
-    /// スケジューラはDeviceOps経由でのみデバイスと対話する。
     pub fn register_device_ops(&self, device: DeviceId, ops: Arc<dyn DeviceOps>) {
         self.device_ops
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .insert(device, ops);
     }
 
     pub fn unregister_device(&self, device: DeviceId) -> bool {
         self.mode_controllers
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .remove(&device);
         self.device_ops
             .write()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .remove(&device)
             .is_some()
     }
 
-    /// デバイス操作ハンドラを取得
     pub fn get_device_ops(&self, device: DeviceId) -> Option<Arc<dyn DeviceOps>> {
         self.device_ops
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .get(&device)
             .cloned()
     }
 
-    /// 登録済みデバイスIDのスナップショットを返す。
     pub fn registered_devices(&self) -> Vec<DeviceId> {
         self.device_ops
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .keys()
             .copied()
             .collect()
     }
 
-    /// Enqueue one owned command. The scheduler retains its DMA lease until a
-    /// device consumes the resulting [`IoSubmission`].
+    /// Enqueue one owned command. Shutdown rejection still returns its complete
+    /// CPU ownership through the same completion consumer as normal requests.
+    ///
+    /// # Panics
+    /// Request identity exhaustion is terminal; identities must never wrap and
+    /// replace live requests. No further command is admitted in that case.
     pub fn submit_command(
-        &self,
+        self: &Arc<Self>,
         device: DeviceId,
         command: IoCommand,
         priority: IoPriority,
-    ) -> IoRequestId {
+    ) -> IoFuture {
         let id = IoRequestId::next();
-        let operation = command.operation();
-        let request = IoRequest {
-            id,
-            device,
-            operation,
-            command: Some(command),
-            state: IoState::Pending,
-            submitted_at: current_tick(),
-            completed_at: None,
-            waker: None,
-            result: None,
-            abandoned: false,
-        };
-        self.requests
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, request);
-        let queue_idx = priority as usize;
-        self.queues[queue_idx]
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(id);
-        self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
-        let depth = self
-            .stats
-            .current_queue_depth
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
-            if depth <= max {
-                break;
-            }
-            if self
-                .stats
-                .max_queue_depth
-                .compare_exchange_weak(max, depth, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-        }
-        id
-    }
-
-    /// I/OリクエストにWakerを設定
-    pub fn set_waker(&self, id: IoRequestId, waker: Waker) {
-        if let Some(request) = self
+        let mut requests = self
             .requests
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .get_mut(&id)
-        {
-            request.waker = Some(waker);
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let phase = if self.shutdown.load(Ordering::Acquire) {
+            RequestPhase::Finished(IoCompletion::rejected(command, IoError::Cancelled))
+        } else {
+            RequestPhase::Queued(command)
+        };
+        let pending = matches!(phase, RequestPhase::Queued(_));
+        requests.insert(
+            id,
+            IoRequest {
+                id,
+                device,
+                phase,
+                submitted_at: current_tick(),
+                waker: None,
+                hook: None,
+                abandoned: false,
+            },
+        );
+        self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
+        if pending {
+            let depth = self
+                .stats
+                .current_queue_depth
+                .fetch_add(1, Ordering::Relaxed)
+                + 1;
+            self.stats
+                .max_queue_depth
+                .fetch_max(depth, Ordering::Relaxed);
+            self.queues[priority as usize]
+                .lock()
+                .unwrap_or_else(|error| error.into_inner())
+                .push_back(id);
+        } else {
+            self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
+            self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
+        }
+        IoFuture {
+            scheduler: self.clone(),
+            request_id: id,
         }
     }
 
-    /// I/OリクエストのWakerを取得
-    pub fn get_waker(&self, id: IoRequestId) -> Option<Waker> {
-        self.requests
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&id)
-            .and_then(|r| r.waker.clone())
-    }
-
-    /// 次のリクエストを取得（優先度順）
-    pub fn next_request(&self) -> Option<IoRequestId> {
-        // 高優先度から順にチェック
-        for i in (0..5).rev() {
-            if let Some(id) = self.queues[i]
+    fn next_request(&self) -> Option<IoRequestId> {
+        for queue in self.queues.iter().rev() {
+            if let Some(id) = queue
                 .lock()
-                .unwrap_or_else(|e| e.into_inner())
+                .unwrap_or_else(|error| error.into_inner())
                 .pop_front()
             {
                 return Some(id);
@@ -165,309 +147,350 @@ impl IoScheduler {
         None
     }
 
-    /// Move one pending command into a device submission exactly once.
-    pub fn take_submission(&self, id: IoRequestId) -> Option<IoSubmission> {
-        let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-        let request = requests.get_mut(&id)?;
-        if request.state != IoState::Pending {
+    /// Dispatch and cancellation both consume Queued under the same lock.
+    /// No command can be borrowed, cloned, or dispatched twice.
+    fn take_submission(&self, id: IoRequestId) -> Option<IoSubmission> {
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if self.shutdown.load(Ordering::Acquire) {
             return None;
         }
-        let command = request
-            .command
-            .take()
-            .expect("pending request must retain its command owner");
-        request.state = IoState::InProgress;
+        let request = requests.get_mut(&id)?;
+        if !matches!(request.phase, RequestPhase::Queued(_)) {
+            return None;
+        }
+        let RequestPhase::Queued(command) =
+            core::mem::replace(&mut request.phase, RequestPhase::Dispatched)
+        else {
+            unreachable!("queued phase was checked under exclusive ownership")
+        };
         Some(IoSubmission {
-            request_id: request.id,
-            device: request.device,
+            completion: IoCompletionRoute {
+                request_id: request.id,
+                device: request.device,
+            },
             command,
         })
     }
 
-    /// 完了統計とレイテンシレポートを記録する
-    pub(super) fn report_completion_stats(&self, request: &IoRequest, result: &IoResult) {
+    fn report_completion_stats(&self, device: DeviceId, submitted_at: u64, status: IoResult) {
         self.stats.total_completed.fetch_add(1, Ordering::Relaxed);
         self.stats
             .current_queue_depth
             .fetch_sub(1, Ordering::Relaxed);
-
-        if matches!(result, IoResult::Error(_) | IoResult::OutcomeUnknown(_)) {
+        if !matches!(status, IoResult::Success(_)) {
             self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
         }
-
-        // モードコントローラにレイテンシを報告
-        if let Some(completed) = request.completed_at {
-            let latency_us = completed.saturating_sub(request.submitted_at) * 1000; // tick to μs (仮)
-            if let Some(controller) = self
-                .mode_controllers
-                .read()
-                .unwrap_or_else(|e| e.into_inner())
-                .get(&request.device)
-            {
-                controller.record_completion(latency_us);
-            }
+        if let Some(controller) = self
+            .mode_controllers
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(&device)
+        {
+            controller.record_completion(
+                current_tick()
+                    .saturating_sub(submitted_at)
+                    .saturating_mul(1000),
+            );
         }
     }
 
-    /// Record one terminal device outcome and preserve its ownership until a
-    /// future consumes it or the explicit abandoned-completion owner drains it.
-    pub fn complete_request(&self, id: IoRequestId, completion: IoCompletion) {
+    /// Accept only the terminal outcome of a dispatched request. A duplicate,
+    /// late, or unmatched event cannot overwrite another completion or consume
+    /// queued CPU ownership; its resources remain in the finalization owner.
+    pub(super) fn complete_request(&self, event: DeviceCompletion) {
+        let DeviceCompletion { route, completion } = event;
+        let id = route.request_id;
         let status = completion.result();
-        let mut completion = Some(completion);
-        let (waker, abandoned) = {
-            let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-            let Some(request) = requests.get_mut(&id) else {
+        let notification = {
+            let mut requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(request) = requests.get_mut(&id).filter(|request| {
+                request.device == route.device && matches!(request.phase, RequestPhase::Dispatched)
+            }) else {
                 drop(requests);
-                self.abandoned_completions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(completion.take().expect("completion is moved exactly once"));
+                self.retain_abandoned(completion);
+                self.stats
+                    .unmatched_completions
+                    .fetch_add(1, Ordering::Relaxed);
                 return;
             };
-            request.state = match status {
-                IoResult::Success(_) => IoState::Completed,
-                IoResult::Error(IoError::Cancelled) => IoState::Cancelled,
-                IoResult::Error(_) | IoResult::OutcomeUnknown(_) => IoState::Failed,
-            };
-            request.completed_at = Some(current_tick());
-            request.result = completion.take();
-            self.report_completion_stats(request, &status);
-            (request.waker.take(), request.abandoned)
+            request.phase = RequestPhase::Finished(completion);
+            let notification = (
+                request.device,
+                request.submitted_at,
+                request.waker.take(),
+                request.hook.take(),
+            );
+            if request.abandoned {
+                let request = requests
+                    .remove(&id)
+                    .expect("request remains under the same lock");
+                let RequestPhase::Finished(completion) = request.phase else {
+                    unreachable!("terminal phase was just installed")
+                };
+                self.retain_abandoned(completion);
+            }
+            notification
         };
+        self.deliver_completion(notification, status);
+    }
 
-        if let Some(hook) = self
-            .completion_hooks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-        {
+    fn deliver_completion(
+        &self,
+        (device, submitted_at, waker, hook): (DeviceId, u64, Option<Waker>, Option<CompletionHook>),
+        status: IoResult,
+    ) {
+        self.report_completion_stats(device, submitted_at, status);
+        // No scheduler lock may be held while invoking a reentrant consumer.
+        if let Some(hook) = hook {
             hook.run(status);
         }
-
         if let Some(waker) = waker {
             waker.wake();
         }
-
-        if abandoned {
-            let completion = self
-                .requests
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id)
-                .and_then(|mut request| request.result.take());
-            if let Some(completion) = completion {
-                self.abandoned_completions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(completion);
-            }
-        }
     }
 
-    /// Cancel only a command that has not crossed the device boundary. Its
-    /// original transfer lease is retained in the resulting completion.
-    pub fn cancel_request(&self, id: IoRequestId) -> bool {
-        let command = {
-            let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
+    /// Cancel before dispatch and preserve the original CPU lease. Once
+    /// dispatched, cancellation is only abandonment of observation, never a
+    /// claim that device access has stopped.
+    pub(super) fn cancel_request(&self, id: IoRequestId) -> bool {
+        let notification = {
+            let mut requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let Some(request) = requests.get_mut(&id) else {
                 return false;
             };
-            if request.state != IoState::Pending {
+            if !request.phase.cancel() {
                 return false;
             }
-            request
-                .command
-                .take()
-                .expect("pending request must retain its command owner")
+            let notification = (
+                request.device,
+                request.submitted_at,
+                request.waker.take(),
+                request.hook.take(),
+            );
+            if request.abandoned {
+                let request = requests
+                    .remove(&id)
+                    .expect("request remains under the same lock");
+                let RequestPhase::Finished(completion) = request.phase else {
+                    unreachable!("terminal phase was just installed")
+                };
+                self.retain_abandoned(completion);
+            }
+            notification
         };
-        self.complete_request(id, IoCompletion::rejected(command, IoError::Cancelled));
+        self.deliver_completion(notification, IoResult::Error(IoError::Cancelled));
         true
     }
 
-    /// Relinquish the future's observation right without discarding resource
-    /// ownership. Pending commands are cancelled before device acceptance;
-    /// active commands remain with the driver until completion/reconciliation.
-    pub fn abandon_request(&self, id: IoRequestId) {
-        let state = {
-            let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
+    /// A dropped future cannot release a driver's in-flight buffer. A returned
+    /// or not-yet-submitted lease is moved to this scheduler's finalization owner.
+    fn abandon_request(&self, id: IoRequestId) {
+        let (retired_waker, notification) = {
+            let mut requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             let Some(request) = requests.get_mut(&id) else {
                 return;
             };
             request.abandoned = true;
-            request.waker = None;
-            request.state
-        };
-        if state == IoState::Pending {
-            let _cancelled = self.cancel_request(id);
-        } else if matches!(
-            state,
-            IoState::Completed | IoState::Failed | IoState::Cancelled
-        ) {
-            let completion = self
-                .requests
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id)
-                .and_then(|mut request| request.result.take());
-            if let Some(completion) = completion {
-                self.abandoned_completions
-                    .lock()
-                    .unwrap_or_else(|e| e.into_inner())
-                    .push(completion);
+            let retired_waker = request.waker.take();
+            let notification = request.phase.cancel().then(|| {
+                (
+                    request.device,
+                    request.submitted_at,
+                    None,
+                    request.hook.take(),
+                )
+            });
+            if matches!(request.phase, RequestPhase::Finished(_)) {
+                let request = requests
+                    .remove(&id)
+                    .expect("request remains under the same lock");
+                let RequestPhase::Finished(completion) = request.phase else {
+                    unreachable!("terminal phase was checked under exclusive ownership")
+                };
+                self.retain_abandoned(completion);
             }
+            (retired_waker, notification)
+        };
+        drop(retired_waker);
+        if let Some(notification) = notification {
+            self.deliver_completion(notification, IoResult::Error(IoError::Cancelled));
         }
     }
 
-    /// リクエストの状態を取得
     pub fn get_state(&self, id: IoRequestId) -> Option<IoState> {
         self.requests
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .get(&id)
-            .map(|r| r.state)
+            .map(|request| request.phase.state())
     }
 
-    /// リクエストの結果を取得
+    /// A status projection has no ownership or completion-publication authority.
     pub fn get_result(&self, id: IoRequestId) -> Option<IoResult> {
         self.requests
-            .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
             .get(&id)
-            .and_then(|request| request.result.as_ref().map(IoCompletion::result))
-    }
-
-    /// Consume the terminal completion, including returned DMA ownership.
-    pub fn take_result(&self, id: IoRequestId) -> Option<IoCompletion> {
-        let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-        let should_remove = requests
-            .get(&id)
-            .map(|r| {
-                matches!(
-                    r.state,
-                    IoState::Completed | IoState::Failed | IoState::Cancelled
-                )
+            .and_then(|request| match &request.phase {
+                RequestPhase::Finished(completion) => Some(completion.result()),
+                _ => None,
             })
-            .unwrap_or(false);
-        if should_remove {
-            return requests
-                .remove(&id)
-                .and_then(|mut request| request.result.take());
-        }
-        None
     }
 
-    /// IoFuture用: 状態確認とWaker登録を1つのロックで行う（lost wake防止）
-    ///
-    /// このAPIは `get_state()` と `set_waker()` の間のレース条件を防ぐ。
-    /// 同一 write lock 内で:
-    /// 1. 完了済みなら結果を返す
-    /// 2. Pending/InProgress なら waker を登録して Pending を返す
-    pub fn poll_result_or_register_waker(
-        &self,
-        id: IoRequestId,
-        waker: &Waker,
-        registered: &mut bool,
-    ) -> Poll<IoCompletion> {
-        let mut reqs = self.requests.write().unwrap_or_else(|e| e.into_inner());
-        let Some(req) = reqs.get_mut(&id) else {
+    /// Poll and waker registration share a lock with completion publication.
+    fn poll_result_or_register_waker(&self, id: IoRequestId, waker: &Waker) -> Poll<IoCompletion> {
+        // RawWaker clone/drop callbacks may be reentrant. Neither runs while
+        // holding scheduler state, including when replacing an older waker.
+        let replacement = waker.clone();
+        let mut requests = self
+            .requests
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let Some(request) = requests.get_mut(&id) else {
             return Poll::Ready(IoCompletion::control(Err(IoError::InvalidParameter)));
         };
-
-        match req.state {
-            IoState::Completed | IoState::Failed | IoState::Cancelled => {
-                // 完了済み: 結果を取り出して削除
-                let completion = req
-                    .result
-                    .take()
-                    .unwrap_or(IoCompletion::control(Err(IoError::DeviceError)));
-                reqs.remove(&id);
-                Poll::Ready(completion)
-            }
-            IoState::Pending | IoState::InProgress => {
-                // Waker 更新が必要か判定
-                let needs_update = if *registered {
-                    req.waker
-                        .as_ref()
-                        .map(|old| !old.will_wake(waker))
-                        .unwrap_or(true)
-                } else {
-                    true
-                };
-                if needs_update {
-                    req.waker = Some(waker.clone());
-                    *registered = true;
-                }
-
-                // ★同ロック内で再チェック（complete_request がこの間に来ても安全）
-                Poll::Pending
-            }
-        }
-    }
-
-    /// 完了フックを登録
-    pub fn register_completion_hook(&self, id: IoRequestId, hook: CompletionHook) {
-        self.completion_hooks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, hook);
-
-        if let Some(result) = self.get_result(id) {
-            if let Some(hook) = self
-                .completion_hooks
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
+        if matches!(request.phase, RequestPhase::Finished(_)) {
+            let request = requests
                 .remove(&id)
+                .expect("request remains under the same lock");
+            let RequestPhase::Finished(completion) = request.phase else {
+                unreachable!("terminal phase was checked under exclusive ownership")
+            };
+            Poll::Ready(completion)
+        } else {
+            let retired = if request
+                .waker
+                .as_ref()
+                .is_none_or(|old| !old.will_wake(waker))
             {
-                hook.run(result);
+                request.waker.replace(replacement)
+            } else {
+                Some(replacement)
+            };
+            drop(requests);
+            drop(retired);
+            Poll::Pending
+        }
+    }
+
+    /// Register one status observer. Returning the hook on failure preserves
+    /// the caller's notification responsibility.
+    ///
+    /// # Errors
+    /// Returns the hook if the request was consumed or already has an observer.
+    pub fn register_completion_hook(
+        &self,
+        id: IoRequestId,
+        hook: CompletionHook,
+    ) -> Result<(), CompletionHook> {
+        let status = {
+            let mut requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let Some(request) = requests.get_mut(&id) else {
+                return Err(hook);
+            };
+            if request.hook.is_some() {
+                return Err(hook);
+            }
+            match &request.phase {
+                RequestPhase::Finished(completion) => completion.result(),
+                _ => {
+                    request.hook = Some(hook);
+                    return Ok(());
+                }
+            }
+        };
+        hook.run(status);
+        Ok(())
+    }
+
+    fn retain_abandoned(&self, completion: IoCompletion) {
+        self.abandoned_completions
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .push(completion);
+    }
+
+    /// Attempt fallible finalization outside the request lock. Failed unmaps
+    /// remain owned here until the device-reset reconciliation owner claims them.
+    pub fn reap_abandoned(&self) {
+        let completions = core::mem::take(
+            &mut *self
+                .abandoned_completions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        );
+        for completion in completions {
+            if let IoCompletion::TransferReturned { buffer, .. } = completion
+                && let Err(failure) = buffer.close()
+            {
+                self.failed_closes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(failure);
             }
         }
     }
 
-    /// デバイスのI/Oモードを取得
     pub fn device_mode(&self, device: DeviceId) -> IoMode {
         self.mode_controllers
             .read()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(|error| error.into_inner())
             .get(&device)
-            .map(|c| c.current_mode())
-            .unwrap_or(IoMode::Interrupt)
+            .map_or(IoMode::Interrupt, |controller| controller.current_mode())
     }
 
-    /// モード評価を実行
     pub fn evaluate_modes(&self, current_tick: u64) {
-        for (_, controller) in self
+        for controller in self
             .mode_controllers
             .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
         {
             controller.evaluate_mode(current_tick);
         }
     }
 
-    /// 統計を取得
     pub fn stats(&self) -> &IoSchedulerStats {
         &self.stats
     }
 
-    /// Transfer ownership of completions whose observing future was dropped.
-    /// The shutdown/reconciliation owner must explicitly close every returned
-    /// CPU lease and retain any fallible close outcome.
-    pub(crate) fn take_abandoned_completions(&self) -> Vec<IoCompletion> {
-        core::mem::take(
-            &mut *self
-                .abandoned_completions
-                .lock()
-                .unwrap_or_else(|error| error.into_inner()),
-        )
-    }
-
-    /// シャットダウン
+    /// Stop admission, cancel queued owners, and leave dispatched requests with
+    /// their device owners. This does not assert hardware shutdown completion.
     pub fn shutdown(&self) {
-        self.shutdown.store(true, Ordering::Release);
+        let pending: Vec<_> = {
+            let requests = self
+                .requests
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            self.shutdown.store(true, Ordering::Release);
+            requests
+                .iter()
+                .filter_map(|(id, request)| {
+                    matches!(request.phase, RequestPhase::Queued(_)).then_some(*id)
+                })
+                .collect()
+        };
+        for id in pending {
+            self.cancel_request(id);
+        }
+        self.reap_abandoned();
     }
 
-    /// シャットダウン状態か
     pub fn is_shutdown(&self) -> bool {
         self.shutdown.load(Ordering::Acquire)
     }

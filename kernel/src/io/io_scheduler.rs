@@ -8,6 +8,8 @@
 // 3. デバイス横断の統一的なI/Oスケジューリング
 // 4. 割り込みからWakerへのブリッジ
 // ============================================================================
+#![forbid(unsafe_code)]
+
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
@@ -34,33 +36,24 @@ pub enum IoOperationType {
     Write,
     /// フラッシュ
     Flush,
-    /// IOCTL
-    Ioctl,
-    /// ポーリング
-    Poll,
-    /// カスタム操作
-    Custom(u32),
+    /// TRIM/Discard
+    Discard,
 }
 
 /// I/O操作の優先度
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum IoPriority {
     /// バックグラウンド（最低）
     Background = 0,
     /// アイドル
     Idle = 1,
     /// 通常
+    #[default]
     Normal = 2,
     /// 高優先度
     High = 3,
     /// リアルタイム（最高）
     Realtime = 4,
-}
-
-impl Default for IoPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 /// I/O操作の状態
@@ -89,7 +82,12 @@ pub struct IoRequestId(pub u64);
 impl IoRequestId {
     fn next() -> Self {
         static COUNTER: AtomicU64 = AtomicU64::new(1);
-        Self(COUNTER.fetch_add(1, Ordering::Relaxed))
+        // Identity exhaustion is terminal: wrapping could replace a live owner.
+        Self(
+            COUNTER
+                .try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1))
+                .expect("scheduler request identity space exhausted"),
+        )
     }
 }
 
@@ -117,9 +115,9 @@ pub enum DeviceId {
 pub trait DeviceOps: Send + Sync {
     /// Consume one scheduler-owned submission.
     ///
-    /// `Rejected` must return the unchanged submission. `OutcomeUnknown` means
-    /// the driver retained any DMA owner in quarantine after an acceptance
-    /// boundary whose result cannot yet be proved.
+    /// `Rejected` must return the unchanged submission. A finished
+    /// `OutcomeUnknown` retains any DMA owner in the driver's quarantine;
+    /// a copied request ID is never a completion route.
     fn submit(&self, submission: IoSubmission, cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome;
 
     /// デバイスが準備完了か
@@ -149,39 +147,62 @@ pub enum IoCommand {
     Discard { lba: u64, blocks: u16 },
 }
 
-impl IoCommand {
-    fn operation(&self) -> IoOperationType {
-        match self {
-            Self::BlockRead { .. } => IoOperationType::Read,
-            Self::BlockWrite { .. } => IoOperationType::Write,
-            Self::Flush => IoOperationType::Flush,
-            Self::Discard { .. } => IoOperationType::Custom(0),
-        }
-    }
-}
-
 /// One command transferred from the scheduler to exactly one device owner.
 #[derive(Debug)]
 pub struct IoSubmission {
-    request_id: IoRequestId,
-    device: DeviceId,
+    completion: IoCompletionRoute,
     command: IoCommand,
 }
 
 impl IoSubmission {
     /// Request identity used for the eventual completion.
     pub const fn request_id(&self) -> IoRequestId {
-        self.request_id
+        self.completion.request_id
     }
 
     /// Scheduler device selected for this submission.
     pub const fn device(&self) -> DeviceId {
-        self.device
+        self.completion.device
+    }
+
+    /// Borrow the command without duplicating its transfer ownership.
+    pub const fn command(&self) -> &IoCommand {
+        &self.command
     }
 
     /// Consume the submission into its identity and command owner.
-    pub fn into_parts(self) -> (IoRequestId, DeviceId, IoCommand) {
-        (self.request_id, self.device, self.command)
+    pub fn into_parts(self) -> (IoCompletionRoute, IoCommand) {
+        (self.completion, self.command)
+    }
+}
+
+/// One-use routing authority issued only when a queued command is dispatched.
+/// This does not certify a hardware fact: the driver must recover CPU DMA
+/// ownership through its validated completion protocol before returning it.
+#[derive(Debug)]
+pub struct IoCompletionRoute {
+    request_id: IoRequestId,
+    device: DeviceId,
+}
+
+impl IoCompletionRoute {
+    /// Restore the command envelope after a pre-acceptance rejection.
+    pub fn reject(self, command: IoCommand, cause: IoError) -> IoSubmitOutcome {
+        IoSubmitOutcome::Rejected {
+            cause,
+            submission: IoSubmission {
+                completion: self,
+                command,
+            },
+        }
+    }
+
+    /// Consume the sole right to deliver this request's terminal outcome.
+    pub fn finish(self, completion: IoCompletion) -> DeviceCompletion {
+        DeviceCompletion {
+            route: self,
+            completion,
+        }
     }
 }
 
@@ -195,66 +216,55 @@ pub enum IoSubmitOutcome {
         cause: IoError,
         submission: IoSubmission,
     },
-    /// Acceptance may have occurred; the device owner retained all resources
-    /// required for reset/reconciliation and no retry authority is returned.
-    OutcomeUnknown { cause: IoError },
+    /// A terminal outcome, including a retained/quarantined DMA state, was
+    /// reached during submit. The consumed route cannot also complete later.
+    Finished(DeviceCompletion),
 }
 
-// ============================================================================
-// Legacy I/O Payload (後方互換用)
-// ============================================================================
-
-// Legacy `IoPayload` removed - use `IoCommand` variants instead.
-// (Removed types: IoPayload, NvmeRwPayload, NvmeSglPayload, NvmeDsmPayload)
-
-/// NVMe SGL ディスクリプタ（I/Oスケジューラ用）
-#[derive(Debug, Clone, Copy)]
-pub struct NvmeSglDescriptor {
-    pub addr: u64,
-    pub length: u32,
-    pub type_specific: u8,
-}
-
-impl NvmeSglDescriptor {
-    pub fn data_block(addr: u64, length: u32) -> Self {
-        Self {
-            addr,
-            length,
-            type_specific: 0x00 << 4,
-        }
-    }
-
-    pub fn last_segment(addr: u64, length: u32) -> Self {
-        Self {
-            addr,
-            length,
-            type_specific: 0x03 << 4,
-        }
-    }
-}
-
-/// Scheduler-owned request state. Its command exists only before dispatch.
+/// Scheduler-owned request state. Each phase owns exactly the resources that
+/// can be used in that phase; cancellation and dispatch share one locked move.
 struct IoRequest {
-    /// リクエストID
-    pub id: IoRequestId,
-    /// デバイスID
-    pub device: DeviceId,
-    /// 操作タイプ
-    pub operation: IoOperationType,
-    /// Command ownership before dispatch; `None` after the device consumes it.
-    command: Option<IoCommand>,
-    /// 状態
-    pub state: IoState,
-    /// 開始時刻 (tick)
-    pub submitted_at: u64,
-    /// 完了時刻 (tick)
-    pub completed_at: Option<u64>,
-    /// Waker（完了通知用）
-    pub waker: Option<Waker>,
-    /// 結果
-    result: Option<IoCompletion>,
-    /// 呼び出し側が破棄済みか
-    pub abandoned: bool,
+    id: IoRequestId,
+    device: DeviceId,
+    phase: RequestPhase,
+    submitted_at: u64,
+    waker: Option<Waker>,
+    hook: Option<CompletionHook>,
+    abandoned: bool,
+}
+
+enum RequestPhase {
+    Queued(IoCommand),
+    Dispatched,
+    Finished(IoCompletion),
+}
+
+impl RequestPhase {
+    /// The queued-to-cancelled move is indivisible with respect to dispatch.
+    fn cancel(&mut self) -> bool {
+        if !matches!(self, Self::Queued(_)) {
+            return false;
+        }
+        let Self::Queued(command) = core::mem::replace(self, Self::Dispatched) else {
+            unreachable!("queued phase is exclusively borrowed")
+        };
+        *self = Self::Finished(IoCompletion::rejected(command, IoError::Cancelled));
+        true
+    }
+
+    fn state(&self) -> IoState {
+        match self {
+            Self::Queued(_) => IoState::Pending,
+            Self::Dispatched => IoState::InProgress,
+            Self::Finished(completion) => match completion.result() {
+                IoResult::Success(_) => IoState::Completed,
+                IoResult::Error(IoError::Cancelled) => IoState::Cancelled,
+                IoResult::Error(_)
+                | IoResult::AuthorityQuarantined(_)
+                | IoResult::OutcomeUnknown(_) => IoState::Failed,
+            },
+        }
+    }
 }
 
 /// I/O結果
@@ -264,6 +274,8 @@ pub enum IoResult {
     Success(usize),
     /// エラー
     Error(IoError),
+    /// The hardware outcome is known, but DMA authority is quarantined.
+    AuthorityQuarantined(IoError),
     /// The device may have accepted the operation, so retry is not authorized.
     OutcomeUnknown(IoError),
 }
@@ -285,6 +297,12 @@ pub enum IoCompletion {
         operation: IoOperationType,
         cause: IoError,
     },
+    /// A pre-acceptance transition could not restore CPU ownership. The
+    /// reconciliation owner, rather than the caller, retains the lease.
+    AuthorityQuarantined {
+        operation: IoOperationType,
+        cause: IoError,
+    },
 }
 
 impl IoCompletion {
@@ -303,6 +321,11 @@ impl IoCompletion {
         Self::OutcomeUnknown { operation, cause }
     }
 
+    /// Build a pre-acceptance failure that retained non-CPU authority.
+    pub const fn authority_quarantined(operation: IoOperationType, cause: IoError) -> Self {
+        Self::AuthorityQuarantined { operation, cause }
+    }
+
     /// Copyable status projection for metrics and notification hooks.
     pub const fn result(&self) -> IoResult {
         match self {
@@ -311,6 +334,7 @@ impl IoCompletion {
                 Err(cause) => IoResult::Error(*cause),
             },
             Self::OutcomeUnknown { cause, .. } => IoResult::OutcomeUnknown(*cause),
+            Self::AuthorityQuarantined { cause, .. } => IoResult::AuthorityQuarantined(*cause),
         }
     }
 
@@ -327,22 +351,8 @@ impl IoCompletion {
 /// One driver-produced completion associated with its scheduler request.
 #[derive(Debug)]
 pub struct DeviceCompletion {
-    request_id: IoRequestId,
+    route: IoCompletionRoute,
     completion: IoCompletion,
-}
-
-impl DeviceCompletion {
-    /// Bind a non-cloneable completion owner to its request identity.
-    pub const fn new(request_id: IoRequestId, completion: IoCompletion) -> Self {
-        Self {
-            request_id,
-            completion,
-        }
-    }
-
-    fn into_parts(self) -> (IoRequestId, IoCompletion) {
-        (self.request_id, self.completion)
-    }
 }
 
 /// I/Oエラー
@@ -640,18 +650,18 @@ pub struct IoScheduler {
     /// 優先度別キュー
     queues: [PoisonLock<VecDeque<IoRequestId>>; 5],
     /// リクエストマップ
-    requests: PoisonRwLock<BTreeMap<IoRequestId, IoRequest>>,
+    requests: PoisonLock<BTreeMap<IoRequestId, IoRequest>>,
     /// デバイスごとのモードコントローラ
     mode_controllers: PoisonRwLock<BTreeMap<DeviceId, Arc<DeviceIoModeController>>>,
     /// デバイス操作ハンドラ（依存逆転用）
     device_ops: PoisonRwLock<BTreeMap<DeviceId, Arc<dyn DeviceOps>>>,
     /// グローバルI/O統計
     stats: IoSchedulerStats,
-    /// 完了フック
-    completion_hooks: PoisonLock<BTreeMap<IoRequestId, CompletionHook>>,
     /// Completions whose future was dropped. This is an explicit owner so a
     /// returned DMA lease is never discarded by cancellation bookkeeping.
     abandoned_completions: PoisonLock<Vec<IoCompletion>>,
+    /// Explicit failed finalization owner; never reaped without reconciliation.
+    failed_closes: PoisonLock<Vec<kernel_api::dma::DmaCloseError>>,
     /// シャットダウンフラグ
     shutdown: AtomicBool,
 }
@@ -668,6 +678,9 @@ pub struct IoSchedulerStats {
     pub current_queue_depth: AtomicU64,
     /// 最大キュー長
     pub max_queue_depth: AtomicU64,
+    /// Events routed to the wrong scheduler or no longer pending. Their
+    /// returned leases stay with the scheduler's finalization owner.
+    pub unmatched_completions: AtomicU64,
 }
 
 impl IoSchedulerStats {
@@ -678,6 +691,7 @@ impl IoSchedulerStats {
             total_errors: AtomicU64::new(0),
             current_queue_depth: AtomicU64::new(0),
             max_queue_depth: AtomicU64::new(0),
+            unmatched_completions: AtomicU64::new(0),
         }
     }
 }
@@ -699,7 +713,7 @@ pub struct PollingExecutor {
     /// スケジューラ参照
     scheduler: Arc<IoScheduler>,
     /// ポーリングハンドラ
-    poll_handlers: PoisonRwLock<BTreeMap<DeviceId, Vec<Box<dyn PollHandler + Send + Sync>>>>,
+    poll_handlers: PoisonRwLock<BTreeMap<DeviceId, Vec<Arc<dyn PollHandler + Send + Sync>>>>,
     /// 最大ポーリング反復回数
     max_poll_iterations: u32,
     /// アクティブフラグ
@@ -738,12 +752,12 @@ impl PollingExecutor {
     }
 
     /// ポーリングハンドラを登録
-    pub fn register_handler(&self, device: DeviceId, handler: Box<dyn PollHandler + Send + Sync>) {
+    pub fn register_handler(&self, device: DeviceId, handler: Arc<dyn PollHandler + Send + Sync>) {
         self.poll_handlers
             .write()
             .unwrap_or_else(|e| e.into_inner())
             .entry(device)
-            .or_insert_with(Vec::new)
+            .or_default()
             .push(handler);
     }
 
@@ -765,90 +779,44 @@ impl PollingExecutor {
         self.active.store(false, Ordering::Release);
     }
 
-    /// 1回のポーリングサイクル
+    /// Poll only handlers admitted on this CPU. Snapshot Arc owners before
+    /// invoking driver code or completion hooks, so reentrant unregistration
+    /// cannot deadlock and a concurrent removal cannot invalidate a callback.
     pub fn poll_once(&self) -> usize {
         if !self.active.load(Ordering::Acquire) {
             return 0;
         }
-
+        let mut current_cpu = None;
+        let handlers: Vec<_> = self
+            .poll_handlers
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .flatten()
+            .cloned()
+            .collect();
         let mut completed = 0;
-        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
-
-        for (_device, handlers) in handlers.iter() {
-            for handler in handlers.iter() {
-                if handler.is_ready() {
-                    for completion in handler.poll_completions() {
-                        let (id, completion) = completion.into_parts();
-                        self.scheduler.complete_request(id, completion);
-                        completed += 1;
+        for handler in handlers {
+            match handler.affinity() {
+                PollAffinity::Any => {}
+                PollAffinity::Cpu(affinity) => {
+                    let cpu_id = current_cpu.get_or_insert_with(|| {
+                        crate::cpu::CurrentCpu::acquire().map(|current| current.id())
+                    });
+                    if *cpu_id != Some(affinity) {
+                        continue;
                     }
+                }
+                PollAffinity::Unavailable => continue,
+            }
+            if handler.is_ready() {
+                for completion in handler.poll_completions() {
+                    self.scheduler.complete_request(completion);
+                    completed += 1;
                 }
             }
         }
-
-        completed
-    }
-
-    /// コールバック付きポーリング（pending_requests 掃除用）
-    ///
-    /// 完了ごとに (DeviceId, IoRequestId, IoResult) でコールバックを呼ぶ.
-    pub fn poll_once_with<F>(&self, mut on_complete: F) -> usize
-    where
-        F: FnMut(DeviceId, IoRequestId, IoResult),
-    {
-        if !self.active.load(Ordering::Acquire) {
-            return 0;
-        }
-
-        let mut completed = 0;
-        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
-
-        for (device, handlers) in handlers.iter() {
-            for handler in handlers.iter() {
-                if handler.is_ready() {
-                    for completion in handler.poll_completions() {
-                        let (id, completion) = completion.into_parts();
-                        on_complete(*device, id, completion.result());
-                        self.scheduler.complete_request(id, completion);
-                        completed += 1;
-                    }
-                }
-            }
-        }
-
-        completed
-    }
-
-    /// 現在のCPUに紐づくハンドラのみポーリング（per-CPU tick用）
-    pub fn poll_once_local(&self) -> usize {
-        if !self.active.load(Ordering::Acquire) {
-            return 0;
-        }
-
-        let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
-            return 0;
-        };
-        let mut completed = 0;
-        let handlers = self.poll_handlers.read().unwrap_or_else(|e| e.into_inner());
-
-        for (_device, handlers) in handlers.iter() {
-            for handler in handlers.iter() {
-                match handler.affinity() {
-                    PollAffinity::Any => {}
-                    PollAffinity::Cpu(affinity) if affinity == cpu_id => {}
-                    PollAffinity::Cpu(_) | PollAffinity::Unavailable => continue,
-                }
-
-                if handler.is_ready() {
-                    for completion in handler.poll_completions() {
-                        let (id, completion) = completion.into_parts();
-                        self.scheduler.complete_request(id, completion);
-                        completed += 1;
-                    }
-                }
-            }
-        }
-
+        self.scheduler.reap_abandoned();
         completed
     }
 
@@ -881,19 +849,16 @@ impl PollingExecutor {
 pub struct IoFuture {
     scheduler: Arc<IoScheduler>,
     request_id: IoRequestId,
-    registered: bool,
 }
 
 impl IoFuture {
-    pub fn new(scheduler: Arc<IoScheduler>, request_id: IoRequestId) -> Self {
-        Self {
-            scheduler,
-            request_id,
-            registered: false,
-        }
-    }
-
     pub fn request_id(&self) -> IoRequestId {
         self.request_id
+    }
+
+    /// Cancel only while queued. False means the driver may already have
+    /// accepted the operation; the future still owns its eventual outcome.
+    pub fn cancel(&self) -> bool {
+        self.scheduler.cancel_request(self.request_id)
     }
 }
