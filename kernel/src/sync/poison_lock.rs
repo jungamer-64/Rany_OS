@@ -306,6 +306,20 @@ impl<T> PoisonLock<T> {
         }
     }
 
+    /// Consumes the lock and returns its owned value.
+    ///
+    /// A poisoned lock returns the value inside [`PoisonError`] so the caller
+    /// cannot silently treat a possibly interrupted transition as consistent.
+    pub fn into_inner(self) -> LockResult<T> {
+        let poisoned = self.poisoned.load(Ordering::Acquire);
+        let data = self.data.into_inner();
+        if poisoned {
+            Err(PoisonError::new(data))
+        } else {
+            Ok(data)
+        }
+    }
+
     /// ロックを取得
     ///
     /// ロックが毒入れされている場合は`Err(PoisonError)`を返す。

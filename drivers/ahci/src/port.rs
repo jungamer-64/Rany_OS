@@ -12,10 +12,10 @@ use core::num::NonZeroUsize;
 use core::sync::atomic::{Ordering, fence};
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::dma::{
-    CompletedDmaLease, CpuDmaLease, DmaCompletionWitness, DmaDeviceAddress,
-    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaTransitionError,
-    InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease, QuarantinedDmaLease,
-    SharedDmaLease,
+    CompletedDmaLease, CpuDmaLease, DmaCloseError, DmaCompletionWitness, DmaDeviceAddress,
+    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness,
+    DmaTransitionError, InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease,
+    QuarantinedDmaLease, SharedDmaLease,
 };
 
 use crate::command::{
@@ -133,6 +133,59 @@ pub enum CommandPoll {
     Idle,
     Pending,
     Completed(CommandCompletion),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PortShutdownBlockCause {
+    CommandActive,
+    ResetRequired {
+        cause: PortFault,
+        transfer_retained: bool,
+    },
+}
+
+#[derive(Debug)]
+pub(crate) struct PortShutdownBlocked {
+    pub(crate) cause: PortShutdownBlockCause,
+    pub(crate) port: AhciPort,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PortShutdownCause {
+    StopDeadline,
+    Quiesce(DmaLeaseError),
+    Unmap(DmaLeaseError),
+    ReconciliationRequired(DmaLeaseError),
+}
+
+#[derive(Debug)]
+enum PortShutdownPhase {
+    Stopping {
+        registers: PortRegisters,
+        queue: DmaQueueIdentity,
+        memory: SharedDmaLease,
+    },
+    Stopped {
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+        memory: SharedDmaLease,
+    },
+    UnmapFailed {
+        registers: MappedMmio,
+        failure: DmaCloseError,
+    },
+}
+
+/// One-way shutdown owner. No phase exposes submission or CPU access.
+#[derive(Debug)]
+pub(crate) struct PortShutdown {
+    phase: PortShutdownPhase,
+}
+
+#[derive(Debug)]
+pub(crate) struct PortShutdownError {
+    pub(crate) cause: PortShutdownCause,
+    pub(crate) owner: PortShutdown,
 }
 
 #[derive(Debug)]
@@ -492,6 +545,141 @@ impl AhciPort {
         }
     }
 
+    #[expect(
+        clippy::result_large_err,
+        reason = "a blocked one-way transition must return the unique live port without allocating"
+    )]
+    pub(crate) fn begin_shutdown(self) -> Result<PortShutdown, PortShutdownBlocked> {
+        let cause = match &self.state {
+            CommandState::Idle => None,
+            CommandState::Submitted { .. } => Some(PortShutdownBlockCause::CommandActive),
+            CommandState::Quarantined { cause, transfer } => {
+                Some(PortShutdownBlockCause::ResetRequired {
+                    cause: *cause,
+                    transfer_retained: transfer.is_some(),
+                })
+            }
+        };
+        if let Some(cause) = cause {
+            return Err(PortShutdownBlocked { cause, port: self });
+        }
+        Ok(PortShutdown {
+            phase: PortShutdownPhase::Stopping {
+                registers: self.registers,
+                queue: self.queue,
+                memory: self.memory,
+            },
+        })
+    }
+}
+
+impl PortShutdown {
+    pub(crate) fn advance(self, poll_budget: NonZeroUsize) -> Result<(), PortShutdownError> {
+        match self.phase {
+            PortShutdownPhase::Stopping {
+                mut registers,
+                queue,
+                memory,
+            } => {
+                if registers.stop(poll_budget).is_err() {
+                    return Err(PortShutdownError {
+                        cause: PortShutdownCause::StopDeadline,
+                        owner: Self {
+                            phase: PortShutdownPhase::Stopping {
+                                registers,
+                                queue,
+                                memory,
+                            },
+                        },
+                    });
+                }
+                fence(Ordering::SeqCst);
+                Self {
+                    phase: PortShutdownPhase::Stopped {
+                        registers: registers.into_mapping(),
+                        queue,
+                        memory,
+                    },
+                }
+                .advance(poll_budget)
+            }
+            PortShutdownPhase::Stopped {
+                registers,
+                queue,
+                memory,
+            } => {
+                #[expect(
+                    unsafe_code,
+                    reason = "the shutdown typestate retains the observed AHCI engine stop"
+                )]
+                // SAFETY: `Stopping` transitions here only after observing
+                // ST/CR and FRE/FR clear. This one-way owner retains exclusive
+                // register and queue authority and cannot restart the engine.
+                let witness =
+                    unsafe { DmaQuiesceWitness::after_queue_quiesced(queue, memory.lease_id()) };
+                let memory = match memory.quiesce(witness) {
+                    Ok(memory) => memory,
+                    Err(failure) => {
+                        let (cause, memory) = failure.into_parts();
+                        return Err(PortShutdownError {
+                            cause: PortShutdownCause::Quiesce(cause),
+                            owner: Self {
+                                phase: PortShutdownPhase::Stopped {
+                                    registers,
+                                    queue,
+                                    memory,
+                                },
+                            },
+                        });
+                    }
+                };
+                match memory.close() {
+                    Ok(()) => Ok(()),
+                    Err(failure) => {
+                        let cause = failure.cause();
+                        Err(PortShutdownError {
+                            cause: PortShutdownCause::Unmap(cause),
+                            owner: Self {
+                                phase: PortShutdownPhase::UnmapFailed { registers, failure },
+                            },
+                        })
+                    }
+                }
+            }
+            PortShutdownPhase::UnmapFailed { registers, failure } => {
+                let cause = failure.cause();
+                Err(PortShutdownError {
+                    cause: PortShutdownCause::ReconciliationRequired(cause),
+                    owner: Self {
+                        phase: PortShutdownPhase::UnmapFailed { registers, failure },
+                    },
+                })
+            }
+        }
+    }
+
+    pub(crate) fn awaits_reconciliation(&self) -> bool {
+        matches!(self.phase, PortShutdownPhase::UnmapFailed { .. })
+    }
+
+    pub(crate) fn retry_close(self, witness: DmaReconcileWitness) -> Result<(), PortShutdownError> {
+        let PortShutdownPhase::UnmapFailed { registers, failure } = self.phase else {
+            unreachable!("controller checks the shutdown phase before consuming its witness")
+        };
+        let (_, lease) = failure.into_parts();
+        match lease.retry_close(witness) {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let cause = failure.cause();
+                Err(PortShutdownError {
+                    cause: PortShutdownCause::Unmap(cause),
+                    owner: Self {
+                        phase: PortShutdownPhase::UnmapFailed { registers, failure },
+                    },
+                })
+            }
+        }
+    }
 }
 
 fn reject_prepared(cause: SubmitCause, prepared: PreparedDmaLease) -> SubmitError {

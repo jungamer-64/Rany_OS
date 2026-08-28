@@ -26,6 +26,23 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub(super) fn test_into_inner_preserves_poison_state() {
+        let clean = PoisonLock::new(7usize);
+        assert_eq!(clean.into_inner().unwrap(), 7);
+
+        let poisoned = PoisonLock::new(11usize);
+        {
+            let _guard = poisoned.lock().unwrap();
+            set_panicking(true);
+        }
+        set_panicking(false);
+
+        let error = poisoned.into_inner().unwrap_err();
+        assert_eq!(error.into_inner(), 11);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub(super) fn test_poisoned_after_simulated_panic() {
         let lock = PoisonLock::new(42);
 

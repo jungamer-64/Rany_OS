@@ -7,20 +7,22 @@
 
 #![forbid(unsafe_code)]
 
+use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
 use ahci_driver::controller::{
-    AhciController, ControllerPortCause, ControllerPortError, ControllerPortMemory,
+    AhciController, AhciControllerShutdown, ControllerPortCause, ControllerPortError,
+    ControllerPortMemory, ControllerReconcileError, ControllerShutdownCause,
 };
 use ahci_driver::port::{
     CommandPoll, InitializationMemory, PortFault, RejectedBuffer, SubmitCause,
 };
 use ahci_driver::{AtaCommand, PortNumber};
 use kernel_api::dma::{
-    CpuDmaLease, DmaLeaseError, DmaTransitionError, PreparedDmaLease, PreparedSharedDmaLease,
-    UnmapFailedDmaLease,
+    CpuDmaLease, DmaLeaseError, DmaReconcileWitness, DmaTransitionError, PreparedDmaLease,
+    PreparedSharedDmaLease, UnmapFailedDmaLease,
 };
 
 use crate::io::io_scheduler::{
@@ -35,7 +37,10 @@ const PORT_COUNT: usize = 32;
 enum RetainedLease {
     PreparedTransfer(DmaTransitionError<PreparedDmaLease>),
     PreparedMetadata(DmaTransitionError<PreparedSharedDmaLease>),
-    UnmapFailed(UnmapFailedDmaLease),
+    UnmapFailed {
+        cause: DmaLeaseError,
+        lease: UnmapFailedDmaLease,
+    },
 }
 
 #[derive(Debug)]
@@ -92,6 +97,59 @@ pub(crate) struct AhciRuntime {
     state: PoisonLock<RuntimeState>,
 }
 
+/// Failure before the runtime can irreversibly enter shutdown.
+#[derive(Debug)]
+pub(crate) enum RuntimeShutdownStartError {
+    RequestsActive {
+        ports: u32,
+        runtime: Arc<AhciRuntime>,
+    },
+    StillShared(Arc<AhciRuntime>),
+    PreparationFailed(Arc<AhciRuntime>),
+    Poisoned(Arc<AhciRuntime>),
+}
+
+/// Machine-readable reason a one-way runtime shutdown remains incomplete.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RuntimeShutdownCause {
+    PreparedLease(DmaLeaseError),
+    ReconciliationRequired(DmaLeaseError),
+    Controller {
+        port: PortNumber,
+        cause: ControllerShutdownCause,
+    },
+}
+
+/// Incomplete shutdown retains every controller and DMA owner.
+#[derive(Debug)]
+pub(crate) struct RuntimeShutdownError {
+    pub(crate) cause: RuntimeShutdownCause,
+    pub(crate) shutdown: AhciRuntimeShutdown,
+}
+
+/// Failure to apply a reconciliation witness to a retained runtime allocation.
+#[derive(Debug)]
+pub(crate) enum RuntimeReconcileError {
+    NotAwaitingReconciliation {
+        witness: DmaReconcileWitness,
+        shutdown: AhciRuntimeShutdown,
+    },
+    Shutdown(RuntimeShutdownError),
+}
+
+/// Exclusive one-way owner after all scheduler and poller references are gone.
+#[derive(Debug)]
+pub(crate) struct AhciRuntimeShutdown {
+    controller: RuntimeControllerShutdown,
+    retained: Vec<RetainedLease>,
+}
+
+#[derive(Debug)]
+enum RuntimeControllerShutdown {
+    Pending(Box<AhciControllerShutdown>),
+    Closed,
+}
+
 impl AhciRuntime {
     pub(crate) fn new(controller: AhciController) -> Self {
         Self {
@@ -146,6 +204,67 @@ impl AhciRuntime {
                 matches!(state, RuntimePortState::Idle).then_some(PortNumber::new(index as u8))
             })
             .collect()
+    }
+
+    /// Enters shutdown only after requests are drained and every published
+    /// scheduler/poller owner has released its `Arc`.
+    pub(crate) fn begin_shutdown(
+        runtime: Arc<Self>,
+    ) -> Result<AhciRuntimeShutdown, RuntimeShutdownStartError> {
+        {
+            let mut state = match runtime.state.lock() {
+                Ok(state) => state,
+                Err(error) => {
+                    drop(error.into_inner());
+                    return Err(RuntimeShutdownStartError::Poisoned(Arc::clone(&runtime)));
+                }
+            };
+            let active_ports = state
+                .ports
+                .iter()
+                .enumerate()
+                .fold(0u32, |mask, (index, port)| {
+                    if matches!(port, RuntimePortState::Submitted { .. }) {
+                        mask | (1u32 << index)
+                    } else {
+                        mask
+                    }
+                });
+            if active_ports != 0 {
+                drop(state);
+                return Err(RuntimeShutdownStartError::RequestsActive {
+                    ports: active_ports,
+                    runtime,
+                });
+            }
+            if state
+                .retained_initialization
+                .try_reserve(PORT_COUNT)
+                .is_err()
+            {
+                drop(state);
+                return Err(RuntimeShutdownStartError::PreparationFailed(runtime));
+            }
+        }
+        let runtime = Arc::try_unwrap(runtime).map_err(RuntimeShutdownStartError::StillShared)?;
+        let state = runtime
+            .state
+            .into_inner()
+            .expect("exclusive runtime cannot become poisoned after the locked precheck");
+        let RuntimeState {
+            controller,
+            ports,
+            mut retained_initialization,
+        } = state;
+        for port in ports {
+            if let RuntimePortState::AuthorityQuarantined { lease, .. } = port {
+                retained_initialization.push(lease);
+            }
+        }
+        Ok(AhciRuntimeShutdown {
+            controller: RuntimeControllerShutdown::Pending(controller.begin_shutdown()),
+            retained: retained_initialization,
+        })
     }
 
     fn submit(&self, expected_port: PortNumber, submission: IoSubmission) -> IoSubmitOutcome {
@@ -427,8 +546,170 @@ fn close_initialization_cpu(state: &mut RuntimeState, memory: CpuDmaLease) -> Ad
             let (cause, lease) = failure.into_parts();
             state
                 .retained_initialization
-                .push(RetainedLease::UnmapFailed(lease));
+                .push(RetainedLease::UnmapFailed { cause, lease });
             AdmissionCleanup::UnmapFailedRetained(cause)
+        }
+    }
+}
+
+impl AhciRuntimeShutdown {
+    /// Stops the controller before releasing every retained allocation.
+    ///
+    /// # Errors
+    /// The returned owner retains the failed allocation and all later work.
+    pub(crate) fn advance(mut self, poll_budget: NonZeroUsize) -> Result<(), RuntimeShutdownError> {
+        if let RuntimeControllerShutdown::Pending(controller) = self.controller {
+            match controller.advance(poll_budget) {
+                Ok(()) => self.controller = RuntimeControllerShutdown::Closed,
+                Err(error) => {
+                    let cause = RuntimeShutdownCause::Controller {
+                        port: error.failed_port,
+                        cause: error.cause,
+                    };
+                    return Err(RuntimeShutdownError {
+                        cause,
+                        shutdown: Self {
+                            controller: RuntimeControllerShutdown::Pending(error.shutdown),
+                            retained: self.retained,
+                        },
+                    });
+                }
+            }
+        }
+        // LOOP_PROOF: mode=condition; reason=Each iteration removes one retained lease and exits immediately if releasing that lease fails.;
+        while let Some(lease) = self.retained.pop() {
+            match release_retained(lease) {
+                Ok(()) => {}
+                Err((cause, lease)) => {
+                    self.retained.push(lease);
+                    return Err(RuntimeShutdownError {
+                        cause,
+                        shutdown: self,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Retries one retained unmap after reset and IOTLB reconciliation.
+    pub(crate) fn reconcile_retained(
+        mut self,
+        witness: DmaReconcileWitness,
+    ) -> Result<Self, RuntimeReconcileError> {
+        let Some(index) = self
+            .retained
+            .iter()
+            .position(|lease| matches!(lease, RetainedLease::UnmapFailed { .. }))
+        else {
+            return Err(RuntimeReconcileError::NotAwaitingReconciliation {
+                witness,
+                shutdown: self,
+            });
+        };
+        let RetainedLease::UnmapFailed { lease, .. } = self.retained.swap_remove(index) else {
+            unreachable!("the retained lease phase was checked before removal")
+        };
+        match lease.retry_close(witness) {
+            Ok(()) => Ok(self),
+            Err(failure) => {
+                let (cause, lease) = failure.into_parts();
+                self.retained
+                    .push(RetainedLease::UnmapFailed { cause, lease });
+                Err(RuntimeReconcileError::Shutdown(RuntimeShutdownError {
+                    cause: RuntimeShutdownCause::ReconciliationRequired(cause),
+                    shutdown: self,
+                }))
+            }
+        }
+    }
+
+    /// Applies reconciliation to a controller port whose final unmap failed.
+    pub(crate) fn reconcile_port(
+        self,
+        port: PortNumber,
+        witness: DmaReconcileWitness,
+    ) -> Result<Self, RuntimeReconcileError> {
+        let RuntimeControllerShutdown::Pending(controller) = self.controller else {
+            return Err(RuntimeReconcileError::NotAwaitingReconciliation {
+                witness,
+                shutdown: self,
+            });
+        };
+        match controller.reconcile_port(port, witness) {
+            Ok(controller) => Ok(Self {
+                controller: RuntimeControllerShutdown::Pending(controller),
+                retained: self.retained,
+            }),
+            Err(ControllerReconcileError::NotAwaitingReconciliation {
+                witness, shutdown, ..
+            }) => Err(RuntimeReconcileError::NotAwaitingReconciliation {
+                witness,
+                shutdown: Self {
+                    controller: RuntimeControllerShutdown::Pending(shutdown),
+                    retained: self.retained,
+                },
+            }),
+            Err(ControllerReconcileError::Shutdown(error)) => {
+                let cause = RuntimeShutdownCause::Controller {
+                    port: error.failed_port,
+                    cause: error.cause,
+                };
+                Err(RuntimeReconcileError::Shutdown(RuntimeShutdownError {
+                    cause,
+                    shutdown: Self {
+                        controller: RuntimeControllerShutdown::Pending(error.shutdown),
+                        retained: self.retained,
+                    },
+                }))
+            }
+        }
+    }
+}
+
+fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, RetainedLease)> {
+    let memory = match lease {
+        RetainedLease::PreparedTransfer(failure) => {
+            let (_, lease) = failure.into_parts();
+            match lease.abort() {
+                Ok(memory) => memory,
+                Err(failure) => {
+                    let cause = failure.cause();
+                    return Err((
+                        RuntimeShutdownCause::PreparedLease(cause),
+                        RetainedLease::PreparedTransfer(failure),
+                    ));
+                }
+            }
+        }
+        RetainedLease::PreparedMetadata(failure) => {
+            let (_, lease) = failure.into_parts();
+            match lease.abort() {
+                Ok(memory) => memory,
+                Err(failure) => {
+                    let cause = failure.cause();
+                    return Err((
+                        RuntimeShutdownCause::PreparedLease(cause),
+                        RetainedLease::PreparedMetadata(failure),
+                    ));
+                }
+            }
+        }
+        RetainedLease::UnmapFailed { cause, lease } => {
+            return Err((
+                RuntimeShutdownCause::ReconciliationRequired(cause),
+                RetainedLease::UnmapFailed { cause, lease },
+            ));
+        }
+    };
+    match memory.close() {
+        Ok(()) => Ok(()),
+        Err(failure) => {
+            let (cause, lease) = failure.into_parts();
+            Err((
+                RuntimeShutdownCause::ReconciliationRequired(cause),
+                RetainedLease::UnmapFailed { cause, lease },
+            ))
         }
     }
 }

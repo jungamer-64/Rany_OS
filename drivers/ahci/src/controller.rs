@@ -7,14 +7,20 @@
 #![deny(unsafe_code, unsafe_op_in_unsafe_fn)]
 #![deny(clippy::missing_safety_doc, clippy::undocumented_unsafe_blocks)]
 
+use alloc::boxed::Box;
 use core::num::NonZeroUsize;
 
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::abi::driver::PackedPciLocation;
-use kernel_api::dma::{CpuDmaLease, DmaQueueIdentity, SharedDmaLease};
+use kernel_api::dma::{
+    CpuDmaLease, DmaLeaseError, DmaQueueIdentity, DmaReconcileWitness, SharedDmaLease,
+};
 
 use crate::command::DmaAddressWidth;
-use crate::port::{AhciPort, InitializationMemory, OpenCause, PortCloseError, PortOpenError};
+use crate::port::{
+    AhciPort, InitializationMemory, OpenCause, PortOpenError, PortShutdown, PortShutdownBlockCause,
+    PortShutdownCause,
+};
 use crate::types::{
     GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PX_CI, PortNumber,
 };
@@ -71,30 +77,54 @@ pub enum ControllerPortCause {
     Open(OpenCause),
 }
 
-/// Resources retained at the first controller shutdown failure.
-#[derive(Debug)]
-pub enum ControllerCloseFailure {
-    Port(PortCloseError),
-    EngineStateUnknown {
-        registers: MappedMmio,
-        queue: DmaQueueIdentity,
-    },
-    PublicationUnknown {
+/// Reason the one-way controller shutdown cannot currently advance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerShutdownCause {
+    CommandActive,
+    ResetRequired {
         cause: crate::port::PortFault,
-        registers: MappedMmio,
-        queue: DmaQueueIdentity,
-        memory: SharedDmaLease,
+        scope: ControllerResetScope,
     },
+    EngineStateUnknown,
+    PublicationUnknown(crate::port::PortFault),
+    StopDeadline,
+    Quiesce(DmaLeaseError),
+    Unmap(DmaLeaseError),
+    ReconciliationRequired(DmaLeaseError),
 }
 
-/// Partial controller shutdown keeps the failed port resources and all ports
-/// not yet visited. `closed_ports` identifies allocations already reclaimed.
+/// Device state that must be covered by reset reconciliation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ControllerResetScope {
+    PortMetadata,
+    PortMetadataAndTransfer,
+}
+
+/// Partial shutdown retains the only controller and allocation owners.
 #[derive(Debug)]
-pub struct ControllerCloseError {
+pub struct ControllerShutdownError {
     pub failed_port: PortNumber,
     pub closed_ports: u32,
-    pub failure: ControllerCloseFailure,
-    pub controller: AhciController,
+    pub cause: ControllerShutdownCause,
+    pub shutdown: Box<AhciControllerShutdown>,
+}
+
+/// Failure to apply an IOTLB reconciliation witness to a shutdown port.
+#[derive(Debug)]
+pub enum ControllerReconcileError {
+    NotAwaitingReconciliation {
+        port: PortNumber,
+        witness: DmaReconcileWitness,
+        shutdown: Box<AhciControllerShutdown>,
+    },
+    Shutdown(ControllerShutdownError),
+}
+
+/// One-way controller owner after interrupt and submission authority is gone.
+#[derive(Debug)]
+pub struct AhciControllerShutdown {
+    controller: AhciController,
+    closed_ports: u32,
 }
 
 #[derive(Debug)]
@@ -111,6 +141,8 @@ enum PortSlot {
         queue: DmaQueueIdentity,
         memory: SharedDmaLease,
     },
+    Shutdown(PortShutdown),
+    Closed,
     Transitioning,
 }
 
@@ -398,62 +430,179 @@ impl AhciController {
         }
     }
 
-    /// Explicitly closes every attached port in ascending hardware order.
+    /// Irreversibly removes interrupt and submission authority.
+    pub fn begin_shutdown(self) -> Box<AhciControllerShutdown> {
+        let shutdown = Box::new(AhciControllerShutdown {
+            controller: self,
+            closed_ports: 0,
+        });
+        shutdown.controller.registers.disable_interrupts();
+        shutdown
+    }
+}
+
+impl AhciControllerShutdown {
+    /// Advances each port through stop, DMA quiescence, and fallible unmap.
     ///
     /// # Errors
-    /// The first failed port is returned with its exact resources. Ports already
-    /// closed are recorded in `closed_ports`; all later ports stay in the
-    /// returned controller and have not begun shutdown.
-    #[expect(
-        clippy::result_large_err,
-        reason = "partial shutdown must return all live port owners without a new fallible allocation"
-    )]
-    pub fn close(mut self, poll_budget: NonZeroUsize) -> Result<(), ControllerCloseError> {
-        self.registers.disable_interrupts();
-        let mut closed_ports = 0u32;
+    /// The first blocked transition returns this one-way owner. No failed or
+    /// unvisited port can be recovered as an operational controller.
+    pub fn advance(
+        mut self: Box<Self>,
+        poll_budget: NonZeroUsize,
+    ) -> Result<(), ControllerShutdownError> {
         for index in 0..PORT_COUNT {
-            let Some(slot) = self.slots.get_mut(index) else {
+            let Some(slot) = self.controller.slots.get_mut(index) else {
                 unreachable!("fixed loop range indexes the fixed port table")
             };
             let state = core::mem::replace(slot, PortSlot::Transitioning);
-            let failure = match state {
+            let shutdown = match state {
                 PortSlot::Available(mapping) => {
-                    *slot = PortSlot::Available(mapping);
+                    drop(mapping);
+                    *slot = PortSlot::Closed;
                     continue;
                 }
-                PortSlot::Attached(port) => match port.close(poll_budget) {
-                    Ok(()) => {
-                        closed_ports |= 1u32 << index;
-                        continue;
+                PortSlot::Attached(port) => match port.begin_shutdown() {
+                    Ok(shutdown) => shutdown,
+                    Err(blocked) => {
+                        let cause = match blocked.cause {
+                            PortShutdownBlockCause::CommandActive => {
+                                ControllerShutdownCause::CommandActive
+                            }
+                            PortShutdownBlockCause::ResetRequired {
+                                cause,
+                                transfer_retained,
+                            } => ControllerShutdownCause::ResetRequired {
+                                cause,
+                                scope: if transfer_retained {
+                                    ControllerResetScope::PortMetadataAndTransfer
+                                } else {
+                                    ControllerResetScope::PortMetadata
+                                },
+                            },
+                        };
+                        *slot = PortSlot::Attached(blocked.port);
+                        return Err(ControllerShutdownError {
+                            failed_port: PortNumber::new(index as u8),
+                            closed_ports: self.closed_ports,
+                            cause,
+                            shutdown: self,
+                        });
                     }
-                    Err(failure) => ControllerCloseFailure::Port(failure),
                 },
                 PortSlot::EngineStateUnknown { registers, queue } => {
-                    ControllerCloseFailure::EngineStateUnknown { registers, queue }
+                    *slot = PortSlot::EngineStateUnknown { registers, queue };
+                    return Err(ControllerShutdownError {
+                        failed_port: PortNumber::new(index as u8),
+                        closed_ports: self.closed_ports,
+                        cause: ControllerShutdownCause::EngineStateUnknown,
+                        shutdown: self,
+                    });
                 }
                 PortSlot::PublicationUnknown {
                     cause,
                     registers,
                     queue,
                     memory,
-                } => ControllerCloseFailure::PublicationUnknown {
-                    cause,
-                    registers,
-                    queue,
-                    memory,
-                },
+                } => {
+                    *slot = PortSlot::PublicationUnknown {
+                        cause,
+                        registers,
+                        queue,
+                        memory,
+                    };
+                    return Err(ControllerShutdownError {
+                        failed_port: PortNumber::new(index as u8),
+                        closed_ports: self.closed_ports,
+                        cause: ControllerShutdownCause::PublicationUnknown(cause),
+                        shutdown: self,
+                    });
+                }
+                PortSlot::Shutdown(shutdown) => shutdown,
+                PortSlot::Closed => {
+                    *slot = PortSlot::Closed;
+                    continue;
+                }
                 PortSlot::Transitioning => {
                     unreachable!("exclusive controller ownership prevents a concurrent transition")
                 }
             };
-            return Err(ControllerCloseError {
-                failed_port: PortNumber::new(index as u8),
-                closed_ports,
-                failure,
-                controller: self,
-            });
+            match shutdown.advance(poll_budget) {
+                Ok(()) => {
+                    *slot = PortSlot::Closed;
+                    self.closed_ports |= 1u32 << index;
+                }
+                Err(failure) => {
+                    *slot = PortSlot::Shutdown(failure.owner);
+                    return Err(ControllerShutdownError {
+                        failed_port: PortNumber::new(index as u8),
+                        closed_ports: self.closed_ports,
+                        cause: map_shutdown_cause(failure.cause),
+                        shutdown: self,
+                    });
+                }
+            }
         }
         Ok(())
+    }
+
+    /// Retries the unmap for one port after reset and IOTLB invalidation.
+    ///
+    /// # Errors
+    /// A witness presented to the wrong phase is returned unchanged. A retry
+    /// failure consumes the witness but retains the unmap-failed allocation.
+    pub fn reconcile_port(
+        mut self: Box<Self>,
+        port: PortNumber,
+        witness: DmaReconcileWitness,
+    ) -> Result<Box<Self>, ControllerReconcileError> {
+        let index = port.as_usize();
+        let Some(slot) = self.controller.slots.get_mut(index) else {
+            return Err(ControllerReconcileError::NotAwaitingReconciliation {
+                port,
+                witness,
+                shutdown: self,
+            });
+        };
+        if !matches!(slot, PortSlot::Shutdown(owner) if owner.awaits_reconciliation()) {
+            return Err(ControllerReconcileError::NotAwaitingReconciliation {
+                port,
+                witness,
+                shutdown: self,
+            });
+        }
+        let PortSlot::Shutdown(owner) = core::mem::replace(slot, PortSlot::Transitioning) else {
+            unreachable!("the reconciliation phase was checked under exclusive ownership")
+        };
+        match owner.retry_close(witness) {
+            Ok(()) => {
+                *slot = PortSlot::Closed;
+                self.closed_ports |= 1u32 << index;
+                Ok(self)
+            }
+            Err(failure) => {
+                *slot = PortSlot::Shutdown(failure.owner);
+                Err(ControllerReconcileError::Shutdown(
+                    ControllerShutdownError {
+                        failed_port: port,
+                        closed_ports: self.closed_ports,
+                        cause: map_shutdown_cause(failure.cause),
+                        shutdown: self,
+                    },
+                ))
+            }
+        }
+    }
+}
+
+const fn map_shutdown_cause(cause: PortShutdownCause) -> ControllerShutdownCause {
+    match cause {
+        PortShutdownCause::StopDeadline => ControllerShutdownCause::StopDeadline,
+        PortShutdownCause::Quiesce(cause) => ControllerShutdownCause::Quiesce(cause),
+        PortShutdownCause::Unmap(cause) => ControllerShutdownCause::Unmap(cause),
+        PortShutdownCause::ReconciliationRequired(cause) => {
+            ControllerShutdownCause::ReconciliationRequired(cause)
+        }
     }
 }
 
