@@ -473,7 +473,7 @@ pub mod ipc;
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-pub mod kapi;
+pub(crate) mod services;
 #[cfg(any(
     not(any(test, feature = "bench")),
     feature = "full_mm_tests",

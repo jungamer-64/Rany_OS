@@ -7,7 +7,7 @@ use kernel_api::abi::driver::{
 };
 use kernel_api::error::KapiError;
 
-pub(crate) fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
+pub(super) fn unpack_device_id(locator: PackedPciLocation) -> IommuDeviceId {
     IommuDeviceId {
         segment: locator.segment(),
         bus: locator.bus(),

@@ -1,6 +1,8 @@
-// ============================================================================
-// kernel/src/kapi/mod.rs - Canonical KernelServices boundary
-// ============================================================================
+//! Kernel-owned implementations of the contracts in `kernel_api`.
+//!
+//! Boot publishes these implementations through the installation entry points.
+//! Service implementation types and subsystem adapters stay inside this module;
+//! callers use the shared traits rather than acquiring an implementation object.
 extern crate alloc;
 
 pub(crate) use alloc::boxed::Box;
@@ -21,23 +23,15 @@ pub(crate) use kernel_api::service::kernel::KernelServices;
 pub(crate) use crate::io::dma;
 pub(crate) use crate::task::{current_subject, current_task_id};
 
-pub mod bootstrap;
-pub mod device_registration;
-pub mod fs;
-pub mod gui;
-pub mod ipc;
-pub mod kernel_services;
-pub mod net;
-pub mod providers;
-pub mod storage;
-pub mod task;
+mod bootstrap;
+mod device_registration;
+mod fs;
+mod gui;
+mod ipc;
+mod kernel;
+mod net;
+mod providers;
+mod storage;
+mod task;
 
 pub(crate) use bootstrap::{register_builtin_service_providers, register_kernel_services};
-
-pub struct ExoKernel;
-
-impl ExoKernel {
-    pub const fn new() -> Self {
-        ExoKernel
-    }
-}
