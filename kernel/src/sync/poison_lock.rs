@@ -442,11 +442,6 @@ impl<T> PoisonLock<T> {
         self.poisoned.store(false, Ordering::Release);
     }
 
-    /// 強制アンロック（障害回復専用）
-    pub fn force_unlock(&self) {
-        self.locked.store(false, Ordering::Release);
-    }
-
     /// 内部データへの参照を取得（ロックなし、unsafeのみ）
     ///
     /// # Safety
