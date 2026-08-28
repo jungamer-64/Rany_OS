@@ -27,13 +27,20 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
+use core::ptr::NonNull;
 use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
-    AbiBlockDeviceRegistration, AbiDmaSlice, AbiDriverType, AbiError as AbiErrorCode,
-    AbiMmioHandle, AbiMsixVectorInfo, AbiNetPortRegistration, AbiNvmeNamespaceRegistration,
-    AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION, DriverCapabilities as AbiDriverCapabilities,
-    DriverContext as AbiDriverContext, DriverEntryFn as AbiEntryFn, DriverExportsV1,
-    DriverVTable as AbiDriverVTable, KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
+    AbiBlockDeviceRegistration, AbiDmaAllocation, AbiDmaOperation, AbiDmaRequest, AbiDmaResponse,
+    AbiDmaStatus, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo,
+    AbiNetPortRegistration, AbiNvmeNamespaceRegistration, AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION,
+    DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
+    DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
+    KERNEL_API_ABI_VERSION, KernelApiV4, PackedPciLocation,
+};
+use kernel_api::dma::{
+    DmaAccessWidth, DmaAllocationRequest, DmaCompletionWitness, DmaDirection, DmaLeaseError,
+    DmaLeaseId, DmaLeaseState, DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness,
+    DmaResetWitness,
 };
 use kernel_api::driver::DriverStateBlob;
 use kernel_api::driver::{DeviceId, Driver, DriverState, DriverType};
@@ -834,6 +841,264 @@ extern "C" fn kapi_log(level: u32, msg_ptr: *const u8, msg_len: usize) {
     crate::io::log::early_print("[KAPI] log done\n");
 }
 
+fn dma_error_status(error: DmaLeaseError) -> i32 {
+    AbiDmaStatus::from_result(Err(error)) as i32
+}
+
+fn dma_queue(request: AbiDmaRequest) -> Result<DmaQueueIdentity, DmaLeaseError> {
+    DmaQueueIdentity::new(
+        PackedPciLocation::from_raw(request.device),
+        request.queue,
+        request.generation,
+    )
+    .ok_or(DmaLeaseError::QueueMismatch)
+}
+
+/// Allocate a registry-owned DMA capability for a driver domain.
+///
+/// # Safety
+/// `out` must be writable and aligned for one `AbiDmaAllocation` for the
+/// duration of this synchronous call.
+unsafe extern "C" fn kapi_dma_allocate(
+    size: usize,
+    device: u64,
+    direction: u8,
+    out: *mut AbiDmaAllocation,
+) -> i32 {
+    let Some(out) = NonNull::new(out).filter(|pointer| pointer.is_aligned()) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    // SAFETY: pointer validity is the caller's ABI obligation and alignment was
+    // checked above. Initialize failure output before any fallible work.
+    unsafe { out.as_ptr().write(AbiDmaAllocation::default()) };
+
+    let Some(direction) = DmaDirection::from_abi(direction) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    let Some(request) = DmaAllocationRequest::new(size, direction) else {
+        return AbiErrorCode::InvalidParam as i32;
+    };
+    match kernel_api::service::kernel::instance()
+        .alloc_dma_for_device(request, PackedPciLocation::from_raw(device))
+    {
+        Ok(lease) => {
+            let allocation = AbiDmaAllocation::export(lease);
+            // SAFETY: the validated output slot remains exclusively borrowed
+            // for this function call.
+            unsafe { out.as_ptr().write(allocation) };
+            AbiErrorCode::Success as i32
+        }
+        Err(error) => map_kapi_error_to_abi(error),
+    }
+}
+
+/// Dispatch one validated state transition to the authoritative DMA registry.
+///
+/// # Safety
+/// `request` must point to an initialized, aligned request and `out` to writable,
+/// aligned response storage. For completion, quiescence, reset, or reconciliation
+/// operations, the caller must have established the hardware fact documented by
+/// the corresponding Rust witness constructor; numeric fields alone are not proof.
+unsafe extern "C" fn kapi_dma_command(
+    lease: u64,
+    request: *const AbiDmaRequest,
+    out: *mut AbiDmaResponse,
+) -> i32 {
+    let Some(request) = NonNull::new(request.cast_mut()).filter(|pointer| pointer.is_aligned())
+    else {
+        return dma_error_status(DmaLeaseError::InvalidRange);
+    };
+    let Some(out) = NonNull::new(out).filter(|pointer| pointer.is_aligned()) else {
+        return dma_error_status(DmaLeaseError::InvalidRange);
+    };
+    // SAFETY: request validity is the ABI caller's obligation; it is copied
+    // before output initialization, so overlapping carrier storage is harmless.
+    let request = unsafe { request.as_ptr().read() };
+    // SAFETY: the caller provided writable aligned response storage.
+    unsafe { out.as_ptr().write(AbiDmaResponse::default()) };
+
+    let Some(lease) = DmaLeaseId::from_abi(lease) else {
+        return dma_error_status(DmaLeaseError::StaleLease);
+    };
+    let operation = match AbiDmaOperation::try_from(request.operation) {
+        Ok(operation) => operation,
+        Err(error) => return dma_error_status(error),
+    };
+    let command = match operation {
+        AbiDmaOperation::Prepare => {
+            dma_queue(request).map(crate::resource_registry::dma::DmaRegistryCommand::Prepare)
+        }
+        AbiDmaOperation::Arm => Ok(crate::resource_registry::dma::DmaRegistryCommand::Arm),
+        AbiDmaOperation::Abort => Ok(crate::resource_registry::dma::DmaRegistryCommand::Abort),
+        AbiDmaOperation::Complete => dma_queue(request).and_then(|queue| {
+            let completed =
+                DmaLeaseId::from_abi(request.witness_lease).ok_or(DmaLeaseError::QueueMismatch)?;
+            // SAFETY: this unsafe ABI operation requires the driver completion
+            // parser to validate exactly this queue entry and allocation.
+            let witness =
+                unsafe { DmaCompletionWitness::from_validated_queue_entry(queue, completed) };
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::Complete(
+                witness,
+            ))
+        }),
+        AbiDmaOperation::ReturnToCpu => {
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::ReturnToCpu)
+        }
+        AbiDmaOperation::OutcomeUnknown => {
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::OutcomeUnknown)
+        }
+        AbiDmaOperation::Revoke => {
+            // SAFETY: the caller contract requires completed device reset before
+            // selecting this operation.
+            unsafe {
+                DmaResetWitness::after_device_reset(
+                    PackedPciLocation::from_raw(request.device),
+                    request.generation,
+                )
+            }
+            .map(crate::resource_registry::dma::DmaRegistryCommand::Revoke)
+            .ok_or(DmaLeaseError::QueueMismatch)
+        }
+        AbiDmaOperation::Reconcile | AbiDmaOperation::RetryClose => {
+            // SAFETY: the caller contract requires reset plus completed IOTLB
+            // invalidation before selecting either reconciliation operation.
+            let witness = unsafe {
+                DmaReconcileWitness::after_iotlb_invalidation(
+                    PackedPciLocation::from_raw(request.device),
+                    request.generation,
+                )
+            }
+            .ok_or(DmaLeaseError::QueueMismatch);
+            witness.map(|witness| {
+                if operation == AbiDmaOperation::RetryClose {
+                    crate::resource_registry::dma::DmaRegistryCommand::RetryClose(witness)
+                } else {
+                    crate::resource_registry::dma::DmaRegistryCommand::Reconcile(witness)
+                }
+            })
+        }
+        AbiDmaOperation::Close => Ok(crate::resource_registry::dma::DmaRegistryCommand::Close),
+        AbiDmaOperation::PrepareShared => {
+            dma_queue(request).map(crate::resource_registry::dma::DmaRegistryCommand::PrepareShared)
+        }
+        AbiDmaOperation::ActivateShared => {
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::ActivateShared)
+        }
+        AbiDmaOperation::QuiesceShared => dma_queue(request).and_then(|queue| {
+            let shared =
+                DmaLeaseId::from_abi(request.witness_lease).ok_or(DmaLeaseError::QueueMismatch)?;
+            // SAFETY: the caller contract requires the queue to be stopped and
+            // drained for this exact allocation.
+            let witness = unsafe { DmaQuiesceWitness::after_queue_quiesced(queue, shared) };
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::QuiesceShared(witness))
+        }),
+        AbiDmaOperation::ReadShared => DmaAccessWidth::from_abi(request.width)
+            .map(
+                |width| crate::resource_registry::dma::DmaRegistryCommand::ReadShared {
+                    offset: request.offset,
+                    width,
+                },
+            )
+            .ok_or(DmaLeaseError::InvalidRange),
+        AbiDmaOperation::WriteShared => DmaAccessWidth::from_abi(request.width)
+            .map(
+                |width| crate::resource_registry::dma::DmaRegistryCommand::WriteShared {
+                    offset: request.offset,
+                    width,
+                    value: request.value,
+                },
+            )
+            .ok_or(DmaLeaseError::InvalidRange),
+        AbiDmaOperation::PreparedQueue => {
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::PreparedQueue)
+        }
+        AbiDmaOperation::Abandon => DmaLeaseState::from_abi(request.state)
+            .map(crate::resource_registry::dma::DmaRegistryCommand::Abandon)
+            .ok_or(DmaLeaseError::InvalidState),
+    };
+    let command = match command {
+        Ok(command) => command,
+        Err(error) => return dma_error_status(error),
+    };
+    let owner = crate::task::current_subject().domain;
+    match crate::resource_registry::dma::command(lease, owner, command) {
+        Ok(response) => {
+            let response = match response {
+                crate::resource_registry::dma::DmaRegistryResponse::None => {
+                    AbiDmaResponse::default()
+                }
+                crate::resource_registry::dma::DmaRegistryResponse::Scalar(value) => {
+                    AbiDmaResponse {
+                        value,
+                        ..AbiDmaResponse::default()
+                    }
+                }
+                crate::resource_registry::dma::DmaRegistryResponse::Queue(queue) => {
+                    AbiDmaResponse {
+                        device: queue.device().raw(),
+                        queue: queue.index(),
+                        generation: queue.generation(),
+                        ..AbiDmaResponse::default()
+                    }
+                }
+            };
+            // SAFETY: output storage remains exclusively writable for this call.
+            unsafe { out.as_ptr().write(response) };
+            AbiDmaStatus::Success as i32
+        }
+        Err(error) => dma_error_status(error),
+    }
+}
+
+/// Visit CPU-owned DMA bytes without exporting their address as an owner.
+///
+/// # Safety
+/// `visitor` must not retain `bytes`, unwind across the ABI, or use `context`
+/// after the synchronous callback returns. Any context pointer it dereferences
+/// must remain valid for the call.
+unsafe extern "C" fn kapi_dma_read(
+    lease: u64,
+    context: *mut u8,
+    visitor: unsafe extern "C" fn(*mut u8, *const u8, usize),
+) -> i32 {
+    let Some(lease) = DmaLeaseId::from_abi(lease) else {
+        return dma_error_status(DmaLeaseError::StaleLease);
+    };
+    let owner = crate::task::current_subject().domain;
+    let mut visit = |bytes: &[u8]| {
+        // SAFETY: the caller supplied this callback under the function's safety
+        // contract; the registry pins `bytes` for this invocation only.
+        unsafe { visitor(context, bytes.as_ptr(), bytes.len()) };
+    };
+    AbiDmaStatus::from_result(crate::resource_registry::dma::with_cpu_bytes(
+        lease, owner, &mut visit,
+    )) as i32
+}
+
+/// Mutably visit CPU-owned DMA bytes under registry exclusivity.
+///
+/// # Safety
+/// The same callback/context conditions as `kapi_dma_read` apply. The callback
+/// must not create an alias or retain the mutable byte pointer.
+unsafe extern "C" fn kapi_dma_write(
+    lease: u64,
+    context: *mut u8,
+    visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
+) -> i32 {
+    let Some(lease) = DmaLeaseId::from_abi(lease) else {
+        return dma_error_status(DmaLeaseError::StaleLease);
+    };
+    let owner = crate::task::current_subject().domain;
+    let mut visit = |bytes: &mut [u8]| {
+        // SAFETY: the caller supplied this callback under the function's safety
+        // contract; the registry grants exclusive access for this invocation.
+        unsafe { visitor(context, bytes.as_mut_ptr(), bytes.len()) };
+    };
+    AbiDmaStatus::from_result(crate::resource_registry::dma::with_cpu_bytes_mut(
+        lease, owner, &mut visit,
+    )) as i32
+}
+
 extern "C" fn kapi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {
     if out.is_null() {
         return AbiErrorCode::InvalidParam as i32;
@@ -1194,8 +1459,10 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     log: kapi_log,
-    alloc_dma_for_device_raw: kapi_alloc_dma_for_device_raw,
-    release_dma_raw: kapi_release_dma_raw,
+    dma_allocate: kapi_dma_allocate,
+    dma_command: kapi_dma_command,
+    dma_read: kapi_dma_read,
+    dma_write: kapi_dma_write,
     map_mmio: kapi_map_mmio,
     unmap_mmio: kapi_unmap_mmio,
     port_read_u8: kapi_port_read_u8,

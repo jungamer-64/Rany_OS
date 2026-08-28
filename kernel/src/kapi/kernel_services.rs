@@ -566,19 +566,8 @@ mod dma_tests {
     use super::*;
     use crate::domain::{DomainCredentials, DomainId};
     use crate::task::{ExecutionContext, Subject, TaskId};
-    use core::sync::atomic::{AtomicUsize, Ordering};
     use kernel_api::ipc::{RRef, RRefError};
     use kernel_api::service::kernel::KernelServices;
-
-    static DROP_COUNTER_A: AtomicUsize = AtomicUsize::new(0);
-    static DROP_COUNTER_B: AtomicUsize = AtomicUsize::new(0);
-    static DROP_COUNTER_C: AtomicUsize = AtomicUsize::new(0);
-
-    fn reset_drop_counters() {
-        DROP_COUNTER_A.store(0, Ordering::SeqCst);
-        DROP_COUNTER_B.store(0, Ordering::SeqCst);
-        DROP_COUNTER_C.store(0, Ordering::SeqCst);
-    }
 
     fn set_current_subject(domain_id: DomainId) -> crate::cpu::ExecutionContextGuard {
         let current = crate::cpu::CurrentCpu::acquire().expect("test CPU-local state");
@@ -648,68 +637,6 @@ mod dma_tests {
         assert_eq!(device.bus, 0x56);
         assert_eq!(device.device, 0x07);
         assert_eq!(device.function, 0x01);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn release_dma_buffer_checked_rejects_foreign_owner_and_keeps_entry() {
-        let _dma_guard = crate::resource_registry::dma::testing::acquire_test_dma_state_guard();
-        reset_drop_counters();
-
-        let owner = DomainId::new(500);
-        let caller = DomainId::new(501);
-        let phys = 0x1000;
-        let size = 4096;
-        let handle = crate::resource_registry::dma::testing::register_test_dma_entry(
-            owner.as_u64(),
-            phys,
-            size,
-            &DROP_COUNTER_A,
-        );
-
-        let _caller_guard = set_current_subject(caller);
-        let err = release_dma_buffer_checked(handle).unwrap_err();
-
-        assert!(matches!(err, KapiError::PermissionDenied));
-        assert!(crate::resource_registry::dma::testing::test_dma_handle_exists(handle));
-        assert!(
-            crate::resource_registry::dma::testing::test_dma_phys_owned_by(
-                phys,
-                size,
-                owner.as_u64()
-            )
-        );
-        assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 0);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn release_dma_buffer_checked_releases_owned_entry() {
-        let _dma_guard = crate::resource_registry::dma::testing::acquire_test_dma_state_guard();
-        reset_drop_counters();
-
-        let owner = DomainId::new(600);
-        let phys = 0x2000;
-        let size = 2048;
-        let handle = crate::resource_registry::dma::testing::register_test_dma_entry(
-            owner.as_u64(),
-            phys,
-            size,
-            &DROP_COUNTER_A,
-        );
-
-        let _owner_guard = set_current_subject(owner);
-        release_dma_buffer_checked(handle).expect("owned DMA handle release should succeed");
-
-        assert!(!crate::resource_registry::dma::testing::test_dma_handle_exists(handle));
-        assert!(
-            !crate::resource_registry::dma::testing::test_dma_phys_owned_by(
-                phys,
-                size,
-                owner.as_u64()
-            )
-        );
-        assert_eq!(DROP_COUNTER_A.load(Ordering::SeqCst), 1);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

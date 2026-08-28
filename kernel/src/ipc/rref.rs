@@ -193,6 +193,12 @@ impl<T> RRef<T> {
 }
 
 impl<T: ?Sized> RRef<T> {
+    /// Observe the owned allocation without creating a reference to its contents.
+    /// DMA boundaries use this to preserve provenance while device access is live.
+    pub(crate) fn allocation_ptr(&self) -> NonNull<T> {
+        self.ptr
+    }
+
     /// 既存のExchange HeapポインタからRRefを作成
     /// # Safety
     /// ptrはExchange Heap上の有効なメモリであり、Heap Registryに登録済みであること

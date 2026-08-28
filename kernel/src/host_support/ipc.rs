@@ -49,6 +49,10 @@ pub mod rref {
     }
 
     impl<T: ?Sized> RRef<T> {
+        pub(crate) fn allocation_ptr(&self) -> NonNull<T> {
+            self.ptr
+        }
+
         pub unsafe fn from_raw(ptr: NonNull<T>, owner: DomainId) -> Self {
             Self { ptr, owner }
         }

@@ -15,9 +15,11 @@ use crate::abi::driver::{
     KernelApiV4, PackedPciLocation,
 };
 use crate::dma::{CpuDmaLease, DmaAllocationRequest};
-#[cfg(any(feature = "cell_runtime", test))]
+#[cfg(feature = "cell_runtime")]
 use crate::dma::{
-    DmaDeviceAddress, DmaDirection, DmaLeaseAuthority, DmaLeaseError, DmaLeaseId, DmaLeaseState,
+    DmaAccessWidth, DmaCompletionWitness, DmaDeviceAddress, DmaDirection, DmaLeaseAuthority,
+    DmaLeaseError, DmaLeaseId, DmaLeaseState, DmaQueueIdentity, DmaQuiesceWitness,
+    DmaReconcileWitness, DmaResetWitness,
 };
 use crate::ipc::{ChannelHandle, DomainId};
 use crate::msix::MsixVectorInfo;
@@ -531,10 +533,296 @@ pub fn abi() -> &'static KernelApiV4 {
 }
 
 #[cfg(feature = "cell_runtime")]
+struct CellDmaLeaseAuthority {
+    lease: DmaLeaseId,
+    device_address: DmaDeviceAddress,
+    byte_count: crate::dma::DmaByteCount,
+    direction: DmaDirection,
+}
+
+#[cfg(feature = "cell_runtime")]
+impl CellDmaLeaseAuthority {
+    fn request(
+        operation: crate::abi::driver::AbiDmaOperation,
+    ) -> crate::abi::driver::AbiDmaRequest {
+        crate::abi::driver::AbiDmaRequest {
+            operation: operation as u32,
+            ..crate::abi::driver::AbiDmaRequest::default()
+        }
+    }
+
+    fn queue_request(
+        operation: crate::abi::driver::AbiDmaOperation,
+        queue: DmaQueueIdentity,
+    ) -> crate::abi::driver::AbiDmaRequest {
+        crate::abi::driver::AbiDmaRequest {
+            operation: operation as u32,
+            device: queue.device().raw(),
+            queue: queue.index(),
+            generation: queue.generation(),
+            ..crate::abi::driver::AbiDmaRequest::default()
+        }
+    }
+
+    fn call(
+        &self,
+        request: &crate::abi::driver::AbiDmaRequest,
+    ) -> Result<crate::abi::driver::AbiDmaResponse, DmaLeaseError> {
+        let mut response = crate::abi::driver::AbiDmaResponse::default();
+        // SAFETY: both ABI records are live, aligned, and remain borrowed for
+        // the synchronous call. Hardware-evidence operations are reached only
+        // from methods that consume the corresponding non-cloneable witness.
+        let raw_status =
+            unsafe { (abi().dma_command)(self.lease.into_abi(), request, &mut response) };
+        let status = crate::abi::driver::AbiDmaStatus::from_raw(raw_status)
+            .ok_or(DmaLeaseError::AuthorityViolation)?;
+        status.into_result()?;
+        Ok(response)
+    }
+
+    fn status(raw_status: i32) -> Result<(), DmaLeaseError> {
+        crate::abi::driver::AbiDmaStatus::from_raw(raw_status)
+            .ok_or(DmaLeaseError::AuthorityViolation)?
+            .into_result()
+    }
+}
+
+#[cfg(feature = "cell_runtime")]
+struct ReadVisitor<'visitor> {
+    visitor: &'visitor mut dyn FnMut(&[u8]),
+}
+
+#[cfg(feature = "cell_runtime")]
+unsafe extern "C" fn visit_read_bytes(context: *mut u8, bytes: *const u8, len: usize) {
+    // SAFETY: `with_cpu_bytes` passes a live `ReadVisitor` for this synchronous
+    // callback and the kernel guarantees a non-null initialized range for `len`.
+    let context = unsafe { &mut *context.cast::<ReadVisitor<'_>>() };
+    // SAFETY: the registry pins the allocation in CpuOwned for this callback;
+    // the slice cannot escape the visitor's higher-ranked call boundary.
+    let bytes = unsafe { core::slice::from_raw_parts(bytes, len) };
+    (context.visitor)(bytes);
+}
+
+#[cfg(feature = "cell_runtime")]
+struct WriteVisitor<'visitor> {
+    visitor: &'visitor mut dyn FnMut(&mut [u8]),
+}
+
+#[cfg(feature = "cell_runtime")]
+unsafe extern "C" fn visit_write_bytes(context: *mut u8, bytes: *mut u8, len: usize) {
+    // SAFETY: `with_cpu_bytes_mut` passes a live `WriteVisitor` and the registry
+    // grants this callback exclusive access to the initialized range.
+    let context = unsafe { &mut *context.cast::<WriteVisitor<'_>>() };
+    // SAFETY: pointer validity, initialization, exclusivity, and callback
+    // duration are established by the registry-owned ABI implementation.
+    let bytes = unsafe { core::slice::from_raw_parts_mut(bytes, len) };
+    (context.visitor)(bytes);
+}
+
+// SAFETY: This proxy owns no backing pointer or independent lifecycle state.
+// Every operation is synchronously validated and serialized by the kernel
+// registry for one immutable lease generation. CPU pointers exist only during
+// a registry callback and cannot be retained by this implementation.
+#[cfg(feature = "cell_runtime")]
+unsafe impl DmaLeaseAuthority for CellDmaLeaseAuthority {
+    fn lease_id(&self) -> DmaLeaseId {
+        self.lease
+    }
+    fn device_address(&self) -> DmaDeviceAddress {
+        self.device_address
+    }
+    fn byte_count(&self) -> crate::dma::DmaByteCount {
+        self.byte_count
+    }
+    fn direction(&self) -> DmaDirection {
+        self.direction
+    }
+
+    fn with_cpu_bytes(&self, visitor: &mut dyn FnMut(&[u8])) -> Result<(), DmaLeaseError> {
+        let mut context = ReadVisitor { visitor };
+        // SAFETY: the context and callback are live for the synchronous call;
+        // the kernel validates lease ownership/state before exposing bytes.
+        let status = unsafe {
+            (abi().dma_read)(
+                self.lease.into_abi(),
+                core::ptr::addr_of_mut!(context).cast(),
+                visit_read_bytes,
+            )
+        };
+        Self::status(status)
+    }
+
+    fn with_cpu_bytes_mut(&self, visitor: &mut dyn FnMut(&mut [u8])) -> Result<(), DmaLeaseError> {
+        let mut context = WriteVisitor { visitor };
+        // SAFETY: as above, with exclusive registry access for the callback.
+        let status = unsafe {
+            (abi().dma_write)(
+                self.lease.into_abi(),
+                core::ptr::addr_of_mut!(context).cast(),
+                visit_write_bytes,
+            )
+        };
+        Self::status(status)
+    }
+
+    fn prepare(&self, queue: DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+        self.call(&Self::queue_request(
+            crate::abi::driver::AbiDmaOperation::Prepare,
+            queue,
+        ))
+        .map(|_| ())
+    }
+
+    fn prepared_queue(&self) -> Result<DmaQueueIdentity, DmaLeaseError> {
+        let response = self.call(&Self::request(
+            crate::abi::driver::AbiDmaOperation::PreparedQueue,
+        ))?;
+        DmaQueueIdentity::new(
+            PackedPciLocation::from_raw(response.device),
+            response.queue,
+            response.generation,
+        )
+        .ok_or(DmaLeaseError::AuthorityViolation)
+    }
+
+    fn abort_prepared(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(crate::abi::driver::AbiDmaOperation::Abort))
+            .map(|_| ())
+    }
+
+    fn arm(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(crate::abi::driver::AbiDmaOperation::Arm))
+            .map(|_| ())
+    }
+
+    fn complete(&self, witness: DmaCompletionWitness) -> Result<(), DmaLeaseError> {
+        let mut request = Self::queue_request(
+            crate::abi::driver::AbiDmaOperation::Complete,
+            witness.queue(),
+        );
+        request.witness_lease = witness.lease_id().into_abi();
+        self.call(&request).map(|_| ())
+    }
+
+    fn return_to_cpu(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(
+            crate::abi::driver::AbiDmaOperation::ReturnToCpu,
+        ))
+        .map(|_| ())
+    }
+
+    fn mark_outcome_unknown(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(
+            crate::abi::driver::AbiDmaOperation::OutcomeUnknown,
+        ))
+        .map(|_| ())
+    }
+
+    fn revoke_after_reset(&self, witness: DmaResetWitness) -> Result<(), DmaLeaseError> {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::Revoke);
+        request.device = witness.device().raw();
+        request.generation = witness.generation();
+        self.call(&request).map(|_| ())
+    }
+
+    fn reconcile(&self, witness: DmaReconcileWitness) -> Result<(), DmaLeaseError> {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::Reconcile);
+        request.device = witness.device().raw();
+        request.generation = witness.generation();
+        self.call(&request).map(|_| ())
+    }
+
+    fn close(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(crate::abi::driver::AbiDmaOperation::Close))
+            .map(|_| ())
+    }
+
+    fn prepare_shared(&self, queue: DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+        self.call(&Self::queue_request(
+            crate::abi::driver::AbiDmaOperation::PrepareShared,
+            queue,
+        ))
+        .map(|_| ())
+    }
+
+    fn activate_shared(&self) -> Result<(), DmaLeaseError> {
+        self.call(&Self::request(
+            crate::abi::driver::AbiDmaOperation::ActivateShared,
+        ))
+        .map(|_| ())
+    }
+
+    fn read_shared_word(&self, offset: usize, width: DmaAccessWidth) -> Result<u64, DmaLeaseError> {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::ReadShared);
+        request.offset = offset;
+        request.width = width.into_abi();
+        self.call(&request).map(|response| response.value)
+    }
+
+    fn write_shared_word(
+        &self,
+        offset: usize,
+        width: DmaAccessWidth,
+        value: u64,
+    ) -> Result<(), DmaLeaseError> {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::WriteShared);
+        request.offset = offset;
+        request.width = width.into_abi();
+        request.value = value;
+        self.call(&request).map(|_| ())
+    }
+
+    fn quiesce_shared(&self, witness: DmaQuiesceWitness) -> Result<(), DmaLeaseError> {
+        let mut request = Self::queue_request(
+            crate::abi::driver::AbiDmaOperation::QuiesceShared,
+            witness.queue(),
+        );
+        request.witness_lease = witness.lease_id().into_abi();
+        self.call(&request).map(|_| ())
+    }
+
+    fn retry_close_after_reconcile(
+        &self,
+        witness: DmaReconcileWitness,
+    ) -> Result<(), DmaLeaseError> {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::RetryClose);
+        request.device = witness.device().raw();
+        request.generation = witness.generation();
+        self.call(&request).map(|_| ())
+    }
+
+    fn abandon(&self, observed_state: DmaLeaseState) {
+        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::Abandon);
+        request.state = observed_state.into_abi();
+        if let Err(error) = self.call(&request) {
+            log::error!("DMA ABI abandon failed for {:?}: {:?}", self.lease, error);
+        }
+    }
+}
+
+#[cfg(feature = "cell_runtime")]
+fn import_dma_allocation(
+    raw: crate::abi::driver::AbiDmaAllocation,
+    direction: DmaDirection,
+) -> KapiResult<CpuDmaLease> {
+    let lease = DmaLeaseId::from_abi(raw.lease_id).ok_or(crate::error::KapiError::IoError)?;
+    let byte_count =
+        crate::dma::DmaByteCount::new(raw.byte_count).ok_or(crate::error::KapiError::IoError)?;
+    Ok(CpuDmaLease::from_authority(alloc::sync::Arc::new(
+        CellDmaLeaseAuthority {
+            lease,
+            device_address: DmaDeviceAddress::from_abi(raw.device_address),
+            byte_count,
+            direction,
+        },
+    )))
+}
+
+#[cfg(feature = "cell_runtime")]
 mod standalone {
     use super::*;
     use crate::KapiError;
-    use crate::abi::driver::{AbiDmaSlice, AbiError, AbiMsixVectorInfo};
+    use crate::abi::driver::{AbiDmaAllocation, AbiError, AbiMsixVectorInfo};
 
     static STANDALONE_KERNEL: StandaloneKernelServices = StandaloneKernelServices;
 
@@ -563,29 +851,23 @@ mod standalone {
         Box::pin(async { Err(KapiError::NotSupported) })
     }
 
-    fn release_dma_from_abi(dma_handle_id: DmaLeaseId) -> Result<(), DmaLeaseError> {
-        let status = (super::abi().release_dma_raw)(dma_handle_id.into_abi());
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(DmaLeaseError::IommuFailure)
-        }
-    }
-
     fn alloc_dma_for_device(
         request: DmaAllocationRequest,
         device_id: PackedPciLocation,
     ) -> KapiResult<CpuDmaLease> {
-        let mut raw = AbiDmaSlice::default();
-        let status = (super::abi().alloc_dma_for_device_raw)(
-            request.byte_count().get(),
-            device_id.raw(),
-            1,
-            request.direction() as u8,
-            &mut raw,
-        );
+        let mut raw = AbiDmaAllocation::default();
+        // SAFETY: `raw` is writable and aligned for the complete synchronous
+        // call; the request has already validated its non-zero byte count.
+        let status = unsafe {
+            (super::abi().dma_allocate)(
+                request.byte_count().get(),
+                device_id.raw(),
+                request.direction().into_abi(),
+                &mut raw,
+            )
+        };
         if AbiError::from_raw(status).is_success() {
-            super::import_dma_lease_from_abi(raw, request.direction(), release_dma_from_abi)
+            super::import_dma_allocation(raw, request.direction())
         } else {
             Err(map_abi_error(status))
         }
@@ -1132,71 +1414,5 @@ mod standalone {
         fn time_service(&self) -> Option<&dyn TimeService> {
             None
         }
-    }
-}
-
-#[cfg(test)]
-mod dma_bridge_tests {
-    use super::*;
-    use crate::abi::driver::AbiDmaSlice;
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    static RELEASED_DMA_HANDLE: AtomicU64 = AtomicU64::new(0);
-
-    fn record_dma_release(dma_handle_id: DmaLeaseId) -> Result<(), DmaLeaseError> {
-        RELEASED_DMA_HANDLE.store(dma_handle_id.into_abi(), Ordering::SeqCst);
-        Ok(())
-    }
-
-    #[test]
-    fn abi_dma_bridge_rejects_zero_sized_buffer() {
-        let raw = AbiDmaSlice {
-            dma_handle_id: 1,
-            device_addr: 0x2000,
-            virt_addr: 0x1000,
-            size: 0,
-        };
-
-        let err = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
-            .unwrap_err();
-        assert!(matches!(err, crate::error::KapiError::IoError));
-    }
-
-    #[test]
-    fn abi_dma_bridge_rejects_null_pointer() {
-        let raw = AbiDmaSlice {
-            dma_handle_id: 1,
-            device_addr: 0x2000,
-            virt_addr: 0,
-            size: 64,
-        };
-
-        let err = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
-            .unwrap_err();
-        assert!(matches!(err, crate::error::KapiError::IoError));
-    }
-
-    #[test]
-    fn abi_dma_bridge_requires_observed_close() {
-        RELEASED_DMA_HANDLE.store(0, Ordering::SeqCst);
-
-        let mut backing = [0u8; 8];
-        backing.copy_from_slice(b"dma-test");
-
-        let raw = AbiDmaSlice {
-            dma_handle_id: 42,
-            device_addr: 0x9000,
-            virt_addr: backing.as_mut_ptr() as usize as u64,
-            size: backing.len(),
-        };
-
-        let dma = import_dma_lease_from_abi(raw, DmaDirection::Bidirectional, record_dma_release)
-            .expect("valid ABI DMA lease");
-        assert_eq!(dma.read(|bytes| bytes == b"dma-test"), Ok(true));
-        assert_eq!(RELEASED_DMA_HANDLE.load(Ordering::SeqCst), 0);
-        dma.close()
-            .expect("explicit close must report release success");
-
-        assert_eq!(RELEASED_DMA_HANDLE.load(Ordering::SeqCst), 42);
     }
 }

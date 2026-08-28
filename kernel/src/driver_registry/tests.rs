@@ -3,8 +3,8 @@ use crate::loader::{unload_cell, with_registry_mut};
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use kernel_api::abi::driver::{
-    AbiDmaSlice, AbiDriverType, AbiError, DRIVER_ABI_VERSION, DriverContext, DriverVTable,
-    DriverVTableFns, PackedPciLocation,
+    AbiDmaAllocation, AbiDmaOperation, AbiDmaRequest, AbiDmaResponse, AbiDmaStatus, AbiDriverType,
+    AbiError, DRIVER_ABI_VERSION, DriverContext, DriverVTable, DriverVTableFns, PackedPciLocation,
 };
 use kernel_api::provider::{ProviderDescriptorV1, ProviderKind};
 
@@ -322,79 +322,74 @@ fn test_registry_poisoned_readers_return_defaults() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_kapi_alloc_dma_raw_rejects_invalid_requests() {
+fn dma_abi_rejects_invalid_allocation_records() {
     let _guard = reset_test_state();
-    let mut out = AbiDmaSlice {
-        dma_handle_id: 7,
-        device_addr: 8,
-        virt_addr: 9,
-        size: 10,
+    let mut out = AbiDmaAllocation {
+        lease_id: 7,
+        device_address: 8,
+        byte_count: 9,
     };
-
+    // SAFETY: output storage is valid; a zero-size allocation is deliberately rejected.
     assert_eq!(
-        super::kapi_alloc_dma_for_device_raw(
-            0,
-            PackedPciLocation::NULL.raw(),
-            1,
-            kernel_api::dma::DmaDirection::Bidirectional as u8,
-            &mut out,
-        ),
+        unsafe {
+            super::kapi_dma_allocate(
+                0,
+                PackedPciLocation::NULL.raw(),
+                kernel_api::dma::DmaDirection::Bidirectional.into_abi(),
+                &mut out,
+            )
+        },
         AbiError::InvalidParam as i32
     );
-    assert_eq!(out.dma_handle_id, 0);
-    assert_eq!(out.device_addr, 0);
-    assert_eq!(out.virt_addr, 0);
-    assert_eq!(out.size, 0);
+    assert_eq!(out.lease_id, 0);
+    assert_eq!(out.device_address, 0);
+    assert_eq!(out.byte_count, 0);
 
-    out = AbiDmaSlice {
-        dma_handle_id: 11,
-        device_addr: 12,
-        virt_addr: 13,
-        size: 14,
-    };
+    // SAFETY: null is intentionally invalid output storage.
     assert_eq!(
-        super::kapi_alloc_dma_for_device_raw(
-            4096,
-            PackedPciLocation::NULL.raw(),
-            3,
-            kernel_api::dma::DmaDirection::Bidirectional as u8,
-            &mut out,
-        ),
+        unsafe {
+            super::kapi_dma_allocate(
+                1,
+                PackedPciLocation::NULL.raw(),
+                kernel_api::dma::DmaDirection::Bidirectional.into_abi(),
+                core::ptr::null_mut(),
+            )
+        },
         AbiError::InvalidParam as i32
     );
-    assert_eq!(out.dma_handle_id, 0);
-    assert_eq!(out.device_addr, 0);
-    assert_eq!(out.virt_addr, 0);
-    assert_eq!(out.size, 0);
-
-    out = AbiDmaSlice {
-        dma_handle_id: 15,
-        device_addr: 16,
-        virt_addr: 17,
-        size: 18,
-    };
+    // SAFETY: output is valid; the unrecognized direction must be rejected.
     assert_eq!(
-        super::kapi_alloc_dma_for_device_raw(
-            4096,
-            PackedPciLocation::NULL.raw(),
-            crate::mm::types::PAGE_SIZE_4K * 2,
-            kernel_api::dma::DmaDirection::Bidirectional as u8,
-            &mut out,
-        ),
-        AbiError::NotSupported as i32
+        unsafe { super::kapi_dma_allocate(1, PackedPciLocation::NULL.raw(), u8::MAX, &mut out,) },
+        AbiError::InvalidParam as i32
     );
-    assert_eq!(out.dma_handle_id, 0);
-    assert_eq!(out.device_addr, 0);
-    assert_eq!(out.virt_addr, 0);
-    assert_eq!(out.size, 0);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_kapi_release_dma_raw_rejects_unknown_handle() {
+fn dma_command_rejects_invalid_tokens_and_pointers() {
     let _guard = reset_test_state();
+    let request = AbiDmaRequest {
+        operation: AbiDmaOperation::Close as u32,
+        ..AbiDmaRequest::default()
+    };
+    let mut response = AbiDmaResponse::default();
+    // SAFETY: both records are valid; the lease token is intentionally invalid.
     assert_eq!(
-        super::kapi_release_dma_raw(u64::MAX),
-        AbiError::InvalidParam as i32
+        unsafe { super::kapi_dma_command(0, &request, &mut response) },
+        AbiDmaStatus::StaleLease as i32
+    );
+
+    let lease = kernel_api::dma::DmaLeaseId::from_parts(1, 1)
+        .unwrap()
+        .into_abi();
+    // SAFETY: null request is deliberately supplied to exercise validation.
+    assert_eq!(
+        unsafe { super::kapi_dma_command(lease, core::ptr::null(), &mut response) },
+        AbiDmaStatus::InvalidRange as i32
+    );
+    // SAFETY: null response is deliberately supplied to exercise validation.
+    assert_eq!(
+        unsafe { super::kapi_dma_command(lease, &request, core::ptr::null_mut()) },
+        AbiDmaStatus::InvalidRange as i32
     );
 }

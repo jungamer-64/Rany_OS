@@ -13,9 +13,10 @@ use alloc::vec::Vec;
 use core::cmp;
 use core::sync::atomic::{AtomicU32, Ordering};
 #[cfg(test)]
-use kernel_api::abi::driver::AbiDmaSlice;
-#[cfg(test)]
-use kernel_api::abi::driver::{AbiBlockDeviceRegistration, AbiNvmeNamespaceRegistration};
+use kernel_api::abi::driver::{
+    AbiBlockDeviceRegistration, AbiDmaAllocation, AbiDmaRequest, AbiDmaResponse, AbiDmaStatus,
+    AbiNvmeNamespaceRegistration,
+};
 use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout,
@@ -49,19 +50,40 @@ fn kernel_api() -> &'static KernelApiV4 {
 extern "C" fn test_kernel_log(_level: u32, _msg_ptr: *const u8, _msg_len: usize) {}
 
 #[cfg(test)]
-extern "C" fn test_kernel_alloc_dma_for_device_raw(
+unsafe extern "C" fn test_kernel_dma_allocate(
     _size: usize,
     _device_id: u64,
-    _align: usize,
     _direction: u8,
-    _out: *mut AbiDmaSlice,
+    _out: *mut AbiDmaAllocation,
 ) -> i32 {
-    -1
+    AbiError::NotSupported as i32
 }
 
 #[cfg(test)]
-extern "C" fn test_kernel_release_dma_raw(_dma_handle_id: u64) -> i32 {
-    0
+unsafe extern "C" fn test_kernel_dma_command(
+    _lease_id: u64,
+    _request: *const AbiDmaRequest,
+    _out: *mut AbiDmaResponse,
+) -> i32 {
+    AbiDmaStatus::NotSupported as i32
+}
+
+#[cfg(test)]
+unsafe extern "C" fn test_kernel_dma_read(
+    _lease_id: u64,
+    _context: *mut u8,
+    _visitor: unsafe extern "C" fn(*mut u8, *const u8, usize),
+) -> i32 {
+    AbiDmaStatus::NotSupported as i32
+}
+
+#[cfg(test)]
+unsafe extern "C" fn test_kernel_dma_write(
+    _lease_id: u64,
+    _context: *mut u8,
+    _visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
+) -> i32 {
+    AbiDmaStatus::NotSupported as i32
 }
 
 #[cfg(test)]
@@ -200,8 +222,10 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: kernel_api::abi::driver::KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
     log: test_kernel_log,
-    alloc_dma_for_device_raw: test_kernel_alloc_dma_for_device_raw,
-    release_dma_raw: test_kernel_release_dma_raw,
+    dma_allocate: test_kernel_dma_allocate,
+    dma_command: test_kernel_dma_command,
+    dma_read: test_kernel_dma_read,
+    dma_write: test_kernel_dma_write,
     map_mmio: test_kernel_map_mmio,
     unmap_mmio: test_kernel_unmap_mmio,
     port_read_u8: test_kernel_port_read_u8,

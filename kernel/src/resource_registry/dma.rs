@@ -6,8 +6,9 @@ use alloc::vec::Vec;
 
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{
-    CpuDmaLease, DmaAllocationRequest, DmaByteCount, DmaDeviceAddress, DmaDirection,
-    DmaLeaseAuthority, DmaLeaseError, DmaLeaseId, DmaLeaseState, DmaQueueIdentity,
+    CpuDmaLease, DmaAccessWidth, DmaAllocationRequest, DmaByteCount, DmaCompletionWitness,
+    DmaDeviceAddress, DmaDirection, DmaLeaseAuthority, DmaLeaseError, DmaLeaseId, DmaLeaseState,
+    DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness, DmaResetWitness,
 };
 
 use crate::domain::DomainId;
@@ -28,6 +29,12 @@ enum QuarantineReason {
 enum EntryState {
     CpuOwned,
     Prepared {
+        queue: DmaQueueIdentity,
+    },
+    SharedPrepared {
+        queue: DmaQueueIdentity,
+    },
+    SharedActive {
         queue: DmaQueueIdentity,
     },
     InFlight {
@@ -81,10 +88,37 @@ pub(crate) enum DmaAllocationError {
     MappingFailed,
 }
 
-pub(crate) struct DmaAbiView {
-    pub(crate) device_address: DmaDeviceAddress,
-    pub(crate) virtual_address: u64,
-    pub(crate) byte_count: DmaByteCount,
+pub(crate) enum DmaRegistryCommand {
+    Prepare(DmaQueueIdentity),
+    Arm,
+    Abort,
+    Complete(DmaCompletionWitness),
+    ReturnToCpu,
+    OutcomeUnknown,
+    Revoke(DmaResetWitness),
+    Reconcile(DmaReconcileWitness),
+    Close,
+    PrepareShared(DmaQueueIdentity),
+    ActivateShared,
+    QuiesceShared(DmaQuiesceWitness),
+    RetryClose(DmaReconcileWitness),
+    ReadShared {
+        offset: usize,
+        width: DmaAccessWidth,
+    },
+    WriteShared {
+        offset: usize,
+        width: DmaAccessWidth,
+        value: u64,
+    },
+    PreparedQueue,
+    Abandon(DmaLeaseState),
+}
+
+pub(crate) enum DmaRegistryResponse {
+    None,
+    Scalar(u64),
+    Queue(DmaQueueIdentity),
 }
 
 struct RegistryState {
@@ -222,23 +256,6 @@ impl DmaRegistry {
         Ok(())
     }
 
-    fn abi_view(&self, lease: DmaLeaseId, owner: u64) -> Result<DmaAbiView, DmaLeaseError> {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let entry = state.entry(lease, owner)?;
-        if entry.state != EntryState::CpuOwned {
-            return Err(DmaLeaseError::InvalidState);
-        }
-        let mapping = entry.mapping()?;
-        let bytes = mapping
-            .cpu_bytes()
-            .ok_or(DmaLeaseError::AuthorityViolation)?;
-        Ok(DmaAbiView {
-            device_address: DmaDeviceAddress::from_abi(mapping.iova()),
-            virtual_address: bytes.as_ptr() as usize as u64,
-            byte_count: entry.logical_len,
-        })
-    }
-
     fn prepare(
         &self,
         lease: DmaLeaseId,
@@ -264,25 +281,32 @@ impl DmaRegistry {
         Ok(())
     }
 
-    fn prepared_queue(&self, lease: DmaLeaseId, owner: u64) -> Option<DmaQueueIdentity> {
+    fn prepared_queue(
+        &self,
+        lease: DmaLeaseId,
+        owner: u64,
+    ) -> Result<DmaQueueIdentity, DmaLeaseError> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        match state.entry(lease, owner).ok()?.state {
-            EntryState::Prepared { queue } => Some(queue),
-            _ => None,
+        match state.entry(lease, owner)?.state {
+            EntryState::Prepared { queue } | EntryState::SharedPrepared { queue } => Ok(queue),
+            _ => Err(DmaLeaseError::InvalidState),
         }
     }
 
     fn abort_prepared(&self, lease: DmaLeaseId, owner: u64) -> Result<(), DmaLeaseError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
-        if !matches!(entry.state, EntryState::Prepared { .. }) {
+        if !matches!(
+            entry.state,
+            EntryState::Prepared { .. } | EntryState::SharedPrepared { .. }
+        ) {
             return Err(DmaLeaseError::InvalidState);
         }
         entry.state = EntryState::CpuOwned;
         Ok(())
     }
 
-    fn accept(&self, lease: DmaLeaseId, owner: u64) -> Result<(), DmaLeaseError> {
+    fn arm(&self, lease: DmaLeaseId, owner: u64) -> Result<(), DmaLeaseError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
         let EntryState::Prepared { queue } = entry.state else {
@@ -292,16 +316,108 @@ impl DmaRegistry {
         Ok(())
     }
 
-    fn complete(
+    fn prepare_shared(
         &self,
         lease: DmaLeaseId,
         owner: u64,
         queue: DmaQueueIdentity,
-        completed_lease: DmaLeaseId,
     ) -> Result<(), DmaLeaseError> {
-        if completed_lease != lease {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry_mut(lease, owner)?;
+        if entry.device != queue.device() {
             return Err(DmaLeaseError::QueueMismatch);
         }
+        if entry.state != EntryState::CpuOwned {
+            return Err(DmaLeaseError::InvalidState);
+        }
+        let bytes = entry
+            .mapping()?
+            .cpu_bytes()
+            .ok_or(DmaLeaseError::AuthorityViolation)?;
+        dma::flush_cache_range(bytes.as_ptr(), bytes.len());
+        entry.state = EntryState::SharedPrepared { queue };
+        Ok(())
+    }
+
+    fn activate_shared(&self, lease: DmaLeaseId, owner: u64) -> Result<(), DmaLeaseError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry_mut(lease, owner)?;
+        let EntryState::SharedPrepared { queue } = entry.state else {
+            return Err(DmaLeaseError::InvalidState);
+        };
+        entry.state = EntryState::SharedActive { queue };
+        Ok(())
+    }
+
+    fn read_shared_word(
+        &self,
+        lease: DmaLeaseId,
+        owner: u64,
+        offset: usize,
+        width: DmaAccessWidth,
+    ) -> Result<u64, DmaLeaseError> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry(lease, owner)?;
+        if !matches!(entry.state, EntryState::SharedActive { .. }) {
+            return Err(DmaLeaseError::InvalidState);
+        }
+        // SAFETY: only active shared state reaches this access. The registry
+        // lock excludes CPU references, other CPU accesses, and reclamation;
+        // the mapping owns the initialized coherent RAM allocation.
+        unsafe { entry.mapping()?.read_shared_word(offset, width) }
+    }
+
+    fn write_shared_word(
+        &self,
+        lease: DmaLeaseId,
+        owner: u64,
+        offset: usize,
+        width: DmaAccessWidth,
+        value: u64,
+    ) -> Result<(), DmaLeaseError> {
+        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry(lease, owner)?;
+        if !matches!(entry.state, EntryState::SharedActive { .. }) {
+            return Err(DmaLeaseError::InvalidState);
+        }
+        // SAFETY: shared state denies CPU slices; the registry lock serializes
+        // scalar accesses and teardown while retaining the coherent allocation.
+        unsafe { entry.mapping()?.write_shared_word(offset, width, value) }
+    }
+
+    fn quiesce_shared(
+        &self,
+        lease: DmaLeaseId,
+        owner: u64,
+        witness: DmaQuiesceWitness,
+    ) -> Result<(), DmaLeaseError> {
+        if witness.lease_id() != lease {
+            return Err(DmaLeaseError::QueueMismatch);
+        }
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let entry = state.entry_mut(lease, owner)?;
+        match entry.state {
+            EntryState::SharedActive { queue } if queue == witness.queue() => {}
+            EntryState::SharedActive { .. } => return Err(DmaLeaseError::QueueMismatch),
+            _ => return Err(DmaLeaseError::InvalidState),
+        }
+        // The caller's non-cloneable witness establishes hardware quiescence.
+        // Only after that fact may a normal CPU reference be constructed.
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        entry.state = EntryState::CpuOwned;
+        Ok(())
+    }
+
+    fn complete(
+        &self,
+        lease: DmaLeaseId,
+        owner: u64,
+        witness: DmaCompletionWitness,
+    ) -> Result<(), DmaLeaseError> {
+        if witness.lease_id() != lease {
+            return Err(DmaLeaseError::QueueMismatch);
+        }
+        let queue = witness.queue();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
         match entry.state {
@@ -351,16 +467,17 @@ impl DmaRegistry {
         &self,
         lease: DmaLeaseId,
         owner: u64,
-        device: PackedPciLocation,
-        reset_generation: u64,
+        witness: DmaResetWitness,
     ) -> Result<(), DmaLeaseError> {
+        let device = witness.device();
+        let reset_generation = witness.generation();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
         if entry.device != device {
             return Err(DmaLeaseError::QueueMismatch);
         }
         let queue = match entry.state {
-            EntryState::InFlight { queue } => queue,
+            EntryState::InFlight { queue } | EntryState::SharedActive { queue } => queue,
             EntryState::Quarantined {
                 reason: QuarantineReason::OutcomeUnknown,
                 queue: Some(queue),
@@ -381,9 +498,10 @@ impl DmaRegistry {
         &self,
         lease: DmaLeaseId,
         owner: u64,
-        device: PackedPciLocation,
-        reset_generation: u64,
+        witness: DmaReconcileWitness,
     ) -> Result<(), DmaLeaseError> {
+        let device = witness.device();
+        let reset_generation = witness.generation();
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
         if entry.device != device {
@@ -425,9 +543,11 @@ impl DmaRegistry {
             entry.state = EntryState::Closing;
             entry.mapping.take().ok_or(DmaLeaseError::InvalidState)?
         };
+        drop(state);
 
         match mapping.try_unmap() {
             Ok(allocation) => {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let removed = state
                     .entries
                     .remove(&lease.slot())
@@ -446,6 +566,7 @@ impl DmaRegistry {
                     lease,
                     kind
                 );
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let entry = state
                     .entry_mut(lease, owner)
                     .expect("closing DMA entry must remain registered after unmap failure");
@@ -463,17 +584,12 @@ impl DmaRegistry {
         &self,
         lease: DmaLeaseId,
         owner: u64,
-        device: PackedPciLocation,
-        reset_generation: u64,
+        witness: DmaReconcileWitness,
     ) -> Result<(), DmaLeaseError> {
-        if reset_generation == 0 {
-            return Err(DmaLeaseError::InvalidState);
-        }
-
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let mapping = {
             let entry = state.entry_mut(lease, owner)?;
-            if entry.device != device {
+            if entry.device != witness.device() {
                 return Err(DmaLeaseError::QueueMismatch);
             }
             if !matches!(
@@ -488,9 +604,11 @@ impl DmaRegistry {
             entry.state = EntryState::Closing;
             entry.mapping.take().ok_or(DmaLeaseError::InvalidState)?
         };
+        drop(state);
 
         match mapping.try_unmap() {
             Ok(allocation) => {
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let removed = state
                     .entries
                     .remove(&lease.slot())
@@ -509,6 +627,7 @@ impl DmaRegistry {
                     lease,
                     kind
                 );
+                let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let entry = state
                     .entry_mut(lease, owner)
                     .expect("reconciled DMA entry must remain registered after unmap failure");
@@ -540,6 +659,8 @@ impl DmaRegistry {
         }
         let queue = match entry.state {
             EntryState::Prepared { queue }
+            | EntryState::SharedPrepared { queue }
+            | EntryState::SharedActive { queue }
             | EntryState::InFlight { queue }
             | EntryState::Completed { queue }
             | EntryState::RevokedAfterReset { queue, .. } => Some(queue),
@@ -596,7 +717,7 @@ unsafe impl DmaLeaseAuthority for KernelDmaLeaseAuthority {
         DMA_REGISTRY.prepare(self.lease, self.owner, queue)
     }
 
-    fn prepared_queue(&self) -> Option<DmaQueueIdentity> {
+    fn prepared_queue(&self) -> Result<DmaQueueIdentity, DmaLeaseError> {
         DMA_REGISTRY.prepared_queue(self.lease, self.owner)
     }
 
@@ -604,12 +725,12 @@ unsafe impl DmaLeaseAuthority for KernelDmaLeaseAuthority {
         DMA_REGISTRY.abort_prepared(self.lease, self.owner)
     }
 
-    fn accept(&self) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.accept(self.lease, self.owner)
+    fn arm(&self) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.arm(self.lease, self.owner)
     }
 
-    fn complete(&self, queue: DmaQueueIdentity, lease: DmaLeaseId) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.complete(self.lease, self.owner, queue, lease)
+    fn complete(&self, witness: DmaCompletionWitness) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.complete(self.lease, self.owner, witness)
     }
 
     fn return_to_cpu(&self) -> Result<(), DmaLeaseError> {
@@ -620,32 +741,48 @@ unsafe impl DmaLeaseAuthority for KernelDmaLeaseAuthority {
         DMA_REGISTRY.mark_outcome_unknown(self.lease, self.owner)
     }
 
-    fn revoke_after_reset(
-        &self,
-        device: PackedPciLocation,
-        reset_generation: u64,
-    ) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.revoke_after_reset(self.lease, self.owner, device, reset_generation)
+    fn revoke_after_reset(&self, witness: DmaResetWitness) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.revoke_after_reset(self.lease, self.owner, witness)
     }
 
-    fn reconcile(
-        &self,
-        device: PackedPciLocation,
-        reset_generation: u64,
-    ) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.reconcile(self.lease, self.owner, device, reset_generation)
+    fn reconcile(&self, witness: DmaReconcileWitness) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.reconcile(self.lease, self.owner, witness)
     }
 
     fn close(&self) -> Result<(), DmaLeaseError> {
         DMA_REGISTRY.close(self.lease, self.owner)
     }
 
+    fn prepare_shared(&self, queue: DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.prepare_shared(self.lease, self.owner, queue)
+    }
+
+    fn activate_shared(&self) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.activate_shared(self.lease, self.owner)
+    }
+
+    fn read_shared_word(&self, offset: usize, width: DmaAccessWidth) -> Result<u64, DmaLeaseError> {
+        DMA_REGISTRY.read_shared_word(self.lease, self.owner, offset, width)
+    }
+
+    fn write_shared_word(
+        &self,
+        offset: usize,
+        width: DmaAccessWidth,
+        value: u64,
+    ) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.write_shared_word(self.lease, self.owner, offset, width, value)
+    }
+
+    fn quiesce_shared(&self, witness: DmaQuiesceWitness) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.quiesce_shared(self.lease, self.owner, witness)
+    }
+
     fn retry_close_after_reconcile(
         &self,
-        device: PackedPciLocation,
-        reset_generation: u64,
+        witness: DmaReconcileWitness,
     ) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.retry_close_after_reconcile(self.lease, self.owner, device, reset_generation)
+        DMA_REGISTRY.retry_close_after_reconcile(self.lease, self.owner, witness)
     }
 
     fn abandon(&self, observed_state: DmaLeaseState) {
@@ -700,12 +837,100 @@ pub(crate) fn allocate(
     )))
 }
 
-pub(crate) fn close_owned(lease: DmaLeaseId, owner: DomainId) -> Result<(), DmaLeaseError> {
-    DMA_REGISTRY.close(lease, owner.as_u64())
+pub(crate) fn with_cpu_bytes(
+    lease: DmaLeaseId,
+    owner: DomainId,
+    visitor: &mut dyn FnMut(&[u8]),
+) -> Result<(), DmaLeaseError> {
+    DMA_REGISTRY.with_cpu_bytes(lease, owner.as_u64(), visitor)
 }
 
-pub(crate) fn abi_view(lease: DmaLeaseId, owner: DomainId) -> Result<DmaAbiView, DmaLeaseError> {
-    DMA_REGISTRY.abi_view(lease, owner.as_u64())
+pub(crate) fn with_cpu_bytes_mut(
+    lease: DmaLeaseId,
+    owner: DomainId,
+    visitor: &mut dyn FnMut(&mut [u8]),
+) -> Result<(), DmaLeaseError> {
+    DMA_REGISTRY.with_cpu_bytes_mut(lease, owner.as_u64(), visitor)
+}
+
+pub(crate) fn command(
+    lease: DmaLeaseId,
+    owner: DomainId,
+    command: DmaRegistryCommand,
+) -> Result<DmaRegistryResponse, DmaLeaseError> {
+    let owner = owner.as_u64();
+    match command {
+        DmaRegistryCommand::Prepare(queue) => {
+            DMA_REGISTRY.prepare(lease, owner, queue)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Arm => {
+            DMA_REGISTRY.arm(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Abort => {
+            DMA_REGISTRY.abort_prepared(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Complete(witness) => {
+            DMA_REGISTRY.complete(lease, owner, witness)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::ReturnToCpu => {
+            DMA_REGISTRY.return_to_cpu(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::OutcomeUnknown => {
+            DMA_REGISTRY.mark_outcome_unknown(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Revoke(witness) => {
+            DMA_REGISTRY.revoke_after_reset(lease, owner, witness)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Reconcile(witness) => {
+            DMA_REGISTRY.reconcile(lease, owner, witness)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::Close => {
+            DMA_REGISTRY.close(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::PrepareShared(queue) => {
+            DMA_REGISTRY.prepare_shared(lease, owner, queue)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::ActivateShared => {
+            DMA_REGISTRY.activate_shared(lease, owner)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::QuiesceShared(witness) => {
+            DMA_REGISTRY.quiesce_shared(lease, owner, witness)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::RetryClose(witness) => {
+            DMA_REGISTRY.retry_close_after_reconcile(lease, owner, witness)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::ReadShared { offset, width } => DMA_REGISTRY
+            .read_shared_word(lease, owner, offset, width)
+            .map(DmaRegistryResponse::Scalar),
+        DmaRegistryCommand::WriteShared {
+            offset,
+            width,
+            value,
+        } => {
+            DMA_REGISTRY.write_shared_word(lease, owner, offset, width, value)?;
+            Ok(DmaRegistryResponse::None)
+        }
+        DmaRegistryCommand::PreparedQueue => DMA_REGISTRY
+            .prepared_queue(lease, owner)
+            .map(DmaRegistryResponse::Queue),
+        DmaRegistryCommand::Abandon(observed) => {
+            DMA_REGISTRY.abandon(lease, owner, observed);
+            Ok(DmaRegistryResponse::None)
+        }
+    }
 }
 
 pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
@@ -741,7 +966,7 @@ pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
 
         let close_candidate = match state_before {
             EntryState::CpuOwned => true,
-            EntryState::Prepared { .. } => {
+            EntryState::Prepared { .. } | EntryState::SharedPrepared { .. } => {
                 match DMA_REGISTRY.abort_prepared(lease, owner.as_u64()) {
                     Ok(()) => true,
                     Err(error) => {
@@ -797,6 +1022,8 @@ pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
             }
             let queue = match entry.state {
                 EntryState::Prepared { queue }
+                | EntryState::SharedPrepared { queue }
+                | EntryState::SharedActive { queue }
                 | EntryState::InFlight { queue }
                 | EntryState::Completed { queue }
                 | EntryState::RevokedAfterReset { queue, .. } => Some(queue),

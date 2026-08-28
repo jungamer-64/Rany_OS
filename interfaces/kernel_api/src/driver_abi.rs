@@ -66,7 +66,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 10;
+pub const KERNEL_API_ABI_VERSION: u32 = 11;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
@@ -501,6 +501,168 @@ pub type DriverEntryFn = extern "C" fn() -> *const DriverVTable;
 // Kernel API (Driver Domain C ABI)
 // ============================================================================
 
+/// Registry-owned allocation metadata. No backing pointer crosses this boundary.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AbiDmaAllocation {
+    pub lease_id: u64,
+    pub device_address: u64,
+    pub byte_count: usize,
+}
+
+impl AbiDmaAllocation {
+    /// Transfer a CPU capability to an ABI recipient. The registry retains the
+    /// allocation until explicit close or owner-shutdown reconciliation.
+    pub fn export(lease: crate::dma::CpuDmaLease) -> Self {
+        lease.export_abi()
+    }
+}
+
+/// Wire operation tags are validated before selecting any registry operation.
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiDmaOperation {
+    Prepare = 1,
+    Arm = 2,
+    Abort = 3,
+    Complete = 4,
+    ReturnToCpu = 5,
+    OutcomeUnknown = 6,
+    Revoke = 7,
+    Reconcile = 8,
+    Close = 9,
+    PrepareShared = 10,
+    ActivateShared = 11,
+    QuiesceShared = 12,
+    RetryClose = 13,
+    ReadShared = 14,
+    WriteShared = 15,
+    PreparedQueue = 16,
+    Abandon = 17,
+}
+
+/// DMA protocol status preserves the registry's machine-readable failure.
+#[repr(i32)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AbiDmaStatus {
+    Success = 0,
+    StaleLease = -100,
+    ForeignOwner = -101,
+    InvalidState = -102,
+    QueueMismatch = -103,
+    NotSupported = -104,
+    IommuFailure = -105,
+    AuthorityViolation = -106,
+    InvalidRange = -107,
+    InvalidAlignment = -108,
+}
+
+impl AbiDmaStatus {
+    /// Decode a status without transmuting an untrusted integer into an enum.
+    pub const fn from_raw(raw: i32) -> Option<Self> {
+        match raw {
+            0 => Some(Self::Success),
+            -100 => Some(Self::StaleLease),
+            -101 => Some(Self::ForeignOwner),
+            -102 => Some(Self::InvalidState),
+            -103 => Some(Self::QueueMismatch),
+            -104 => Some(Self::NotSupported),
+            -105 => Some(Self::IommuFailure),
+            -106 => Some(Self::AuthorityViolation),
+            -107 => Some(Self::InvalidRange),
+            -108 => Some(Self::InvalidAlignment),
+            _ => None,
+        }
+    }
+
+    /// Encode one registry result for the stable boundary.
+    pub const fn from_result(result: Result<(), crate::dma::DmaLeaseError>) -> Self {
+        match result {
+            Ok(()) => Self::Success,
+            Err(crate::dma::DmaLeaseError::StaleLease) => Self::StaleLease,
+            Err(crate::dma::DmaLeaseError::ForeignOwner) => Self::ForeignOwner,
+            Err(crate::dma::DmaLeaseError::InvalidState) => Self::InvalidState,
+            Err(crate::dma::DmaLeaseError::QueueMismatch) => Self::QueueMismatch,
+            Err(crate::dma::DmaLeaseError::NotSupported) => Self::NotSupported,
+            Err(crate::dma::DmaLeaseError::IommuFailure) => Self::IommuFailure,
+            Err(crate::dma::DmaLeaseError::AuthorityViolation) => Self::AuthorityViolation,
+            Err(crate::dma::DmaLeaseError::InvalidRange) => Self::InvalidRange,
+            Err(crate::dma::DmaLeaseError::InvalidAlignment) => Self::InvalidAlignment,
+        }
+    }
+
+    /// Restore the exact registry failure observed across the ABI.
+    ///
+    /// # Errors
+    /// Returns the [`crate::dma::DmaLeaseError`] encoded by every non-success status.
+    pub const fn into_result(self) -> Result<(), crate::dma::DmaLeaseError> {
+        match self {
+            Self::Success => Ok(()),
+            Self::StaleLease => Err(crate::dma::DmaLeaseError::StaleLease),
+            Self::ForeignOwner => Err(crate::dma::DmaLeaseError::ForeignOwner),
+            Self::InvalidState => Err(crate::dma::DmaLeaseError::InvalidState),
+            Self::QueueMismatch => Err(crate::dma::DmaLeaseError::QueueMismatch),
+            Self::NotSupported => Err(crate::dma::DmaLeaseError::NotSupported),
+            Self::IommuFailure => Err(crate::dma::DmaLeaseError::IommuFailure),
+            Self::AuthorityViolation => Err(crate::dma::DmaLeaseError::AuthorityViolation),
+            Self::InvalidRange => Err(crate::dma::DmaLeaseError::InvalidRange),
+            Self::InvalidAlignment => Err(crate::dma::DmaLeaseError::InvalidAlignment),
+        }
+    }
+}
+
+impl TryFrom<u32> for AbiDmaOperation {
+    type Error = crate::dma::DmaLeaseError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            1 => Ok(Self::Prepare),
+            2 => Ok(Self::Arm),
+            3 => Ok(Self::Abort),
+            4 => Ok(Self::Complete),
+            5 => Ok(Self::ReturnToCpu),
+            6 => Ok(Self::OutcomeUnknown),
+            7 => Ok(Self::Revoke),
+            8 => Ok(Self::Reconcile),
+            9 => Ok(Self::Close),
+            10 => Ok(Self::PrepareShared),
+            11 => Ok(Self::ActivateShared),
+            12 => Ok(Self::QuiesceShared),
+            13 => Ok(Self::RetryClose),
+            14 => Ok(Self::ReadShared),
+            15 => Ok(Self::WriteShared),
+            16 => Ok(Self::PreparedQueue),
+            17 => Ok(Self::Abandon),
+            _ => Err(crate::dma::DmaLeaseError::InvalidState),
+        }
+    }
+}
+
+/// Untrusted ABI fields, decoded into queue identities and witnesses at entry.
+/// Only the fields belonging to the selected operation are meaningful.
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AbiDmaRequest {
+    pub operation: u32,
+    pub device: u64,
+    pub queue: u16,
+    pub generation: u64,
+    pub witness_lease: u64,
+    pub offset: usize,
+    pub width: u8,
+    pub state: u8,
+    pub value: u64,
+}
+
+#[repr(C)]
+#[derive(Debug, Default, Clone, Copy)]
+pub struct AbiDmaResponse {
+    pub value: u64,
+    pub device: u64,
+    pub queue: u16,
+    pub generation: u64,
+}
+
 /// ABI-stable MMIO mapping handle for driver domains.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -874,6 +1036,55 @@ impl AbiNetTxSubmission {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dma_status_round_trips_machine_readable_failures() {
+        use crate::dma::DmaLeaseError;
+
+        let failures = [
+            (AbiDmaStatus::StaleLease, DmaLeaseError::StaleLease),
+            (AbiDmaStatus::ForeignOwner, DmaLeaseError::ForeignOwner),
+            (AbiDmaStatus::InvalidState, DmaLeaseError::InvalidState),
+            (AbiDmaStatus::QueueMismatch, DmaLeaseError::QueueMismatch),
+            (AbiDmaStatus::NotSupported, DmaLeaseError::NotSupported),
+            (AbiDmaStatus::IommuFailure, DmaLeaseError::IommuFailure),
+            (
+                AbiDmaStatus::AuthorityViolation,
+                DmaLeaseError::AuthorityViolation,
+            ),
+            (AbiDmaStatus::InvalidRange, DmaLeaseError::InvalidRange),
+            (
+                AbiDmaStatus::InvalidAlignment,
+                DmaLeaseError::InvalidAlignment,
+            ),
+        ];
+
+        assert_eq!(AbiDmaStatus::Success.into_result(), Ok(()));
+        for (status, error) in failures {
+            assert_eq!(AbiDmaStatus::from_raw(status as i32), Some(status));
+            assert_eq!(AbiDmaStatus::from_result(Err(error)), status);
+            assert_eq!(status.into_result(), Err(error));
+        }
+        assert!(AbiDmaStatus::from_raw(i32::MIN).is_none());
+    }
+
+    #[test]
+    fn dma_operation_rejects_unrecognized_wire_tags() {
+        assert_eq!(
+            AbiDmaOperation::try_from(0),
+            Err(crate::dma::DmaLeaseError::InvalidState)
+        );
+        assert_eq!(
+            AbiDmaOperation::try_from(u32::MAX),
+            Err(crate::dma::DmaLeaseError::InvalidState)
+        );
+        for raw in 1..=17 {
+            assert_eq!(
+                AbiDmaOperation::try_from(raw).map(|value| value as u32),
+                Ok(raw)
+            );
+        }
+    }
 
     #[test]
     fn abi_tx_submission_rejects_empty_and_invalid_segments() {
@@ -1320,14 +1531,35 @@ pub struct KernelApiV4 {
 
     pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
 
-    pub alloc_dma_for_device_raw: extern "C" fn(
+    /// Allocation returns metadata only. `out` must be writable and aligned.
+    pub dma_allocate: unsafe extern "C" fn(
         size: usize,
         device_id: u64,
-        align: usize,
         direction: u8,
-        out: *mut AbiDmaSlice,
+        out: *mut AbiDmaAllocation,
     ) -> i32,
-    pub release_dma_raw: extern "C" fn(dma_handle_id: u64) -> i32,
+    /// Request/output pointers must be live and aligned. Completion, quiescence,
+    /// reset, and reconciliation commands require the same hardware evidence as
+    /// their Rust witness constructors. Numeric metadata alone is not evidence.
+    /// Returns zero or an encoded `DmaLeaseError`, preserving failure semantics.
+    pub dma_command: unsafe extern "C" fn(
+        lease_id: u64,
+        request: *const AbiDmaRequest,
+        out: *mut AbiDmaResponse,
+    ) -> i32,
+    /// The callback runs synchronously while the registry pins CPU ownership.
+    /// It must not retain the byte pointer or unwind across the ABI boundary.
+    pub dma_read: unsafe extern "C" fn(
+        lease_id: u64,
+        context: *mut u8,
+        visitor: unsafe extern "C" fn(*mut u8, *const u8, usize),
+    ) -> i32,
+    /// As for `dma_read`, with exclusive mutation for the callback duration.
+    pub dma_write: unsafe extern "C" fn(
+        lease_id: u64,
+        context: *mut u8,
+        visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
+    ) -> i32,
 
     pub map_mmio: extern "C" fn(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32,
     pub unmap_mmio: extern "C" fn(handle: *const AbiMmioHandle) -> i32,
