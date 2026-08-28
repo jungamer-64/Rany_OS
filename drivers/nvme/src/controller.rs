@@ -87,7 +87,13 @@ impl ControllerAcquire {
                 return Err(ControllerAcquireError::Access { cause, registers });
             }
         };
-        if !status.ready() {
+        let enabled = match registers.enabled() {
+            Ok(enabled) => enabled,
+            Err(cause) => {
+                return Err(ControllerAcquireError::Access { cause, registers });
+            }
+        };
+        if !enabled && !status.ready() {
             return Ok(Self::Disabled(ControllerDisabled {
                 registers,
                 admin_identity,
@@ -316,18 +322,6 @@ impl core::fmt::Debug for ControllerEnableError {
 
 /// Ready controller with one active Admin queue.
 pub struct NvmeAdminController {
-    registers: NvmeRegisters,
-    admin_queue: Box<NvmeQueue>,
-}
-
-impl NvmeAdminController {
-    /// Borrow the register capability for queue operations.
-    pub const fn registers(&self) -> &NvmeRegisters {
-        &self.registers
-    }
-
-    /// Borrow the active Admin queue.
-    pub const fn admin_queue(&self) -> &NvmeQueue {
-        &self.admin_queue
-    }
+    pub(crate) registers: NvmeRegisters,
+    pub(crate) admin_queue: Box<NvmeQueue>,
 }

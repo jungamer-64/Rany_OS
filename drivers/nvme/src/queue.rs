@@ -7,7 +7,7 @@ use kernel_api::dma::{
 };
 use spin::Mutex;
 
-use crate::protocol::{IoTransfer, NvmeCommand, NvmeCompletion, TransferDirection};
+use crate::protocol::{AdminCommand, IoTransfer, NvmeCommand, NvmeCompletion, TransferDirection};
 use crate::registers::{NvmeRegisterError, NvmeRegisters};
 
 const PAGE_SIZE: usize = 4096;
@@ -252,6 +252,8 @@ impl core::fmt::Debug for QueueActivationError {
 /// Reason a transfer did not cross the device-acceptance boundary.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SubmitFailure {
+    /// The requested I/O queue is not owned by this controller.
+    InvalidQueue,
     /// Queue doorbell geometry is invalid.
     Register(NvmeRegisterError),
     /// The queue has entered a reset-required state.
@@ -327,6 +329,29 @@ struct QueueState {
     outstanding: u16,
     fault: Option<QueueFault>,
     pending: Vec<Option<PendingCommand>>,
+    command_ids: CommandIdPool,
+}
+
+struct CommandIdPool {
+    free: Vec<u16>,
+}
+
+impl CommandIdPool {
+    fn new(depth: u16) -> Self {
+        let mut free = Vec::with_capacity(usize::from(depth));
+        for command_id in (0..depth).rev() {
+            free.push(command_id);
+        }
+        Self { free }
+    }
+
+    fn acquire(&mut self) -> Option<u16> {
+        self.free.pop()
+    }
+
+    fn release(&mut self, command_id: u16) {
+        self.free.push(command_id);
+    }
 }
 
 /// One active NVMe submission/completion queue pair.
@@ -365,6 +390,7 @@ impl NvmeQueue {
                 outstanding: 0,
                 fault: None,
                 pending,
+                command_ids: CommandIdPool::new(depth),
             }),
         }
     }
@@ -372,6 +398,10 @@ impl NvmeQueue {
     /// Queue generation bound into DMA preparation and completion validation.
     pub const fn identity(&self) -> DmaQueueIdentity {
         self.identity
+    }
+
+    pub(crate) const fn depth(&self) -> u16 {
+        self.depth
     }
 
     /// Device-visible queue bases for controller setup commands.
@@ -466,7 +496,12 @@ impl NvmeQueue {
                 lease: prepared,
             });
         }
-        let command_id = state.tail;
+        let Some(command_id) = state.command_ids.acquire() else {
+            return Err(SubmitError::Prepared {
+                cause: SubmitFailure::QueueFull,
+                lease: prepared,
+            });
+        };
         if state.pending[usize::from(command_id)].is_some() {
             state.fault = Some(QueueFault::Ownership);
             return Err(SubmitError::Prepared {
@@ -476,7 +511,8 @@ impl NvmeQueue {
         }
         let command =
             NvmeCommand::transfer(command_id, transfer, descriptor.device_address(), prp2);
-        if let Err(cause) = write_submission(&mut self.submission.lock(), command_id, &command) {
+        if let Err(cause) = write_submission(&mut self.submission.lock(), state.tail, &command) {
+            state.command_ids.release(command_id);
             state.fault = Some(QueueFault::SharedMemory);
             return Err(SubmitError::Prepared {
                 cause: SubmitFailure::Dma(cause),
@@ -486,6 +522,7 @@ impl NvmeQueue {
         let inflight = match prepared.arm() {
             Ok(inflight) => inflight,
             Err(error) => {
+                state.command_ids.release(command_id);
                 let (cause, prepared) = error.into_parts();
                 return Err(SubmitError::Prepared {
                     cause: SubmitFailure::Dma(cause),
@@ -510,6 +547,26 @@ impl NvmeQueue {
         registers: &NvmeRegisters,
         namespace: u32,
     ) -> Result<QueueSubmission, SubmitFailure> {
+        self.submit_control(registers, |command_id| {
+            NvmeCommand::flush(command_id, namespace)
+        })
+    }
+
+    pub(crate) fn submit_admin(
+        &self,
+        registers: &NvmeRegisters,
+        command: AdminCommand,
+    ) -> Result<QueueSubmission, SubmitFailure> {
+        self.submit_control(registers, |command_id| {
+            Some(command.with_command_id(command_id))
+        })
+    }
+
+    fn submit_control(
+        &self,
+        registers: &NvmeRegisters,
+        command: impl FnOnce(u16) -> Option<NvmeCommand>,
+    ) -> Result<QueueSubmission, SubmitFailure> {
         let mut doorbell = registers
             .submission_doorbell(self.identity.index())
             .map_err(SubmitFailure::Register)?;
@@ -520,14 +577,19 @@ impl NvmeQueue {
         if state.outstanding >= self.depth - 1 {
             return Err(SubmitFailure::QueueFull);
         }
-        let command_id = state.tail;
-        let command =
-            NvmeCommand::flush(command_id, namespace).ok_or(SubmitFailure::InvalidTransfer)?;
+        let Some(command_id) = state.command_ids.acquire() else {
+            return Err(SubmitFailure::QueueFull);
+        };
+        let Some(command) = command(command_id) else {
+            state.command_ids.release(command_id);
+            return Err(SubmitFailure::InvalidTransfer);
+        };
         if state.pending[usize::from(command_id)].is_some() {
             state.fault = Some(QueueFault::Ownership);
             return Err(SubmitFailure::QueueFault);
         }
-        write_submission(&mut self.submission.lock(), command_id, &command).map_err(|cause| {
+        write_submission(&mut self.submission.lock(), state.tail, &command).map_err(|cause| {
+            state.command_ids.release(command_id);
             state.fault = Some(QueueFault::SharedMemory);
             SubmitFailure::Dma(cause)
         })?;
@@ -599,6 +661,7 @@ impl NvmeQueue {
             }
         };
         state.outstanding -= 1;
+        state.command_ids.release(cid);
         state.completion_head = (state.completion_head + 1) % self.depth;
         if state.completion_head == 0 {
             state.phase = !state.phase;
@@ -756,6 +819,8 @@ pub enum CompletedCommand {
 /// Completion parsing or ownership failure.
 #[derive(Debug)]
 pub enum PollError {
+    /// The requested I/O queue is not owned by this controller.
+    InvalidQueue,
     /// Doorbell register geometry is invalid.
     Register(NvmeRegisterError),
     /// Shared completion memory could not be read.
@@ -814,5 +879,22 @@ mod tests {
             8,
             false
         ));
+    }
+
+    #[test]
+    fn command_ids_are_recycled_independently_of_submission_order() {
+        let mut pool = CommandIdPool::new(4);
+        let first = pool.acquire().expect("first command id");
+        let second = pool.acquire().expect("second command id");
+        assert_ne!(first, second);
+
+        // A later SQ entry may complete first. Its CID becomes reusable even
+        // though the earlier command remains outstanding.
+        pool.release(second);
+        assert_eq!(pool.acquire(), Some(second));
+        assert_ne!(pool.acquire(), Some(first));
+
+        pool.release(first);
+        assert_eq!(pool.acquire(), Some(first));
     }
 }

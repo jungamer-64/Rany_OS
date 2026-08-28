@@ -12,6 +12,7 @@ extern crate alloc;
 
 mod controller;
 mod protocol;
+mod provision;
 mod queue;
 mod registers;
 
@@ -22,6 +23,11 @@ pub use controller::{
 };
 
 pub use protocol::{CompletionStatus, IoOpcode, IoTransfer, NvmeCompletion, TransferDirection};
+pub use provision::{
+    ActiveQueueCreateCause, IoQueueCreatePoll, IoQueueCreation, IoQueueProvisioner, NvmeController,
+    QueueBudgetCause, QueueBudgetError, QueueBudgetPoll, QueueBudgetRequest, QueueCreateError,
+    QueueCreationStage, QueueInputError,
+};
 pub use queue::{
     CompletedCommand, CompletedOwnership, NvmeQueue, PollError, PreparedQueuePair,
     QueueActivationError, QueueMemory, QueuePrepareError, QueueSubmission, SubmitError,

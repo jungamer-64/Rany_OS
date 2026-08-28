@@ -134,6 +134,14 @@ impl NvmeRegisters {
         ))
     }
 
+    /// Whether CC.EN still permits the controller to enter or remain ready.
+    ///
+    /// # Errors
+    /// Returns a geometry error if the retained mapping no longer admits CC.
+    pub fn enabled(&self) -> Result<bool, NvmeRegisterError> {
+        Ok(self.mapping.region().read_write::<u32>(CC)?.read() & 1 != 0)
+    }
+
     /// Request controller disable while preserving defined CC configuration.
     ///
     /// # Errors

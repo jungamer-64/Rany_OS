@@ -1,6 +1,19 @@
+use core::num::NonZeroU16;
+
 use kernel_api::dma::{DmaByteCount, DmaDeviceAddress};
 
 const COMMAND_DWORDS: usize = 16;
+const PAGE_SIZE: u64 = 4096;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+enum AdminOpcode {
+    CreateIoSubmissionQueue = 0x01,
+    CreateIoCompletionQueue = 0x05,
+    SetFeatures = 0x09,
+}
+
+const NUMBER_OF_QUEUES_FEATURE: u32 = 0x07;
 
 /// NVM command opcode accepted by the production I/O path.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -135,6 +148,74 @@ pub(crate) struct NvmeCommand {
     dwords: [u32; COMMAND_DWORDS],
 }
 
+/// Validated Admin command whose command identifier is assigned by the queue.
+pub(crate) struct AdminCommand {
+    dwords: [u32; COMMAND_DWORDS],
+}
+
+impl AdminCommand {
+    pub(crate) fn request_io_queues(requested: NonZeroU16) -> Self {
+        let zero_based = u32::from(requested.get() - 1);
+        let mut dwords = [0; COMMAND_DWORDS];
+        dwords[0] = u32::from(AdminOpcode::SetFeatures as u8);
+        dwords[10] = NUMBER_OF_QUEUES_FEATURE;
+        dwords[11] = zero_based | (zero_based << 16);
+        Self { dwords }
+    }
+
+    pub(crate) fn create_io_completion_queue(
+        queue_id: u16,
+        depth: u16,
+        address: DmaDeviceAddress,
+    ) -> Option<Self> {
+        if queue_id == 0 || depth < 2 || !address.get().is_multiple_of(PAGE_SIZE) {
+            return None;
+        }
+        let mut dwords = [0; COMMAND_DWORDS];
+        dwords[0] = u32::from(AdminOpcode::CreateIoCompletionQueue as u8);
+        encode_prp1(&mut dwords, address);
+        dwords[10] = u32::from(queue_id) | (u32::from(depth - 1) << 16);
+        // PC=1; this polling queue does not enable an interrupt vector.
+        dwords[11] = 1;
+        Some(Self { dwords })
+    }
+
+    pub(crate) fn create_io_submission_queue(
+        queue_id: u16,
+        depth: u16,
+        completion_queue_id: u16,
+        address: DmaDeviceAddress,
+    ) -> Option<Self> {
+        if queue_id == 0
+            || completion_queue_id == 0
+            || depth < 2
+            || !address.get().is_multiple_of(PAGE_SIZE)
+        {
+            return None;
+        }
+        let mut dwords = [0; COMMAND_DWORDS];
+        dwords[0] = u32::from(AdminOpcode::CreateIoSubmissionQueue as u8);
+        encode_prp1(&mut dwords, address);
+        dwords[10] = u32::from(queue_id) | (u32::from(depth - 1) << 16);
+        // CQID selects the already-created completion queue; PC=1.
+        dwords[11] = (u32::from(completion_queue_id) << 16) | 1;
+        Some(Self { dwords })
+    }
+
+    pub(crate) fn with_command_id(mut self, command_id: u16) -> NvmeCommand {
+        self.dwords[0] |= u32::from(command_id) << 16;
+        NvmeCommand {
+            dwords: self.dwords,
+        }
+    }
+}
+
+fn encode_prp1(dwords: &mut [u32; COMMAND_DWORDS], address: DmaDeviceAddress) {
+    let address = address.get();
+    dwords[6] = address as u32;
+    dwords[7] = (address >> 32) as u32;
+}
+
 impl NvmeCommand {
     pub(crate) fn transfer(
         command_id: u16,
@@ -149,9 +230,7 @@ impl NvmeCommand {
         let mut dwords = [0; COMMAND_DWORDS];
         dwords[0] = u32::from(opcode as u8) | (u32::from(command_id) << 16);
         dwords[1] = transfer.namespace;
-        let prp1 = prp1.get();
-        dwords[6] = prp1 as u32;
-        dwords[7] = (prp1 >> 32) as u32;
+        encode_prp1(&mut dwords, prp1);
         if let Some(prp2) = prp2 {
             let prp2 = prp2.get();
             dwords[8] = prp2 as u32;
@@ -210,5 +289,43 @@ mod tests {
         assert_eq!(completion.command_id(), 9);
         assert!(completion.status().phase());
         assert!(completion.status().is_success());
+    }
+
+    #[test]
+    fn queue_admin_commands_encode_validated_zero_based_geometry() {
+        let requested = NonZeroU16::new(4).expect("non-zero request");
+        let request = AdminCommand::request_io_queues(requested).with_command_id(7);
+        assert_eq!(request.dwords[0], 0x0007_0009);
+        assert_eq!(request.dwords[10], 0x07);
+        assert_eq!(request.dwords[11], 0x0003_0003);
+
+        let completion =
+            AdminCommand::create_io_completion_queue(2, 64, DmaDeviceAddress::from_abi(0x8000))
+                .expect("aligned completion queue")
+                .with_command_id(5);
+        assert_eq!(completion.dwords[0], 0x0005_0005);
+        assert_eq!(completion.dwords[6], 0x8000);
+        assert_eq!(completion.dwords[10], 0x003f_0002);
+        assert_eq!(completion.dwords[11], 1);
+
+        let submission =
+            AdminCommand::create_io_submission_queue(2, 64, 2, DmaDeviceAddress::from_abi(0x9000))
+                .expect("aligned submission queue")
+                .with_command_id(6);
+        assert_eq!(submission.dwords[0], 0x0006_0001);
+        assert_eq!(submission.dwords[10], 0x003f_0002);
+        assert_eq!(submission.dwords[11], 0x0002_0001);
+    }
+
+    #[test]
+    fn queue_admin_commands_reject_ambient_or_unaligned_memory() {
+        assert!(
+            AdminCommand::create_io_completion_queue(0, 64, DmaDeviceAddress::from_abi(0x8000))
+                .is_none()
+        );
+        assert!(
+            AdminCommand::create_io_submission_queue(1, 1, 1, DmaDeviceAddress::from_abi(0x8001))
+                .is_none()
+        );
     }
 }
