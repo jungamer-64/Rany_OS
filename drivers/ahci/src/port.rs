@@ -37,7 +37,6 @@ pub enum OpenCause {
     QueueIndex,
     Memory(CommandError),
     Dma(DmaLeaseError),
-    StopDeadline,
     DeviceType,
     Port(PortFault),
 }
@@ -48,14 +47,33 @@ pub enum OpenCause {
 pub enum InitializationMemory {
     Cpu(CpuDmaLease),
     Prepared(PreparedSharedDmaLease),
-    Shared(SharedDmaLease),
 }
 
+/// Initialization failure classified by whether the register aperture and new
+/// metadata allocation may be reused independently.
 #[derive(Debug)]
-pub struct PortOpenError {
-    pub cause: OpenCause,
-    pub registers: MappedMmio,
-    pub memory: InitializationMemory,
+pub enum PortOpenError {
+    /// No new DMA address was published and the engine was observed stopped.
+    Rejected {
+        cause: OpenCause,
+        registers: MappedMmio,
+        memory: InitializationMemory,
+    },
+    /// The previous engine did not stop. The new CPU lease was never published,
+    /// but register authority requires reset reconciliation before reuse.
+    EngineStateUnknown {
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+        memory: CpuDmaLease,
+    },
+    /// New metadata addresses were programmed and the resulting engine/link
+    /// state was not admissible. Mapping and shared memory must remain together.
+    PublicationUnknown {
+        cause: PortFault,
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+        memory: SharedDmaLease,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -175,21 +193,21 @@ impl AhciPort {
         poll_budget: NonZeroUsize,
     ) -> Result<Self, PortOpenError> {
         if queue.index() >= 32 {
-            return Err(PortOpenError {
+            return Err(PortOpenError::Rejected {
                 cause: OpenCause::QueueIndex,
                 registers: mapping,
                 memory: InitializationMemory::Cpu(memory),
             });
         }
         if memory.byte_count().get() < PORT_DMA_BYTES {
-            return Err(PortOpenError {
+            return Err(PortOpenError::Rejected {
                 cause: OpenCause::Memory(CommandError::BufferTooSmall),
                 registers: mapping,
                 memory: InitializationMemory::Cpu(memory),
             });
         }
         if memory.direction() != DmaDirection::Bidirectional {
-            return Err(PortOpenError {
+            return Err(PortOpenError::Rejected {
                 cause: OpenCause::Memory(CommandError::Direction),
                 registers: mapping,
                 memory: InitializationMemory::Cpu(memory),
@@ -198,7 +216,7 @@ impl AhciPort {
         let mut registers = match PortRegisters::new(mapping) {
             Ok(registers) => registers,
             Err((cause, mapping)) => {
-                return Err(PortOpenError {
+                return Err(PortOpenError::Rejected {
                     cause: OpenCause::Registers(cause),
                     registers: mapping,
                     memory: InitializationMemory::Cpu(memory),
@@ -206,21 +224,21 @@ impl AhciPort {
             }
         };
         if registers.stop(poll_budget).is_err() {
-            return Err(PortOpenError {
-                cause: OpenCause::StopDeadline,
+            return Err(PortOpenError::EngineStateUnknown {
                 registers: registers.into_mapping(),
-                memory: InitializationMemory::Cpu(memory),
+                queue,
+                memory,
             });
         }
         if registers.device_type() != DeviceType::Sata {
-            return Err(PortOpenError {
+            return Err(PortOpenError::Rejected {
                 cause: OpenCause::DeviceType,
                 registers: registers.into_mapping(),
                 memory: InitializationMemory::Cpu(memory),
             });
         }
         if let Err(cause) = memory.write(|bytes| bytes.fill(0)) {
-            return Err(PortOpenError {
+            return Err(PortOpenError::Rejected {
                 cause: OpenCause::Dma(cause),
                 registers: registers.into_mapping(),
                 memory: InitializationMemory::Cpu(memory),
@@ -230,7 +248,7 @@ impl AhciPort {
             Ok(prepared) => prepared,
             Err(failure) => {
                 let (cause, memory) = failure.into_parts();
-                return Err(PortOpenError {
+                return Err(PortOpenError::Rejected {
                     cause: OpenCause::Dma(cause),
                     registers: registers.into_mapping(),
                     memory: InitializationMemory::Cpu(memory),
@@ -254,7 +272,7 @@ impl AhciPort {
         let (list, received_fis, table_address) = match addresses {
             Ok(addresses) => addresses,
             Err(cause) => {
-                return Err(PortOpenError {
+                return Err(PortOpenError::Rejected {
                     cause,
                     registers: registers.into_mapping(),
                     memory: InitializationMemory::Prepared(prepared),
@@ -265,7 +283,7 @@ impl AhciPort {
             Ok(memory) => memory,
             Err(failure) => {
                 let (cause, memory) = failure.into_parts();
-                return Err(PortOpenError {
+                return Err(PortOpenError::Rejected {
                     cause: OpenCause::Dma(cause),
                     registers: registers.into_mapping(),
                     memory: InitializationMemory::Prepared(memory),
@@ -275,10 +293,11 @@ impl AhciPort {
         fence(Ordering::SeqCst);
         registers.start(list, received_fis);
         if let Err(cause) = registers.observe().admission() {
-            return Err(PortOpenError {
-                cause: OpenCause::Port(cause),
+            return Err(PortOpenError::PublicationUnknown {
+                cause,
                 registers: registers.into_mapping(),
-                memory: InitializationMemory::Shared(memory),
+                queue,
+                memory,
             });
         }
         Ok(Self {

@@ -11,7 +11,7 @@ use core::num::NonZeroUsize;
 
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::abi::driver::PackedPciLocation;
-use kernel_api::dma::{CpuDmaLease, DmaQueueIdentity};
+use kernel_api::dma::{CpuDmaLease, DmaQueueIdentity, SharedDmaLease};
 
 use crate::command::DmaAddressWidth;
 use crate::port::{AhciPort, InitializationMemory, OpenCause, PortCloseError, PortOpenError};
@@ -47,9 +47,17 @@ pub enum ControllerPortMemory {
 
 /// Failure to attach one controller-owned port.
 #[derive(Debug)]
-pub struct ControllerPortError {
-    pub cause: ControllerPortCause,
-    pub memory: ControllerPortMemory,
+pub enum ControllerPortError {
+    /// The port remains reusable and the allocation state is returned.
+    Returned {
+        cause: ControllerPortCause,
+        memory: ControllerPortMemory,
+    },
+    /// Register or published-DMA state requires reset reconciliation.
+    Quarantined {
+        cause: ControllerPortCause,
+        memory: Option<ControllerPortMemory>,
+    },
 }
 
 /// Port identity/resource failure distinct from the port hardware protocol.
@@ -59,7 +67,24 @@ pub enum ControllerPortCause {
     NotImplemented,
     AlreadyAttached,
     QueueGenerationExhausted,
+    EngineStateUnknown,
     Open(OpenCause),
+}
+
+/// Resources retained at the first controller shutdown failure.
+#[derive(Debug)]
+pub enum ControllerCloseFailure {
+    Port(PortCloseError),
+    EngineStateUnknown {
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+    },
+    PublicationUnknown {
+        cause: crate::port::PortFault,
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+        memory: SharedDmaLease,
+    },
 }
 
 /// Partial controller shutdown keeps the failed port resources and all ports
@@ -68,8 +93,25 @@ pub enum ControllerPortCause {
 pub struct ControllerCloseError {
     pub failed_port: PortNumber,
     pub closed_ports: u32,
-    pub failure: PortCloseError,
+    pub failure: ControllerCloseFailure,
     pub controller: AhciController,
+}
+
+#[derive(Debug)]
+enum PortSlot {
+    Available(MappedMmio),
+    Attached(AhciPort),
+    EngineStateUnknown {
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+    },
+    PublicationUnknown {
+        cause: crate::port::PortFault,
+        registers: MappedMmio,
+        queue: DmaQueueIdentity,
+        memory: SharedDmaLease,
+    },
+    Transitioning,
 }
 
 #[derive(Debug)]
@@ -109,8 +151,7 @@ pub struct AhciController {
     registers: ControllerRegisters,
     device: PackedPciLocation,
     ports_implemented: u32,
-    port_mappings: [Option<MappedMmio>; PORT_COUNT],
-    ports: [Option<AhciPort>; PORT_COUNT],
+    slots: [PortSlot; PORT_COUNT],
     version: u32,
     command_slots: u8,
     address_width: DmaAddressWidth,
@@ -189,8 +230,12 @@ impl AhciController {
             registers,
             device,
             ports_implemented,
-            port_mappings,
-            ports: core::array::from_fn(|_| None),
+            slots: port_mappings.map(|mapping| {
+                let Some(mapping) = mapping else {
+                    unreachable!("every hardware port has one attenuated aperture")
+                };
+                PortSlot::Available(mapping)
+            }),
             version,
             command_slots: (((capability >> 8) & 0x1f) as u8) + 1,
             address_width: if capability & CAP_S64A == 0 {
@@ -219,12 +264,17 @@ impl AhciController {
 
     /// Returns whether a SATA port is attached to this owner.
     pub fn contains_port(&self, port: PortNumber) -> bool {
-        self.ports.get(port.as_usize()).is_some_and(Option::is_some)
+        self.slots
+            .get(port.as_usize())
+            .is_some_and(|slot| matches!(slot, PortSlot::Attached(_)))
     }
 
     /// Borrows an attached port under the controller's exclusive borrow.
     pub fn port_mut(&mut self, port: PortNumber) -> Option<&mut AhciPort> {
-        self.ports.get_mut(port.as_usize())?.as_mut()
+        match self.slots.get_mut(port.as_usize())? {
+            PortSlot::Attached(port) => Some(port),
+            _ => None,
+        }
     }
 
     /// Attaches one implemented port using registry-owned metadata memory.
@@ -242,27 +292,33 @@ impl AhciController {
         poll_budget: NonZeroUsize,
     ) -> Result<(), ControllerPortError> {
         if !port.is_valid() {
-            return Err(port_error(
+            return Err(returned_port_error(
                 ControllerPortCause::InvalidPort,
                 ControllerPortMemory::Cpu(memory),
             ));
         }
         let bit = 1u32 << u32::from(port.as_u8());
         if self.ports_implemented & bit == 0 {
-            return Err(port_error(
+            return Err(returned_port_error(
                 ControllerPortCause::NotImplemented,
                 ControllerPortMemory::Cpu(memory),
             ));
         }
         let index = port.as_usize();
-        if self.ports.get(index).is_some_and(Option::is_some) {
-            return Err(port_error(
+        let Some(slot) = self.slots.get_mut(index) else {
+            return Err(returned_port_error(
+                ControllerPortCause::InvalidPort,
+                ControllerPortMemory::Cpu(memory),
+            ));
+        };
+        if !matches!(slot, PortSlot::Available(_)) {
+            return Err(returned_port_error(
                 ControllerPortCause::AlreadyAttached,
                 ControllerPortMemory::Cpu(memory),
             ));
         }
         let Some(next_generation) = self.next_queue_generation.checked_add(1) else {
-            return Err(port_error(
+            return Err(returned_port_error(
                 ControllerPortCause::QueueGenerationExhausted,
                 ControllerPortMemory::Cpu(memory),
             ));
@@ -271,28 +327,13 @@ impl AhciController {
         self.next_queue_generation = next_generation;
         let Some(queue) = DmaQueueIdentity::new(self.device, u16::from(port.as_u8()), generation)
         else {
-            return Err(port_error(
+            return Err(returned_port_error(
                 ControllerPortCause::QueueGenerationExhausted,
                 ControllerPortMemory::Cpu(memory),
             ));
         };
-        let Some(port_slot) = self.ports.get_mut(index) else {
-            return Err(port_error(
-                ControllerPortCause::InvalidPort,
-                ControllerPortMemory::Cpu(memory),
-            ));
-        };
-        let Some(mapping_slot) = self.port_mappings.get_mut(index) else {
-            return Err(port_error(
-                ControllerPortCause::InvalidPort,
-                ControllerPortMemory::Cpu(memory),
-            ));
-        };
-        let Some(mapping) = mapping_slot.take() else {
-            return Err(port_error(
-                ControllerPortCause::AlreadyAttached,
-                ControllerPortMemory::Cpu(memory),
-            ));
+        let PortSlot::Available(mapping) = core::mem::replace(slot, PortSlot::Transitioning) else {
+            unreachable!("availability was checked under the same exclusive borrow")
         };
 
         #[expect(
@@ -307,19 +348,47 @@ impl AhciController {
             unsafe { AhciPort::attach(mapping, queue, self.address_width, memory, poll_budget) };
         match opened {
             Ok(port) => {
-                *port_slot = Some(port);
+                *slot = PortSlot::Attached(port);
                 Ok(())
             }
-            Err(PortOpenError {
+            Err(PortOpenError::Rejected {
                 cause,
                 registers,
                 memory,
             }) => {
-                *mapping_slot = Some(registers);
-                Err(port_error(
+                *slot = PortSlot::Available(registers);
+                Err(returned_port_error(
                     ControllerPortCause::Open(cause),
                     ControllerPortMemory::Initialization(memory),
                 ))
+            }
+            Err(PortOpenError::EngineStateUnknown {
+                registers,
+                queue,
+                memory,
+            }) => {
+                *slot = PortSlot::EngineStateUnknown { registers, queue };
+                Err(ControllerPortError::Quarantined {
+                    cause: ControllerPortCause::EngineStateUnknown,
+                    memory: Some(ControllerPortMemory::Cpu(memory)),
+                })
+            }
+            Err(PortOpenError::PublicationUnknown {
+                cause,
+                registers,
+                queue,
+                memory,
+            }) => {
+                *slot = PortSlot::PublicationUnknown {
+                    cause,
+                    registers,
+                    queue,
+                    memory,
+                };
+                Err(ControllerPortError::Quarantined {
+                    cause: ControllerPortCause::Open(OpenCause::Port(cause)),
+                    memory: None,
+                })
             }
         }
     }
@@ -338,25 +407,56 @@ impl AhciController {
         self.registers.disable_interrupts();
         let mut closed_ports = 0u32;
         for index in 0..PORT_COUNT {
-            let Some(port) = self.ports.get_mut(index).and_then(Option::take) else {
-                continue;
+            let Some(slot) = self.slots.get_mut(index) else {
+                unreachable!("fixed loop range indexes the fixed port table")
             };
-            if let Err(failure) = port.close(poll_budget) {
-                return Err(ControllerCloseError {
-                    failed_port: PortNumber::new(index as u8),
-                    closed_ports,
-                    failure,
-                    controller: self,
-                });
-            }
-            closed_ports |= 1u32 << index;
+            let state = core::mem::replace(slot, PortSlot::Transitioning);
+            let failure = match state {
+                PortSlot::Available(mapping) => {
+                    *slot = PortSlot::Available(mapping);
+                    continue;
+                }
+                PortSlot::Attached(port) => match port.close(poll_budget) {
+                    Ok(()) => {
+                        closed_ports |= 1u32 << index;
+                        continue;
+                    }
+                    Err(failure) => ControllerCloseFailure::Port(failure),
+                },
+                PortSlot::EngineStateUnknown { registers, queue } => {
+                    ControllerCloseFailure::EngineStateUnknown { registers, queue }
+                }
+                PortSlot::PublicationUnknown {
+                    cause,
+                    registers,
+                    queue,
+                    memory,
+                } => ControllerCloseFailure::PublicationUnknown {
+                    cause,
+                    registers,
+                    queue,
+                    memory,
+                },
+                PortSlot::Transitioning => {
+                    unreachable!("exclusive controller ownership prevents a concurrent transition")
+                }
+            };
+            return Err(ControllerCloseError {
+                failed_port: PortNumber::new(index as u8),
+                closed_ports,
+                failure,
+                controller: self,
+            });
         }
         Ok(())
     }
 }
 
-fn port_error(cause: ControllerPortCause, memory: ControllerPortMemory) -> ControllerPortError {
-    ControllerPortError { cause, memory }
+fn returned_port_error(
+    cause: ControllerPortCause,
+    memory: ControllerPortMemory,
+) -> ControllerPortError {
+    ControllerPortError::Returned { cause, memory }
 }
 
 fn retain_hba_prefix(mapping: MappedMmio) -> MappedMmio {
