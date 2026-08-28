@@ -27,31 +27,6 @@ pub(crate) fn current_tick() -> u64 {
 }
 
 // ============================================================================
-// Convenience API
-// ============================================================================
-
-/// 非同期I/O読み取り
-pub async fn async_read(device: DeviceId, priority: IoPriority) -> Result<usize, IoError> {
-    hybrid_coordinator()
-        .submit_io(device, IoOperationType::Read, priority)
-        .await
-}
-
-/// 非同期I/O書き込み
-pub async fn async_write(device: DeviceId, priority: IoPriority) -> Result<usize, IoError> {
-    hybrid_coordinator()
-        .submit_io(device, IoOperationType::Write, priority)
-        .await
-}
-
-/// 非同期フラッシュ
-pub async fn async_flush(device: DeviceId) -> Result<usize, IoError> {
-    hybrid_coordinator()
-        .submit_io(device, IoOperationType::Flush, IoPriority::High)
-        .await
-}
-
-// ============================================================================
 // Tests
 // ============================================================================
 

@@ -18,6 +18,7 @@ impl IoScheduler {
             device_ops: PoisonRwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
             completion_hooks: PoisonLock::new(BTreeMap::new()),
+            abandoned_completions: PoisonLock::new(Vec::new()),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -73,73 +74,8 @@ impl IoScheduler {
             .collect()
     }
 
-    /// I/Oリクエストをサブミット
-    pub fn submit(
-        &self,
-        device: DeviceId,
-        operation: IoOperationType,
-        priority: IoPriority,
-    ) -> IoRequestId {
-        let id = IoRequestId::next();
-        let request = IoRequest {
-            id,
-            device,
-            operation,
-            command: None,
-            priority,
-            state: IoState::Pending,
-            submitted_at: current_tick(),
-            completed_at: None,
-            waker: None,
-            result: None,
-            abandoned: false,
-        };
-
-        // リクエストを登録
-        self.requests
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(id, request);
-
-        // 優先度キューに追加
-        let queue_idx = priority as usize;
-        self.queues[queue_idx]
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .push_back(id);
-
-        // 統計更新
-        self.stats.total_submitted.fetch_add(1, Ordering::Relaxed);
-        let depth = self
-            .stats
-            .current_queue_depth
-            .fetch_add(1, Ordering::Relaxed)
-            + 1;
-
-        // 最大キュー長を更新
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let max = self.stats.max_queue_depth.load(Ordering::Relaxed);
-            if depth <= max {
-                break;
-            }
-            if self
-                .stats
-                .max_queue_depth
-                .compare_exchange_weak(max, depth, Ordering::Relaxed, Ordering::Relaxed)
-                .is_ok()
-            {
-                break;
-            }
-        }
-
-        id
-    }
-
-    /// デバイス中立コマンドでI/Oをサブミット（新API）
-    ///
-    /// `IoCommand` を使用し、デバイス固有形式（PRP/SGL等）は
-    /// ドライバの `DeviceOps::submit` 内で変換される。
+    /// Enqueue one owned command. The scheduler retains its DMA lease until a
+    /// device consumes the resulting [`IoSubmission`].
     pub fn submit_command(
         &self,
         device: DeviceId,
@@ -147,19 +83,12 @@ impl IoScheduler {
         priority: IoPriority,
     ) -> IoRequestId {
         let id = IoRequestId::next();
-        let operation = match &command {
-            IoCommand::BlockRead { .. } => IoOperationType::Read,
-            IoCommand::BlockWrite { .. } => IoOperationType::Write,
-            IoCommand::Flush => IoOperationType::Flush,
-            IoCommand::Discard { .. } => IoOperationType::Custom(0),
-            IoCommand::Ioctl { code: _, .. } => IoOperationType::Ioctl,
-        };
+        let operation = command.operation();
         let request = IoRequest {
             id,
             device,
             operation,
             command: Some(command),
-            priority,
             state: IoState::Pending,
             submitted_at: current_tick(),
             completed_at: None,
@@ -236,15 +165,23 @@ impl IoScheduler {
         None
     }
 
-    /// リクエストを開始状態にする
-    pub fn start_request(&self, id: IoRequestId) -> Option<IoRequest> {
+    /// Move one pending command into a device submission exactly once.
+    pub fn take_submission(&self, id: IoRequestId) -> Option<IoSubmission> {
         let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(request) = requests.get_mut(&id) {
-            if request.state == IoState::Pending {
-                request.state = IoState::InProgress;
-            }
+        let request = requests.get_mut(&id)?;
+        if request.state != IoState::Pending {
+            return None;
         }
-        requests.get(&id).cloned()
+        let command = request
+            .command
+            .take()
+            .expect("pending request must retain its command owner");
+        request.state = IoState::InProgress;
+        Some(IoSubmission {
+            request_id: request.id,
+            device: request.device,
+            command,
+        })
     }
 
     /// 完了統計とレイテンシレポートを記録する
@@ -254,7 +191,7 @@ impl IoScheduler {
             .current_queue_depth
             .fetch_sub(1, Ordering::Relaxed);
 
-        if matches!(result, IoResult::Error(_)) {
+        if matches!(result, IoResult::Error(_) | IoResult::OutcomeUnknown(_)) {
             self.stats.total_errors.fetch_add(1, Ordering::Relaxed);
         }
 
@@ -272,24 +209,30 @@ impl IoScheduler {
         }
     }
 
-    /// リクエスト完了を通知
-    pub fn complete_request(&self, id: IoRequestId, result: IoResult) {
+    /// Record one terminal device outcome and preserve its ownership until a
+    /// future consumes it or the explicit abandoned-completion owner drains it.
+    pub fn complete_request(&self, id: IoRequestId, completion: IoCompletion) {
+        let status = completion.result();
+        let mut completion = Some(completion);
         let (waker, abandoned) = {
             let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-            if let Some(request) = requests.get_mut(&id) {
-                request.state = match &result {
-                    IoResult::Success(_) => IoState::Completed,
-                    IoResult::Error(_) => IoState::Failed,
-                };
-                request.completed_at = Some(current_tick());
-                request.result = Some(result);
-
-                self.report_completion_stats(request, &result);
-
-                (request.waker.take(), request.abandoned)
-            } else {
-                (None, false)
-            }
+            let Some(request) = requests.get_mut(&id) else {
+                drop(requests);
+                self.abandoned_completions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(completion.take().expect("completion is moved exactly once"));
+                return;
+            };
+            request.state = match status {
+                IoResult::Success(_) => IoState::Completed,
+                IoResult::Error(IoError::Cancelled) => IoState::Cancelled,
+                IoResult::Error(_) | IoResult::OutcomeUnknown(_) => IoState::Failed,
+            };
+            request.completed_at = Some(current_tick());
+            request.result = completion.take();
+            self.report_completion_stats(request, &status);
+            (request.waker.take(), request.abandoned)
         };
 
         if let Some(hook) = self
@@ -298,126 +241,79 @@ impl IoScheduler {
             .unwrap_or_else(|e| e.into_inner())
             .remove(&id)
         {
-            hook.run(result);
+            hook.run(status);
         }
 
-        // Wakerを起動
-        if let Some(w) = waker {
-            w.wake();
+        if let Some(waker) = waker {
+            waker.wake();
         }
 
         if abandoned {
-            self.requests
+            let completion = self
+                .requests
                 .write()
                 .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
+                .remove(&id)
+                .and_then(|mut request| request.result.take());
+            if let Some(completion) = completion {
+                self.abandoned_completions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(completion);
+            }
         }
     }
 
-    /// リクエストをキャンセル
+    /// Cancel only a command that has not crossed the device boundary. Its
+    /// original transfer lease is retained in the resulting completion.
     pub fn cancel_request(&self, id: IoRequestId) -> bool {
-        let result = IoResult::Error(IoError::Cancelled);
-        let (waker, abandoned) = {
-            let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-            if let Some(request) = requests.get_mut(&id) {
-                if request.state == IoState::Pending {
-                    request.state = IoState::Cancelled;
-                    request.result = Some(result);
-                    self.stats
-                        .current_queue_depth
-                        .fetch_sub(1, Ordering::Relaxed);
-                    (request.waker.take(), request.abandoned)
-                } else {
-                    (None, request.abandoned)
-                }
-            } else {
-                (None, false)
-            }
-        };
-
-        if let Some(hook) = self
-            .completion_hooks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-        {
-            hook.run(result);
-        }
-
-        if let Some(ref w) = waker {
-            w.wake_by_ref();
-        }
-
-        if abandoned {
-            self.requests
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
-        }
-
-        waker.is_some()
-    }
-
-    /// Pending 状態のリクエストのみキャンセル（Future drop 用）
-    ///
-    /// InProgress のリクエストは絶対に remove しない。
-    /// 完了時に `complete_request()` で回収される。
-    pub fn cancel_request_if_pending(&self, id: IoRequestId) -> bool {
-        let result = IoResult::Error(IoError::Cancelled);
-        let (waker, should_remove) = {
+        let command = {
             let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
             let Some(request) = requests.get_mut(&id) else {
                 return false;
             };
-
             if request.state != IoState::Pending {
-                // InProgress 等は触らない
                 return false;
             }
-
-            request.state = IoState::Cancelled;
-            request.result = Some(result.clone());
-            request.abandoned = true; // drop 由来なので即回収OK
-            self.stats
-                .current_queue_depth
-                .fetch_sub(1, Ordering::Relaxed);
-            (request.waker.take(), true)
+            request
+                .command
+                .take()
+                .expect("pending request must retain its command owner")
         };
-
-        if let Some(hook) = self
-            .completion_hooks
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&id)
-        {
-            hook.run(result);
-        }
-
-        if let Some(w) = waker {
-            w.wake();
-        }
-
-        if should_remove {
-            self.requests
-                .write()
-                .unwrap_or_else(|e| e.into_inner())
-                .remove(&id);
-        }
-
+        self.complete_request(id, IoCompletion::rejected(command, IoError::Cancelled));
         true
     }
 
-    /// リクエストを破棄（Future drop 時に使用）
+    /// Relinquish the future's observation right without discarding resource
+    /// ownership. Pending commands are cancelled before device acceptance;
+    /// active commands remain with the driver until completion/reconciliation.
     pub fn abandon_request(&self, id: IoRequestId) {
-        let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
-        if let Some(request) = requests.get_mut(&id) {
+        let state = {
+            let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
+            let Some(request) = requests.get_mut(&id) else {
+                return;
+            };
             request.abandoned = true;
             request.waker = None;
-            if matches!(
-                request.state,
-                IoState::Completed | IoState::Failed | IoState::Cancelled
-            ) {
-                requests.remove(&id);
+            request.state
+        };
+        if state == IoState::Pending {
+            let _cancelled = self.cancel_request(id);
+        } else if matches!(
+            state,
+            IoState::Completed | IoState::Failed | IoState::Cancelled
+        ) {
+            let completion = self
+                .requests
+                .write()
+                .unwrap_or_else(|e| e.into_inner())
+                .remove(&id)
+                .and_then(|mut request| request.result.take());
+            if let Some(completion) = completion {
+                self.abandoned_completions
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .push(completion);
             }
         }
     }
@@ -437,11 +333,11 @@ impl IoScheduler {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .get(&id)
-            .and_then(|r| r.result)
+            .and_then(|request| request.result.as_ref().map(IoCompletion::result))
     }
 
-    /// 完了済みリクエストの結果を取り出して削除
-    pub fn take_result(&self, id: IoRequestId) -> Option<IoResult> {
+    /// Consume the terminal completion, including returned DMA ownership.
+    pub fn take_result(&self, id: IoRequestId) -> Option<IoCompletion> {
         let mut requests = self.requests.write().unwrap_or_else(|e| e.into_inner());
         let should_remove = requests
             .get(&id)
@@ -453,9 +349,9 @@ impl IoScheduler {
             })
             .unwrap_or(false);
         if should_remove {
-            let result = requests.get(&id).and_then(|r| r.result);
-            requests.remove(&id);
-            return result;
+            return requests
+                .remove(&id)
+                .and_then(|mut request| request.result.take());
         }
         None
     }
@@ -471,24 +367,21 @@ impl IoScheduler {
         id: IoRequestId,
         waker: &Waker,
         registered: &mut bool,
-    ) -> Poll<Result<usize, IoError>> {
+    ) -> Poll<IoCompletion> {
         let mut reqs = self.requests.write().unwrap_or_else(|e| e.into_inner());
         let Some(req) = reqs.get_mut(&id) else {
-            return Poll::Ready(Err(IoError::InvalidParameter));
+            return Poll::Ready(IoCompletion::control(Err(IoError::InvalidParameter)));
         };
 
         match req.state {
             IoState::Completed | IoState::Failed | IoState::Cancelled => {
                 // 完了済み: 結果を取り出して削除
-                let result = req
+                let completion = req
                     .result
                     .take()
-                    .unwrap_or(IoResult::Error(IoError::DeviceError));
+                    .unwrap_or(IoCompletion::control(Err(IoError::DeviceError)));
                 reqs.remove(&id);
-                Poll::Ready(match result {
-                    IoResult::Success(n) => Ok(n),
-                    IoResult::Error(e) => Err(e),
-                })
+                Poll::Ready(completion)
             }
             IoState::Pending | IoState::InProgress => {
                 // Waker 更新が必要か判定
@@ -555,6 +448,18 @@ impl IoScheduler {
     /// 統計を取得
     pub fn stats(&self) -> &IoSchedulerStats {
         &self.stats
+    }
+
+    /// Transfer ownership of completions whose observing future was dropped.
+    /// The shutdown/reconciliation owner must explicitly close every returned
+    /// CPU lease and retain any fallible close outcome.
+    pub(crate) fn take_abandoned_completions(&self) -> Vec<IoCompletion> {
+        core::mem::take(
+            &mut *self
+                .abandoned_completions
+                .lock()
+                .unwrap_or_else(|error| error.into_inner()),
+        )
     }
 
     /// シャットダウン

@@ -115,11 +115,12 @@ pub enum DeviceId {
 /// ドライバはこのトレイトを実装して、具体的なI/O処理を提供する。
 /// スケジューラはデバイスの詳細（PCI/MMIO等）を知らずにこのトレイトを通じて操作する。
 pub trait DeviceOps: Send + Sync {
-    /// リクエストをサブミット（非同期）
+    /// Consume one scheduler-owned submission.
     ///
-    /// * `req`: I/Oリクエスト
-    /// * `cpu_id`: 送信元の論理CPU identity
-    fn submit(&self, req: &IoRequest, cpu_id: crate::cpu::CpuId) -> Result<(), IoError>;
+    /// `Rejected` must return the unchanged submission. `OutcomeUnknown` means
+    /// the driver retained any DMA owner in quarantine after an acceptance
+    /// boundary whose result cannot yet be proved.
+    fn submit(&self, submission: IoSubmission, cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome;
 
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
@@ -146,6 +147,57 @@ pub enum IoCommand {
     Flush,
     /// TRIM/Discard
     Discard { lba: u64, blocks: u16 },
+}
+
+impl IoCommand {
+    fn operation(&self) -> IoOperationType {
+        match self {
+            Self::BlockRead { .. } => IoOperationType::Read,
+            Self::BlockWrite { .. } => IoOperationType::Write,
+            Self::Flush => IoOperationType::Flush,
+            Self::Discard { .. } => IoOperationType::Custom(0),
+        }
+    }
+}
+
+/// One command transferred from the scheduler to exactly one device owner.
+#[derive(Debug)]
+pub struct IoSubmission {
+    request_id: IoRequestId,
+    device: DeviceId,
+    command: IoCommand,
+}
+
+impl IoSubmission {
+    /// Request identity used for the eventual completion.
+    pub const fn request_id(&self) -> IoRequestId {
+        self.request_id
+    }
+
+    /// Scheduler device selected for this submission.
+    pub const fn device(&self) -> DeviceId {
+        self.device
+    }
+
+    /// Consume the submission into its identity and command owner.
+    pub fn into_parts(self) -> (IoRequestId, DeviceId, IoCommand) {
+        (self.request_id, self.device, self.command)
+    }
+}
+
+/// Result of crossing a device's command-acceptance boundary.
+#[derive(Debug)]
+pub enum IoSubmitOutcome {
+    /// The device owner now owns the command and any DMA lease it contains.
+    Accepted,
+    /// No acceptance occurred; the complete scheduler submission is returned.
+    Rejected {
+        cause: IoError,
+        submission: IoSubmission,
+    },
+    /// Acceptance may have occurred; the device owner retained all resources
+    /// required for reset/reconciliation and no retry authority is returned.
+    OutcomeUnknown { cause: IoError },
 }
 
 // ============================================================================
@@ -181,18 +233,16 @@ impl NvmeSglDescriptor {
     }
 }
 
-/// I/Oリクエスト記述子
-pub struct IoRequest {
+/// Scheduler-owned request state. Its command exists only before dispatch.
+struct IoRequest {
     /// リクエストID
     pub id: IoRequestId,
     /// デバイスID
     pub device: DeviceId,
     /// 操作タイプ
     pub operation: IoOperationType,
-    /// デバイス中立コマンド（新API）
-    pub command: Option<IoCommand>,
-    /// 優先度
-    pub priority: IoPriority,
+    /// Command ownership before dispatch; `None` after the device consumes it.
+    command: Option<IoCommand>,
     /// 状態
     pub state: IoState,
     /// 開始時刻 (tick)
@@ -202,7 +252,7 @@ pub struct IoRequest {
     /// Waker（完了通知用）
     pub waker: Option<Waker>,
     /// 結果
-    pub result: Option<IoResult>,
+    result: Option<IoCompletion>,
     /// 呼び出し側が破棄済みか
     pub abandoned: bool,
 }
@@ -214,6 +264,85 @@ pub enum IoResult {
     Success(usize),
     /// エラー
     Error(IoError),
+    /// The device may have accepted the operation, so retry is not authorized.
+    OutcomeUnknown(IoError),
+}
+
+/// Completion ownership returned to the scheduler exactly once.
+#[derive(Debug)]
+pub enum IoCompletion {
+    /// A transfer ended with CPU ownership restored, including on a proved
+    /// device error. The caller remains responsible for explicit final close.
+    TransferReturned {
+        result: Result<usize, IoError>,
+        buffer: CpuDmaLease,
+    },
+    /// A command without a transfer buffer reached a terminal result.
+    Control { result: Result<usize, IoError> },
+    /// Device acceptance or completion could not be proved. Any transfer owner
+    /// remains in the driver/reset-reconciliation owner and is not returned.
+    OutcomeUnknown {
+        operation: IoOperationType,
+        cause: IoError,
+    },
+}
+
+impl IoCompletion {
+    /// Build a completion for a transfer whose CPU lease was recovered.
+    pub fn transfer_returned(result: Result<usize, IoError>, buffer: CpuDmaLease) -> Self {
+        Self::TransferReturned { result, buffer }
+    }
+
+    /// Build a completion for a command that has no transfer buffer.
+    pub const fn control(result: Result<usize, IoError>) -> Self {
+        Self::Control { result }
+    }
+
+    /// Build an outcome that deliberately returns no retry authority.
+    pub const fn outcome_unknown(operation: IoOperationType, cause: IoError) -> Self {
+        Self::OutcomeUnknown { operation, cause }
+    }
+
+    /// Copyable status projection for metrics and notification hooks.
+    pub const fn result(&self) -> IoResult {
+        match self {
+            Self::TransferReturned { result, .. } | Self::Control { result } => match result {
+                Ok(bytes) => IoResult::Success(*bytes),
+                Err(cause) => IoResult::Error(*cause),
+            },
+            Self::OutcomeUnknown { cause, .. } => IoResult::OutcomeUnknown(*cause),
+        }
+    }
+
+    fn rejected(command: IoCommand, cause: IoError) -> Self {
+        match command {
+            IoCommand::BlockRead { buffer, .. } | IoCommand::BlockWrite { buffer, .. } => {
+                Self::transfer_returned(Err(cause), buffer)
+            }
+            IoCommand::Flush | IoCommand::Discard { .. } => Self::control(Err(cause)),
+        }
+    }
+}
+
+/// One driver-produced completion associated with its scheduler request.
+#[derive(Debug)]
+pub struct DeviceCompletion {
+    request_id: IoRequestId,
+    completion: IoCompletion,
+}
+
+impl DeviceCompletion {
+    /// Bind a non-cloneable completion owner to its request identity.
+    pub const fn new(request_id: IoRequestId, completion: IoCompletion) -> Self {
+        Self {
+            request_id,
+            completion,
+        }
+    }
+
+    fn into_parts(self) -> (IoRequestId, IoCompletion) {
+        (self.request_id, self.completion)
+    }
 }
 
 /// I/Oエラー
@@ -520,6 +649,9 @@ pub struct IoScheduler {
     stats: IoSchedulerStats,
     /// 完了フック
     completion_hooks: PoisonLock<BTreeMap<IoRequestId, CompletionHook>>,
+    /// Completions whose future was dropped. This is an explicit owner so a
+    /// returned DMA lease is never discarded by cancellation bookkeeping.
+    abandoned_completions: PoisonLock<Vec<IoCompletion>>,
     /// シャットダウンフラグ
     shutdown: AtomicBool,
 }
@@ -576,8 +708,8 @@ pub struct PollingExecutor {
 
 /// ポーリングハンドラトレイト
 pub trait PollHandler {
-    /// 完了をポーリング
-    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)>;
+    /// Poll validated device completions, including returned DMA ownership.
+    fn poll_completions(&self) -> Vec<DeviceCompletion>;
 
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
@@ -645,8 +777,9 @@ impl PollingExecutor {
         for (_device, handlers) in handlers.iter() {
             for handler in handlers.iter() {
                 if handler.is_ready() {
-                    for (id, result) in handler.poll_completions() {
-                        self.scheduler.complete_request(id, result);
+                    for completion in handler.poll_completions() {
+                        let (id, completion) = completion.into_parts();
+                        self.scheduler.complete_request(id, completion);
                         completed += 1;
                     }
                 }
@@ -673,9 +806,10 @@ impl PollingExecutor {
         for (device, handlers) in handlers.iter() {
             for handler in handlers.iter() {
                 if handler.is_ready() {
-                    for (id, result) in handler.poll_completions() {
-                        on_complete(*device, id, result.clone());
-                        self.scheduler.complete_request(id, result);
+                    for completion in handler.poll_completions() {
+                        let (id, completion) = completion.into_parts();
+                        on_complete(*device, id, completion.result());
+                        self.scheduler.complete_request(id, completion);
                         completed += 1;
                     }
                 }
@@ -706,8 +840,9 @@ impl PollingExecutor {
                 }
 
                 if handler.is_ready() {
-                    for (id, result) in handler.poll_completions() {
-                        self.scheduler.complete_request(id, result);
+                    for completion in handler.poll_completions() {
+                        let (id, completion) = completion.into_parts();
+                        self.scheduler.complete_request(id, completion);
                         completed += 1;
                     }
                 }

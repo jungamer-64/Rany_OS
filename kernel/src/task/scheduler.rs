@@ -531,7 +531,6 @@ fn run_scheduler_loop(park_policy: ParkPolicy) {
         crate::sync::process_deferred_waker_queue_wakes();
         crate::interrupts::poll_timer_events();
         super::interrupt_waker::process_interrupt_events();
-        crate::io::io_scheduler::process_deferred_completions_local();
         // Timer IRQs only advance the clock. Expired sleep/timeout wakers must
         // be delivered outside interrupt context before selecting ready work.
         super::process_pending_timer_wakers();
@@ -575,7 +574,6 @@ pub(crate) fn quiesce_current_cpu_deferred_work() {
     crate::sync::process_deferred_wakes();
     crate::sync::process_deferred_waker_queue_wakes();
     super::interrupt_waker::process_interrupt_events();
-    crate::io::io_scheduler::process_deferred_completions_local();
     assert_eq!(
         current.pending_deferred_work(),
         0,

@@ -5,7 +5,7 @@ mod coordinator_helpers;
 pub use coordinator_helpers::*;
 
 impl Future for IoFuture {
-    type Output = Result<usize, IoError>;
+    type Output = IoCompletion;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let scheduler = self.scheduler.clone();
@@ -15,135 +15,7 @@ impl Future for IoFuture {
 
 impl Drop for IoFuture {
     fn drop(&mut self) {
-        if self.scheduler.cancel_request_if_pending(self.request_id) {
-            return;
-        }
         self.scheduler.abandon_request(self.request_id);
-    }
-}
-
-// ============================================================================
-// Deferred I/O Completions (ISR-safe queue)
-// ============================================================================
-
-pub(crate) const IO_RESULT_ERROR_FLAG: u64 = 1 << 63;
-
-pub(crate) fn defer_io_completion(device: DeviceId, id: IoRequestId, result: IoResult) -> bool {
-    crate::cpu::CurrentCpu::acquire().is_some_and(|current| {
-        current.defer_io_completion((encode_device_id(device), id.0, encode_io_result(result)))
-    })
-}
-
-pub fn process_deferred_completions_local() -> usize {
-    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
-        return 0;
-    };
-    let Some(first) = current.take_io_completion() else {
-        return 0;
-    };
-    let coordinator = hybrid_coordinator();
-    let scheduler = coordinator.scheduler.clone();
-    let bridge = coordinator.interrupt_bridge();
-    let mut processed = 0;
-    let mut completion = Some(first);
-    while let Some((device_raw, id_raw, result_raw)) = completion {
-        let device = decode_device_id(device_raw)
-            .expect("CPU-local I/O completion queue contained an invalid device encoding");
-        let id = IoRequestId(id_raw);
-        let result = decode_io_result(result_raw);
-        scheduler.complete_request(id, result);
-        bridge.complete_pending(device, id);
-        processed += 1;
-        completion = current.take_io_completion();
-    }
-    processed
-}
-
-pub(crate) fn encode_device_id(device: DeviceId) -> u64 {
-    const KIND_NVME: u64 = 1;
-    const KIND_AHCI: u64 = 4;
-    const KIND_USB: u64 = 5;
-    const KIND_CUSTOM: u64 = 6;
-    const KIND_SHIFT: u64 = 56;
-    match device {
-        DeviceId::Nvme {
-            controller,
-            namespace,
-        } => (KIND_NVME << KIND_SHIFT) | ((controller as u64) << 48) | (namespace as u64),
-        DeviceId::Ahci { port } => (KIND_AHCI << KIND_SHIFT) | ((port as u64) << 48),
-        DeviceId::Usb { bus, device } => {
-            (KIND_USB << KIND_SHIFT) | ((bus as u64) << 48) | ((device as u64) << 40)
-        }
-        DeviceId::Custom(code) => (KIND_CUSTOM << KIND_SHIFT) | (code as u64),
-    }
-}
-
-pub(crate) fn decode_device_id(raw: u64) -> Option<DeviceId> {
-    if raw == 0 {
-        return None;
-    }
-    let kind = (raw >> 56) & 0xFF;
-    match kind {
-        1 => Some(DeviceId::Nvme {
-            controller: ((raw >> 48) & 0xFF) as u8,
-            namespace: (raw & 0xFFFF_FFFF) as u32,
-        }),
-        4 => Some(DeviceId::Ahci {
-            port: ((raw >> 48) & 0xFF) as u8,
-        }),
-        5 => Some(DeviceId::Usb {
-            bus: ((raw >> 48) & 0xFF) as u8,
-            device: ((raw >> 40) & 0xFF) as u8,
-        }),
-        6 => Some(DeviceId::Custom((raw & 0xFFFF_FFFF) as u32)),
-        _ => None,
-    }
-}
-
-pub(crate) fn encode_io_result(result: IoResult) -> u64 {
-    match result {
-        IoResult::Success(bytes) => {
-            let raw = bytes as u64;
-            if raw >= IO_RESULT_ERROR_FLAG {
-                IO_RESULT_ERROR_FLAG | (io_error_to_u8(IoError::InvalidParameter) as u64)
-            } else {
-                raw
-            }
-        }
-        IoResult::Error(err) => IO_RESULT_ERROR_FLAG | (io_error_to_u8(err) as u64),
-    }
-}
-
-pub(crate) fn decode_io_result(raw: u64) -> IoResult {
-    if (raw & IO_RESULT_ERROR_FLAG) == 0 {
-        return IoResult::Success(raw as usize);
-    }
-    let code = (raw & 0xFF) as u8;
-    IoResult::Error(io_error_from_u8(code))
-}
-
-pub(crate) fn io_error_to_u8(err: IoError) -> u8 {
-    match err {
-        IoError::DeviceError => 1,
-        IoError::Timeout => 2,
-        IoError::Cancelled => 3,
-        IoError::InvalidParameter => 4,
-        IoError::NoResources => 5,
-        IoError::Busy => 6,
-        IoError::NotSupported => 7,
-    }
-}
-
-pub(crate) fn io_error_from_u8(code: u8) -> IoError {
-    match code {
-        1 => IoError::DeviceError,
-        2 => IoError::Timeout,
-        3 => IoError::Cancelled,
-        4 => IoError::InvalidParameter,
-        5 => IoError::NoResources,
-        6 => IoError::Busy,
-        7 => IoError::NotSupported,
-        _ => IoError::DeviceError,
     }
 }
 
@@ -153,16 +25,12 @@ pub(crate) fn io_error_from_u8(code: u8) -> IoError {
 
 pub struct IoInterruptBridge {
     pending_requests: PoisonRwLock<BTreeMap<DeviceId, VecDeque<IoRequestId>>>,
-    dropped_completions: AtomicU64,
-    overflow_flag: AtomicBool,
 }
 
 impl IoInterruptBridge {
     pub fn new(_scheduler: Arc<IoScheduler>) -> Self {
         Self {
             pending_requests: PoisonRwLock::new(BTreeMap::new()),
-            dropped_completions: AtomicU64::new(0),
-            overflow_flag: AtomicBool::new(false),
         }
     }
 
@@ -175,23 +43,6 @@ impl IoInterruptBridge {
             .entry(device)
             .or_insert_with(VecDeque::new)
             .push_back(request_id);
-    }
-
-    pub fn handle_interrupt(&self, device: DeviceId, results: &[(IoRequestId, IoResult)]) {
-        for (id, result) in results {
-            if !defer_io_completion(device, *id, result.clone()) {
-                self.dropped_completions.fetch_add(1, Ordering::Relaxed);
-                self.overflow_flag.store(true, Ordering::Release);
-            }
-        }
-    }
-
-    pub fn check_and_clear_overflow(&self) -> bool {
-        self.overflow_flag.swap(false, Ordering::AcqRel)
-    }
-
-    pub fn dropped_completions(&self) -> u64 {
-        self.dropped_completions.load(Ordering::Relaxed)
     }
 
     pub(super) fn complete_pending(&self, device: DeviceId, request_id: IoRequestId) {
@@ -213,26 +64,6 @@ impl IoInterruptBridge {
             .read()
             .unwrap_or_else(|e| e.into_inner());
         guard.get(&device).map(|q| q.len()).unwrap_or(0)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn deferred_io_completion_encoding_round_trips() {
-        let device = DeviceId::Custom(42);
-        assert_eq!(decode_device_id(encode_device_id(device)), Some(device));
-        assert_eq!(
-            decode_io_result(encode_io_result(IoResult::Success(4096))),
-            IoResult::Success(4096)
-        );
-        assert_eq!(
-            decode_io_result(encode_io_result(IoResult::Error(IoError::Timeout))),
-            IoResult::Error(IoError::Timeout)
-        );
     }
 }
 
@@ -266,28 +97,6 @@ impl HybridIoCoordinator {
         self.interrupt_bridge.clone()
     }
 
-    pub fn submit_io(
-        &self,
-        device: DeviceId,
-        operation: IoOperationType,
-        priority: IoPriority,
-    ) -> IoFuture {
-        match operation {
-            IoOperationType::Flush => self.submit_io_command(device, IoCommand::Flush, priority),
-            _ => {
-                let id = self.scheduler.submit(device, operation, priority);
-                let global_mode = self.global_mode();
-                if !matches!(global_mode, IoMode::Polling) {
-                    let mode = self.scheduler.device_mode(device);
-                    if !matches!(mode, IoMode::Polling) {
-                        self.interrupt_bridge.register_pending(device, id);
-                    }
-                }
-                IoFuture::new(self.scheduler.clone(), id)
-            }
-        }
-    }
-
     pub fn submit_io_command(
         &self,
         device: DeviceId,
@@ -303,24 +112,6 @@ impl HybridIoCoordinator {
             }
         }
         IoFuture::new(self.scheduler.clone(), id)
-    }
-
-    pub(super) fn recover_overflow(&self) {
-        let was_active = self.polling_executor.is_active();
-        if !was_active {
-            self.polling_executor.start();
-        }
-        for _ in 0..self.polling_executor.max_poll_iterations {
-            let n = self.polling_executor.poll_once_with(|device, id, _res| {
-                self.interrupt_bridge.complete_pending(device, id);
-            });
-            if n == 0 {
-                break;
-            }
-        }
-        if !was_active && matches!(self.global_mode(), IoMode::Interrupt) {
-            self.polling_executor.stop();
-        }
     }
 
     pub(super) fn poll_by_global_mode(&self) {
@@ -340,10 +131,6 @@ impl HybridIoCoordinator {
         F: FnOnce(),
     {
         process_interrupts();
-        process_deferred_completions_local();
-        if self.interrupt_bridge.check_and_clear_overflow() {
-            self.recover_overflow();
-        }
         self.scheduler.evaluate_modes(current_tick());
         self.dispatch_pending();
         self.poll_by_global_mode();
@@ -359,20 +146,34 @@ impl HybridIoCoordinator {
                 Some(id) => id,
                 None => break,
             };
-            let request = match self.scheduler.start_request(id) {
-                Some(request) => request,
+            let submission = match self.scheduler.take_submission(id) {
+                Some(submission) => submission,
                 None => continue,
             };
-            if !matches!(request.state, IoState::InProgress) {
-                continue;
-            }
-            let ops = self.scheduler.get_device_ops(request.device);
-            let result = match ops {
-                Some(ops) => ops.submit(&request, cpu_id),
-                None => Err(IoError::NotSupported),
+            let device = submission.device();
+            let operation = submission.command.operation();
+            let outcome = match self.scheduler.get_device_ops(device) {
+                Some(ops) => ops.submit(submission, cpu_id),
+                None => IoSubmitOutcome::Rejected {
+                    cause: IoError::NotSupported,
+                    submission,
+                },
             };
-            if let Err(err) = result {
-                self.scheduler.complete_request(id, IoResult::Error(err));
+            match outcome {
+                IoSubmitOutcome::Accepted => {}
+                IoSubmitOutcome::Rejected { cause, submission } => {
+                    let (returned_id, returned_device, command) = submission.into_parts();
+                    let cause = if returned_id == id && returned_device == device {
+                        cause
+                    } else {
+                        IoError::DeviceError
+                    };
+                    self.scheduler
+                        .complete_request(id, IoCompletion::rejected(command, cause));
+                }
+                IoSubmitOutcome::OutcomeUnknown { cause } => self
+                    .scheduler
+                    .complete_request(id, IoCompletion::outcome_unknown(operation, cause)),
             }
         }
     }

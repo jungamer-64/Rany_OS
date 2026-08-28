@@ -13,7 +13,6 @@ use super::{CpuGenerationResource, CpuId};
 
 const CONTROL_QUEUE_SLOTS: usize = 32;
 const DEFERRED_WAKE_QUEUE_SLOTS: usize = 257;
-const IO_COMPLETION_QUEUE_SLOTS: usize = 257;
 const INTERRUPT_WAKE_QUEUE_SLOTS: usize = 1025;
 const IA32_FS_BASE: u32 = 0xc000_0100;
 const IA32_GS_BASE: u32 = 0xc000_0101;
@@ -47,7 +46,6 @@ pub struct CpuRemoteAccess {
     tlb_observed_generation: AtomicU64,
     deferred_atomic_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
     deferred_queue_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
-    deferred_io_completions: MpscRingBuffer<(u64, u64, u64), IO_COMPLETION_QUEUE_SLOTS>,
     interrupt_wakes: MpscRingBuffer<usize, INTERRUPT_WAKE_QUEUE_SLOTS>,
 }
 
@@ -83,7 +81,6 @@ impl CpuRemoteAccess {
             tlb_observed_generation: AtomicU64::new(0),
             deferred_atomic_wakes: MpscRingBuffer::new(),
             deferred_queue_wakes: MpscRingBuffer::new(),
-            deferred_io_completions: MpscRingBuffer::new(),
             interrupt_wakes: MpscRingBuffer::new(),
         }
     }
@@ -237,14 +234,6 @@ impl CpuRemoteAccess {
         self.deferred_queue_wakes.pop()
     }
 
-    fn defer_io_completion(&self, completion: (u64, u64, u64)) -> bool {
-        self.deferred_io_completions.try_push(completion).is_ok()
-    }
-
-    fn take_io_completion(&self) -> Option<(u64, u64, u64)> {
-        self.deferred_io_completions.pop()
-    }
-
     fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
         self.interrupt_wakes.try_push(encoded_source).is_ok()
     }
@@ -261,7 +250,6 @@ impl CpuRemoteAccess {
         self.deferred_atomic_wakes
             .len()
             .saturating_add(self.deferred_queue_wakes.len())
-            .saturating_add(self.deferred_io_completions.len())
             .saturating_add(self.interrupt_wakes.len())
     }
 
@@ -763,14 +751,6 @@ impl CurrentCpu {
         self.local.remote.take_queue_wake()
     }
 
-    pub(crate) fn defer_io_completion(&self, completion: (u64, u64, u64)) -> bool {
-        self.local.remote.defer_io_completion(completion)
-    }
-
-    pub(crate) fn take_io_completion(&self) -> Option<(u64, u64, u64)> {
-        self.local.remote.take_io_completion()
-    }
-
     pub(crate) fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
         self.local.remote.defer_interrupt_wake(encoded_source)
     }
@@ -896,13 +876,11 @@ mod tests {
 
         assert!(remote.defer_atomic_wake(11));
         assert!(remote.defer_queue_wake(22));
-        assert!(remote.defer_io_completion((33, 44, 55)));
         assert!(remote.defer_interrupt_wake(66));
-        assert_eq!(remote.pending_deferred_work(), 4);
+        assert_eq!(remote.pending_deferred_work(), 3);
 
         assert_eq!(remote.take_atomic_wake(), Some(11));
         assert_eq!(remote.take_queue_wake(), Some(22));
-        assert_eq!(remote.take_io_completion(), Some((33, 44, 55)));
         assert_eq!(remote.take_interrupt_wake(), Some(66));
         assert_eq!(remote.pending_deferred_work(), 0);
     }
