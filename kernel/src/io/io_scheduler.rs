@@ -97,7 +97,10 @@ pub enum DeviceId {
     /// NVMe デバイス
     Nvme { controller: u8, namespace: u32 },
     /// AHCI/SATA
-    Ahci { port: u8 },
+    Ahci {
+        controller: kernel_api::abi::driver::PackedPciLocation,
+        port: u8,
+    },
     /// USB
     Usb { bus: u8, device: u8 },
     /// カスタム

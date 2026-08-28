@@ -179,7 +179,7 @@ pub enum AbiDriverType {
 /// - bits 15..8: device
 /// - bits 7..0: function
 #[repr(transparent)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct PackedPciLocation(pub u64);
 
 impl PackedPciLocation {
