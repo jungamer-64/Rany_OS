@@ -17,6 +17,7 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use core::task::{Context, Poll, Waker};
+use kernel_api::dma::CpuDmaLease;
 
 // ============================================================================
 // I/O Operation Types
@@ -109,15 +110,6 @@ pub enum DeviceId {
 // Device-Neutral I/O Command (新設計)
 // ============================================================================
 
-/// DMA バッファハンドル（IOVA + 長さ）
-#[derive(Debug, Clone, Copy)]
-pub struct DmaBufHandle {
-    /// デバイス可視アドレス (IOVA)
-    pub iova: u64,
-    /// バッファサイズ
-    pub len: usize,
-}
-
 /// デバイス操作トレイト（抽象化レイヤー）
 ///
 /// ドライバはこのトレイトを実装して、具体的なI/O処理を提供する。
@@ -136,30 +128,24 @@ pub trait DeviceOps: Send + Sync {
 /// I/Oコマンド（デバイス中立）
 ///
 /// `DeviceOps::submit` 内でドライバが変換する。
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum IoCommand {
-    /// ブロック読み取り（連続バッファ）
+    /// ブロック読み取り。キューは CPU-owned lease を一意に所有する。
     BlockRead {
         lba: u64,
         blocks: u16,
-        bytes: usize,
-        buf: DmaBufHandle,
+        buffer: CpuDmaLease,
     },
-    /// ブロック書き込み（連続バッファ）
+    /// ブロック書き込み。キューは CPU-owned lease を一意に所有する。
     BlockWrite {
         lba: u64,
         blocks: u16,
-        bytes: usize,
-        buf: DmaBufHandle,
+        buffer: CpuDmaLease,
     },
     /// キャッシュフラッシュ
     Flush,
     /// TRIM/Discard
     Discard { lba: u64, blocks: u16 },
-    /// デバイス固有コマンド（ioctl的）
-    ///
-    /// コードとバッファの解釈はデバイスドライバに委ねられる
-    Ioctl { code: u32, buf: DmaBufHandle },
 }
 
 // ============================================================================
@@ -196,7 +182,6 @@ impl NvmeSglDescriptor {
 }
 
 /// I/Oリクエスト記述子
-#[derive(Clone)]
 pub struct IoRequest {
     /// リクエストID
     pub id: IoRequestId,
