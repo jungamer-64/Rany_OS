@@ -415,7 +415,7 @@ impl NvmeQueue {
     /// Every error occurs before the SQ tail doorbell write and returns either
     /// CPU or prepared ownership. After success, ownership remains in this queue
     /// until validated completion or reset reconciliation.
-    pub fn submit_transfer(
+    pub(crate) fn submit_transfer(
         &self,
         registers: &NvmeRegisters,
         transfer: IoTransfer,
@@ -424,7 +424,7 @@ impl NvmeQueue {
         self.submit_dma(
             registers,
             transfer.direction(),
-            transfer.logical_bytes().get(),
+            transfer.logical_byte_count().get(),
             lease,
             |command_id, descriptor, prp2| {
                 Some(NvmeCommand::transfer(
@@ -598,7 +598,7 @@ impl NvmeQueue {
     ///
     /// # Errors
     /// Returns a pre-publication failure; no completion can follow an error.
-    pub fn submit_flush(
+    pub(crate) fn submit_flush(
         &self,
         registers: &NvmeRegisters,
         namespace: u32,
@@ -662,7 +662,7 @@ impl NvmeQueue {
     /// # Errors
     /// Invalid device tags fault the queue without granting CPU access. DMA
     /// transition failures restore the in-flight owner to the pending slot.
-    pub fn poll_completion(
+    pub(crate) fn poll_completion(
         &self,
         registers: &NvmeRegisters,
     ) -> Result<Option<CompletedCommand>, PollError> {

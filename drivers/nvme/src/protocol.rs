@@ -48,31 +48,12 @@ pub struct IoTransfer {
 }
 
 impl IoTransfer {
-    /// Validate the non-zero command quantities before DMA preparation.
-    pub fn new(
-        direction: TransferDirection,
-        namespace: u32,
-        start_lba: u64,
-        block_count: u16,
-        logical_bytes: usize,
-    ) -> Option<Self> {
-        if namespace == 0 || block_count == 0 {
-            return None;
-        }
-        Some(Self {
-            direction,
-            namespace,
-            start_lba,
-            block_count,
-            logical_bytes: DmaByteCount::new(logical_bytes)?,
-        })
-    }
-
     pub(crate) const fn direction(self) -> TransferDirection {
         self.direction
     }
 
-    pub(crate) const fn logical_bytes(self) -> DmaByteCount {
+    /// Logical transfer length validated with this command.
+    pub const fn logical_byte_count(self) -> DmaByteCount {
         self.logical_bytes
     }
 }

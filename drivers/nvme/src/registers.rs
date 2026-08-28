@@ -90,7 +90,7 @@ impl NvmeRegisters {
     ///
     /// # Errors
     /// Returns the original mapping together with the failed validation.
-    pub fn new(mapping: MappedMmio) -> Result<Self, (NvmeRegisterError, MappedMmio)> {
+    pub(crate) fn new(mapping: MappedMmio) -> Result<Self, (NvmeRegisterError, MappedMmio)> {
         let capability = match mapping.region().read_only::<u64>(CAP) {
             Ok(register) => register.read(),
             Err(error) => return Err((error.into(), mapping)),
@@ -147,7 +147,7 @@ impl NvmeRegisters {
     /// # Errors
     /// Returns a geometry error before writing if CC cannot be derived from the
     /// retained mapping.
-    pub fn request_disable(&self) -> Result<(), NvmeRegisterError> {
+    pub(crate) fn request_disable(&self) -> Result<(), NvmeRegisterError> {
         let mut register = self.mapping.region().read_write::<u32>(CC)?;
         let value = register.read() & !1;
         register.write(value);
@@ -159,7 +159,7 @@ impl NvmeRegisters {
     /// # Errors
     /// Rejects an invalid depth or a mapping that does not admit all complete
     /// AQA, ASQ, and ACQ accesses. Every derivation completes before any write.
-    pub fn program_admin_queue(
+    pub(crate) fn program_admin_queue(
         &self,
         depth: u16,
         submission: DmaDeviceAddress,
@@ -184,7 +184,7 @@ impl NvmeRegisters {
     /// # Errors
     /// Returns a geometry error before writing if CC cannot be derived from the
     /// retained mapping.
-    pub fn enable_nvm(&self) -> Result<(), NvmeRegisterError> {
+    pub(crate) fn enable_nvm(&self) -> Result<(), NvmeRegisterError> {
         let value = 1 | (6 << 16) | (4 << 20);
         self.mapping.region().read_write::<u32>(CC)?.write(value);
         Ok(())
