@@ -34,33 +34,25 @@ fn test_buddy_allocator_reserves_frame_zero() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_init_numa_frame_allocator_registers_region_with_buddy() {
-    use crate::mm::phys::buddy_allocator::init_buddy_allocator;
-    use crate::mm::phys::frame_allocator::init_numa_frame_allocator;
-    use crate::mm::types::NumaNodeId;
-
-    // Initialize buddy allocator without owning global memory
-    unsafe {
-        init_buddy_allocator(&[]);
-    }
-
-    // Register a NUMA region for PMM
-    let numa_region = [(PhysAddr::new(0x200000), 0x2000u64, NumaNodeId::new(1))];
-    unsafe {
-        init_numa_frame_allocator(&numa_region);
-    }
-
-    // Buddy should not manage the PMM range until it borrows from PMM
-    assert!(!crate::mm::phys::buddy_allocator::is_managed_by_buddy(
-        PhysAddr::new(0x200000)
-    ));
-
-    // Try to allocate a frame preferring that node (best-effort) via PMM borrow
-    let alloc = crate::mm::phys::buddy_allocator::buddy_alloc_frame_on_node(NumaNodeId::new(1))
-        .expect("borrowed alloc");
-    assert!(crate::mm::phys::buddy_allocator::is_managed_by_buddy(
-        alloc.start_address()
-    ));
+fn overlapping_region_admission_cannot_republish_live_frames() {
+    let mut allocator = BuddyFrameAllocator::new();
+    let start = FrameIndex::new(512);
+    let end = start.offset(512);
+    // SAFETY: the fixture does not dereference or publish physical frame identities.
+    assert_eq!(
+        unsafe { allocator.register_numa_region(NumaNodeId::NODE_0, start, end) },
+        Ok(())
+    );
+    let frame = allocator.allocate_order(2).expect("live extent");
+    let free = allocator.free_frame_count();
+    // SAFETY: no external physical users exist; the constructor must still
+    // reject overlap with its own previously admitted inventory.
+    assert_eq!(
+        unsafe { allocator.register_numa_region(NumaNodeId::new(1), start, end) },
+        Err(FrameInventoryError::Overlap)
+    );
+    assert_eq!(allocator.free_frame_count(), free);
+    assert_eq!(allocator.deallocate_order(frame, 2), Ok(()));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -85,7 +77,11 @@ fn test_numa_register_and_alloc_local() {
     let start_frame = FrameIndex::from_phys_addr(start.as_u64());
     let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
 
-    allocator.register_numa_region(NumaNodeId::new(0), start_frame, end_frame);
+    // SAFETY: this local inventory fixture never publishes physical memory.
+    assert_eq!(
+        unsafe { allocator.register_numa_region(NumaNodeId::new(0), start_frame, end_frame) },
+        Ok(())
+    );
 
     // Allocate a 4K frame preferring node 0
     let frame = allocator
@@ -106,7 +102,11 @@ fn test_numa_2m_alloc_local() {
     let start_frame = FrameIndex::from_phys_addr(start.as_u64());
     let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
 
-    allocator.register_numa_region(NumaNodeId::new(1), start_frame, end_frame);
+    // SAFETY: this local inventory fixture never publishes physical memory.
+    assert_eq!(
+        unsafe { allocator.register_numa_region(NumaNodeId::new(1), start_frame, end_frame) },
+        Ok(())
+    );
 
     // Try 4K allocation on node 1 (2M allocation may fail due to size)
     let frame = allocator
@@ -117,80 +117,89 @@ fn test_numa_2m_alloc_local() {
 }
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_folio_allocation_and_flags() {
-    use crate::mm::meta::page_flags::{self, PageMetaFlags};
-
-    // Initialize page flags for testing (needed for Folio tracking)
-    // We allocate enough space for the test frames.
-    // Note: This modifies global state, so it might conflict if other tests used page_flags.
-    // Currently, other tests largely ignore page_flags (only order-0 allocations).
-    unsafe {
-        let max_frames = 4096; // 16MB range
-        // We blindly call init. In a real scenario, we might want a "try_init" or verify status.
-        // Since tests run in parallel, this is slightly risky, but acceptable for this verification phase.
-        page_flags::init_page_flags(max_frames);
-    }
-
+fn compound_release_requires_exact_extent() {
     let mut allocator = BuddyFrameAllocator::new();
-
-    // Setup a region: 2MB at 2MB offset (Frames 512 to 1024)
-    let start = PhysAddr::new(0x200000);
-    let size = 0x200000u64; // 2MB
-    let regions = [(start, size)];
-
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // Allocate Order 2 (16KB, 4 pages)
-    let frame = allocator
-        .allocate_order(2)
-        .expect("Failed to allocate order 2");
-    let frame_idx = frame.as_usize();
-
-    // 1. Verify Head Page
-    assert!(
-        page_flags::test_flag(frame, PageMetaFlags::CompoundHead),
-        "Head flag not set"
+    // SAFETY: this isolated inventory fixture never dereferences or publishes
+    // the physical frame identities.
+    unsafe { allocator.init(&[(PhysAddr::new(0x200000), 0x200000)]) };
+    let free = allocator.free_frame_count();
+    let frame = allocator.allocate_order(2).expect("order two allocation");
+    assert_eq!(allocator.free_frame_count(), free - 4);
+    assert_eq!(
+        allocator.deallocate_order(frame.offset(1), 0),
+        Err(ExtentError::NotAllocationHead)
     );
-    assert!(
-        !page_flags::test_flag(frame, PageMetaFlags::CompoundTail),
-        "Head has Tail flag"
+    assert_eq!(
+        allocator.deallocate_order(frame, 0),
+        Err(ExtentError::OrderMismatch {
+            allocated: 2,
+            requested: 0
+        })
     );
-    assert_eq!(page_flags::get_order(frame), 2, "Head order incorrect");
-
-    // 2. Verify Tail Pages
-    for i in 1..4 {
-        let tail = FrameIndex::new(frame_idx + i);
-        assert!(
-            page_flags::test_flag(tail, PageMetaFlags::CompoundTail),
-            "Tail flag not set at index {}",
-            i
-        );
-        assert!(
-            !page_flags::test_flag(tail, PageMetaFlags::CompoundHead),
-            "Tail has Head flag at index {}",
-            i
-        );
-        // Allocation only sets order on HEAD. Tail order remains 0.
-        assert_eq!(page_flags::get_order(tail), 0, "Tail order should be 0");
-    }
-
-    // 3. Verify Deallocation Cleans Up
-    allocator.deallocate_order(frame, 2);
-
-    assert!(
-        !page_flags::test_flag(frame, PageMetaFlags::CompoundHead),
-        "Head flag not cleared"
+    assert_eq!(allocator.free_frame_count(), free - 4);
+    assert_eq!(allocator.deallocate_order(frame, 2), Ok(()));
+    assert_eq!(allocator.free_frame_count(), free);
+    assert_eq!(
+        allocator.deallocate_order(frame, 2),
+        Err(ExtentError::NotAllocationHead)
     );
-    assert_eq!(page_flags::get_order(frame), 0, "Head order not cleared");
+    assert_eq!(allocator.free_frame_count(), free);
+}
 
-    for i in 1..4 {
-        let tail = FrameIndex::new(frame_idx + i);
-        assert!(
-            !page_flags::test_flag(tail, PageMetaFlags::CompoundTail),
-            "Tail flag not cleared at index {}",
-            i
-        );
-    }
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn numa_and_zeroed_allocations_track_the_same_extent_contract() {
+    let mut allocator = BuddyFrameAllocator::new();
+    let start = FrameIndex::from_phys_addr(0x200000);
+    let end = start.offset(512);
+    // SAFETY: bookkeeping-only fixture with exclusive frame identities.
+    assert_eq!(
+        unsafe { allocator.register_numa_region(NumaNodeId::NODE_0, start, end) },
+        Ok(())
+    );
+    let free = allocator.free_frame_count();
+    let local = allocator
+        .allocate_order_in_range(2, start.as_usize(), end.as_usize())
+        .expect("NUMA extent");
+    assert_eq!(allocator.deallocate_order(local, 2), Ok(()));
+    let zeroed = allocator.find_dirty_free_page(2).expect("returned extent");
+    allocator.mark_scrubbed(zeroed, 2);
+    let (frame, was_zeroed) = allocator
+        .allocate_order_prefer_zeroed(2)
+        .expect("zeroed extent");
+    assert!(was_zeroed);
+    assert_eq!(allocator.deallocate_order(frame, 2), Ok(()));
+    assert_eq!(allocator.free_frame_count(), free);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn zero_size_allocation_does_not_consume_a_frame() {
+    let mut allocator = BuddyFrameAllocator::new();
+    // SAFETY: bookkeeping-only fixture, never published to a physical consumer.
+    unsafe { allocator.init(&[(PhysAddr::new(0x200000), 0x200000)]) };
+    let free = allocator.free_frame_count();
+    assert!(allocator.allocate_contiguous(0).is_none());
+    assert_eq!(allocator.free_frame_count(), free);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn coalescing_invalidates_zeroed_state_before_extent_reuse() {
+    let mut allocator = BuddyFrameAllocator::new();
+    // SAFETY: isolated bookkeeping fixture, never used as physical storage.
+    unsafe { allocator.init(&[(PhysAddr::new(0x200000), 0x4000)]) };
+    let left = allocator.allocate_order(1).expect("left half");
+    let right = allocator.allocate_order(1).expect("right half");
+    assert_eq!(allocator.deallocate_order(left, 1), Ok(()));
+    assert_eq!(allocator.deallocate_order(right, 1), Ok(()));
+    allocator.mark_scrubbed(left, 1);
+    allocator.mark_scrubbed(right, 1);
+    allocator.try_coalesce_all();
+    let combined = allocator.allocate_order(2).expect("coalesced extent");
+    assert_eq!(allocator.deallocate_order(combined, 2), Ok(()));
+    let (_, was_zeroed) = allocator
+        .allocate_order_prefer_zeroed(1)
+        .expect("split extent");
+    assert!(!was_zeroed, "old child zeroed state survived reuse");
 }

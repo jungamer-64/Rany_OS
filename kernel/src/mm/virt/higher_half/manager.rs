@@ -281,7 +281,8 @@ impl PageTableManager {
     ///
     /// # Safety
     /// - `virt` と `phys` は4KiBアラインされている必要がある
-    /// - 物理フレームは有効なメモリを指している必要がある
+    /// - The caller retains the physical-memory owner until the mapping is
+    ///   removed and all CPUs have completed the required TLB invalidation.
     pub unsafe fn map_page(
         &mut self,
         virt: VirtAddr,
@@ -304,10 +305,6 @@ impl PageTableManager {
 
         *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
 
-        // 脆弱性修正: マップカウントを増加させてページ回収時のUse-After-Freeを防止
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-        crate::mm::meta::page_flags::inc_map_count(frame_idx);
-
         Ok(())
     }
 
@@ -324,6 +321,8 @@ impl PageTableManager {
     ///
     /// # Safety
     /// - `virt` と `phys` は2MiBアラインされている必要がある
+    /// - The caller retains ownership of every constituent frame through unmap
+    ///   and completed TLB invalidation; mapping does not transfer ownership.
     pub unsafe fn map_2mb_page(
         &mut self,
         virt: VirtAddr,
@@ -360,12 +359,6 @@ impl PageTableManager {
         // Huge Page フラグを設定
         *pde = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
-        // 脆弱性修正: マップカウントを増加 (2MB = 512 * 4KB)
-        let start_frame = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-        for i in 0..512 {
-            crate::mm::meta::page_flags::inc_map_count(start_frame.offset(i));
-        }
-
         Ok(())
     }
 
@@ -373,6 +366,8 @@ impl PageTableManager {
     ///
     /// # Safety
     /// - `virt` と `phys` は1GiBアラインされている必要がある
+    /// - The caller retains ownership of every constituent frame through unmap
+    ///   and completed TLB invalidation; mapping does not transfer ownership.
     pub unsafe fn map_1gb_page(
         &mut self,
         virt: VirtAddr,
@@ -407,10 +402,6 @@ impl PageTableManager {
         // Huge Page フラグを設定（1GiBページ）
         *pdpte = PageTableEntry::huge(phys, actual_flags.set(PageFlags::PRESENT));
 
-        // 脆弱性修正: マップカウントを増加（とりあえず先頭ページのみ。1GB=262144ページ）
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-        crate::mm::meta::page_flags::inc_map_count(frame_idx);
-
         Ok(())
     }
 
@@ -442,10 +433,6 @@ impl PageTableManager {
             let phys = pdpte.phys_addr();
             pdpte.clear();
 
-            // 脆弱性修正: マップカウントを減少（先頭ページのみ）
-            let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-            crate::mm::meta::page_flags::dec_map_count(frame_idx);
-
             return Ok(phys);
         }
 
@@ -460,12 +447,6 @@ impl PageTableManager {
             let phys = pde.phys_addr();
             pde.clear();
 
-            // 脆弱性修正: マップカウントを減少
-            let start_frame = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-            for i in 0..512 {
-                crate::mm::meta::page_flags::dec_map_count(start_frame.offset(i));
-            }
-
             return Ok(phys);
         }
 
@@ -479,10 +460,6 @@ impl PageTableManager {
         // 4KiBページ
         let phys = pte.phys_addr();
         pte.clear();
-
-        // 脆弱性修正: マップカウントを減少
-        let frame_idx = crate::mm::types::FrameIndex::from_phys_addr(phys.as_u64());
-        crate::mm::meta::page_flags::dec_map_count(frame_idx);
 
         Ok(phys)
     }

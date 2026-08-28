@@ -70,55 +70,65 @@ impl BuddyFrameAllocator {
         })
     }
 
-    /// 4KiB フレームを解放
+    /// Release exactly one order-zero allocation.
+    ///
+    /// # Panics
+    /// An invalid head, duplicate release, or wrong extent is an ownership bug;
+    /// the kernel stops without returning that memory to the free index.
     pub fn deallocate_4k_frame(&mut self, frame: PhysFrame<Size4KiB>) {
         let frame_idx = FrameIndex::from_phys_addr(frame.start_address().as_u64());
-
-        // Phase 6: Check for Folio order
-        let order = crate::mm::meta::page_flags::get_order(frame_idx) as usize;
+        self.deallocate_order(frame_idx, 0)
+            .expect("[Buddy] invalid order-zero release");
 
         // Memcg: ページがmemcgでトラックされている場合はアンチャージ
         crate::mm::meta::memcg::memcg_untrack_and_uncharge(frame_idx, 1);
-
-        self.deallocate_order(frame_idx, order);
     }
 
     /// 2MiB フレームを解放
     ///
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
+    ///
+    /// # Panics
+    /// A release that does not match a live 2MiB extent is a fatal ownership bug.
     pub fn deallocate_2m_frame(&mut self, frame: PhysFrame<Size2MiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let frames_count = PAGE_SIZE_2M / PAGE_SIZE_4K;
+        let order = Self::frames_to_order(frames_count);
+        self.deallocate_order_immediate(start_frame, order)
+            .expect("[Buddy] invalid 2MiB release");
 
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
             crate::mm::meta::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
-
-        let order = Self::frames_to_order(PAGE_SIZE_2M / PAGE_SIZE_4K);
-        self.deallocate_order_immediate(start_frame, order);
     }
 
     /// 1GiB フレームを解放
     ///
     /// 大きなブロックは即時結合を使用（スラッシングのリスクが低い）
+    ///
+    /// # Panics
+    /// A release that does not match a live 1GiB extent is a fatal ownership bug.
     pub fn deallocate_1g_frame(&mut self, frame: PhysFrame<Size1GiB>) {
         let start_frame = FrameIndex::from_phys_addr(frame.start_address().as_u64());
         let frames_count = PAGE_SIZE_1G / PAGE_SIZE_4K;
+        let order = Self::frames_to_order(frames_count);
+        self.deallocate_order_immediate(start_frame, order)
+            .expect("[Buddy] invalid 1GiB release");
 
         // Memcg: 各4KiBページについてアンチャージ/アンストラックする
         for i in 0..frames_count {
             let idx = FrameIndex::new(start_frame.as_usize() + i);
             crate::mm::meta::memcg::memcg_untrack_and_uncharge(idx, 1);
         }
-
-        let order = Self::frames_to_order(PAGE_SIZE_1G / PAGE_SIZE_4K);
-        self.deallocate_order_immediate(start_frame, order);
     }
 
     /// 連続する物理フレームを割り当て（2のべき乗に切り上げ）
     pub fn allocate_contiguous(&mut self, frame_count: usize) -> Option<PhysAddr> {
+        if frame_count == 0 {
+            return None;
+        }
         let order = Self::frames_to_order(frame_count);
         if order > MAX_ORDER {
             return None;
@@ -127,8 +137,24 @@ impl BuddyFrameAllocator {
             .map(|frame| PhysAddr::new(frame.to_phys_addr()))
     }
 
-    /// Register a NUMA region for a node and add it to the allocator
-    pub fn register_numa_region(&mut self, node: NumaNodeId, start: FrameIndex, end: FrameIndex) {
+    /// Admit exclusively owned physical RAM before publishing it for allocation.
+    ///
+    /// # Safety
+    /// The range must not be used by any other allocator or live memory owner.
+    ///
+    /// # Errors
+    /// Invalid/overlapping ranges or exhausted tracking storage leave the range
+    /// unadmitted. The caller retains ownership and must reclaim it.
+    pub(super) unsafe fn register_numa_region(
+        &mut self,
+        node: NumaNodeId,
+        start: FrameIndex,
+        end: FrameIndex,
+    ) -> Result<(), FrameInventoryError> {
+        if end.as_usize() > MAX_4K_FRAMES {
+            return Err(FrameInventoryError::InvalidRange);
+        }
+        self.allocations.admit(start, end)?;
         self.init_layout();
 
         if self.numa_regions.is_none() {
@@ -145,6 +171,7 @@ impl BuddyFrameAllocator {
         // Update total_frames to cover the new region
         self.total_frames = self.total_frames.max(end.as_usize().min(MAX_4K_FRAMES));
         self.update_order_limits();
+        Ok(())
     }
 
     /// Allocate an order block restricted to [start_frame, end_frame)
@@ -165,16 +192,7 @@ impl BuddyFrameAllocator {
             if let Some(block_idx) =
                 self.find_free_block_in_range(current_order, start_block, end_block)
             {
-                self.clear_free_block(current_order, block_idx);
-                let frame = FrameIndex::new(block_idx << current_order);
-
-                self.split_block(frame, current_order, order);
-
-                let target_size = 1u64 << order;
-                debug_assert!(self.free_frames >= target_size);
-                self.free_frames = self.free_frames.saturating_sub(target_size);
-
-                return Some(frame);
+                return Some(self.claim_free_block(block_idx, current_order, order));
             }
         }
         None
@@ -359,11 +377,7 @@ impl BuddyFrameAllocator {
 
         // まずゼロクリア済みブロックを探す
         if let Some(block_idx) = self.find_zeroed_free_block(order) {
-            self.clear_free_block(order, block_idx);
-            self.clear_block_zeroed(order, block_idx);
-            let frame = FrameIndex::new(block_idx << order);
-            let block_size = 1u64 << order;
-            self.free_frames = self.free_frames.saturating_sub(block_size);
+            let frame = self.claim_free_block(block_idx, order, order);
             self.zeroed_allocs += 1;
             return Some((frame, true));
         }
@@ -376,10 +390,7 @@ impl BuddyFrameAllocator {
     pub fn allocate_4k_zeroed(&mut self) -> Option<(PhysFrame<Size4KiB>, bool)> {
         self.allocate_order_prefer_zeroed(0).map(|(frame, zeroed)| {
             let phys_addr = PhysAddr::new(frame.to_phys_addr());
-            (
-                unsafe { PhysFrame::from_start_address_unchecked(phys_addr) },
-                zeroed,
-            )
+            (PhysFrame::containing_address(phys_addr), zeroed)
         })
     }
 

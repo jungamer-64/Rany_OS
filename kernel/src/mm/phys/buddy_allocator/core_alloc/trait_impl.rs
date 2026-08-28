@@ -71,8 +71,29 @@ pub(crate) fn borrow_exact_order_from_pmm(
 
     let node_id =
         crate::mm::phys::frame_allocator::numa_node_for_addr(addr).unwrap_or(NumaNodeId::NODE_0);
-    buddy_register_numa_region(node_id, addr, size_bytes);
-    true
+    let start_frame = FrameIndex::from_phys_addr(addr.as_u64());
+    let end_frame = start_frame.offset(frames);
+    // SAFETY: PMM returned this exclusive, aligned allocation above. Admission
+    // transfers it to buddy only on success; rejected admission returns it below.
+    let admitted = unsafe {
+        BUDDY_ALLOCATOR
+            .lock()
+            .expect("lock poisoned")
+            .register_numa_region(node_id, start_frame, end_frame)
+    };
+    match admitted {
+        Ok(()) => true,
+        Err(FrameInventoryError::Overlap) => {
+            // PMM violated exclusive ownership. Returning the contested range
+            // would allow another allocation to overwrite live buddy memory.
+            panic!("[Buddy] PMM returned an already-owned physical range");
+        }
+        Err(error) => {
+            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(addr, frames);
+            log::warn!("[Buddy] PMM range admission failed: {:?}", error);
+            false
+        }
+    }
 }
 
 pub(crate) fn borrow_from_pmm_for_order(order: usize, preferred_node: Option<NumaNodeId>) -> bool {
@@ -208,14 +229,6 @@ pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
     BUDDY_ALLOCATOR.lock().expect("lock poisoned").stats()
 }
 
-/// Register a NUMA region with the global Buddy Allocator
-pub fn buddy_register_numa_region(node: NumaNodeId, start: PhysAddr, size: u64) {
-    let mut allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
-    let start_frame = FrameIndex::from_phys_addr(start.as_u64());
-    let end_frame = FrameIndex::from_phys_addr(start.as_u64() + size);
-    allocator.register_numa_region(node, start_frame, end_frame);
-}
-
 /// Allocate a 4KiB frame preferring the given NUMA node (best-effort)
 pub fn buddy_alloc_frame_on_node(node: NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
     if let Some(frame) = BUDDY_ALLOCATOR
@@ -278,69 +291,24 @@ pub fn buddy_alloc_frame_1g_on_node(node: NumaNodeId) -> Option<PhysFrame<Size1G
 /// 注: Buddyアロケータは初期化時に登録された領域のみを管理する
 pub fn is_managed_by_buddy(addr: PhysAddr) -> bool {
     let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
-
-    // If NUMA regions are recorded, check them first
-    if let Some(map) = allocator.numa_regions.as_ref() {
-        for (_node, ranges) in map.iter() {
-            for &(start, end) in ranges.iter() {
-                let start_addr = start.to_phys_addr();
-                let end_addr = end.to_phys_addr();
-                if addr.as_u64() >= start_addr && addr.as_u64() < end_addr {
-                    return true;
-                }
-            }
-        }
-    }
-
-    // Fallback: contiguous region assumption
-    if allocator.total_frames == 0 {
-        return false;
-    }
-
-    let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
-    addr.as_u64() < max_addr
+    allocator
+        .allocations
+        .contains(FrameIndex::from_phys_addr(addr.as_u64()))
 }
 
-/// 指定範囲がBuddy Allocatorで管理されているかチェック
-///
-/// 範囲は [start, start+size) の半開区間。
-/// Check if [start, end) is fully contained within any NUMA range.
-pub(crate) fn is_range_in_numa_regions(
-    map: &alloc::collections::BTreeMap<NumaNodeId, alloc::vec::Vec<(FrameIndex, FrameIndex)>>,
-    start: u64,
-    end: u64,
-) -> bool {
-    for (_node, ranges) in map.iter() {
-        for &(range_start, range_end) in ranges.iter() {
-            if start >= range_start.to_phys_addr() && end <= range_end.to_phys_addr() {
-                return true;
-            }
-        }
-    }
-    false
-}
-
+/// Reports membership only; this does not authorize mutation or release.
+/// Checked byte bounds are converted to the half-open frame range they touch.
 pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
     if size == 0 {
         return false;
     }
-
     let Some(end) = start.as_u64().checked_add(size) else {
         return false;
     };
-
+    let first = FrameIndex::from_phys_addr(start.as_u64());
+    let last = FrameIndex::from_phys_addr(end - 1).offset(1);
     let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
-
-    if let Some(map) = allocator.numa_regions.as_ref() {
-        return is_range_in_numa_regions(map, start.as_u64(), end);
-    }
-
-    if allocator.total_frames == 0 {
-        return false;
-    }
-
-    let max_addr = (allocator.total_frames as u64) * (PAGE_SIZE_4K as u64);
-    start.as_u64() < max_addr && end <= max_addr
+    allocator.allocations.contains_range(first, last)
 }
 
 // ============================================================================
@@ -350,18 +318,15 @@ pub fn is_range_managed_by_buddy(start: PhysAddr, size: u64) -> bool {
 /// 指定フレームが割り当て済み（使用中）かどうかをチェック
 ///
 /// THP昇格候補の検出に使用される。
-/// 空きフレームでない = 割り当て済みとみなす。
+/// Only a live extent is allocated; unmanaged holes and coalesced free blocks
+/// are not inferred to be live from the order-zero search index.
 #[inline]
 pub fn is_frame_allocated(frame_idx: usize) -> bool {
     let allocator = BUDDY_ALLOCATOR.lock().expect("lock poisoned");
 
-    if frame_idx >= allocator.total_frames {
-        return false;
-    }
-
-    // Order 0（4KB）のビットマップで空きかどうかをチェック
-    // is_block_free が false = 空きではない = 割り当て済み
-    !allocator.is_block_free(0, frame_idx)
+    allocator
+        .allocations
+        .is_allocated(FrameIndex::new(frame_idx))
 }
 
 /// 512個の連続フレームをHugePageとしてマーク
@@ -392,7 +357,10 @@ pub unsafe fn mark_as_huge_page(start_frame: usize) -> bool {
         }
 
         // 空きであれば割り当て不可
-        if allocator.is_block_free(0, frame_idx) {
+        if !allocator
+            .allocations
+            .is_allocated(FrameIndex::new(frame_idx))
+        {
             return false;
         }
     }

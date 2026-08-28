@@ -1,6 +1,8 @@
 use super::*;
 use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
 
+mod allocations;
+use allocations::{ExtentError, FrameAllocations, FrameInventoryError};
 mod trait_impl;
 pub use trait_impl::*;
 mod coalesce;
@@ -43,6 +45,9 @@ pub(crate) const LAZY_COALESCE_THRESHOLD: u64 = 64;
 /// - 明示的な `try_coalesce_all` 呼び出し
 #[derive(Debug)]
 pub struct BuddyFrameAllocator {
+    /// Live extent authority, mutated with the free index under this owner's
+    /// exclusive borrow, including NUMA and zeroed allocation paths.
+    allocations: FrameAllocations,
     /// 各オーダーの空きブロックビット（1 = free）
     free_bits: [u64; TOTAL_DETAIL_WORDS],
     /// 各オーダーの空きサマリービット（1 = detail word has free blocks）
@@ -96,6 +101,7 @@ pub struct BuddyFrameAllocator {
 impl BuddyFrameAllocator {
     pub const fn new() -> Self {
         Self {
+            allocations: FrameAllocations::new(),
             free_bits: [0u64; TOTAL_DETAIL_WORDS],
             free_summary: [0u64; TOTAL_SUMMARY_WORDS],
             order_block_capacity: [0usize; MAX_ORDER + 1],
@@ -152,18 +158,15 @@ impl BuddyFrameAllocator {
     /// メモリマップに基づいてアロケータを初期化
     ///
     /// # Safety
-    /// - `usable_regions` は正しい使用可能メモリ領域を示す必要がある
+    /// `usable_regions` must be exclusively available physical RAM. No live
+    /// allocations may exist when initializing this allocator.
+    ///
+    /// # Panics
+    /// Invalid/overlapping inventory or exhausted metadata storage is fatal at
+    /// boot: continuing would publish frames without a complete allocation map.
     pub unsafe fn init(&mut self, usable_regions: &[(PhysAddr, u64)]) {
-        self.init_layout();
-        self.clear_state();
-
-        let mut total = 0usize;
-
-        // 使用可能な領域を空きブロックとして登録
-        if self.numa_regions.is_none() {
-            self.numa_regions = Some(BTreeMap::new());
-        }
-
+        let mut allocations = FrameAllocations::new();
+        let mut ranges = alloc::vec::Vec::new();
         for &(start, size) in usable_regions {
             let Some((start_addr, end_addr)) =
                 crate::mm::phys::frame_allocator::sanitize_managed_region(start.as_u64(), size)
@@ -172,8 +175,27 @@ impl BuddyFrameAllocator {
             };
 
             let start_frame = FrameIndex::from_phys_addr(start_addr);
-            let end_frame = FrameIndex::from_phys_addr(end_addr);
+            let end_frame = FrameIndex::new(
+                FrameIndex::from_phys_addr(end_addr)
+                    .as_usize()
+                    .min(MAX_4K_FRAMES),
+            );
+            if start_frame >= end_frame {
+                continue;
+            }
+            allocations
+                .admit(start_frame, end_frame)
+                .expect("[Buddy] cannot establish physical-frame inventory");
+            ranges.push((start_frame, end_frame));
+        }
 
+        self.init_layout();
+        self.clear_state();
+        self.allocations = allocations;
+        self.numa_regions = Some(BTreeMap::new());
+
+        let mut total = 0usize;
+        for (start_frame, end_frame) in ranges {
             total = total.max(end_frame.as_usize());
 
             // 領域を最大オーダーのブロックに分割して登録
@@ -314,6 +336,10 @@ impl BuddyFrameAllocator {
         }
         let new_word = word & !(1u64 << bit_idx);
         self.free_bits[word_idx] = new_word;
+        // A zeroed fact belongs to this exact free block. Allocation, splitting,
+        // or coalescing invalidates it; stale child bits must not survive reuse
+        // through a larger extent and later claim that dirty RAM is zeroed.
+        self.clear_block_zeroed(order, block_idx);
         self.order_free_counts[order] = self.order_free_counts[order].saturating_sub(1);
         if new_word == 0 {
             self.clear_summary_bit(order, detail_word_idx);
@@ -478,38 +504,30 @@ impl BuddyFrameAllocator {
         // 要求オーダー以上の空きブロックを探す
         for current_order in order..=MAX_ORDER {
             if let Some(block_idx) = self.find_free_block(current_order) {
-                self.clear_free_block(current_order, block_idx);
-                let frame = FrameIndex::new(block_idx << current_order);
-
-                // 必要に応じてブロックを分割
-                self.split_block(frame, current_order, order);
-
-                let block_size = 1u64 << order;
-                debug_assert!(self.free_frames >= block_size);
-                self.free_frames = self.free_frames.saturating_sub(block_size);
-
-                // Phase 6: Set Folio (Compound Page) flags
-                if order > 0 {
-                    use crate::mm::meta::page_flags::{self, PageMetaFlags};
-                    // Set order
-                    unsafe {
-                        page_flags::set_order(frame, order as u8);
-                    }
-
-                    // Head page
-                    page_flags::set_flag(frame, PageMetaFlags::CompoundHead);
-                    // Tail pages
-                    for i in 1..block_size {
-                        let tail_frame = FrameIndex::new(frame.as_usize() + i as usize);
-                        page_flags::set_flag(tail_frame, PageMetaFlags::CompoundTail);
-                    }
-                }
-
-                return Some(frame);
+                return Some(self.claim_free_block(block_idx, current_order, order));
             }
         }
 
         None
+    }
+
+    /// The free index selected this block while exclusively borrowed. A
+    /// disagreement with the extent inventory is allocator corruption and must
+    /// stop allocation, not publish a second owner for live physical RAM.
+    fn claim_free_block(
+        &mut self,
+        block_idx: usize,
+        from_order: usize,
+        order: usize,
+    ) -> FrameIndex {
+        let frame = FrameIndex::new(block_idx << from_order);
+        self.allocations
+            .allocate(frame, order)
+            .expect("[Buddy] free index disagrees with live allocation inventory");
+        self.clear_free_block(from_order, block_idx);
+        self.split_block(frame, from_order, order);
+        self.free_frames -= 1u64 << order;
+        frame
     }
 
     /// 大きなブロックを目標オーダーまで分割
@@ -537,34 +555,15 @@ impl BuddyFrameAllocator {
     /// - 解放回数が閾値 (LAZY_COALESCE_THRESHOLD) を超えた場合
     /// - allocate_order で要求サイズのブロックが見つからない場合
     /// - 明示的な try_coalesce_all 呼び出し
-    pub(super) fn deallocate_order(&mut self, frame: FrameIndex, order: usize) {
-        debug_assert_eq!(frame.align_down(order), frame);
-
-        // Phase 6: Clear Folio flags
-        if order > 0 {
-            use crate::mm::meta::page_flags::{self, PageMetaFlags};
-            unsafe {
-                page_flags::set_order(frame, 0);
-            }
-
-            let count = 1usize << order;
-            page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
-            for i in 1..count {
-                let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
-            }
-        }
+    ///
+    /// # Errors
+    /// A wrong head/order or duplicate release retains the live inventory and
+    /// does not publish any free frames.
+    fn deallocate_order(&mut self, frame: FrameIndex, order: usize) -> Result<(), ExtentError> {
+        self.allocations.release(frame, order)?;
 
         // フレームを空きとしてマーク
         let block_idx = frame.as_usize() >> order;
-        if self.is_block_free(order, block_idx) {
-            log::error!(
-                "[Buddy] Double free detected: frame={:#x} order={}",
-                frame.to_phys_addr(),
-                order
-            );
-            return;
-        }
         self.set_free_block(order, block_idx);
         self.free_frames += 1u64 << order;
 
@@ -578,44 +577,30 @@ impl BuddyFrameAllocator {
         } else {
             self.deferred_coalesce_skipped += 1;
         }
+        Ok(())
     }
 
     /// 指定オーダーのブロックを解放（即時結合版）
     ///
     /// 遅延結合を使用せず、即座にBuddyとの結合を試みる。
     /// 大きなブロック（2MB以上）の解放など、結合が有利な場合に使用。
-    pub(super) fn deallocate_order_immediate(&mut self, frame: FrameIndex, order: usize) {
-        debug_assert_eq!(frame.align_down(order), frame);
-
-        // Phase 6: Clear Folio flags
-        if order > 0 {
-            use crate::mm::meta::page_flags::{self, PageMetaFlags};
-            unsafe {
-                page_flags::set_order(frame, 0);
-            }
-
-            let count = 1usize << order;
-            page_flags::clear_flag(frame, PageMetaFlags::CompoundHead);
-            for i in 1..count {
-                let tail_frame = FrameIndex::new(frame.as_usize() + i);
-                page_flags::clear_flag(tail_frame, PageMetaFlags::CompoundTail);
-            }
-        }
+    ///
+    /// # Errors
+    /// A rejected extent release leaves the inventory and free index unchanged.
+    fn deallocate_order_immediate(
+        &mut self,
+        frame: FrameIndex,
+        order: usize,
+    ) -> Result<(), ExtentError> {
+        self.allocations.release(frame, order)?;
 
         let block_idx = frame.as_usize() >> order;
-        if self.is_block_free(order, block_idx) {
-            log::error!(
-                "[Buddy] Double free detected: frame={:#x} order={}",
-                frame.to_phys_addr(),
-                order
-            );
-            return;
-        }
         self.set_free_block(order, block_idx);
         self.free_frames += 1u64 << order;
 
         // 即座にBuddyとの合体を試みる
         self.coalesce(block_idx, order);
+        Ok(())
     }
 
     /// 全オーダーで結合可能なブロックを結合する
@@ -674,7 +659,7 @@ impl BuddyFrameAllocator {
 
 impl TypeIdHash for BuddyFrameAllocator {
     fn type_id_hash() -> TypeHash {
-        const_hash(b"BuddyFrameAllocator:v1:free_bits,free_summary,order_free_counts")
+        const_hash(b"BuddyFrameAllocator:v2:allocations,free_bits,free_summary,order_free_counts")
     }
 
     fn type_name() -> &'static str {
@@ -682,6 +667,6 @@ impl TypeIdHash for BuddyFrameAllocator {
     }
 
     fn type_version() -> SemVer {
-        SemVer::new(1, 0, 0)
+        SemVer::new(2, 0, 0)
     }
 }
