@@ -6,18 +6,13 @@
 //!
 //! - `types` - 型安全なID、定数、エラー型
 //! - `fis` - FIS (Frame Information Structure) 関連
-//! - `command` - コマンドヘッダ、PRD、コマンドテーブル
+//! - `command` - 検証済み ATA command と lease 由来の wire encoding
 //! - `identify` - ATA IDENTIFY データ構造体
 //! - `port` - AHCIポート実装
 //! - `controller` - AHCIコントローラ実装
-//!
-//! ## Kernel-Dependent Modules (temporarily excluded)
-//! - `poll_handler` - `IoScheduler`統合 (requires kernel io_scheduler)
-//! - `dma_buffer` - DMA安全バッファ (requires kernel dma module)
 
 #![no_std]
-#![allow(unsafe_attr_outside_unsafe)]
-#![allow(unsafe_op_in_unsafe_fn)] // Transitional: DMA and controller operations
+#![deny(unsafe_op_in_unsafe_fn)]
 #![allow(clippy::derivable_impls)] // Explicit Default impl for packed struct clarity
 #![allow(clippy::must_use_candidate)] // Hardware accessor methods
 
@@ -26,23 +21,19 @@ extern crate alloc;
 #[cfg(feature = "standalone")]
 kernel_api::register_cell_runtime!();
 
-// Core modules (no kernel deps)
-pub mod command;
+mod command;
 pub mod fis;
 pub mod identify;
 pub mod types;
 
-// Modules with kernel deps - excluded for now
 pub mod atapi;
 pub mod controller;
-pub mod dma_buffer;
 pub mod driver_impl;
 pub mod ffi;
-pub mod port; // ATAPI (CD/DVD) support
-// pub mod poll_handler;
+pub mod port;
 
 // 主要な型を再エクスポート
-pub use command::{CommandHeader, CommandTable, PhysicalRegionDescriptor, ReceivedFis};
+pub use command::{AtaCommand, CommandError, DmaAddressWidth, PORT_DMA_BYTES};
 pub use fis::{
     ATA_CMD_FLUSH_CACHE, ATA_CMD_FLUSH_CACHE_EXT, ATA_CMD_IDENTIFY, ATA_CMD_READ_DMA_EXT,
     ATA_CMD_WRITE_DMA_EXT, FisRegH2D, FisType,
