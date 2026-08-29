@@ -196,6 +196,15 @@ impl DmaQueueIdentity {
     pub const fn generation(self) -> u64 {
         self.generation.get()
     }
+
+    /// Derive another hardware queue in the same controller generation.
+    pub const fn with_index(self, index: u16) -> Self {
+        Self {
+            device: self.device,
+            index,
+            generation: self.generation,
+        }
+    }
 }
 
 /// Borrowed descriptor data for one prepared DMA submission.
@@ -1323,6 +1332,17 @@ mod tests {
         assert_eq!(lease.slot(), 4);
         assert_eq!(lease.generation(), 9);
         assert_eq!(DmaLeaseId::from_abi(lease.into_abi()), Some(lease));
+    }
+
+    #[test]
+    fn derived_queue_identity_preserves_controller_and_generation() {
+        let device = PackedPciLocation::new(0, 2, 3, 1);
+        let admin = DmaQueueIdentity::new(device, 0, 19).expect("valid admin queue identity");
+        let io = admin.with_index(7);
+
+        assert_eq!(io.device(), device);
+        assert_eq!(io.index(), 7);
+        assert_eq!(io.generation(), 19);
     }
 
     #[test]

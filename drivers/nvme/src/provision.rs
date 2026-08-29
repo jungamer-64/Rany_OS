@@ -2,7 +2,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
-use kernel_api::dma::{CpuDmaLease, DmaQueueIdentity};
+use kernel_api::dma::CpuDmaLease;
 
 use crate::controller::NvmeAdminController;
 use crate::protocol::{AdminCommand, CompletionStatus, IoTransfer};
@@ -154,8 +154,6 @@ pub enum QueueInputError {
     QueueLimit,
     /// Queue depth is unsupported by the controller or cannot hold work.
     InvalidDepth,
-    /// A non-zero queue generation could not be established.
-    InvalidGeneration,
     /// Runtime metadata could not be reserved before hardware publication.
     MetadataAllocation,
 }
@@ -259,7 +257,6 @@ impl IoQueueProvisioner {
     pub fn begin_next_queue(
         mut self,
         depth: u16,
-        generation: u64,
         memory: QueueMemory,
     ) -> Result<IoQueueCreation, QueueCreateError> {
         let next = self.io_queues.len().checked_add(1);
@@ -281,14 +278,7 @@ impl IoQueueProvisioner {
                 memory,
             ));
         }
-        let device = self.controller.admin_queue.identity().device();
-        let Some(identity) = DmaQueueIdentity::new(device, queue_id, generation) else {
-            return Err(input_error(
-                QueueInputError::InvalidGeneration,
-                self,
-                memory,
-            ));
-        };
+        let identity = self.controller.admin_queue.identity().with_index(queue_id);
         let prepared = match PreparedQueuePair::prepare(identity, depth, memory) {
             Ok(prepared) => prepared,
             Err(cause) => {
