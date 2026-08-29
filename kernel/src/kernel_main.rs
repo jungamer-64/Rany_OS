@@ -765,7 +765,6 @@ fn phase_driver_bringup() -> bool {
     init_hid_drivers();
 
     // 3.5.5 - 3.5.7. Storage and USB controller scanning
-    init_nvme_controllers();
     init_ahci_controllers();
     init_usb_controllers();
     log_driver_registry_summary();
