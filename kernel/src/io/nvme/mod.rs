@@ -8,4 +8,4 @@
 
 mod runtime;
 
-pub(crate) use runtime::{NvmeDeviceOps, NvmeQueuePoller, NvmeRuntime, RuntimeCreateError};
+pub(crate) use runtime::{NvmeRuntime, RuntimeCreateError};

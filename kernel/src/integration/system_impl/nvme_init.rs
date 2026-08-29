@@ -38,29 +38,10 @@ pub(in crate::integration) struct NvmeControllerOwner {
 }
 
 enum NvmeControllerState {
-    Running {
-        runtime: Arc<NvmeRuntime>,
-        identify_close_failure: Option<DmaCloseError>,
-    },
     Failed(NvmeStartupFailure),
 }
 
 impl NvmeControllerOwner {
-    fn running(
-        locator: PackedPciLocation,
-        runtime: Arc<NvmeRuntime>,
-        identify_close_failure: Option<DmaCloseError>,
-    ) -> Self {
-        Self {
-            locator,
-            generation: INITIAL_CONTROLLER_GENERATION,
-            state: NvmeControllerState::Running {
-                runtime,
-                identify_close_failure,
-            },
-        }
-    }
-
     fn failed(locator: PackedPciLocation, failure: NvmeStartupFailure) -> Self {
         Self {
             locator,
@@ -71,26 +52,14 @@ impl NvmeControllerOwner {
 
     fn running_device(&self) -> Option<crate::io::io_scheduler::DeviceId> {
         match &self.state {
-            NvmeControllerState::Running { runtime, .. } => Some(runtime.device()),
             NvmeControllerState::Failed(_) => None,
         }
     }
 
     fn retained_failure(&self) -> Option<&NvmeStartupFailure> {
         match &self.state {
-            NvmeControllerState::Running { .. } => None,
             NvmeControllerState::Failed(failure) => Some(failure),
         }
-    }
-
-    fn identify_close_failed(&self) -> bool {
-        matches!(
-            &self.state,
-            NvmeControllerState::Running {
-                identify_close_failure: Some(_),
-                ..
-            }
-        )
     }
 }
 
@@ -102,7 +71,6 @@ impl core::fmt::Debug for NvmeControllerOwner {
             .field("generation", &self.generation)
             .field("running_device", &self.running_device())
             .field("failure", &self.retained_failure())
-            .field("identify_close_failed", &self.identify_close_failed())
             .finish()
     }
 }
@@ -731,15 +699,4 @@ fn requested_queue_count() -> NonZeroU16 {
 
 fn timed_out(start: u64, timeout_ns: u64) -> bool {
     crate::time::best_effort_time_nanos().saturating_sub(start) >= timeout_ns
-}
-
-fn publish_runtime(runtime: Arc<NvmeRuntime>, pollers: Vec<Arc<NvmeQueuePoller>>) {
-    let device = runtime.device();
-    let scheduler = io_scheduler();
-    scheduler.register_device(device, Default::default());
-    scheduler.register_device_ops(device, Arc::new(NvmeDeviceOps::new(runtime)));
-    let executor = hybrid_coordinator().polling_executor();
-    for poller in pollers {
-        executor.register_handler(device, poller);
-    }
 }

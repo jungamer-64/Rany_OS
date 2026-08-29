@@ -608,66 +608,6 @@ const fn map_poll_error(cause: &PollError) -> IoError {
     }
 }
 
-pub(crate) struct NvmeDeviceOps(Arc<NvmeRuntime>);
-
-impl NvmeDeviceOps {
-    pub(crate) fn new(runtime: Arc<NvmeRuntime>) -> Self {
-        Self(runtime)
-    }
-}
-
-impl DeviceOps for NvmeDeviceOps {
-    fn submit(&self, submission: IoSubmission, cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome {
-        self.0.submit(submission, cpu_id)
-    }
-
-    fn is_ready(&self) -> bool {
-        self.0.is_ready()
-    }
-}
-
-pub(crate) struct NvmeQueuePoller {
-    runtime: Arc<NvmeRuntime>,
-    queue_id: u16,
-}
-
-impl NvmeQueuePoller {
-    pub(crate) fn new(runtime: Arc<NvmeRuntime>, queue_id: u16) -> Option<Self> {
-        runtime
-            .queues
-            .get(usize::from(queue_id.checked_sub(1)?))
-            .filter(|queue| queue.queue_id == queue_id)?;
-        Some(Self { runtime, queue_id })
-    }
-}
-
-impl PollHandler for NvmeQueuePoller {
-    fn poll_completions(&self) -> Vec<DeviceCompletion> {
-        self.runtime.poll_queue(self.queue_id)
-    }
-
-    fn is_ready(&self) -> bool {
-        self.runtime
-            .queues
-            .get(usize::from(self.queue_id - 1))
-            .is_some_and(|queue| queue.lock().needs_poll())
-    }
-
-    fn affinity(&self) -> PollAffinity {
-        let snapshot = crate::cpu::snapshot();
-        let online = snapshot.online();
-        if online.is_empty() {
-            return PollAffinity::Unavailable;
-        }
-        let Some(queue_index) = self.queue_id.checked_sub(1).map(usize::from) else {
-            return PollAffinity::Unavailable;
-        };
-        online
-            .member_at(queue_index % online.len())
-            .map_or(PollAffinity::Unavailable, PollAffinity::Cpu)
-    }
-}
-
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
 mod tests {
     use super::*;
