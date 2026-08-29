@@ -27,7 +27,9 @@ pub use identify::{
     IdentifySubmitError, NamespaceIdentifyError, NamespaceInfo, NamespaceParseError,
 };
 
-pub use protocol::{CompletionStatus, IoOpcode, IoTransfer, NvmeCompletion, TransferDirection};
+pub use protocol::{
+    CompletionStatus, IoOpcode, IoTransfer, NvmeCompletion, TransferDirection, TransferRangeError,
+};
 pub use provision::{
     ActiveQueueCreateCause, IoQueueCreatePoll, IoQueueCreation, IoQueueProvisioner, NvmeController,
     QueueBudgetCause, QueueBudgetError, QueueBudgetPoll, QueueBudgetRequest, QueueCreateError,

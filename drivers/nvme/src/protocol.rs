@@ -1,6 +1,8 @@
 use core::num::NonZeroU16;
 
-use kernel_api::dma::{DmaByteCount, DmaDeviceAddress};
+use kernel_api::dma::{DmaByteCount, DmaDeviceAddress, DmaQueueIdentity};
+
+use crate::identify::NamespaceInfo;
 
 const COMMAND_DWORDS: usize = 16;
 const PAGE_SIZE: u64 = 4096;
@@ -37,9 +39,10 @@ pub enum TransferDirection {
     Write,
 }
 
-/// Validated device-independent input for one NVM read or write command.
+/// One NVM read/write range bound to identified namespace geometry and generation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IoTransfer {
+    controller: DmaQueueIdentity,
     direction: TransferDirection,
     namespace: u32,
     start_lba: u64,
@@ -48,6 +51,46 @@ pub struct IoTransfer {
 }
 
 impl IoTransfer {
+    /// Derive the DMA length from the identified namespace, never from a caller
+    /// supplied byte count. The controller rechecks the generation at submit.
+    ///
+    /// # Errors
+    /// Rejects empty or overflowing ranges, LBAs beyond NSZE, and byte lengths
+    /// that cannot be represented by a DMA allocation on this target.
+    pub fn for_namespace(
+        namespace: NamespaceInfo,
+        direction: TransferDirection,
+        start_lba: u64,
+        block_count: u16,
+    ) -> Result<Self, TransferRangeError> {
+        if block_count == 0 {
+            return Err(TransferRangeError::Empty);
+        }
+        let end = start_lba
+            .checked_add(u64::from(block_count))
+            .ok_or(TransferRangeError::LbaOverflow)?;
+        if end > namespace.block_count() {
+            return Err(TransferRangeError::OutsideNamespace);
+        }
+        let logical_bytes = usize::try_from(namespace.block_size())
+            .ok()
+            .and_then(|size| size.checked_mul(usize::from(block_count)))
+            .and_then(DmaByteCount::new)
+            .ok_or(TransferRangeError::ByteCountOverflow)?;
+        Ok(Self {
+            controller: namespace.controller_identity(),
+            direction,
+            namespace: namespace.namespace(),
+            start_lba,
+            block_count,
+            logical_bytes,
+        })
+    }
+
+    pub(crate) fn belongs_to(self, controller: DmaQueueIdentity) -> bool {
+        self.controller == controller
+    }
+
     pub(crate) const fn direction(self) -> TransferDirection {
         self.direction
     }
@@ -56,6 +99,19 @@ impl IoTransfer {
     pub const fn logical_byte_count(self) -> DmaByteCount {
         self.logical_bytes
     }
+}
+
+/// Failure to derive a transfer from a namespace's current formatted geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransferRangeError {
+    /// NVMe read/write commands require at least one logical block.
+    Empty,
+    /// The LBA interval's exclusive end overflowed.
+    LbaOverflow,
+    /// The requested interval extends beyond NSZE.
+    OutsideNamespace,
+    /// Block count times block size does not fit a host DMA byte count.
+    ByteCountOverflow,
 }
 
 /// Raw completion status retained as an integer bitfield.
@@ -259,25 +315,6 @@ impl NvmeCommand {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn transfer_encoding_uses_zero_based_block_count_and_typed_prps() {
-        let transfer = IoTransfer::new(TransferDirection::Read, 7, 0x1122_3344_5566_7788, 8, 4096)
-            .expect("valid transfer");
-        let command = NvmeCommand::transfer(
-            9,
-            transfer,
-            DmaDeviceAddress::from_abi(0x1000),
-            Some(DmaDeviceAddress::from_abi(0x2000)),
-        );
-        assert_eq!(command.dwords[0], 0x0009_0002);
-        assert_eq!(command.dwords[1], 7);
-        assert_eq!(command.dwords[6], 0x1000);
-        assert_eq!(command.dwords[8], 0x2000);
-        assert_eq!(command.dwords[10], 0x5566_7788);
-        assert_eq!(command.dwords[11], 0x1122_3344);
-        assert_eq!(command.dwords[12], 7);
-    }
 
     #[test]
     fn completion_keeps_device_tags_as_checked_integer_fields() {

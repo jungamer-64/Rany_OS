@@ -1,4 +1,4 @@
-use kernel_api::dma::{CompletedDmaLease, CpuDmaLease, DmaLeaseError};
+use kernel_api::dma::{CompletedDmaLease, CpuDmaLease, DmaLeaseError, DmaQueueIdentity};
 
 use crate::controller::NvmeAdminController;
 use crate::protocol::{CompletionStatus, NvmeCompletion};
@@ -31,12 +31,17 @@ pub enum NamespaceParseError {
 /// Validated geometry for one NVM namespace.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct NamespaceInfo {
+    controller: DmaQueueIdentity,
     namespace: u32,
     block_count: u64,
     block_size: u32,
 }
 
 impl NamespaceInfo {
+    pub(crate) const fn controller_identity(self) -> DmaQueueIdentity {
+        self.controller
+    }
+
     /// Namespace identifier used for later commands.
     pub const fn namespace(self) -> u32 {
         self.namespace
@@ -57,7 +62,11 @@ impl NamespaceInfo {
         self.block_count.checked_mul(self.block_size as u64)
     }
 
-    fn parse(namespace: u32, bytes: &[u8]) -> Result<Self, NamespaceParseError> {
+    fn parse(
+        controller: DmaQueueIdentity,
+        namespace: u32,
+        bytes: &[u8],
+    ) -> Result<Self, NamespaceParseError> {
         if bytes.len() < IDENTIFY_BYTES {
             return Err(NamespaceParseError::Truncated);
         }
@@ -107,6 +116,7 @@ impl NamespaceInfo {
             .checked_shl(exponent)
             .ok_or(NamespaceParseError::InvalidBlockSize)?;
         Ok(Self {
+            controller,
             namespace,
             block_count,
             block_size,
@@ -323,7 +333,9 @@ impl IdentifyNamespaceRequest {
                 });
             }
         };
-        let info = match buffer.read(|bytes| NamespaceInfo::parse(self.namespace, bytes)) {
+        let identity = self.controller.admin_queue.identity();
+        let info = match buffer.read(|bytes| NamespaceInfo::parse(identity, self.namespace, bytes))
+        {
             Ok(Ok(info)) => info,
             Ok(Err(cause)) => {
                 return Err(IdentifyNamespaceError::Parse {
@@ -351,6 +363,14 @@ impl IdentifyNamespaceRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::protocol::{IoTransfer, NvmeCommand, TransferDirection, TransferRangeError};
+    use kernel_api::abi::driver::PackedPciLocation;
+    use kernel_api::dma::DmaDeviceAddress;
+
+    fn identity(generation: u64) -> DmaQueueIdentity {
+        DmaQueueIdentity::new(PackedPciLocation::new(0, 0, 1, 0), 0, generation)
+            .expect("non-null controller generation")
+    }
 
     fn identify_bytes(blocks: u64, format_index: u8, exponent: u8, metadata: u16) -> [u8; 4096] {
         let mut bytes = [0; 4096];
@@ -367,7 +387,7 @@ mod tests {
     #[test]
     fn namespace_geometry_uses_selected_lba_format() {
         let bytes = identify_bytes(0x1234, 2, 12, 0);
-        let info = NamespaceInfo::parse(7, &bytes).expect("valid namespace");
+        let info = NamespaceInfo::parse(identity(1), 7, &bytes).expect("valid namespace");
         assert_eq!(info.namespace(), 7);
         assert_eq!(info.block_count(), 0x1234);
         assert_eq!(info.block_size(), 4096);
@@ -375,7 +395,7 @@ mod tests {
 
         let extended = identify_bytes(8, 17, 9, 0);
         assert_eq!(
-            NamespaceInfo::parse(1, &extended)
+            NamespaceInfo::parse(identity(1), 1, &extended)
                 .expect("extended format index")
                 .block_size(),
             512
@@ -385,11 +405,11 @@ mod tests {
     #[test]
     fn namespace_geometry_rejects_metadata_and_invalid_exponents() {
         assert_eq!(
-            NamespaceInfo::parse(1, &identify_bytes(8, 0, 9, 8)),
+            NamespaceInfo::parse(identity(1), 1, &identify_bytes(8, 0, 9, 8)),
             Err(NamespaceParseError::MetadataUnsupported)
         );
         assert_eq!(
-            NamespaceInfo::parse(1, &identify_bytes(8, 0, 8, 0)),
+            NamespaceInfo::parse(identity(1), 1, &identify_bytes(8, 0, 8, 0)),
             Err(NamespaceParseError::InvalidBlockSize)
         );
     }
@@ -397,14 +417,68 @@ mod tests {
     #[test]
     fn namespace_geometry_rejects_empty_and_out_of_range_formats() {
         assert_eq!(
-            NamespaceInfo::parse(1, &identify_bytes(0, 0, 9, 0)),
+            NamespaceInfo::parse(identity(1), 1, &identify_bytes(0, 0, 9, 0)),
             Err(NamespaceParseError::EmptyNamespace)
         );
         let mut bytes = identify_bytes(8, 0, 9, 0);
         bytes[NAMESPACE_FORMATTED_LBA_OFFSET] = 1;
         assert_eq!(
-            NamespaceInfo::parse(1, &bytes),
+            NamespaceInfo::parse(identity(1), 1, &bytes),
             Err(NamespaceParseError::InvalidFormatIndex)
+        );
+    }
+
+    #[test]
+    fn transfer_length_and_encoding_follow_identified_geometry() {
+        let namespace = NamespaceInfo::parse(identity(3), 7, &identify_bytes(u64::MAX, 0, 9, 0))
+            .expect("valid geometry");
+        let transfer =
+            IoTransfer::for_namespace(namespace, TransferDirection::Read, 0x1122_3344_5566_7788, 8)
+                .expect("in-range transfer");
+        assert_eq!(transfer.logical_byte_count().get(), 4096);
+        assert!(transfer.belongs_to(identity(3)));
+        assert!(!transfer.belongs_to(identity(4)));
+        let command = NvmeCommand::transfer(
+            9,
+            transfer,
+            DmaDeviceAddress::from_abi(0x1000),
+            Some(DmaDeviceAddress::from_abi(0x2000)),
+        );
+        let words = command.dwords();
+        assert_eq!(words[0], 0x0009_0002);
+        assert_eq!(words[1], 7);
+        assert_eq!(words[6], 0x1000);
+        assert_eq!(words[8], 0x2000);
+        assert_eq!(words[10], 0x5566_7788);
+        assert_eq!(words[11], 0x1122_3344);
+        assert_eq!(words[12], 7);
+
+        let large_blocks = NamespaceInfo::parse(identity(3), 7, &identify_bytes(8, 0, 12, 0))
+            .expect("4096-byte blocks");
+        assert_eq!(
+            IoTransfer::for_namespace(large_blocks, TransferDirection::Write, 7, 1)
+                .expect("last block")
+                .logical_byte_count()
+                .get(),
+            4096
+        );
+    }
+
+    #[test]
+    fn transfer_range_rejects_empty_overflowing_and_outside_intervals() {
+        let namespace = NamespaceInfo::parse(identity(1), 1, &identify_bytes(8, 0, 9, 0))
+            .expect("valid geometry");
+        assert_eq!(
+            IoTransfer::for_namespace(namespace, TransferDirection::Read, 0, 0),
+            Err(TransferRangeError::Empty)
+        );
+        assert_eq!(
+            IoTransfer::for_namespace(namespace, TransferDirection::Read, u64::MAX, 1),
+            Err(TransferRangeError::LbaOverflow)
+        );
+        assert_eq!(
+            IoTransfer::for_namespace(namespace, TransferDirection::Read, 7, 2),
+            Err(TransferRangeError::OutsideNamespace)
         );
     }
 }

@@ -497,6 +497,11 @@ pub struct NvmeController {
 }
 
 impl NvmeController {
+    /// Whether the geometry was identified by this controller generation.
+    pub fn owns_namespace(&self, namespace: crate::NamespaceInfo) -> bool {
+        namespace.controller_identity() == self.admin_queue.identity()
+    }
+
     /// PCI function that owns this controller generation.
     pub fn device(&self) -> kernel_api::abi::driver::PackedPciLocation {
         self.admin_queue.identity().device()
@@ -505,6 +510,11 @@ impl NvmeController {
     /// Number of active I/O queue pairs.
     pub fn queue_count(&self) -> usize {
         self.io_queues.len()
+    }
+
+    /// Depth of one active sequential I/O queue.
+    pub fn queue_depth(&self, queue_id: u16) -> Option<u16> {
+        self.queue(queue_id).map(NvmeQueue::depth)
     }
 
     /// Submit one transfer to a sequential one-based I/O queue identifier.
@@ -518,6 +528,12 @@ impl NvmeController {
         transfer: IoTransfer,
         lease: CpuDmaLease,
     ) -> Result<QueueSubmission, SubmitError> {
+        if !transfer.belongs_to(self.admin_queue.identity()) {
+            return Err(SubmitError::Cpu {
+                cause: SubmitFailure::InvalidTransfer,
+                lease,
+            });
+        }
         let Some(queue) = self.queue(queue_id) else {
             return Err(SubmitError::Cpu {
                 cause: SubmitFailure::InvalidQueue,
