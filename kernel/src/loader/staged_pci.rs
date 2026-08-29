@@ -36,18 +36,86 @@ pub enum StageArtifactResult {
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub enum StagedPciBindOutcome {
+pub enum StagedPciClaimOutcome {
     NoMatch,
-    AlreadyBound,
+    AlreadyClaimed,
     Started {
         domain_id: DriverDomainId,
         handles: Vec<DriverHandle>,
     },
-    Failed(String),
+    Failed(StagedPciClaimFailure),
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+#[derive(Debug)]
+pub enum StagedPciClaimFailure {
+    PlatformServicesUnavailable {
+        driver: String,
+        device: PackedPciLocation,
+    },
+    MemoryDecode {
+        driver: String,
+        device: PackedPciLocation,
+        cause: kernel_api::KapiError,
+    },
+    BusMaster {
+        driver: String,
+        device: PackedPciLocation,
+        cause: kernel_api::KapiError,
+        memory_rollback: Result<(), kernel_api::KapiError>,
+    },
+    StartOutcomeUnknown {
+        driver: String,
+        device: PackedPciLocation,
+        cause: crate::driver_domain::DriverDomainError,
+    },
+}
+
+#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+impl core::fmt::Display for StagedPciClaimFailure {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        let (driver, device) = match self {
+            Self::PlatformServicesUnavailable { driver, device }
+            | Self::MemoryDecode { driver, device, .. }
+            | Self::BusMaster { driver, device, .. }
+            | Self::StartOutcomeUnknown { driver, device, .. } => (driver, device),
+        };
+        write!(
+            formatter,
+            "staged PCI driver '{}' claimed {:04x}:{:02x}:{:02x}.{}",
+            driver,
+            device.segment(),
+            device.bus(),
+            device.device(),
+            device.function()
+        )?;
+        match self {
+            Self::PlatformServicesUnavailable { .. } => {
+                formatter.write_str(" but PCI services are unavailable")
+            }
+            Self::MemoryDecode { cause, .. } => {
+                write!(
+                    formatter,
+                    " but memory decoding could not be enabled: {cause}"
+                )
+            }
+            Self::BusMaster {
+                cause,
+                memory_rollback,
+                ..
+            } => write!(
+                formatter,
+                " but bus mastering could not be enabled: {cause}; memory rollback: {memory_rollback:?}"
+            ),
+            Self::StartOutcomeUnknown { cause, .. } => {
+                write!(formatter, " and startup outcome is unknown: {cause}")
+            }
+        }
+    }
 }
 
 static STAGED_PCI_PACKS: PoisonLock<Vec<StagedPciDriverPack>> = PoisonLock::new(Vec::new());
-static BOUND_PCI_LOCATORS: PoisonLock<Vec<PackedPciLocation>> = PoisonLock::new(Vec::new());
+static CLAIMED_PCI_LOCATORS: PoisonLock<Vec<PackedPciLocation>> = PoisonLock::new(Vec::new());
 
 fn class_code_u32(dev: &PciDeviceInfo) -> u32 {
     ((dev.class_code.class as u32) << 16)
@@ -121,15 +189,19 @@ fn best_match_for(dev: &PciDeviceInfo) -> Option<StagedPciDriverPack> {
     best.map(|(_, index)| entries[index].clone())
 }
 
-fn mark_bound(locator: PackedPciLocation) {
-    let mut bound = BOUND_PCI_LOCATORS.lock().unwrap_or_else(|e| e.into_inner());
-    if !bound.contains(&locator) {
-        bound.push(locator);
+fn claim_device(locator: PackedPciLocation) -> bool {
+    let mut claimed = CLAIMED_PCI_LOCATORS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner());
+    if claimed.contains(&locator) {
+        return false;
     }
+    claimed.push(locator);
+    true
 }
 
-pub fn is_device_bound(locator: PackedPciLocation) -> bool {
-    BOUND_PCI_LOCATORS
+pub fn is_device_claimed(locator: PackedPciLocation) -> bool {
+    CLAIMED_PCI_LOCATORS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .contains(&locator)
@@ -199,18 +271,49 @@ pub fn stage_boot_artifact(
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-pub fn try_start_for_device(
+pub fn claim_and_start_for_device(
     dev: &PciDeviceInfo,
     mut ctx: AbiDriverContext,
-) -> StagedPciBindOutcome {
+) -> StagedPciClaimOutcome {
     let locator = dev.packed_locator();
-    if is_device_bound(locator) {
-        return StagedPciBindOutcome::AlreadyBound;
+    if is_device_claimed(locator) {
+        return StagedPciClaimOutcome::AlreadyClaimed;
     }
 
     let Some(entry) = best_match_for(dev) else {
-        return StagedPciBindOutcome::NoMatch;
+        return StagedPciClaimOutcome::NoMatch;
     };
+
+    // Claim the physical function before enabling decoding or starting code.
+    // A failed domain start may have programmed device state before its error
+    // becomes observable, so the built-in path must never acquire the same BAR
+    // or DMA function merely because startup did not return success.
+    if !claim_device(locator) {
+        return StagedPciClaimOutcome::AlreadyClaimed;
+    }
+
+    let Some(pci) = kernel_api::service::platform::try_pci() else {
+        return StagedPciClaimOutcome::Failed(StagedPciClaimFailure::PlatformServicesUnavailable {
+            driver: entry.manifest_name,
+            device: locator,
+        });
+    };
+    if let Err(cause) = pci.set_memory_space(dev.bdf, true) {
+        return StagedPciClaimOutcome::Failed(StagedPciClaimFailure::MemoryDecode {
+            driver: entry.manifest_name,
+            device: locator,
+            cause,
+        });
+    }
+    if let Err(cause) = pci.set_bus_master(dev.bdf, true) {
+        let memory_rollback = pci.set_memory_space(dev.bdf, false);
+        return StagedPciClaimOutcome::Failed(StagedPciClaimFailure::BusMaster {
+            driver: entry.manifest_name,
+            device: locator,
+            cause,
+            memory_rollback,
+        });
+    }
 
     ctx.irq = dev.interrupt_line as u32;
     ctx.vendor_id = dev.vendor_id.0;
@@ -238,18 +341,13 @@ pub fn try_start_for_device(
                 dev.bdf.device(),
                 dev.bdf.function()
             );
-            mark_bound(locator);
-            StagedPciBindOutcome::Started { domain_id, handles }
+            StagedPciClaimOutcome::Started { domain_id, handles }
         }
-        Err(err) => StagedPciBindOutcome::Failed(alloc::format!(
-            "staged PCI driver '{}' failed for {:04x}:{:02x}:{:02x}.{}: {}",
-            entry.manifest_name,
-            dev.segment,
-            dev.bdf.bus(),
-            dev.bdf.device(),
-            dev.bdf.function(),
-            err
-        )),
+        Err(cause) => StagedPciClaimOutcome::Failed(StagedPciClaimFailure::StartOutcomeUnknown {
+            driver: entry.manifest_name,
+            device: locator,
+            cause,
+        }),
     }
 }
 
@@ -259,7 +357,7 @@ pub(crate) fn reset_for_tests() {
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
-    BOUND_PCI_LOCATORS
+    CLAIMED_PCI_LOCATORS
         .lock()
         .unwrap_or_else(|e| e.into_inner())
         .clear();
@@ -481,16 +579,16 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn bound_locators_are_tracked_once() {
+    fn claimed_locators_are_tracked_once() {
         reset_for_tests();
 
         let locator = PackedPciLocation::new(0, 0, 1, 0);
-        assert!(!is_device_bound(locator));
-        mark_bound(locator);
-        mark_bound(locator);
-        assert!(is_device_bound(locator));
+        assert!(!is_device_claimed(locator));
+        assert!(claim_device(locator));
+        assert!(!claim_device(locator));
+        assert!(is_device_claimed(locator));
         assert_eq!(
-            BOUND_PCI_LOCATORS
+            CLAIMED_PCI_LOCATORS
                 .lock()
                 .unwrap_or_else(|e| e.into_inner())
                 .len(),

@@ -21,7 +21,8 @@ Drivers are intended to be built separately from the kernel core and must not de
 
 ## カーネル機能が必要な場合
 
-- Request access via `kernel_api::service::kernel::instance()`, which provides `KernelServices` trait methods such as `alloc_dma_for_device(size, pci_locator)`. DMA buffers are reclaimed automatically on Drop.
+- Request access via `kernel_api::service::kernel::instance()`, which provides device-scoped services such as `alloc_dma_for_device(DmaAllocationRequest, pci_locator)`.
+- DMA ownership is an explicit lease protocol. CPU access is available only in CPU-owned states, submission consumes that authority, and release is an explicit fallible close/reconciliation boundary. `Drop` is abandonment bookkeeping and must not be treated as proof that unmap or backing-memory reclamation succeeded.
 - Obtain `pci_locator` from `kernel_api::abi::driver::DriverContext::pci_location()` or from PCI enumeration using `PackedPciLocation::new(segment, bus, device, function)`.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.
 - For standalone cells, enable the crate's `standalone` feature so `kernel_api::register_cell_runtime!()` can bind allocator/panic/logging to the kernel ABI table.
@@ -34,6 +35,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Boot artifact behavior is now split:
   - `drivers/*.cell` without a PCI selector autostart immediately.
   - driver packs with a PCI selector are staged and matched during PCI enumeration with a real `DriverContext::for_pci(...)`.
+  - a matching pack claims its physical function before external startup effects. Any failed or uncertain start remains claimed; built-in acquisition is permitted only after `NoMatch`.
   - `storage`, `driver_domain`, `network`, and `iommu` QEMU profiles now consume the boot partition's `/drivers/*.cell` and `/cells/*.cell` payloads by default.
 
 ## CI による検証

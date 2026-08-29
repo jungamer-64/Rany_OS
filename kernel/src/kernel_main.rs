@@ -925,8 +925,6 @@ pub(crate) fn init_usb_controllers() {
         };
 
         info!(target: "init", "xHCI BAR0: phys={:#x} virt={:#x}", bar0.base(), base_virt);
-        device_info.enable_bus_master();
-        device_info.enable_memory_space();
 
         let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
             base_virt,
@@ -939,16 +937,39 @@ pub(crate) fn init_usb_controllers() {
             device_info.packed_locator(),
         );
         standalone_ctx.device_address_secondary = 0;
-        match crate::loader::staged_pci::try_start_for_device(device_info, standalone_ctx) {
-            crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
-            | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+        match crate::loader::staged_pci::claim_and_start_for_device(device_info, standalone_ctx) {
+            crate::loader::staged_pci::StagedPciClaimOutcome::Started { .. } => {
                 info!(target: "init", "USB xHCI controller initialized via staged standalone driver");
                 continue;
             }
-            crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
-                warn!(target: "init", "{}; falling back to built-in xHCI path", reason);
+            crate::loader::staged_pci::StagedPciClaimOutcome::AlreadyClaimed => {
+                info!(target: "init", "USB xHCI controller authority was already claimed; built-in acquisition skipped");
+                continue;
             }
-            crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+            crate::loader::staged_pci::StagedPciClaimOutcome::Failed(reason) => {
+                warn!(target: "init", "{}; built-in xHCI acquisition is prohibited", reason);
+                continue;
+            }
+            crate::loader::staged_pci::StagedPciClaimOutcome::NoMatch => {}
+        }
+
+        let Some(pci) = kernel_api::service::platform::try_pci() else {
+            warn!(target: "init", "xHCI PCI services unavailable; built-in acquisition skipped");
+            continue;
+        };
+        if let Err(cause) = pci.set_memory_space(device_info.bdf, true) {
+            warn!(target: "init", "xHCI memory decoding could not be enabled: {}", cause);
+            continue;
+        }
+        if let Err(cause) = pci.set_bus_master(device_info.bdf, true) {
+            let memory_rollback = pci.set_memory_space(device_info.bdf, false);
+            warn!(
+                target: "init",
+                "xHCI bus mastering could not be enabled: {}; memory rollback: {:?}",
+                cause,
+                memory_rollback
+            );
+            continue;
         }
 
         let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(

@@ -422,8 +422,6 @@ pub(super) fn init_ahci_controllers() {
     let ahci_devices = crate::platform::pci::find_by_class(0x01, 0x06);
     for dev in ahci_devices {
         info!(target: "init", "AHCI controller found at {}", dev.bdf);
-        dev.enable_bus_master();
-        dev.enable_memory_space();
         init_single_ahci_controller(&dev);
     }
 }
@@ -494,16 +492,39 @@ fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInf
         dev.packed_locator(),
     );
     standalone_ctx.device_address_secondary = 0;
-    match crate::loader::staged_pci::try_start_for_device(dev, standalone_ctx) {
-        crate::loader::staged_pci::StagedPciBindOutcome::Started { .. }
-        | crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {
+    match crate::loader::staged_pci::claim_and_start_for_device(dev, standalone_ctx) {
+        crate::loader::staged_pci::StagedPciClaimOutcome::Started { .. } => {
             info!(target: "init", "AHCI controller initialized via staged standalone driver");
             return;
         }
-        crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
-            warn!(target: "init", "{}; falling back to built-in AHCI path", reason);
+        crate::loader::staged_pci::StagedPciClaimOutcome::AlreadyClaimed => {
+            info!(target: "init", "AHCI controller authority was already claimed; built-in acquisition skipped");
+            return;
         }
-        crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+        crate::loader::staged_pci::StagedPciClaimOutcome::Failed(reason) => {
+            warn!(target: "init", "{}; built-in AHCI acquisition is prohibited", reason);
+            return;
+        }
+        crate::loader::staged_pci::StagedPciClaimOutcome::NoMatch => {}
+    }
+
+    let Some(pci) = kernel_api::service::platform::try_pci() else {
+        warn!(target: "init", "AHCI PCI services unavailable; built-in acquisition skipped");
+        return;
+    };
+    if let Err(cause) = pci.set_memory_space(dev.bdf, true) {
+        warn!(target: "init", "AHCI memory decoding could not be enabled: {}", cause);
+        return;
+    }
+    if let Err(cause) = pci.set_bus_master(dev.bdf, true) {
+        let memory_rollback = pci.set_memory_space(dev.bdf, false);
+        warn!(
+            target: "init",
+            "AHCI bus mastering could not be enabled: {}; memory rollback: {:?}",
+            cause,
+            memory_rollback
+        );
+        return;
     }
 
     match crate::drivers::ahci::init_from_pci(base_virt, iommu_device) {

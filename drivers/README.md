@@ -47,8 +47,9 @@ If your driver needs to run as a standalone cell:
   - exact device match: `vendor_id + device_id`
   - class match: `class + subclass + prog_if`, with optional `vendor_id`
 - `prog_if = 0x00` is still a valid exact class selector. Only omitted `vendor_id` is treated as wildcard.
-- Non-PCI `.cell` payloads and driver packs without a PCI selector still autostart from boot artifacts; PCI packs with a selector are staged and bound during PCI enumeration.
-- `target/x86_64-exorust/<profile>/boot_artifacts/drivers` is now the default runtime payload consumed by the QEMU profiles. Built-in kernel drivers remain fallback-only when staged standalone binding returns `NoMatch` or fails.
+- Non-PCI `.cell` payloads and driver packs without a PCI selector still autostart from boot artifacts; PCI packs with a selector are staged and claim their function during PCI enumeration before device enable or driver-domain start.
+- `target/x86_64-exorust/<profile>/boot_artifacts/drivers` is now the default runtime payload consumed by the QEMU profiles.
+- Built-in kernel drivers are fallback-only when staged matching returns `NoMatch`. A failed or uncertain staged start remains the function's authority and prohibits built-in reacquisition.
 
 This directory has a verification script that checks for unauthorized kernel dependencies as part of CI: `scripts/check-driver-deps.ps1`.
 

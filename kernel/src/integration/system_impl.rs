@@ -5,6 +5,7 @@ mod global_init;
 mod lifecycle;
 mod nvme_init;
 pub use self::global_init::*;
+pub(super) use self::nvme_init::NvmeControllerOwner;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InterruptCapabilityMode {
@@ -31,30 +32,44 @@ impl SystemIntegration {
             device_manager: DeviceManager::new(),
             security: SecurityIntegration::new(),
             boot_log: Vec::new(),
+            nvme_controllers: Vec::new(),
         }
     }
 
-    /// Run full system integration
+    /// Advance the one owned integration state through each remaining boot phase.
+    ///
+    /// Completed phases are never replayed. This preserves device and DMA
+    /// owners across a later retry instead of reconstructing a second authority.
     pub fn integrate(&mut self) -> Result<(), IntegrationError> {
+        if self.status == IntegrationStatus::Complete {
+            return Ok(());
+        }
         self.log("Starting system integration...");
 
-        // Phase 1: Parse ACPI tables
-        self.integrate_acpi()?;
+        if self.status == IntegrationStatus::Uninitialized {
+            self.integrate_acpi()?;
+        }
 
-        // Phase 2: Scan PCI bus and configure devices
-        self.integrate_pci()?;
+        if self.status == IntegrationStatus::AcpiParsed {
+            self.integrate_pci()?;
+        }
 
-        // Phase 3: Configure interrupt routing
-        self.integrate_interrupts()?;
+        if self.status == IntegrationStatus::PciScanned {
+            self.integrate_interrupts()?;
+        }
 
-        // Phase 4: Initialize detected devices
-        self.integrate_devices()?;
+        if self.status == IntegrationStatus::InterruptsConfigured {
+            self.integrate_devices()?;
+        }
 
-        // Phase 5: Bind security contexts
-        self.integrate_security()?;
+        if self.status == IntegrationStatus::DevicesInitialized {
+            self.integrate_security()?;
+        }
 
-        self.status = IntegrationStatus::Complete;
-        self.log("System integration complete!");
+        if self.status == IntegrationStatus::SecurityBound {
+            self.status = IntegrationStatus::Complete;
+            self.log("System integration complete!");
+        }
 
         // Diagnostic: print network port runtime and stack configuration/stats
         // NOTE: ブートストラップ時はエグゼキュータ未起動のため同期版を使用（許容）
@@ -372,7 +387,7 @@ impl SystemIntegration {
         self.start_staged_pci_drivers();
 
         // Initialize NVMe controllers
-        self.init_nvme_devices();
+        self.init_nvme_devices()?;
 
         self.status = IntegrationStatus::DevicesInitialized;
         Ok(())
@@ -382,8 +397,6 @@ impl SystemIntegration {
         let devices = crate::platform::pci::scan_all_devices();
         let mut started = 0usize;
         for dev in devices {
-            dev.enable_bus_master();
-            dev.enable_memory_space();
             let bar0_virt = dev.bars[0]
                 .map(|bar0| {
                     crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(
@@ -403,8 +416,8 @@ impl SystemIntegration {
                 dev.packed_locator(),
             );
             ctx.device_address_secondary = 0;
-            match crate::loader::staged_pci::try_start_for_device(&dev, ctx) {
-                crate::loader::staged_pci::StagedPciBindOutcome::Started { .. } => {
+            match crate::loader::staged_pci::claim_and_start_for_device(&dev, ctx) {
+                crate::loader::staged_pci::StagedPciClaimOutcome::Started { .. } => {
                     started = started.saturating_add(1);
                     self.log(&alloc::format!(
                         "    Staged PCI driver started for {:02x}:{:02x}.{}",
@@ -413,11 +426,11 @@ impl SystemIntegration {
                         dev.bdf.function()
                     ));
                 }
-                crate::loader::staged_pci::StagedPciBindOutcome::AlreadyBound => {}
-                crate::loader::staged_pci::StagedPciBindOutcome::Failed(reason) => {
+                crate::loader::staged_pci::StagedPciClaimOutcome::AlreadyClaimed => {}
+                crate::loader::staged_pci::StagedPciClaimOutcome::Failed(reason) => {
                     self.log(&alloc::format!("    {}", reason));
                 }
-                crate::loader::staged_pci::StagedPciBindOutcome::NoMatch => {}
+                crate::loader::staged_pci::StagedPciClaimOutcome::NoMatch => {}
             }
         }
         self.log(&alloc::format!("  Staged PCI driver starts: {}", started));

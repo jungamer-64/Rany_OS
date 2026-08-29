@@ -7,17 +7,14 @@ impl Default for SystemIntegration {
     }
 }
 
-// Global integration instance
-pub(crate) static SYSTEM_INTEGRATION: Mutex<Option<SystemIntegration>> = Mutex::new(None);
+// Process-lifetime composition owner. Only this module can acquire it; callers
+// receive status/log projections rather than an ambient device authority.
+static SYSTEM_INTEGRATION: Mutex<Option<SystemIntegration>> = Mutex::new(None);
 
-/// Initialize system integration
+/// Create the composition owner once and advance that same owner on retry.
 pub fn init() -> Result<(), IntegrationError> {
-    let mut integration = SystemIntegration::new();
-    let result = integration.integrate();
-
-    *SYSTEM_INTEGRATION.lock() = Some(integration);
-
-    result
+    let mut owner = SYSTEM_INTEGRATION.lock();
+    owner.get_or_insert_with(SystemIntegration::new).integrate()
 }
 
 /// Get integration status

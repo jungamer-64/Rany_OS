@@ -13,6 +13,8 @@
 ## ガイドライン
 
 - The kernel composition root retains the PCI resource owner and passes one checked `MappedMmio` to `ControllerAcquire`.
+- `SystemIntegration` is the sole built-in owner of each unclaimed NVMe function. It derives the controller timeout from `CAP.TO`, completes disable/Admin/Identify/I/O-queue construction before scheduler publication, and retains the exact typestate on every startup failure.
+- A staged PCI match claims the function before memory decoding, bus mastering, or driver-domain start. Failed or uncertain staged startup remains claimed; the built-in NVMe path may acquire only a function for which staging returned `NoMatch`.
 - Queue and transfer memory comes only from `kernel_api::service::kernel::instance().alloc_dma_for_device(DmaAllocationRequest, pci_locator)`.
 - Allocation callers retain `CpuDmaLease`; byte access is limited to its checked `read`/`write` visitors. Device addresses exist only through borrowed descriptors after preparation.
 - Submission consumes CPU ownership into the queue generation. Only a validated CQ entry can produce completion authority and restore CPU ownership.

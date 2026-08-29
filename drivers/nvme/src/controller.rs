@@ -62,6 +62,14 @@ pub struct ControllerDisabled {
 }
 
 impl ControllerAcquire {
+    /// Parsed controller limits retained across either disable state.
+    pub const fn capabilities(&self) -> crate::ControllerCapabilities {
+        match self {
+            Self::Disabled(controller) => controller.capabilities(),
+            Self::Disabling(controller) => controller.capabilities(),
+        }
+    }
+
     /// Consume a mapped BAR and request the disabled state.
     ///
     /// # Errors
@@ -110,6 +118,11 @@ impl ControllerAcquire {
 }
 
 impl ControllerDisabling {
+    /// Parsed controller limits retained while the ready bit is clearing.
+    pub const fn capabilities(&self) -> crate::ControllerCapabilities {
+        self.registers.capabilities()
+    }
+
     /// Observe one disable-progress step without spinning in the driver.
     ///
     /// # Errors
@@ -194,6 +207,11 @@ impl core::fmt::Debug for AdminQueueInstallError {
 }
 
 impl ControllerDisabled {
+    /// Parsed controller limits used to size the Admin and I/O queues.
+    pub const fn capabilities(&self) -> crate::ControllerCapabilities {
+        self.registers.capabilities()
+    }
+
     /// Install active Admin queue RAM, program its properties, and request enable.
     ///
     /// # Errors

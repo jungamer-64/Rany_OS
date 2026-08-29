@@ -21,20 +21,17 @@ pub use device_manager::{DeviceInfo, DeviceManager};
 pub use security_integration::SecurityIntegration;
 pub use system_impl::*;
 
-fn register_pci_dma_width(dev: &PciDeviceInfo, bits: u8) {
+fn register_pci_dma_width(
+    dev: &PciDeviceInfo,
+    bits: u8,
+) -> Result<(), crate::io::iommu::types::IommuError> {
     let device = crate::io::iommu::types::DeviceId::new(
         dev.segment,
         dev.bdf.bus(),
         dev.bdf.device(),
         dev.bdf.function(),
     );
-    if let Err(err) = crate::io::iommu::api::register_device_dma_width(device, bits) {
-        log::warn!(
-            "[INTEGRATION] Failed to register DMA width for {}: {:?}",
-            dev.bdf,
-            err
-        );
-    }
+    crate::io::iommu::api::register_device_dma_width(device, bits)
 }
 
 /// Integration status
@@ -54,8 +51,6 @@ pub enum IntegrationStatus {
     SecurityBound,
     /// Fully integrated
     Complete,
-    /// Failed
-    Failed,
 }
 
 /// Integration error
@@ -83,4 +78,6 @@ pub struct SystemIntegration {
     security: SecurityIntegration,
     /// Boot log
     boot_log: Vec<String>,
+    /// Sole kernel owners for built-in NVMe controller generations.
+    nvme_controllers: Vec<system_impl::NvmeControllerOwner>,
 }

@@ -29,6 +29,14 @@ pub mod ide {
 }
 pub mod nvme {
     pub use crate::io::nvme::*;
+    pub(crate) use nvme_driver::{
+        AdminQueueInstallError, ControllerAcquire, ControllerAcquireError, ControllerDisableError,
+        ControllerDisablePoll, ControllerDisabled, ControllerDisabling, ControllerEnableError,
+        ControllerEnablePoll, ControllerEnabling, IdentifiedNamespace, IdentifyNamespaceError,
+        IdentifyNamespacePoll, IdentifyNamespaceRequest, IdentifySubmitError, IoQueueCreatePoll,
+        IoQueueCreation, IoQueueProvisioner, NvmeAdminController, QueueBudgetError,
+        QueueBudgetPoll, QueueBudgetRequest, QueueCreateError, QueueMemory,
+    };
 }
 pub mod pci {
     pub use crate::io::pci::*;
