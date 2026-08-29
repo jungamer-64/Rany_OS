@@ -5,3 +5,7 @@
 //! expose ambient lookup or a second DMA ownership path.
 
 #![forbid(unsafe_code)]
+
+mod runtime;
+
+pub(crate) use runtime::{NvmeDeviceOps, NvmeQueuePoller, NvmeRuntime, RuntimeCreateError};
