@@ -5,15 +5,10 @@
 #![allow(clippy::wildcard_imports)]
 use super::*;
 use alloc::format;
-use alloc::string::{String, ToString};
+use alloc::string::ToString;
 use uefi::proto::media::file::Directory;
 
-#[derive(Debug, Clone)]
-pub(crate) struct BootArtifactFile {
-    pub kind: boot_proto::BootArtifactKind,
-    pub path: String,
-    pub data: Vec<u8>,
-}
+use crate::boot_artifact_copy::BootArtifactFile;
 
 /// ブートボリュームのルートディレクトリを開く
 pub(crate) fn open_boot_volume(image_handle: Handle) -> Result<Directory, Status> {

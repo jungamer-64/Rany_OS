@@ -17,6 +17,8 @@ use uefi::{CStr16, Identify, boot};
 use ed25519_compact::{PublicKey, Signature};
 
 mod ap_trampoline_handoff;
+mod boot_artifact_copy;
+mod boot_artifact_handoff;
 mod boot_log;
 mod boot_memory_map;
 mod config;
@@ -47,6 +49,8 @@ macro_rules! serial_println {
     ($($arg:tt)*) => {};
 }
 mod uefi_runtime;
+mod usable_memory;
+use usable_memory::MAX_USABLE_MEMORY_REGIONS;
 
 /// Kernel base address for higher-half mapping
 /// PIE ELF has VAddr starting at 0x0, so we add this offset
@@ -267,7 +271,26 @@ fn main() -> Status {
     }
 
     // 6.5. Initialize boot artifacts and cmdline in boot_info
-    copy_boot_artifacts_to_boot_info(boot_info, &boot_artifacts, hhdm_start);
+    let artifact_handoff = match boot_artifact_handoff::BootArtifactHandoff::build(
+        &boot_artifacts,
+        hhdm_start,
+        map_limit,
+    ) {
+        Ok(handoff) => handoff,
+        Err(failure) => {
+            error!("Boot artifact handoff rejected: {}", failure);
+            // SAFETY: boot services are still active, and failure never
+            // published the allocation to the kernel or another owner.
+            return match unsafe { failure.release() } {
+                Ok(status) => status,
+                Err(release) => {
+                    error!("{}", release);
+                    Status::ABORTED
+                }
+            };
+        }
+    };
+    boot_info.boot_artifacts = artifact_handoff.table();
     copy_cmdline_to_boot_info(boot_info, &cmdline_data, hhdm_start);
 
     // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
@@ -349,19 +372,23 @@ fn main() -> Status {
             MAX_USABLE_MEMORY_REGIONS,
         )
     };
-    if let Err(_cause) = populate_usable_memory(
-        &snapshot,
-        usable_output,
+    let reservations = usable_memory::HandoffReservations {
         boot_info,
-        &segment_info,
-        boot_info_phys,
-        usable_buffer_phys,
-        hhdm_start,
-    ) {
-        serial_println!(
-            "Usable-memory normalization unavailable: {}; using complete raw snapshot",
-            _cause
-        );
+        artifact_allocation: artifact_handoff.allocation_range(),
+        segment_info: &segment_info,
+        boot_info_allocation: (boot_info_phys, (boot_info_pages * 4096) as u64),
+        map_allocation: snapshot.allocation_range(),
+        usable_allocation: (usable_buffer_phys, usable_buffer_size as u64),
+    };
+    match usable_memory::build_usable_memory_table(snapshot.records(), usable_output, &reservations)
+    {
+        Ok(table) => boot_info.usable_memory = table,
+        Err(_cause) => {
+            serial_println!(
+                "Usable-memory normalization unavailable: {}; using complete raw snapshot",
+                _cause
+            );
+        }
     }
 
     // 8. Switch CR3 & Jump to kernel

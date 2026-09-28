@@ -16,14 +16,13 @@ use super::*;
 
 #[path = "elf_relocations/file_io.rs"]
 mod file_io;
-pub(crate) use file_io::{BootArtifactFile, load_boot_artifacts, load_kernel, verify_kernel};
+pub(crate) use file_io::{load_boot_artifacts, load_kernel, verify_kernel};
 
 #[path = "elf_relocations/boot_info_setup.rs"]
 mod boot_info_setup;
 pub(crate) use boot_info_setup::{
-    MAX_USABLE_MEMORY_REGIONS, copy_boot_artifacts_to_boot_info, copy_cmdline_to_boot_info,
-    handle_boot_recovery, populate_boot_info_detections, populate_boot_policy,
-    populate_usable_memory, run_boot_self_tests, setup_gop_framebuffer,
+    copy_cmdline_to_boot_info, handle_boot_recovery, populate_boot_info_detections,
+    populate_boot_policy, run_boot_self_tests, setup_gop_framebuffer,
 };
 
 #[path = "elf_relocations/hhdm.rs"]
@@ -92,21 +91,8 @@ pub(crate) fn resolve_entry_physical_address(
                 seg_vaddr, seg_phys, offset_in_seg
             );
             info!("Entry physical address: 0x{:x}", entry_phys);
-            let bytes = unsafe { core::slice::from_raw_parts(entry_phys as *const u8, 8) };
-            info!(
-                "Entry bytes: {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x} {:02x}",
-                bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]
-            );
             return entry_phys;
         }
     }
     0
 }
-
-// 以下の関数はサブモジュールに移動済み:
-// - file_io: load_kernel, load_boot_artifacts, open_boot_volume, open_uefi_file,
-//            read_uefi_file_contents, verify_kernel
-// - boot_info_setup: populate_*, handle_boot_recovery, run_boot_self_tests, setup_gop_framebuffer,
-//                    copy_boot_artifacts_to_boot_info, copy_cmdline_to_boot_info, build_memory_map_from_uefi
-// - hhdm: compute_max_physical_address, map_hhdm_and_identity, select_hhdm_page_size
-// - cr3_jump: switch_cr3_and_jump
