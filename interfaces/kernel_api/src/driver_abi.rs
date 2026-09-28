@@ -66,7 +66,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 11;
+pub const KERNEL_API_ABI_VERSION: u32 = 12;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
@@ -661,14 +661,6 @@ pub struct AbiDmaResponse {
     pub device: u64,
     pub queue: u16,
     pub generation: u64,
-}
-
-/// ABI-stable MMIO mapping handle for driver domains.
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
-pub struct AbiMmioHandle {
-    pub base: u64,
-    pub size: usize,
 }
 
 #[repr(u32)]
@@ -1560,9 +1552,6 @@ pub struct KernelApiV4 {
         context: *mut u8,
         visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
     ) -> i32,
-
-    pub map_mmio: extern "C" fn(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32,
-    pub unmap_mmio: extern "C" fn(handle: *const AbiMmioHandle) -> i32,
 
     pub port_read_u8: extern "C" fn(port: u16) -> u8,
     pub port_write_u8: extern "C" fn(port: u16, value: u8),

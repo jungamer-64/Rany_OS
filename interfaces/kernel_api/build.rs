@@ -50,7 +50,6 @@ fn calculate_abi_hash(content: &str) -> u64 {
             "pub enum AbiDmaStatus",
             "pub struct AbiDmaRequest",
             "pub struct AbiDmaResponse",
-            "pub struct AbiMmioHandle",
             "pub struct AbiRxWritableRegion",
             "pub struct AbiRxLease",
             "pub struct AbiTxDeviceOutcome",
@@ -78,7 +77,6 @@ fn calculate_abi_hash(content: &str) -> u64 {
     extract_and_hash_decl(content, "pub enum AbiDmaStatus", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiDmaRequest", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiDmaResponse", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiMmioHandle", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiRxWritableRegion", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiRxLease", &mut hasher);
     extract_and_hash_decl(content, "pub struct AbiTxDeviceOutcome", &mut hasher);

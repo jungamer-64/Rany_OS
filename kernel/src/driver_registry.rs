@@ -31,7 +31,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::AtomicBool;
 use kernel_api::abi::driver::{
     AbiBlockDeviceRegistration, AbiDmaAllocation, AbiDmaOperation, AbiDmaRequest, AbiDmaResponse,
-    AbiDmaStatus, AbiDriverType, AbiError as AbiErrorCode, AbiMmioHandle, AbiMsixVectorInfo,
+    AbiDmaStatus, AbiDriverType, AbiError as AbiErrorCode, AbiMsixVectorInfo,
     AbiNetPortRegistration, AbiNvmeNamespaceRegistration, AbiRRefRaw, DRIVER_EXPORTS_ABI_VERSION,
     DriverCapabilities as AbiDriverCapabilities, DriverContext as AbiDriverContext,
     DriverEntryFn as AbiEntryFn, DriverExportsV1, DriverVTable as AbiDriverVTable,
@@ -1099,34 +1099,6 @@ unsafe extern "C" fn kernel_abi_dma_write(
     )) as i32
 }
 
-extern "C" fn kernel_abi_map_mmio(paddr: u64, size: usize, out: *mut AbiMmioHandle) -> i32 {
-    if out.is_null() {
-        return AbiErrorCode::InvalidParam as i32;
-    }
-
-    // Security: Prevent mapping of protected physical regions (Kernel, IOMMU, APIC, etc.)
-    // This is critical for preventing malicious or buggy drivers from corrupting the system.
-    if crate::security::dma::range_overlaps_protected(paddr, size as u64) {
-        log::error!(
-            "[KAPI][SECURITY] Driver attempted to map protected MMIO range: {:#x}-{:#x}",
-            paddr,
-            paddr + size as u64
-        );
-        return AbiErrorCode::PermissionDenied as i32;
-    }
-
-    let virt =
-        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(paddr)).as_u64();
-    unsafe {
-        *out = AbiMmioHandle { base: virt, size };
-    }
-    AbiErrorCode::Success as i32
-}
-
-extern "C" fn kernel_abi_unmap_mmio(_handle: *const AbiMmioHandle) -> i32 {
-    AbiErrorCode::Success as i32
-}
-
 extern "C" fn kernel_abi_port_read_u8(port: u16) -> u8 {
     kernel_api::service::kernel::instance().port_read_u8(port)
 }
@@ -1470,8 +1442,6 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     dma_command: kernel_abi_dma_command,
     dma_read: kernel_abi_dma_read,
     dma_write: kernel_abi_dma_write,
-    map_mmio: kernel_abi_map_mmio,
-    unmap_mmio: kernel_abi_unmap_mmio,
     port_read_u8: kernel_abi_port_read_u8,
     port_write_u8: kernel_abi_port_write_u8,
     irq_bind: kernel_abi_irq_bind,
