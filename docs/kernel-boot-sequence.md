@@ -17,6 +17,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `ExoBootInfo` には raw `memory_map` / raw `rsdp_addr` / raw `cmdline` に加えて、bootloader が正規化した `usable_memory`、immutable `acpi_snapshot`、boot-critical `boot_policy` が含まれる。
 - カーネル側では `_start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner` の順に入る。
 - この段階では ExoLoader が構築したページテーブルと `ExoBootInfo` ABI が前提になる。
+- memory-map handoff は bootloader が所有する確保ページへ全 descriptor のコピーを完了してから公開する。容量不足では件数を切り詰めず、未初期化 prefix を公開しない。usable-memory の正規化は同じ immutable snapshot を借用し、boot services 終了後のコピー失敗は kernel へ進まない。
 
 ## Canonical Paths
 

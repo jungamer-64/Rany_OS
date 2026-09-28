@@ -18,9 +18,11 @@ use ed25519_compact::{PublicKey, Signature};
 
 mod ap_trampoline_handoff;
 mod boot_log;
+mod boot_memory_map;
 mod config;
 #[path = "main/elf_relocations.rs"]
 mod elf_relocations;
+mod memory_map_copy;
 use elf_relocations::*;
 #[cfg(feature = "ui")]
 mod menu;
@@ -224,9 +226,7 @@ fn main() -> Status {
     );
 
     // 6. Populate Boot Info
-    use boot_proto::{
-        EXO_BOOT_INFO_VERSION, ExoBootInfo, MemoryDescriptor as BootMemoryDescriptor,
-    };
+    use boot_proto::{EXO_BOOT_INFO_VERSION, ExoBootInfo};
 
     info!("Allocating BootInfo...");
     let boot_info_pages = core::mem::size_of::<ExoBootInfo>().div_ceil(4096);
@@ -271,22 +271,39 @@ fn main() -> Status {
     copy_cmdline_to_boot_info(boot_info, &cmdline_data, hhdm_start);
 
     // 6.7. Pre-allocate memory map buffer BEFORE exiting boot services
-    let mmap_estimate_count = 512;
-    let mmap_buffer_size = mmap_estimate_count * core::mem::size_of::<BootMemoryDescriptor>();
-    let mmap_buffer_pages = (mmap_buffer_size + 4095) / 4096;
-    let mmap_buffer_phys = page_table::UefiMapper::alloc_zeroed_pages(
-        mmap_buffer_pages,
-        MemoryType::RUNTIME_SERVICES_DATA,
-    )
-    .expect("Failed to allocate memory map buffer");
+    // Allow for allocations made by boot-log finalization and ExitBootServices;
+    // the final copy still checks this capacity instead of trusting the estimate.
+    let capacity = match boot::memory_map(MemoryType::LOADER_DATA) {
+        Ok(map) => match map.entries().len().checked_add(128) {
+            Some(capacity) => capacity,
+            None => return Status::OUT_OF_RESOURCES,
+        },
+        Err(cause) => {
+            error!("Memory-map sizing failed: {:?}", cause);
+            return cause.status();
+        }
+    };
+    let mmap_buffer = match boot_memory_map::MemoryMapBuffer::reserve(capacity) {
+        Ok(buffer) => buffer,
+        Err(cause) => {
+            error!("Memory-map reservation rejected: {}", cause);
+            return Status::OUT_OF_RESOURCES;
+        }
+    };
     let usable_buffer_size =
         MAX_USABLE_MEMORY_REGIONS * core::mem::size_of::<boot_proto::UsableMemoryRegion>();
     let usable_buffer_pages = usable_buffer_size.div_ceil(4096);
-    let usable_buffer_phys = page_table::UefiMapper::alloc_zeroed_pages(
+    let Some(usable_buffer_phys) = page_table::UefiMapper::alloc_zeroed_pages(
         usable_buffer_pages,
         MemoryType::RUNTIME_SERVICES_DATA,
-    )
-    .expect("Failed to allocate usable memory buffer");
+    ) else {
+        // SAFETY: boot services have not exited and this unpublished allocation
+        // has no external consumer. A failed release remains explicitly owned.
+        if let Err(failure) = unsafe { mmap_buffer.close() } {
+            error!("{}", failure);
+        }
+        return Status::OUT_OF_RESOURCES;
+    };
 
     // Log kernel entry points before exiting boot services
     let entry_addr = elf.header.pt2.entry_point();
@@ -308,28 +325,65 @@ fn main() -> Status {
     info!("Exiting Boot Services...");
     let mmap = unsafe { boot::exit_boot_services(Some(MemoryType::LOADER_DATA)) };
 
-    // Build memory map from UEFI into pre-allocated buffer
-    build_memory_map_from_uefi(
-        &mmap,
-        boot_info,
-        mmap_buffer_phys,
-        mmap_estimate_count,
-        hhdm_start,
-    );
-    build_usable_memory_from_uefi(
-        &mmap,
+    // The capacity is checked before any kernel-visible descriptor is published.
+    let snapshot = match mmap_buffer.initialize(&mmap) {
+        Ok(snapshot) => snapshot,
+        Err(_failure) => {
+            serial_println!("{}", _failure);
+            halt_after_boot_services();
+        }
+    };
+    boot_info.memory_map = match snapshot.handoff(hhdm_start) {
+        Ok(table) => table,
+        Err(_cause) => {
+            serial_println!("Memory-map publication rejected: {}", _cause);
+            halt_after_boot_services();
+        }
+    };
+    // SAFETY: alloc_zeroed_pages returned exclusive page-aligned RAM of at least
+    // usable_buffer_size bytes. UsableMemoryRegion contains only integer fields,
+    // so zero is valid. No handoff was published and no other borrow exists.
+    let usable_output = unsafe {
+        core::slice::from_raw_parts_mut(
+            usable_buffer_phys as *mut boot_proto::UsableMemoryRegion,
+            MAX_USABLE_MEMORY_REGIONS,
+        )
+    };
+    if let Err(_cause) = populate_usable_memory(
+        &snapshot,
+        usable_output,
         boot_info,
         &segment_info,
         boot_info_phys,
-        mmap_buffer_phys,
-        mmap_buffer_size as u64,
         usable_buffer_phys,
         hhdm_start,
-    );
+    ) {
+        serial_println!(
+            "Usable-memory normalization unavailable: {}; using complete raw snapshot",
+            _cause
+        );
+    }
 
     // 8. Switch CR3 & Jump to kernel
     unsafe {
         switch_cr3_and_jump(pml4_addr, hhdm_start + boot_info_phys, entry_addr);
+    }
+}
+
+/// After ExitBootServices there is no valid return-to-firmware or allocator
+/// recovery path. Stop without publishing invalid storage or running destructors.
+fn halt_after_boot_services() -> ! {
+    // SAFETY: this is the terminal, BSP-owned post-firmware failure boundary;
+    // interrupts must not resume boot or expose an incomplete kernel handoff.
+    unsafe {
+        core::arch::asm!("cli", options(nomem, nostack));
+    }
+    // LOOP_PROOF: mode=halt; reason=Post-ExitBootServices failure cannot safely return to firmware and the BSP stays halted without reclaiming retained handoff pages.;
+    loop {
+        // SAFETY: interrupts are disabled and no recovery is attempted.
+        unsafe {
+            core::arch::asm!("hlt", options(nomem, nostack));
+        }
     }
 }
 

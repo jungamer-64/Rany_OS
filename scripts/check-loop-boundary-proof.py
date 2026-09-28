@@ -41,6 +41,7 @@ EVENT_GATE_RE = re.compile(
     r"\bbreak\b|\breturn\b|\.await\b|\bsleep\s*\(|yield[_A-Za-z0-9]*\s*\("
 )
 HALT_PROOF_RE = re.compile(r"spin_loop\s*\(|\bhlt\s*\(")
+HALT_ASM_RE = re.compile(r'\basm!\s*\(\s*"hlt"\s*(?:,|\))')
 BOUNDED_COMPARISON_RE = re.compile(r"(<=|>=|<|>|!=)")
 IDENT_RE = re.compile(r"\b[_A-Za-z][_A-Za-z0-9]*\b")
 LOOP_TOKEN_RE = re.compile(r"\b(?:while|loop)\b")
@@ -243,6 +244,21 @@ def mask_non_code(text: str) -> str:
     return "".join(chars)
 
 
+def contains_halt_operation(body: str) -> bool:
+    """Recognize a Rust halt primitive or a direct x86 HLT instruction.
+
+    Match macro positions against masked code so a comment or diagnostic string
+    mentioning inline assembly cannot satisfy the terminal-operation contract.
+    """
+    masked = mask_non_code(body)
+    if HALT_PROOF_RE.search(masked) is not None:
+        return True
+    return any(
+        masked[match.start():].startswith("asm!")
+        for match in HALT_ASM_RE.finditer(body)
+    )
+
+
 def find_tokens(masked: str) -> list[LoopToken]:
     starts = line_starts(masked)
     tokens: list[LoopToken] = []
@@ -417,12 +433,12 @@ def check_file(path: Path, root: Path) -> list[CheckError]:
                 )
                 continue
             body = text[block[0] : block[1] + 1]
-            if HALT_PROOF_RE.search(body) is None:
+            if not contains_halt_operation(body):
                 errors.append(
                     CheckError(
                         path=path,
                         line=token.line,
-                        message="mode=halt requires hlt()/spin_loop() in loop body",
+                        message="mode=halt requires hlt()/spin_loop() or direct HLT assembly in loop body",
                     )
                 )
             if re.search(r"\bbreak\b|\breturn\b", body):
@@ -565,6 +581,17 @@ class LoopProofCheckerTests(unittest.TestCase):
     def test_halt_fixture_rejects_escape_path(self) -> None:
         errors = self.run_fixture("bad_halt.rs")
         self.assertTrue(errors)
+
+    def test_halt_accepts_direct_cpu_instruction(self) -> None:
+        self.assertTrue(contains_halt_operation('unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }'))
+
+    def test_halt_rejects_assembly_in_comments_and_strings(self) -> None:
+        self.assertFalse(contains_halt_operation('// asm!("hlt", options(nostack));'))
+        self.assertFalse(contains_halt_operation('let message = r#"asm!("hlt", options(nostack))"#;'))
+        self.assertFalse(contains_halt_operation('// hlt(); spin_loop();'))
+
+    def test_halt_rejects_nonhalting_cpu_instruction(self) -> None:
+        self.assertFalse(contains_halt_operation('unsafe { core::arch::asm!("nop", options(nomem, nostack)); }'))
 
     def test_condition_fixture_rejects_unconditional_loop(self) -> None:
         errors = self.run_fixture("bad_condition_loop.rs")

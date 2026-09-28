@@ -589,18 +589,24 @@ fn append_region_coalesced(
     true
 }
 
+/// All handoff-owned ranges that must be excluded before RAM publication.
+struct HandoffReservations<'a> {
+    boot_info: &'a boot_proto::ExoBootInfo,
+    artifact_entries: &'a [boot_proto::BootArtifactEntry],
+    segment_info: &'a [(u64, u64, u64)],
+    boot_info_phys: u64,
+    map_allocation: (u64, u64),
+    usable_allocation: (u64, u64),
+}
+
 fn build_usable_memory_regions(
     descriptors: &[boot_proto::MemoryDescriptor],
     output: &mut [UsableMemoryRegion],
-    boot_info: &boot_proto::ExoBootInfo,
-    artifact_entries: &[boot_proto::BootArtifactEntry],
-    segment_info: &[(u64, u64, u64)],
-    boot_info_phys: u64,
-    mmap_buffer_phys: u64,
-    mmap_buffer_bytes: u64,
-    usable_buffer_phys: u64,
-    usable_buffer_bytes: u64,
+    reservations: &HandoffReservations<'_>,
 ) -> Option<usize> {
+    let boot_info = reservations.boot_info;
+    let (mmap_buffer_phys, mmap_buffer_bytes) = reservations.map_allocation;
+    let (usable_buffer_phys, usable_buffer_bytes) = reservations.usable_allocation;
     let hhdm_start = boot_info.phys_mem_offset;
     let mut output_count = 0usize;
 
@@ -618,7 +624,7 @@ fn build_usable_memory_regions(
             &mut current,
             &mut next,
             current_count,
-            Some(boot_info_phys),
+            Some(reservations.boot_info_phys),
             core::mem::size_of::<boot_proto::ExoBootInfo>() as u64,
         )?;
         current_count = apply_reserved_range(
@@ -650,7 +656,7 @@ fn build_usable_memory_regions(
             hhdm_start,
         )?;
 
-        for entry in artifact_entries {
+        for entry in reservations.artifact_entries {
             current_count = apply_reserved_hhdm_span(
                 &mut current,
                 &mut next,
@@ -717,7 +723,7 @@ fn build_usable_memory_regions(
             EXCHANGE_HEAP_SIZE,
         )?;
 
-        for &(_virt, phys, size) in segment_info {
+        for &(_virt, phys, size) in reservations.segment_info {
             current_count =
                 apply_reserved_range(&mut current, &mut next, current_count, Some(phys), size)?;
         }
@@ -749,6 +755,62 @@ fn boot_artifact_entries_from_phys(
     unsafe {
         core::slice::from_raw_parts(entries_phys as *const boot_proto::BootArtifactEntry, count)
     }
+}
+
+#[derive(Debug)]
+pub(crate) enum UsableMemoryError {
+    NormalizationIncomplete,
+    AddressOverflow,
+    InvalidSpan(&'static str),
+}
+
+impl core::fmt::Display for UsableMemoryError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NormalizationIncomplete => {
+                formatter.write_str("usable-memory output or reservation workspace exhausted")
+            }
+            Self::AddressOverflow => formatter.write_str("usable-memory HHDM address overflowed"),
+            Self::InvalidSpan(cause) => write!(formatter, "invalid usable-memory handoff: {cause}"),
+        }
+    }
+}
+
+/// Computes usable RAM from the completed owned descriptor snapshot, not from
+/// independently interpreted raw table metadata. Failed normalization publishes
+/// no prefix; the kernel's existing raw-map fallback receives the complete map.
+///
+/// # Errors
+/// Reports normalization exhaustion or invalid output handoff geometry. The raw
+/// snapshot stays immutable and owned; the partially written output is unpublished.
+pub(crate) fn populate_usable_memory(
+    snapshot: &crate::boot_memory_map::MemoryMapSnapshot,
+    output: &mut [UsableMemoryRegion],
+    boot_info: &mut boot_proto::ExoBootInfo,
+    segment_info: &[(u64, u64, u64)],
+    boot_info_phys: u64,
+    usable_buffer_phys: u64,
+    hhdm_start: u64,
+) -> Result<(), UsableMemoryError> {
+    let artifact_entries = boot_artifact_entries_from_phys(boot_info);
+    let usable_buffer_bytes = core::mem::size_of_val(output) as u64;
+    let reservations = HandoffReservations {
+        boot_info,
+        artifact_entries,
+        segment_info,
+        boot_info_phys,
+        map_allocation: snapshot.allocation_range(),
+        usable_allocation: (usable_buffer_phys, usable_buffer_bytes),
+    };
+    let count = build_usable_memory_regions(snapshot.records(), output, &reservations)
+        .ok_or(UsableMemoryError::NormalizationIncomplete)?;
+    let address = hhdm_start
+        .checked_add(usable_buffer_phys)
+        .ok_or(UsableMemoryError::AddressOverflow)?;
+    let table = boot_proto::UsableMemoryTable::from_hhdm_addr(address, count)
+        .map_err(UsableMemoryError::InvalidSpan)?;
+    boot_info.usable_memory = table;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -846,19 +908,16 @@ mod tests {
         let mut output = [UsableMemoryRegion::default(); 32];
         let segment_info = [(0, 0x1400_9000, 0x2000)];
 
-        let count = build_usable_memory_regions(
-            &descriptors,
-            &mut output,
-            &boot_info,
-            artifact_entries.as_slice(),
-            &segment_info,
-            0x1400_0000,
-            0x1400_c000,
-            0x1000,
-            0x1400_d000,
-            0x2000,
-        )
-        .expect("usable memory build should succeed");
+        let reservations = HandoffReservations {
+            boot_info: &boot_info,
+            artifact_entries: artifact_entries.as_slice(),
+            segment_info: &segment_info,
+            boot_info_phys: 0x1400_0000,
+            map_allocation: (0x1400_c000, 0x1000),
+            usable_allocation: (0x1400_d000, 0x2000),
+        };
+        let count = build_usable_memory_regions(&descriptors, &mut output, &reservations)
+            .expect("usable memory build should succeed");
         let regions = &output[..count];
 
         let reserved = [
@@ -908,19 +967,16 @@ mod tests {
         let descriptors = [desc(EFI_MEMORY_TYPE_CONVENTIONAL, 0x1400_0000, 0x0010_0000)];
         let mut output = [UsableMemoryRegion::default(); 16];
 
-        let count = build_usable_memory_regions(
-            &descriptors,
-            &mut output,
-            &boot_info,
-            artifact_entries.as_slice(),
-            &[],
-            0x1400_0000,
-            0x1400_5000,
-            0x1000,
-            0x1400_6000,
-            0x1000,
-        )
-        .expect("usable memory build should succeed");
+        let reservations = HandoffReservations {
+            boot_info: &boot_info,
+            artifact_entries: artifact_entries.as_slice(),
+            segment_info: &[],
+            boot_info_phys: 0x1400_0000,
+            map_allocation: (0x1400_5000, 0x1000),
+            usable_allocation: (0x1400_6000, 0x1000),
+        };
+        let count = build_usable_memory_regions(&descriptors, &mut output, &reservations)
+            .expect("usable memory build should succeed");
         let regions = &output[..count];
 
         assert!(regions.iter().any(|region| {
