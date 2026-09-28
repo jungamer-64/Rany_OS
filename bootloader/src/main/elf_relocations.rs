@@ -21,7 +21,7 @@ pub(crate) use file_io::{BootArtifactFile, load_boot_artifacts, load_kernel, ver
 #[path = "elf_relocations/boot_info_setup.rs"]
 mod boot_info_setup;
 pub(crate) use boot_info_setup::{
-    MAX_USABLE_MEMORY_REGIONS, build_memory_map_from_uefi, build_usable_memory_from_uefi,
+    MAX_USABLE_MEMORY_REGIONS,
     copy_boot_artifacts_to_boot_info, copy_cmdline_to_boot_info, handle_boot_recovery,
     populate_boot_info_detections, populate_boot_policy, run_boot_self_tests,
     setup_gop_framebuffer,

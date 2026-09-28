@@ -437,43 +437,6 @@ pub(crate) fn copy_cmdline_to_boot_info(
 // メモリマップ構築
 // ============================================================
 
-/// UEFI メモリマップを事前割り当てバッファにコピー
-pub(crate) fn build_memory_map_from_uefi(
-    mmap: &uefi::mem::memory_map::MemoryMapOwned,
-    boot_info: &mut boot_proto::ExoBootInfo,
-    mmap_buffer_phys: u64,
-    mmap_estimate_count: usize,
-    hhdm_start: u64,
-) {
-    use boot_proto::MemoryDescriptor as BootMemoryDescriptor;
-
-    let mmap_entries = mmap.entries();
-    let count = mmap_entries.len();
-
-    let boot_mmap_slice = unsafe {
-        core::slice::from_raw_parts_mut(
-            mmap_buffer_phys as *mut BootMemoryDescriptor,
-            mmap_estimate_count,
-        )
-    };
-    for (i, desc) in mmap_entries.enumerate() {
-        if i >= mmap_estimate_count {
-            break;
-        }
-        boot_mmap_slice[i] = BootMemoryDescriptor {
-            r#type: desc.ty.0,
-            pad: 0,
-            phys_start: desc.phys_start,
-            virt_start: desc.virt_start,
-            page_count: desc.page_count,
-            attribute: desc.att.bits(),
-        };
-    }
-    boot_info.memory_map =
-        boot_proto::MemoryMap::from_hhdm_addr(hhdm_start + mmap_buffer_phys, count)
-            .expect("boot memory map span invalid");
-}
-
 fn is_usable_efi_memory_type(memory_type: u32) -> bool {
     matches!(
         memory_type,
@@ -785,77 +748,6 @@ fn boot_artifact_entries_from_phys(
     }
     unsafe {
         core::slice::from_raw_parts(entries_phys as *const boot_proto::BootArtifactEntry, count)
-    }
-}
-
-/// Build bootloader-normalized usable memory handoff from the final UEFI memory map.
-pub(crate) fn build_usable_memory_from_uefi(
-    mmap: &uefi::mem::memory_map::MemoryMapOwned,
-    boot_info: &mut boot_proto::ExoBootInfo,
-    segment_info: &[(u64, u64, u64)],
-    boot_info_phys: u64,
-    mmap_buffer_phys: u64,
-    mmap_buffer_bytes: u64,
-    usable_buffer_phys: u64,
-    hhdm_start: u64,
-) {
-    let descriptors = if boot_info.memory_map.is_empty() {
-        let _ = mmap;
-        &[][..]
-    } else if let Some((descriptors_phys, _)) = boot_info
-        .memory_map
-        .span()
-        .and_then(|span| span.phys_range(hhdm_start))
-    {
-        let count = boot_info.memory_map.len().min(MAX_USABLE_MEMORY_REGIONS);
-        unsafe {
-            core::slice::from_raw_parts(
-                descriptors_phys as *const boot_proto::MemoryDescriptor,
-                count,
-            )
-        }
-    } else {
-        let _ = mmap;
-        &[][..]
-    };
-    let artifact_entries = boot_artifact_entries_from_phys(boot_info);
-
-    let output = unsafe {
-        core::slice::from_raw_parts_mut(
-            usable_buffer_phys as *mut UsableMemoryRegion,
-            MAX_USABLE_MEMORY_REGIONS,
-        )
-    };
-    let usable_buffer_bytes =
-        (MAX_USABLE_MEMORY_REGIONS * core::mem::size_of::<UsableMemoryRegion>()) as u64;
-
-    match build_usable_memory_regions(
-        descriptors,
-        output,
-        boot_info,
-        artifact_entries,
-        segment_info,
-        boot_info_phys,
-        mmap_buffer_phys,
-        mmap_buffer_bytes,
-        usable_buffer_phys,
-        usable_buffer_bytes,
-    ) {
-        Some(count) if count > 0 => {
-            boot_info.usable_memory = boot_proto::UsableMemoryTable::from_hhdm_addr(
-                hhdm_start + usable_buffer_phys,
-                count,
-            )
-            .expect("usable memory handoff span invalid");
-            info!(
-                "Usable memory snapshot ready: {} region(s) at HHDM 0x{:x}",
-                count, boot_info.usable_memory.entries_ptr
-            );
-        }
-        _ => {
-            boot_info.usable_memory = boot_proto::UsableMemoryTable::default();
-            info!("Usable memory snapshot unavailable, kernel will fall back to raw memory map");
-        }
     }
 }
 
