@@ -40,11 +40,16 @@ pub enum DeviceState {
     QueuesReady,
     Active,
     Error,
+    /// Reset was requested; no DMA-revocation authority follows from this state.
+    ResetPending,
+    /// Reset acknowledgement was not observed; all prior resources stay retained.
+    ResetOutcomeUnknown,
 }
 
 /// ConnectX デバイス抽象化
 pub struct Mlx5Device {
     // Hardware info
+    pub(crate) registers: crate::registers::InitializationRegisters,
     pub(crate) device_id: u16,
     pub(crate) variant: ConnectXVariant,
 
@@ -66,7 +71,7 @@ pub struct Mlx5Device {
     pub(crate) command_generation: u64,
 
     // Resources
-    pub(crate) uar_page: u32,
+    pub(crate) uar: Option<crate::registers::UarRegisters>,
     pub(crate) pd: u32,
     pub(crate) td: u32,
     pub(crate) mkey: u32,
@@ -107,7 +112,7 @@ pub struct Mlx5Device {
     // Management
     pub(crate) polling_state: AdaptivePollingState,
     pub(crate) health_monitor: HealthMonitor,
-    pub(crate) allocated_uars: Vec<u32>,
+    allocated_uars: Vec<UarAllocation>,
     pub(crate) tx_path_enabled: bool,
     pub(crate) tx_probe_pending: bool,
     pub(crate) tx_probe_verified: bool,
@@ -115,6 +120,13 @@ pub struct Mlx5Device {
 }
 
 // Types moved to crate::flow
+
+/// A firmware grant is retained even if its BAR geometry is unusable. UID is
+/// part of the release identity and must not be rediscovered through retries.
+struct UarAllocation {
+    number: u32,
+    uid: u16,
+}
 
 impl Mlx5Device {
     fn splitmix64_step(state: &mut u64) -> u64 {
@@ -126,7 +138,7 @@ impl Mlx5Device {
     }
 
     pub(crate) fn derive_sw_owner_id(&self) -> [u32; 4] {
-        let mut seed = self.bar0_base
+        let mut seed = self.command_generation
             ^ self.cmd_in_mbox_device.rotate_left(7)
             ^ self.cmd_out_mbox_device.rotate_left(23)
             ^ ((self.device_id as u64) << 32)
@@ -149,6 +161,74 @@ impl Mlx5Device {
         words
     }
 
+    /// Acquires register authority by consuming the mapping, never an address.
+    ///
+    /// # Errors
+    /// Returns the original mapping with its geometry error, before device I/O.
+    pub fn new(
+        mapping: hal::mmio::MappedMmio,
+        device_id: u16,
+    ) -> Result<Self, (hal::mmio::MappedMmio, hal::mmio::MmioAccessError)> {
+        if let Err(error) = crate::registers::InitializationRegisters::validate(&mapping) {
+            return Err((mapping, error));
+        }
+        let variant = ConnectXVariant::from_device_id(device_id);
+        Ok(Self {
+            registers: crate::registers::InitializationRegisters::new(mapping),
+            device_id,
+            variant,
+            state: DeviceState::Uninitialized,
+            fw_info: None,
+            hca_caps: None,
+            cmd: None,
+            cmd_in_mbox_virt: 0,
+            cmd_in_mbox_device: 0,
+            cmd_out_mbox_virt: 0,
+            cmd_out_mbox_device: 0,
+            fw_function_id: 0,
+            firmware_pages: None,
+            command_generation: 0,
+            uar: None,
+            pd: 0,
+            td: 0,
+            mkey: 0,
+            tx_mkey: 0,
+            underlay_qpn: 0,
+            mkey_info: None,
+            sw_vhca_id: 0,
+            sw_owner_id: [0; 4],
+            vnic_env_query_logged: false,
+            resources_allocated: false,
+            is_vf: ConnectXVariant::is_vf_device_id(device_id),
+            is_ecpf: false,
+            pci_segment: 0,
+            pci_bus: 0,
+            pci_device: 0,
+            pci_function: 0,
+            eqs: Vec::new(),
+            cqs: Vec::new(),
+            sqs: Vec::new(),
+            rqs: Vec::new(),
+            rmp_list: Vec::new(),
+            rq_tables: Vec::new(),
+            cq_db_records: Vec::new(),
+            tx_cq_by_sq: Vec::new(),
+            rx_cq_by_rq: Vec::new(),
+            ports: vec![Mlx5Port::new(1)],
+            tis_list: Vec::new(),
+            tir_list: Vec::new(),
+            flow_tables: Vec::new(),
+            flow_groups: Vec::new(),
+            flow_entries: Vec::new(),
+            polling_state: AdaptivePollingState::with_defaults(),
+            health_monitor: HealthMonitor::new(),
+            allocated_uars: Vec::new(),
+            tx_path_enabled: false,
+            tx_probe_pending: false,
+            tx_probe_verified: false,
+            tx_implicit_tis0_fallback: false,
+        })
+    }
 
     pub fn state(&self) -> DeviceState {
         self.state
@@ -157,7 +237,6 @@ impl Mlx5Device {
     pub fn variant(&self) -> ConnectXVariant {
         self.variant
     }
-
 
     pub fn fw_info(&self) -> Option<&FwInfo> {
         self.fw_info.as_ref()

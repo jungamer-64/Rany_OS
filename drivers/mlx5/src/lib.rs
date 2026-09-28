@@ -48,6 +48,7 @@ pub mod health;
 pub mod pages;
 pub mod polling;
 pub mod port;
+mod registers;
 pub mod regs;
 pub mod resources;
 mod structs; // low‑level layout helpers used internally
@@ -471,7 +472,6 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
         _ => None,
     }
 }
-
 
 // Re-export core types
 pub use bootstrap::{

@@ -8,7 +8,7 @@
 //! ページ要求などのイベントを配信する。
 
 use crate::defs::EventType;
-use crate::regs::{eqe, uar};
+use crate::regs::eqe;
 
 /// Event Queue Entry (EQE) — 64バイト
 #[repr(C, align(64))]
@@ -79,6 +79,7 @@ impl Eqe {
 ///
 /// EQリングバッファとコンシューマインデックスを管理する。
 pub struct EventQueue {
+    doorbell: crate::registers::EqDoorbell,
     /// EQのハードウェア番号（CREATE_EQで返される）
     pub eqn: u32,
     /// EQバッファの仮想アドレス
@@ -96,6 +97,35 @@ pub struct EventQueue {
 }
 
 impl EventQueue {
+    /// Binds a firmware-created queue to its retained register capability.
+    ///
+    /// # Safety
+    /// `log_eq_size` must be less than 32. The initialized ring must contain
+    /// `2^log_eq_size` EQEs, be 64-byte aligned and have a non-overflowing extent.
+    /// Its DMA mapping must belong to this device/queue and remain retained
+    /// through known quiescence, including on an unknown command outcome.
+    /// The caller owns that range separately: this object retains the MMIO
+    /// mapping, not DMA backing. CPU access must exclude other queue users;
+    /// device writes must obey the EQ ownership protocol.
+    pub(crate) unsafe fn from_created_queue(
+        eqn: u32,
+        buf_virt: u64,
+        buf_phys: u64,
+        doorbell: crate::registers::EqDoorbell,
+        log_eq_size: u8,
+        msix_vector: u32,
+    ) -> Self {
+        Self {
+            eqn,
+            buf_virt,
+            buf_phys,
+            doorbell,
+            log_eq_size,
+            consumer_counter: 0,
+            eq_depth: 1 << log_eq_size,
+            msix_vector,
+        }
+    }
 
     /// EQバッファの物理アドレス
     pub fn buffer_phys(&self) -> u64 {
@@ -125,18 +155,16 @@ impl EventQueue {
 
     /// EQドアベルを更新（コンシューマインデックスをHWに通知）
     ///
-    /// # Safety
-    /// - uar_base が有効なMMIOマッピングであること
-    pub unsafe fn update_doorbell(&self) {
+    pub fn update_doorbell(&mut self) {
         // EQ ARM ドアベル: EQ番号とコンシューマカウンタを書き込み
-        let db_val: u32 = (self.eqn & 0xFF) | ((self.consumer_counter & 0x00FF_FFFF) << 8);
-        crate::mmio_write_be32(self.uar_base as usize + uar::EQ_DOORBELL, db_val);
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.doorbell.acknowledge(self.eqn, self.consumer_counter);
     }
 
     /// EQ内の全保留イベントを処理する
     ///
     /// # Safety
-    /// - buf_virt, uar_base が有効であること
+    /// - The device-visible ring RAM remains live through completion/quiescence.
     ///
     /// # Returns
     /// 処理したイベント数

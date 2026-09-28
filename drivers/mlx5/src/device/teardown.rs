@@ -12,112 +12,157 @@ use crate::cmd::res::*; // resource-management commands (dealloc etc)
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
 use crate::device::{DeviceState, Mlx5Device};
 use crate::error::Mlx5Result;
-use alloc::vec::Vec; // bring execute() method into scope
 
 impl Mlx5Device {
     /// # Errors
     ///
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
+    /// Completed releases remove their inventory entry; any failure retains
+    /// the entire unreleased suffix. An unknown command outcome blocks a new
+    /// attempt before mailbox mutation. Reset/reconciliation remains separate.
+    ///
+    /// # Safety
+    /// The device's command and queue DMA must remain retained throughout this
+    /// finalization, including its error return. The caller must exclude every
+    /// TX/RX/interrupt entry before starting, and may reclaim backing only after
+    /// its separate lease close/quiescence protocol succeeds.
+    #[deny(unsafe_op_in_unsafe_fn)]
     pub unsafe fn teardown_full(&mut self) -> Mlx5Result<()> {
-        log::info!(target: "mlx5", "=== Starting full teardown sequence ===");
-
-        // 1. パケット送受信の停止
-        let sqns: Vec<u32> = self.sqs.iter().map(|sq| sq.sqn).collect();
-        for sqn in sqns {
-            let _ = self.transition_sq_to_error(sqn);
+        let command = self
+            .cmd
+            .as_ref()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        if !command.is_idle() {
+            return Err(crate::error::Mlx5Error::DeviceNotReady);
         }
-        let rqns: Vec<u32> = self.rqs.iter().map(|rq| rq.rqn).collect();
-        for rqn in rqns {
-            let _ = self.transition_rq_to_error(rqn);
+        self.tx_path_enabled = false;
+        for index in 0..self.sqs.len() {
+            let number = self.sqs[index].sqn;
+            // SAFETY: the caller retains SQ backing and excludes all queue users
+            // as required by this finalizer's contract, including on failure.
+            unsafe { self.transition_sq_to_error(number) }?;
         }
-
-        // 2. フローテーブルの破棄
-        let entries = core::mem::take(&mut self.flow_entries);
-        for entry in entries {
-            let _ = self.delete_flow_table_entry_hw(entry.table_id, entry.index);
-        }
-        let groups = core::mem::take(&mut self.flow_groups);
-        for group in groups {
-            let _ = self.destroy_flow_group_hw(group.table_id, group.group_id);
-        }
-        let tables = core::mem::take(&mut self.flow_tables);
-        for table in tables {
-            let _ = self.destroy_flow_table_hw(table.table_id);
+        for index in 0..self.rqs.len() {
+            let number = self.rqs[index].rqn;
+            // SAFETY: the caller retains RQ backing and excludes all queue users
+            // as required by this finalizer's contract, including on failure.
+            unsafe { self.transition_rq_to_error(number) }?;
         }
 
-        // 3. TIR / TIS / RQT の破棄
-        let tir_list = core::mem::take(&mut self.tir_list);
-        for tir in tir_list {
-            let _ = self.destroy_tir_hw(tir.tirn);
+        // LOOP_PROOF: mode=condition; reason=Each successful hardware release removes exactly one owned entry, failure returns with the remainder retained.;
+        while let Some(entry) = self.flow_entries.last() {
+            let (table, index) = (entry.table_id, entry.index);
+            // SAFETY: this device still owns the entry and its parent table.
+            unsafe { self.delete_flow_table_entry_hw(table, index) }?;
+            self.flow_entries.pop();
         }
-        let tis_list = core::mem::take(&mut self.tis_list);
-        for tis in tis_list {
-            if tis.destroy_on_teardown() {
-                let _ = self.destroy_tis_hw(tis.tisn);
-            } else {
-                log::info!(
-                    target: "mlx5",
-                    "Skipping destroy for external TIS {:#x} during teardown",
-                    tis.tisn
-                );
+        // LOOP_PROOF: mode=condition; reason=Success removes one group, failure retains the unreleased suffix.;
+        while let Some(group) = self.flow_groups.last() {
+            let (table, group) = (group.table_id, group.group_id);
+            // SAFETY: all owned entries were removed before their parent group.
+            unsafe { self.destroy_flow_group_hw(table, group) }?;
+            self.flow_groups.pop();
+        }
+        // LOOP_PROOF: mode=condition; reason=Success removes one table, failure retains the unreleased suffix.;
+        while let Some(table) = self.flow_tables.last() {
+            let table = table.table_id;
+            // SAFETY: the table's owned groups and entries were released first.
+            unsafe { self.destroy_flow_table_hw(table) }?;
+            self.flow_tables.pop();
+        }
+        // LOOP_PROOF: mode=condition; reason=Success removes one TIR, failure retains its ownership entry.;
+        while let Some(tir) = self.tir_list.last() {
+            let number = tir.tirn;
+            // SAFETY: flows were released before the owned TIR.
+            unsafe { self.destroy_tir_hw(number) }?;
+            self.tir_list.pop();
+        }
+        // LOOP_PROOF: mode=condition; reason=An owned TIS is removed only after release, borrowed TIS entries surrender no hardware ownership.;
+        while let Some(tis) = self.tis_list.last() {
+            let (number, owned) = (tis.tisn, tis.destroy_on_teardown());
+            if owned {
+                // SAFETY: only an owned firmware grant is destroyed.
+                unsafe { self.destroy_tis_hw(number) }?;
             }
+            self.tis_list.pop();
         }
-        let rq_tables = core::mem::take(&mut self.rq_tables);
-        for rqt in rq_tables {
-            let _ = self.destroy_rqt_hw(rqt.rqtn);
+        // LOOP_PROOF: mode=condition; reason=Success removes one RQT, failure retains the unreleased suffix.;
+        while let Some(table) = self.rq_tables.last() {
+            let number = table.rqtn;
+            // SAFETY: TIR references were removed before this owned RQT.
+            unsafe { self.destroy_rqt_hw(number) }?;
+            self.rq_tables.pop();
         }
-
-        // 4. SQ / RQ / CQ / EQ の破棄
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(sq) = self.sqs.pop() {
-            let _ = self.destroy_sq_hw(sq.sqn);
+        // LOOP_PROOF: mode=condition; reason=Success destroys one SQ before dropping its retained doorbell, failure retains both.;
+        while let Some(sq) = self.sqs.last() {
+            let number = sq.sqn;
+            // SAFETY: the SQ backing and UAR grant remain retained until this completion.
+            unsafe { self.destroy_sq_hw(number) }?;
+            self.sqs.pop();
         }
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(rq) = self.rqs.pop() {
-            let _ = self.destroy_rq_hw(rq.rqn);
+        // LOOP_PROOF: mode=condition; reason=Success destroys one RQ before removing its entry, failure retains it.;
+        while let Some(rq) = self.rqs.last() {
+            let number = rq.rqn;
+            // SAFETY: the RQ backing remains retained until this completion.
+            unsafe { self.destroy_rq_hw(number) }?;
+            self.rqs.pop();
         }
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(rmpn) = self.rmp_list.pop() {
-            let _ = self.destroy_rmp_hw(rmpn);
+        // LOOP_PROOF: mode=condition; reason=Success destroys one RMP before removing its entry, failure retains it.;
+        while let Some(&number) = self.rmp_list.last() {
+            // SAFETY: all RQ consumers were destroyed before the owned RMP.
+            unsafe { self.destroy_rmp_hw(number) }?;
+            self.rmp_list.pop();
         }
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(cq) = self.cqs.pop() {
-            let _ = self.destroy_cq_hw(cq.cqn);
+        // LOOP_PROOF: mode=condition; reason=Success destroys one CQ before dropping its retained doorbell, failure retains both.;
+        while let Some(cq) = self.cqs.last() {
+            let number = cq.cqn;
+            // SAFETY: SQ/RQ consumers were destroyed and CQ DMA/UAR are still retained.
+            unsafe { self.destroy_cq_hw(number) }?;
+            self.cqs.pop();
         }
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(eq) = self.eqs.pop() {
-            let _ = self.destroy_eq_hw(eq.eqn);
+        // LOOP_PROOF: mode=condition; reason=Success destroys one EQ before dropping its retained doorbell, failure retains both.;
+        while let Some(eq) = self.eqs.last() {
+            let number = eq.eqn;
+            // SAFETY: CQ consumers were destroyed and EQ DMA/UAR are still retained.
+            unsafe { self.destroy_eq_hw(number) }?;
+            self.eqs.pop();
         }
         self.tx_cq_by_sq.clear();
         self.rx_cq_by_rq.clear();
+        self.cq_db_records.clear();
 
-        // 5. MKEY & PD / TD / UAR
-        if let Some(info) = self.mkey_info.take() {
-            let _ = self.destroy_mkey_hw(info.mkey_index);
+        if let Some(info) = self.mkey_info.as_ref() {
+            let index = info.mkey_index;
+            // SAFETY: all DMA queues using the owned MKEY were destroyed first.
+            unsafe { self.destroy_mkey_hw(index) }?;
+            self.mkey_info = None;
         }
         if self.underlay_qpn != 0 {
-            let _ = self.destroy_qp_hw(self.underlay_qpn);
+            // SAFETY: the stored QP is an owned firmware grant retained on failure.
+            unsafe { self.destroy_qp_hw(self.underlay_qpn) }?;
             self.underlay_qpn = 0;
         }
         if self.pd != 0 {
-            let _ = self.dealloc_pd_hw(self.pd);
+            // SAFETY: owned PD consumers were destroyed before this release.
+            unsafe { self.dealloc_pd_hw(self.pd) }?;
             self.pd = 0;
         }
         if self.td != 0 {
-            let _ = self.dealloc_td_hw(self.td);
+            // SAFETY: owned TD consumers were destroyed before this release.
+            unsafe { self.dealloc_td_hw(self.td) }?;
             self.td = 0;
         }
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(uar) = self.allocated_uars.pop() {
-            let _ = self.dealloc_uar_hw(uar);
+        // LOOP_PROOF: mode=condition; reason=The checked release consumes one recorded UAR only after a known completion, failure keeps its UID and grant.;
+        while !self.allocated_uars.is_empty() {
+            // SAFETY: this finalizer retains command DMA and all queues are destroyed.
+            unsafe { self.release_last_uar() }?;
         }
-
-        // Firmware pages are returned only after HCA teardown, while the
-        // command interface is still live. Disable is not a page-return proof.
-        self.teardown_hca_hw(true)?;
-        self.finish_fw_pages()?;
-        self.disable_hca_hw()?;
-
+        // SAFETY: queue teardown succeeded, command DMA and firmware page leases remain live.
+        unsafe { self.teardown_hca_hw(true) }?;
+        // SAFETY: current command/page owners remain retained through return or uncertainty.
+        unsafe { self.finish_fw_pages() }?;
+        // SAFETY: the firmware pages were successfully returned before HCA disable.
+        unsafe { self.disable_hca_hw() }?;
         self.state = DeviceState::Uninitialized;
         self.resources_allocated = false;
         Ok(())
@@ -401,17 +446,49 @@ impl Mlx5Device {
     /// # Errors
     ///
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn dealloc_uar_hw(&mut self, uar_page: u32) -> Mlx5Result<()> {
-        self.cmd
-            .as_ref()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_dealloc_uar_input(in_mbox, uar_page);
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::DeallocUar,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
+    /// Releases the recorded grant under its allocating UID, never by an
+    /// ambient page number. Doorbell authority is removed only on completion.
+    #[deny(unsafe_op_in_unsafe_fn)]
+    unsafe fn release_last_uar(&mut self) -> Mlx5Result<()> {
+        use crate::error::Mlx5Error;
+        if !self.sqs.is_empty()
+            || !self.rqs.is_empty()
+            || !self.rmp_list.is_empty()
+            || !self.cqs.is_empty()
+            || !self.eqs.is_empty()
+        {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let Some(allocation) = self.allocated_uars.last() else {
+            return Ok(());
+        };
+        let (number, uid) = (allocation.number, allocation.uid);
+        let command = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        if !command.is_idle() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let previous_uid = command.uid();
+        command.set_uid(uid);
+        // SAFETY: this finalizer retains writable command DMA and admitted an idle slot.
+        let input = unsafe { &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox) };
+        build_dealloc_uar_input(input, number);
+        // SAFETY: recorded grant identity is used once, and DMA remains retained
+        // through the validated completion or unknown command outcome.
+        let result = unsafe {
+            command.execute(
+                CmdOpcode::DeallocUar,
+                self.cmd_in_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+                self.cmd_out_mbox_device,
+                MLX5_CMD_MBOX_SIZE as u32,
+            )
+        };
+        command.set_uid(previous_uid);
+        result?;
+        if self.uar.as_ref().is_some_and(|uar| uar.number() == number) {
+            self.uar = None;
+        }
+        self.allocated_uars.pop();
         Ok(())
     }
 

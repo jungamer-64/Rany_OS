@@ -323,9 +323,9 @@ impl Mlx5Device {
     /// # Errors
     ///
     /// Returns an error if the device is not ready, times out, or reports a failed completion.
-    pub unsafe fn wait_firmware(&mut self) -> Mlx5Result<()> {
+    pub fn wait_firmware(&mut self) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Waiting for firmware to be ready...");
-        match crate::fw::wait_fw_ready(self.bar0_base, 30000) {
+        match crate::fw::wait_fw_ready(&self.registers, 30000) {
             Ok(info) => {
                 self.fw_info = Some(info.clone());
                 self.state = DeviceState::FirmwareReady;
@@ -399,13 +399,12 @@ impl Mlx5Device {
         }
 
         // Read layout info from BAR0 registers
-        let base = self.bar0_base as usize;
-        let cmdq_addr_l_sz = crate::mmio_read_be32(base + crate::regs::init_seg::CMDQ_ADDR_L_SZ);
+        let cmdq_addr_l_sz = self.registers.command_layout()?;
         let (log_cmdq_size, log_cmd_stride, _nic_if_supported) =
             CmdQueueTransport::parse_hw_cmdq_layout(cmdq_addr_l_sz);
 
-        let mut cmd = CmdQueue::new(
-            self.bar0_base,
+        let mut cmd = CmdQueue::from_command_dma(
+            self.registers.command()?,
             cmdq_pa,
             cmdq_virt,
             self.cmd_in_mbox_virt,
@@ -429,18 +428,19 @@ impl Mlx5Device {
         Ok(())
     }
 
-    unsafe fn wait_post_cmdif_ready(&mut self, timeout_ms: u64) -> Mlx5Result<()> {
+    fn wait_post_cmdif_ready(&mut self, timeout_ms: u64) -> Mlx5Result<()> {
         let start_ms = kernel_api::service::kernel::instance().current_tick();
 
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while kernel_api::service::kernel::instance()
-            .current_tick()
-            .saturating_sub(start_ms)
-            < timeout_ms
-        {
-            let initializing = crate::mmio_read_be32(
-                self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,
-            );
+        // A finite read budget also terminates when the early-boot clock stops.
+        for _ in 0..100_000_000u32 {
+            if kernel_api::service::kernel::instance()
+                .current_tick()
+                .saturating_sub(start_ms)
+                >= timeout_ms
+            {
+                break;
+            }
+            let initializing = self.registers.initializing()?;
 
             if initializing != 0 && initializing != u32::MAX {
                 if (initializing & crate::regs::fw_state::INITIALIZING_BIT) == 0 {
@@ -680,8 +680,7 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
 
         // ECPU (Embedded CPU / ECPF) 判定
-        let initializing =
-            crate::mmio_read_be32(self.bar0_base as usize + crate::regs::init_seg::INITIALIZING);
+        let initializing = self.registers.initializing()?;
         if (initializing & crate::regs::fw_state::EMBEDDED_CPU_BIT) != 0 {
             self.is_ecpf = true;
             log::info!(target: "mlx5", "Device recognized as ECPF (Embedded CPU / SmartNIC mode)");
@@ -1639,28 +1638,34 @@ impl Mlx5Device {
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub unsafe fn trigger_sw_reset(&mut self) -> Mlx5Result<()> {
-        log::info!(target: "mlx5", "Triggering software reset via SW_RESET register...");
-        crate::mmio_write_be32(self.bar0_base as usize + crate::regs::init_seg::SW_RESET, 1);
-
-        // initializing bit がセットされるまで待機
-        let start_ms = kernel_api::service::kernel::instance().current_tick();
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while kernel_api::service::kernel::instance().current_tick() - start_ms < 2000 {
-            let initializing = crate::mmio_read_be32(
-                self.bar0_base as usize + crate::regs::init_seg::INITIALIZING,
-            );
-            if (initializing & crate::regs::fw_state::INITIALIZING_BIT) != 0 {
-                log::info!(target: "mlx5", "Software reset in progress (initializing bit set)");
-                self.state = DeviceState::Uninitialized;
+    /// Observes only reset-start acknowledgement, never DMA quiescence. A
+    /// published request that is not acknowledged remains machine-readable as
+    /// unknown, with the previous mapping/queue/page owners still retained.
+    pub fn trigger_sw_reset(&mut self) -> Mlx5Result<()> {
+        self.registers.request_reset()?;
+        self.state = DeviceState::ResetPending;
+        let clock = kernel_api::service::kernel::instance();
+        let start = clock.current_tick();
+        for _ in 0..10_000_000u32 {
+            if clock.current_tick().saturating_sub(start) >= 2000 {
+                break;
+            }
+            let initializing = match self.registers.initializing() {
+                Ok(value) => value,
+                Err(_) => {
+                    self.state = DeviceState::ResetOutcomeUnknown;
+                    return Err(Mlx5Error::ResetOutcomeUnknown);
+                }
+            };
+            if initializing != u32::MAX
+                && initializing & crate::regs::fw_state::INITIALIZING_BIT != 0
+            {
                 return Ok(());
             }
             core::hint::spin_loop();
         }
-
-        log::warn!(target: "mlx5", "SW reset bit check timeout (HCA might already be in reset or not responding)");
-        self.state = DeviceState::Uninitialized;
-        Ok(())
+        self.state = DeviceState::ResetOutcomeUnknown;
+        Err(Mlx5Error::ResetOutcomeUnknown)
     }
 
     /// デバイスのリカバリ試行

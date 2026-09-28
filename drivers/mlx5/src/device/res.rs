@@ -992,62 +992,76 @@ impl Mlx5Device {
         Ok(tirn)
     }
 
-    /// UAR (User Access Region) を割り当て
-    /// # Errors
+    /// Allocates a UAR only after a current, successful firmware completion.
+    /// The grant (including its UID) is retained before validating its geometry,
+    /// so an invalid firmware page remains explicitly releasable/quarantined.
+    /// No rejected command grants a fallback page.
     ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
+    /// # Safety
+    /// The initialized command DMA must remain mapped and exclusively managed
+    /// by this device through completion, uncertainty, reset and teardown.
+    ///
+    /// # Errors
+    /// Admission failure precedes publication. A rejected command grants no
+    /// UAR. A completed but out-of-range grant stays in the owned inventory;
+    /// transport uncertainty blocks mailbox reuse and requires reconciliation.
+    #[deny(unsafe_op_in_unsafe_fn)]
     pub unsafe fn alloc_uar(&mut self) -> Mlx5Result<u32> {
+        self.allocated_uars
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
         let is_vf = self.is_vf();
         let cmd = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
-        let prev_uid = cmd.uid();
-        let (uids, len) = Self::uid_candidates(prev_uid, is_vf);
-
-        let mut last_err: Mlx5Result<u32> = Err(Mlx5Error::NotSupported);
-        let mut fallback_uar = None;
+        if !cmd.is_idle() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let previous_uid = cmd.uid();
+        let (uids, len) = Self::uid_candidates(previous_uid, is_vf);
+        let mut last_error = Mlx5Error::NotSupported;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-            build_alloc_uar_input(in_mbox);
-
-            match cmd.execute(
-                CmdOpcode::AllocUar,
-                self.cmd_in_mbox_device,
-                0x10,
-                self.cmd_out_mbox_device,
-                0x10,
-            ) {
+            // SAFETY: command DMA is retained by the device startup owner and
+            // the idle command slot permits CPU mailbox preparation.
+            let input = unsafe { &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox) };
+            build_alloc_uar_input(input);
+            // SAFETY: the idle transport owns these command DMA ranges through
+            // the completion or unknown outcome; no second command is admitted.
+            let result = unsafe {
+                cmd.execute(
+                    CmdOpcode::AllocUar,
+                    self.cmd_in_mbox_device,
+                    0x10,
+                    self.cmd_out_mbox_device,
+                    0x10,
+                )
+            };
+            cmd.set_uid(previous_uid);
+            match result {
                 Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-                    let uar_number = parse_alloc_uar_output(out_mbox);
-                    self.allocated_uars.push(uar_number);
-                    if self.uar_page == 0 {
-                        self.uar_page = uar_number;
-                        self.uar_base = self.bar0_base
-                            + (uar_number as u64) * (crate::regs::uar::PAGE_SIZE as u64);
+                    // SAFETY: execute observed the current token's completion;
+                    // output RAM is retained and no command is in flight.
+                    let output = unsafe { &*(self.cmd_out_mbox_virt as *const CmdMailbox) };
+                    let number = parse_alloc_uar_output(output);
+                    self.allocated_uars
+                        .push(super::UarAllocation { number, uid });
+                    // SAFETY: number came from this function's token-validated
+                    // ALLOC_UAR response. Queue teardown retains the grant on
+                    // failure and forbids release while doorbells remain live.
+                    let registers = unsafe { self.registers.granted_uar(number) }?;
+                    if self.uar.is_none() {
+                        self.uar = Some(registers);
                     }
-                    cmd.set_uid(prev_uid);
-                    return Ok(uar_number);
+                    return Ok(number);
                 }
-                Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
-                    fallback_uar = Some(0);
-                    last_err = Err(Mlx5Error::CommandFailed(status));
-                    continue;
+                // Only an explicit firmware rejection permits another UID
+                // attempt. Timeout/transport uncertainty must not touch RAM.
+                Err(Mlx5Error::CommandFailed(status)) => {
+                    last_error = Mlx5Error::CommandFailed(status)
                 }
-                Err(e) => {
-                    last_err = Err(e);
-                    continue;
-                }
+                Err(error) => return Err(error),
             }
         }
-        cmd.set_uid(prev_uid);
-        if let Some(uar_number) = fallback_uar {
-            self.allocated_uars.push(uar_number);
-            self.uar_page = uar_number;
-            self.uar_base =
-                self.bar0_base + (uar_number as u64) * (crate::regs::uar::PAGE_SIZE as u64);
-            return Ok(uar_number);
-        }
-        last_err
+        Err(last_error)
     }
 
     /// Protection Domain を割り当て

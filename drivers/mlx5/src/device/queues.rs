@@ -222,6 +222,15 @@ impl Mlx5Device {
         msix_vector: u32,
         event_bitmask: u64,
     ) -> Mlx5Result<u32> {
+        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let uar_page = uar.number();
+        if log_eq_size >= 32 {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        let doorbell = uar.eq()?;
+        self.eqs
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
         // VF 特有の MSI-X / EQ 数上限チェック
         if let Some(caps) = self.hca_caps.as_ref() {
             if msix_vector >= caps.max_eq {
@@ -247,7 +256,7 @@ impl Mlx5Device {
             in_mbox,
             log_eq_size,
             eq_buf_pa,
-            self.uar_page,
+            uar_page,
             msix_vector,
             event_bitmask,
         );
@@ -262,7 +271,7 @@ impl Mlx5Device {
                 "CREATE_EQ input: log_eq_size={} eq_buf_pa={:#x} uar_page={} msix_vector={} event_mask={:#x} in_len={:#x}",
                 log_eq_size,
                 eq_buf_pa,
-                self.uar_page,
+                uar_page,
                 msix_vector,
                 event_bitmask,
                 eq_in_len
@@ -286,11 +295,11 @@ impl Mlx5Device {
             out_mbox.read_be32(0x08),
             out_mbox.read_be32(0x0C),
         );
-        let eq = EventQueue::new(
+        let eq = EventQueue::from_created_queue(
             eqn,
             eq_buf_virt,
             eq_buf_pa,
-            self.uar_base,
+            doorbell,
             log_eq_size,
             msix_vector,
         );
@@ -311,6 +320,18 @@ impl Mlx5Device {
         log_cq_size: u8,
         eqn: u32,
     ) -> Mlx5Result<u32> {
+        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let uar_page = uar.number();
+        if log_cq_size >= 32 {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        let doorbell = uar.cq()?;
+        self.cqs
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
+        self.cq_db_records
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
         let cq_depth = 1u32 << log_cq_size;
         let cq_ptr = cq_buf_virt as *mut u8;
         core::ptr::write_bytes(cq_ptr, 0, (cq_depth as usize) * crate::regs::cqe::SIZE);
@@ -333,7 +354,7 @@ impl Mlx5Device {
             log_cq_size,
             cq_buf_pa,
             db_pa,
-            self.uar_page,
+            uar_page,
             eqn,
             cqe_comp,
         );
@@ -365,7 +386,7 @@ impl Mlx5Device {
                 log_cq_size,
                 cq_buf_pa,
                 db_pa,
-                self.uar_page,
+                uar_page,
                 eqn,
                 cqe_comp,
                 cq_in_len
@@ -389,11 +410,11 @@ impl Mlx5Device {
 
         let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
         let cqn = parse_create_cq_output(out_mbox);
-        let cq = CompletionQueue::new(
+        let cq = CompletionQueue::from_created_queue(
             cqn,
             cq_buf_virt,
             cq_buf_pa,
-            self.uar_base,
+            doorbell,
             db_virt,
             log_cq_size,
             eqn,
@@ -439,6 +460,22 @@ impl Mlx5Device {
         cqn: u32,
         tisn: u32,
     ) -> Mlx5Result<u32> {
+        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let uar_page = uar.number();
+        if log_sq_size >= 30 {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        let doorbell = uar.sq()?;
+        let storage = crate::wq::SendQueueStorage::new(log_sq_size)?;
+        self.sqs
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
+        self.tx_cq_by_sq
+            .try_reserve(1)
+            .map_err(|_| Mlx5Error::NoResources)?;
+        let cq_index = self
+            .cq_index_by_cqn(cqn)
+            .ok_or(Mlx5Error::InvalidParameter)?;
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let sq_db_ptr = db_virt as *mut u32;
@@ -476,7 +513,7 @@ impl Mlx5Device {
                 db_pa,
                 cqn,
                 self.pd,
-                self.uar_page,
+                uar_page,
                 tisn,
                 if sq_program_min_inline_mode {
                     min_inline_mode
@@ -624,20 +661,17 @@ impl Mlx5Device {
             }
         }
         let csum_offload = self.hca_caps.as_ref().map(|c| c.csum_cap).unwrap_or(false);
-        let sq = SendQueue::new(
+        let sq = SendQueue::from_created_queue(
             sqn,
             sq_buf_virt,
             db_virt,
-            self.uar_base,
-            log_sq_size,
+            doorbell,
+            storage,
             effective_tisn,
             cqn,
             self.tx_mkey,
             csum_offload,
         );
-        let cq_index = self
-            .cq_index_by_cqn(cqn)
-            .ok_or(Mlx5Error::InvalidResponse)?;
         self.sqs.push(sq);
         self.tx_cq_by_sq.push(cq_index);
         Ok(sqn)
@@ -663,6 +697,8 @@ impl Mlx5Device {
         scatter_fcs: bool,
         vlan_strip: bool,
     ) -> Mlx5Result<u32> {
+        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let uar_page = uar.number();
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let rq_bytes = (1usize << (log_rq_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
@@ -705,7 +741,7 @@ impl Mlx5Device {
                 attempt.name,
                 cqn,
                 self.pd,
-                self.uar_page,
+                uar_page,
                 log_rq_size,
                 attempt.log_wq_stride,
                 attempt.wq_type,
@@ -719,7 +755,7 @@ impl Mlx5Device {
                 db_pa,
                 cqn,
                 self.pd,
-                self.uar_page,
+                uar_page,
                 scatter_fcs,
                 vlan_strip,
                 0,
@@ -899,7 +935,7 @@ impl Mlx5Device {
                             attempt.name,
                             cqn,
                             self.pd,
-                            self.uar_page,
+                            uar_page,
                             log_rq_size,
                             attempt.log_wq_stride,
                             attempt.wq_type,
@@ -914,7 +950,7 @@ impl Mlx5Device {
                             db_pa,
                             cqn,
                             self.pd,
-                            self.uar_page,
+                            uar_page,
                             scatter_fcs,
                             vlan_strip,
                             1,
@@ -1109,6 +1145,8 @@ impl Mlx5Device {
         db_pa: u64,
         log_rmp_size: u8,
     ) -> Mlx5Result<u32> {
+        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
+        let uar_page = uar.number();
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
         let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
@@ -1134,7 +1172,7 @@ impl Mlx5Device {
                 rmp_buf_pa,
                 db_pa,
                 self.pd,
-                self.uar_page,
+                uar_page,
                 state,
                 basic_cyclic,
                 wq_type,

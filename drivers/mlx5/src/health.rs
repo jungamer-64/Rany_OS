@@ -15,9 +15,9 @@
 //! - `Result::Err` でエラーを伝播（パニックではなくエラー型で障害通知）
 //! - ウォッチドッグタイマーでハング検出
 
-use crate::fw;
-use crate::regs::init_seg;
-use crate::structs::health::HealthLayout;
+#![forbid(unsafe_code)]
+
+use crate::regs::fw_state;
 
 /// 健全性チェックの結果
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -66,12 +66,36 @@ impl HealthMonitor {
         }
     }
 
-
     pub fn record_recovery(&mut self) {
         self.recovery_count += 1;
         self.consecutive_errors = 0;
         self.checks_since_recovery = 0;
         self.counter_stuck_count = 0;
+    }
+
+    /// Observes one counter sample, avoiding inconsistent double reads of the
+    /// hardware register. The result is advisory, never a DMA-revocation proof.
+    pub(crate) fn observe(&mut self, counter: u32, full_reset_required: bool) -> HealthStatus {
+        self.total_checks = self.total_checks.saturating_add(1);
+        self.checks_since_recovery = self.checks_since_recovery.saturating_add(1);
+        if counter != 0 && counter == self.last_health_counter {
+            self.counter_stuck_count = self.counter_stuck_count.saturating_add(1);
+        } else {
+            self.counter_stuck_count = 0;
+            self.last_health_counter = counter;
+        }
+        let stuck = self.counter_stuck_count >= 10;
+        if counter != fw_state::HEALTH_FATAL && !stuck && !full_reset_required {
+            self.consecutive_errors = 0;
+            return HealthStatus::Healthy;
+        }
+        self.consecutive_errors = self.consecutive_errors.saturating_add(1);
+        self.total_errors = self.total_errors.saturating_add(1);
+        if self.consecutive_errors >= self.error_threshold || stuck || full_reset_required {
+            HealthStatus::Critical
+        } else {
+            HealthStatus::Degraded
+        }
     }
 
     pub fn stats(&self) -> HealthStats {
@@ -97,5 +121,43 @@ pub struct HealthStats {
 impl Default for HealthMonitor {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stuck_counter_requires_ten_repeated_nonzero_samples() {
+        let mut monitor = HealthMonitor::new();
+        for _ in 0..10 {
+            assert_eq!(monitor.observe(7, false), HealthStatus::Healthy);
+        }
+        assert_eq!(monitor.observe(7, false), HealthStatus::Critical);
+        assert_eq!(monitor.observe(8, false), HealthStatus::Healthy);
+        for _ in 0..12 {
+            assert_eq!(monitor.observe(0, false), HealthStatus::Healthy);
+        }
+    }
+
+    #[test]
+    fn fatal_errors_escalate_and_success_clears_consecutive_errors() {
+        let mut monitor = HealthMonitor::new();
+        assert_eq!(
+            monitor.observe(fw_state::HEALTH_FATAL, false),
+            HealthStatus::Degraded
+        );
+        assert_eq!(
+            monitor.observe(fw_state::HEALTH_FATAL, false),
+            HealthStatus::Degraded
+        );
+        assert_eq!(
+            monitor.observe(fw_state::HEALTH_FATAL, false),
+            HealthStatus::Critical
+        );
+        assert_eq!(monitor.observe(1, false), HealthStatus::Healthy);
+        assert_eq!(monitor.stats().consecutive_errors, 0);
+        assert_eq!(monitor.observe(2, true), HealthStatus::Critical);
     }
 }

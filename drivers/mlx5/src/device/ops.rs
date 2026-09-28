@@ -248,7 +248,7 @@ impl Mlx5Device {
         };
         let need_rearm = self.polling_state.record_poll_cycle(result.len() as u32);
         if need_rearm {
-            if let Some(cq) = self.cqs.get(cq_index) {
+            if let Some(cq) = self.cqs.get_mut(cq_index) {
                 cq.arm();
             }
         }
@@ -310,25 +310,15 @@ impl Mlx5Device {
             .unwrap_or_default()
     }
 
-    /// デバイスの現在時刻を取得（ハードウェアタイマー）
-    ///
-    /// # Safety
-    /// - bar0_base が有効であること
-    pub unsafe fn query_time(&self) -> u64 {
-        use crate::regs::init_seg;
-        let base = self.bar0_base as usize;
-
-        // 64ビットカウンタを32ビットずつ2回に分けて読み取る（一貫性確保のためループ）
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            let hi = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
-            let lo = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_L);
-            let hi2 = crate::mmio_read_be32(base + init_seg::INTERNAL_TIMER_H);
-
-            if hi == hi2 {
-                return ((hi as u64) << 32) | (lo as u64);
+    /// Reads a coherent hardware timestamp, or fails after a bounded rollover
+    /// retry budget. An unresponsive device cannot keep the caller spinning.
+    pub fn query_time(&self) -> Mlx5Result<u64> {
+        for _ in 0..8 {
+            if let Some(time) = self.registers.timer_sample()? {
+                return Ok(time);
             }
         }
+        Err(Mlx5Error::DeviceNotReady)
     }
 
     /// PTP (Precision Time Protocol) サポート状況を確認
@@ -972,12 +962,19 @@ impl Mlx5Device {
         Ok(())
     }
 
-    pub unsafe fn health_status(&mut self) -> HealthStatus {
-        self.health_monitor.check(self.bar0_base)
+    /// Samples the retained health aperture. This does not establish reset or
+    /// DMA quiescence; callers must use the explicit recovery protocol.
+    pub fn health_status(&mut self) -> Mlx5Result<HealthStatus> {
+        let counter = self.registers.health_counter()?;
+        let bytes = self.registers.health_buffer()?;
+        let layout = crate::structs::health::HealthLayout::new(&bytes);
+        Ok(self
+            .health_monitor
+            .observe(counter, layout.full_reset_required()))
     }
 
-    pub unsafe fn health_check(&mut self) -> bool {
-        !matches!(self.health_status(), HealthStatus::Critical)
+    pub fn health_check(&mut self) -> Mlx5Result<bool> {
+        Ok(!matches!(self.health_status()?, HealthStatus::Critical))
     }
 
     /// プロミスキャスモードを設定

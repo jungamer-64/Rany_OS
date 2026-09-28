@@ -57,6 +57,7 @@ pub struct TxBufferInfo {
 
 /// Send Queue (SQ) 管理構造体
 pub struct SendQueue {
+    doorbell: crate::registers::SqDoorbell,
     /// SQのハードウェア番号
     pub sqn: u32,
     /// WQバッファの仮想アドレス
@@ -95,6 +96,44 @@ pub struct DmaSegment {
 }
 
 impl SendQueue {
+    /// Binds a firmware-created queue to its retained register capability.
+    ///
+    /// # Safety
+    /// Storage must match the firmware queue's configured depth. Initialized
+    /// SQ RAM must contain that many 64-byte WQEs, be 64-byte aligned and have
+    /// a non-overflowing extent; doorbell RAM must contain an initialized,
+    /// u32-aligned word. Both DMA ranges must belong to this device/queue and
+    /// remain mapped and retained through known quiescence, including on an
+    /// unknown command outcome. The caller owns them separately: this object
+    /// retains the MMIO mapping, not DMA backing. CPU mutation must be exclusive
+    /// and must not overwrite WQEs still owned by the device.
+    pub(crate) unsafe fn from_created_queue(
+        sqn: u32,
+        buf_virt: u64,
+        doorbell_virt: u64,
+        doorbell: crate::registers::SqDoorbell,
+        storage: SendQueueStorage,
+        tisn: u32,
+        cqn: u32,
+        mkey: u32,
+        csum_offload: bool,
+    ) -> Self {
+        Self {
+            sqn,
+            buf_virt,
+            doorbell_virt,
+            doorbell,
+            sq_depth: storage.depth,
+            producer_counter: 0,
+            tisn,
+            cqn,
+            tx_buffers: storage.tx_buffers,
+            debug_wqe_ring: storage.debug_wqe_ring,
+            mkey,
+            csum_offload,
+            last_bf_offset: 0,
+        }
+    }
 
     /// 送信可能なWQEスロットがあるか
     pub fn has_space(&self) -> bool {
@@ -102,6 +141,41 @@ impl SendQueue {
         let wqe_idx = (self.producer_counter as u32 % self.sq_depth) as usize;
         let bb_idx = wqe_idx * 4;
         self.tx_buffers[bb_idx].is_none()
+    }
+}
+
+/// Metadata storage is allocated before CREATE_SQ publishes a hardware queue.
+/// Binding a successful queue consumes it without further allocation.
+pub(crate) struct SendQueueStorage {
+    depth: u32,
+    tx_buffers: alloc::vec::Vec<Option<TxBufferInfo>>,
+    debug_wqe_ring: alloc::vec::Vec<TxWqeDebugInfo>,
+}
+
+impl SendQueueStorage {
+    pub(crate) fn new(log_size: u8) -> crate::error::Mlx5Result<Self> {
+        use crate::error::Mlx5Error;
+        let depth = 1u32
+            .checked_shl(u32::from(log_size))
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        let buffers = depth.checked_mul(4).ok_or(Mlx5Error::InvalidParameter)?;
+        let buffers = usize::try_from(buffers).map_err(|_| Mlx5Error::InvalidParameter)?;
+        let entries = usize::try_from(depth).map_err(|_| Mlx5Error::InvalidParameter)?;
+        let mut tx_buffers = alloc::vec::Vec::new();
+        tx_buffers
+            .try_reserve_exact(buffers)
+            .map_err(|_| Mlx5Error::NoResources)?;
+        tx_buffers.resize(buffers, None);
+        let mut debug_wqe_ring = alloc::vec::Vec::new();
+        debug_wqe_ring
+            .try_reserve_exact(entries)
+            .map_err(|_| Mlx5Error::NoResources)?;
+        debug_wqe_ring.resize(entries, TxWqeDebugInfo::default());
+        Ok(Self {
+            depth,
+            tx_buffers,
+            debug_wqe_ring,
+        })
     }
 }
 
@@ -316,7 +390,7 @@ impl SendQueue {
     /// SQドアベルをリング
     ///
     /// # Safety
-    /// - uar_base が有効であること
+    /// - WQE and doorbell-record RAM remain live, initialized and CPU owned.
     unsafe fn ring_doorbell(&mut self, wqe_ptr: *const u8) {
         // Maintain the standard mlx5 SQ doorbell ordering:
         //  1. make WQE visible
@@ -336,9 +410,8 @@ impl SendQueue {
         // Ring the SQ via the selected BF register base without per-packet
         // slot toggling. Use the first BF slot until bfreg allocation is
         // modeled explicitly.
-        let bf_addr = self.uar_base as usize + crate::regs::uar::BLUEFLAME;
         let ctrl_qword = core::ptr::read_unaligned(wqe_ptr as *const u64);
-        hal::mmio::mmio_write_u64(bf_addr, ctrl_qword);
+        self.doorbell.publish_control_word(ctrl_qword);
         self.last_bf_offset = 0;
     }
 

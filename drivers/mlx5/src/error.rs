@@ -12,12 +12,16 @@ pub enum Mlx5Error {
     FirmwareInitFailed,
     /// コマンドタイムアウト
     CommandTimeout,
+    /// Reset was published but its acknowledgement/outcome could not be established.
+    ResetOutcomeUnknown,
     /// コマンドがエラーステータスを返した
     CommandFailed(u8),
     /// 不正なコマンドレスポンス
     InvalidResponse,
     /// バーマッピング失敗
     BarMapFailed,
+    /// Register geometry failure; no access is made outside the retained mapping.
+    MmioAccess(hal::mmio::MmioAccessError),
     /// DMAバッファ割り当て失敗
     DmaAllocFailed,
     /// デバイスが見つからない
@@ -51,9 +55,11 @@ impl fmt::Display for Mlx5Error {
         match self {
             Self::FirmwareInitFailed => write!(f, "firmware init failed"),
             Self::CommandTimeout => write!(f, "command timeout"),
+            Self::ResetOutcomeUnknown => write!(f, "reset outcome unknown; resources retained"),
             Self::CommandFailed(status) => write!(f, "command failed: status={:#x}", status),
             Self::InvalidResponse => write!(f, "invalid response"),
             Self::BarMapFailed => write!(f, "BAR mapping failed"),
+            Self::MmioAccess(cause) => write!(f, "MMIO access: {cause:?}"),
             Self::DmaAllocFailed => write!(f, "DMA allocation failed"),
             Self::DeviceNotFound => write!(f, "device not found"),
             Self::DeviceNotReady => write!(f, "device not ready"),
@@ -73,3 +79,9 @@ impl fmt::Display for Mlx5Error {
 
 /// Result type for mlx5 operations
 pub type Mlx5Result<T> = Result<T, Mlx5Error>;
+
+impl From<hal::mmio::MmioAccessError> for Mlx5Error {
+    fn from(cause: hal::mmio::MmioAccessError) -> Self {
+        Self::MmioAccess(cause)
+    }
+}

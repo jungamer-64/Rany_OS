@@ -164,6 +164,28 @@ impl MappedMmio {
         MmioRegion { mapping: self }
     }
 
+    /// Derives a write-only register that retains the mapping independently.
+    ///
+    /// This is for independently owned queues sharing a device aperture. It
+    /// delegates only one register, not mapping or unmap authority, and performs
+    /// no allocation. Access remains valid after the original mapping handle
+    /// is dropped.
+    ///
+    /// # Errors
+    /// Rejects overflow, out-of-bounds access, and misalignment before I/O.
+    pub fn owned_write_only<T: MmioValue>(
+        self: &Arc<Self>,
+        offset: usize,
+    ) -> Result<OwnedMmioRegister<T, WriteOnly>, MmioAccessError> {
+        let address = checked_register_address::<T>(self.base, self.len(), offset)?;
+        Ok(OwnedMmioRegister {
+            address,
+            mapping: Arc::clone(self),
+            value: PhantomData,
+            access: PhantomData,
+        })
+    }
+
     /// Consumes an aperture and retains only the requested subrange.
     ///
     /// # Errors
@@ -310,6 +332,17 @@ pub struct MmioRegister<'region, T: MmioValue, Access: sealed::Access> {
     access: PhantomData<Access>,
 }
 
+/// One checked register retaining its mapping, without aperture/unmap access.
+///
+/// Unlike a borrowed register this can belong to an independently owned queue.
+/// It does not prove DMA publication, hardware completion, or resource teardown.
+pub struct OwnedMmioRegister<T: MmioValue, Access: sealed::Access> {
+    address: usize,
+    mapping: Arc<MappedMmio>,
+    value: PhantomData<T>,
+    access: PhantomData<Access>,
+}
+
 macro_rules! register_access {
     ($value:ty) => {
         impl<Access: Readable> MmioRegister<'_, $value, Access> {
@@ -338,6 +371,21 @@ macro_rules! register_access {
                 let pointer = core::ptr::without_provenance_mut::<$value>(self.address);
                 // SAFETY: derivation checked bounds/alignment; the borrowed
                 // mapping retains the register aperture for this access.
+                unsafe { core::ptr::write_volatile(pointer, value) }
+            }
+        }
+        impl<Access: Writable> OwnedMmioRegister<$value, Access> {
+            /// Performs one volatile write at the prevalidated width/address.
+            /// This is not a memory barrier or a device-completion proof.
+            #[expect(
+                unsafe_code,
+                reason = "the owned register retains its checked live mapping"
+            )]
+            pub fn write(&mut self, value: $value) {
+                let _owner = &self.mapping;
+                let pointer = core::ptr::without_provenance_mut::<$value>(self.address);
+                // SAFETY: construction checked the complete register extent and
+                // alignment; the strong mapping owner prevents invalidation.
                 unsafe { core::ptr::write_volatile(pointer, value) }
             }
         }

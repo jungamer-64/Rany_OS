@@ -7,7 +7,7 @@
 //! 各CQエントリ（CQE）は64バイトで、完了した操作の詳細情報を含む。
 
 use crate::defs::CqeOpcode;
-use crate::regs::{cqe as cqe_regs, uar};
+use crate::regs::cqe as cqe_regs;
 use core::sync::atomic::{AtomicU32, Ordering};
 
 /// Completion Queue Entry (CQE) — 64バイト
@@ -184,6 +184,7 @@ mod tests {
 
 /// Completion Queue 管理構造体
 pub struct CompletionQueue {
+    doorbell: crate::registers::CqDoorbell,
     /// CQのハードウェア番号（CREATE_CQで返される）
     pub cqn: u32,
     /// CQバッファ仮想アドレス
@@ -205,6 +206,39 @@ pub struct CompletionQueue {
 }
 
 impl CompletionQueue {
+    /// Binds a firmware-created queue to its retained register capability.
+    ///
+    /// # Safety
+    /// `log_cq_size` must be less than 32. The initialized ring must contain
+    /// `2^log_cq_size` CQEs, be 64-byte aligned and have a non-overflowing extent;
+    /// doorbell RAM must contain two initialized, u32-aligned words. Both DMA
+    /// ranges must belong to this device/queue and remain mapped and retained
+    /// through known quiescence, including on an unknown command outcome.
+    /// The caller owns these ranges separately: this object retains the MMIO
+    /// mapping, not DMA backing. CPU access must exclude other queue users;
+    /// device writes must obey the CQ ownership protocol.
+    pub(crate) unsafe fn from_created_queue(
+        cqn: u32,
+        buf_virt: u64,
+        buf_phys: u64,
+        doorbell: crate::registers::CqDoorbell,
+        doorbell_virt: u64,
+        log_cq_size: u8,
+        eq_number: u32,
+    ) -> Self {
+        Self {
+            cqn,
+            buf_virt,
+            buf_phys,
+            doorbell,
+            doorbell_virt,
+            log_cq_size,
+            cq_depth: 1 << log_cq_size,
+            consumer_counter: 0,
+            eq_number,
+            arm_sn: AtomicU32::new(0),
+        }
+    }
 
     /// CQバッファの物理アドレス
     pub fn buffer_phys(&self) -> u64 {
@@ -246,8 +280,8 @@ impl CompletionQueue {
     /// CQをARMする（次のイベント通知をEQに要求）
     ///
     /// # Safety
-    /// - uar_base が有効であること
-    pub unsafe fn arm(&self) {
+    /// - The doorbell-record RAM remains exclusively CPU writable and live.
+    pub unsafe fn arm(&mut self) {
         // PRM format:
         // doorbell[0] = be32(sn << 28 | cmd | ci), doorbell[1] = be32(cqn)
         // written as a single raw 64-bit MMIO store to MLX5_CQ_DOORBELL.
@@ -257,17 +291,13 @@ impl CompletionQueue {
         let arm_db_ptr = (self.doorbell_virt as *mut u32).add(1);
         core::ptr::write_volatile(arm_db_ptr, arm_db.to_be());
         core::sync::atomic::fence(Ordering::Release);
-        let mut raw = [0u8; 8];
-        raw[..4].copy_from_slice(&arm_db.to_be_bytes());
-        raw[4..].copy_from_slice(&self.cqn.to_be_bytes());
-        let arm_val = u64::from_ne_bytes(raw);
-        hal::mmio::mmio_write_u64(self.uar_base as usize + uar::CQ_DOORBELL, arm_val);
+        self.doorbell.arm(arm_db, self.cqn);
     }
 
     /// CQ内の全保留完了を処理してCQEのリストを返す
     ///
     /// # Safety
-    /// - buf_virt, doorbell_virt, uar_base が有効であること
+    /// - Ring and doorbell-record RAM remain live through completion/quiescence.
     ///
     /// # Arguments
     /// - `max_batch`: 一度に処理するCQEの最大数
