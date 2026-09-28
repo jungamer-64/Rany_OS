@@ -183,12 +183,9 @@ impl IommuController {
         Ok(())
     }
 
-    fn should_invalidate_device_tlb(&self, device: &DeviceId) -> bool {
-        (self.ecap & ecap_bits::ECAP_DT) != 0
-            && match self.ats_enabled_devices.lock() {
-                Ok(set) => set.contains(device),
-                Err(_) => false,
-            }
+    fn should_invalidate_device_tlb(&self, device: &DeviceId) -> Result<bool, IommuError> {
+        let devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
+        Ok(devices.contains_key(device))
     }
 
     /// Issue QI IOTLB and (optional) Device-TLB invalidations for an unmap.
@@ -201,7 +198,7 @@ impl IommuController {
         size: u64,
     ) -> Result<(), IommuError> {
         let mut flags = InvalidateFlags::empty();
-        if self.should_invalidate_device_tlb(device) {
+        if self.should_invalidate_device_tlb(device)? {
             flags |= InvalidateFlags::ATS_AWARE;
         }
         let req = InvalidateRequest {

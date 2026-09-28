@@ -126,12 +126,9 @@ impl IommuController {
             .device_domains
             .lock()
             .map_err(|_| IommuError::Poisoned)?;
-        let ats_devices = self
-            .ats_enabled_devices
-            .lock()
-            .map_err(|_| IommuError::Poisoned)?;
+        let ats_devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
 
-        for device in ats_devices.iter() {
+        for device in ats_devices.keys() {
             if let Some(&did) = device_domains.get(device) {
                 if did == domain_id {
                     let source_id = device.requester_id();
@@ -184,16 +181,13 @@ impl IommuController {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_global()?;
             // IOTLB completion alone does not cover translations cached by ATS devices.
-            let ats_devices = self
-                .ats_enabled_devices
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?;
-            for device in ats_devices.iter() {
+            let ats_devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
+            for device in ats_devices.keys() {
                 self.qi_invalidate_device_tlb_all(device.requester_id())?;
             }
         } else {
             if !self
-                .ats_enabled_devices
+                .ats_devices
                 .lock()
                 .map_err(|_| IommuError::Poisoned)?
                 .is_empty()

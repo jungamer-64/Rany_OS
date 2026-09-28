@@ -18,7 +18,7 @@ pub mod qi_init;
 pub mod qi_ops;
 pub mod utils;
 
-use alloc::collections::BTreeSet;
+use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -59,7 +59,9 @@ use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 /// Hardware Tables (Root Table and Context Tables)
 mod hw_context_impl;
 pub use hw_context_impl::*;
-mod ats_control;
+mod ats;
+use ats::AtsDevice;
+pub(crate) use ats::AtsEnableError;
 #[derive(Debug)]
 pub struct HardwareContext {
     /// Root Table: 256 entries (16 bytes each = 4KB)
@@ -135,8 +137,8 @@ pub struct IommuController {
     pub segment: u16,
     /// IOVA allocator (lock-free bitmap-based)
     pub(crate) iova_allocator: PoisonLock<Option<Arc<IovaAllocator>>>,
-    /// Set of devices with ATS enabled
-    pub(crate) ats_enabled_devices: PoisonLock<BTreeSet<DeviceId>>,
+    /// PCI ATS resources remain owned through uncertain enable/disable/flush outcomes.
+    ats_devices: PoisonLock<BTreeMap<DeviceId, AtsDevice>>,
     /// Fault log ring buffer
     pub(crate) fault_log: IrqMutex<Option<FaultLog>>,
     /// Device scopes
@@ -182,7 +184,7 @@ impl IommuController {
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),
             iova_allocator: PoisonLock::new(None),
-            ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
+            ats_devices: PoisonLock::new(BTreeMap::new()),
             fault_log: IrqMutex::new(None),
             device_scopes: Vec::new(),
             include_all: false,
@@ -222,7 +224,7 @@ impl IommuController {
             qi_enabled: AtomicBool::new(false),
             scalable_mode_enabled: AtomicBool::new(false),
             iova_allocator: PoisonLock::new(None),
-            ats_enabled_devices: PoisonLock::new(BTreeSet::new()),
+            ats_devices: PoisonLock::new(BTreeMap::new()),
             fault_log: IrqMutex::new(None),
             device_scopes: scopes,
             include_all,

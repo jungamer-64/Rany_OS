@@ -188,7 +188,7 @@ impl DomainManager for IommuController {
     }
 
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        self.disable_ats_for_device(
+        self.close_ats(
             device,
             crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
         )?;

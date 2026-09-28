@@ -18,6 +18,10 @@ pub enum IommuError {
     NotPresent,
     /// Not supported
     NotSupported,
+    /// PCI configuration failure retains the precise hardware/resource cause.
+    PciConfiguration(PcieError),
+    /// Device trust policy does not admit ATS.
+    AtsPolicyDenied,
     /// Already initialized
     AlreadyInitialized,
     /// Invalid address
@@ -52,6 +56,9 @@ pub enum IommuError {
 impl From<PcieError> for IommuError {
     fn from(e: PcieError) -> Self {
         match e {
+            PcieError::InvalidBusRange { .. } | PcieError::ConfigMapping(_) => {
+                IommuError::PciConfiguration(e)
+            }
             PcieError::DeviceNotFound => IommuError::DeviceNotFound,
             PcieError::CapabilityNotFound => IommuError::NotSupported,
             PcieError::NotSupported => IommuError::NotSupported,

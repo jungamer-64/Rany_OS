@@ -1,6 +1,5 @@
 use super::{PcieBdf, PcieConfig, PcieError, PcieResult, cap_id, ext_cap_id};
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, Ordering};
 use exorust_sync::PoisonRwLock;
 
 // ============================================================================
@@ -508,8 +507,43 @@ pub struct AtsCapability {
 pub struct AtsController {
     config: &'static PcieConfig,
     bdf: PcieBdf,
-    capability: Option<AtsCapability>,
-    enabled: AtomicBool,
+    capability: AtsCapability,
+}
+
+#[derive(Clone, Copy)]
+enum AtsControlRequest {
+    Enable { stu: u8 },
+    Disable,
+}
+
+impl AtsControlRequest {
+    fn prepare(self, current: u16) -> PcieResult<u16> {
+        if current == u16::MAX {
+            return Err(PcieError::DeviceNotFound);
+        }
+        match self {
+            Self::Enable { stu } if stu <= 0x1f => {
+                Ok((current & !0x1f) | u16::from(stu) | (1 << 15))
+            }
+            Self::Enable { .. } => Err(PcieError::ConfigError),
+            Self::Disable => Ok(current & !(1 << 15)),
+        }
+    }
+
+    fn check_readback(self, observed: u16) -> PcieResult<()> {
+        if observed == u16::MAX {
+            return Err(PcieError::DeviceNotFound);
+        }
+        let matches = match self {
+            Self::Enable { stu } => observed & ((1 << 15) | 0x1f) == (1 << 15) | u16::from(stu),
+            Self::Disable => observed & (1 << 15) == 0,
+        };
+        if matches {
+            Ok(())
+        } else {
+            Err(PcieError::ConfigError)
+        }
+    }
 }
 
 impl AtsController {
@@ -524,8 +558,7 @@ impl AtsController {
         Ok(Self {
             config,
             bdf,
-            capability: Some(cap),
-            enabled: AtomicBool::new(false),
+            capability: cap,
         })
     }
 
@@ -557,55 +590,92 @@ impl AtsController {
 
     /// # Errors
     ///
-    /// Returns an error if the requested state transition is invalid or rejected by the device.
+    /// Invalid STU or configuration/readback failure leaves the resource with
+    /// the caller. A failure after the write may still have enabled hardware;
+    /// the translation-cache owner must retain it until explicit shutdown.
     pub fn enable_ats(&self, stu: u8) -> PcieResult<()> {
-        let cap = self
-            .capability
-            .as_ref()
-            .ok_or(PcieError::CapabilityNotFound)?;
-        let offset = cap.offset;
-        let mut ctrl = self
-            .config
-            .read16(self.bdf, offset + ats_regs::CTRL)
-            .ok_or(PcieError::ConfigError)?;
-        ctrl = (ctrl & !0x1F) | ((stu as u16) & 0x1F);
-        ctrl |= 1 << 15;
-        self.config
-            .write16(self.bdf, offset + ats_regs::CTRL, ctrl)
-            .ok_or(PcieError::ConfigError)?;
-        self.enabled.store(true, Ordering::SeqCst);
-        Ok(())
+        self.transition(AtsControlRequest::Enable { stu })
     }
 
     /// # Errors
     ///
-    /// Returns an error if the requested state transition is invalid or rejected by the device.
+    /// Failure does not establish disablement. Even success confirms only the
+    /// PCI control bit, not Device-TLB invalidation or outstanding DMA completion.
     pub fn disable_ats(&self) -> PcieResult<()> {
-        let cap = self
-            .capability
-            .as_ref()
-            .ok_or(PcieError::CapabilityNotFound)?;
-        let offset = cap.offset;
-        let mut ctrl = self
-            .config
-            .read16(self.bdf, offset + ats_regs::CTRL)
-            .ok_or(PcieError::ConfigError)?;
-        ctrl &= !(1 << 15);
+        self.transition(AtsControlRequest::Disable)
+    }
+
+    fn transition(&self, request: AtsControlRequest) -> PcieResult<()> {
+        let offset = self.capability.offset;
+        let ctrl = request.prepare(self.read_control()?)?;
         self.config
             .write16(self.bdf, offset + ats_regs::CTRL, ctrl)
             .ok_or(PcieError::ConfigError)?;
-        self.enabled.store(false, Ordering::SeqCst);
-        Ok(())
+        request.check_readback(self.read_control()?)
     }
 
-    pub fn is_enabled(&self) -> bool {
-        self.enabled.load(Ordering::Relaxed)
+    fn read_control(&self) -> PcieResult<u16> {
+        match self
+            .config
+            .read16(self.bdf, self.capability.offset + ats_regs::CTRL)
+        {
+            Some(u16::MAX) => Err(PcieError::DeviceNotFound),
+            Some(value) => Ok(value),
+            None => Err(PcieError::ConfigError),
+        }
     }
-    pub fn capability(&self) -> Option<&AtsCapability> {
-        self.capability.as_ref()
+
+    pub fn capability(&self) -> &AtsCapability {
+        &self.capability
+    }
+    pub const fn segment(&self) -> u16 {
+        self.config.segment()
     }
     pub fn bdf(&self) -> PcieBdf {
         self.bdf
+    }
+}
+
+#[cfg(test)]
+mod ats_control_tests {
+    use super::*;
+
+    #[test]
+    fn control_update_preserves_reserved_fields_without_truncating_stu() {
+        assert_eq!(
+            AtsControlRequest::Enable { stu: 3 }.prepare(0x4260),
+            Ok(0xc263)
+        );
+        assert_eq!(AtsControlRequest::Disable.prepare(0xc263), Ok(0x4263));
+        assert_eq!(
+            AtsControlRequest::Enable { stu: 32 }.prepare(0),
+            Err(PcieError::ConfigError)
+        );
+    }
+
+    #[test]
+    fn lost_device_is_not_a_successful_enable_or_disable_readback() {
+        assert_eq!(
+            AtsControlRequest::Enable { stu: 31 }.check_readback(u16::MAX),
+            Err(PcieError::DeviceNotFound)
+        );
+        assert_eq!(
+            AtsControlRequest::Disable.check_readback(u16::MAX),
+            Err(PcieError::DeviceNotFound)
+        );
+    }
+
+    #[test]
+    fn readback_must_confirm_requested_enablement_and_translation_unit() {
+        let enable = AtsControlRequest::Enable { stu: 3 };
+        assert_eq!(enable.check_readback(0x8003), Ok(()));
+        assert_eq!(enable.check_readback(0x0003), Err(PcieError::ConfigError));
+        assert_eq!(enable.check_readback(0x8002), Err(PcieError::ConfigError));
+        assert_eq!(AtsControlRequest::Disable.check_readback(0x0003), Ok(()));
+        assert_eq!(
+            AtsControlRequest::Disable.check_readback(0x8003),
+            Err(PcieError::ConfigError)
+        );
     }
 }
 

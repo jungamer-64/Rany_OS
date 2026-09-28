@@ -3,7 +3,6 @@
 // ============================================================================
 
 use super::*;
-use crate::io::iommu::types::DeviceId;
 
 // ============================================================================
 // Isolation Helpers (extracted from isolate_faulting_device for CC reduction)
@@ -189,20 +188,8 @@ impl IommuController {
                 let _ = self.invalidate_iotlb_global_sync();
             }
 
-            // 3. Device-TLB (ATS) Invalidation
-            // If the device has ATS enabled, we MUST flush its internal TLB
-            // Convert the requester ID (bus<<8 | devfn) back into a DeviceId.
-            let device_id = DeviceId::from_bus_devfn(
-                self.segment,
-                ((sid >> 8) & 0xff) as u8,
-                (sid & 0xff) as u8,
-            );
-            if self.is_ats_enabled(&device_id) {
-                if self.is_queued_invalidation_enabled() {
-                    let _ = self.qi_invalidate_device_tlb_all(sid);
-                    let _ = self.qi_wait_sync();
-                }
-            }
+            // Domain/global invalidation above also covers every owned ATS
+            // resource; no second presence flag selects an independent flush.
         }
 
         // Phase 7: Notify security event AFTER lock is released and invalidation done

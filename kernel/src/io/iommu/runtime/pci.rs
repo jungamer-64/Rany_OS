@@ -14,7 +14,6 @@ use crate::io::iommu::runtime::groups::{RealPciTopology, get_iommu_group_manager
 use crate::io::iommu::runtime::registry::get_iommu_driver;
 #[cfg(not(test))]
 use crate::io::iommu::types::{DeviceId, IommuDomainType};
-use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 #[cfg(not(test))]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
@@ -140,18 +139,6 @@ pub fn setup_iommu_for_pci_device(
 
     let domain_id = iommu_group.domain_id;
 
-    // ATS support check (Intel specific for now in this function, but safe to call)
-    // ATS requires PCIe extended config space; skip when unavailable.
-    if has_pcie_ext {
-        if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
-            let registry = get_iommu_registry().expect("Intel registry must exist");
-            if let Some(controller) = registry.controllers.get(controller_idx) {
-                let ext_mgr = pcie_ext_manager().unwrap();
-                try_enable_ats(controller, ext_mgr, device, device_id);
-            }
-        }
-    }
-
     if let Err(e) = driver.attach_device(device_id, domain_id) {
         log::error!(
             "[IOMMU] Attach failed for device {:?} to domain {}: {:?}\n",
@@ -163,6 +150,16 @@ pub fn setup_iommu_for_pci_device(
     }
 
     device.iommu_domain_id = Some(domain_id);
+    // ATS publication follows domain attachment and consumes the PCI resource.
+    if has_pcie_ext {
+        if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
+            let registry = get_iommu_registry().expect("Intel registry must exist");
+            if let Some(controller) = registry.controllers.get(controller_idx) {
+                let ext_mgr = pcie_ext_manager().unwrap();
+                try_enable_ats(controller, ext_mgr, device, device_id);
+            }
+        }
+    }
     log_device_protection(device_id, &iommu_group, domain_id, newly_created);
 
     Ok(domain_id)
@@ -175,56 +172,33 @@ fn try_enable_ats(
     device: &crate::io::pci::PciDeviceInfo,
     device_id: DeviceId,
 ) {
-    if (controller.ecap & ecap_bits::ECAP_DT) == 0 {
-        return;
-    }
-    if !pci_driver::device_supports_ats(
-        pcie_ext_manager.config(),
-        PcieBdf::from_bdf_address(&device.bdf),
-    ) {
-        return;
-    }
-
-    let ats_enabled_for_device = match controller.ats_enabled_devices.lock() {
-        Ok(set) => set.contains(&device_id),
-        Err(_) => {
-            log::warn!(
-                "[IOMMU] ats_enabled_devices lock poisoned while checking ATS for device {:?} - assuming ATS NOT enabled",
-                device_id
-            );
-            false
-        }
-    };
-
-    if ats_enabled_for_device {
-        return;
-    }
-
     let trust_level = determine_trust_level(pcie_ext_manager, device);
-
-    if trust_level == crate::io::iommu::runtime::security::DeviceTrustLevel::Untrusted {
-        log::warn!(
-            "[IOMMU][SECURITY] ATS disabled for UNTRUSTED device {:?}",
-            device_id
-        );
+    if controller.check_ats_admission(trust_level).is_err() {
         return;
     }
 
     if let Some(config) = pcie_ext_config() {
         if let Ok(ats_ctrl) = AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf)) {
-            if let Err(e) = ats_ctrl.enable_ats(0) {
-                log::warn!(
-                    "[IOMMU] Failed to enable ATS for device {:?}: {:?}",
-                    device_id,
-                    e
-                );
-            } else {
-                log::info!(
-                    "[IOMMU] Enabled ATS for device {:?} (Trust: {:?})",
-                    device_id,
-                    trust_level
-                );
-                controller.enable_ats_for_device(device_id, trust_level);
+            use crate::io::iommu::vendors::intel::controller::AtsEnableError;
+            match controller.enable_ats(ats_ctrl, trust_level) {
+                Ok(()) => log::info!("[IOMMU] ATS active for device {:?}", device_id),
+                Err(AtsEnableError::Rejected { cause, resource }) => {
+                    // No configuration write was issued; ATS is optional here.
+                    log::warn!(
+                        "[IOMMU] ATS admission rejected for {:?}: {:?}",
+                        resource.bdf(),
+                        cause
+                    );
+                }
+                Err(AtsEnableError::Retained { cause, device }) => {
+                    // The controller still owns this resource and includes it in
+                    // invalidation, even though enablement could not be confirmed.
+                    log::warn!(
+                        "[IOMMU] ATS outcome unknown for {:?}, resource retained: {:?}",
+                        device,
+                        cause
+                    );
+                }
             }
         }
     }
