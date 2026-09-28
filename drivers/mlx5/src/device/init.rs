@@ -2,7 +2,6 @@
 // drivers/mlx5/src/device/init.rs - MLX5 Device Initialization
 // ============================================================================
 
-use crate::bootstrap::{Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan};
 use crate::cmd::CmdQueueTransport; // needed for layout parsing
 use crate::cmd::hca::{
     MLX5_ACCESS_REGISTER_OP_MOD_WRITE, MLX5_REG_HOST_ENDIANNESS, build_access_register_input,
@@ -601,54 +600,6 @@ impl Mlx5Device {
             0x20,
             self.cmd_out_mbox_device,
             0x20,
-        )
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub unsafe fn bootstrap(
-        &mut self,
-        config: &Mlx5BootstrapConfig,
-        resources: &Mlx5AllocatedResources,
-    ) -> Mlx5Result<()> {
-        self.is_vf = config.is_vf;
-
-        let plan = Mlx5BootstrapPlan::new(config);
-        plan.validate_resources(resources)?;
-        self.set_pci_location(
-            config.pci_identity.segment,
-            config.pci_identity.bus,
-            config.pci_identity.device,
-            config.pci_identity.function,
-        )?;
-
-        let eq_bufs = resources.eq_bufs();
-        let tx_cq_bufs = resources.tx_cq_bufs();
-        let rx_cq_bufs = resources.rx_cq_bufs();
-        let sq_bufs = resources.sq_bufs();
-        let rq_bufs = resources.rq_bufs();
-        let rmp_bufs = resources.rmp_bufs();
-        let profile = plan.queue_profile();
-
-        self.init_multi_queue(
-            resources.cmdq.virt_addr,
-            resources.cmdq.device_addr,
-            resources.cmd_in_mbox.virt_addr,
-            resources.cmd_in_mbox.device_addr,
-            resources.cmd_out_mbox.virt_addr,
-            resources.cmd_out_mbox.device_addr,
-            &config.mkey_params,
-            &eq_bufs,
-            &tx_cq_bufs,
-            &rx_cq_bufs,
-            &sq_bufs,
-            &rq_bufs,
-            &rmp_bufs,
-            profile.log_eq_size,
-            profile.log_cq_size,
-            profile.log_sq_size,
-            profile.log_rq_size,
         )
     }
 

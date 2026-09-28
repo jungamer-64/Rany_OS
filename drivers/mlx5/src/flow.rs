@@ -176,7 +176,7 @@ pub struct MatchCriteria {
 }
 
 /// マッチ値（具体的なヘッダフィールド値）
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct MatchValue {
     /// 宛先MACアドレス
     pub dst_mac: Option<[u8; 6]>,
@@ -198,23 +198,6 @@ pub struct MatchValue {
     pub src_port: Option<u16>,
     /// IPプロトコル
     pub ip_protocol: Option<u8>,
-}
-
-impl Default for MatchValue {
-    fn default() -> Self {
-        Self {
-            dst_mac: None,
-            src_mac: None,
-            ethertype: None,
-            dst_ipv4: None,
-            src_ipv4: None,
-            dst_ipv6: None,
-            src_ipv6: None,
-            dst_port: None,
-            src_port: None,
-            ip_protocol: None,
-        }
-    }
 }
 
 // ============================================================================

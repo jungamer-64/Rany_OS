@@ -14,7 +14,7 @@
 //! バッファの所有権をSW↔HW間で明示的に移動する。
 //! DMAバッファの物理アドレスをWQEに直接設定する。
 
-use crate::defs::{WQEBB_SIZE, WqeOpcode};
+use crate::defs::{MLX5_SQ_STRIDE, WQEBB_SIZE, WqeOpcode};
 use crate::regs::wqe;
 use alloc::collections::VecDeque;
 use core::sync::atomic::{Ordering, fence};
@@ -200,8 +200,8 @@ impl SendQueue {
         wqe_ptr: *const u8,
         data_seg_ptr: *const u8,
     ) {
-        let mut wqe_bytes = [0u8; 64];
-        core::ptr::copy_nonoverlapping(wqe_ptr, wqe_bytes.as_mut_ptr(), 64);
+        let mut wqe_bytes = [0u8; MLX5_SQ_STRIDE];
+        core::ptr::copy_nonoverlapping(wqe_ptr, wqe_bytes.as_mut_ptr(), MLX5_SQ_STRIDE);
         self.debug_wqe_ring[buf_idx] = TxWqeDebugInfo {
             valid: true,
             wqe_counter,
@@ -230,9 +230,9 @@ impl SendQueue {
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
 
-        let wqe_offset = buf_idx * 64;
+        let wqe_offset = buf_idx * MLX5_SQ_STRIDE;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
-        core::ptr::write_bytes(wqe_ptr, 0, 64);
+        core::ptr::write_bytes(wqe_ptr, 0, MLX5_SQ_STRIDE);
 
         // Control Segment (16 bytes)
         let ctrl_ptr = wqe_ptr;
@@ -315,9 +315,9 @@ impl SendQueue {
 
         let wqe_idx = self.producer_counter;
         let buf_idx = (wqe_idx as u32 % self.sq_depth) as usize;
-        let wqe_offset = buf_idx * 64;
+        let wqe_offset = buf_idx * MLX5_SQ_STRIDE;
         let wqe_ptr = (self.buf_virt as usize + wqe_offset) as *mut u8;
-        core::ptr::write_bytes(wqe_ptr, 0, 64);
+        core::ptr::write_bytes(wqe_ptr, 0, MLX5_SQ_STRIDE);
 
         // Control Segment
         let ctrl_ptr = wqe_ptr;
@@ -440,13 +440,13 @@ impl SendQueue {
     pub unsafe fn debug_state(&self) -> TxQueueDebugState {
         let last_wqe_counter = self.producer_counter.wrapping_sub(1);
         let last_idx = (last_wqe_counter as u32 % self.sq_depth) as usize;
-        let last_wqe_ptr = (self.buf_virt as usize + last_idx * 64) as *const u8;
+        let last_wqe_ptr = (self.buf_virt as usize + last_idx * MLX5_SQ_STRIDE) as *const u8;
         let last_data_seg_ptr = last_wqe_ptr.add(32);
 
         let doorbell_be = core::ptr::read_volatile((self.doorbell_virt as *const u32).add(1));
         let doorbell_host = u32::from_be(doorbell_be) & 0x0000_ffff;
-        let mut last_wqe_bytes = [0u8; 64];
-        core::ptr::copy_nonoverlapping(last_wqe_ptr, last_wqe_bytes.as_mut_ptr(), 64);
+        let mut last_wqe_bytes = [0u8; MLX5_SQ_STRIDE];
+        core::ptr::copy_nonoverlapping(last_wqe_ptr, last_wqe_bytes.as_mut_ptr(), MLX5_SQ_STRIDE);
 
         TxQueueDebugState {
             sqn: self.sqn,
@@ -501,7 +501,7 @@ pub struct TxQueueDebugState {
     pub last_wqe_lkey: u32,
     pub last_wqe_device_addr: u64,
     pub last_bf_offset: u16,
-    pub last_wqe_bytes: [u8; 64],
+    pub last_wqe_bytes: [u8; MLX5_SQ_STRIDE],
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -515,7 +515,7 @@ pub struct TxWqeDebugInfo {
     pub byte_count: u32,
     pub lkey: u32,
     pub device_addr: u64,
-    pub wqe_bytes: [u8; 64],
+    pub wqe_bytes: [u8; MLX5_SQ_STRIDE],
 }
 
 impl Default for TxWqeDebugInfo {
@@ -530,7 +530,7 @@ impl Default for TxWqeDebugInfo {
             byte_count: 0,
             lkey: 0,
             device_addr: 0,
-            wqe_bytes: [0u8; 64],
+            wqe_bytes: [0u8; MLX5_SQ_STRIDE],
         }
     }
 }

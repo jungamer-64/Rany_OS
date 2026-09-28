@@ -35,6 +35,8 @@ extern crate alloc;
 kernel_api::register_cell_runtime!();
 
 pub mod bootstrap;
+#[cfg(test)]
+mod bootstrap_tests;
 pub mod cmd;
 pub mod cq;
 pub mod defs;
@@ -475,8 +477,8 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
 
 // Re-export core types
 pub use bootstrap::{
-    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
-    Mlx5QueueDmaRegion, Mlx5QueueProfile,
+    BootstrapDmaInventory, BootstrapDmaPlan, BootstrapDmaPurpose, BootstrapPlanError,
+    BootstrapQueueKind, Mlx5BootstrapConfig, Mlx5PciIdentity, Mlx5QueueProfile,
 };
 pub use defs::{
     CONNECTX4_DEVICE_ID, CONNECTX4_LX_DEVICE_ID, CONNECTX4_LX_VF_DEVICE_ID, CONNECTX5_DEVICE_ID,

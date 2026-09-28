@@ -3,7 +3,10 @@
 // ============================================================================
 
 use crate::cmd::CmdMailbox;
-use crate::defs::{MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE, MLX5_RX_WQE_MAX_SUPPORTED_SIZE};
+use crate::defs::{
+    MLX5_CMD_MBOX_SIZE, MLX5_PAGE_SIZE, MLX5_QUEUE_PAS_OFFSET, MLX5_RX_WQE_MAX_SUPPORTED_SIZE,
+    MLX5_SQ_LOG_STRIDE, MLX5_SQ_STRIDE,
+};
 use crate::structs::queues::{
     CqContextLayout, EqContextLayout, RmpContextLayout, RqContextLayout, SqContextLayout,
 };
@@ -86,7 +89,7 @@ pub fn build_create_eq_input(
     let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
     let eq_pages = (eq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..eq_pages {
-        let off = 0x110 + i * 8;
+        let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, eq_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }
@@ -128,7 +131,7 @@ pub fn build_create_cq_input(
     let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
     let cq_pages = (cq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..cq_pages {
-        let off = 0x110 + i * 8;
+        let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, cq_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }
@@ -198,15 +201,15 @@ pub fn build_create_sq_input(
         wq.set_pd(pd);
         wq.set_uar_page(uar_page);
         wq.set_dbr_addr(db_pa);
-        wq.set_log_wq_stride(6); // 64B
+        wq.set_log_wq_stride(MLX5_SQ_LOG_STRIDE);
         wq.set_log_wq_pg_sz(0); // 4KB
         wq.set_log_wq_sz(log_sq_size);
     }
 
-    let sq_bytes = (1usize << (log_sq_size as usize)) * 64usize;
+    let sq_bytes = (1usize << (log_sq_size as usize)) * MLX5_SQ_STRIDE;
     let sq_pages = (sq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..sq_pages {
-        let off = 0x110 + i * 8;
+        let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, sq_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }
@@ -378,7 +381,7 @@ pub fn build_create_rq_input_with_options(
     let rq_bytes = (1usize << (log_rq_size as usize)) * rq_slot_size_bytes(log_wq_stride);
     let rq_pages = (rq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..rq_pages {
-        let off = 0x110 + i * 8;
+        let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, rq_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }
@@ -442,7 +445,7 @@ pub fn build_create_rmp_input_with_options(
     let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
     let rmp_pages = (rmp_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
     for i in 0..rmp_pages {
-        let off = 0x110 + i * 8;
+        let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
             in_mbox.write_be64(off, rmp_buf_pa + (i as u64) * (MLX5_PAGE_SIZE as u64));
         }

@@ -190,6 +190,10 @@ pub const MLX5_CQ_DEPTH: u32 = 64;
 /// SQ/RQエントリ数（2のべき乗）
 pub const MLX5_WQ_DEPTH: u32 = 256;
 
+/// One SQ slot contains a complete WQE, not a single 16-byte data segment.
+pub(crate) const MLX5_SQ_LOG_STRIDE: u8 = 6;
+pub(crate) const MLX5_SQ_STRIDE: usize = 1 << MLX5_SQ_LOG_STRIDE;
+
 /// 現在サポートする RX WQE スロットの最大サイズ
 pub const MLX5_RX_WQE_MAX_SUPPORTED_SIZE: usize = 64;
 
@@ -212,6 +216,9 @@ pub const MLX5_PAGE_SIZE: usize = 4096;
 /// コマンドメールボックスの論理サイズ (16KB)
 pub const MLX5_CMD_MBOX_SIZE: usize = 16384;
 
+/// First PAS entry in CREATE_EQ/CQ/SQ/RQ/RMP input, shared with allocation admission.
+pub(crate) const MLX5_QUEUE_PAS_OFFSET: usize = 0x110;
+
 /// 記述子に inline で載る mailbox 先頭データ長
 pub const MLX5_CMD_INLINE_SIZE: usize = 16;
 
@@ -228,7 +235,7 @@ pub const fn mlx5_cmd_chained_blocks(len: usize) -> usize {
     if len <= MLX5_CMD_INLINE_SIZE {
         0
     } else {
-        (len - MLX5_CMD_INLINE_SIZE + MLX5_CMD_DATA_BLOCK_SIZE - 1) / MLX5_CMD_DATA_BLOCK_SIZE
+        (len - MLX5_CMD_INLINE_SIZE).div_ceil(MLX5_CMD_DATA_BLOCK_SIZE)
     }
 }
 

@@ -14,7 +14,7 @@
 
 - Drivers MUST NOT depend on the kernel crate directly (i.e., no `kernel` dependency in `Cargo.toml`).
 - Drivers SHOULD depend on `kernel_api` for system calls, types, and kernel services (e.g., DMA allocation).
-- Drivers may use the `hal` crate for safe MMIO/port IO primitives.
+- Drivers use retained mapping capabilities and assigned port ranges from `hal`; a raw address is not MMIO/PIO access authority.
 - If you need to perform privileged kernel operations, extend the `kernel_api` trait and implement support in the kernel's `KernelServices` implementation.
 - If a driver exposes `standalone`, that feature should mean "standalone cell build" end-to-end: export the ABI entry symbol and enable `kernel_api/cell_runtime`.
 
@@ -31,8 +31,9 @@ hal = { path = "../hal" }
 
 If your driver needs to allocate DMA memory:
 
-- Use `kernel_api::service::kernel::instance().alloc_dma_for_device(size, pci_locator)` and let the returned `kernel_api::dma::DmaSlice<kernel_api::dma::CpuOwned>` reclaim itself on Drop.
+- Pass a checked `kernel_api::dma::DmaAllocationRequest` to `kernel_api::service::kernel::instance().alloc_dma_for_device(request, pci_locator)`. The returned `CpuDmaLease` owns a linear registry capability, not independently reclaimable backing memory.
 - Pass a real `kernel_api::abi::driver::PackedPciLocation` from `DriverContext::pci_location()` or your PCI enumeration path. Public driver code must not rely on identity/global DMA fallback.
+- Transfer CPU ownership before hardware publication. Descriptor RAM uses the shared lease protocol, not MMIO or retained Rust slices. Explicit `close` can fail and returns the quarantined capability; Drop is not successful release. See the [DMA ownership contract](../docs/driver-dependency.md).
 
 If your driver needs to run as a standalone cell:
 

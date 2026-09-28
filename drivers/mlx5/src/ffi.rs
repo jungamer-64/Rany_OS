@@ -21,15 +21,15 @@ use kernel_api::abi::driver::{
     AbiError, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
     AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout,
     AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiRxLeaseGuard, AbiTxDeviceOutcome,
-    DriverContext, KernelApiV4, PackedPciLocation,
+    DriverContext, KernelApiV4,
 };
 use kernel_api::driver::{AsyncDriver, DriverFuture, DriverType, DriverVersion};
 use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, TxLeaseId};
 use spin::Mutex;
 
 use crate::bootstrap::{
-    Mlx5AllocatedResources, Mlx5BootstrapConfig, Mlx5BootstrapPlan, Mlx5DmaRegion, Mlx5PciIdentity,
-    Mlx5QueueDmaRegion, Mlx5QueueProfile,
+    BootstrapAllocationCause, BootstrapDmaInventory, BootstrapDmaPlan, BootstrapRetirementFailure,
+    Mlx5BootstrapConfig, Mlx5PciIdentity, Mlx5QueueProfile,
 };
 use crate::defs::{CqeOpcode, MLX5_WQ_DEPTH};
 use crate::device::Mlx5Device;
@@ -254,7 +254,7 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
 };
 
 // ============================================================================
-// DMA Resource Management
+// Unpublished DMA retirement
 // ============================================================================
 
 // ============================================================================
@@ -263,13 +263,81 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
 
 const MLX5_POLL_BATCH: u32 = 64;
 const MLX5_POLL_INTERVAL_MS: u64 = 1;
-const MLX5_DMA_MIN_IOVA: u64 = 0x100000;
-const MLX5_DMA_LOW_IOVA_MAX_RETRIES: u32 = 64;
+enum BootstrapDmaRetention {
+    Unpublished(BootstrapDmaInventory),
+    UnmapFailed(BootstrapRetirementFailure),
+    Released,
+}
+
+/// Does not retry uncertain release or restore CPU access. Reset reconciliation
+/// owns that separate transition; a repeated stop must retain this quarantine.
+fn retire_bootstrap_dma(
+    retention: &mut BootstrapDmaRetention,
+) -> Result<(), kernel_api::error::KapiError> {
+    let inventory = match core::mem::replace(retention, BootstrapDmaRetention::Released) {
+        BootstrapDmaRetention::Unpublished(inventory) => inventory,
+        BootstrapDmaRetention::UnmapFailed(failure) => {
+            log::warn!(target: "mlx5", "DMA quarantine retained: {:?}, released={} retained={}",
+                failure.cause(), failure.released_count(), failure.retained_count());
+            *retention = BootstrapDmaRetention::UnmapFailed(failure);
+            return Err(kernel_api::error::KapiError::IoError);
+        }
+        BootstrapDmaRetention::Released => return Ok(()),
+    };
+    if let Err(failure) = inventory.close() {
+        log::warn!(target: "mlx5", "DMA close retained: {:?}, released={} retained={}",
+            failure.cause(), failure.released_count(), failure.retained_count());
+        *retention = BootstrapDmaRetention::UnmapFailed(failure);
+        return Err(kernel_api::error::KapiError::IoError);
+    }
+    Ok(())
+}
+
+enum AcquisitionMapping {
+    Mapped(AbiMmioHandle),
+    UnmapUnknown {
+        _mapping: AbiMmioHandle,
+        status: i32,
+    },
+    Released,
+}
+
+/// Allocation failed before command/ring publication. This claim retains the
+/// original acquisition cause and every successfully acquired DMA capability.
+struct Mlx5AcquisitionFailure {
+    cause: BootstrapAllocationCause,
+    dma: BootstrapDmaRetention,
+    mapping: AcquisitionMapping,
+}
+
+impl Mlx5AcquisitionFailure {
+    fn close(&mut self) -> Result<(), kernel_api::error::KapiError> {
+        log::warn!(target: "mlx5", "Retiring failed acquisition: {:?}", self.cause);
+        retire_bootstrap_dma(&mut self.dma)?;
+        let mapping = match self.mapping {
+            AcquisitionMapping::Mapped(mapping) => mapping,
+            AcquisitionMapping::UnmapUnknown { status, .. } => {
+                return Err(kernel_api::error::KapiError::Internal(status));
+            }
+            AcquisitionMapping::Released => return Ok(()),
+        };
+        let status = (kernel_api().unmap_mmio)(&mapping);
+        if status != 0 {
+            self.mapping = AcquisitionMapping::UnmapUnknown {
+                _mapping: mapping,
+                status,
+            };
+            return Err(kernel_api::error::KapiError::Internal(status));
+        }
+        self.mapping = AcquisitionMapping::Released;
+        Ok(())
+    }
+}
 
 struct Mlx5StandaloneState {
     lifecycle: Mlx5Lifecycle,
     device: Mlx5Device,
-    dma: Mlx5DmaResources,
+    dma: BootstrapDmaRetention,
     mmio: AbiMmioHandle,
     registration_handle: Option<u64>,
     runtime: Option<AbiNetPortRuntime>,
@@ -296,6 +364,7 @@ enum Mlx5Lifecycle {
 enum Mlx5Slot {
     Vacant,
     Live(Mlx5StandaloneState),
+    AcquisitionFailed(Mlx5AcquisitionFailure),
     Finalizing,
 }
 
@@ -552,6 +621,9 @@ fn destroy_state(
             state.lifecycle = Mlx5Lifecycle::DeviceStopped;
         }
         Mlx5Lifecycle::DeviceStopped => {}
+    }
+    if let Err(cause) = retire_bootstrap_dma(&mut state.dma) {
+        return Err((cause, state));
     }
     let status = (kernel_api().unmap_mmio)(&state.mmio);
     if status != 0 {
@@ -882,7 +954,10 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 },
                 is_vf: crate::defs::ConnectXVariant::is_vf_device_id(device_id),
             };
-            let plan = Mlx5BootstrapPlan::new(&config);
+            let plan = BootstrapDmaPlan::new(config.queue_profile).map_err(|cause| {
+                log::error!(target: "mlx5", "Unsupported bootstrap allocation profile: {:?}", cause);
+                kernel_api::error::KapiError::NotSupported
+            })?;
 
             let mut mmio = AbiMmioHandle::default();
             let bar0_size = 0x1000000;
@@ -892,33 +967,40 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 return Err(kernel_api::error::KapiError::IoError);
             }
 
-            let dma = match Mlx5DmaResources::allocate(&plan, pci_locator) {
+            let mut dma = match BootstrapDmaInventory::allocate(&plan, |request| {
+                kernel_api::service::kernel::instance().alloc_dma_for_device(request, pci_locator)
+            }) {
                 Ok(dma) => dma,
-                Err(_) => {
-                    let _ = (kernel_api().unmap_mmio)(&mmio);
-                    return Err(kernel_api::error::KapiError::OutOfMemory);
+                Err(failure) => {
+                    let (cause, inventory) = failure.into_parts();
+                    let result = match &cause {
+                        BootstrapAllocationCause::Metadata(_) => {
+                            kernel_api::error::KapiError::OutOfMemory
+                        }
+                        BootstrapAllocationCause::Allocation { cause, .. } => *cause,
+                        BootstrapAllocationCause::AuthorityViolation { .. } => {
+                            kernel_api::error::KapiError::Internal(-1)
+                        }
+                    };
+                    *MLX5_STANDALONE_STATE.lock() =
+                        Mlx5Slot::AcquisitionFailed(Mlx5AcquisitionFailure {
+                            cause,
+                            dma: BootstrapDmaRetention::Unpublished(inventory),
+                            mapping: AcquisitionMapping::Mapped(mmio),
+                        });
+                    return Err(result);
                 }
             };
 
             let mut device = Mlx5Device::new(mmio.base, device_id);
-            let allocated = dma.to_allocated_resources();
-
-            log::info!(
-                target: "mlx5",
-                "CMD DMA IOVA: cmdq={:#x} in_mbox={:#x} out_mbox={:#x}",
-                dma.cmdq.device_address(),
-                dma.cmd_in_mbox.device_address(),
-                dma.cmd_out_mbox.device_address(),
-            );
-
-            if let Err(err) = unsafe { device.bootstrap(&config, &allocated) } {
+            if let Err(err) = device.bootstrap(&config, &mut dma) {
                 log::error!(target: "mlx5", "Initialization failed: {:?}", err);
                 // The failed/uncertain start keeps the function claimed and
                 // retains firmware pages, DMA resources and the live mapping.
                 *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(Mlx5StandaloneState {
                     lifecycle: Mlx5Lifecycle::StartupFailed(err),
                     device,
-                    dma,
+                    dma: BootstrapDmaRetention::Unpublished(dma),
                     mmio,
                     registration_handle: None,
                     runtime: None,
@@ -949,7 +1031,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let state = Mlx5StandaloneState {
                 lifecycle: Mlx5Lifecycle::Running,
                 device,
-                dma,
+                dma: BootstrapDmaRetention::Unpublished(dma),
                 mmio,
                 registration_handle: None,
                 runtime: None,
@@ -1011,10 +1093,22 @@ impl AsyncDriver for Mlx5AsyncDriver {
             if let Some(handle) = handle {
                 kernel_api::service::kernel::instance().unregister_netdev_port(handle)?;
             }
-            let mut state = {
+            let result = {
                 let mut guard = MLX5_STANDALONE_STATE.lock();
                 match core::mem::replace(&mut *guard, Mlx5Slot::Finalizing) {
-                    Mlx5Slot::Live(state) => state,
+                    Mlx5Slot::Live(mut state) => {
+                        drop(guard);
+                        state.registration_handle = None;
+                        state.runtime = None;
+                        destroy_state(state)
+                            .map_err(|(cause, state)| (cause, Mlx5Slot::Live(state)))
+                    }
+                    Mlx5Slot::AcquisitionFailed(mut state) => {
+                        drop(guard);
+                        state
+                            .close()
+                            .map_err(|cause| (cause, Mlx5Slot::AcquisitionFailed(state)))
+                    }
                     Mlx5Slot::Vacant => {
                         *guard = Mlx5Slot::Vacant;
                         return Ok(());
@@ -1024,15 +1118,13 @@ impl AsyncDriver for Mlx5AsyncDriver {
                     }
                 }
             };
-            state.registration_handle = None;
-            state.runtime = None;
-            match destroy_state(state) {
+            match result {
                 Ok(()) => {
                     *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Vacant;
                     Ok(())
                 }
-                Err((cause, state)) => {
-                    *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(state);
+                Err((cause, slot)) => {
+                    *MLX5_STANDALONE_STATE.lock() = slot;
                     Err(cause)
                 }
             }
