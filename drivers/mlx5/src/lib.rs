@@ -472,15 +472,6 @@ fn boot_opcode_name(opcode: defs::CmdOpcode) -> Option<&'static str> {
     }
 }
 
-#[inline]
-pub(crate) fn mmio_read_be32(addr: usize) -> u32 {
-    u32::from_be(hal::mmio::mmio_read_u32(addr))
-}
-
-#[inline]
-pub(crate) fn mmio_write_be32(addr: usize, value: u32) {
-    hal::mmio::mmio_write_u32(addr, value.to_be());
-}
 
 // Re-export core types
 pub use bootstrap::{

@@ -224,7 +224,6 @@ enum CommandSlotState {
 pub struct CmdQueueTransport {
     cmdq_phys: u64,
     cmdq_virt: u64,
-    bar0_base: u64,
     in_mbox_virt: u64,
     out_mbox_virt: u64,
     next_token: u8,
@@ -314,56 +313,6 @@ impl CmdQueueTransport {
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    ///
-    /// # Safety
-    /// All supplied ranges must be distinct, live device-scoped DMA mappings,
-    /// retained throughout this transport's lifetime and uncertainty/recovery.
-    /// CMDQ contains at least `(1 << log_cmdq_size) * 64` aligned bytes. Both
-    /// mailboxes contain MLX5_CMD_MBOX_BACKING_SIZE bytes, aligned for CmdMailbox
-    /// and CmdProtBlock. No other CPU/device owner may access these ranges while
-    /// initializing. BAR0 must be a live mapping of the initialization aperture.
-    pub unsafe fn new(
-        bar0_base: u64,
-        cmdq_phys: u64,
-        cmdq_virt: u64,
-        in_mbox_virt: u64,
-        out_mbox_virt: u64,
-        log_cmdq_size: u8,
-        log_cmd_stride: u8,
-    ) -> Mlx5Result<Self> {
-        Self::validate_hw_cmdq_layout(log_cmdq_size, log_cmd_stride)?;
-        let cmdq_entries = 1usize
-            .checked_shl(log_cmdq_size as u32)
-            .ok_or(Mlx5Error::NotSupported)?;
-        let cmdq_bytes = cmdq_entries
-            .checked_mul(cmd_entry::ENTRY_SIZE)
-            .ok_or(Mlx5Error::NotSupported)?;
-        // SAFETY: the caller retains distinct, exclusively writable mappings of
-        // the documented extents; firmware has not acquired these fresh ranges.
-        unsafe {
-            // Fresh DMA buffers may retain stale owner bits from prior use. Clear the
-            // command queue and mailboxes before exposing them to the device.
-            core::ptr::write_bytes(cmdq_virt as *mut u8, 0, cmdq_bytes);
-            core::ptr::write_bytes(in_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE);
-            core::ptr::write_bytes(out_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE);
-        }
-        Ok(Self {
-            cmdq_phys,
-            cmdq_virt,
-            bar0_base,
-            in_mbox_virt,
-            out_mbox_virt,
-            next_token: 1,
-            slot_state: CommandSlotState::Idle,
-            uid: 0,
-            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
-            in_snapshot_len: 0,
-            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
-        })
-    }
 
     pub(crate) fn is_idle(&self) -> bool {
         self.slot_state == CommandSlotState::Idle

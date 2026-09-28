@@ -85,8 +85,6 @@ pub struct EventQueue {
     buf_virt: u64,
     /// EQバッファの物理アドレス
     buf_phys: u64,
-    /// UAR（User Access Region）ベースアドレス
-    uar_base: u64,
     /// ログ2 EQサイズ
     log_eq_size: u8,
     /// コンシューマカウンタ
@@ -98,34 +96,6 @@ pub struct EventQueue {
 }
 
 impl EventQueue {
-    /// 新しいEvent Queueを作成
-    ///
-    /// # Arguments
-    /// - `eqn`: HWが割り当てたEQ番号
-    /// - `buf_virt`: EQバッファ仮想アドレス
-    /// - `buf_phys`: EQバッファ物理アドレス
-    /// - `uar_base`: UARページベースアドレス
-    /// - `log_eq_size`: ログ2 EQサイズ
-    /// - `msix_vector`: MSI-Xベクタ番号
-    pub fn new(
-        eqn: u32,
-        buf_virt: u64,
-        buf_phys: u64,
-        uar_base: u64,
-        log_eq_size: u8,
-        msix_vector: u32,
-    ) -> Self {
-        Self {
-            eqn,
-            buf_virt,
-            buf_phys,
-            uar_base,
-            log_eq_size,
-            consumer_counter: 0,
-            eq_depth: 1 << log_eq_size,
-            msix_vector,
-        }
-    }
 
     /// EQバッファの物理アドレス
     pub fn buffer_phys(&self) -> u64 {

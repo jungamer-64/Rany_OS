@@ -190,8 +190,6 @@ pub struct CompletionQueue {
     buf_virt: u64,
     /// CQバッファ物理アドレス
     buf_phys: u64,
-    /// UAR（User Access Region）ベースアドレス
-    uar_base: u64,
     /// ドアベルレコードの仮想アドレス（8バイト: CQ番号 + CI）
     doorbell_virt: u64,
     /// ログ2 CQサイズ
@@ -207,29 +205,6 @@ pub struct CompletionQueue {
 }
 
 impl CompletionQueue {
-    /// 新しいCompletion Queueを作成
-    pub fn new(
-        cqn: u32,
-        buf_virt: u64,
-        buf_phys: u64,
-        uar_base: u64,
-        doorbell_virt: u64,
-        log_cq_size: u8,
-        eq_number: u32,
-    ) -> Self {
-        Self {
-            cqn,
-            buf_virt,
-            buf_phys,
-            uar_base,
-            doorbell_virt,
-            log_cq_size,
-            cq_depth: 1 << log_cq_size,
-            consumer_counter: 0,
-            eq_number,
-            arm_sn: AtomicU32::new(0),
-        }
-    }
 
     /// CQバッファの物理アドレス
     pub fn buffer_phys(&self) -> u64 {

@@ -63,8 +63,6 @@ pub struct SendQueue {
     buf_virt: u64,
     /// ドアベルレコードの仮想アドレス
     doorbell_virt: u64,
-    /// UAR（BlueFlame用）ベースアドレス
-    uar_base: u64,
     /// SQエントリ数
     sq_depth: u32,
     /// プロデューサインデックス
@@ -97,41 +95,6 @@ pub struct DmaSegment {
 }
 
 impl SendQueue {
-    /// 新しいSend Queueを作成
-    pub fn new(
-        sqn: u32,
-        buf_virt: u64,
-        doorbell_virt: u64,
-        uar_base: u64,
-        log_sq_size: u8,
-        tisn: u32,
-        cqn: u32,
-        mkey: u32,
-        csum_offload: bool,
-    ) -> Self {
-        let depth = 1u32 << log_sq_size;
-        // WQE 1つあたり 4 WQEBB (64 bytes)
-        let mut tx_buffers = alloc::vec::Vec::with_capacity((depth * 4) as usize);
-        tx_buffers.resize((depth * 4) as usize, None);
-        let mut debug_wqe_ring = alloc::vec::Vec::with_capacity(depth as usize);
-        debug_wqe_ring.resize(depth as usize, TxWqeDebugInfo::default());
-
-        Self {
-            sqn,
-            buf_virt,
-            doorbell_virt,
-            uar_base,
-            sq_depth: depth,
-            producer_counter: 0,
-            tisn,
-            cqn,
-            tx_buffers,
-            debug_wqe_ring,
-            mkey,
-            csum_offload,
-            last_bf_offset: 0,
-        }
-    }
 
     /// 送信可能なWQEスロットがあるか
     pub fn has_space(&self) -> bool {
