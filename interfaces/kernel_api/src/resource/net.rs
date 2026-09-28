@@ -9,7 +9,6 @@ pub use crate::types_impl::{
     DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketFront,
     PacketMeta, PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadFront,
     PacketPayloadOwnershipError, PacketRef, PacketSegments, PacketType, PacketWindowError,
-    PhysicalAddress,
 };
 
 /// # Errors

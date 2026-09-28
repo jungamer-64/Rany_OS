@@ -12,7 +12,6 @@ use core::fmt;
 use core::marker::PhantomData;
 use core::mem::{ManuallyDrop, MaybeUninit, align_of, size_of};
 use core::num::NonZeroUsize;
-use core::ops::{Add, AddAssign};
 use core::ptr;
 
 /// Task handle - opaque reference to a spawned task
@@ -56,34 +55,6 @@ impl InterfaceScope {
 
 /// Shared default headroom for L2/L3/L4 header prepends.
 pub const DEFAULT_PACKET_HEADROOM: usize = 128;
-
-/// Canonical physical address wrapper shared across kernel-facing interfaces.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub struct PhysicalAddress(u64);
-
-impl PhysicalAddress {
-    pub const fn new(value: u64) -> Self {
-        Self(value)
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-}
-
-impl Add<u64> for PhysicalAddress {
-    type Output = Self;
-
-    fn add(self, rhs: u64) -> Self::Output {
-        Self(self.0.saturating_add(rhs))
-    }
-}
-
-impl AddAssign<u64> for PhysicalAddress {
-    fn add_assign(&mut self, rhs: u64) {
-        self.0 = self.0.saturating_add(rhs);
-    }
-}
 
 /// Packet classification hint.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
