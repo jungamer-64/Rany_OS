@@ -47,25 +47,22 @@ pub(crate) fn process_elf_relocations(
     let mut reloc_errors = 0usize;
 
     for section in elf.section_iter() {
-        if let Ok(name) = section.get_name(elf) {
-            if name == ".rela.dyn" || name.starts_with(".rela") {
-                if let Ok(xmas_elf::sections::SectionData::Rela64(rela_entries)) =
-                    section.get_data(elf)
-                {
-                    info!(
-                        "Processing {} RELA relocations from {}",
-                        rela_entries.len(),
-                        name
-                    );
-                    process_rela_entries(
-                        rela_entries,
-                        segment_info,
-                        &mut reloc_count,
-                        &mut applied_count,
-                        &mut reloc_errors,
-                    );
-                }
-            }
+        if let Ok(name) = section.get_name(elf)
+            && (name == ".rela.dyn" || name.starts_with(".rela"))
+            && let Ok(xmas_elf::sections::SectionData::Rela64(rela_entries)) = section.get_data(elf)
+        {
+            info!(
+                "Processing {} RELA relocations from {}",
+                rela_entries.len(),
+                name
+            );
+            process_rela_entries(
+                rela_entries,
+                segment_info,
+                &mut reloc_count,
+                &mut applied_count,
+                &mut reloc_errors,
+            );
         }
     }
 

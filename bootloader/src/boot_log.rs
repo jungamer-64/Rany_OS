@@ -101,6 +101,7 @@ impl BootLogger {
     }
 
     /// error レベルのログ
+    #[cfg(feature = "self_test")]
     pub fn error(&mut self, message: &str) {
         self.log(&alloc::format!("[ERROR] {}", message));
     }

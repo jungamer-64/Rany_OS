@@ -16,7 +16,7 @@ pub const SMBIOS_TABLE_GUID: uefi::Guid = guid!("eb9d2d31-2d88-11d3-9a16-0090273
 
 /// SMBIOS情報
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SmbiosInfo {
     /// SMBIOS 3.x テーブルアドレス（0 = 未検出）
     pub smbios3_addr: u64,
@@ -45,26 +45,6 @@ pub struct SmbiosInfo {
     pub system_serial_offset: u32,
     /// システムUUID
     pub system_uuid: [u8; 16],
-}
-
-impl Default for SmbiosInfo {
-    fn default() -> Self {
-        Self {
-            smbios3_addr: 0,
-            smbios_addr: 0,
-            major_version: 0,
-            minor_version: 0,
-            table_max_size: 0,
-            flags: 0,
-            _reserved: [0; 4],
-            bios_vendor_offset: 0,
-            bios_version_offset: 0,
-            system_manufacturer_offset: 0,
-            system_product_offset: 0,
-            system_serial_offset: 0,
-            system_uuid: [0; 16],
-        }
-    }
 }
 
 /// SMBIOSフラグ
@@ -156,16 +136,15 @@ pub fn detect_smbios() -> SmbiosInfo {
                 info.flags |= smbios_flags::SMBIOS2_AVAILABLE;
 
                 // SMBIOS 3.x が未検出の場合のみ 2.x を使用
-                if info.smbios3_addr == 0 {
-                    if let Some((major, minor, table_addr, table_len)) =
+                if info.smbios3_addr == 0
+                    && let Some((major, minor, table_addr, table_len)) =
                         parse_smbios2_entry(entry.address)
-                    {
-                        info.major_version = major;
-                        info.minor_version = minor;
-                        info.table_max_size = table_len as u32;
+                {
+                    info.major_version = major;
+                    info.minor_version = minor;
+                    info.table_max_size = table_len as u32;
 
-                        parse_smbios_structures(&mut info, table_addr as u64, table_len as usize);
-                    }
+                    parse_smbios_structures(&mut info, table_addr as u64, table_len as usize);
                 }
             }
         }
@@ -286,8 +265,8 @@ fn parse_system_info(info: &mut SmbiosInfo, table_ptr: *const u8, offset: usize,
 
     // UUID (SMBIOS 2.1+)
     if length >= 25 {
-        for i in 0..16 {
-            info.system_uuid[i] = unsafe { *table_ptr.add(offset + 8 + i) };
+        for (i, byte) in info.system_uuid.iter_mut().enumerate() {
+            *byte = unsafe { *table_ptr.add(offset + 8 + i) };
         }
     }
 

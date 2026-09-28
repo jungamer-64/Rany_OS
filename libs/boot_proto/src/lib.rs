@@ -94,6 +94,10 @@ impl BootHhdmSpan {
         self.start
     }
 
+    #[expect(
+        clippy::len_without_is_empty,
+        reason = "the constructor rejects zero-length spans, so emptiness is not a representable state"
+    )]
     pub const fn len(&self) -> u64 {
         self.len
     }
@@ -161,7 +165,7 @@ fn table_slice_from_span<'a, T>(span: BootHhdmSpan, count: u64) -> Result<&'a [T
     if count_byte_len::<T>(count) != Some(span.len()) {
         return Err("boot handoff table span length mismatch");
     }
-    if span.start() % (align_of::<T>() as u64) != 0 {
+    if !span.start().is_multiple_of(align_of::<T>() as u64) {
         return Err("boot handoff table pointer is misaligned");
     }
     Ok(unsafe { slice::from_raw_parts(span.start() as *const T, count) })
@@ -813,7 +817,7 @@ pub mod runtime_caps {
 /// Memory encryption information (AMD SME/SEV, Intel TDX).
 /// Used by the kernel to handle encrypted memory correctly.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct MemoryEncryptionInfo {
     /// AMD SME (Secure Memory Encryption) is available
     pub sme_available: bool,
@@ -843,30 +847,10 @@ pub struct MemoryEncryptionInfo {
     pub _reserved3: [u8; 7],
 }
 
-impl Default for MemoryEncryptionInfo {
-    fn default() -> Self {
-        Self {
-            sme_available: false,
-            sev_available: false,
-            sev_es_available: false,
-            sev_snp_available: false,
-            sme_enabled: false,
-            sev_enabled: false,
-            _reserved: [0; 2],
-            c_bit_position: 0,
-            phys_addr_reduction: 0,
-            _reserved2: [0; 6],
-            encryption_mask: 0,
-            tdx_available: false,
-            _reserved3: [0; 7],
-        }
-    }
-}
-
 /// UEFI Secure Boot state information.
 /// Provides information about the Secure Boot configuration.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SecureBootInfo {
     /// Secure Boot is enabled
     pub secure_boot_enabled: bool,
@@ -894,25 +878,6 @@ pub struct SecureBootInfo {
     pub kernel_sha256: [u8; 32],
 }
 
-impl Default for SecureBootInfo {
-    fn default() -> Self {
-        Self {
-            secure_boot_enabled: false,
-            setup_mode: false,
-            pk_present: false,
-            kek_present: false,
-            db_present: false,
-            dbx_present: false,
-            audit_mode: false,
-            deployed_mode: false,
-            vendor_keys: false,
-            dbx_check_passed: false,
-            _reserved: [0; 6],
-            kernel_sha256: [0u8; 32],
-        }
-    }
-}
-
 /// Secure Boot mode flags
 pub mod secure_boot_flags {
     /// Secure Boot is enabled and enforcing
@@ -936,7 +901,7 @@ pub mod secure_boot_flags {
 /// Shim bootloader and MOK (Machine Owner Key) information.
 /// Provides information about Shim-based Secure Boot chain.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct ShimMokInfo {
     /// Shim Lock Protocol detected (we were launched by Shim)
     pub shim_detected: bool,
@@ -964,25 +929,6 @@ pub struct ShimMokInfo {
     pub _reserved2: [u8; 4],
 }
 
-impl Default for ShimMokInfo {
-    fn default() -> Self {
-        Self {
-            shim_detected: false,
-            mok_sb_state: 0,
-            mok_list_present: false,
-            mok_list_rt_present: false,
-            mok_list_x_present: false,
-            sbat_level_present: false,
-            shim_validated: false,
-            _reserved: 0,
-            mok_count: 0,
-            shim_version_major: 0,
-            shim_version_minor: 0,
-            _reserved2: [0; 4],
-        }
-    }
-}
-
 /// Shim/MOK state flags
 pub mod shim_mok_flags {
     /// Shim bootloader detected
@@ -1004,7 +950,7 @@ pub mod shim_mok_flags {
 /// SMBIOS (System Management BIOS) information.
 /// Contains table addresses and parsed basic information.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SmbiosInfo {
     /// SMBIOS 3.x table address (0 = not found)
     pub smbios3_addr: u64,
@@ -1034,26 +980,6 @@ pub struct SmbiosInfo {
     pub system_uuid: [u8; 16],
 }
 
-impl Default for SmbiosInfo {
-    fn default() -> Self {
-        Self {
-            smbios3_addr: 0,
-            smbios_addr: 0,
-            major_version: 0,
-            minor_version: 0,
-            table_max_size: 0,
-            flags: 0,
-            _reserved: [0; 4],
-            bios_vendor_offset: 0,
-            bios_version_offset: 0,
-            system_manufacturer_offset: 0,
-            system_product_offset: 0,
-            system_serial_offset: 0,
-            system_uuid: [0; 16],
-        }
-    }
-}
-
 /// SMBIOS status flags
 pub mod smbios_flags {
     /// SMBIOS 3.x available
@@ -1073,7 +999,7 @@ pub mod smbios_flags {
 /// Boot recovery information.
 /// Contains failure tracking and recovery mode status.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BootRecoveryInfo {
     /// Current boot attempt ID (incremental counter)
     pub boot_attempt_id: u32,
@@ -1087,19 +1013,6 @@ pub struct BootRecoveryInfo {
     pub _reserved: u8,
     /// Expected success ID (kernel should confirm this)
     pub expected_success_id: u32,
-}
-
-impl Default for BootRecoveryInfo {
-    fn default() -> Self {
-        Self {
-            boot_attempt_id: 0,
-            failure_count: 0,
-            is_recovery_mode: false,
-            is_fallback: false,
-            _reserved: 0,
-            expected_success_id: 0,
-        }
-    }
 }
 
 /// Boot recovery flags
@@ -1116,7 +1029,7 @@ pub mod boot_recovery_flags {
 
 /// Self-test results from boot-time hardware validation.
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct SelfTestInfo {
     /// Overall test result (0=Pass, 1=Warning, 2=Fail, 3=Skip)
     pub overall_result: u8,
@@ -1128,18 +1041,6 @@ pub struct SelfTestInfo {
     pub tests_run: u8,
     /// Reserved for alignment
     pub _reserved: [u8; 4],
-}
-
-impl Default for SelfTestInfo {
-    fn default() -> Self {
-        Self {
-            overall_result: 0,
-            critical_failures: 0,
-            warnings: 0,
-            tests_run: 0,
-            _reserved: [0; 4],
-        }
-    }
 }
 
 /// Self-test result values

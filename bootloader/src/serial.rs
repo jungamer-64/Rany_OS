@@ -42,7 +42,7 @@ impl SerialWriter {
             // Set divisor to 1 (115200 baud)
             // Divisor = 115200 / baud_rate
             // For 115200 baud: divisor = 1
-            outb(COM1_PORT + 0, 0x01); // Low byte
+            outb(COM1_PORT, 0x01); // Low byte
             outb(COM1_PORT + 1, 0x00); // High byte
 
             // 8 bits, no parity, 1 stop bit (8N1)
@@ -58,10 +58,10 @@ impl SerialWriter {
             outb(COM1_PORT + 4, 0x1E);
 
             // Test serial chip (send byte 0xAE and check if received)
-            outb(COM1_PORT + 0, 0xAE);
+            outb(COM1_PORT, 0xAE);
 
             // Check if serial is faulty (i.e., not same byte as sent)
-            if inb(COM1_PORT + 0) != 0xAE {
+            if inb(COM1_PORT) != 0xAE {
                 // Serial is faulty, but we continue anyway
                 // (some emulators don't support loopback test)
             }

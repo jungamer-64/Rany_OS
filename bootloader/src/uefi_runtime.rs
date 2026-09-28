@@ -100,8 +100,12 @@ fn collect_runtime_memory_map(runtime_info: &mut UefiRuntimeInfo, hhdm_offset: u
     info!("UEFI Runtime: Collected {} runtime memory region(s)", count);
 
     // Log first few regions for debugging
-    for i in 0..count.min(4) {
-        let region = &runtime_info.runtime_mmap[i];
+    for (i, region) in runtime_info
+        .runtime_mmap
+        .iter()
+        .enumerate()
+        .take(count.min(4))
+    {
         info!(
             "  Region {}: phys 0x{:x}, {} pages, type {}",
             i, region.phys_addr, region.page_count, region.memory_type

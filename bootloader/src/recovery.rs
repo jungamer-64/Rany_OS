@@ -46,7 +46,7 @@ impl Default for BootState {
 
 /// ブート回復情報（boot_protoに渡す）
 #[repr(C)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct BootRecoveryInfo {
     /// 現在のブート試行ID
     pub boot_attempt_id: u32,
@@ -60,19 +60,6 @@ pub struct BootRecoveryInfo {
     pub _reserved: u8,
     /// 前回のブート試行ID（成功確認用）
     pub expected_success_id: u32,
-}
-
-impl Default for BootRecoveryInfo {
-    fn default() -> Self {
-        Self {
-            boot_attempt_id: 0,
-            failure_count: 0,
-            is_recovery_mode: false,
-            is_fallback: false,
-            _reserved: 0,
-            expected_success_id: 0,
-        }
-    }
 }
 
 /// UEFI変数名

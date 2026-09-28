@@ -115,10 +115,11 @@ fn log_shim_summary(info: &ShimMokInfo) {
 /// # Returns
 /// ShimMokInfo containing Shim/MOK detection results
 pub fn detect_shim_mok() -> ShimMokInfo {
-    let mut info = ShimMokInfo::default();
-
     // 1. Check for Shim Lock Protocol
-    info.shim_detected = detect_shim_lock_protocol();
+    let mut info = ShimMokInfo {
+        shim_detected: detect_shim_lock_protocol(),
+        ..Default::default()
+    };
 
     if info.shim_detected {
         info!("Shim bootloader detected (SHIM_LOCK protocol present)");
@@ -219,8 +220,7 @@ fn count_mok_certificates() -> u16 {
             if data_len > 0 {
                 // A typical X.509 certificate in EFI_SIGNATURE_LIST is ~1-2KB
                 // This is a rough estimate
-                let estimated = (data_len / 1024).max(1) as u16;
-                estimated
+                (data_len / 1024).max(1) as u16
             } else {
                 0
             }

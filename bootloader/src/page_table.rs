@@ -184,8 +184,14 @@ impl<'a> UefiMapper<'a> {
     /// * `Ok(())` if mapping succeeded
     /// * `Err(())` if allocation failed
     pub fn map_page_1gb(&mut self, virt: u64, phys: u64, flags: u64) -> Result<(), ()> {
-        debug_assert!(virt % PAGE_SIZE_1GB == 0, "1GB page virt not aligned");
-        debug_assert!(phys % PAGE_SIZE_1GB == 0, "1GB page phys not aligned");
+        debug_assert!(
+            virt.is_multiple_of(PAGE_SIZE_1GB),
+            "1GB page virt not aligned"
+        );
+        debug_assert!(
+            phys.is_multiple_of(PAGE_SIZE_1GB),
+            "1GB page phys not aligned"
+        );
 
         let p4_index = ((virt >> 39) & 0x1ff) as usize;
         let p3_index = ((virt >> 30) & 0x1ff) as usize;

@@ -128,7 +128,7 @@ pub const MAX_PATH_LEN: usize = 128;
 pub const MAX_CMDLINE_LEN: usize = 256;
 
 /// A boot menu entry
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct BootEntry {
     /// Display name for the entry
     pub name: String,
@@ -136,16 +136,6 @@ pub struct BootEntry {
     pub kernel: String,
     /// Optional kernel command line
     pub cmdline: Option<String>,
-}
-
-impl Default for BootEntry {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            kernel: String::new(),
-            cmdline: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -176,10 +166,10 @@ impl Default for BootConfig {
 
 /// Save a boot entry to config if it has a non-empty kernel path
 fn save_entry_if_valid(config: &mut BootConfig, entry: Option<BootEntry>) {
-    if let Some(entry) = entry {
-        if !entry.kernel.is_empty() {
-            config.entries.push(entry);
-        }
+    if let Some(entry) = entry
+        && !entry.kernel.is_empty()
+    {
+        config.entries.push(entry);
     }
 }
 
@@ -230,9 +220,10 @@ fn process_config_line(
     if line.starts_with('[') && line.ends_with(']') {
         save_entry_if_valid(config, current_entry.take());
         let name = &line[1..line.len() - 1];
-        let mut entry = BootEntry::default();
-        entry.name = String::from(name);
-        *current_entry = Some(entry);
+        *current_entry = Some(BootEntry {
+            name: String::from(name),
+            ..BootEntry::default()
+        });
         return Ok(());
     }
 

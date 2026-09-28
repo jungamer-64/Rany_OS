@@ -32,9 +32,10 @@ pub(crate) fn select_hhdm_page_size(
     cpu_features: &page_table::CpuPageFeatures,
 ) -> (u64, HhdmPageSize) {
     use page_table::{PAGE_SIZE, PAGE_SIZE_1GB, PAGE_SIZE_2MB};
-    if cpu_features.page_1gb && current % PAGE_SIZE_1GB == 0 && remaining >= PAGE_SIZE_1GB {
+    if cpu_features.page_1gb && current.is_multiple_of(PAGE_SIZE_1GB) && remaining >= PAGE_SIZE_1GB
+    {
         (PAGE_SIZE_1GB, HhdmPageSize::Size1GB)
-    } else if current % PAGE_SIZE_2MB == 0 && remaining >= PAGE_SIZE_2MB {
+    } else if current.is_multiple_of(PAGE_SIZE_2MB) && remaining >= PAGE_SIZE_2MB {
         (PAGE_SIZE_2MB, HhdmPageSize::Size2MB)
     } else {
         (PAGE_SIZE, HhdmPageSize::Size4KB)

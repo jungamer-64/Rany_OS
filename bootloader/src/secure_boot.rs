@@ -229,7 +229,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
         let mut w = [0u32; 64];
 
         // Fill first 16 words from message bytes (big-endian)
-        for j in 0..16 {
+        for (j, word) in w.iter_mut().enumerate().take(16) {
             let byte_pos = block_idx * 64 + j * 4;
             let b = |i: usize| -> u8 {
                 let p = byte_pos + i;
@@ -244,7 +244,7 @@ pub fn sha256(data: &[u8]) -> [u8; 32] {
                     0
                 }
             };
-            w[j] = ((b(0) as u32) << 24)
+            *word = ((b(0) as u32) << 24)
                 | ((b(1) as u32) << 16)
                 | ((b(2) as u32) << 8)
                 | (b(3) as u32);
@@ -392,10 +392,10 @@ fn parse_efi_signature_list_sha256(data: &[u8], out: &mut [[u8; 32]; MAX_DBX_HAS
 /// Check whether `hash` appears in the dbx forbidden hash list.
 fn is_hash_in_dbx(hash: &[u8; 32], dbx_hashes: &[[u8; 32]], count: usize) -> bool {
     // Constant-time comparison to mitigate timing side-channels
-    for i in 0..count {
+    for candidate in &dbx_hashes[..count] {
         let mut diff = 0u8;
         for j in 0..32 {
-            diff |= hash[j] ^ dbx_hashes[i][j];
+            diff |= hash[j] ^ candidate[j];
         }
         if diff == 0 {
             return true;

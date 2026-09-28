@@ -74,11 +74,11 @@ fn detect_amd_sev_capabilities(info: &mut MemoryEncryptionInfo) {
         info.encryption_mask = 1u64 << info.c_bit_position;
     }
 
-    if info.sme_available || info.sev_available {
-        if let Some(msr_value) = read_sev_status_msr() {
-            info.sev_enabled = (msr_value & (1 << 0)) != 0;
-            info.sme_enabled = (msr_value & (1 << 23)) != 0;
-        }
+    if (info.sme_available || info.sev_available)
+        && let Some(msr_value) = read_sev_status_msr()
+    {
+        info.sev_enabled = (msr_value & (1 << 0)) != 0;
+        info.sme_enabled = (msr_value & (1 << 23)) != 0;
     }
 }
 
@@ -203,9 +203,5 @@ fn detect_intel_tdx() -> bool {
     // EBX = "Inte" = 0x6574_6E49
     // EDX = "lTDX" = 0x5844_546C
     // ECX = "    " = 0x2020_2020
-    let is_tdx = tdx_check.ebx == 0x6574_6E49
-        && tdx_check.edx == 0x5844_546C
-        && tdx_check.ecx == 0x2020_2020;
-
-    is_tdx
+    tdx_check.ebx == 0x6574_6E49 && tdx_check.edx == 0x5844_546C && tdx_check.ecx == 0x2020_2020
 }

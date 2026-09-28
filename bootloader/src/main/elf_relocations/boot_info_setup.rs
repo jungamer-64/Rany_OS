@@ -407,7 +407,7 @@ pub(crate) fn copy_cmdline_to_boot_info(
 ) {
     if let Some(cmdline) = cmdline_data.as_ref().filter(|cmdline| !cmdline.is_empty()) {
         let cmdline_size = cmdline.len() + 1;
-        let num_pages = (cmdline_size + 4095) / 4096;
+        let num_pages = cmdline_size.div_ceil(4096);
         let cmdline_phys =
             page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
                 .expect("Failed to alloc cmdline");

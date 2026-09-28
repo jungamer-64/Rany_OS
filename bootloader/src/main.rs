@@ -418,9 +418,9 @@ fn load_boot_config(image_handle: Handle) -> Result<config::BootConfig, Status> 
 
 /// Show boot menu (UI feature) and return selected entry index or error
 #[cfg(feature = "ui")]
-fn select_boot_entry_ui<'a>(
-    boot_config: &'a config::BootConfig,
-) -> Result<Option<&'a config::BootEntry>, Status> {
+fn select_boot_entry_ui(
+    boot_config: &config::BootConfig,
+) -> Result<Option<&config::BootEntry>, Status> {
     if boot_config.entries.len() > 1 || boot_config.timeout > 0 {
         info!("Showing boot menu...");
         match menu::show_boot_menu(boot_config) {
@@ -444,9 +444,7 @@ fn select_boot_entry_ui<'a>(
 }
 
 /// Determine kernel path and cmdline from selected boot entry
-fn determine_boot_paths<'a>(
-    selected_entry: Option<&'a config::BootEntry>,
-) -> (&'a str, Option<&'a str>) {
+fn determine_boot_paths(selected_entry: Option<&config::BootEntry>) -> (&str, Option<&str>) {
     match selected_entry {
         Some(entry) => {
             info!("Booting: {}", entry.name);
@@ -528,10 +526,10 @@ fn merge_cmdline_sources(
 
 /// Log effective command line (first 64 bytes)
 fn log_effective_cmdline(cmdline: Option<&[u8]>) {
-    if let Some(data) = cmdline {
-        if let Ok(s) = core::str::from_utf8(&data[..data.len().min(64)]) {
-            info!("Effective cmdline: \"{}\"...", s);
-        }
+    if let Some(data) = cmdline
+        && let Ok(s) = core::str::from_utf8(&data[..data.len().min(64)])
+    {
+        info!("Effective cmdline: \"{}\"...", s);
     }
 }
 
@@ -576,13 +574,13 @@ fn verify_and_split_signed_kernel(signed_kernel_data: &[u8]) -> Result<&[u8], St
 /// Log ELF LOAD segment headers
 fn log_elf_load_segments(elf: &xmas_elf::ElfFile) {
     for header in elf.program_iter() {
-        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header {
-            if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
-                info!(
-                    "LOAD Segment: VAddr 0x{:x}, MemSize 0x{:x}, FileSize 0x{:x}",
-                    ph.virtual_addr, ph.mem_size, ph.file_size
-                );
-            }
+        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header
+            && ph.get_type().unwrap() == xmas_elf::program::Type::Load
+        {
+            info!(
+                "LOAD Segment: VAddr 0x{:x}, MemSize 0x{:x}, FileSize 0x{:x}",
+                ph.virtual_addr, ph.mem_size, ph.file_size
+            );
         }
     }
 }
@@ -599,7 +597,7 @@ fn map_single_load_segment(
     let page_offset = virt_addr & (PAGE_SIZE - 1);
     let virt_start_aligned = virt_addr & !(PAGE_SIZE - 1);
     let total_size = ph.mem_size + page_offset;
-    let num_pages = ((total_size + PAGE_SIZE - 1) / PAGE_SIZE) as usize;
+    let num_pages = total_size.div_ceil(PAGE_SIZE) as usize;
 
     let mut page_flags = 0u64;
     if ph.flags.is_write() {
@@ -647,12 +645,12 @@ fn map_elf_load_segments(
 
     let mut segment_info: Vec<(u64, u64, u64)> = Vec::new();
     for header in elf.program_iter() {
-        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header {
-            if ph.get_type().unwrap() == xmas_elf::program::Type::Load {
-                let phys_start = map_single_load_segment(ph, mapper, kernel_elf_data);
-                let page_offset = ph.virtual_addr & (PAGE_SIZE - 1);
-                segment_info.push((ph.virtual_addr, phys_start + page_offset, ph.mem_size));
-            }
+        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header
+            && ph.get_type().unwrap() == xmas_elf::program::Type::Load
+        {
+            let phys_start = map_single_load_segment(ph, mapper, kernel_elf_data);
+            let page_offset = ph.virtual_addr & (PAGE_SIZE - 1);
+            segment_info.push((ph.virtual_addr, phys_start + page_offset, ph.mem_size));
         }
     }
     segment_info
@@ -662,18 +660,18 @@ fn map_elf_load_segments(
 fn detect_tls_segment(elf: &xmas_elf::ElfFile) -> boot_proto::TlsInfo {
     let mut tls_info = boot_proto::TlsInfo::default();
     for header in elf.program_iter() {
-        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header {
-            if ph.get_type().unwrap() == xmas_elf::program::Type::Tls {
-                tls_info.start_addr = ph.virtual_addr;
-                tls_info.file_size = ph.file_size;
-                tls_info.mem_size = ph.mem_size;
-                tls_info.align = ph.align;
-                info!(
-                    "Found PT_TLS: start=0x{:x}, file_size=0x{:x}, mem_size=0x{:x}, align={}",
-                    tls_info.start_addr, tls_info.file_size, tls_info.mem_size, tls_info.align
-                );
-                break;
-            }
+        if let xmas_elf::program::ProgramHeader::Ph64(ph) = header
+            && ph.get_type().unwrap() == xmas_elf::program::Type::Tls
+        {
+            tls_info.start_addr = ph.virtual_addr;
+            tls_info.file_size = ph.file_size;
+            tls_info.mem_size = ph.mem_size;
+            tls_info.align = ph.align;
+            info!(
+                "Found PT_TLS: start=0x{:x}, file_size=0x{:x}, mem_size=0x{:x}, align={}",
+                tls_info.start_addr, tls_info.file_size, tls_info.mem_size, tls_info.align
+            );
+            break;
         }
     }
     tls_info

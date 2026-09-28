@@ -38,7 +38,7 @@ pub struct MeasuredBootArtifact<'a> {
 }
 
 /// Result of TPM measurement operations
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, Default)]
 pub struct TpmMeasurementResult {
     /// Whether TPM was available and measurements were performed
     pub tpm_available: bool,
@@ -48,17 +48,6 @@ pub struct TpmMeasurementResult {
     pub boot_artifacts_measured: bool,
     /// Whether cmdline was measured
     pub cmdline_measured: bool,
-}
-
-impl Default for TpmMeasurementResult {
-    fn default() -> Self {
-        Self {
-            tpm_available: false,
-            kernel_measured: false,
-            boot_artifacts_measured: false,
-            cmdline_measured: false,
-        }
-    }
 }
 
 /// TCG2 Protocol GUID
@@ -154,8 +143,10 @@ pub fn perform_measured_boot(
     };
 
     // Check TPM capability
-    let mut capability = Tcg2BootServiceCapability::default();
-    capability.size = core::mem::size_of::<Tcg2BootServiceCapability>() as u8;
+    let mut capability = Tcg2BootServiceCapability {
+        size: core::mem::size_of::<Tcg2BootServiceCapability>() as u8,
+        ..Default::default()
+    };
 
     let status = unsafe { ((*tcg2).get_capability)(tcg2, &mut capability) };
     if status != Status::SUCCESS {
@@ -193,8 +184,8 @@ pub fn perform_measured_boot(
     }
 
     let artifact_measurement = encode_boot_artifact_measurement(boot_artifacts);
-    if !artifact_measurement.is_empty() {
-        if extend_pcr(
+    if !artifact_measurement.is_empty()
+        && extend_pcr(
             tcg2,
             PCR_BOOT_ARTIFACTS,
             &artifact_measurement,
@@ -202,18 +193,17 @@ pub fn perform_measured_boot(
             b"ExoLoader Boot Artifacts",
         )
         .is_ok()
-        {
-            result.boot_artifacts_measured = true;
-            info!(
-                "TPM: Boot artifacts measured to PCR[{}]",
-                PCR_BOOT_ARTIFACTS
-            );
-        }
+    {
+        result.boot_artifacts_measured = true;
+        info!(
+            "TPM: Boot artifacts measured to PCR[{}]",
+            PCR_BOOT_ARTIFACTS
+        );
     }
 
     // Measure command line if present
-    if let Some(cmdline_data) = cmdline {
-        if extend_pcr(
+    if let Some(cmdline_data) = cmdline
+        && extend_pcr(
             tcg2,
             PCR_BOOT_CONFIG,
             cmdline_data,
@@ -221,10 +211,9 @@ pub fn perform_measured_boot(
             b"ExoLoader Cmdline",
         )
         .is_ok()
-        {
-            result.cmdline_measured = true;
-            info!("TPM: Command line measured to PCR[{}]", PCR_BOOT_CONFIG);
-        }
+    {
+        result.cmdline_measured = true;
+        info!("TPM: Command line measured to PCR[{}]", PCR_BOOT_CONFIG);
     }
 
     result
