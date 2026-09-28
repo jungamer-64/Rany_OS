@@ -29,9 +29,7 @@ impl AmdIommuDriver {
                 size: _,
             } => self.handle_unmap_region_device(*device, *iova),
             IommuCommandKind::InvalidateIotlbGlobal => {
-                let _ = self.invalidate_all_entries();
-                let _ = self.invalidate_global_device_tlbs();
-                Ok(0)
+                self.invalidate_iotlb_global().map(|_| 0).map_err(|_| ())
             }
             IommuCommandKind::InvalidateIotlbDomain { .. } => Err(()),
             IommuCommandKind::MapRegion { .. } => Err(()),
@@ -179,10 +177,10 @@ impl AmdIommuDriver {
 
         // 3. Reclaim released page tables if any
         if pt_removed {
-            let _ = domain.flush(self, self);
+            domain.flush(self, self).map_err(|_| ())?;
         }
 
-        let _ = self.free_iova_fast(iova, mapping.size);
+        self.free_iova_fast(iova, mapping.size).map_err(|_| ())?;
         Ok(0)
     }
 }

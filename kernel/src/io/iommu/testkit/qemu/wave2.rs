@@ -1978,10 +1978,15 @@ pub fn wave2_ats_enable_disable_lifecycle_smoke() -> bool {
     }
 
     // Disable ATS
-    ctrl.disable_ats_for_device(
-        dev,
-        crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest,
-    );
+    if ctrl
+        .disable_ats_for_device(
+            dev,
+            crate::io::iommu::runtime::security::AtsChangeReason::AdminRequest,
+        )
+        .is_err()
+    {
+        return false;
+    }
 
     // Verify disabled
     !ctrl.is_ats_enabled(&dev)
@@ -2023,10 +2028,15 @@ pub fn wave2_ats_detach_disables_ats_smoke() -> bool {
         if !ctrl.is_ats_enabled(&dev) {
             return false;
         }
-        ctrl.disable_ats_for_device(
-            dev,
-            crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
-        );
+        if ctrl
+            .disable_ats_for_device(
+                dev,
+                crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
+            )
+            .is_err()
+        {
+            return false;
+        }
         return !ctrl.is_ats_enabled(&dev);
     }
 

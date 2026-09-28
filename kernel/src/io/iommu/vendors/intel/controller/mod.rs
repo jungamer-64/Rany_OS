@@ -134,7 +134,7 @@ pub struct IommuController {
     /// IOMMU Segment number
     pub segment: u16,
     /// IOVA allocator (lock-free bitmap-based)
-    pub(crate) iova_allocator: PoisonLock<Option<IovaAllocator>>,
+    pub(crate) iova_allocator: PoisonLock<Option<Arc<IovaAllocator>>>,
     /// Set of devices with ATS enabled
     pub(crate) ats_enabled_devices: PoisonLock<BTreeSet<DeviceId>>,
     /// Fault log ring buffer
@@ -497,10 +497,9 @@ impl IommuController {
     }
 
     /// Invalidate Global IOTLB (Register-based / Direct)
-    pub unsafe fn invalidate_iotlb_global(&self) {
-        #[cfg(feature = "qemu-test-export")]
+    unsafe fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
         if self.mmio_base == 0 {
-            return;
+            return Err(IommuError::NotPresent);
         }
 
         use crate::io::iommu::vendors::intel::registers::{iotlb_bits, iotlb_regs};
@@ -513,10 +512,11 @@ impl IommuController {
 
         self.write64(offset + iotlb_regs::IOTLB, cmd);
 
-        // LOOP_PROOF: mode=condition; reason=Global IOTLB invalidate wait exits when hardware clears IVT completion bit.;
-        while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
-            core::hint::spin_loop();
-        }
+        self.wait_for_condition(
+            || (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) == 0,
+            100_000,
+            true,
+        )
     }
 
     /// Invalidate IOTLB (Generic: uses QI if enabled, else Direct)
@@ -527,38 +527,28 @@ impl IommuController {
     /// Invalidate IOTLB globally (synchronous).
     ///
     /// Used for emergency device isolation.
+    ///
+    /// # Errors
+    /// Missing registers, command/ATS failures, poisoned ownership, or retirement
+    /// exhaustion leave pending IOVAs quarantined. Submission is not completion.
+    #[deny(unsafe_code)]
     pub fn invalidate_iotlb_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
-        // Advance epoch before global invalidation
-        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
-            guard.as_ref().map(|a| a.advance_epoch())
-        } else {
-            None
-        };
-
-        let res = if self.is_queued_invalidation_enabled() {
-            let res = self.qi_invalidate_iotlb_global();
-            if res.is_ok() {
-                let _ = self.qi_wait_sync();
-            }
-            res
-        } else {
-            unsafe {
-                self.invalidate_iotlb_global();
-            }
-            Ok(())
-        };
-
-        // Complete epoch after hardware confirmation
-        if let Some(e) = epoch {
-            if let Ok(guard) = self.iova_allocator.lock() {
-                if let Some(alloc) = guard.as_ref() {
-                    alloc.complete_epoch(e);
-                }
-            }
+        let flush = self.begin_iova_global_flush()?;
+        self.invalidate_global_nosync()?;
+        if self.is_queued_invalidation_enabled() {
+            self.qi_wait_sync()?;
         }
-        res
+        if let Some(flush) = flush {
+            // SAFETY: the global path invalidates IOTLB and every enabled ATS
+            // device, then observes hardware completion before releasing IOVAs.
+            #[expect(unsafe_code, reason = "global IOTLB/ATS completion was observed above")]
+            unsafe {
+                flush.complete_after_global_invalidation()
+            };
+        }
+        Ok(())
     }
 
     /// Invalidate context cache globally (synchronous).
@@ -567,36 +557,17 @@ impl IommuController {
     pub fn invalidate_context_global_sync(&self) -> Result<(), IommuError> {
         use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
-        // Advance epoch
-        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
-            guard.as_ref().map(|a| a.advance_epoch())
-        } else {
-            None
-        };
-
-        let res = if self.is_queued_invalidation_enabled() {
-            let res = self.qi_invalidate_context_global();
-            if res.is_ok() {
-                let _ = self.qi_wait_sync();
-            }
-            res
+        if self.is_queued_invalidation_enabled() {
+            self.qi_invalidate_context_global()?;
+            self.qi_wait_sync()?;
         } else {
             // Register-based context invalidation
             unsafe {
                 self.invalidate_context_global_direct();
             }
-            Ok(())
-        };
-
-        // Complete epoch
-        if let Some(e) = epoch {
-            if let Ok(guard) = self.iova_allocator.lock() {
-                if let Some(alloc) = guard.as_ref() {
-                    alloc.complete_epoch(e);
-                }
-            }
         }
-        res
+        // Context-cache completion does not invalidate cached IOVA translations.
+        Ok(())
     }
 
     /// Register-based global context cache invalidation.

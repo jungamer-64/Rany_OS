@@ -6,6 +6,7 @@
 
 //! Unit tests for the AMD-Vi IOMMU subsystem.
 
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64};
 
@@ -49,10 +50,10 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         next_domain_id: AtomicU64::new(1),
         page_table_pool: PageTablePool::new(1, 1),
         command_queue: None,
-        iova_allocator: IovaAllocator::new(
+        iova_allocator: Arc::new(IovaAllocator::new(
             PAGE_SIZE_4K as u64,
             (1u64 << AMD_DEFAULT_MAX_ADDR_BITS).saturating_sub(PAGE_SIZE_4K as u64),
-        ),
+        )),
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
         max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
@@ -289,8 +290,10 @@ fn make_test_driver_small() -> AmdIommuDriver {
     };
 
     let page_table_pool = PageTablePool::new(1, 1);
-    let iova_allocator =
-        IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64);
+    let iova_allocator = Arc::new(IovaAllocator::new(
+        PAGE_SIZE_4K as u64,
+        (1u64 << 20) - PAGE_SIZE_4K as u64,
+    ));
 
     let default_domain = DomainState::new(
         0,

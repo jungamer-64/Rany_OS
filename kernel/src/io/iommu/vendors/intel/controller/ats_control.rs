@@ -132,60 +132,49 @@ impl IommuController {
     ///
     /// # Note
     ///
-    /// After disabling ATS, a Device-TLB invalidation should be issued to
-    /// ensure the device does not use stale cached translations.
+    /// This retires controller-side ATS tracking only after Device-TLB completion.
+    /// The PCI resource owner remains responsible for disabling ATS at the device.
+    /// A failed flush retains tracking so later global invalidation still covers it.
+    ///
+    /// # Errors
+    /// Poisoned tracking, submission failure, and completion failure leave the
+    /// device in the tracked set; detach must not report success in that state.
     pub fn disable_ats_for_device(
         &self,
         device: DeviceId,
         reason: crate::io::iommu::runtime::security::AtsChangeReason,
-    ) {
+    ) -> Result<(), IommuError> {
         use crate::io::iommu::runtime::security::SecurityEvent;
         use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 
-        match self.ats_enabled_devices.lock() {
-            Ok(mut set) => {
-                if set.remove(&device) {
-                    log::info!(
-                        "[IOMMU] ATS disabled for device {:04X}:{:02X}.{:X} (reason: {:?})",
-                        device.bus,
-                        device.device,
-                        device.function,
-                        reason
-                    );
+        {
+            let mut set = self
+                .ats_enabled_devices
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
+            if set.contains(&device) {
+                self.qi_invalidate_device_tlb_all(device.requester_id())?;
+                self.qi_wait_sync()?;
+                set.remove(&device);
+                log::info!(
+                    "[IOMMU] ATS disabled for device {:04X}:{:02X}.{:X} (reason: {:?})",
+                    device.bus,
+                    device.device,
+                    device.function,
+                    reason
+                );
 
-                    // Notify state change
-                    if let Some(notifier) = self.security_notifier.get() {
-                        notifier.notify(SecurityEvent::AtsStateChanged {
-                            source_id: device.requester_id(),
-                            enabled: false,
-                            reason,
-                        });
-                    }
-
-                    // Issue Device-TLB invalidation to clear stale entries
-                    if let Err(err) = self.qi_invalidate_device_tlb_all(device.requester_id()) {
-                        log::error!(
-                            "[IOMMU][SECURITY] Failed to submit Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
-                            device.bus,
-                            device.device,
-                            device.function,
-                            err
-                        );
-                    } else if let Err(err) = self.qi_wait_sync() {
-                        log::error!(
-                            "[IOMMU][SECURITY] Timeout/Error waiting for Device-TLB invalidation for device {:04X}:{:02X}.{:X} while disabling ATS: {:?}",
-                            device.bus,
-                            device.device,
-                            device.function,
-                            err
-                        );
-                    }
+                // Notify state change
+                if let Some(notifier) = self.security_notifier.get() {
+                    notifier.notify(SecurityEvent::AtsStateChanged {
+                        source_id: device.requester_id(),
+                        enabled: false,
+                        reason,
+                    });
                 }
             }
-            Err(_) => {
-                log::error!("Failed to lock ats_enabled_devices - cannot disable ATS");
-            }
         }
+        Ok(())
     }
 
     /// Check if ATS is enabled for a device

@@ -215,9 +215,6 @@ impl AmdIommuDriver {
             .and_then(|state| state.as_ref())
             .ok_or(IommuError::NotSupported)?;
 
-        // Advance epoch before invalidation
-        let epoch = self.iova_allocator.advance_epoch();
-
         let token = {
             let mut guard = match state.lock() {
                 Ok(guard) => guard,
@@ -226,30 +223,32 @@ impl AmdIommuDriver {
             guard.submit_and_wait_token(cmd, true)?
         };
 
-        let res = token.wait_async().await;
-
-        // Complete epoch after async invalidation finishes
-        self.iova_allocator.complete_epoch(epoch);
-        res
+        // One command on one unit does not cover allocator-wide retirement.
+        token.wait_async().await
     }
 
     pub(super) fn invalidate_all_entries(&self) -> Result<(), IommuError> {
-        let mut has_state = false;
+        if self.units.is_empty() {
+            return Err(IommuError::NotSupported);
+        }
         let mut tokens = Vec::new();
+        tokens
+            .try_reserve_exact(self.units.len())
+            .map_err(|_| IommuError::OutOfMemory)?;
 
-        for idx in 0..self.cmd_states.len() {
-            if self.cmd_states[idx].is_none() {
-                continue;
-            }
-            has_state = true;
+        for idx in 0..self.units.len() {
             let res = self.with_cmd_state(idx, |state| {
+                let efr = crate::io::mmio::mmio_read_u64(
+                    state.buffer.mmio_base as usize
+                        + super::registers::MMIO_EXT_FEATURE_OFFSET as usize,
+                );
+                // AMD-Vi §2.4.8: without IASup this opcode is illegal, not a flush.
+                if efr & super::registers::EFR_IA_SUP == 0 {
+                    return Err(IommuError::NotSupported);
+                }
                 state.submit_and_wait_token(cmd::AmdCommand::invalidate_all(), false)
             })?;
             tokens.push(res);
-        }
-
-        if !has_state {
-            return Err(IommuError::NotSupported);
         }
 
         for token in tokens {
@@ -456,60 +455,45 @@ impl AmdIommuDriver {
         iova: Option<u64>,
         any_ats: bool,
     ) -> Result<(), IommuError> {
-        let epoch = self.iova_allocator.advance_epoch();
-
         // AMD-Vi uses INVALIDATE_IOMMU_PAGES command
         // For emergency isolation, we invalidate all pages in the domain
-        let res = self.invalidate_domain_all(domain_id);
-
-        if res.is_ok() && any_ats {
-            let _ = self.invalidate_domain_device_tlbs(domain_id, iova, None);
+        self.invalidate_domain_all(domain_id)?;
+        if any_ats {
+            self.invalidate_domain_device_tlbs(domain_id, iova, None)?;
         }
-
-        self.iova_allocator.complete_epoch(epoch);
-        res
+        // This domain's success cannot release another domain's retired IOVAs.
+        Ok(())
     }
 
     /// Invalidate all IOTLB entries globally.
+    ///
+    /// # Errors
+    /// Missing command state, allocation, command/ATS failures, or generation
+    /// exhaustion retain IOVA quarantine; partial hardware progress cannot release it.
+    #[deny(unsafe_code)]
     pub(crate) fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
-        let epoch = self.iova_allocator.advance_epoch();
-
-        // Invalidate all domains - AMD-Vi doesn't have a single global invalidation
-        // so we iterate through known domains
-        let domain_ids: Vec<u16> = match self.domains.lock() {
-            Ok(domains) => domains.keys().cloned().collect(),
-            Err(_) => {
-                self.iova_allocator.complete_epoch(epoch);
-                return Err(IommuError::Poisoned);
-            }
+        let flush = self.iova_allocator.begin_global_flush()?;
+        self.invalidate_all_entries()?;
+        self.invalidate_global_device_tlbs()?;
+        // SAFETY: every unit and attached device completed translation-cache
+        // invalidation after the allocator retirement boundary was captured.
+        #[expect(
+            unsafe_code,
+            reason = "all IOMMU and Device-TLB command completions were observed above"
+        )]
+        unsafe {
+            flush.complete_after_global_invalidation()
         };
-
-        let mut last_err = None;
-        for domain_id in domain_ids {
-            if let Err(err) = self.invalidate_domain_all(domain_id) {
-                last_err = Some(err);
-            }
-        }
-
-        self.iova_allocator.complete_epoch(epoch);
-        if let Some(err) = last_err {
-            Err(err)
-        } else {
-            Ok(())
-        }
+        Ok(())
     }
 
     /// Invalidate context cache globally.
     pub(crate) fn invalidate_context_global(&self) -> Result<(), IommuError> {
-        let epoch = self.iova_allocator.advance_epoch();
-
         // AMD-Vi uses device table entries; invalidation is done via
         // INVALIDATE_DEVTAB_ENTRY command
         // For global invalidation, we flush all known devices
-        let res = self.invalidate_all_device_entries();
-
-        self.iova_allocator.complete_epoch(epoch);
-        res
+        // Context/device-table invalidation is not IOTLB retirement authority.
+        self.invalidate_all_device_entries()
     }
 
     /// Invalidate all pages in a domain.
@@ -591,11 +575,16 @@ impl AmdIommuDriver {
                 .device_domains
                 .lock()
                 .map_err(|_| IommuError::Poisoned)?;
-            device_domains.keys().cloned().collect()
+            let mut devices = Vec::new();
+            devices
+                .try_reserve_exact(device_domains.len())
+                .map_err(|_| IommuError::OutOfMemory)?;
+            devices.extend(device_domains.keys().copied());
+            devices
         };
 
         for device in devices {
-            let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+            self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
         }
         Ok(())
     }
@@ -713,9 +702,6 @@ impl IommuInvalidator for AmdIommuDriver {
             return Ok(());
         }
 
-        // Advance epoch before invalidation
-        let epoch = self.iova_allocator.advance_epoch();
-
         for req in requests {
             // Check for ATS flush requirement across all kinds
             let ats = req.flags.contains(InvalidateFlags::ATS_AWARE);
@@ -739,17 +725,14 @@ impl IommuInvalidator for AmdIommuDriver {
                     }
                 }
                 InvalidateKind::Global => {
-                    self.invalidate_all_entries()?;
-                    if ats {
-                        self.invalidate_global_device_tlbs()?;
-                    }
+                    self.invalidate_iotlb_global()?;
                 }
                 InvalidateKind::Context { source_id } => {
                     let device = Self::device_id_from_devid(0, source_id);
                     self.invalidate_device_entry(device)?;
                     if ats {
                         // For context invalidation with ATS, flush the entire device IOTLB
-                        let _ = self.invalidate_iotlb_pages(device, 0, u64::MAX);
+                        self.invalidate_iotlb_pages(device, 0, u64::MAX)?;
                     }
                 }
                 _ => {
@@ -763,8 +746,6 @@ impl IommuInvalidator for AmdIommuDriver {
             }
         }
 
-        // Complete epoch after hardware confirmation
-        self.iova_allocator.complete_epoch(epoch);
         Ok(())
     }
 
@@ -797,10 +778,7 @@ impl IommuInvalidator for AmdIommuDriver {
                 }
                 InvalidateKind::Global => {
                     // Fall back to sync path for now as global is rare
-                    self.invalidate_all_entries()?;
-                    if ats {
-                        self.invalidate_global_device_tlbs()?;
-                    }
+                    self.invalidate_iotlb_global()?;
                 }
                 _ => {
                     // Fall back to sync path for context for now

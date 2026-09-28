@@ -188,7 +188,10 @@ impl DomainManager for IommuController {
     }
 
     fn detach_device(&self, device: DeviceId) -> Result<(), IommuError> {
-        self.check_and_clear_ats(device);
+        self.disable_ats_for_device(
+            device,
+            crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
+        )?;
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
 
@@ -289,16 +292,11 @@ impl DomainManager for IommuController {
 
                 self.invalidate_iotlb(*domain, true).map_err(|_| ())?;
                 if pt_removed {
-                    let _ = domain_arc.flush(self, self);
+                    domain_arc.flush(self, self).map_err(|_| ())?;
                 }
 
-                // Free the IOVA to prevent allocator leaks
-                if let Err(IommuError::OutOfMemory) = self.free_iova(*iova, mapping.size) {
-                    let _ = self.invalidate_iotlb_global_sync();
-                    let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                        self, *iova, mapping.size,
-                    );
-                }
+                // A failed retirement is not permission to bypass quarantine.
+                self.free_iova(*iova, mapping.size).map_err(|_| ())?;
                 Ok(0)
             }
             IommuCommandKind::UnmapRegionDevice { device, iova, .. } => {
@@ -318,19 +316,14 @@ impl DomainManager for IommuController {
 
                 if pt_removed {
                     self.invalidate_iotlb(domain_id, true).map_err(|_| ())?;
-                    let _ = domain_arc.flush(self, self);
+                    domain_arc.flush(self, self).map_err(|_| ())?;
                 } else {
                     self.qi_invalidate_unmap(domain_id, device, *iova, mapping.size as u64)
                         .map_err(|_| ())?;
                 }
 
-                // Free the IOVA to prevent allocator leaks
-                if let Err(IommuError::OutOfMemory) = self.free_iova(*iova, mapping.size) {
-                    let _ = self.invalidate_iotlb_global_sync();
-                    let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                        self, *iova, mapping.size,
-                    );
-                }
+                // Keep rejected IOVAs allocated and report failure to the owner.
+                self.free_iova(*iova, mapping.size).map_err(|_| ())?;
                 Ok(0)
             }
             IommuCommandKind::InvalidateIotlbDomain { domain } => self

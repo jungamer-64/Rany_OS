@@ -75,6 +75,7 @@ pub(crate) const AMD_DEFAULT_MAX_ADDR_BITS: u8 = 48; // Fallback when EFR is una
 
 // Extended Feature Register (EFR) — MMIO offset 0x30
 pub(crate) const MMIO_EXT_FEATURE_OFFSET: u64 = 0x0030;
+pub(crate) const EFR_IA_SUP: u64 = 1 << 6;
 pub(crate) const EFR_HATS_SHIFT: u32 = 10;
 pub(crate) const EFR_HATS_MASK: u64 = 0x03; // bits [11:10] — Host Address Translation Size
 

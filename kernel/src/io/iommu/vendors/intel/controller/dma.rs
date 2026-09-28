@@ -236,19 +236,6 @@ impl IommuController {
         Ok((domain_id, domain_arc))
     }
 
-    pub(crate) fn check_and_clear_ats(&self, device: DeviceId) {
-        let ats_was_enabled = match self.ats_enabled_devices.lock() {
-            Ok(set) => set.contains(&device),
-            Err(_) => false,
-        };
-        if ats_was_enabled {
-            self.disable_ats_for_device(
-                device,
-                crate::io::iommu::runtime::security::AtsChangeReason::DeviceDetach,
-            );
-        }
-    }
-
     pub(crate) fn clear_hw_context_entry(
         &self,
         bus: usize,

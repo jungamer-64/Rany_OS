@@ -32,10 +32,16 @@
 // ```
 // ============================================================================
 
+#![deny(unsafe_code)]
+
 use crate::sync::IrqMutex;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
+
+#[path = "flush_epoch.rs"]
+mod flush_epoch;
+use flush_epoch::{FlushBoundary, RetirementClock};
 
 pub use crate::mm::phys::fast_allocator::PageGranularity;
 use crate::mm::phys::fast_allocator::{FastBitmapAllocator, LocalCachePolicy};
@@ -71,12 +77,8 @@ pub struct IovaAllocator {
     /// IOVA address spaces.
     fallback_quarantine: IovaQuarantine,
 
-    /// Current global epoch (incremented *before* IOTLB invalidation)
-    current_epoch: AtomicU32,
-
-    /// Last completed epoch (updated *after* IOTLB invalidation completes)
-    /// All quarantine entries with epoch <= completed_epoch are safe to free.
-    completed_epoch: AtomicU32,
+    /// Retirement generations are advanced only around allocator-wide invalidation.
+    clock: RetirementClock,
 
     // Statistics
     stats: IovaAllocatorStats,
@@ -87,6 +89,30 @@ pub struct IovaAllocator {
 pub struct IovaAllocatorStats {
     pub quarantine_pushes: AtomicU64,
     pub quarantine_drains: AtomicU64,
+}
+
+/// Pending allocator-wide invalidation. Dropping it leaves every IOVA quarantined.
+/// The Arc binds completion to the exact allocator even across replacement or await.
+#[derive(Debug)]
+pub(in crate::io::iommu) struct PendingGlobalIovaFlush {
+    allocator: Arc<IovaAllocator>,
+    boundary: FlushBoundary,
+}
+
+impl PendingGlobalIovaFlush {
+    /// Release only IOVAs retired before this global invalidation began.
+    ///
+    /// # Safety
+    /// Every translation cache using this allocator, including ATS Device-TLBs,
+    /// must have completed global invalidation after this token was created.
+    /// A domain/page/context flush or command submission alone is insufficient.
+    #[expect(
+        unsafe_code,
+        reason = "hardware completion for the allocator-wide translation scope is established by the backend"
+    )]
+    pub(in crate::io::iommu) unsafe fn complete_after_global_invalidation(self) {
+        self.allocator.reclaim_through(self.boundary);
+    }
 }
 
 impl IovaAllocator {
@@ -103,8 +129,7 @@ impl IovaAllocator {
             inner,
             quarantines: IrqMutex::new(Arc::from([])),
             fallback_quarantine: IrqMutex::new(QuarantineRing::new()),
-            current_epoch: AtomicU32::new(0),
-            completed_epoch: AtomicU32::new(0),
+            clock: RetirementClock::new(),
             stats: IovaAllocatorStats::default(),
         }
     }
@@ -208,7 +233,7 @@ impl IovaAllocator {
         addr: u64,
         granularity: PageGranularity,
     ) -> Result<(), IommuError> {
-        let epoch = self.current_epoch.load(Ordering::Relaxed);
+        let epoch = self.clock.retirement_epoch();
         let entry = QuarantineEntry {
             addr,
             epoch,
@@ -236,11 +261,9 @@ impl IovaAllocator {
                 // Ring full: Do NOT force drain here because it bypasses IOTLB consistency (Epochs).
                 // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
                 //
-                // The caller (IOMMU driver/domain) must handle this Error by:
-                // 1. Advancing the global epoch.
-                // 2. Issuing a global IOTLB/Context flush.
-                // 3. Completing the epoch (which will safely drain these rings).
-                // 4. Retrying the free.
+                // The rejected block remains allocated. The allocator owner
+                // must complete an allocator-wide IOTLB + ATS flush before
+                // retrying this block; a context or domain flush cannot drain it.
 
                 log::warn!(
                     "[IOVA][SECURITY] Quarantine ring full for CPU {}. Rejecting free until IOTLB flush.",
@@ -268,10 +291,8 @@ impl IovaAllocator {
         // Quarantine full: We MUST NOT force drain here because it bypasses IOTLB consistency (Epochs).
         // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
         //
-        // The caller (IommuDomain) handles this Error by:
-        // 1. Issuing a global IOTLB/Context flush for the domain.
-        // 2. Advancing and completing the epoch (safely draining these rings).
-        // 3. Retrying the free.
+        // The rejected block remains allocated until its owner can complete
+        // allocator-wide IOTLB + ATS invalidation and retry this block.
 
         log::warn!(
             "[IOVA][SECURITY] Fallback quarantine full. Rejecting free of 0x{:x} until IOTLB flush.",
@@ -371,6 +392,33 @@ impl IovaAllocator {
     // ========================================================================
     // Epoch / Quarantine Management
     // ========================================================================
+
+    /// Capture the retirement boundary before issuing allocator-wide invalidation.
+    /// Capturing the token only clones an Arc; no lock must be held across I/O or await.
+    ///
+    /// # Errors
+    /// Epoch exhaustion is terminal for this allocator's retirement protocol;
+    /// existing quarantine remains intact and epochs are never reused.
+    pub(in crate::io::iommu) fn begin_global_flush(
+        self: &Arc<Self>,
+    ) -> Result<PendingGlobalIovaFlush, IommuError> {
+        let boundary = self.clock.begin().ok_or(IommuError::GenerationExhausted)?;
+        Ok(PendingGlobalIovaFlush {
+            allocator: Arc::clone(self),
+            boundary,
+        })
+    }
+
+    fn reclaim_through(&self, boundary: FlushBoundary) {
+        // Every later completed token proves a later allocator-wide flush.
+        // Epochs cannot wrap, so out-of-order completions only advance coverage.
+        let completed = self.clock.confirm(boundary);
+        let quarantines = self.quarantines.lock().clone();
+        for quarantine in quarantines.iter() {
+            self.drain_quarantine(quarantine, completed);
+        }
+        self.drain_fallback_for_epoch(completed);
+    }
 
     /// Drain quarantine ring for a specific CPU
     ///

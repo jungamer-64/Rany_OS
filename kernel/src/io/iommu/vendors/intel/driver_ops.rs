@@ -302,38 +302,24 @@ impl IntelIommuDriver {
         if pt_removed {
             // SECURITY: Domain-wide invalidation to clear paging-structure caches.
             controller.invalidate_iotlb(domain_id, true)?;
-            let _ = domain_arc.flush(controller, controller);
+            domain_arc.flush(controller, controller)?;
         } else {
             // Page-selective invalidation with ATS awareness
             controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
         }
 
-        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
-            // Quarantine full: Force global flush and immediate free.
-            // This is safe because the global flush ensures no stale entries remain.
-            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ =
-                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                        controller,
-                        iova,
-                        mapping.size,
-                    );
-            }
-        }
+        controller.free_iova(iova, mapping.size)?;
         Ok(())
     }
 
     /// コマンドキュー経由で非同期 UnmapRegionDevice を実行する
     pub(super) async fn try_cq_unmap_device_async(
         cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
-        domain_arc: &Arc<IommuDomain>,
         controller: &controller::IommuController,
         device: &DeviceId,
         iova: u64,
         size: u64,
     ) -> Result<(), IommuError> {
-        let mapping = domain_arc.mapping(iova).ok_or(IommuError::NotMapped)?;
-        let mapping_size = mapping.size;
         let cmd = IommuCommandKind::UnmapRegionDevice {
             device: *device,
             iova,
@@ -347,16 +333,8 @@ impl IntelIommuDriver {
         if rc != 0 {
             return Err(controller_cq_completion_error(rc));
         }
-        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping_size) {
-            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ =
-                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                        controller,
-                        iova,
-                        mapping_size,
-                    );
-            }
-        }
+        // The command handler owns unmap, invalidation, and IOVA retirement.
+        // A successful completion is not a second retirement authority.
         Ok(())
     }
 
@@ -407,21 +385,10 @@ impl IntelIommuDriver {
         }
 
         if pt_removed {
-            let _ = domain_arc.flush(controller, controller);
+            domain_arc.flush(controller, controller)?;
         }
 
-        if let Err(IommuError::OutOfMemory) = controller.free_iova(iova, mapping.size) {
-            // Quarantine full: Force global flush and immediate free.
-            // This is safe because the global flush ensures no stale entries remain.
-            if let Ok(_) = controller.invalidate_iotlb_global_sync() {
-                let _ =
-                    crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                        controller,
-                        iova,
-                        mapping.size,
-                    );
-            }
-        }
+        controller.free_iova(iova, mapping.size)?;
         Ok(())
     }
 
@@ -446,15 +413,7 @@ impl IntelIommuDriver {
                 None => continue,
             };
             if let Some(cq) = controller.command_queue_ref() {
-                return Self::try_cq_unmap_device_async(
-                    cq,
-                    &domain_arc,
-                    controller,
-                    device,
-                    iova,
-                    size,
-                )
-                .await;
+                return Self::try_cq_unmap_device_async(cq, controller, device, iova, size).await;
             }
             return Self::direct_unmap_invalidate_async(&domain_arc, controller, device, iova)
                 .await;

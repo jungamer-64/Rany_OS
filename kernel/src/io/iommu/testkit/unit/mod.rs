@@ -1894,13 +1894,6 @@ fn test_iova_quarantine_and_epoch_drain() {
         Err(e) => panic!("alloc: {:?}", e),
     };
 
-    // Advance epoch so the free will be associated with a new epoch
-    let epoch = if let Ok(guard) = ctrl.iova_allocator.lock() {
-        guard.as_ref().unwrap().advance_epoch()
-    } else {
-        panic!("lock failed");
-    };
-
     // Free the IOVA - it should go to quarantine
     ctrl.free_iova(iova, 4096).expect("free");
 
@@ -1913,10 +1906,19 @@ fn test_iova_quarantine_and_epoch_drain() {
         allocated.push(addr);
     }
 
-    // Now space is exhausted. If we complete the epoch, `iova` should become available.
-    if let Ok(guard) = ctrl.iova_allocator.lock() {
-        guard.as_ref().unwrap().complete_epoch(epoch);
-    }
+    // This allocator fixture is not attached to hardware. There are no IOTLB
+    // or ATS entries; use the production pending-flush transition, not a raw epoch.
+    let flush = {
+        let guard = ctrl.iova_allocator.lock().expect("allocator owner");
+        guard
+            .as_ref()
+            .expect("initialized allocator")
+            .begin_global_flush()
+            .expect("flush boundary")
+    };
+    // SAFETY: no device or IOMMU has ever been attached to this fixture allocator,
+    // so the captured retirement boundary has no outstanding cached translations.
+    unsafe { flush.complete_after_global_invalidation() };
 
     // Now it should be available again
     let iova_again = match ctrl.allocate_iova(4096) {

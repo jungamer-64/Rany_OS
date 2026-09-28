@@ -12,6 +12,7 @@
 use super::IommuController;
 use crate::io::iommu::common::dma::iova_allocator::{IovaAllocator, PageGranularity};
 use crate::io::iommu::types::IommuError;
+use alloc::sync::Arc;
 
 pub trait IovaManager {
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError>;
@@ -28,12 +29,18 @@ pub trait IovaManager {
 }
 
 impl IovaManager for IommuController {
-    /// Initialize controller IOVA allocator
+    /// Initialize the controller's address space once; never replace a live bitmap.
+    ///
+    /// # Errors
+    /// AlreadyInitialized retains the existing allocator and all outstanding flush owners.
     fn init_iova(&self, base: u64, size: u64) -> Result<(), IommuError> {
         let mut guard = self
             .iova_allocator
             .lock_for_init("[IOMMU] iova_allocator init");
-        *guard = Some(IovaAllocator::new(base, size));
+        if guard.is_some() {
+            return Err(IommuError::AlreadyInitialized);
+        }
+        *guard = Some(Arc::new(IovaAllocator::new(base, size)));
         Ok(())
     }
 

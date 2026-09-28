@@ -355,17 +355,12 @@ impl AmdIommuDriver {
 
         // 3. Reclaim released page tables
         if pt_removed {
-            let _ = domain.flush(self, self);
+            domain.flush(self, self)?;
         }
 
-        if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
-            let _ = self.invalidate_all_entries();
-            let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                self,
-                iova,
-                mapping.size,
-            );
-        }
+        // Rejected retirement remains allocated. Do not bypass quarantine after
+        // a failed flush, nor re-free a range whose prefix may already be queued.
+        self.free_iova_fast(iova, mapping.size)?;
         Ok(())
     }
 
@@ -470,17 +465,11 @@ impl AmdIommuDriver {
 
         // 3. Reclaim released page tables
         if pt_removed {
-            let _ = domain.flush(self, self);
+            domain.flush(self, self)?;
         }
 
-        if let Err(IommuError::OutOfMemory) = self.free_iova_fast(iova, mapping.size) {
-            let _ = self.invalidate_all_entries();
-            let _ = crate::io::iommu::common::interface::IommuHardwareContext::free_iova_immediate(
-                self,
-                iova,
-                mapping.size,
-            );
-        }
+        // Failure must reach the DMA owner; no immediate-free fallback is valid.
+        self.free_iova_fast(iova, mapping.size)?;
         Ok(())
     }
 }

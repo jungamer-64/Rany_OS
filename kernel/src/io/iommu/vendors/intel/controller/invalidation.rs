@@ -9,12 +9,30 @@
 
 use super::IommuController;
 use super::qi_ops::InvalidationOps;
+use crate::io::iommu::common::dma::iova_allocator::PendingGlobalIovaFlush;
 use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateKind, InvalidateRequest, IommuInvalidator,
 };
 use crate::io::iommu::types::IommuError;
 
 impl IommuController {
+    /// Bind an outstanding global flush to the current allocator, not a later replacement.
+    ///
+    /// # Errors
+    /// A poisoned owner or exhausted retirement generation leaves quarantine unchanged.
+    pub(super) fn begin_iova_global_flush(
+        &self,
+    ) -> Result<Option<PendingGlobalIovaFlush>, IommuError> {
+        let guard = self
+            .iova_allocator
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        guard
+            .as_ref()
+            .map(|allocator| allocator.begin_global_flush())
+            .transpose()
+    }
+
     pub(crate) fn process_single_invalidation_nosync(
         &self,
         req: &InvalidateRequest,
@@ -165,18 +183,26 @@ impl IommuController {
     pub(crate) fn invalidate_global_nosync(&self) -> Result<(), IommuError> {
         if self.is_queued_invalidation_enabled() {
             self.qi_invalidate_iotlb_global()?;
-            // For global, we should ideally invalidate ALL Device-TLBs,
-            // but usually a global IOTLB flush is enough if followed by domain flushes.
-            // To be safe, iterate over all ATS devices.
+            // IOTLB completion alone does not cover translations cached by ATS devices.
             let ats_devices = self
                 .ats_enabled_devices
                 .lock()
                 .map_err(|_| IommuError::Poisoned)?;
             for device in ats_devices.iter() {
-                let _ = self.qi_invalidate_device_tlb_all(device.requester_id());
+                self.qi_invalidate_device_tlb_all(device.requester_id())?;
             }
         } else {
-            unsafe { self.invalidate_iotlb_global() };
+            if !self
+                .ats_enabled_devices
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?
+                .is_empty()
+            {
+                return Err(IommuError::NotSupported);
+            }
+            // SAFETY: this controller owns the register resource, and the
+            // direct routine observes global IOTLB completion before returning.
+            unsafe { self.invalidate_iotlb_global()? };
         }
         Ok(())
     }
@@ -212,15 +238,19 @@ impl IommuController {
     }
 }
 
+#[deny(unsafe_code)]
 impl IommuInvalidator for IommuController {
     fn process_invalidations(&self, requests: &[InvalidateRequest]) -> Result<(), IommuError> {
         if requests.is_empty() {
             return Ok(());
         }
 
-        // Advance epoch before invalidation to mark current quarantine entries
-        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
-            guard.as_ref().map(|a| a.advance_epoch())
+        // Only an allocator-wide IOTLB + ATS flush covers every retirement ring.
+        let flush = if requests
+            .iter()
+            .any(|request| matches!(request.kind, InvalidateKind::Global))
+        {
+            self.begin_iova_global_flush()?
         } else {
             None
         };
@@ -242,14 +272,16 @@ impl IommuInvalidator for IommuController {
             self.qi_wait_sync()?;
         }
 
-        // Complete epoch after invalidation is confirmed by hardware.
-        // This safely drains the quarantine rings.
-        if let Some(e) = epoch {
-            if let Ok(guard) = self.iova_allocator.lock() {
-                if let Some(alloc) = guard.as_ref() {
-                    alloc.complete_epoch(e);
-                }
-            }
+        if let Some(flush) = flush {
+            // SAFETY: a Global request invalidated all IOTLB/ATS entries and
+            // the batch's hardware completion was observed above.
+            #[expect(
+                unsafe_code,
+                reason = "the batch contains a completed global IOTLB and ATS flush"
+            )]
+            unsafe {
+                flush.complete_after_global_invalidation()
+            };
         }
 
         Ok(())
@@ -259,30 +291,28 @@ impl IommuInvalidator for IommuController {
         &self,
         request: InvalidateRequest,
     ) -> impl core::future::Future<Output = Result<(), IommuError>> + Send {
-        let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
-
-        // Advance epoch before invalidation
-        let epoch = if let Ok(guard) = self.iova_allocator.lock() {
-            guard.as_ref().map(|a| a.advance_epoch())
-        } else {
-            None
-        };
-
-        let res = self.process_single_invalidation_nosync(&request, any_ats);
-
         async move {
-            res?;
+            let flush = if matches!(request.kind, InvalidateKind::Global) {
+                self.begin_iova_global_flush()?
+            } else {
+                None
+            };
+            let any_ats = request.flags.contains(InvalidateFlags::ATS_AWARE);
+            self.process_single_invalidation_nosync(&request, any_ats)?;
             if self.is_queued_invalidation_enabled() {
                 self.qi_wait_async().await?;
             }
 
-            // Complete epoch after async invalidation finishes
-            if let Some(e) = epoch {
-                if let Ok(guard) = self.iova_allocator.lock() {
-                    if let Some(alloc) = guard.as_ref() {
-                        alloc.complete_epoch(e);
-                    }
-                }
+            if let Some(flush) = flush {
+                // SAFETY: the Global request covers all IOTLB/ATS caches and
+                // asynchronous hardware completion was observed above.
+                #[expect(
+                    unsafe_code,
+                    reason = "the global IOTLB and ATS wait completed successfully"
+                )]
+                unsafe {
+                    flush.complete_after_global_invalidation()
+                };
             }
             Ok(())
         }

@@ -190,7 +190,7 @@ pub struct AmdIommuDriver {
     pub(super) next_domain_id: AtomicU64,
     pub(super) page_table_pool: Arc<PageTablePool>,
     pub command_queue: Option<CommandQueue>,
-    pub(super) iova_allocator: IovaAllocator,
+    pub(super) iova_allocator: Arc<IovaAllocator>,
     pub(super) enabled: AtomicBool,
     pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
@@ -226,7 +226,7 @@ impl AmdIommuDriver {
         let iova_base: u64 = PAGE_SIZE_4K as u64;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
-        let iova_allocator = IovaAllocator::new(iova_base, iova_size);
+        let iova_allocator = Arc::new(IovaAllocator::new(iova_base, iova_size));
         let alloc_base = iova_allocator.base();
         let alloc_end = alloc_base.saturating_add(iova_allocator.size());
 

@@ -38,6 +38,8 @@ pub enum IommuError {
     OutOfMemory,
     /// Out of IOVA space
     OutOfIova,
+    /// Retirement generations are exhausted; this allocator cannot safely reuse epochs.
+    GenerationExhausted,
     /// Timeout
     Timeout,
     /// System entered poisoned state (critical error)
