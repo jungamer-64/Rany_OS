@@ -15,7 +15,6 @@ use crate::regs::{cmd_entry, cqe, eqe};
 use crate::resources::MkeyParams;
 
 const CMD_LOG_SIZE: u8 = 2;
-const FW_BOOT_PAGE_COUNT: usize = 16;
 const MLX5_EQ_SPARE_EQE: u32 = 0x80;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -104,7 +103,6 @@ pub struct Mlx5AllocatedResources {
     pub cmdq: Mlx5DmaRegion,
     pub cmd_in_mbox: Mlx5DmaRegion,
     pub cmd_out_mbox: Mlx5DmaRegion,
-    pub fw_pages: Vec<Mlx5DmaRegion>,
     pub eqs: Vec<Mlx5DmaRegion>,
     pub tx_cqs: Vec<Mlx5QueueDmaRegion>,
     pub rx_cqs: Vec<Mlx5QueueDmaRegion>,
@@ -114,10 +112,6 @@ pub struct Mlx5AllocatedResources {
 }
 
 impl Mlx5AllocatedResources {
-    pub fn fw_page_device_addrs(&self) -> Vec<u64> {
-        self.fw_pages.iter().map(|page| page.device_addr).collect()
-    }
-
     pub fn eq_bufs(&self) -> Vec<(u64, u64)> {
         self.eqs
             .iter()
@@ -196,14 +190,6 @@ impl Mlx5BootstrapPlan {
         self.cmd_mailbox_size
     }
 
-    pub const fn fw_boot_page_count(&self) -> usize {
-        FW_BOOT_PAGE_COUNT
-    }
-
-    pub const fn fw_page_size(&self) -> usize {
-        MLX5_PAGE_SIZE
-    }
-
     pub const fn eq_size(&self) -> usize {
         self.eq_size
     }
@@ -235,13 +221,6 @@ impl Mlx5BootstrapPlan {
         validate_region(resources.cmdq, self.cmdq_size)?;
         validate_region(resources.cmd_in_mbox, self.cmd_mailbox_size)?;
         validate_region(resources.cmd_out_mbox, self.cmd_mailbox_size)?;
-
-        if resources.fw_pages.len() < FW_BOOT_PAGE_COUNT {
-            return Err(Mlx5Error::InvalidParameter);
-        }
-        for page in resources.fw_pages.iter().take(FW_BOOT_PAGE_COUNT) {
-            validate_region(*page, MLX5_PAGE_SIZE)?;
-        }
 
         validate_region_list(&resources.eqs, self.queue_profile.eq_count, self.eq_size)?;
         validate_queue_list(

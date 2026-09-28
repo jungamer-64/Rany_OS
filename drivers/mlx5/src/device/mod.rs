@@ -11,7 +11,6 @@ use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::{FlowGroup, FlowTable, FlowTableEntry, RqTable};
 use crate::fw::FwInfo;
 use crate::health::HealthMonitor;
-use crate::pages::PageManager;
 use crate::polling::AdaptivePollingState;
 use crate::port::Mlx5Port;
 use crate::resources::{MkeyInfo, TirInfo, TisInfo, TisOwnership};
@@ -63,8 +62,6 @@ pub struct Mlx5Device {
 
     // Memory/Pages
     pub(crate) fw_function_id: u16,
-    pub(crate) page_manager: PageManager,
-    pub(crate) bootstrap_fw_page_cursor: usize,
 
     // Resources
     pub(crate) uar_page: u32,
@@ -166,8 +163,6 @@ impl Mlx5Device {
             cmd_out_mbox_virt: 0,
             cmd_out_mbox_device: 0,
             fw_function_id: 0,
-            page_manager: PageManager::new(),
-            bootstrap_fw_page_cursor: 0,
             uar_page: 0,
             uar_base: 0,
             pd: 0,
