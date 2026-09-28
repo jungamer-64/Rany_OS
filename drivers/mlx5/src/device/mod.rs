@@ -11,6 +11,7 @@ use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::{FlowGroup, FlowTable, FlowTableEntry, RqTable};
 use crate::fw::FwInfo;
 use crate::health::HealthMonitor;
+use crate::pages::FirmwarePages;
 use crate::polling::AdaptivePollingState;
 use crate::port::Mlx5Port;
 use crate::resources::{MkeyInfo, TirInfo, TisInfo, TisOwnership};
@@ -62,6 +63,8 @@ pub struct Mlx5Device {
 
     // Memory/Pages
     pub(crate) fw_function_id: u16,
+    pub(crate) firmware_pages: Option<FirmwarePages>,
+    pub(crate) command_generation: u64,
 
     // Resources
     pub(crate) uar_page: u32,
@@ -163,6 +166,8 @@ impl Mlx5Device {
             cmd_out_mbox_virt: 0,
             cmd_out_mbox_device: 0,
             fw_function_id: 0,
+            firmware_pages: None,
+            command_generation: 0,
             uar_page: 0,
             uar_base: 0,
             pd: 0,
@@ -289,11 +294,23 @@ impl Mlx5Device {
         self.eqs.get(eq_index).map(|eq| eq.msix_vector)
     }
 
-    pub fn set_pci_location(&mut self, segment: u16, bus: u8, device: u8, function: u8) {
+    /// # Errors
+    /// A live command/page owner cannot be rebound to another PCI identity.
+    pub fn set_pci_location(
+        &mut self,
+        segment: u16,
+        bus: u8,
+        device: u8,
+        function: u8,
+    ) -> Mlx5Result<()> {
+        if self.cmd.is_some() || self.firmware_pages.is_some() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
         self.pci_segment = segment;
         self.pci_bus = bus;
         self.pci_device = device;
         self.pci_function = function;
+        Ok(())
     }
 
     pub fn pci_location(&self) -> (u16, u8, u8, u8) {

@@ -112,15 +112,11 @@ impl Mlx5Device {
             let _ = self.dealloc_uar_hw(uar);
         }
 
-        // 6. HCA Teardown & Disable
-        let _ = self.teardown_hca_hw(true);
-        let _ = self.disable_hca_hw();
-
-        // 7. FW ページの回収
-        let total_pages = self.page_manager.total_given_pages();
-        if total_pages > 0 {
-            let _ = self.reclaim_pages(self.fw_function_id, total_pages as u32);
-        }
+        // Firmware pages are returned only after HCA teardown, while the
+        // command interface is still live. Disable is not a page-return proof.
+        self.teardown_hca_hw(true)?;
+        self.finish_fw_pages()?;
+        self.disable_hca_hw()?;
 
         self.state = DeviceState::Uninitialized;
         self.resources_allocated = false;

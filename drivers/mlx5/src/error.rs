@@ -40,6 +40,10 @@ pub enum Mlx5Error {
     NotSupported,
     /// 内部エラー
     Internal,
+    /// Registry transition/finalization failure; the device page owner retains the capability.
+    DmaLease(kernel_api::dma::DmaLeaseError),
+    /// Scoped firmware-page allocation failure, preserving the kernel cause.
+    PageAllocation(kernel_api::error::KapiError),
 }
 
 impl fmt::Display for Mlx5Error {
@@ -61,6 +65,8 @@ impl fmt::Display for Mlx5Error {
             Self::InvalidParameter => write!(f, "invalid parameter"),
             Self::NotSupported => write!(f, "not supported"),
             Self::Internal => write!(f, "internal error"),
+            Self::DmaLease(cause) => write!(f, "DMA lease: {cause:?}"),
+            Self::PageAllocation(cause) => write!(f, "firmware page allocation: {cause}"),
         }
     }
 }

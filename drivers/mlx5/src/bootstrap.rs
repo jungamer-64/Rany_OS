@@ -342,12 +342,6 @@ mod tests {
             cmdq: Mlx5DmaRegion::new(0x1000, 0x2000, plan.command_queue_size()),
             cmd_in_mbox: Mlx5DmaRegion::new(0x3000, 0x4000, plan.command_mailbox_size()),
             cmd_out_mbox: Mlx5DmaRegion::new(0x5000, 0x6000, plan.command_mailbox_size()),
-            fw_pages: (0..plan.fw_boot_page_count())
-                .map(|i| {
-                    let base = 0x7000 + (i as u64 * 0x1000);
-                    Mlx5DmaRegion::new(base, base + 0x100000, plan.fw_page_size())
-                })
-                .collect(),
             eqs: (0..profile.eq_count)
                 .map(|i| {
                     let base = 0x20_000 + (i as u64 * 0x2000);

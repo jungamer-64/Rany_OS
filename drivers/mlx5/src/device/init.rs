@@ -366,6 +366,15 @@ impl Mlx5Device {
         cmd_out_mbox_pa: u64,
     ) -> Mlx5Result<()> {
         log::info!(target: "mlx5", "Initializing command interface...");
+        if self.cmd.is_some() || self.firmware_pages.is_some() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let generation = self
+            .command_generation
+            .checked_add(1)
+            .ok_or(Mlx5Error::NoResources)?;
+        let queue = kernel_api::dma::DmaQueueIdentity::new(self.packed_device_id(), 0, generation)
+            .ok_or(Mlx5Error::InvalidParameter)?;
 
         // Keep the mailbox addresses for later use
         self.cmd_in_mbox_virt = cmd_in_mbox_virt;
@@ -407,6 +416,8 @@ impl Mlx5Device {
         cmd.setup_cmdq_in_bar0();
 
         self.cmd = Some(cmd);
+        self.command_generation = generation;
+        self.firmware_pages = Some(crate::pages::FirmwarePages::new(queue));
         self.state = DeviceState::CommandInitialized;
 
         log::info!(
@@ -593,135 +604,6 @@ impl Mlx5Device {
         )
     }
 
-    unsafe fn provide_bootstrap_pages_if_requested(
-        &mut self,
-        phase: &str,
-        func_id: u16,
-        requested_pages: i32,
-        fw_page_addrs: &mut Vec<u64>,
-    ) -> Mlx5Result<()> {
-        if requested_pages <= 0 {
-            return Ok(());
-        }
-
-        let requested_pages = requested_pages as usize;
-        let start = self.bootstrap_fw_page_cursor.min(fw_page_addrs.len());
-        let target_total = start.saturating_add(requested_pages);
-
-        if !self.is_vf() && fw_page_addrs.len() < target_total {
-            let additional_needed = target_total - fw_page_addrs.len();
-            let device_id = self.packed_device_id();
-            let mut added_pages = 0usize;
-            let allocation_start_tick = kernel_api::service::kernel::instance().current_tick();
-
-            log::info!(
-                target: "mlx5",
-                "Expanding FW page pool for {} phase: need {} additional pages for function {:#x}",
-                phase,
-                additional_needed,
-                func_id
-            );
-
-            for _ in 0..additional_needed {
-                match kernel_api::service::kernel::instance()
-                    .alloc_dma_for_device(crate::defs::MLX5_PAGE_SIZE, device_id)
-                {
-                    Ok(buf) => {
-                        let dma_addr = self.page_manager.record_owned_dma_page(buf, func_id);
-                        fw_page_addrs.push(dma_addr);
-                        added_pages += 1;
-                        if added_pages == 1 || added_pages % 256 == 0 {
-                            let elapsed_ticks = kernel_api::service::kernel::instance()
-                                .current_tick()
-                                .saturating_sub(allocation_start_tick);
-                            log::info!(
-                                target: "mlx5",
-                                "FW page expansion progress for {} phase: {}/{} pages allocated (elapsed_ticks={})",
-                                phase,
-                                added_pages,
-                                additional_needed,
-                                elapsed_ticks
-                            );
-                        }
-                    }
-                    Err(err) => {
-                        log::warn!(
-                            target: "mlx5",
-                            "Failed to allocate additional FW page for {} phase after {} pages: {:?}",
-                            phase,
-                            added_pages,
-                            err
-                        );
-                        break;
-                    }
-                }
-            }
-
-            if added_pages != 0 {
-                log::info!(
-                    target: "mlx5",
-                    "Expanded FW page pool by {} pages for {} phase (total pages={})",
-                    added_pages,
-                    phase,
-                    fw_page_addrs.len()
-                );
-            }
-        }
-
-        if fw_page_addrs.is_empty() {
-            log::warn!(
-                target: "mlx5",
-                "FW requested {} {} pages for function {:#x}, but no bootstrap pages are available",
-                requested_pages,
-                phase,
-                func_id
-            );
-            return Ok(());
-        }
-
-        let available = fw_page_addrs.len().saturating_sub(start);
-        if available == 0 {
-            log::warn!(
-                target: "mlx5",
-                "FW requested {} {} pages for function {:#x}, but bootstrap page pool is exhausted (cursor={} total={})",
-                requested_pages,
-                phase,
-                func_id,
-                self.bootstrap_fw_page_cursor,
-                fw_page_addrs.len()
-            );
-            return Ok(());
-        }
-
-        let provided_pages = requested_pages.min(available);
-        if provided_pages < requested_pages {
-            log::warn!(
-                target: "mlx5",
-                "FW requested {} {} pages for function {:#x}, only {} bootstrap pages available (cursor={} total={})",
-                requested_pages,
-                phase,
-                func_id,
-                provided_pages,
-                self.bootstrap_fw_page_cursor,
-                fw_page_addrs.len()
-            );
-        } else {
-            log::info!(
-                target: "mlx5",
-                "Providing {} {} pages for function {:#x} (page window {}..{})",
-                provided_pages,
-                phase,
-                func_id,
-                start,
-                start + provided_pages
-            );
-        }
-
-        let selected = &fw_page_addrs[start..start + provided_pages];
-        self.bootstrap_fw_page_cursor = start + provided_pages;
-        self.provide_pages(func_id, selected)
-    }
-
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
@@ -731,11 +613,6 @@ impl Mlx5Device {
         resources: &Mlx5AllocatedResources,
     ) -> Mlx5Result<()> {
         self.is_vf = config.is_vf;
-        self.bootstrap_fw_page_cursor = 0;
-        self.pci_segment = config.pci_identity.segment;
-        self.pci_bus = config.pci_identity.bus;
-        self.pci_device = config.pci_identity.device;
-        self.pci_function = config.pci_identity.function;
 
         let plan = Mlx5BootstrapPlan::new(config);
         plan.validate_resources(resources)?;
@@ -744,9 +621,8 @@ impl Mlx5Device {
             config.pci_identity.bus,
             config.pci_identity.device,
             config.pci_identity.function,
-        );
+        )?;
 
-        let mut fw_page_addrs = resources.fw_page_device_addrs();
         let eq_bufs = resources.eq_bufs();
         let tx_cq_bufs = resources.tx_cq_bufs();
         let rx_cq_bufs = resources.rx_cq_bufs();
@@ -762,7 +638,6 @@ impl Mlx5Device {
             resources.cmd_in_mbox.device_addr,
             resources.cmd_out_mbox.virt_addr,
             resources.cmd_out_mbox.device_addr,
-            &mut fw_page_addrs,
             &config.mkey_params,
             &eq_bufs,
             &tx_cq_bufs,
@@ -787,7 +662,6 @@ impl Mlx5Device {
         cmd_in_mbox_device: u64,
         cmd_out_mbox_virt: u64,
         cmd_out_mbox_device: u64,
-        fw_page_addrs: &mut Vec<u64>,
         mkey_params: &crate::resources::MkeyParams,
         eq_bufs: &[(u64, u64)],
         tx_cq_bufs: &[(u64, u64, u64, u64)],
@@ -885,14 +759,12 @@ impl Mlx5Device {
         crate::boot_trace("[MLX5_BOOT] enable/setup phase done\n");
 
         // Phase 2: Pages & Caps
-        // VF devices typically do not request additional firmware pages; the PF
-        // is responsible for managing them.  Ignore any page requirements to
-        // avoid failing during early boot.
-        let (func_id, requested_pages) = self
-            .query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_BOOT_PAGES)
-            .unwrap_or((0, 0));
+        // A zero count must be a successful firmware response, not a fallback
+        // for a failed query. PF/VF requests use the same owned page protocol.
+        let (func_id, requested_pages) =
+            self.query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_BOOT_PAGES)?;
         self.fw_function_id = func_id;
-        self.provide_bootstrap_pages_if_requested("boot", func_id, requested_pages, fw_page_addrs)?;
+        self.satisfy_fw_page_request(func_id, requested_pages)?;
         crate::boot_trace("[MLX5_BOOT] query caps start\n");
         self.query_all_caps()?;
         crate::boot_trace("[MLX5_BOOT] query caps done\n");
@@ -989,29 +861,14 @@ impl Mlx5Device {
             );
         }
 
-        // Issue QUERY_PAGES for init pages between SET_HCA_CAP and INIT_HCA,
-        // even when the result is zero. Some VF firmware paths appear to use
-        // this handshake as part of the startup state transition.
-        match self.query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_INIT_PAGES) {
-            Ok((func_id, requested_pages)) => {
-                if func_id != 0 {
-                    self.fw_function_id = func_id;
-                }
-                self.provide_bootstrap_pages_if_requested(
-                    "init",
-                    func_id,
-                    requested_pages,
-                    fw_page_addrs,
-                )?;
-            }
-            Err(err) => {
-                log::warn!(
-                    target: "mlx5",
-                    "QUERY_PAGES(init) failed before INIT_HCA: {:?}",
-                    err
-                );
-            }
+        // Query init working pages after SET_HCA_CAP and before INIT_HCA, even
+        // for a zero successful request. A failed query stops startup.
+        let (func_id, requested_pages) =
+            self.query_required_pages(crate::cmd::hca::QUERY_PAGES_OP_MOD_INIT_PAGES)?;
+        if func_id != 0 {
+            self.fw_function_id = func_id;
         }
+        self.satisfy_fw_page_request(func_id, requested_pages)?;
 
         crate::boot_trace("[MLX5_BOOT] init_hca start\n");
         self.init_hca()?;

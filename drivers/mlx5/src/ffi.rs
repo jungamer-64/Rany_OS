@@ -353,7 +353,6 @@ struct Mlx5DmaResources {
     cmdq: DmaSlot,
     cmd_in_mbox: DmaSlot,
     cmd_out_mbox: DmaSlot,
-    fw_pages: Vec<DmaSlot>,
     eqs: Vec<DmaSlot>,
     tx_cqs: Vec<DmaSlot>,
     tx_cq_dbs: Vec<DmaSlot>,
@@ -370,11 +369,6 @@ struct Mlx5DmaResources {
 impl Mlx5DmaResources {
     fn allocate(plan: &Mlx5BootstrapPlan, pci_locator: PackedPciLocation) -> Result<Self, i32> {
         let profile = plan.queue_profile();
-
-        let mut fw_pages = Vec::with_capacity(plan.fw_boot_page_count());
-        for _ in 0..plan.fw_boot_page_count() {
-            fw_pages.push(DmaSlot::alloc(plan.fw_page_size(), pci_locator, "fw_page")?);
-        }
 
         let mut eqs = Vec::with_capacity(profile.eq_count);
         let mut tx_cqs = Vec::with_capacity(profile.tx_queue_count);
@@ -422,7 +416,6 @@ impl Mlx5DmaResources {
             cmdq: DmaSlot::alloc(plan.command_queue_size(), pci_locator, "cmdq")?,
             cmd_in_mbox: DmaSlot::alloc(plan.command_mailbox_size(), pci_locator, "cmd_in_mbox")?,
             cmd_out_mbox: DmaSlot::alloc(plan.command_mailbox_size(), pci_locator, "cmd_out_mbox")?,
-            fw_pages,
             eqs,
             tx_cqs,
             tx_cq_dbs,
@@ -442,7 +435,6 @@ impl Mlx5DmaResources {
             cmdq: self.cmdq.as_region(),
             cmd_in_mbox: self.cmd_in_mbox.as_region(),
             cmd_out_mbox: self.cmd_out_mbox.as_region(),
-            fw_pages: self.fw_pages.iter().map(DmaSlot::as_region).collect(),
             eqs: self.eqs.iter().map(DmaSlot::as_region).collect(),
             tx_cqs: self
                 .tx_cqs
@@ -495,7 +487,6 @@ impl Mlx5DmaResources {
 
 impl Drop for Mlx5DmaResources {
     fn drop(&mut self) {
-        self.fw_pages.clear();
         self.rmp_dbs.clear();
         self.rmps.clear();
         self.rq_dbs.clear();
@@ -523,6 +514,7 @@ const MLX5_DMA_MIN_IOVA: u64 = 0x100000;
 const MLX5_DMA_LOW_IOVA_MAX_RETRIES: u32 = 64;
 
 struct Mlx5StandaloneState {
+    lifecycle: Mlx5Lifecycle,
     device: Mlx5Device,
     dma: Mlx5DmaResources,
     mmio: AbiMmioHandle,
@@ -539,7 +531,22 @@ struct Mlx5StandaloneState {
     rx_slots: Vec<Vec<Option<AbiRxLeaseGuard>>>,
 }
 
-static MLX5_STANDALONE_STATE: Mutex<Option<Mlx5StandaloneState>> = Mutex::new(None);
+enum Mlx5Lifecycle {
+    Running,
+    StartupFailed(Mlx5Error),
+    DeviceStopped,
+    MmioUnmapUnknown(i32),
+}
+
+// The finalizing future owns the resource state outside this lock. The slot
+// retains its claim so another probe cannot reacquire the same function.
+enum Mlx5Slot {
+    Vacant,
+    Live(Mlx5StandaloneState),
+    Finalizing,
+}
+
+static MLX5_STANDALONE_STATE: Mutex<Mlx5Slot> = Mutex::new(Mlx5Slot::Vacant);
 
 fn fallback_mac() -> [u8; 6] {
     [0x02, 0x00, 0x5E, 0x00, 0x53, 0x01]
@@ -768,24 +775,47 @@ fn poll_device_locked(state: &mut Mlx5StandaloneState) {
     }
 }
 
-fn destroy_state(mut state: Mlx5StandaloneState) {
-    unsafe {
-        if let Err(err) = state.device.teardown_full() {
-            log::warn!(target: "mlx5", "Teardown error: {:?}", err);
+/// Failure retains the device, page capabilities, DMA resources and mapping.
+/// An uncertain unmap is terminal for ordinary retry: no further register I/O
+/// may use that address until the framework reconciles the mapping outcome.
+#[expect(
+    clippy::result_large_err,
+    reason = "failed teardown returns the inline resource owner without allocating after hardware effects"
+)]
+fn destroy_state(
+    mut state: Mlx5StandaloneState,
+) -> Result<(), (kernel_api::error::KapiError, Mlx5StandaloneState)> {
+    match state.lifecycle {
+        Mlx5Lifecycle::MmioUnmapUnknown(status) => {
+            return Err((kernel_api::error::KapiError::Internal(status), state));
         }
+        Mlx5Lifecycle::Running | Mlx5Lifecycle::StartupFailed(_) => {
+            // SAFETY: the retained state owns the startup resources and mapping;
+            // registration/runtime admission was closed before reaching here.
+            if let Err(cause) = unsafe { state.device.teardown_full() } {
+                log::warn!(target: "mlx5", "Teardown retained resources: {:?}", cause);
+                return Err((map_driver_error(cause), state));
+            }
+            state.lifecycle = Mlx5Lifecycle::DeviceStopped;
+        }
+        Mlx5Lifecycle::DeviceStopped => {}
     }
-    let _ = (kernel_api().unmap_mmio)(&state.mmio);
-    let _ = state.registration_handle.take();
-    let _ = state.runtime.take();
-    drop(state.dma);
+    let status = (kernel_api().unmap_mmio)(&state.mmio);
+    if status != 0 {
+        state.lifecycle = Mlx5Lifecycle::MmioUnmapUnknown(status);
+        return Err((kernel_api::error::KapiError::Internal(status), state));
+    }
+    Ok(())
 }
 
 async fn mlx5_poll_kicker(generation: u64) {
     loop {
         let should_continue = {
             let guard = MLX5_STANDALONE_STATE.lock();
-            match guard.as_ref() {
-                Some(state) if state.poll_generation == generation && state.runtime.is_some() => {
+            match &*guard {
+                Mlx5Slot::Live(state)
+                    if state.poll_generation == generation && state.runtime.is_some() =>
+                {
                     schedule_runtime_poll_locked(state);
                     true
                 }
@@ -808,9 +838,12 @@ extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime)
 
     let generation = {
         let mut guard = MLX5_STANDALONE_STATE.lock();
-        let Some(state) = guard.as_mut() else {
+        let Mlx5Slot::Live(state) = &mut *guard else {
             return AbiError::NotInitialized as i32;
         };
+        if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
+            return AbiError::IoError as i32;
+        }
         state.runtime = Some(unsafe { *runtime });
         if refill_rx_ring(state).is_err() {
             state.runtime = None;
@@ -828,7 +861,7 @@ extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime)
         Ok(_) => AbiError::Success as i32,
         Err(_) => {
             let mut guard = MLX5_STANDALONE_STATE.lock();
-            if let Some(state) = guard.as_mut() {
+            if let Mlx5Slot::Live(state) = &mut *guard {
                 if state.poll_generation == generation {
                     state.runtime = None;
                     state.poll_generation = state.poll_generation.wrapping_add(1);
@@ -856,9 +889,12 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         return AbiError::InvalidParam as i32;
     };
     let mut guard = MLX5_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_mut() else {
+    let Mlx5Slot::Live(state) = &mut *guard else {
         return AbiError::NotInitialized as i32;
     };
+    if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
+        return AbiError::IoError as i32;
+    }
     if !state.device.is_active() {
         return AbiError::NotInitialized as i32;
     }
@@ -945,9 +981,12 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
 
 extern "C" fn mlx5_netdev_poll(_opaque: u64, _if_id: u16) -> i32 {
     let mut guard = MLX5_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_mut() else {
+    let Mlx5Slot::Live(state) = &mut *guard else {
         return AbiError::NotInitialized as i32;
     };
+    if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
+        return AbiError::IoError as i32;
+    }
     poll_device_locked(state);
     AbiError::Success as i32
 }
@@ -966,7 +1005,7 @@ extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 
     }
 
     let guard = MLX5_STANDALONE_STATE.lock();
-    let Some(state) = guard.as_ref() else {
+    let Mlx5Slot::Live(state) = &*guard else {
         return AbiError::NotInitialized as i32;
     };
 
@@ -985,7 +1024,7 @@ extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 
 
 extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
     let mut guard = MLX5_STANDALONE_STATE.lock();
-    if let Some(state) = guard.as_mut() {
+    if let Mlx5Slot::Live(state) = &mut *guard {
         if state.device.is_active() && unsafe { state.device.disable_hca_hw() }.is_err() {
             return AbiError::IoError as i32;
         }
@@ -1075,7 +1114,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
         let device_id = ctx.device_id;
         let pci_locator = ctx.pci_location();
         Box::pin(async move {
-            if MLX5_STANDALONE_STATE.lock().is_some() {
+            if !matches!(*MLX5_STANDALONE_STATE.lock(), Mlx5Slot::Vacant) {
                 return Err(kernel_api::error::KapiError::AlreadyExists);
             }
 
@@ -1121,7 +1160,25 @@ impl AsyncDriver for Mlx5AsyncDriver {
 
             if let Err(err) = unsafe { device.bootstrap(&config, &allocated) } {
                 log::error!(target: "mlx5", "Initialization failed: {:?}", err);
-                let _ = (kernel_api().unmap_mmio)(&mmio);
+                // The failed/uncertain start keeps the function claimed and
+                // retains firmware pages, DMA resources and the live mapping.
+                *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(Mlx5StandaloneState {
+                    lifecycle: Mlx5Lifecycle::StartupFailed(err),
+                    device,
+                    dma,
+                    mmio,
+                    registration_handle: None,
+                    runtime: None,
+                    poll_generation: 0,
+                    next_sq: AtomicU32::new(0),
+                    last_link_up: false,
+                    tx_packets: 0,
+                    rx_packets: 0,
+                    tx_errors: 0,
+                    rx_errors: 0,
+                    tx_slots: Vec::new(),
+                    rx_slots: Vec::new(),
+                });
                 return Err(map_driver_error(err));
             }
 
@@ -1137,6 +1194,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 .map(|port| port.is_link_up())
                 .unwrap_or(false);
             let state = Mlx5StandaloneState {
+                lifecycle: Mlx5Lifecycle::Running,
                 device,
                 dma,
                 mmio,
@@ -1152,7 +1210,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
                 tx_slots,
                 rx_slots,
             };
-            *MLX5_STANDALONE_STATE.lock() = Some(state);
+            *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(state);
             Ok(())
         })
     }
@@ -1161,11 +1219,17 @@ impl AsyncDriver for Mlx5AsyncDriver {
         Box::pin(async move {
             let registration = {
                 let guard = MLX5_STANDALONE_STATE.lock();
-                let Some(state) = guard.as_ref() else {
+                let Mlx5Slot::Live(state) = &*guard else {
                     return Err(kernel_api::error::KapiError::NotFound);
                 };
                 if state.registration_handle.is_some() {
                     return Ok(());
+                }
+                if let Mlx5Lifecycle::StartupFailed(cause) = state.lifecycle {
+                    return Err(map_driver_error(cause));
+                }
+                if !matches!(state.lifecycle, Mlx5Lifecycle::Running) {
+                    return Err(kernel_api::error::KapiError::IoError);
                 }
                 netdev_registration(state)
             };
@@ -1173,7 +1237,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let handle =
                 kernel_api::service::kernel::instance().register_netdev_port(&registration)?;
             let mut guard = MLX5_STANDALONE_STATE.lock();
-            let Some(state) = guard.as_mut() else {
+            let Mlx5Slot::Live(state) = &mut *guard else {
                 let _ = kernel_api::service::kernel::instance().unregister_netdev_port(handle);
                 return Err(kernel_api::error::KapiError::NotFound);
             };
@@ -1185,19 +1249,40 @@ impl AsyncDriver for Mlx5AsyncDriver {
     fn stop(&mut self) -> DriverFuture<'_, kernel_api::error::KapiResult<()>> {
         Box::pin(async move {
             let handle = {
-                let mut guard = MLX5_STANDALONE_STATE.lock();
-                guard
-                    .as_mut()
-                    .and_then(|state| state.registration_handle.take())
+                let guard = MLX5_STANDALONE_STATE.lock();
+                match &*guard {
+                    Mlx5Slot::Live(state) => state.registration_handle,
+                    _ => None,
+                }
             };
             if let Some(handle) = handle {
-                let _ = kernel_api::service::kernel::instance().unregister_netdev_port(handle);
+                kernel_api::service::kernel::instance().unregister_netdev_port(handle)?;
             }
-            let state = MLX5_STANDALONE_STATE.lock().take();
-            if let Some(state) = state {
-                destroy_state(state);
+            let mut state = {
+                let mut guard = MLX5_STANDALONE_STATE.lock();
+                match core::mem::replace(&mut *guard, Mlx5Slot::Finalizing) {
+                    Mlx5Slot::Live(state) => state,
+                    Mlx5Slot::Vacant => {
+                        *guard = Mlx5Slot::Vacant;
+                        return Ok(());
+                    }
+                    Mlx5Slot::Finalizing => {
+                        return Err(kernel_api::error::KapiError::AlreadyExists);
+                    }
+                }
+            };
+            state.registration_handle = None;
+            state.runtime = None;
+            match destroy_state(state) {
+                Ok(()) => {
+                    *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Vacant;
+                    Ok(())
+                }
+                Err((cause, state)) => {
+                    *MLX5_STANDALONE_STATE.lock() = Mlx5Slot::Live(state);
+                    Err(cause)
+                }
             }
-            Ok(())
         })
     }
 
@@ -1208,6 +1293,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
 
 fn map_driver_error(err: Mlx5Error) -> kernel_api::error::KapiError {
     match err {
+        Mlx5Error::PageAllocation(cause) => cause,
         Mlx5Error::NotSupported => kernel_api::error::KapiError::NotSupported,
         Mlx5Error::NoResources | Mlx5Error::DmaAllocFailed => {
             kernel_api::error::KapiError::OutOfMemory
@@ -1241,7 +1327,6 @@ mod tests {
             cmdq: slot(0x1000, 0x2000, 0x3000, 0x100),
             cmd_in_mbox: slot(0x4000, 0x5000, 0x6000, 0x200),
             cmd_out_mbox: slot(0x7000, 0x8000, 0x9000, 0x200),
-            fw_pages: vec![slot(0xa000, 0xb000, 0xc000, 0x1000)],
             eqs: vec![slot(0xd000, 0xe000, 0xf000, 0x100)],
             tx_cqs: vec![slot(0x11_000, 0x12_000, 0x13_000, 0x100)],
             tx_cq_dbs: vec![slot(0x14_000, 0x15_000, 0x16_000, 0x1000)],
@@ -1270,22 +1355,6 @@ mod tests {
                 entries: Mlx5DmaRegion::new(0x2b_000, 0x2a_000, 0x200),
                 doorbell: Mlx5DmaRegion::new(0x2e_000, 0x2d_000, 0x1000),
             }
-        );
-    }
-
-    #[test]
-    fn fw_pages_use_iova_addresses() {
-        let fw_pages = [
-            slot(0x1000, 0x2000, 0, 0x1000),
-            slot(0x3000, 0x4000, 0, 0x1000),
-        ];
-
-        assert_eq!(
-            fw_pages
-                .iter()
-                .map(DmaSlot::device_address)
-                .collect::<Vec<_>>(),
-            vec![0x2000, 0x4000]
         );
     }
 }

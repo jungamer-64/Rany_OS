@@ -213,6 +213,13 @@ pub trait CommandTransport {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommandSlotState {
+    Idle,
+    Pending { token: u8 },
+    OutcomeUnknown { token: u8 },
+}
+
 /// CMDQベースのコマンドインタフェース
 pub struct CmdQueueTransport {
     cmdq_phys: u64,
@@ -221,6 +228,7 @@ pub struct CmdQueueTransport {
     in_mbox_virt: u64,
     out_mbox_virt: u64,
     next_token: u8,
+    slot_state: CommandSlotState,
     uid: u16,
     in_snapshot: [u8; MLX5_CMD_MBOX_SIZE],
     in_snapshot_len: usize,
@@ -309,7 +317,15 @@ impl CmdQueueTransport {
     /// # Errors
     ///
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub fn new(
+    ///
+    /// # Safety
+    /// All supplied ranges must be distinct, live device-scoped DMA mappings,
+    /// retained throughout this transport's lifetime and uncertainty/recovery.
+    /// CMDQ contains at least `(1 << log_cmdq_size) * 64` aligned bytes. Both
+    /// mailboxes contain MLX5_CMD_MBOX_BACKING_SIZE bytes, aligned for CmdMailbox
+    /// and CmdProtBlock. No other CPU/device owner may access these ranges while
+    /// initializing. BAR0 must be a live mapping of the initialization aperture.
+    pub unsafe fn new(
         bar0_base: u64,
         cmdq_phys: u64,
         cmdq_virt: u64,
@@ -325,6 +341,8 @@ impl CmdQueueTransport {
         let cmdq_bytes = cmdq_entries
             .checked_mul(cmd_entry::ENTRY_SIZE)
             .ok_or(Mlx5Error::NotSupported)?;
+        // SAFETY: the caller retains distinct, exclusively writable mappings of
+        // the documented extents; firmware has not acquired these fresh ranges.
         unsafe {
             // Fresh DMA buffers may retain stale owner bits from prior use. Clear the
             // command queue and mailboxes before exposing them to the device.
@@ -339,11 +357,16 @@ impl CmdQueueTransport {
             in_mbox_virt,
             out_mbox_virt,
             next_token: 1,
+            slot_state: CommandSlotState::Idle,
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
             out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
         })
+    }
+
+    pub(crate) fn is_idle(&self) -> bool {
+        self.slot_state == CommandSlotState::Idle
     }
 
     pub fn set_uid(&mut self, uid: u16) {
@@ -562,6 +585,9 @@ impl CmdQueueTransport {
 
 impl CommandTransport for CmdQueueTransport {
     unsafe fn snapshot_input(&mut self, in_len: u32) -> Mlx5Result<()> {
+        if !self.is_idle() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
         let len = (in_len as usize).min(MLX5_CMD_MBOX_SIZE);
         if len == 0 {
             self.in_snapshot_len = 0;
@@ -577,6 +603,9 @@ impl CommandTransport for CmdQueueTransport {
     }
 
     unsafe fn restore_input(&mut self) -> Mlx5Result<()> {
+        if !self.is_idle() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
         if self.in_snapshot_len == 0 {
             return Ok(());
         }
@@ -588,6 +617,7 @@ impl CommandTransport for CmdQueueTransport {
         Ok(())
     }
 
+    #[deny(unsafe_op_in_unsafe_fn)]
     unsafe fn execute(
         &mut self,
         opcode: CmdOpcode,
@@ -596,6 +626,9 @@ impl CommandTransport for CmdQueueTransport {
         out_mbox_phys: u64,
         out_len: u32,
     ) -> Mlx5Result<()> {
+        if !self.is_idle() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
         crate::boot_trace_cmd(opcode, "exec_enter", self.uid);
         let token = self.next_token;
         self.next_token = if self.next_token == 0xFF {
@@ -604,62 +637,24 @@ impl CommandTransport for CmdQueueTransport {
             self.next_token + 1
         };
 
-        let in_mbox = &mut *(self.in_mbox_virt as *mut CmdMailbox);
+        let entry_ptr = self.cmdq_virt as *mut CmdEntry;
+        // SAFETY: the constructor-established CMDQ span contains this byte.
+        let owner_ptr = unsafe { (entry_ptr as *const u8).add(cmd_entry::STATUS_OWN) };
+        // SAFETY: constructor establishes the aligned, retained CMDQ range;
+        // an integer-only volatile read creates no aliasing Rust reference.
+        if unsafe { core::ptr::read_volatile(owner_ptr) } & 1 != 0 {
+            self.slot_state = CommandSlotState::OutcomeUnknown { token };
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        // SAFETY: slot is idle; startup retains the exclusively borrowed mailbox.
+        let in_mbox = unsafe { &mut *(self.in_mbox_virt as *mut CmdMailbox) };
         self.write_transport_header(opcode, in_mbox);
 
-        let in_inline = self.prepare_in_block(token, in_len as usize, in_mbox_phys)?;
-        self.prepare_out_block(token, out_len as usize, out_mbox_phys)?;
-        let entry_ptr = self.cmdq_virt as *mut CmdEntry;
-        let entry = &mut *entry_ptr;
-
-        crate::boot_trace_cmd(opcode, "wait_slot", self.uid);
-        let queue_wait_start = kernel_api::service::kernel::instance().current_tick();
-        let mut queue_wait_last_tick = queue_wait_start;
-        let mut queue_wait_stalled_tick_spins = 0u64;
-        let mut queue_wait_spins = 0u64;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while entry.is_owned_by_hw() {
-            queue_wait_spins = queue_wait_spins.wrapping_add(1);
-            if queue_wait_spins == 10_000_000 {
-                crate::boot_trace_cmd(opcode, "slot_still_busy", self.uid);
-            }
-            let now_tick = kernel_api::service::kernel::instance().current_tick();
-            if now_tick.saturating_sub(queue_wait_start) > CMD_WAIT_TIMEOUT_MS {
-                crate::boot_trace_cmd(opcode, "slot_timeout", self.uid);
-                log::error!(
-                    target: "mlx5",
-                    "Command queue busy before submit: opcode={:?} token={} uid={:#x}",
-                    opcode,
-                    token,
-                    self.uid
-                );
-                return Err(Mlx5Error::CommandTimeout);
-            }
-
-            if now_tick == queue_wait_last_tick {
-                queue_wait_stalled_tick_spins = queue_wait_stalled_tick_spins.saturating_add(1);
-                if queue_wait_stalled_tick_spins >= CMD_WAIT_MAX_STALLED_TICK_SPINS {
-                    crate::boot_trace_cmd(opcode, "slot_tick_stall", self.uid);
-                    log::error!(
-                        target: "mlx5",
-                        "Command queue wait aborted due to stalled tick before submit: opcode={:?} token={} uid={:#x} stalled_spins={}",
-                        opcode,
-                        token,
-                        self.uid,
-                        queue_wait_stalled_tick_spins
-                    );
-                    return Err(Mlx5Error::CommandTimeout);
-                }
-            } else {
-                queue_wait_last_tick = now_tick;
-                queue_wait_stalled_tick_spins = 0;
-            }
-
-            core::hint::spin_loop();
-        }
-        crate::boot_trace_cmd(opcode, "slot_ready", self.uid);
-
-        *entry = CmdEntry::zeroed();
+        // SAFETY: idle slot and the retained input backing cover the checked length.
+        let in_inline = unsafe { self.prepare_in_block(token, in_len as usize, in_mbox_phys) }?;
+        // SAFETY: idle slot and the retained output backing cover the checked length.
+        unsafe { self.prepare_out_block(token, out_len as usize, out_mbox_phys) }?;
+        let mut entry = CmdEntry::zeroed();
         if in_len as usize > MLX5_CMD_INLINE_SIZE {
             entry.set_input_mailbox(in_mbox_phys);
         }
@@ -669,8 +664,13 @@ impl CommandTransport for CmdQueueTransport {
         }
         entry.set_output_length(out_len);
         entry.set_input_inline(&in_inline);
-        fence(Ordering::Release);
         entry.submit(token);
+        // Publish the integer representation without holding a Rust reference
+        // to descriptor RAM while firmware may update it.
+        // SAFETY: startup retains aligned CMDQ RAM, and firmware has not been notified.
+        unsafe { core::ptr::write_volatile(entry_ptr, entry) };
+        fence(Ordering::Release);
+        self.slot_state = CommandSlotState::Pending { token };
 
         crate::boot_trace_cmd(opcode, "doorbell", self.uid);
         let doorbell = self.bar0_base as usize + crate::regs::init_seg::CMDQ_DOORBELL;
@@ -684,8 +684,13 @@ impl CommandTransport for CmdQueueTransport {
         let mut hw_wait_last_tick = start_ms;
         let mut hw_wait_stalled_tick_spins = 0u64;
         let mut hw_wait_spins = 0u64;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while entry.is_owned_by_hw() {
+        // LOOP_PROOF: mode=event; reason=Hardware owner clearing exits normally, elapsed-time or a finite stalled-tick budget aborts while retaining unknown-outcome resources;
+        loop {
+            // SAFETY: CMDQ RAM remains pinned through Pending/OutcomeUnknown;
+            // integer volatile access creates no reference to device-mutated RAM.
+            if unsafe { core::ptr::read_volatile(owner_ptr) } & 1 == 0 {
+                break;
+            }
             hw_wait_spins = hw_wait_spins.wrapping_add(1);
             if hw_wait_spins == 10_000_000 {
                 crate::boot_trace_cmd(opcode, "hw_still_owned", self.uid);
@@ -694,6 +699,7 @@ impl CommandTransport for CmdQueueTransport {
             if now_tick.saturating_sub(start_ms) > CMD_WAIT_TIMEOUT_MS {
                 crate::boot_trace_cmd(opcode, "hw_timeout", self.uid);
                 log::error!(target: "mlx5", "Command timeout: opcode={:?}", opcode);
+                self.slot_state = CommandSlotState::OutcomeUnknown { token };
                 return Err(Mlx5Error::CommandTimeout);
             }
 
@@ -709,6 +715,7 @@ impl CommandTransport for CmdQueueTransport {
                         self.uid,
                         hw_wait_stalled_tick_spins
                     );
+                    self.slot_state = CommandSlotState::OutcomeUnknown { token };
                     return Err(Mlx5Error::CommandTimeout);
                 }
             } else {
@@ -720,6 +727,14 @@ impl CommandTransport for CmdQueueTransport {
         }
         crate::boot_trace_cmd(opcode, "hw_done", self.uid);
         fence(Ordering::Acquire);
+        // SAFETY: the owner byte is clear and device ordering has been acquired;
+        // CmdEntry contains only bytes, so every hardware bit pattern is valid.
+        let entry = unsafe { core::ptr::read_volatile(entry_ptr) };
+        if entry.raw[cmd_entry::TOKEN] != token || entry.is_owned_by_hw() {
+            self.slot_state = CommandSlotState::OutcomeUnknown { token };
+            return Err(Mlx5Error::InvalidResponse);
+        }
+        self.slot_state = CommandSlotState::Idle;
 
         let out_inline = entry.output_inline();
         let delivery_status_raw = entry.delivery_status_raw();
@@ -739,7 +754,9 @@ impl CommandTransport for CmdQueueTransport {
             return Err(Mlx5Error::CommandFailed(delivery_status_raw));
         }
 
-        self.reconstruct_output_mailbox(&out_inline, out_len as usize);
+        // SAFETY: a current ordered completion relinquished the output backing;
+        // reconstruction writes only within its startup-validated mailbox extent.
+        unsafe { self.reconstruct_output_mailbox(&out_inline, out_len as usize) };
 
         let fw_status = out_inline[0];
         if fw_status != 0 {
@@ -784,6 +801,7 @@ mod tests {
             in_mbox_virt: 0,
             out_mbox_virt: 0,
             next_token: 1,
+            slot_state: CommandSlotState::Idle,
             uid: 0x1234,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
@@ -849,6 +867,7 @@ mod tests {
             in_mbox_virt: in_backing.as_mut_ptr() as u64,
             out_mbox_virt: 0,
             next_token: 1,
+            slot_state: CommandSlotState::Idle,
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
@@ -884,6 +903,7 @@ mod tests {
             in_mbox_virt: in_backing.as_mut_ptr() as u64,
             out_mbox_virt: 0,
             next_token: 1,
+            slot_state: CommandSlotState::Idle,
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
@@ -926,6 +946,7 @@ mod tests {
             in_mbox_virt: 0,
             out_mbox_virt: out_backing.as_mut_ptr() as u64,
             next_token: 1,
+            slot_state: CommandSlotState::Idle,
             uid: 0,
             in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
             in_snapshot_len: 0,
