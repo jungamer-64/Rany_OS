@@ -330,75 +330,6 @@ pub(crate) fn setup_gop_framebuffer(boot_info: &mut boot_proto::ExoBootInfo) {
     configure_pixel_format(boot_info, mode.pixel_format(), stride);
 }
 
-fn copy_bytes_to_loader_data(bytes: &[u8], hhdm_start: u64) -> u64 {
-    if bytes.is_empty() {
-        return 0;
-    }
-
-    let num_pages = bytes.len().div_ceil(4096);
-    let phys = page_table::UefiMapper::alloc_zeroed_pages(num_pages, MemoryType::LOADER_DATA)
-        .expect("Failed to alloc boot artifact bytes");
-    unsafe {
-        core::ptr::copy_nonoverlapping(bytes.as_ptr(), phys as *mut u8, bytes.len());
-    }
-    hhdm_start + phys
-}
-
-/// boot artifact データをページに割り当て、boot_info に設定
-pub(crate) fn copy_boot_artifacts_to_boot_info(
-    boot_info: &mut boot_proto::ExoBootInfo,
-    boot_artifacts: &[BootArtifactFile],
-    hhdm_start: u64,
-) {
-    if boot_artifacts.is_empty() {
-        boot_info.boot_artifacts = boot_proto::BootArtifactTable::default();
-        return;
-    }
-
-    let entry_size = core::mem::size_of::<boot_proto::BootArtifactEntry>();
-    let total_bytes = boot_artifacts
-        .len()
-        .checked_mul(entry_size)
-        .expect("boot artifact table overflow");
-    let entry_pages = total_bytes.div_ceil(4096);
-    let entries_phys =
-        page_table::UefiMapper::alloc_zeroed_pages(entry_pages, MemoryType::LOADER_DATA)
-            .expect("Failed to alloc boot artifact table");
-    let entries = unsafe {
-        core::slice::from_raw_parts_mut(
-            entries_phys as *mut boot_proto::BootArtifactEntry,
-            boot_artifacts.len(),
-        )
-    };
-
-    for (slot, artifact) in entries.iter_mut().zip(boot_artifacts.iter()) {
-        let path_ptr = copy_bytes_to_loader_data(artifact.path.as_bytes(), hhdm_start);
-        let data_ptr = copy_bytes_to_loader_data(&artifact.data, hhdm_start);
-        let path_span = boot_proto::BootHhdmSpan::new(path_ptr, artifact.path.len() as u64)
-            .expect("boot artifact path span invalid");
-        let data_span = if artifact.data.is_empty() {
-            None
-        } else {
-            Some(
-                boot_proto::BootHhdmSpan::new(data_ptr, artifact.data.len() as u64)
-                    .expect("boot artifact data span invalid"),
-            )
-        };
-        *slot = boot_proto::BootArtifactEntry::new_hhdm(artifact.kind, path_span, data_span);
-    }
-
-    boot_info.boot_artifacts = boot_proto::BootArtifactTable::from_hhdm_addr(
-        hhdm_start + entries_phys,
-        boot_artifacts.len(),
-    )
-    .expect("boot artifact table span invalid");
-    info!(
-        "Boot artifacts mapped at HHDM 0x{:x}, count {}",
-        boot_info.boot_artifacts.entries_ptr,
-        boot_info.boot_artifacts.len()
-    );
-}
-
 /// カーネルコマンドラインをページに割り当て、boot_info に設定
 pub(crate) fn copy_cmdline_to_boot_info(
     boot_info: &mut boot_proto::ExoBootInfo,
@@ -736,25 +667,6 @@ fn build_usable_memory_regions(
     }
 
     Some(output_count)
-}
-
-fn boot_artifact_entries_from_phys(
-    boot_info: &boot_proto::ExoBootInfo,
-) -> &[boot_proto::BootArtifactEntry] {
-    let Some((entries_phys, _)) = boot_info
-        .boot_artifacts
-        .entries_span()
-        .and_then(|span| span.phys_range(boot_info.phys_mem_offset))
-    else {
-        return &[];
-    };
-    let count = boot_info.boot_artifacts.len();
-    if count == 0 {
-        return &[];
-    }
-    unsafe {
-        core::slice::from_raw_parts(entries_phys as *const boot_proto::BootArtifactEntry, count)
-    }
 }
 
 #[derive(Debug)]
