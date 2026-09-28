@@ -372,50 +372,6 @@ impl IovaAllocator {
     // Epoch / Quarantine Management
     // ========================================================================
 
-    /// Advance the global epoch (Start of IOTLB Invalidation)
-    ///
-    /// Call this *before* issuing IOTLB invalidation commands.
-    /// Returns the epoch value that was active BEFORE advancing. Use this value
-    /// with `complete_epoch` to safely reclaim only those entries that were
-    /// quarantined prior to this invalidation.
-    pub fn advance_epoch(&self) -> u32 {
-        self.current_epoch.fetch_add(1, Ordering::AcqRel)
-    }
-
-    /// Complete an epoch (End of IOTLB Invalidation)
-    ///
-    /// Call this *after* generic IOTLB invalidation completion is confirmed.
-    /// This allows quarantined items stamped with an epoch <= `epoch` to be freed.
-    pub fn complete_epoch(&self, epoch: u32) {
-        // Monotonic update: only forward (with wrap-around support)
-        // Using compare_exchange loop because fetch_max uses unsigned comparison
-        // which breaks when the 32-bit epoch wraps around.
-        let mut current = self.completed_epoch.load(Ordering::Acquire);
-        // LOOP_PROOF: mode=event; reason=Epoch CAS loop exits when update is no longer needed or compare_exchange successfully publishes epoch.;
-        loop {
-            // Check if 'epoch' is ahead of 'current' in a wrap-around safe way
-            if (epoch.wrapping_sub(current) as i32) <= 0 {
-                break;
-            }
-            match self.completed_epoch.compare_exchange_weak(
-                current,
-                epoch,
-                Ordering::Release,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(new) => current = new,
-            }
-        }
-
-        let completed = self.completed_epoch.load(Ordering::Acquire);
-        let quarantines = self.quarantines.lock().clone();
-        for quarantine in quarantines.iter() {
-            self.drain_quarantine(quarantine, completed);
-        }
-        self.drain_fallback_for_epoch(completed);
-    }
-
     /// Drain quarantine ring for a specific CPU
     ///
     /// Reclaims pages that have been safe-guarded long enough.
