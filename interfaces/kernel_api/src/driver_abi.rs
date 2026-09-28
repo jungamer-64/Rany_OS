@@ -263,7 +263,7 @@ pub struct DriverContext {
     pub device_id: u16,
     /// PCI Class code (if applicable)
     pub class_code: u32,
-    /// Driver-specific data pointer (used to store Box<Driver> raw pointer)
+    /// Driver-specific data pointer (used to store `Box<Driver>` raw pointer)
     pub driver_data: u64,
     /// Reserved for future use
     pub reserved: [u64; 2],

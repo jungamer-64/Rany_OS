@@ -28,6 +28,7 @@ pub mod driver;
 pub mod error;
 
 pub mod ipc;
+pub mod mmio;
 pub mod msix;
 pub mod provider;
 
@@ -180,6 +181,7 @@ pub mod __type_id {
         let mut entry = [0u8; ENTRY_SIZE];
         let bytes = dep.name.as_bytes();
         let mut i = 0usize;
+        // LOOP_PROOF: mode=bounded; reason=Index increases once per name byte and cannot exceed the fixed name field or input length.;
         while i < bytes.len() && i < ENTRY_NAME_LEN {
             entry[i] = bytes[i];
             i += 1;
@@ -187,6 +189,7 @@ pub mod __type_id {
 
         let hash = dep.hash.to_le_bytes();
         let mut j = 0usize;
+        // LOOP_PROOF: mode=bounded; reason=Index increases once per hash byte and is bounded by the eight-byte encoded hash.;
         while j < hash.len() {
             entry[64 + j] = hash[j];
             j += 1;
@@ -207,6 +210,7 @@ pub mod __type_id {
     pub const fn build_section<const N: usize>(deps: [DependencySpec; N]) -> TypeIdSection<N> {
         let mut entries = [[0u8; ENTRY_SIZE]; N];
         let mut i = 0usize;
+        // LOOP_PROOF: mode=bounded; reason=Index increases once per dependency and is bounded by the immutable const-generic array extent.;
         while i < N {
             entries[i] = encode_entry(deps[i]);
             i += 1;

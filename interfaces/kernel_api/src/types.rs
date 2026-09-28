@@ -14,6 +14,8 @@ use core::mem::{ManuallyDrop, MaybeUninit, align_of, size_of};
 use core::num::NonZeroUsize;
 use core::ptr;
 
+use crate::resource::memory::PhysicalAddress;
+
 /// Task handle - opaque reference to a spawned task
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TaskHandle {

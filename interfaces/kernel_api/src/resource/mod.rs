@@ -3,6 +3,7 @@
 // ============================================================================
 
 pub mod fs;
+pub mod memory;
 pub mod net;
 pub mod storage;
 pub mod system;
