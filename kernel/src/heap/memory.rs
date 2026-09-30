@@ -14,16 +14,22 @@ pub(crate) struct HeapMemory {
     layout: Layout,
 }
 
-// SAFETY: this unique owner has no dereference or reclamation API. Its globally
-// mapped RAM is retained for the kernel lifetime. Moving it transfers exclusive
-// allocation authority; the receiving allocator serializes metadata access.
 #[expect(
     unsafe_code,
     reason = "bootstrap RAM ownership is CPU-independent; allocator mutation is locked"
 )]
+// SAFETY: this unique owner has no public dereference or reclamation API. Its
+// globally mapped RAM is retained for the kernel lifetime. Moving it transfers
+// exclusive allocation authority; receiving allocators serialize metadata access.
 unsafe impl Send for HeapMemory {}
 
 impl HeapMemory {
+    // Only allocator boundaries inside this ownership namespace can project
+    // provenance. Numeric observations elsewhere do not grant a RAM view.
+    pub(super) fn base(&self) -> NonNull<u8> {
+        self.base
+    }
+
     /// # Safety
     /// The range is exclusively owned, writable, stable RAM for the kernel
     /// lifetime; no other allocator/device may access it. The mapping is retained

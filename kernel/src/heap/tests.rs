@@ -27,7 +27,7 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     let base = unsafe { alloc::alloc::alloc(slab.allocation()) };
     assert!(!base.is_null());
     let geometry = slab
-        .at(base.addr() as u64, 0, u64::MAX)
+        .at(base.expose_provenance() as u64, 0, u64::MAX)
         .expect("identity-mapped fixture");
     // SAFETY: fresh page-aligned exclusive RAM, identity mapped in this test.
     // No source reclaimer or alias survives; only these two owners may use it.

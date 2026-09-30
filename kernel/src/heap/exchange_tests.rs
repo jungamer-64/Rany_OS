@@ -8,7 +8,7 @@ fn owned_exchange(bytes: usize) -> crate::heap::HeapMemory {
     let base = unsafe { alloc::alloc::alloc(layout.allocation()) };
     assert!(!base.is_null());
     let geometry = layout
-        .at(base.addr() as u64, 0, u64::MAX)
+        .at(base.expose_provenance() as u64, 0, u64::MAX)
         .expect("identity-mapped fixture");
     // SAFETY: fresh exclusive RAM is stable for the test/kernel lifetime and
     // remains retained; identity mapping covers this exact allocation.
@@ -60,11 +60,8 @@ fn duplicate_admission_preserves_existing_allocations_and_returns_owner() {
     assert_eq!(retained.start(), incoming_start);
     // SAFETY: duplicate admission did not free or reinitialize the first heap;
     // the allocation stays exclusively owned and fully initialized above.
-    assert!(
-        unsafe { core::slice::from_raw_parts(ptr.as_ptr(), 64) }
-            .iter()
-            .all(|byte| *byte == 0x5a)
-    );
+    let payload = unsafe { core::slice::from_raw_parts(ptr.as_ptr(), 64) };
+    assert!(payload.iter().all(|byte| *byte == 0x5a));
     // SAFETY: same allocation and exact original Layout, no remaining borrow.
     unsafe {
         heap.deallocate(ptr, layout);

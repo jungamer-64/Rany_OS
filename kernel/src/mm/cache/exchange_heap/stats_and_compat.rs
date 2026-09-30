@@ -1,29 +1,20 @@
 use super::*;
 
-/// 拡張ヒープ統計情報
-#[derive(Debug, Clone, Copy)]
-pub struct ExtendedHeapStats {
-    pub allocated: usize,
-    pub free: usize,
-    pub alloc_count: u64,
-    pub dealloc_count: u64,
-    pub split_count: u64,
-    pub coalesce_count: u64,
-    /// 空きブロックが存在するサイズクラス（ビットマップ）
-    pub non_empty_classes: u32,
-}
+pub use crate::heap::ExtendedHeapStats;
 
 /// Exchange Heap: ドメイン間でゼロコピー通信するためのヒープ
 /// プライベートヒープとは別に管理される
 pub struct ExchangeHeap {
-    heap: PoisonLock<SegregatedFreeListHeap>,
+    heap: PoisonLock<ExchangeBlocks>,
+    caches: spin::Once<IrqMutex<ExchangeCacheSnapshot>>,
 }
 
 impl ExchangeHeap {
     /// 新しいExchange Heapを作成（未初期化）
     pub const fn new() -> Self {
         Self {
-            heap: PoisonLock::new(SegregatedFreeListHeap::empty()),
+            heap: PoisonLock::new(ExchangeBlocks::empty()),
+            caches: spin::Once::new(),
         }
     }
 
@@ -40,29 +31,52 @@ impl ExchangeHeap {
         }
     }
 
-    pub(super) fn try_per_cpu_cache_alloc(size_class: usize) -> Option<NonNull<u8>> {
+    fn per_cpu_cache(&self, cpu_id: crate::cpu::CpuId) -> Option<Arc<IrqMutex<ExchangeCache>>> {
+        let slot_count = crate::cpu::try_runtime()?.snapshot().slots().len();
+        let required_slots = slot_count.max(cpu_id.as_usize().checked_add(1)?);
+        let registry = self.caches.call_once(|| IrqMutex::new(Arc::from([])));
+
+        // LOOP_PROOF: mode=event; reason=Returns on an existing or newly published slot, and a contended publication observes a strictly newer immutable registry snapshot before retry.;
+        loop {
+            let current = registry.lock().clone();
+            if let Some(cache) = current.get(cpu_id.as_usize()) {
+                return Some(Arc::clone(cache));
+            }
+            let mut expanded = Vec::new();
+            expanded.try_reserve_exact(required_slots).ok()?;
+            expanded.extend(current.iter().cloned());
+            expanded.resize_with(required_slots, || {
+                Arc::new(IrqMutex::new(ExchangeCache::new()))
+            });
+            let expanded: ExchangeCacheSnapshot = Arc::from(expanded.into_boxed_slice());
+            let mut published = registry.lock();
+            if Arc::ptr_eq(&published, &current) {
+                *published = expanded;
+                return published.get(cpu_id.as_usize()).cloned();
+            }
+        }
+    }
+
+    fn try_per_cpu_cache_alloc(&self, class: CacheClass) -> Option<NonNull<u8>> {
         let cpu_id = crate::cpu::CurrentCpu::acquire().map(|current| current.id())?;
-        let local_cache = per_cpu_cache(cpu_id)?;
+        let local_cache = self.per_cpu_cache(cpu_id)?;
         {
             let mut cache = local_cache.lock();
-            if let Some((addr, _cached_size)) = cache.try_alloc(size_class) {
-                return NonNull::new(addr as *mut u8);
+            if let Some(block) = cache.take(class) {
+                return Some(block.into_pointer());
             }
-            cache.steal_attempts.fetch_add(1, Ordering::Relaxed);
         }
         let snapshot = crate::cpu::snapshot();
         for victim_id in snapshot.online() {
             if victim_id == cpu_id {
                 continue;
             }
-            let Some(victim) = per_cpu_cache(victim_id) else {
+            let Some(victim) = self.per_cpu_cache(victim_id) else {
                 continue;
             };
             if let Some(mut victim_cache) = victim.try_lock() {
-                if let Some((addr, _stolen_size)) = victim_cache.try_steal_one(size_class) {
-                    let local = local_cache.lock();
-                    local.steal_successes.fetch_add(1, Ordering::Relaxed);
-                    return NonNull::new(addr as *mut u8);
+                if let Some(block) = victim_cache.steal(class) {
+                    return Some(block.into_pointer());
                 }
             }
         }
@@ -71,19 +85,16 @@ impl ExchangeHeap {
 
     /// Exchange Heap上にメモリを割り当て
     pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
-        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
-        let size_class = SegregatedFreeListHeap::size_to_class(size);
-
-        // Fast path: try per-CPU cache first
-        if size_class < CACHED_SIZE_CLASSES {
-            if let Some(result) = Self::try_per_cpu_cache_alloc(size_class) {
+        let class = CacheClass::for_layout(layout);
+        if let Some(class) = class {
+            if let Some(result) = self.try_per_cpu_cache_alloc(class) {
                 return Some(result);
             }
         }
 
         // Slow path: global heap
         match self.heap.lock() {
-            Ok(mut guard) => guard.allocate(layout).ok(),
+            Ok(mut guard) => guard.allocate(class.map_or(layout, CacheClass::layout)),
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - allocation failed");
                 None
@@ -96,18 +107,20 @@ impl ExchangeHeap {
     /// # Safety
     /// - `ptr` は以前に `allocate` で取得したポインタである必要がある
     /// - `layout` は `allocate` 時と同じである必要がある
+    /// - this heap owns that allocation exclusively; no borrow or prior free remains
     pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
-        let size = layout.size().max(core::mem::size_of::<FreeBlock>());
-        let size_class = SegregatedFreeListHeap::size_to_class(size);
-        let addr = ptr.as_ptr() as usize;
-
-        // Fast path: try per-CPU cache first
-        if size_class < CACHED_SIZE_CLASSES {
+        let class = CacheClass::for_layout(layout);
+        let mut ptr = ptr;
+        if let Some(class) = class {
             if let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) {
-                if let Some(cache) = per_cpu_cache(cpu_id) {
-                    let mut cache = cache.lock();
-                    if cache.try_cache(addr, size, size_class) {
-                        return;
+                if let Some(cache) = self.per_cpu_cache(cpu_id) {
+                    // SAFETY: caller consumes this heap's exclusive allocation;
+                    // allocate used the same canonical Layout. Only this heap's
+                    // registry can publish/reuse the non-Clone entry.
+                    let block = unsafe { CachedAllocation::retain(ptr, class) };
+                    match cache.lock().insert(block) {
+                        Ok(()) => return,
+                        Err(block) => ptr = block.into_pointer(),
                     }
                 }
             }
@@ -116,7 +129,9 @@ impl ExchangeHeap {
         // Slow path: global heap
         // SAFETY: 呼び出し元がポインタとレイアウトの有効性を保証
         match self.heap.lock() {
-            Ok(mut guard) => unsafe { guard.deallocate(ptr, layout) },
+            Ok(mut guard) => unsafe {
+                guard.deallocate(ptr, class.map_or(layout, CacheClass::layout))
+            },
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - deallocate ignored");
             }
@@ -127,8 +142,8 @@ impl ExchangeHeap {
     pub fn stats(&self) -> HeapStats {
         match self.heap.lock() {
             Ok(guard) => HeapStats {
-                allocated: guard.used(),
-                free: guard.free(),
+                allocated: guard.stats().allocated,
+                free: guard.stats().free,
             },
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - returning zero stats");
@@ -143,7 +158,7 @@ impl ExchangeHeap {
     /// 拡張統計情報を取得（デバッグ/性能分析用）
     pub fn extended_stats(&self) -> Option<ExtendedHeapStats> {
         match self.heap.lock() {
-            Ok(guard) => Some(guard.extended_stats()),
+            Ok(guard) => Some(guard.stats()),
             Err(_) => {
                 log::error!("[MEM] Exchange Heap poisoned - returning None for extended stats");
                 None
