@@ -4,10 +4,11 @@
 //! - Image drawing (opaque/various formats)
 //! - SIMD packer performance (scalar/SSSE3/AVX2/NEON)
 
-use criterion::{Criterion, black_box, criterion_group, criterion_main};
+use criterion::{Criterion, criterion_group, criterion_main};
 use graphic_types::{Color, FramebufferInfo, PixelFormat};
 use rany_os::graphics::framebuffer::Framebuffer;
 use rany_os::graphics::image::Image;
+use std::hint::black_box;
 use std::time::Duration;
 
 // =============================================================================

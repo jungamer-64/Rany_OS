@@ -22,7 +22,7 @@ path = "src/lib.rs"
 [dependencies]
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
-spin = "0.10"
+spin = "0.12"
 log = "0.4"
 kernel_api = { path = "../../interfaces/kernel_api" }
 hid_driver = { path = "../hid" }

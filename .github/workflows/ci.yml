@@ -19,12 +19,16 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
+
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -46,7 +50,7 @@ jobs:
         fi
 
     - name: Cache cargo registry
-      uses: actions/cache@v4
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: |
           ~/.cargo/registry
@@ -75,7 +79,7 @@ jobs:
       run: cargo build -p rany_kernel --target x86_64-exorust.json --release -Z json-target-spec -Z build-std=core,compiler_builtins,alloc -Z build-std-features=compiler-builtins-mem
     
     - name: Upload artifacts
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: kernel-binary
         path: target/x86_64-exorust/debug/exorust_kernel
@@ -89,12 +93,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -119,12 +127,16 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
 
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -167,12 +179,16 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
+
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rustfmt, clippy, rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -225,12 +241,16 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
+
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src
 
     - name: Install build dependencies
@@ -249,7 +269,7 @@ jobs:
       continue-on-error: true  # no_std環境のdoc生成
     
     - name: Upload documentation
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: documentation
         path: target/x86_64-exorust/doc
@@ -263,7 +283,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
     - name: Count lines of code
       run: |
@@ -290,7 +310,7 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
     - name: Verify drivers don't depend on kernel
       run: |
@@ -340,12 +360,16 @@ jobs:
     runs-on: ubuntu-latest
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
+
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
     
     - name: Install cargo-audit
       run: cargo install cargo-audit
@@ -364,12 +388,16 @@ jobs:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     
     steps:
-    - uses: actions/checkout@v4
+    - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
     
+    - name: Read repository Rust configuration
+      id: rust-config
+      run: python3 scripts/export_ci_rust_config.py
+
     - name: Install Rust toolchain
-      uses: dtolnay/rust-toolchain@0f1b44df7e9cbb178d781a242338dfa5e243ad7f # nightly
+      uses: dtolnay/rust-toolchain@02cb101ec7c40f2c49e1d9714d64511d8e1b74de # master
       with:
-        toolchain: nightly-2026-08-23
+        toolchain: ${{ steps.rust-config.outputs.toolchain }}
         components: rust-src, llvm-tools-preview
 
     - name: Install build dependencies
@@ -395,7 +423,7 @@ jobs:
         tar -czvf exorust-${{ steps.version.outputs.version }}.tar.gz release/
     
     - name: Upload release artifact
-      uses: actions/upload-artifact@v4
+      uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
       with:
         name: exorust-release
         path: exorust-*.tar.gz

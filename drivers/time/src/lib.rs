@@ -506,7 +506,7 @@ impl TimeService for TimeManagement {
     fn adjust_wall_clock(&self, delta_ns: i64) {
         let _ =
             self.wall_clock_offset_ns
-                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
+                .try_update(Ordering::SeqCst, Ordering::SeqCst, |current| {
                     Some(current.saturating_add(delta_ns))
                 });
     }

@@ -1,5 +1,6 @@
-use criterion::{Criterion, black_box};
+use criterion::Criterion;
 use std::env;
+use std::hint::black_box;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;

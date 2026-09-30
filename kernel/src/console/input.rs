@@ -92,7 +92,7 @@ impl ConsoleInputHub {
 
 #[inline]
 fn increment_dropped_gui_events() {
-    let _ = DROPPED_GUI_EVENTS.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+    let _ = DROPPED_GUI_EVENTS.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         v.checked_add(1).or(Some(u64::MAX))
     });
 }
@@ -102,7 +102,7 @@ fn increment_dropped_tty_bytes(by: u64) {
     if by == 0 {
         return;
     }
-    let _ = DROPPED_TTY_BYTES.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+    let _ = DROPPED_TTY_BYTES.try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
         v.checked_add(by).or(Some(u64::MAX))
     });
 }

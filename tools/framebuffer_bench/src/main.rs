@@ -1,6 +1,7 @@
 // framebuffer_bench/src/main.rs
-use criterion::{Criterion, black_box};
+use criterion::Criterion;
 use std::env;
+use std::hint::black_box;
 
 use rany_os::graphics::framebuffer::Framebuffer;
 use rany_os::graphics::framebuffer::{current_packer_mode, force_packer_mode};

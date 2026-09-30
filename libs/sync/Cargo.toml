@@ -14,7 +14,7 @@ categories.workspace = true
 workspace = true
 
 [dependencies]
-spin = "0.10"
+spin = "0.12"
 
 [features]
 default = []

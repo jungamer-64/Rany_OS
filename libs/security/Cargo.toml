@@ -14,7 +14,7 @@ description = "Security Primitives for RanyOS"
 workspace = true
 
 [dependencies]
-spin = "0.10"
+spin = "0.12"
 log = "0.4"
 
 [features]

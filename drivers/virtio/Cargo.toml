@@ -21,7 +21,7 @@ path = "src/lib.rs"
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }
 graphic_types = { path = "../../libs/graphic_types" }
-spin = "0.10"
+spin = "0.12"
 exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
 

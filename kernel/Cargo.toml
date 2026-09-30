@@ -61,35 +61,35 @@ security = { path = "../libs/security" }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 
 # スピンロック（no_std互換）
-spin = "0.10"
+spin = "0.12"
 
 # Once-cell for lazy initialization (no_std compatible)
-once_cell = { version = "1.20", default-features = false, features = ["race", "alloc"] }
+once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 
 # UART シリアル出力（デバッグ用）
-uart_16550 = { version = "0.4", optional = true }
+uart_16550 = { version = "0.8", optional = true }
 
 # ビットフィールド操作
-bitflags = "2.4"
+bitflags = "2.13"
 
 # DWARF情報解析（スタックアンワインド用）
-gimli = { version = "0.32", default-features = false, features = ["read-core"] }
+gimli = { version = "0.34", default-features = false, features = ["read-core"] }
 
 # no_std向けHashMap
-hashbrown = "0.16"
+hashbrown = "0.17"
 arrayvec = { version = "0.7", default-features = false }
 
 # Ed25519署名検証 & X25519鍵交換用（no_std対応、curve25519-dalek不使用）
-ed25519-compact = { version = "2", default-features = false, features = ["x25519"] }
+ed25519-compact = { version = "2.6", default-features = false, features = ["x25519"] }
 
 # SHA-256ハッシュ計算用
-sha2 = { version = "0.10", default-features = false, features = ["force-soft"] }
+sha2 = { version = "0.11", default-features = false }
 
 # ログフレームワーク
 log = "0.4"
 
 # Criterion (moved from dev-dependencies for no_std test compatibility)
-criterion = { version = "0.5", optional = true }
+criterion = { version = "0.8", optional = true }
 
 # ============================================================================
 # フィーチャーフラグ
@@ -144,8 +144,8 @@ std = ["hal/std"]
 [dev-dependencies]
 graphic_types = { path = "../libs/graphic_types", features = ["alloc"] }
 boot_proto = { path = "../libs/boot_proto" }
-spin = "0.10"
-creusot-contracts = "0.8.0"
+spin = "0.12"
+creusot-contracts = "0.8"
 
 # ============================================================================
 # ブートイメージ設定

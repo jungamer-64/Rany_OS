@@ -7,12 +7,6 @@
 [unstable]
 panic-abort-tests = true
 
-[build]
-# Reproducible builds: normalize local workspace path.
-rustflags = [
-    "--remap-path-prefix=/home/jgm64=.",
-]
-
 # Custom kernel target with PIE disabled and higher-half linker script
 # Note: For JSON targets, use the full path including .json extension
 [target.x86_64-exorust]
@@ -44,6 +38,15 @@ rustflags = [
     "link-arg=--no-pie",
     "-C",
     "link-arg=-Map=kernel-test.map",
+]
+
+# Kernel execution does not preserve SIMD state for SHA-2 backends.
+# Apply this dependency configuration to host tests and every kernel target.
+[target.'cfg(all())']
+rustflags = [
+    # Reproducible builds: normalize local workspace path.
+    "--remap-path-prefix=/home/jgm64=.",
+    "--cfg", 'sha2_backend="soft"',
 ]
 
 [target.'cfg(target_os = "none")']

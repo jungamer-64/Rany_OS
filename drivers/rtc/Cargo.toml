@@ -14,6 +14,6 @@ description = "RTC Driver for RanyOS"
 workspace = true
 
 [dependencies]
-spin = "0.10"
+spin = "0.12"
 exorust_sync = { path = "../../libs/sync" }
 hal = { path = "../../hal" }

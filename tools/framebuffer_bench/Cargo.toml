@@ -14,7 +14,7 @@ missing_errors_doc = "deny"
 missing_panics_doc = "deny"
 
 [dependencies]
-criterion = "0.5"
+criterion = "0.8"
 rany_kernel = { path = "../../kernel", features = ["bench", "std"] }
 
 [features]

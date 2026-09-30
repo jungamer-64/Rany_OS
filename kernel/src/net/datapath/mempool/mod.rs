@@ -80,7 +80,7 @@ impl PacketBuffer {
     pub fn add_ref(&self) -> bool {
         self.meta
             .ref_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current == 0 {
                     return None;
                 }
@@ -221,7 +221,7 @@ fn dma_add_ref(buf: NonNull<DmaBuffer>) -> bool {
     unsafe {
         buf.as_ref()
             .ref_count
-            .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
                 if current == 0 {
                     return None;
                 }

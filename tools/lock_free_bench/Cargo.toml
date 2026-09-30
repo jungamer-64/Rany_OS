@@ -8,9 +8,9 @@ missing_errors_doc = "deny"
 missing_panics_doc = "deny"
 
 [dependencies]
-spin = "0.9"
+spin = "0.12"
 
-rand = "0.8"
+rand = "0.10"
 
 [workspace]
 

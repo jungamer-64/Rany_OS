@@ -177,7 +177,7 @@ impl KeyboardDriver {
 
         let _ = self
             .dropped_events
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 v.checked_add(1).or(Some(u64::MAX))
             });
         self.waker.notify();
