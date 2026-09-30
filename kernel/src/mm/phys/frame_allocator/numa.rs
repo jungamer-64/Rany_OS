@@ -260,18 +260,6 @@ impl NumaPmmAllocator {
 
 /// グローバルなフレームアロケータ（NUMA非対応版、後方互換用）
 /// 割り込み禁止PoisonLockで保護
-pub(crate) static FRAME_ALLOCATOR: IrqPoisonLock<BitmapFrameAllocator> =
-    IrqPoisonLock::new(BitmapFrameAllocator::new());
-
-/// NUMA対応グローバルフレームアロケータ
-/// 設計書 5.3: NUMAアーキテクチャへの対応
-static NUMA_FRAME_ALLOCATOR: spin::Once<IrqPoisonLock<NumaFrameAllocator>> = spin::Once::new();
-
-pub(crate) fn legacy_numa_frame_allocator() -> &'static IrqPoisonLock<NumaFrameAllocator> {
-    NUMA_FRAME_ALLOCATOR.call_once(|| IrqPoisonLock::new(NumaFrameAllocator::new()))
-}
-
-/// PMM fast allocator (global)
 pub(crate) static PMM_GLOBAL_PTR: AtomicPtr<PmmAllocatorFast> = AtomicPtr::new(ptr::null_mut());
 
 /// PMM fast allocator (NUMA-aware)
