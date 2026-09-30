@@ -12,7 +12,7 @@ pub(crate) use bootstrap::{
 };
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use bootstrap::{
-    ensure_global_heap_ready, free_memory_kb, heap_stats, init, is_initialized, total_memory_kb,
+    free_memory_kb, heap_stats, init, is_initialized, total_memory_kb,
     used_memory_kb, verify_buddy_integrity,
 };
 
@@ -175,22 +175,6 @@ impl BuddyHeapAllocator {
             initialized: false,
             free_lists: [None; Self::MAX_ORDER + 1],
         }
-    }
-
-    /// Recover from metadata bit-flips where only `initialized` became false
-    /// while heap geometry is already configured.
-    #[inline]
-    fn ensure_initialized(&mut self) -> bool {
-        if self.initialized {
-            return true;
-        }
-        if self.heap_start != 0 && self.heap_size != 0 {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] repaired initialized flag\n");
-            self.initialized = true;
-            return true;
-        }
-        false
     }
 
     /// 現在のアドレスに対するアラインメント対応ブロックオーダーを計算
@@ -711,38 +695,11 @@ pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 #[cfg(all(feature = "full_mm_tests", test))]
 pub use crate::ALLOCATOR;
 
-/// ヒープのサイズ
-///
-/// PF passthrough with VT-d now builds substantially larger IOMMU metadata and
-/// firmware-page working sets than the original single-driver boot path.
-pub const HEAP_SIZE: usize = 256 * 1024 * 1024; // 256 MiB
-
-/// Exchange Heap のサイズ
-/// NOTE: ネットワーク Mempool (1024 × 4KB = 4MiB) + RRef IPC + その他のため
-/// 十分な容量を確保する
-pub const EXCHANGE_HEAP_SIZE: usize = 16 * 1024 * 1024; // 16 MiB
 const EFI_PAGE_SIZE: u64 = 4096;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;
 const EFI_MEMORY_TYPE_CONVENTIONAL: u32 = 7;
 const MIN_USABLE_PHYS_ADDR: u64 = 0x100_0000; // 16 MiB
-
-/// ヒープの開始アドレスを計算（ランタイム）
-/// 物理メモリ16MBをPhysical Memory Offsetでマップした仮想アドレス
-#[inline]
-fn heap_start() -> u64 {
-    physical_memory_offset() + 0x100_0000
-}
-
-/// Exchange Heap の開始アドレスを計算（ランタイム）
-///
-/// NOTE: place the Exchange Heap after the global heap to avoid overlap
-/// with the main kernel heap (see bugfix for overlapping regions).
-#[inline]
-pub(crate) fn exchange_heap_start() -> u64 {
-    // heap_start() + HEAP_SIZE (no overlap)
-    heap_start().saturating_add(HEAP_SIZE as u64)
-}
 
 /// メモリサブシステム初期化フラグ
 static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =

@@ -9,8 +9,6 @@ use x86_64::PhysAddr;
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
 static HEAP_DEALLOC_ENABLED: AtomicBool = AtomicBool::new(true);
 
-pub const HEAP_SIZE: usize = 64 * 1024 * 1024;
-pub const EXCHANGE_HEAP_SIZE: usize = 16 * 1024 * 1024;
 
 pub struct LockedBuddyHeap;
 
@@ -77,7 +75,6 @@ pub fn set_heap_deallocation_enabled(enabled: bool) {
 
 pub fn init(_boot_info: Option<&ExoBootInfoView<'_>>) {}
 
-pub fn ensure_global_heap_ready() {}
 
 pub fn verify_buddy_integrity() {}
 
@@ -111,14 +108,6 @@ pub(crate) fn checked_store_usize(addr: usize, val: usize, _context: &str) {
     unsafe {
         core::ptr::write_volatile(addr as *mut usize, val);
     }
-}
-
-pub(crate) fn exchange_heap_start() -> u64 {
-    physical_memory_offset().saturating_add(HEAP_SIZE as u64)
-}
-
-pub(crate) fn get_default_memory_regions() -> Vec<(PhysAddr, u64)> {
-    Vec::new()
 }
 
 pub(crate) fn print_memory_stats() {}

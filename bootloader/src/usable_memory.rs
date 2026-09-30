@@ -7,10 +7,6 @@
 use boot_proto::UsableMemoryRegion;
 
 const MIN_USABLE_PHYS_ADDR: u64 = 0x0100_0000;
-const BOOTSTRAP_HEAP_BASE: u64 = MIN_USABLE_PHYS_ADDR;
-const BOOTSTRAP_HEAP_SIZE: u64 = 256 * 1024 * 1024;
-const EXCHANGE_HEAP_BASE: u64 = BOOTSTRAP_HEAP_BASE + BOOTSTRAP_HEAP_SIZE;
-const EXCHANGE_HEAP_SIZE: u64 = 16 * 1024 * 1024;
 const EFI_PAGE_SIZE: u64 = 4096;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_CODE: u32 = 3;
 const EFI_MEMORY_TYPE_BOOT_SERVICES_DATA: u32 = 4;
@@ -268,21 +264,6 @@ fn build_usable_memory_regions(
                 runtime_region.page_count.saturating_mul(EFI_PAGE_SIZE),
             )?;
         }
-
-        current_count = apply_reserved_range(
-            &mut current,
-            &mut next,
-            current_count,
-            Some(BOOTSTRAP_HEAP_BASE),
-            BOOTSTRAP_HEAP_SIZE,
-        )?;
-        current_count = apply_reserved_range(
-            &mut current,
-            &mut next,
-            current_count,
-            Some(EXCHANGE_HEAP_BASE),
-            EXCHANGE_HEAP_SIZE,
-        )?;
 
         for &(_virt, phys, size) in reservations.segment_info {
             current_count =
