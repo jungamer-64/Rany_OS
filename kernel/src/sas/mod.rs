@@ -80,10 +80,6 @@ impl SingleAddressSpaceManager {
 
         log::info!("[SAS] Single Address Space Manager initialized\n");
         log::info!("[SAS] Base address: {:#x}\n", SAS_BASE_ADDRESS);
-
-        // Exchange Heap は init_post_buddy() で既に 4MB で初期化済み。
-        // init_exchange_heap() は call_once で保護されているため、
-        // ここでの再初期化は不要。
     }
 
     /// セル用のメモリ領域を割り当て

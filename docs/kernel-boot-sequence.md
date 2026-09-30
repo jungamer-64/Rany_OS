@@ -18,6 +18,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - カーネル側では `_start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner` の順に入る。
 - この段階では ExoLoader が構築したページテーブルと `ExoBootInfo` ABI が前提になる。
 - memory-map handoff は bootloader が所有する確保ページへ全 descriptor のコピーを完了してから公開する。容量不足では件数を切り詰めず、未初期化 prefix を公開しない。usable-memory の正規化は同じ immutable snapshot を借用し、boot services 終了後のコピー失敗は kernel へ進まない。
+- bootstrap RAM は firmware から取得した一つの専有 slab を kernel heap と Exchange Heap へ分割して引き渡す。ABI descriptor は geometry の観測値であり、kernel entry が一度だけ allocation ownership を引き受ける。固定アドレスや推測した RAM 領域から allocator を起動しない。
 
 ## Canonical Paths
 
@@ -43,6 +44,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
 - `heap::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
 - `heap::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
+- allocator 初期化は bootstrap RAM owner を消費し、完了した状態だけを公開する。途中失敗は未使用 RAM の ownership を保持した terminal outcome とし、既存 allocation のある heap を再初期化しない。usable RAM が存在しない場合も推測した領域へ fallback しない。
 - `heap::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
 - 依存:
   - Phase 2 で `physical_memory_offset` が設定済みであること

@@ -1,14 +1,10 @@
-// ALLOW: host-support heap shims mirror the production heap API for lib-test builds;
-// some hooks are intentionally present only to keep the test-time surface compatible.
-use alloc::vec::Vec;
+//! Hosted allocation boundary for pure kernel components; no boot RAM admission
+//! or allocator reinitialization authority is available in this configuration.
 use boot_proto::ExoBootInfoView;
 use core::alloc::{GlobalAlloc, Layout};
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use x86_64::PhysAddr;
+use core::sync::atomic::{AtomicU64, Ordering};
 
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
-static HEAP_DEALLOC_ENABLED: AtomicBool = AtomicBool::new(true);
-
 
 pub struct LockedBuddyHeap;
 
@@ -69,13 +65,6 @@ pub mod oom {
     }
 }
 
-pub fn set_heap_deallocation_enabled(enabled: bool) {
-    HEAP_DEALLOC_ENABLED.store(enabled, Ordering::Release);
-}
-
-pub fn init(_boot_info: Option<&ExoBootInfoView<'_>>) {}
-
-
 pub fn verify_buddy_integrity() {}
 
 pub fn is_initialized() -> bool {
@@ -83,7 +72,7 @@ pub fn is_initialized() -> bool {
 }
 
 pub fn heap_stats() -> (usize, usize) {
-    (0, HEAP_SIZE)
+    (0, 0)
 }
 
 pub fn total_memory_kb() -> u64 {
@@ -96,18 +85,6 @@ pub fn free_memory_kb() -> u64 {
 
 pub fn used_memory_kb() -> u64 {
     total_memory_kb().saturating_sub(free_memory_kb())
-}
-
-pub(crate) fn checked_volatile_write_usize(addr: usize, val: usize, _context: &str) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut usize, val);
-    }
-}
-
-pub(crate) fn checked_store_usize(addr: usize, val: usize, _context: &str) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut usize, val);
-    }
 }
 
 pub(crate) fn print_memory_stats() {}

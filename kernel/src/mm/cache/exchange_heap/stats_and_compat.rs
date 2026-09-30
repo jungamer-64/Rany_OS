@@ -27,19 +27,16 @@ impl ExchangeHeap {
         }
     }
 
-    /// Exchange Heapを指定アドレスとサイズで初期化
-    ///
-    /// # Safety
-    /// - `heap_start` は有効なメモリ領域を指している必要がある
-    /// - `size` はそのメモリ領域のサイズと一致する必要がある
-    /// - このメモリ領域は他のアロケータと重複してはならない
-    pub unsafe fn init(&self, heap_start: usize, size: usize) {
-        // SAFETY: 呼び出し元がメモリ領域の有効性を保証
-        unsafe {
-            // Initialization-time best-effort recovery: proceed with initialization even if the lock
-            // appears poisoned to avoid blocking boot.
-            let mut guard = self.heap.lock_for_init("[MEM] Exchange Heap init");
-            guard.init(heap_start as *mut u8, size);
+    /// # Errors
+    /// Poisoned/previously initialized state returns the incoming RAM owner
+    /// untouched. No path reinitializes live allocations.
+    pub(crate) fn initialize(
+        &self,
+        memory: crate::heap::HeapMemory,
+    ) -> Result<(), crate::heap::HeapMemory> {
+        match self.heap.lock() {
+            Ok(mut guard) => guard.initialize(memory),
+            Err(_) => Err(memory),
         }
     }
 
@@ -182,22 +179,6 @@ pub struct HeapStats {
 /// Exchange Heap インスタンス（グローバルアロケータではない）
 /// RRefで使用する専用のヒープ
 pub(crate) static EXCHANGE_HEAP: ExchangeHeap = ExchangeHeap::new();
-
-/// Exchange Heapが初期化済みかどうか
-pub(crate) static INITIALIZED: spin::Once<()> = spin::Once::new();
-
-/// Exchange Heapの初期化関数
-///
-/// # Safety
-/// カーネル初期化時に一度だけ呼ばれる必要がある
-pub unsafe fn init_exchange_heap(heap_start: usize, size: usize) {
-    INITIALIZED.call_once(|| {
-        // SAFETY: 呼び出し元がメモリ領域の有効性を保証
-        unsafe {
-            EXCHANGE_HEAP.init(heap_start, size);
-        }
-    });
-}
 
 /// Exchange Heap経由でメモリを割り当て（RRefで使用）
 pub fn allocate_on_exchange<T>(value: T) -> Option<NonNull<T>> {
@@ -620,7 +601,3 @@ pub enum ExchangeHeapError {
     /// 不完全な初期化
     PartiallyInitialized,
 }
-
-#[cfg(test)]
-#[path = "tests.rs"]
-mod tests;

@@ -6,10 +6,10 @@ use core::alloc::{GlobalAlloc, Layout};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn exchange_heap_after_global_heap() {
-    // Exchange heap must be placed after the global heap (no overlap)
-    let heap_end = heap_start().saturating_add(HEAP_SIZE as u64);
-    assert!(exchange_heap_start() >= heap_end);
+fn buddy_coordinates_follow_absolute_alignment() {
+    let allocator = BuddyHeapAllocator::new();
+    assert_eq!(allocator.buddy_addr(0x14000, 6), 0x15000);
+    assert_eq!(allocator.buddy_addr(0x15000, 6), 0x14000);
 }
 
 #[cfg(any(feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -20,18 +20,24 @@ fn test_global_alloc_quota_charge_and_uncharge_with_header() {
     use crate::domain::{create_domain, set_domain_resource_limits, terminate_domain};
     use crate::task::{ExecutionContext, TaskId};
 
-    #[repr(align(4096))]
-    struct LocalHeap([u8; 256 * 1024]);
-
-    static mut TEST_HEAP: LocalHeap = LocalHeap([0; 256 * 1024]);
-
     let allocator = LockedBuddyHeap::new();
-    let heap_base = unsafe { core::ptr::addr_of_mut!(TEST_HEAP.0).cast::<u8>() as usize };
+    let slab = boot_proto::BootstrapHeapLayout::new(256 * 1024, 4096).expect("slab layout");
+    // SAFETY: valid nonzero Layout; the returned allocation is uniquely owned
+    // and retained rather than freed while this allocator or its blocks live.
+    let base = unsafe { alloc::alloc::alloc(slab.allocation()) };
+    assert!(!base.is_null());
+    let geometry = slab
+        .at(base.addr() as u64, 0, u64::MAX)
+        .expect("identity-mapped fixture");
+    // SAFETY: fresh page-aligned exclusive RAM, identity mapped in this test.
+    // No source reclaimer or alias survives; only these two owners may use it.
+    let heaps =
+        unsafe { super::super::BootstrapHeaps::from_handoff(geometry.descriptor(), 0, u64::MAX) }
+            .expect("valid retained allocation");
+    let (memory, _exchange, _) = heaps.into_parts();
     {
         let mut guard = allocator.0.lock().expect("heap lock poisoned");
-        unsafe {
-            guard.init(heap_base, 256 * 1024);
-        }
+        guard.init(memory).expect("initial admission");
     }
 
     let domain = create_domain(String::from("alloc_quota_header")).expect("create_domain failed");

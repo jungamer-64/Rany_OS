@@ -10,7 +10,13 @@ use graphic_types::FramebufferInfo;
 
 pub use boot_config::{BootPolicy, BootPolicyError, BootShellMode};
 
-pub const EXO_BOOT_INFO_VERSION: u64 = 7;
+pub const EXO_BOOT_INFO_VERSION: u64 = 8;
+
+mod bootstrap_memory;
+pub use bootstrap_memory::{
+    BootstrapHeapDescriptor, BootstrapHeapGeometry, BootstrapHeapLayout, BootstrapMemoryError,
+    MappedHeapRange,
+};
 
 /// Shared low-memory AP trampoline handed from the bootloader to the kernel.
 /// CPU discovery and per-CPU stacks are deliberately not part of this ABI.
@@ -365,6 +371,9 @@ pub struct ExoBootInfo {
     /// Used to convert physical addresses to virtual addresses (e.g. `phys + offset`).
     pub phys_mem_offset: u64,
 
+    /// Exclusive physical end covered by the retained HHDM mapping.
+    pub phys_mem_limit: u64,
+
     /// Physical address of the RSDP (Root System Description Pointer) for ACPI.
     pub rsdp_addr: u64,
 
@@ -390,6 +399,10 @@ pub struct ExoBootInfo {
     pub memory_map: MemoryMap,
     /// Bootloader-normalized usable physical memory regions.
     pub usable_memory: UsableMemoryTable,
+
+    /// Exclusive loader allocation transferred once to the two kernel heaps.
+    /// ABI metadata is an observation, never reusable allocation authority.
+    pub bootstrap_heaps: BootstrapHeapDescriptor,
 
     /// Framebuffer information (resolution, base address, format).
     pub framebuffer: FramebufferInfo,
@@ -1069,6 +1082,7 @@ mod tests {
         ExoBootInfo {
             version: EXO_BOOT_INFO_VERSION,
             phys_mem_offset: 0xffff_8000_0000_0000,
+            phys_mem_limit: 0x100000000,
             rsdp_addr: 0,
             ap_trampoline: ApTrampolineDescriptor::default(),
             cmdline_ptr: 0,
@@ -1078,6 +1092,7 @@ mod tests {
             tls_template: TlsInfo::default(),
             memory_map: MemoryMap::default(),
             usable_memory: UsableMemoryTable::default(),
+            bootstrap_heaps: BootstrapHeapDescriptor::default(),
             framebuffer: graphic_types::FramebufferInfo {
                 address: 0,
                 width: 0,

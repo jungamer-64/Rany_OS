@@ -31,6 +31,15 @@ serial = false
 mode = "hybrid"
 
 [[package]]
+name = "boot_proto"
+tier = "pr-required"
+root_default = false
+run_ignored = false
+test_filter = ""
+exact = false
+serial = false
+
+[[package]]
 name = "boot_config"
 tier = "pr-required"
 root_default = true

@@ -263,7 +263,7 @@ fn install_bsp_stack_guard() {
     );
 }
 
-fn phase_early_kernel_substrate(context: &KernelBootContext) {
+fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::BootstrapHeaps) {
     // 0. 割り込みシステムの早期初期化（例外ハンドラの設定）
     // これにより、メモリ初期化中の例外でデバッグ情報が得られる
     // 0.1. PIT (Programmable Interval Timer) を 1000 Hz に設定
@@ -271,8 +271,12 @@ fn phase_early_kernel_substrate(context: &KernelBootContext) {
     // 周期 tick だけを有効化して 1 tick = 1ms の前提を整える。
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    heap::init(Some(context.boot_info_view()));
-    heap::ensure_global_heap_ready();
+    if let Err(error) = heap::init(context.boot_info_view(), heaps) {
+        // Bootstrap RAM failure is terminal: no substrate exists to safely
+        // start workers or recover partially admitted allocator state.
+        io::log::early_print("[MEM] bootstrap initialization rejected\n");
+        panic!("bootstrap heap initialization failed: {error}");
+    }
     info!(target: "init", "Memory management initialized");
 
     if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
@@ -992,6 +996,19 @@ pub extern "C" fn kmain_inner(boot_info: &'static ExoBootInfo) -> ! {
     let context = KernelBootContext::new(boot_info);
 
     phase_entry_and_early_cpu(&context);
-    phase_early_kernel_substrate(&context);
+    // SAFETY: this is the once-only loader entry. ExoLoader transfers one
+    // retained LOADER_DATA slab disjoint from all other live allocations and
+    // its page tables map the entire checked HHDM extent for kernel lifetime.
+    let heaps = match unsafe {
+        heap::BootstrapHeaps::from_handoff(
+            boot_info.bootstrap_heaps,
+            boot_info.phys_mem_offset,
+            boot_info.phys_mem_limit,
+        )
+    } {
+        Ok(heaps) => heaps,
+        Err(error) => panic!("invalid bootstrap RAM handoff: {error:?}"),
+    };
+    phase_early_kernel_substrate(&context, heaps);
     start_async_boot_runtime(context);
 }

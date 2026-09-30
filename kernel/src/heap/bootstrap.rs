@@ -112,29 +112,25 @@ fn get_boot_usable_regions(usable_memory: &[UsableMemoryRegion]) -> Vec<(PhysAdd
 
 /// ブートメモリマップから使用可能領域を準備してBuddy Allocatorを初期化する
 pub(crate) fn init_buddy_from_boot_info(
-    boot_info: Option<&ExoBootInfoView<'_>>,
-) -> alloc::vec::Vec<(x86_64::PhysAddr, u64)> {
-    let usable_regions = if let Some(info) = boot_info {
-        let authoritative = get_boot_usable_regions(info.usable_memory());
-        if !authoritative.is_empty() {
-            authoritative
-        } else {
-            let mut fallback = if info.memory_map().is_empty() {
-                get_default_memory_regions()
-            } else {
-                let regions = get_boot_memory_regions(info.memory_map());
-                if regions.is_empty() {
-                    get_default_memory_regions()
-                } else {
-                    regions
-                }
-            };
-            fallback = reserve_bootstrap_heaps(fallback);
-            reserve_boot_info_ranges(fallback, info)
-        }
+    info: &ExoBootInfoView<'_>,
+    heap_geometry: boot_proto::BootstrapHeapGeometry,
+) -> Option<alloc::vec::Vec<(x86_64::PhysAddr, u64)>> {
+    let authoritative = get_boot_usable_regions(info.usable_memory());
+    let mut usable_regions = if authoritative.is_empty() {
+        reserve_boot_info_ranges(
+            reserve_kernel_image(get_boot_memory_regions(info.memory_map())),
+            info,
+        )
     } else {
-        get_default_memory_regions()
+        authoritative
     };
+    // Reservation follows the unique admitted owner's immutable geometry in
+    // both normalized and raw-map paths; no guessed RAM source is available.
+    let (physical, bytes) = heap_geometry.allocation_range();
+    usable_regions = subtract_reserved_range(usable_regions, physical, bytes);
+    if usable_regions.is_empty() {
+        return None;
+    }
 
     unsafe {
         crate::mm::phys::buddy_allocator::init_buddy_allocator(&usable_regions);
@@ -149,7 +145,7 @@ pub(crate) fn init_buddy_from_boot_info(
 
     verify_buddy_integrity();
 
-    usable_regions
+    Some(usable_regions)
 }
 
 /// NUMA情報を使ってPMM (Physical Memory Manager) を初期化する
@@ -202,15 +198,43 @@ fn initialize_firmware_catalog(boot_info: Option<&ExoBootInfoView<'_>>) {
     }
 }
 
-/// Exchange Heap, BSP Per-CPU/TLS, Per-Core Slab Cache の初期化
-pub(crate) fn init_post_buddy(_boot_info: Option<&ExoBootInfoView<'_>>) {
-    unsafe {
-        crate::mm::cache::exchange_heap::init_exchange_heap(
-            exchange_heap_start() as usize,
-            EXCHANGE_HEAP_SIZE,
-        );
+#[derive(Debug)]
+pub(crate) enum HeapInitError {
+    AlreadyStarted {
+        retained: super::super::BootstrapHeaps,
+    },
+    GlobalAllocatorUnavailable {
+        kernel: HeapMemory,
+        exchange: HeapMemory,
+    },
+    NoUsableRam {
+        exchange: HeapMemory,
+    },
+    ExchangeAllocatorUnavailable {
+        retained: HeapMemory,
+    },
+}
+
+impl core::fmt::Display for HeapInitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::AlreadyStarted { retained } => {
+                write!(f, "memory startup already consumed; retained {retained:?}")
+            }
+            Self::GlobalAllocatorUnavailable { kernel, exchange } => write!(
+                f,
+                "global allocator rejected RAM; retained {kernel:?}, {exchange:?}"
+            ),
+            Self::NoUsableRam { exchange } => write!(
+                f,
+                "no usable RAM after reservations; global heap committed, retained {exchange:?}"
+            ),
+            Self::ExchangeAllocatorUnavailable { retained } => write!(
+                f,
+                "exchange allocator rejected RAM after PMM startup; retained {retained:?}"
+            ),
+        }
     }
-    verify_buddy_integrity();
 }
 
 /// メモリサブシステムの完全初期化
@@ -221,42 +245,80 @@ pub(crate) fn init_post_buddy(_boot_info: Option<&ExoBootInfoView<'_>>) {
 /// 3. Exchange Heap（ゼロコピーIPC用）
 /// 4. Per-CPU データ構造
 /// 5. Per-Core Slab Cache
-pub fn init(boot_info: Option<&ExoBootInfoView<'_>>) {
+///
+/// # Errors
+/// Duplicate startup returns both incoming owners. A failed global admission
+/// also returns both owners. Later failure retains unused exchange RAM while
+/// global/physical allocators remain committed; none of these errors permits
+/// reinitialization or restarting runtime workers. The boot root must terminate.
+pub(crate) fn init(
+    boot_info: &ExoBootInfoView<'_>,
+    heaps: super::super::BootstrapHeaps,
+) -> Result<(), HeapInitError> {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
 
-    if MEMORY_INITIALIZED.swap(true, Ordering::SeqCst) {
-        return;
+    // Only Ready is published to observers. A partial startup failure is
+    // terminal; the retained global heap is never reinitialized or reissued.
+    if MEMORY_STATE
+        .compare_exchange(
+            MemoryState::Uninitialized as u8,
+            MemoryState::Initializing as u8,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .is_err()
+    {
+        return Err(HeapInitError::AlreadyStarted { retained: heaps });
     }
+    let (kernel, exchange, geometry) = heaps.into_parts();
 
     // 0. Higher Half Manager の初期化 (IOMMUなどが依存)
     crate::mm::virt::higher_half::init(physical_memory_offset());
 
     // 1. グローバルヒープの初期化（最初に行う - allocが必要）
-    init_global_heap();
+    #[cfg(not(all(feature = "full_mm_tests", test, not(feature = "std"))))]
+    {
+        let admitted = match ALLOCATOR.0.lock() {
+            Ok(mut allocator) => allocator.init(kernel),
+            Err(_) => Err(kernel),
+        };
+        if let Err(kernel) = admitted {
+            MEMORY_STATE.store(MemoryState::Failed as u8, Ordering::Release);
+            return Err(HeapInitError::GlobalAllocatorUnavailable { kernel, exchange });
+        }
+    }
+    #[cfg(all(feature = "full_mm_tests", test, not(feature = "std")))]
+    core::mem::forget(kernel);
     verify_buddy_integrity();
 
     // The catalog owns copies of firmware tables and therefore needs the
     // kernel heap. It must precede NUMA PMM construction, whose topology is
     // derived from this catalog rather than from a bootloader snapshot.
-    initialize_firmware_catalog(boot_info);
+    initialize_firmware_catalog(Some(boot_info));
 
     // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
-    let usable_regions = init_buddy_from_boot_info(boot_info);
+    let Some(usable_regions) = init_buddy_from_boot_info(boot_info, geometry) else {
+        MEMORY_STATE.store(MemoryState::Failed as u8, Ordering::Release);
+        return Err(HeapInitError::NoUsableRam { exchange });
+    };
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
     init_numa_pmm(crate::platform::firmware::tables(), &usable_regions);
 
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
-    init_post_buddy(boot_info);
+    if let Err(retained) = crate::mm::cache::exchange_heap::EXCHANGE_HEAP.initialize(exchange) {
+        MEMORY_STATE.store(MemoryState::Failed as u8, Ordering::Release);
+        return Err(HeapInitError::ExchangeAllocatorUnavailable { retained });
+    }
+    verify_buddy_integrity();
 
-    // Early-boot helper vector is no longer needed.  Avoid allocator churn on
-    // function epilogue in qemu-test-export/full-mm paths where allocator
-    // metadata can still be in a fragile state.
-    core::mem::forget(usable_regions);
+    drop(usable_regions);
 
+    MEMORY_STATE.store(MemoryState::Ready as u8, Ordering::Release);
     crate::io::log::early_print("[MEM] init done\n");
+    Ok(())
 }
 
 /// ヒープ整合性チェック（デバッグ用）
@@ -271,9 +333,12 @@ pub fn verify_buddy_integrity() {
                     let head = guard.free_lists[i].unwrap_or(0);
 
                     if head != 0 {
-                        let next = crate::io::mmio::volatile_read::<usize>(head as usize);
+                        // SAFETY: the retained heap owner and exclusive lock
+                        // keep each initialized free-list header alive.
+                        let next = unsafe { core::ptr::read(head as *const usize) };
                         if next != 0
-                            && (next < guard.heap_start || next >= guard.heap_start + HEAP_SIZE)
+                            && (next < guard.heap_start
+                                || next >= guard.heap_start + guard.heap_size)
                         {
                             crate::io::log::early_print("[HEAP_CHECK] INVALID NEXT at head=");
                             crate::io::log::early_print_hex(head as u64);
@@ -301,10 +366,9 @@ pub fn verify_buddy_integrity() {
     }
 }
 
-
 /// メモリサブシステムが初期化済みかどうか
 pub fn is_initialized() -> bool {
-    MEMORY_INITIALIZED.load(core::sync::atomic::Ordering::SeqCst)
+    MEMORY_STATE.load(core::sync::atomic::Ordering::Acquire) == MemoryState::Ready as u8
 }
 
 /// ヒープ統計を取得（Buddy Allocator用）
@@ -312,7 +376,18 @@ pub fn is_initialized() -> bool {
 pub fn heap_stats() -> (usize, usize) {
     // Buddy allocatorでは正確な使用量追跡は複雑なため、
     // ヒープサイズ全体を返す（詳細はbuddy_allocator_stats()を使用）
-    (0, HEAP_SIZE)
+    #[cfg(not(all(feature = "full_mm_tests", test, not(feature = "std"))))]
+    {
+        ALLOCATOR
+            .0
+            .lock()
+            .map(|guard| (0, guard.heap_size))
+            .unwrap_or((0, 0))
+    }
+    #[cfg(all(feature = "full_mm_tests", test, not(feature = "std")))]
+    {
+        (0, 0)
+    }
 }
 
 /// システム総メモリをKB単位で取得

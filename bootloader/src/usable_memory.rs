@@ -168,6 +168,7 @@ fn append_region_coalesced(
 
 /// All handoff-owned ranges that must be excluded before RAM publication.
 pub(crate) struct HandoffReservations<'a> {
+    pub(crate) bootstrap_allocation: (u64, u64),
     pub(crate) boot_info: &'a boot_proto::ExoBootInfo,
     pub(crate) artifact_allocation: Option<(u64, u64)>,
     pub(crate) segment_info: &'a [(u64, u64, u64)],
@@ -229,6 +230,9 @@ fn build_usable_memory_regions(
             current_count =
                 apply_reserved_range(&mut current, &mut next, current_count, Some(start), bytes)?;
         }
+        let (start, bytes) = reservations.bootstrap_allocation;
+        current_count =
+            apply_reserved_range(&mut current, &mut next, current_count, Some(start), bytes)?;
 
         current_count = apply_reserved_range(
             &mut current,
@@ -341,6 +345,7 @@ mod tests {
         let mut boot_info = boot_proto::ExoBootInfo {
             version: boot_proto::EXO_BOOT_INFO_VERSION,
             phys_mem_offset: hhdm_start,
+            phys_mem_limit: 0x100000000,
             rsdp_addr: 0,
             ap_trampoline: boot_proto::ApTrampolineDescriptor::new(0x8000).unwrap(),
             cmdline_ptr: 0,
@@ -350,6 +355,7 @@ mod tests {
             tls_template: boot_proto::TlsInfo::default(),
             memory_map: boot_proto::MemoryMap::default(),
             usable_memory: boot_proto::UsableMemoryTable::default(),
+            bootstrap_heaps: boot_proto::BootstrapHeapDescriptor::default(),
             framebuffer: graphic_types::FramebufferInfo {
                 address: 0x1400_5000,
                 width: 1,
@@ -408,6 +414,7 @@ mod tests {
         let segment_info = [(0, 0x1400_9000, 0x2000)];
 
         let reservations = HandoffReservations {
+            bootstrap_allocation: (0x1401_0000, 0x2000),
             boot_info: &boot_info,
             artifact_allocation: Some((0x1400_1000, 0x4000)),
             segment_info: &segment_info,
@@ -420,6 +427,7 @@ mod tests {
         let regions = &output[..count];
 
         let reserved = [
+            (0x1401_0000, 0x1401_2000),
             (0x1400_0000, 0x1400_1000),
             (0x1400_1000, 0x1400_5000),
             (0x1400_5000, 0x1400_5004),
@@ -454,6 +462,7 @@ mod tests {
         let mut output = [UsableMemoryRegion::default(); 16];
 
         let reservations = HandoffReservations {
+            bootstrap_allocation: (0x1401_0000, 0x2000),
             boot_info: &boot_info,
             artifact_allocation: Some((0x1400_1000, 0x1000)),
             segment_info: &[],
@@ -476,6 +485,7 @@ mod tests {
         let boot_info = sample_boot_info(hhdm_start);
         let descriptors = [desc(EFI_MEMORY_TYPE_CONVENTIONAL, 0x1400_0000, 0x0020_0000)];
         let reservations = HandoffReservations {
+            bootstrap_allocation: (0x1401_0000, 0x2000),
             boot_info: &boot_info,
             artifact_allocation: Some((0x1400_1000, 0x4000)),
             segment_info: &[],
@@ -504,6 +514,7 @@ mod tests {
         let boot_info = sample_boot_info(u64::MAX - 0x2000_0000);
         let descriptors = [desc(EFI_MEMORY_TYPE_CONVENTIONAL, 0x3000_0000, 0x1000)];
         let reservations = HandoffReservations {
+            bootstrap_allocation: (0x1401_0000, 0x2000),
             boot_info: &boot_info,
             artifact_allocation: None,
             segment_info: &[],

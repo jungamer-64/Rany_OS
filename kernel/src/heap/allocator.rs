@@ -6,53 +6,22 @@ pub mod oom;
 #[path = "bootstrap.rs"]
 mod bootstrap;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
-pub(crate) use bootstrap::{
-    checked_store_usize, checked_volatile_write_usize, physical_memory_offset,
-    set_physical_memory_offset,
-};
+pub(crate) use bootstrap::init;
 #[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use bootstrap::{
-    free_memory_kb, heap_stats, init, is_initialized, total_memory_kb,
-    used_memory_kb, verify_buddy_integrity,
+    free_memory_kb, heap_stats, is_initialized, total_memory_kb, used_memory_kb,
+    verify_buddy_integrity,
 };
+#[cfg(any(not(test), feature = "full_mm_tests"))]
+pub(crate) use bootstrap::{physical_memory_offset, set_physical_memory_offset};
 
+use super::HeapMemory;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use boot_proto::MemoryDescriptor;
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::null_mut;
-use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::PhysAddr;
-
-/// Test-mode volatile write stub (the real implementation is in ap_boot_reserve.rs).
-#[cfg(all(test, not(feature = "full_mm_tests")))]
-pub fn checked_volatile_write_usize(addr: usize, val: usize, _context: &str) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut usize, val);
-    }
-}
-
-#[cfg(all(test, not(feature = "full_mm_tests")))]
-pub fn checked_store_usize(addr: usize, val: usize, _context: &str) {
-    unsafe {
-        core::ptr::write_volatile(addr as *mut usize, val);
-    }
-}
-
-#[cfg(feature = "qemu-test-export")]
-static HEAP_DEALLOC_ENABLED: AtomicBool = AtomicBool::new(false);
-#[cfg(not(feature = "qemu-test-export"))]
-static HEAP_DEALLOC_ENABLED: AtomicBool = AtomicBool::new(true);
-
-#[inline]
-pub fn set_heap_deallocation_enabled(enabled: bool) {
-    HEAP_DEALLOC_ENABLED.store(enabled, Ordering::Release);
-}
-
-#[inline]
-fn heap_deallocation_enabled() -> bool {
-    HEAP_DEALLOC_ENABLED.load(Ordering::Acquire)
-}
 
 const ALLOC_HEADER_MAGIC: u64 = 0x514f_5441_4d45_4d31;
 const QUOTA_ALLOCATION_RACE_RETRY: usize = 3;
@@ -154,8 +123,9 @@ struct BuddyHeapAllocator {
     heap_start: usize,
     /// ヒープのサイズ
     heap_size: usize,
-    /// 初期化済みフラグ
-    initialized: bool,
+    /// Sole backing owner. Geometry fields below/above are immutable projections
+    /// after admission; metadata cannot manufacture or repair this ownership.
+    backing: Option<HeapMemory>,
     /// Buddy システム: 各オーダーの空きブロックリスト
     /// オーダー0 = 最小ブロック (MIN_BLOCK_SIZE)
     /// オーダーN = 2^N * MIN_BLOCK_SIZE
@@ -172,7 +142,7 @@ impl BuddyHeapAllocator {
         Self {
             heap_start: 0,
             heap_size: 0,
-            initialized: false,
+            backing: None,
             free_lists: [None; Self::MAX_ORDER + 1],
         }
     }
@@ -196,11 +166,16 @@ impl BuddyHeapAllocator {
     }
 
     /// ヒープを初期化
-    unsafe fn init(&mut self, heap_start: usize, heap_size: usize) {
+    fn init(&mut self, memory: HeapMemory) -> Result<(), HeapMemory> {
+        if self.backing.is_some() {
+            return Err(memory);
+        }
+        let heap_start = memory.start();
+        let heap_size = memory.size();
         crate::io::log::early_print("[BUD] init\n");
         self.heap_start = heap_start;
         self.heap_size = heap_size;
-        self.initialized = true;
+        self.backing = Some(memory);
 
         crate::io::log::early_print("[BUD] clear\n");
         // 全てのフリーリストをクリア
@@ -241,12 +216,13 @@ impl BuddyHeapAllocator {
             }
         }
         crate::io::log::early_print("[BUD] done\n");
+        Ok(())
     }
 
     /// サイズから必要なオーダーを計算
     #[inline]
     fn size_to_order(size: usize) -> usize {
-        let blocks = (size + Self::MIN_BLOCK_SIZE - 1) / Self::MIN_BLOCK_SIZE;
+        let blocks = size.div_ceil(Self::MIN_BLOCK_SIZE);
         if blocks <= 1 {
             0
         } else {
@@ -263,7 +239,7 @@ impl BuddyHeapAllocator {
     /// フリーリストにブロックを追加
     fn add_to_free_list(&mut self, addr: usize, order: usize) {
         // Security check: Range validation
-        if addr < self.heap_start || addr >= self.heap_start.saturating_add(HEAP_SIZE) {
+        if addr < self.heap_start || addr >= self.heap_start + self.heap_size {
             crate::io::log::early_print("[BUD] WARN: add_to_free_list invalid addr=");
             crate::io::log::early_print_hex(addr as u64);
             crate::io::log::early_print(" order=");
@@ -271,7 +247,7 @@ impl BuddyHeapAllocator {
             crate::io::log::early_print(" heap=");
             crate::io::log::early_print_hex(self.heap_start as u64);
             crate::io::log::early_print("-");
-            crate::io::log::early_print_hex((self.heap_start + HEAP_SIZE) as u64);
+            crate::io::log::early_print_hex((self.heap_start + self.heap_size) as u64);
             crate::io::log::early_print("\n");
             return; // graceful skip
         }
@@ -292,7 +268,11 @@ impl BuddyHeapAllocator {
         // アドレスに次のフリーブロックへのポインタを格納
         let ptr_addr = addr as usize;
 
-        checked_volatile_write_usize(ptr_addr, old_head, "BUD add_to_free_list");
+        // SAFETY: the lock exclusively owns this free block in backing RAM.
+        // Its aligned header is initialized before the head is published.
+        unsafe {
+            core::ptr::write(ptr_addr as *mut usize, old_head);
+        }
         self.free_lists[order] = Some(addr);
     }
 
@@ -301,7 +281,7 @@ impl BuddyHeapAllocator {
         let addr = self.free_lists[order].take()?;
 
         let head_valid = addr >= self.heap_start
-            && addr < self.heap_start.saturating_add(HEAP_SIZE)
+            && addr < self.heap_start + self.heap_size
             && addr % Self::MIN_BLOCK_SIZE == 0;
         if !head_valid {
             crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt head=");
@@ -313,10 +293,12 @@ impl BuddyHeapAllocator {
             return None;
         }
 
-        let next = crate::io::mmio::volatile_read::<usize>(addr);
+        // SAFETY: the free-list header was initialized on insertion, belongs
+        // to retained backing RAM, and metadata access is exclusive under lock.
+        let next = unsafe { core::ptr::read(addr as *const usize) };
         if next != 0 {
             let next_valid = next >= self.heap_start
-                && next < self.heap_start.saturating_add(HEAP_SIZE)
+                && next < self.heap_start + self.heap_size
                 && next % Self::MIN_BLOCK_SIZE == 0;
             if !next_valid {
                 crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt next=");
@@ -345,11 +327,17 @@ impl BuddyHeapAllocator {
             if curr_addr == addr {
                 // 見つかった - リストから削除
                 let next_ptr = curr_addr as usize;
-                let next = crate::io::mmio::volatile_read::<usize>(next_ptr);
+                // SAFETY: linked free blocks have initialized usize headers,
+                // and this allocator lock excludes simultaneous list mutation.
+                let next = unsafe { core::ptr::read(next_ptr as *const usize) };
                 let next_opt = if next == 0 { None } else { Some(next) };
 
                 if let Some(prev_addr) = prev {
-                    checked_volatile_write_usize(prev_addr, next, "BUD remove_specific prev->next");
+                    // SAFETY: prev_addr is an initialized free block reached
+                    // under the same exclusive allocator lock.
+                    unsafe {
+                        core::ptr::write(prev_addr as *mut usize, next);
+                    }
                 } else {
                     self.free_lists[order] = next_opt;
                 }
@@ -357,7 +345,8 @@ impl BuddyHeapAllocator {
             }
             prev = current;
             let next_ptr = curr_addr as *const usize;
-            let next = unsafe { *next_ptr };
+            // SAFETY: current is a retained, initialized free-list header.
+            let next = unsafe { core::ptr::read(next_ptr) };
             current = if next == 0 { None } else { Some(next) };
         }
         false
@@ -365,7 +354,7 @@ impl BuddyHeapAllocator {
 
     /// メモリを割り当て（O(log n)）
     fn allocate(&mut self, layout: Layout) -> *mut u8 {
-        if !self.ensure_initialized() {
+        if self.backing.is_none() {
             #[cfg(debug_assertions)]
             crate::io::log::early_print("[HEAP] allocate: not initialized\n");
             return null_mut();
@@ -426,15 +415,7 @@ impl BuddyHeapAllocator {
             return;
         }
 
-        // qemu full-boot export profiles keep deallocation disabled during the
-        // earliest boot phase; runtime code re-enables it once heap metadata
-        // stabilization is complete.
-        if !heap_deallocation_enabled() {
-            let _ = layout;
-            return;
-        }
-
-        if !self.ensure_initialized() {
+        if self.backing.is_none() {
             #[cfg(debug_assertions)]
             crate::io::log::early_print("[HEAP] deallocate: null or not init\n");
             return;
@@ -444,8 +425,9 @@ impl BuddyHeapAllocator {
         let order = Self::size_to_order(size);
         let addr = ptr as usize;
 
-        if addr < self.heap_start || addr >= self.heap_start + HEAP_SIZE {
+        if addr < self.heap_start || addr >= self.heap_start + self.heap_size {
             crate::io::log::early_print("[HEAP] ERROR: deallocate got invalid ptr!\n");
+            return;
         }
 
         self.coalesce(addr, order);
@@ -476,9 +458,10 @@ impl BuddyHeapAllocator {
     /// Buddyのアドレスを計算
     #[inline]
     fn buddy_addr(&self, addr: usize, order: usize) -> usize {
-        let offset = addr - self.heap_start;
         let block_size = Self::order_to_size(order);
-        self.heap_start + (offset ^ block_size)
+        // Blocks are aligned to absolute addresses during admission, not to
+        // the slab origin. XOR must use that same coordinate system.
+        addr ^ block_size
     }
 }
 
@@ -492,7 +475,7 @@ impl LockedBuddyHeap {
 
     /// Check if the heap allocator is initialized
     pub fn is_initialized(&self) -> Option<bool> {
-        self.0.lock().ok().map(|g| g.initialized)
+        self.0.lock().ok().map(|g| g.backing.is_some())
     }
 }
 
@@ -648,7 +631,7 @@ impl LockedBuddyHeap {
         crate::io::log::early_print("\n");
 
         crate::io::log::early_print("[ALLOC] guard.initialized=");
-        crate::io::log::early_print_dec(if guard.initialized { 1 } else { 0 });
+        crate::io::log::early_print_dec(if guard.backing.is_some() { 1 } else { 0 });
         crate::io::log::early_print("\n");
 
         crate::io::log::early_print("[ALLOC] Dumping free_lists:\n");
@@ -688,11 +671,12 @@ impl LockedBuddyHeap {
 /// 設計理念: O(log n)割り当てで <100ns を達成
 #[cfg(any(
     not(feature = "full_mm_tests"),
-    all(feature = "full_mm_tests", not(test))
+    all(feature = "full_mm_tests", not(test)),
+    all(test, feature = "std")
 ))]
 pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
 
-#[cfg(all(feature = "full_mm_tests", test))]
+#[cfg(all(feature = "full_mm_tests", test, not(feature = "std")))]
 pub use crate::ALLOCATOR;
 
 const EFI_PAGE_SIZE: u64 = 4096;
@@ -702,8 +686,15 @@ const EFI_MEMORY_TYPE_CONVENTIONAL: u32 = 7;
 const MIN_USABLE_PHYS_ADDR: u64 = 0x100_0000; // 16 MiB
 
 /// メモリサブシステム初期化フラグ
-static MEMORY_INITIALIZED: core::sync::atomic::AtomicBool =
-    core::sync::atomic::AtomicBool::new(false);
+#[repr(u8)]
+enum MemoryState {
+    Uninitialized,
+    Initializing,
+    Ready,
+    Failed,
+}
+static MEMORY_STATE: core::sync::atomic::AtomicU8 =
+    core::sync::atomic::AtomicU8::new(MemoryState::Uninitialized as u8);
 
 fn is_usable_efi_memory_type(ty: u32) -> bool {
     ty == EFI_MEMORY_TYPE_CONVENTIONAL
@@ -783,15 +774,7 @@ fn subtract_reserved_range(
     filtered
 }
 
-fn reserve_bootstrap_heaps(regions: Vec<(PhysAddr, u64)>) -> Vec<(PhysAddr, u64)> {
-    let hhdm = physical_memory_offset();
-    let heap_phys = heap_start().saturating_sub(hhdm);
-    let exchange_phys = exchange_heap_start().saturating_sub(hhdm);
-
-    // Reserve and remove bootstrap heap regions (global heap and exchange heap)
-    let regions = subtract_reserved_range(regions, heap_phys, HEAP_SIZE as u64);
-    let mut regions = subtract_reserved_range(regions, exchange_phys, EXCHANGE_HEAP_SIZE as u64);
-
+fn reserve_kernel_image(mut regions: Vec<(PhysAddr, u64)>) -> Vec<(PhysAddr, u64)> {
     // Reserve kernel image (.text/.rodata/.data/.bss) so PMM never hands out
     // frames that back static kernel state (e.g. global allocator metadata).
     if let Some((kernel_start, kernel_end)) = kernel_phys_range() {

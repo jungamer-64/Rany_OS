@@ -21,6 +21,7 @@ mod boot_artifact_copy;
 mod boot_artifact_handoff;
 mod boot_log;
 mod boot_memory_map;
+mod bootstrap_heap;
 mod config;
 #[path = "main/elf_relocations.rs"]
 mod elf_relocations;
@@ -243,10 +244,29 @@ fn main() -> Status {
 
     boot_info.version = EXO_BOOT_INFO_VERSION;
     boot_info.phys_mem_offset = hhdm_start;
+    boot_info.phys_mem_limit = map_limit;
     boot_info.page_table_base = pml4_addr;
     boot_info.paging_levels = 4;
     boot_info.la57_enabled = 0;
     boot_info.tls_template = tls_info;
+
+    let bootstrap_heaps = match bootstrap_heap::BootstrapHeapHandoff::reserve(hhdm_start, map_limit)
+    {
+        Ok(heaps) => heaps,
+        Err(failure) => {
+            error!("Bootstrap RAM admission failed: {failure:?}");
+            // SAFETY: boot services are active and the failed reservation has
+            // never been published. Release error keeps opaque RAM ownership.
+            return match unsafe { failure.release() } {
+                Ok(status) => status,
+                Err(release) => {
+                    error!("{release}");
+                    Status::ABORTED
+                }
+            };
+        }
+    };
+    boot_info.bootstrap_heaps = bootstrap_heaps.descriptor();
 
     // Populate all hardware detection fields
     populate_boot_info_detections(boot_info, hhdm_start);
@@ -375,6 +395,7 @@ fn main() -> Status {
     let reservations = usable_memory::HandoffReservations {
         boot_info,
         artifact_allocation: artifact_handoff.allocation_range(),
+        bootstrap_allocation: bootstrap_heaps.allocation_range(),
         segment_info: &segment_info,
         boot_info_allocation: (boot_info_phys, (boot_info_pages * 4096) as u64),
         map_allocation: snapshot.allocation_range(),

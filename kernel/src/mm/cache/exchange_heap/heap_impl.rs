@@ -1,12 +1,17 @@
 use super::*;
 
-// SegregatedFreeListHeap は PoisonLock で保護されるため Send/Sync は安全
+// SAFETY: moving this exclusive RAM owner transfers allocator metadata and all
+// free blocks together. HHDM remains stable across CPUs; no reclaimer survives.
 unsafe impl Send for SegregatedFreeListHeap {}
+// SAFETY: shared methods inspect metadata only; every backing-RAM mutation
+// requires &mut self. ExchangeHeap obtains that borrow under PoisonLock, so
+// interrupt/SMP callers cannot mutate headers concurrently through &self.
 unsafe impl Sync for SegregatedFreeListHeap {}
 
 impl SegregatedFreeListHeap {
     pub(super) const fn empty() -> Self {
         Self {
+            backing: None,
             heap_start: 0,
             heap_end: 0,
             free_lists: [None; SIZE_CLASS_COUNT],
@@ -35,12 +40,18 @@ impl SegregatedFreeListHeap {
         class.min(SIZE_CLASS_COUNT - 1)
     }
 
-    /// ヒープを初期化
-    ///
-    /// # Safety
-    /// - `heap_start` は有効なメモリ領域を指す
-    /// - `size` バイトがアクセス可能
-    pub(crate) unsafe fn init(&mut self, heap_start: *mut u8, size: usize) {
+    /// Duplicate admission returns the incoming owner without touching live
+    /// allocations. Initialization consumes exclusive retained RAM, not an address.
+    pub(super) fn initialize(
+        &mut self,
+        memory: crate::heap::HeapMemory,
+    ) -> Result<(), crate::heap::HeapMemory> {
+        if self.backing.is_some() {
+            return Err(memory);
+        }
+        let heap_start = core::ptr::with_exposed_provenance_mut::<u8>(memory.start());
+        let end = memory.end();
+        let size = memory.size();
         crate::io::log::early_print("[ExHeap] init heap_start=");
         crate::io::log::early_print_hex(heap_start as u64);
         crate::io::log::early_print(" size=");
@@ -48,7 +59,8 @@ impl SegregatedFreeListHeap {
         crate::io::log::early_print("\n");
 
         self.heap_start = heap_start as usize;
-        self.heap_end = self.heap_start + size;
+        self.heap_end = end;
+        self.backing = Some(memory);
         self.allocated_bytes = 0;
         self.free_bitmap = 0;
         self.alloc_count = 0;
@@ -65,6 +77,7 @@ impl SegregatedFreeListHeap {
         if size >= core::mem::size_of::<FreeBlock>() {
             self.add_free_block(heap_start as usize, size);
         }
+        Ok(())
     }
 
     /// 空きブロックを適切なサイズクラスに追加（結合を試みる）
@@ -83,39 +96,23 @@ impl SegregatedFreeListHeap {
         let class = Self::size_to_class(final_size);
         let block_ptr = final_addr as *mut FreeBlock;
 
+        // SAFETY: the exclusive allocator state owns the coalesced free block
+        // in retained RAM. Its in-bounds header/footer are initialized before
+        // the free-list entry is published; no live allocation aliases them.
         unsafe {
-            // Set header (use checked store for debug)
-            crate::heap::checked_store_usize(
-                block_ptr as usize,
-                final_size,
-                "ExHeap header size store",
-            );
+            core::ptr::write(core::ptr::addr_of_mut!((*block_ptr).size), final_size);
             (*block_ptr).next = self.free_lists[class];
-
-            #[cfg(debug_assertions)]
-            {
-                let next_val = match (*block_ptr).next {
-                    Some(nn) => nn.as_ptr() as usize,
-                    None => 0usize,
-                };
-                if next_val == crate::heap::EXCHANGE_HEAP_SIZE {
-                    crate::io::log::early_print(
-                        "[ExHeap] WARNING: next pointer equal to EXCHANGE_HEAP_SIZE!\n",
-                    );
-                    let bt = crate::unwind::Backtrace::capture();
-                    for entry in bt.iter() {
-                        crate::io::log::early_print("[ExHeap][BT] IP=");
-                        crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
-                        crate::io::log::early_print("\n");
-                    }
-                }
-            }
 
             // Set footer (boundary tag) using checked store for its size
             let footer_addr = final_addr + final_size - core::mem::size_of::<BlockFooter>();
-            crate::heap::checked_store_usize(footer_addr, final_size, "ExHeap footer size store");
             let footer_ptr = footer_addr as *mut BlockFooter;
-            (*footer_ptr).is_free = true;
+            core::ptr::write(
+                footer_ptr,
+                BlockFooter {
+                    size: final_size,
+                    is_free: true,
+                },
+            );
         }
 
         self.free_lists[class] = NonNull::new(block_ptr);
