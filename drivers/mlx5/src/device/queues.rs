@@ -6,10 +6,8 @@ extern crate alloc;
 // unused import Vec removed
 use crate::cmd::CmdMailbox;
 use crate::cmd::queues::*; // bring in helper builders/parsers
-use crate::cq::CompletionQueue;
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE, MLX5_RX_WQE_MAX_SUPPORTED_SIZE, WqState};
 use crate::device::Mlx5Device;
-use crate::eq::EventQueue;
 use crate::error::{Mlx5Error, Mlx5Result};
 use crate::flow::RqTable;
 use crate::wq::{ReceiveQueue, ResolvedRqLayout, SendQueue};
@@ -210,220 +208,6 @@ fn resolve_rmp_backed_rq_layout(
 }
 
 impl Mlx5Device {
-    /// Event Queueを作成
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub unsafe fn create_eq_hw(
-        &mut self,
-        eq_buf_virt: u64,
-        eq_buf_pa: u64,
-        log_eq_size: u8,
-        msix_vector: u32,
-        event_bitmask: u64,
-    ) -> Mlx5Result<u32> {
-        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let uar_page = uar.number();
-        if log_eq_size >= 32 {
-            return Err(Mlx5Error::InvalidParameter);
-        }
-        let doorbell = uar.eq()?;
-        self.eqs
-            .try_reserve(1)
-            .map_err(|_| Mlx5Error::NoResources)?;
-        // VF 特有の MSI-X / EQ 数上限チェック
-        if let Some(caps) = self.hca_caps.as_ref() {
-            if msix_vector >= caps.max_eq {
-                log::error!(target: "mlx5", "Requested MSI-X vector {} exceeds hardware max_eq {}", msix_vector, caps.max_eq);
-                return Err(Mlx5Error::NoResources);
-            }
-            if self.eqs.len() >= caps.max_eq as usize {
-                log::error!(target: "mlx5", "Maximum EQ count reached ({})", caps.max_eq);
-                return Err(Mlx5Error::NoResources);
-            }
-        }
-
-        let eq_depth = 1u32 << log_eq_size;
-        let eq_ptr = eq_buf_virt as *mut u8;
-        core::ptr::write_bytes(eq_ptr, 0, (eq_depth as usize) * crate::regs::eqe::EQE_SIZE);
-        for i in 0..eq_depth {
-            let offset = (i as usize * crate::regs::eqe::EQE_SIZE) + crate::regs::eqe::STATUS_OWN;
-            core::ptr::write_volatile(eq_ptr.add(offset), 0x01);
-        }
-
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        build_create_eq_input(
-            in_mbox,
-            log_eq_size,
-            eq_buf_pa,
-            uar_page,
-            msix_vector,
-            event_bitmask,
-        );
-
-        let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
-        let eq_pages = (eq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
-        let eq_in_len = (0x110 + eq_pages * 8) as u32;
-
-        if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateEq, eq_in_len, 0x10) {
-            log::info!(
-                target: "mlx5",
-                "CREATE_EQ input: log_eq_size={} eq_buf_pa={:#x} uar_page={} msix_vector={} event_mask={:#x} in_len={:#x}",
-                log_eq_size,
-                eq_buf_pa,
-                uar_page,
-                msix_vector,
-                event_bitmask,
-                eq_in_len
-            );
-            Self::debug_dump_mailbox_words("CREATE_EQ in", in_mbox, 32);
-            return Err(err);
-        }
-
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let eqn = parse_create_eq_output(out_mbox);
-        log::info!(
-            target: "mlx5",
-            "CREATE_EQ output: status={:#x} syndrome={:#x} eqn8={} eqn24@0x05={} eqn24@0x09={} dw0={:#010x} dw1={:#010x} dw2={:#010x} dw3={:#010x}",
-            out_mbox.data[0],
-            out_mbox.read_be32(0x04),
-            out_mbox.data[0x0B] as u32,
-            out_mbox.read_be24(0x05),
-            out_mbox.read_be24(0x09),
-            out_mbox.read_be32(0x00),
-            out_mbox.read_be32(0x04),
-            out_mbox.read_be32(0x08),
-            out_mbox.read_be32(0x0C),
-        );
-        let eq = EventQueue::from_created_queue(
-            eqn,
-            eq_buf_virt,
-            eq_buf_pa,
-            doorbell,
-            log_eq_size,
-            msix_vector,
-        );
-        self.eqs.push(eq);
-        Ok(eqn)
-    }
-
-    /// Completion Queueを作成
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub unsafe fn create_cq_hw(
-        &mut self,
-        cq_buf_virt: u64,
-        cq_buf_pa: u64,
-        db_virt: u64,
-        db_pa: u64,
-        log_cq_size: u8,
-        eqn: u32,
-    ) -> Mlx5Result<u32> {
-        let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let uar_page = uar.number();
-        if log_cq_size >= 32 {
-            return Err(Mlx5Error::InvalidParameter);
-        }
-        let doorbell = uar.cq()?;
-        self.cqs
-            .try_reserve(1)
-            .map_err(|_| Mlx5Error::NoResources)?;
-        self.cq_db_records
-            .try_reserve(1)
-            .map_err(|_| Mlx5Error::NoResources)?;
-        let cq_depth = 1u32 << log_cq_size;
-        let cq_ptr = cq_buf_virt as *mut u8;
-        core::ptr::write_bytes(cq_ptr, 0, (cq_depth as usize) * crate::regs::cqe::SIZE);
-        for i in 0..cq_depth {
-            let offset = (i as usize * crate::regs::cqe::SIZE) + crate::regs::cqe::OP_OWN;
-            core::ptr::write_volatile(cq_ptr.add(offset), 0x01);
-        }
-        let cq_db_ptr = db_virt as *mut u32;
-        core::ptr::write_volatile(cq_db_ptr, 0u32.to_be());
-        // Initialize arm_db with MLX5_CQ_INIT_CMD_SN = cpu_to_be32(2 << 28).
-        core::ptr::write_volatile(cq_db_ptr.add(1), (2u32 << 28).to_be());
-
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
-        // Keep CQE compression disabled in the generic CREATE_CQ path.
-        // RX-specific flows can enable it after programming the companion
-        // CQC fields (mini_cqe_res_format/layout).
-        let cqe_comp = false;
-        build_create_cq_input(
-            in_mbox,
-            log_cq_size,
-            cq_buf_pa,
-            db_pa,
-            uar_page,
-            eqn,
-            cqe_comp,
-        );
-
-        let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
-        let cq_pages = (cq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
-        let cq_in_len = (0x110 + cq_pages * 8) as u32;
-
-        let cqc = &in_mbox.data[0x10..];
-        if cfg!(feature = "debug_mlx5_cmd") {
-            log::info!(
-                target: "mlx5",
-                "CREATE_CQ in(pre): st={} cqe_comp={} page_offset={} log_cq_size={} uar_page={} c_eqn={:#x} log_page_size={} dbr_addr={:#x} pas0={:#x}",
-                crate::structs::get_bits_u32(cqc, 20, 4),
-                crate::structs::get_bits_u32(cqc, 17, 1),
-                crate::structs::get_bits_u32(cqc, 84, 6),
-                crate::structs::get_bits_u32(cqc, 99, 5),
-                crate::structs::get_bits_u32(cqc, 104, 24),
-                crate::structs::get_bits_u32(cqc, 160, 32),
-                crate::structs::get_bits_u32(cqc, 195, 5),
-                in_mbox.read_be64(0x48),
-                in_mbox.read_be64(0x110),
-            );
-        }
-        if let Err(err) = self.execute_uid_sensitive_cmd(CmdOpcode::CreateCq, cq_in_len, 0x10) {
-            log::info!(
-                target: "mlx5",
-                "CREATE_CQ input: log_cq_size={} cq_buf_pa={:#x} db_pa={:#x} uar_page={} eqn={} cqe_comp={} in_len={:#x}",
-                log_cq_size,
-                cq_buf_pa,
-                db_pa,
-                uar_page,
-                eqn,
-                cqe_comp,
-                cq_in_len
-            );
-            Self::debug_dump_mailbox_words("CREATE_CQ in", in_mbox, 32);
-            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-            log::info!(
-                target: "mlx5",
-                "CREATE_CQ output(last): status={:#x} syndrome={:#x} cqn24@0x05={} cqn24@0x09={} dw0={:#010x} dw1={:#010x} dw2={:#010x} dw3={:#010x}",
-                out_mbox.data[0],
-                out_mbox.read_be32(0x04),
-                out_mbox.read_be24(0x05),
-                out_mbox.read_be24(0x09),
-                out_mbox.read_be32(0x00),
-                out_mbox.read_be32(0x04),
-                out_mbox.read_be32(0x08),
-                out_mbox.read_be32(0x0C),
-            );
-            return Err(err);
-        }
-
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
-        let cqn = parse_create_cq_output(out_mbox);
-        let cq = CompletionQueue::from_created_queue(
-            cqn,
-            cq_buf_virt,
-            cq_buf_pa,
-            doorbell,
-            db_virt,
-            log_cq_size,
-            eqn,
-        );
-        self.cqs.push(cq);
-        self.cq_db_records.push((db_virt, db_pa));
-        Ok(cqn)
-    }
-
     /// CQモデレーション（割り込み抑制）を設定
     /// # Errors
     ///
@@ -435,11 +219,13 @@ impl Mlx5Device {
         count: u16,
     ) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_modify_cq_moderation_input(in_mbox, cqn, period_usec, count);
 
         self.execute_uid_sensitive_cmd(
             CmdOpcode::ModifyCq,
+            in_mbox,
             0x40, // input length
             0x10, // output length
         )?;
@@ -477,7 +263,8 @@ impl Mlx5Device {
             .cq_index_by_cqn(cqn)
             .ok_or(Mlx5Error::InvalidParameter)?;
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let sq_db_ptr = db_virt as *mut u32;
         core::ptr::write_volatile(sq_db_ptr, 0u32.to_be());
         core::ptr::write_volatile(sq_db_ptr.add(1), 0u32.to_be());
@@ -532,7 +319,7 @@ impl Mlx5Device {
             let mut pre_exec = CmdMailbox::zeroed();
             pre_exec.data[..sq_in_len as usize]
                 .copy_from_slice(&in_mbox.data[..sq_in_len as usize]);
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, sq_in_len, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateSq, in_mbox, sq_in_len, 0x10) {
                 Ok(()) => {
                     if fallback_tis0 {
                         log::warn!(
@@ -588,7 +375,7 @@ impl Mlx5Device {
                 }
             }
         }
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let sqn = parse_create_sq_output(out_mbox);
         if let Err(err) = self.transition_sq_to_ready(sqn) {
             if self.is_vf() {
@@ -606,7 +393,7 @@ impl Mlx5Device {
         let mut effective_tisn = tisn;
         match self.query_sq_hw(sqn) {
             Ok(ctx) => {
-                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                let out_mbox = &*self.cmd_output;
                 Self::debug_dump_mailbox_range("QUERY_SQ sq_context", out_mbox, 0x20, 64);
                 crate::boot_trace_mailbox_range("sqc_out", out_mbox, 0x20, 64);
                 if ctx.tis_num_0 != 0 {
@@ -700,7 +487,8 @@ impl Mlx5Device {
         let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let uar_page = uar.number();
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let rq_bytes = (1usize << (log_rq_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
         let rq_pages = (rq_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rq_in_len = (0x110 + rq_pages * 8) as u32;
@@ -766,9 +554,9 @@ impl Mlx5Device {
                 attempt.log_wq_stride,
             );
 
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, in_mbox, rq_in_len, 0x10) {
                 Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let out_mbox = &*self.cmd_output;
                     let rqn = parse_create_rq_output(out_mbox);
                     if let Err(err) = self.transition_rq_to_ready(rqn) {
                         if self.is_vf() {
@@ -961,9 +749,14 @@ impl Mlx5Device {
                             attempt.log_wq_stride,
                         );
 
-                        match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRq, rq_in_len, 0x10) {
+                        match self.execute_uid_sensitive_cmd(
+                            CmdOpcode::CreateRq,
+                            in_mbox,
+                            rq_in_len,
+                            0x10,
+                        ) {
                             Ok(()) => {
-                                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                                let out_mbox = &*self.cmd_output;
                                 let rqn = parse_create_rq_output(out_mbox);
                                 if let Err(err) = self.transition_rq_to_ready(rqn) {
                                     if self.is_vf() {
@@ -1148,7 +941,8 @@ impl Mlx5Device {
         let uar = self.uar.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         let uar_page = uar.number();
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
         let rmp_pages = (rmp_bytes + crate::defs::MLX5_PAGE_SIZE - 1) / crate::defs::MLX5_PAGE_SIZE;
         let rmp_in_len = (0x110 + rmp_pages * 8) as u32;
@@ -1178,9 +972,9 @@ impl Mlx5Device {
                 wq_type,
                 end_padding_mode,
             );
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRmp, rmp_in_len, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateRmp, in_mbox, rmp_in_len, 0x10) {
                 Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let out_mbox = &*self.cmd_output;
                     let rmpn = parse_create_rmp_output(out_mbox);
                     self.transition_rmp_to_ready(rmpn)?;
                     log::info!(
@@ -1208,16 +1002,18 @@ impl Mlx5Device {
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_rqt(&mut self, rq_numbers: &[u32], log_rqt_size: u8) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::flow::build_create_rqt_input(in_mbox, rq_numbers, log_rqt_size);
 
         self.execute_uid_sensitive_cmd(
             CmdOpcode::CreateRqt,
+            in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let rqtn = crate::cmd::flow::parse_create_rqt_output(out_mbox);
         self.rq_tables.push(RqTable {
             rqtn,
@@ -1229,16 +1025,16 @@ impl Mlx5Device {
 
     unsafe fn query_sq_hw(&mut self, sqn: u32) -> Mlx5Result<QuerySqInfo> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_query_sq_input(in_mbox, sqn);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QuerySq,
-            self.cmd_in_mbox_device,
+            in_mbox,
             0x10,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         Ok(parse_query_sq_output(out_mbox))
     }
 
@@ -1297,28 +1093,29 @@ impl Mlx5Device {
 
     unsafe fn query_rq_hw(&mut self, rqn: u32) -> Mlx5Result<QueryRqInfo> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_query_rq_input(in_mbox, rqn);
         self.execute_cmd_with_uid_candidates(
             CmdOpcode::QueryRq,
-            self.cmd_in_mbox_device,
+            in_mbox,
             0x10,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         Ok(parse_query_rq_output(out_mbox))
     }
 
     unsafe fn transition_sq_to_ready(&mut self, sqn: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         let mut tried = [false; 16];
         for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
             tried[current_state as usize] = true;
             build_modify_sq_input(in_mbox, sqn, current_state, WqState::Ready as u8);
-            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, in_mbox, 0x110, 0x10) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_err = Err(err),
             }
@@ -1328,7 +1125,7 @@ impl Mlx5Device {
             let current_state = ctx.state & 0x0f;
             if usize::from(current_state) < tried.len() && !tried[current_state as usize] {
                 build_modify_sq_input(in_mbox, sqn, current_state, WqState::Ready as u8);
-                match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, 0x110, 0x10) {
+                match self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, in_mbox, 0x110, 0x10) {
                     Ok(()) => return Ok(()),
                     Err(err) => last_err = Err(err),
                 }
@@ -1340,11 +1137,12 @@ impl Mlx5Device {
 
     unsafe fn transition_rq_to_ready(&mut self, rqn: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
             build_modify_rq_input(in_mbox, rqn, current_state, WqState::Ready as u8);
-            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, 0x110, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, in_mbox, 0x110, 0x10) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_err = Err(err),
             }
@@ -1354,11 +1152,12 @@ impl Mlx5Device {
 
     unsafe fn transition_rmp_to_ready(&mut self, rmpn: u32) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let mut last_err: Mlx5Result<()> = Err(Mlx5Error::NotSupported);
         for current_state in [WqState::Reset as u8, WqState::Ready as u8] {
             build_modify_rmp_input(in_mbox, rmpn, current_state, WqState::Ready as u8);
-            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRmp, 0x110, 0x10) {
+            match self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRmp, in_mbox, 0x110, 0x10) {
                 Ok(()) => return Ok(()),
                 Err(err) => last_err = Err(err),
             }
