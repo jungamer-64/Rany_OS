@@ -15,7 +15,6 @@ impl DomainId {
 }
 
 pub mod rref {
-    use alloc::boxed::Box;
     use core::ops::{Deref, DerefMut};
     use core::ptr::NonNull;
 
@@ -27,28 +26,14 @@ pub mod rref {
         owner: DomainId,
     }
 
-    impl<T> RRef<T> {
-        pub fn new(owner: DomainId, val: T) -> Self {
-            let boxed = Box::new(val);
-            let ptr = NonNull::new(Box::into_raw(boxed)).expect("RRef Box pointer is null");
-            Self { ptr, owner }
-        }
-
-        pub fn into_raw_parts(self) -> RRefRawParts {
+    impl<T: ?Sized> RRef<T> {
+        pub fn into_raw_parts(self) -> RRefRawParts
+        where
+            T: 'static,
+        {
             RRefRawParts::from_rref(self)
         }
 
-        pub unsafe fn from_raw_parts_for_zombie(parts: RRefRawParts) -> Self {
-            // Test shim only supports sized types; panic on mismatch in debug mode.
-            unsafe {
-                parts
-                    .into_rref::<T>()
-                    .expect("RRefRawParts type mismatch in test shim")
-            }
-        }
-    }
-
-    impl<T: ?Sized> RRef<T> {
         pub(crate) fn allocation_ptr(&self) -> NonNull<T> {
             self.ptr
         }
@@ -79,14 +64,6 @@ pub mod rref {
         }
     }
 
-    impl<T: ?Sized> Drop for RRef<T> {
-        fn drop(&mut self) {
-            unsafe {
-                drop(Box::from_raw(self.ptr.as_ptr()));
-            }
-        }
-    }
-
     unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
     unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
 
@@ -112,23 +89,42 @@ pub mod rref {
     unsafe impl Sync for RRefRawParts {}
 
     impl RRefRawParts {
-        pub fn from_rref<T: Sized>(rref: RRef<T>) -> Self {
+        pub fn from_rref<T: ?Sized + 'static>(rref: RRef<T>) -> Self {
             #[cfg(debug_assertions)]
             let size = core::mem::size_of_val(&*rref);
             #[cfg(debug_assertions)]
             let type_hash = debug_type_hash(&*rref);
             let (ptr, owner) = rref.into_raw();
-            // Simplified: avoid unstable ptr::metadata / ptr::from_raw_parts usage by
-            // only supporting sized `RRef<T>` in the test shim. Store meta as zero.
-            let meta = 0usize;
-
-            // Embed type-specific drop function (Sized-only for test shim)
-            unsafe fn drop_impl<T: Sized>(ptr: NonNull<u8>, owner: DomainId, _meta: usize) {
-                // For sized types we can reconstruct the typed pointer directly.
-                let data_ptr = ptr.as_ptr() as *mut T;
-                let rref: RRef<T> =
-                    unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) };
-                drop(rref);
+            let metadata = core::ptr::metadata(ptr.as_ptr());
+            let mut meta = 0usize;
+            let metadata_size = core::mem::size_of_val(&metadata);
+            assert!(metadata_size <= core::mem::size_of::<usize>());
+            unsafe {
+                core::ptr::copy_nonoverlapping(
+                    (&metadata as *const <T as core::ptr::Pointee>::Metadata).cast::<u8>(),
+                    (&mut meta as *mut usize).cast::<u8>(),
+                    metadata_size,
+                );
+            }
+            unsafe fn drop_impl<T: ?Sized + 'static>(
+                ptr: NonNull<u8>,
+                owner: DomainId,
+                meta: usize,
+            ) {
+                let mut metadata =
+                    core::mem::MaybeUninit::<<T as core::ptr::Pointee>::Metadata>::uninit();
+                unsafe {
+                    core::ptr::copy_nonoverlapping(
+                        (&meta as *const usize).cast::<u8>(),
+                        metadata.as_mut_ptr().cast::<u8>(),
+                        core::mem::size_of::<<T as core::ptr::Pointee>::Metadata>(),
+                    );
+                }
+                let data_ptr =
+                    core::ptr::from_raw_parts_mut::<T>(ptr.as_ptr().cast::<()>(), unsafe {
+                        metadata.assume_init()
+                    });
+                drop(unsafe { RRef::from_raw(NonNull::new_unchecked(data_ptr), owner) });
             }
 
             Self {
