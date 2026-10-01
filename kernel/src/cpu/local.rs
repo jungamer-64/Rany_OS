@@ -46,8 +46,6 @@ pub struct CpuRemoteAccess {
     tlb_mode: AtomicU8,
     tlb_requested_generation: AtomicU64,
     tlb_observed_generation: AtomicU64,
-    deferred_atomic_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
-    deferred_queue_wakes: MpscRingBuffer<usize, DEFERRED_WAKE_QUEUE_SLOTS>,
     interrupt_wakes: MpscRingBuffer<usize, INTERRUPT_WAKE_QUEUE_SLOTS>,
 }
 
@@ -82,8 +80,6 @@ impl CpuRemoteAccess {
             tlb_mode: AtomicU8::new(TLB_LAZY),
             tlb_requested_generation: AtomicU64::new(0),
             tlb_observed_generation: AtomicU64::new(0),
-            deferred_atomic_wakes: MpscRingBuffer::new(),
-            deferred_queue_wakes: MpscRingBuffer::new(),
             interrupt_wakes: MpscRingBuffer::new(),
         }
     }
@@ -223,22 +219,6 @@ impl CpuRemoteAccess {
     fn complete_tlb_generation(&self, generation: u64) {
         self.tlb_observed_generation
             .fetch_max(generation, Ordering::SeqCst);
-    }
-
-    fn defer_atomic_wake(&self, pointer: usize) -> bool {
-        self.deferred_atomic_wakes.try_push(pointer).is_ok()
-    }
-
-    fn take_atomic_wake(&self) -> Option<usize> {
-        self.deferred_atomic_wakes.pop()
-    }
-
-    fn defer_queue_wake(&self, pointer: usize) -> bool {
-        self.deferred_queue_wakes.try_push(pointer).is_ok()
-    }
-
-    fn take_queue_wake(&self) -> Option<usize> {
-        self.deferred_queue_wakes.pop()
     }
 
     fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
@@ -389,7 +369,8 @@ impl Drop for CpuTls {
 
 #[repr(C, align(64))]
 pub struct CpuLocal {
-    self_address: usize,
+    preemption: hal::preemption::CpuPreemptionHeader,
+    scheduler_xstate: UnsafeCell<super::xstate::XStateImage>,
     id: CpuId,
     owned: UnsafeCell<CpuOwnedState>,
     #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
@@ -418,7 +399,8 @@ impl CpuLocal {
         let descriptor_tables = crate::interrupts::gdt::CpuDescriptorTables::allocate()
             .ok_or(CpuLocalAllocationError::DescriptorTablesAllocationFailed)?;
         let mut local = Box::pin(Self {
-            self_address: 0,
+            preemption: hal::preemption::CpuPreemptionHeader::unbound(),
+            scheduler_xstate: UnsafeCell::new(super::xstate::XStateImage::initial()),
             id,
             owned: UnsafeCell::new(CpuOwnedState {
                 execution: None,
@@ -437,7 +419,11 @@ impl CpuLocal {
             _pin: PhantomPinned,
         });
         let address = local.as_ref().get_ref() as *const Self as usize;
-        unsafe { Pin::get_unchecked_mut(local.as_mut()).self_address = address };
+        unsafe {
+            Pin::get_unchecked_mut(local.as_mut())
+                .preemption
+                .self_address = address
+        };
         Ok(local)
     }
 
@@ -480,6 +466,10 @@ impl CpuLocal {
         if owned.page_fault_active {
             return Err(CpuGenerationResource::PageFault);
         }
+        if self.preemption.state().guarded() {
+            return Err(CpuGenerationResource::ExecutionContext);
+        }
+        unsafe { self.preemption.state().reset_for_new_cpu_generation() };
         owned.task_fuel = 0;
 
         if let Some(tls) = self.tls.as_ref() {
@@ -496,11 +486,11 @@ impl CpuLocal {
     }
 
     fn is_self_address(&self, address: usize) -> bool {
-        self.self_address == address && self.self_address == self as *const Self as usize
+        self.preemption.self_address == address && address == self as *const Self as usize
     }
 
     unsafe fn install_on_current_cpu(&self) {
-        unsafe { write_msr(IA32_GS_BASE, self.self_address as u64) };
+        unsafe { write_msr(IA32_GS_BASE, self.preemption.self_address as u64) };
         if let Some(tls) = self.tls.as_ref() {
             unsafe { write_msr(IA32_FS_BASE, tls.fs_base) };
         }
@@ -569,6 +559,9 @@ impl CpuLocal {
     fn consume_task_fuel(&self, amount: u64) -> bool {
         with_owner_access(|| {
             let owned = unsafe { &mut *self.owned.get() };
+            if owned.execution.is_none() {
+                return true;
+            }
             match owned.task_fuel.checked_sub(amount) {
                 Some(remaining) => {
                     owned.task_fuel = remaining;
@@ -759,6 +752,18 @@ impl CurrentCpu {
             .cpu_local(id)
             .ok_or(CurrentCpuBindError::UnknownCpu(id))?;
         unsafe { local.install_on_current_cpu() };
+        let mask = match super::xstate::configuration() {
+            super::xstate::XStateConfiguration::Fxsave => 0,
+            super::xstate::XStateConfiguration::Xsave { mask, .. } => mask,
+        };
+        // SAFETY: CpuRuntime pins this CPU-local image across the whole CPU
+        // generation and the BSP/AP xstate policy bounds the image size.
+        unsafe {
+            local
+                .preemption
+                .state()
+                .configure_xstate(local.scheduler_xstate.get() as usize, mask)
+        };
         Self::acquire().ok_or(CurrentCpuBindError::BindingRejected(id))
     }
 
@@ -787,6 +792,10 @@ impl CurrentCpu {
         })
     }
 
+    pub(crate) fn preemption_state(&self) -> &hal::preemption::PreemptionState {
+        self.local.preemption.state()
+    }
+
     pub(crate) fn enter_execution(
         self,
         execution: crate::task::ExecutionContext,
@@ -795,6 +804,7 @@ impl CurrentCpu {
         ExecutionContextGuard {
             current: self,
             previous,
+            code_lease: None,
         }
     }
 
@@ -851,8 +861,12 @@ impl CurrentCpu {
         self.local.remote.runtime_timer_armed()
     }
 
-    pub(crate) fn refill_task_fuel(&self, amount: u64) {
-        self.local.refill_task_fuel(amount);
+    pub(crate) fn install_task_fuel(&self, budget: &crate::task::PollBudget) {
+        self.local.refill_task_fuel(budget.remaining());
+    }
+
+    pub(crate) fn exhaust_task_fuel(&self) {
+        self.local.refill_task_fuel(0);
     }
 
     pub(crate) fn consume_task_fuel(&self, amount: u64) -> bool {
@@ -893,22 +907,6 @@ impl CurrentCpu {
 
     pub(crate) fn complete_tlb_generation(&self, generation: u64) {
         self.local.remote.complete_tlb_generation(generation);
-    }
-
-    pub(crate) fn defer_atomic_wake(&self, pointer: usize) -> bool {
-        self.local.remote.defer_atomic_wake(pointer)
-    }
-
-    pub(crate) fn take_atomic_wake(&self) -> Option<usize> {
-        self.local.remote.take_atomic_wake()
-    }
-
-    pub(crate) fn defer_queue_wake(&self, pointer: usize) -> bool {
-        self.local.remote.defer_queue_wake(pointer)
-    }
-
-    pub(crate) fn take_queue_wake(&self) -> Option<usize> {
-        self.local.remote.take_queue_wake()
     }
 
     pub(crate) fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
@@ -962,6 +960,14 @@ impl Drop for PageFaultGuard {
 pub(crate) struct ExecutionContextGuard {
     current: CurrentCpu,
     previous: Option<crate::task::ExecutionContext>,
+    code_lease: Option<crate::domain::DomainCodeLease>,
+}
+
+impl ExecutionContextGuard {
+    pub(crate) fn retain_code(mut self, lease: crate::domain::DomainCodeLease) -> Self {
+        self.code_lease = Some(lease);
+        self
+    }
 }
 
 impl Drop for ExecutionContextGuard {
