@@ -8,7 +8,6 @@ impl DeviceDmaContext {
         Self {
             device_id: Some(device_id),
             domain_id: None,
-            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id)),
         }
     }
 
@@ -36,7 +35,6 @@ impl DeviceDmaContext {
         Ok(Self {
             device_id: Some(device_id),
             domain_id: Some(domain_id),
-            allocator: Arc::new(DeviceDmaAllocator::with_device(device_id)),
         })
     }
 
@@ -57,15 +55,6 @@ impl DeviceDmaContext {
         crate::io::iommu::api::register_device_dma_width(device_id, bits)
             .map_err(|_| DmaError::InvalidAddress)?;
         Self::with_device(device_id)
-    }
-
-    /// コヒーレントDMAバッファを割り当て
-    pub fn allocate(
-        &self,
-        size: usize,
-        direction: DmaDirection,
-    ) -> Result<DmaAllocation, DmaError> {
-        self.allocator.allocate_coherent(size, direction)
     }
 
     /// Allocate the canonical owned DMA region for this context.
@@ -92,43 +81,6 @@ impl DeviceDmaContext {
         Ok((region, slot))
     }
 
-    /// Map a physical range for a specific device through the IOMMU.
-    pub fn map_physical_range(
-        &self,
-        phys_addr: x86_64::PhysAddr,
-        size: usize,
-        direction: DmaDirection,
-    ) -> Result<DeviceDmaMapping, DmaError> {
-        let device_id = self.device_id.ok_or(DmaError::DeviceNotFound)?;
-        if !crate::io::iommu::api::is_iommu_enabled() {
-            return Err(DmaError::IommuRequired);
-        }
-
-        let mapped_len = iommu_align_len(size).ok_or(DmaError::InvalidSize)?;
-        let (read, write) = match direction {
-            DmaDirection::ToDevice => (true, false),
-            DmaDirection::FromDevice => (false, true),
-            DmaDirection::Bidirectional => (true, true),
-        };
-
-        let iova = unsafe {
-            crate::io::iommu::api::map_for_device_with_perms(
-                &device_id,
-                phys_addr,
-                mapped_len as u64,
-                read,
-                write,
-            )
-        }
-        .map_err(|_| DmaError::IommuMappingFailed)?;
-
-        Ok(DeviceDmaMapping {
-            device_id,
-            iova,
-            mapped_len: mapped_len as u64,
-        })
-    }
-
     /// RRef-backed DMA mapping (safe IOMMU API)
     ///
     /// Returns a `DmaHandle<T>` that must be explicitly unmapped to recover the `RRef<T>`.
@@ -139,7 +91,7 @@ impl DeviceDmaContext {
     ) -> Result<crate::io::iommu::api::DmaHandle<T>, crate::io::iommu::api::MapError<T>> {
         let iommu_direction = direction.into();
         let Some(device) = self.device_id else {
-            return Err(crate::io::iommu::api::MapError::new(
+            return Err(crate::io::iommu::api::MapError::unmapped(
                 rref,
                 crate::io::iommu::api::MapErrorKind::IommuError(
                     crate::io::iommu::types::IommuError::NotSupported,
@@ -159,7 +111,7 @@ impl DeviceDmaContext {
     ) -> Result<crate::io::iommu::api::DmaHandle<[T]>, crate::io::iommu::api::MapError<[T]>> {
         let iommu_direction = direction.into();
         let Some(device) = self.device_id else {
-            return Err(crate::io::iommu::api::MapError::new(
+            return Err(crate::io::iommu::api::MapError::unmapped(
                 rref,
                 crate::io::iommu::api::MapErrorKind::IommuError(
                     crate::io::iommu::types::IommuError::NotSupported,
