@@ -64,28 +64,18 @@ impl IommuDomain {
         pte_format: PteFormat,
     ) -> Result<Self, IommuError> {
         let pt_levels = pt_levels.clamp(MIN_PT_LEVELS, MAX_PT_LEVELS);
-        let layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .map_err(|_| IommuError::HardwareError)?;
-
         #[cfg(test)]
         if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_ALLOC {
             return Err(IommuError::OutOfMemory);
         }
-
-        let page_table = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
-            .ok_or(IommuError::OutOfMemory)?
-            .as_ptr() as *mut SlPte;
-
+        let root = page_table_pool.acquire(numa_node)?;
         #[cfg(test)]
         if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_PHYS {
+            page_table_pool.release(root);
             return Err(IommuError::HardwareError);
         }
-
-        let root_phys =
-            virt_ptr_to_phys(page_table as *const u8).map_err(|_| IommuError::HardwareError)?;
-
-        register_page_table(root_phys, page_table as usize, numa_node.unwrap_or(0));
+        let page_table = root.ptr().as_ptr();
+        let root_phys = root.phys();
 
         debug_assert_eq!(PT_ENTRIES % DOMAIN_SHARD_COUNT, 0);
         debug_assert!(PML4_ENTRIES_PER_SHARD > 0);
@@ -99,10 +89,18 @@ impl IommuDomain {
         } else {
             (0x1_0000_0000, 0x8_0000_0000)
         };
-        let per_domain_iova = crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(
-            default_iova_base,
-            default_iova_size,
-        );
+        let per_domain_iova =
+            match crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(
+                default_iova_base,
+                default_iova_size,
+            ) {
+                Ok(allocator) => allocator,
+                Err(error) => {
+                    page_table_pool.release(root);
+                    return Err(error);
+                }
+            };
+        crate::io::iommu::common::dma::page_table_pool::publish_table(root);
 
         Ok(Self {
             id,
@@ -126,7 +124,9 @@ impl IommuDomain {
             poisoned: AtomicBool::new(false),
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
-            pending_pt_release: PoisonLock::new(Vec::new()),
+            pending_pt_release: PoisonLock::new(
+                crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
+            ),
             paging_lock: IrqMutex::new(()),
         })
     }
@@ -216,7 +216,8 @@ impl IommuDomain {
 
         // Override with custom IOVA range
         domain.per_domain_iova =
-            crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size);
+            crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size)
+                .expect("domain construction requires a valid IOVA pool");
 
         log::debug!(
             "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
@@ -497,18 +498,20 @@ impl IommuDomain {
     }
 
     pub fn clear_mapping_only(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let _paging_guard = self.paging_lock.lock();
         let (_mapping, mut guards) = self.verify_and_lock_for_clear(iova, size)?;
-
-        for guard in guards.iter_mut() {
-            guard.mappings.remove(iova);
-        }
-
-        // SECURITY: Unregister from resource registry to maintain consistency.
-        let _ = self.dma_registry.unregister(iova);
-
+        let mut registry = self
+            .dma_registry
+            .state
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, size)?;
         }
+        for guard in guards.iter_mut() {
+            guard.mappings.remove(iova);
+        }
+        self.dma_registry.unregister_locked(&mut registry, iova);
 
         self.mapped_size.fetch_sub(size, Ordering::Relaxed);
 
@@ -558,11 +561,14 @@ impl IommuDomain {
             }
         };
 
-        // 2. Check if we have any empty page tables pending release
-        let has_pending_pts = if let Ok(pending) = self.pending_pt_release.lock() {
-            !pending.is_empty()
-        } else {
-            false
+        // Capture under paging exclusion before issuing invalidation. Failure
+        // keeps this cohort retained; newer detached tables remain queued.
+        let has_pending_pts = {
+            let _paging = self.paging_lock.lock();
+            self.pending_pt_release
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?
+                .capture()
         };
 
         // Skip if absolutely nothing to do
@@ -590,12 +596,18 @@ impl IommuDomain {
             self.quarantine.reap_completed(batch, &mut fctx, self);
         }
 
-        // 6. Security: Now that IOTLB (and paging-structure caches) are confirmed clear,
-        // it is safe to release the empty page tables back to the global pool.
-        if let Ok(mut pending) = self.pending_pt_release.lock() {
-            for pt in pending.drain(..) {
-                self.page_table_pool.release(pt);
-            }
+        // SAFETY: successful process_invalidations acknowledged this domain's
+        // paging structures and ATS after capture. New retirements stay queued.
+        let completed = unsafe {
+            self.pending_pt_release
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?
+                .take_completed()
+        };
+        for table in completed {
+            // SAFETY: the captured cohort is covered by that same completion.
+            self.page_table_pool
+                .release(unsafe { table.complete_after_invalidation() });
         }
 
         Ok(())
@@ -657,7 +669,10 @@ impl IommuDomain {
         start: usize,
         end: usize,
     ) -> Result<Vec<PoisonLockGuard<'_, DomainShard>>, IommuError> {
-        let mut guards = Vec::with_capacity(end.saturating_sub(start) + 1);
+        let mut guards = Vec::new();
+        guards
+            .try_reserve_exact(end.saturating_sub(start) + 1)
+            .map_err(|_| IommuError::MetadataAllocation)?;
         for idx in start..=end {
             let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
             guards.push(guard);
@@ -749,94 +764,6 @@ impl IommuDomain {
             && phys % SIZE_2MB == 0
     }
 
-    /// Attempt to map pages at the best available page size (1GB > 2MB > 4KB).
-    ///
-    /// Returns the number of bytes successfully mapped in this chunk.
-    pub(super) fn map_next_chunk(
-        &self,
-        iova: u64,
-        phys: u64,
-        remaining: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<u64, IommuError> {
-        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-        const SIZE_2MB: u64 = 2 * 1024 * 1024;
-        const SIZE_4KB: u64 = 4096;
-
-        if self.can_use_1gb_page(iova, phys, remaining) {
-            unsafe { self.map_page_1gb(iova, phys, read, write) }?;
-            return Ok(SIZE_1GB);
-        }
-
-        if self.can_use_2mb_page(iova, phys, remaining) {
-            unsafe { self.map_page_2mb(iova, phys, read, write) }?;
-            return Ok(SIZE_2MB);
-        }
-
-        let pages_remaining = (remaining / SIZE_4KB) as usize;
-        let pt_idx = Self::level_index(iova, 1);
-        let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
-        let pages_mapped = self.map_range_4k(iova, phys, pages_in_pt, read, write)?;
-        Ok((pages_mapped as u64) * SIZE_4KB)
-    }
-
-    /// Rollback previously mapped pages and return the appropriate error.
-    ///
-    /// If rollback itself fails, the domain is poisoned.
-    pub(super) fn rollback_mapping(
-        &self,
-        start_iova: u64,
-        mapped_len: u64,
-        error: IommuError,
-    ) -> IommuError {
-        if mapped_len > 0 {
-            if let Err(rollback_err) = self.unmap_range(start_iova, mapped_len) {
-                log::error!(
-                    "[IommuDomain] rollback failed after map error: {:?} (rollback: {:?})",
-                    error,
-                    rollback_err
-                );
-                self.poison();
-                return IommuError::Poisoned;
-            }
-        }
-        error
-    }
-
-    /// Map all pages in the given range transactionally.
-    ///
-    /// If any page mapping fails, all successfully mapped pages are rolled back.
-    pub(super) fn map_pages_transactional(
-        &self,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<(), IommuError> {
-        let mut current_iova = iova;
-        let mut current_phys = phys;
-        let mut remaining = size;
-        let mut mapped_len: u64 = 0;
-
-        while remaining > 0 {
-            match self.map_next_chunk(current_iova, current_phys, remaining, read, write) {
-                Ok(bytes) => {
-                    current_iova += bytes;
-                    current_phys += bytes;
-                    remaining -= bytes;
-                    mapped_len += bytes;
-                }
-                Err(e) => {
-                    return Err(self.rollback_mapping(iova, mapped_len, e));
-                }
-            }
-        }
-
-        Ok(())
-    }
-
     /// Map a DMA region
     ///
     /// This function is transactional: if any page mapping fails, all successfully
@@ -914,6 +841,8 @@ impl IommuDomain {
         self.check_no_overlap(&guards, iova, size)?;
 
         if self.domain_type != IommuDomainType::Passthrough {
+            // Rollback capacity is admitted before any leaf is published.
+            self.reserve_range_retirement(iova, size)?;
             self.map_pages_transactional(iova, phys, size, read, write)?;
         }
 
@@ -932,15 +861,14 @@ impl IommuDomain {
                     iova,
                     size
                 );
-                // Rollback the page table mapping on slab overflow
-                if self.domain_type != IommuDomainType::Passthrough {
-                    let _ = self.unmap_range(iova, size);
-                }
-                // Also remove entries already inserted into earlier shards
                 for prev in guards.iter_mut() {
                     prev.mappings.remove(iova);
                 }
-                return Err(IommuError::OutOfMemory);
+                return Err(if self.domain_type != IommuDomainType::Passthrough {
+                    self.rollback_mapping(iova, size, IommuError::OutOfMemory)
+                } else {
+                    IommuError::OutOfMemory
+                });
             }
         }
 
@@ -955,10 +883,11 @@ impl IommuDomain {
             for guard in guards.iter_mut() {
                 guard.mappings.remove(iova);
             }
-            if self.domain_type != IommuDomainType::Passthrough {
-                let _ = self.unmap_range(iova, size);
-            }
-            return Err(e);
+            return Err(if self.domain_type != IommuDomainType::Passthrough {
+                self.rollback_mapping(iova, size, e)
+            } else {
+                e
+            });
         }
 
         self.mapped_size.fetch_add(size, Ordering::Relaxed);
@@ -1027,20 +956,32 @@ impl IommuDomain {
     }
 }
 
-impl Drop for IommuDomain {
-    fn drop(&mut self) {
-        // 1. Release any page tables waiting in the quarantine
-        if let Ok(mut pending) = self.pending_pt_release.lock() {
-            for pt in pending.drain(..) {
-                self.page_table_pool.release(pt);
+impl IommuDomain {
+    /// Retire a uniquely owned domain after its hardware context has been removed.
+    /// # Safety
+    /// No device, CPU borrower or controller context can access this domain.
+    /// Context, domain paging-structure and ATS invalidations completed after
+    /// removal. Dropping a domain without this proof retains its physical RAM.
+    pub(in crate::io::iommu) unsafe fn retire_after_invalidation(mut self) {
+        let mut pending = self
+            .pending_pt_release
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // LOOP_PROOF: mode=event; reason=Unique finalization consumes the two finite cohorts and exits when no retired table remains.;
+        loop {
+            if !pending.capture() {
+                break;
+            }
+            // SAFETY: caller completed all translations before this finalization.
+            for table in unsafe { pending.take_completed() } {
+                // SAFETY: each retained owner belongs to this retired domain.
+                self.page_table_pool
+                    .release(unsafe { table.complete_after_invalidation() });
             }
         }
-
-        // 2. Iteratively deallocate the main page table hierarchy
-        if !self.page_table.is_null() {
-            unsafe {
-                self.deallocate_page_tables_iterative();
-            }
-        }
+        drop(pending);
+        // SAFETY: all hardware users and borrowers are retired by caller.
+        unsafe { self.deallocate_page_tables_iterative() };
+        self.page_table = core::ptr::null_mut();
     }
 }
