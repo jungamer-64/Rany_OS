@@ -17,7 +17,6 @@
 //   mm/sync/       -- MM同期プリミティブ
 //   mm/numa/       -- NUMAサポート
 //   mm/meta/       -- ページメタデータ・アカウンティング
-//   mm/advanced/   -- 高度な機能のうち現行で維持する最小面
 // ============================================================================
 
 // === Foundation (共通型・ユーティリティ) ===
@@ -47,5 +46,3 @@ pub mod numa;
 // === Page Metadata (ページメタデータ・アカウンティング) ===
 pub mod meta;
 
-// === Advanced Features (高度な機能) ===
-pub mod advanced;
