@@ -4,11 +4,11 @@
 // 設計書 4.2.1: デッドロック回避：割り込みフリーキューの採用
 //
 // ハードウェア割り込みとRustのasync/await Futureを連携させる機構
-// ISRから安全にWakerを起動し、Executorにタスクの再開を通知する
+// ISRから安全に通知を保存し、schedulerにタスクの再開を通知する
 //
 // 重要: 2段階Wake方式を採用
-// 1. ISR内ではイベントキューにイベントIDをpushするのみ
-// 2. Executorのメインループでキューをチェックしwake()を呼び出す
+// 1. ISR内ではCPU専用のソース通知集合へ記録するのみ
+// 2. schedulerが有限のsnapshotを処理してwake()を呼び出す
 // ============================================================================
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
@@ -61,7 +61,7 @@ impl InterruptSource {
 }
 
 /// 最大インデックスサイズ（配列サイズ）
-const MAX_INTERRUPT_INDICES: usize = 2048;
+pub(crate) const MAX_INTERRUPT_INDICES: usize = 2048;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
@@ -76,8 +76,8 @@ pub use crate::sync::AtomicWaker;
 /// 割り込みソースごとのWaker管理（ロックフリー版）
 pub struct InterruptWakerRegistry {
     /// 割り込みソース -> AtomicWakerのマッピング（配列）
-    /// spin::Onceを使って遅延初期化（カーネルヒープ初期化後）
-    wakers: spin::Once<Vec<AtomicWaker>>,
+    /// crate::sync::InitOnceを使って遅延初期化（カーネルヒープ初期化後）
+    wakers: crate::sync::InitOnce<Vec<AtomicWaker>>,
     /// 統計: 割り込み回数
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
@@ -88,7 +88,7 @@ impl InterruptWakerRegistry {
     /// 新しいレジストリを作成
     pub const fn new() -> Self {
         Self {
-            wakers: spin::Once::new(),
+            wakers: crate::sync::InitOnce::new(),
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
         }
@@ -105,16 +105,6 @@ impl InterruptWakerRegistry {
         })
     }
 
-    /// 割り込みソースにWakerを登録
-    pub fn register(&self, source: InterruptSource, waker: &Waker) {
-        let idx = source.to_index();
-        if idx >= MAX_INTERRUPT_INDICES {
-            return; // 範囲外は無視
-        }
-
-        self.get_wakers()[idx].register(waker);
-    }
-
     /// 割り込みソースのWakerを起動要求（ISRから呼ばれる）
     ///
     /// 2段階Wake方式:
@@ -127,11 +117,10 @@ impl InterruptWakerRegistry {
             return;
         }
 
-        // spin::Onceが初期化済みかチェック（初期化前はwake不可）
+        // crate::sync::InitOnceが初期化済みかチェック（初期化前はwake不可）
         if self.wakers.get().is_some() {
-            // +1 して 0 を空スロットに使う
             if let Some(current) = crate::cpu::CurrentCpu::acquire() {
-                let _queued = current.defer_interrupt_wake(idx + 1);
+                current.defer_interrupt_wake(idx);
             }
         }
     }
@@ -146,14 +135,15 @@ impl InterruptWakerRegistry {
                 for source in sources {
                     let idx = source.to_index();
                     if idx < MAX_INTERRUPT_INDICES {
-                        let _queued = current.defer_interrupt_wake(idx + 1);
+                        current.defer_interrupt_wake(idx);
                     }
                 }
             }
         }
     }
 
-    /// イベントキューから保留中の割り込みイベントを処理
+    /// 保留ソースの有限の snapshot を非割込みコンテキストで処理する。
+    /// 同じソースへの通知は合流し、処理中の通知は次回の処理へ残る。
     pub fn process_pending_events(&self) {
         let Some(wakers) = self.wakers.get() else {
             return;
@@ -161,18 +151,10 @@ impl InterruptWakerRegistry {
         let Some(current) = crate::cpu::CurrentCpu::acquire() else {
             return;
         };
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(encoded_idx) = current.take_interrupt_wake() {
-            if encoded_idx == 0 {
-                continue;
-            }
-            let idx = encoded_idx - 1;
-            if idx >= MAX_INTERRUPT_INDICES {
-                continue;
-            }
+        current.drain_interrupt_wakes(|idx| {
             wakers[idx].wake();
             self.wake_count.fetch_add(1, Ordering::Relaxed);
-        }
+        });
     }
 
     /// 保留中のイベント数を取得
@@ -187,34 +169,6 @@ impl InterruptWakerRegistry {
             .filter_map(|cpu| runtime.cpu_local(cpu))
             .map(|local| local.remote().pending_interrupt_wakes())
             .sum()
-    }
-
-    /// 割り込みソースの登録を解除
-    pub fn unregister(&self, source: InterruptSource) {
-        let idx = source.to_index();
-        if idx >= MAX_INTERRUPT_INDICES {
-            return;
-        }
-
-        // 初期化済みならクリア
-        if let Some(wakers) = self.wakers.get() {
-            // AtomicWakerにはclear()がない？
-            // registerで上書きされるので実質問題ないが、厳密には残る。
-            // AtomicWakerの実装を確認する必要があるが、明示的なunregisterは通常不要。
-            // register(noop_waker) で消す手はあるが、Wakerが必要。
-            // そもそもAtomicWakerは "one-shot" の性質を持つ場合が多いが、
-            // ここの実装は "register" されたら次の "wake" まで有効。
-            // unregisterは実はあまり必要ない（タスクがドロップされればWakerも無効になるはずだが、
-            // AtomicWakerはWakerを保持し続けるので、メモリリークのリスクはある？）
-            // 前の BTreeMap 実装では remove していた。
-            // AtomicWakerに clear() メソッドを追加するのも一つの手。
-
-            // AtomicWaker.rs (step 796) says:
-            // pub fn clear(&self) { ... }
-            // So we can use clear().
-
-            wakers[idx].clear();
-        }
     }
 
     /// 統計を取得
@@ -254,11 +208,6 @@ static INTERRUPT_WAKER_REGISTRY: InterruptWakerRegistry = InterruptWakerRegistry
 /// 割り込みWakerレジストリにアクセス
 pub fn interrupt_waker_registry() -> &'static InterruptWakerRegistry {
     &INTERRUPT_WAKER_REGISTRY
-}
-
-/// 割り込みソースにWakerを登録（便利関数）
-pub fn register_interrupt_waker(source: InterruptSource, waker: &Waker) {
-    INTERRUPT_WAKER_REGISTRY.register(source, waker);
 }
 
 /// 割り込みハンドラから呼ばれる（便利関数）
@@ -306,25 +255,6 @@ pub fn wait_for_interrupt(source: InterruptSource) -> InterruptFuture {
 pub struct InterruptFuture {
     source: InterruptSource,
     registered: bool,
-}
-
-impl core::future::Future for InterruptFuture {
-    type Output = ();
-
-    fn poll(
-        mut self: core::pin::Pin<&mut Self>,
-        cx: &mut core::task::Context<'_>,
-    ) -> core::task::Poll<Self::Output> {
-        if !self.registered {
-            // 最初のpollでWakerを登録
-            register_interrupt_waker(self.source, cx.waker());
-            self.registered = true;
-            core::task::Poll::Pending
-        } else {
-            // 割り込みが来てwakeされた
-            core::task::Poll::Ready(())
-        }
-    }
 }
 
 // ============================================================================
@@ -391,23 +321,5 @@ mod tests {
             InterruptSource::from_vector(0x30),
             Some(InterruptSource::Irq(0x30))
         );
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn interrupt_event_queue_preserves_full_capacity() {
-        let queue = InterruptEventQueue::new();
-        assert_eq!(queue.pop(), None);
-
-        for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
-            assert!(queue.push_once(i + 1), "failed at {}", i);
-        }
-        assert!(!queue.push_once(usize::MAX));
-        assert_eq!(queue.len(), INTERRUPT_EVENT_QUEUE_SIZE);
-
-        for i in 0..INTERRUPT_EVENT_QUEUE_SIZE {
-            assert_eq!(queue.pop(), Some(i + 1));
-        }
-        assert_eq!(queue.pop(), None);
     }
 }
