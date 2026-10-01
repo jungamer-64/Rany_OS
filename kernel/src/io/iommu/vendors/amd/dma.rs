@@ -146,38 +146,6 @@ impl AmdIommuDriver {
         )
     }
 
-    /// コマンドキューなしでの直接 DMA マッピング (同期)
-    fn direct_map_device(
-        &self,
-        domain_id: u16,
-        device: &DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<u64, IommuError> {
-        let domain = self.domain_for_id(domain_id)?;
-        if let Err(err) = domain.map(iova, phys, size, read, write) {
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        if let Err(err) = self.invalidate_iommu_pages(*device, domain_id, iova, size) {
-            let _ = domain.unmap(iova);
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        if let Err(err) = self.invalidate_iotlb_pages(*device, iova, size) {
-            let _ = domain.unmap(iova);
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        Ok(iova)
-    }
-
     pub(crate) async unsafe fn map_for_device_with_perms_async(
         &self,
         device: &DeviceId,
@@ -219,41 +187,6 @@ impl AmdIommuDriver {
             write,
         )
         .await
-    }
-
-    /// コマンドキューなしでの直接 DMA マッピング (非同期)
-    async fn direct_map_device_async(
-        &self,
-        domain_id: u16,
-        device: &DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<u64, IommuError> {
-        let domain = self.domain_for_id(domain_id)?;
-        if let Err(err) = domain.map(iova, phys, size, read, write) {
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        if let Err(err) = self
-            .invalidate_iommu_pages_async(*device, domain_id, iova, size)
-            .await
-        {
-            let _ = domain.unmap(iova);
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        if let Err(err) = self.invalidate_iotlb_pages_async(*device, iova, size).await {
-            let _ = domain.unmap(iova);
-            let _ = self.free_iova_fast(iova, size);
-            return Err(err);
-        }
-
-        Ok(iova)
     }
 
     pub(crate) async unsafe fn map_for_device_async(
@@ -308,20 +241,14 @@ impl AmdIommuDriver {
         }
 
         // 1. Monitor page table releases
-        let pts_before = domain
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
 
         let mapping = domain.unmap(iova)?;
 
-        let pts_after = domain
+        let pt_removed = domain
             .pending_pt_release
             .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
+            .map(|pending| pending.has_pending())
+            .unwrap_or(true);
 
         if pt_removed {
             // SECURITY: Domain-wide invalidation to clear paging-structure caches
@@ -409,20 +336,14 @@ impl AmdIommuDriver {
         }
 
         // 1. Monitor page table releases
-        let pts_before = domain
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
 
         let mapping = domain.unmap(iova)?;
 
-        let pts_after = domain
+        let pt_removed = domain
             .pending_pt_release
             .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
+            .map(|pending| pending.has_pending())
+            .unwrap_or(true);
 
         if pt_removed {
             // SECURITY: Domain-wide invalidation (async)

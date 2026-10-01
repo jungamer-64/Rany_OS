@@ -108,22 +108,6 @@ pub enum MapErrorKind {
     IommuError(IommuError),
 }
 
-/// Map operation error (returns ownership on failure)
-#[derive(Debug)]
-pub struct MapError<T: ?Sized + 'static> {
-    /// The original RRef - returned so caller can retry or clean up
-    pub rref: RRef<T>,
-    /// Error kind
-    pub kind: MapErrorKind,
-}
-
-impl<T: ?Sized + 'static> MapError<T> {
-    /// Create a new map error
-    pub fn new(rref: RRef<T>, kind: MapErrorKind) -> Self {
-        Self { rref, kind }
-    }
-}
-
 /// Unmap operation error kind
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UnmapErrorKind {
