@@ -171,45 +171,6 @@ impl MemoryQuota {
         }
     }
 
-    /// メモリ割り当てを試行
-    ///
-    /// # Returns
-    /// 割り当て可能な場合 `Ok(())`、超過の場合 `Err(QuotaError)`
-    pub fn try_allocate(&self, bytes: u64) -> Result<(), QuotaError> {
-        let current = self.used_bytes.load(Ordering::Relaxed);
-        let new_total = current.saturating_add(bytes);
-
-        if new_total > self.limit_bytes {
-            return Err(QuotaError::MemoryExceeded {
-                requested: bytes,
-                available: self.limit_bytes.saturating_sub(current),
-                limit: self.limit_bytes,
-            });
-        }
-
-        // CAS操作で安全に更新
-        match self.used_bytes.compare_exchange(
-            current,
-            new_total,
-            Ordering::SeqCst,
-            Ordering::Relaxed,
-        ) {
-            Ok(_) => Ok(()),
-            Err(_) => {
-                // 競合が発生、再試行が必要
-                Err(QuotaError::AllocationRace)
-            }
-        }
-    }
-
-    /// メモリ解放を記録
-    pub fn deallocate(&self, bytes: u64) {
-        self.used_bytes.fetch_sub(
-            bytes.min(self.used_bytes.load(Ordering::Relaxed)),
-            Ordering::Relaxed,
-        );
-    }
-
     /// 現在の使用量を取得
     pub fn used(&self) -> u64 {
         self.used_bytes.load(Ordering::Relaxed)
@@ -540,25 +501,6 @@ impl QuotaManager {
     pub fn unregister(&self, domain_id: DomainId) {
         let mut quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
         quotas.remove(&domain_id);
-    }
-
-    /// メモリ割り当てを試行
-    pub fn try_allocate_memory(&self, domain_id: DomainId, bytes: u64) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(quota) = quotas.get(&domain_id) {
-            quota.memory.try_allocate(bytes)
-        } else {
-            // 未登録ドメインは許可（カーネルなど）
-            Ok(())
-        }
-    }
-
-    /// メモリ解放を記録
-    pub fn deallocate_memory(&self, domain_id: DomainId, bytes: u64) {
-        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(quota) = quotas.get(&domain_id) {
-            quota.memory.deallocate(bytes);
-        }
     }
 
     /// CPU時間を消費

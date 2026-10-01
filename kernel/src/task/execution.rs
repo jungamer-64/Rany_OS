@@ -28,7 +28,7 @@ impl Subject {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub struct ExecutionContext {
     pub subject: Subject,
 }
