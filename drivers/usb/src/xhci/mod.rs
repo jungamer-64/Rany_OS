@@ -31,11 +31,8 @@ pub mod command;
 pub mod context;
 pub mod controller;
 pub mod device;
-pub mod doorbell_manager;
 pub mod event_handler;
-pub mod initialization;
 pub mod port_manager;
-pub mod ring_manager;
 pub mod trb;
 
 use alloc::sync::Arc;
@@ -47,19 +44,14 @@ pub use command::{CommandApi, CommandExecutor, CommandFuture};
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
 pub use controller::XhciController;
 pub use device::XhciDevice;
-pub use doorbell_manager::{
-    DoorbellBatch, DoorbellCoordinator, DoorbellTarget, StreamId, XhciDoorbellManager,
-};
 pub use event_handler::{
     CommandCompletionEvent, DeviceNotificationEvent, EventHandler, PortStatusChangeEvent,
     ProcessedEvent, TransferEvent,
 };
-pub use initialization::{XhciCapabilities, XhciInitContext};
 pub use port_manager::{
     PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState,
     XhciPortManager,
 };
-pub use ring_manager::{CommandBuilder, ManagedRing, TransferBuilder, XhciRingManager};
 pub use trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
 
 // ============================================================================
