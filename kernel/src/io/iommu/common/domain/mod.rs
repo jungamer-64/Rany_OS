@@ -22,7 +22,7 @@ use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use spin::{Once, RwLock};
 mod domain_impl;
-mod map_ops;
+mod leaf_walk;
 mod mapping;
 mod paging;
 mod unmap_ops;
@@ -475,11 +475,17 @@ impl DmaResourceRegistry {
     /// Called when a DmaHandle is created for this domain.
     /// O(1) average time, chunks allocated dynamically.
     pub fn register(&self, iova: u64, phys: u64, size: u64) -> Result<(), IommuError> {
-        let mut state = self.state.lock().map_err(|_| {
-            log::error!("[IOMMU] DMA registry state lock poisoned");
-            IommuError::Poisoned
-        })?;
+        let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
+        self.register_locked(&mut state, iova, phys, size)
+    }
 
+    fn register_locked(
+        &self,
+        state: &mut RegistryState,
+        iova: u64,
+        phys: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
         // Refill free list if needed by allocating a new chunk
         if state.free_head == REGISTRY_INVALID_INDEX {
             state.allocate_chunk();
@@ -504,8 +510,6 @@ impl DmaResourceRegistry {
 
         state.hash_buckets[bucket] = slot_idx;
 
-        drop(state);
-
         self.active_count.fetch_add(1, Ordering::Relaxed);
         self.total_bytes.fetch_add(size, Ordering::Relaxed);
 
@@ -517,10 +521,14 @@ impl DmaResourceRegistry {
     /// Called when a DmaHandle is successfully unmapped.
     /// O(1) average time.
     pub fn unregister(&self, iova: u64) -> Result<Option<DmaRegistryEntry>, IommuError> {
-        let bucket = Self::hash_iova(iova);
-
         let mut state = self.state.lock().map_err(|_| IommuError::Poisoned)?;
+        Ok(self.unregister_locked(&mut state, iova))
+    }
 
+    // The caller retains the registry lock across page-table mutation, so
+    // cleanup cannot newly fail after PTEs and mapping metadata commit.
+    fn unregister_locked(&self, state: &mut RegistryState, iova: u64) -> Option<DmaRegistryEntry> {
+        let bucket = Self::hash_iova(iova);
         let mut prev_idx = REGISTRY_INVALID_INDEX;
         let mut curr_idx = state.hash_buckets[bucket];
 
@@ -550,18 +558,16 @@ impl DmaResourceRegistry {
                 slot_mut.next = free_head;
                 state.free_head = curr_idx;
 
-                drop(state);
-
                 self.active_count.fetch_sub(1, Ordering::Relaxed);
                 self.total_bytes.fetch_sub(entry.size, Ordering::Relaxed);
 
-                return Ok(Some(entry));
+                return Some(entry);
             }
             prev_idx = curr_idx;
             curr_idx = state.get_slot(curr_idx).next;
         }
 
-        Ok(None)
+        None
     }
 
     /// Get count of active (non-unmapped) entries
@@ -744,7 +750,7 @@ pub struct IommuDomain {
     /// When a page table becomes empty during unmap, it is moved here.
     /// The next flush() operation will return them to the page_table_pool.
     pub(crate) pending_pt_release:
-        PoisonLock<Vec<crate::io::iommu::common::dma::page_table_pool::PooledPt>>,
+        PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
     /// Global lock for page table hierarchy modifications within this domain.
     ///
     /// Prevents race conditions between concurrent map/unmap operations that

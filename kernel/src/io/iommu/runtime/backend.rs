@@ -4,6 +4,7 @@
 
 //! IOMMU backend enum dispatch (static, zero-allocation).
 
+use crate::io::iommu::common::dma::mapping_outcome::{DeviceMapFailure, DeviceMappedRange};
 use alloc::sync::Arc;
 use x86_64::PhysAddr;
 
@@ -17,7 +18,6 @@ use crate::io::iommu::vendors::intel::IntelIommuDriver;
 /// IOMMU backend implementation selected at init time.
 pub enum IommuBackend {
     Intel(IntelIommuDriver),
-    Amd(AmdIommuDriver),
 }
 
 impl IommuBackend {
@@ -97,7 +97,7 @@ impl IommuBackend {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         match self {
             Self::Intel(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
             Self::Amd(driver) => unsafe { driver.map_for_device(device, phys_addr, size) },
@@ -113,7 +113,7 @@ impl IommuBackend {
         size: u64,
         read: bool,
         write: bool,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         match self {
             Self::Intel(driver) => unsafe {
                 driver.map_for_device_with_perms(device, phys_addr, size, read, write)
@@ -131,7 +131,7 @@ impl IommuBackend {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         match self {
             Self::Intel(driver) => {
                 unsafe { driver.map_for_device_async(device, phys_addr, size) }.await
@@ -142,29 +142,9 @@ impl IommuBackend {
         }
     }
 
-    pub fn unmap_for_device(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        match self {
-            Self::Intel(driver) => driver.unmap_for_device(device, iova, size),
-            Self::Amd(driver) => driver.unmap_for_device(device, iova, size),
-        }
-    }
 
-    pub async fn unmap_for_device_async(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        match self {
-            Self::Intel(driver) => driver.unmap_for_device_async(device, iova, size).await,
-            Self::Amd(driver) => driver.unmap_for_device_async(device, iova, size).await,
-        }
-    }
+
+
 
     pub fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
         match self {

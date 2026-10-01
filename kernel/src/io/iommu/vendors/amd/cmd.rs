@@ -23,17 +23,11 @@ impl AmdIommuDriver {
                 read,
                 write,
             } => self.handle_map_region_device(*device, *iova, *phys, *size, *read, *write),
-            IommuCommandKind::UnmapRegionDevice {
-                device,
-                iova,
-                size: _,
-            } => self.handle_unmap_region_device(*device, *iova),
             IommuCommandKind::InvalidateIotlbGlobal => {
                 self.invalidate_iotlb_global().map(|_| 0).map_err(|_| ())
             }
             IommuCommandKind::InvalidateIotlbDomain { .. } => Err(()),
             IommuCommandKind::MapRegion { .. } => Err(()),
-            IommuCommandKind::UnmapRegion { .. } => Err(()),
         }
     }
 
@@ -117,72 +111,7 @@ impl AmdIommuDriver {
         self.execute_map_and_invalidate(device, domain_id, iova, phys, size, read, write)
     }
 
-    /// Handle UnmapRegionDevice: unmap, invalidate, and free IOVA.
-    fn handle_unmap_region_device(&self, device: DeviceId, iova: u64) -> Result<i32, ()> {
-        let domain_id = self.domain_id_for_device(device).map_err(|_| ())?;
-        let domain = self.domain_for_id(domain_id).map_err(|_| ())?;
 
-        // 1. Monitor page table releases to detect if paging-structure caches need clearing
-        let pts_before = domain
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-
-        let mapping = domain.unmap(iova).map_err(|_| ())?;
-
-        let pts_after = domain
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        // 2. Invalidate IOMMU
-        if pt_removed {
-            // SECURITY: If a page table was removed, we MUST perform a domain-wide
-            // invalidation to clear cached paging-structure entries (Level 2/3/4 caches).
-            // Page-selective invalidation with PDE=1 is intended to clear structures for the
-            // specified range, but a domain-wide flush is the safest way to ensure no
-            // stale paging structure references remain.
-            if let Err(err) = self.invalidate_domain_pages(domain_id, 0, u64::MAX) {
-                log::error!(
-                    "[IOMMU][AMD-Vi] handle_unmap_region_device domain-wide invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(());
-            }
-        } else {
-            if let Err(err) = self.invalidate_domain_pages(domain_id, iova, mapping.size) {
-                log::error!(
-                    "[IOMMU][AMD-Vi] handle_unmap_region_device IOMMU invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(());
-            }
-        }
-
-        if let Err(err) =
-            self.invalidate_domain_device_tlbs(domain_id, Some(iova), Some(mapping.size))
-        {
-            log::error!(
-                "[IOMMU][AMD-Vi] handle_unmap_region_device IOTLB invalidation failed: {:?}. Poisoning domain.",
-                err
-            );
-            domain.poison();
-            return Err(());
-        }
-
-        // 3. Reclaim released page tables if any
-        if pt_removed {
-            domain.flush(self, self).map_err(|_| ())?;
-        }
-
-        self.free_iova_fast(iova, mapping.size).map_err(|_| ())?;
-        Ok(0)
-    }
 }
 
 const MMIO_CMD_BUF_OFFSET: u64 = 0x0008;

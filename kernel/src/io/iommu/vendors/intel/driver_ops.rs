@@ -3,6 +3,7 @@
 // ============================================================================
 
 use super::*;
+use crate::io::iommu::common::dma::mapping_outcome::{DeviceMapFailure, DeviceMappedRange};
 
 mod domain_query;
 mod invalidation;
@@ -154,7 +155,7 @@ impl IntelIommuDriver {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
     }
 
@@ -165,7 +166,7 @@ impl IntelIommuDriver {
         size: u64,
         read: bool,
         write: bool,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         validate_dma_params(phys_addr, size)?;
 
         if let Some(ref controller) = self.controller {
@@ -176,6 +177,7 @@ impl IntelIommuDriver {
                         apply_mapping_sync(
                             controller,
                             &domain_arc,
+                            device,
                             iova,
                             phys_addr.as_u64(),
                             size,
@@ -185,12 +187,12 @@ impl IntelIommuDriver {
                     };
                 }
             }
-            return Err(IommuError::DomainNotFound);
+            return Err(IommuError::DomainNotFound.into());
         }
 
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
-            return Err(IommuError::NotPresent);
+            return Err(IommuError::NotPresent.into());
         }
 
         for controller in &registry.controllers {
@@ -201,6 +203,7 @@ impl IntelIommuDriver {
                         apply_mapping_sync(
                             controller,
                             &domain_arc,
+                            device,
                             iova,
                             phys_addr.as_u64(),
                             size,
@@ -212,7 +215,7 @@ impl IntelIommuDriver {
             }
         }
 
-        Err(IommuError::DomainNotFound)
+        Err(IommuError::DomainNotFound.into())
     }
 
     pub(crate) async unsafe fn map_for_device_async(
@@ -220,12 +223,12 @@ impl IntelIommuDriver {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         validate_dma_params(phys_addr, size)?;
 
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
-            return Err(IommuError::NotPresent);
+            return Err(IommuError::NotPresent.into());
         }
 
         for controller in &registry.controllers {
@@ -240,186 +243,7 @@ impl IntelIommuDriver {
             }
         }
 
-        Err(IommuError::DomainNotFound)
-    }
-
-    pub(crate) fn unmap_for_device(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        if let Some(ref controller) = self.controller {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-                if let Some(domain_arc) = controller.domain(domain_id) {
-                    return Self::perform_unmap(controller, device, &domain_arc, iova, size);
-                }
-            }
-            return Err(IommuError::DomainNotFound);
-        }
-
-        let registry = self.registry()?;
-        if registry.controllers.is_empty() {
-            return Err(IommuError::NotPresent);
-        }
-
-        for controller in &registry.controllers {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-                if let Some(domain_arc) = controller.domain(domain_id) {
-                    return Self::perform_unmap(controller, device, &domain_arc, iova, size);
-                }
-            }
-        }
-
-        Err(IommuError::DomainNotFound)
-    }
-
-    /// Execute the actual unmap on a resolved domain on the caller thread.
-    pub(super) fn perform_unmap(
-        controller: &controller::IommuController,
-        device: &DeviceId,
-        domain_arc: &Arc<IommuDomain>,
-        iova: u64,
-        _size: u64,
-    ) -> Result<(), IommuError> {
-        // 1. Monitor page table releases to detect if paging-structure caches need clearing
-        let pts_before = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-
-        let mapping = domain_arc.unmap(iova)?;
-        let domain_id = domain_arc.id();
-
-        let pts_after = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        if pt_removed {
-            // SECURITY: Domain-wide invalidation to clear paging-structure caches.
-            controller.invalidate_iotlb(domain_id, true)?;
-            domain_arc.flush(controller, controller)?;
-        } else {
-            // Page-selective invalidation with ATS awareness
-            controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-        }
-
-        controller.free_iova(iova, mapping.size)?;
-        Ok(())
-    }
-
-    /// コマンドキュー経由で非同期 UnmapRegionDevice を実行する
-    pub(super) async fn try_cq_unmap_device_async(
-        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
-        controller: &controller::IommuController,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let cmd = IommuCommandKind::UnmapRegionDevice {
-            device: *device,
-            iova,
-            size,
-        };
-        let comp = cq
-            .submit_async(cmd)
-            .await
-            .map_err(|_| controller_cq_submit_error(controller))?;
-        let rc = comp.await;
-        if rc != 0 {
-            return Err(controller_cq_completion_error(rc));
-        }
-        // The command handler owns unmap, invalidation, and IOVA retirement.
-        // A successful completion is not a second retirement authority.
-        Ok(())
-    }
-
-    /// 直接 unmap + IOTLB 無効化 (非同期)
-    pub(super) async fn direct_unmap_invalidate_async(
-        domain_arc: &Arc<IommuDomain>,
-        controller: &controller::IommuController,
-        device: &DeviceId,
-        iova: u64,
-    ) -> Result<(), IommuError> {
-        // 1. Monitor page table releases
-        let pts_before = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-
-        let mapping = domain_arc.unmap(iova)?;
-        let domain_id = domain_arc.id();
-
-        let pts_after = domain_arc
-            .pending_pt_release
-            .lock()
-            .map(|p| p.len())
-            .unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        if pt_removed {
-            // Domain-level invalidation needed to clear paging-structure caches.
-            // Use CQ path if available for async benefits.
-            if let Some(cq) = controller.command_queue_ref() {
-                let kind = IommuCommandKind::InvalidateIotlbDomain { domain: domain_id };
-                let comp = cq
-                    .submit_async(kind)
-                    .await
-                    .map_err(|_| controller_cq_submit_error(controller))?;
-                let rc = comp.await;
-                if rc != 0 {
-                    return Err(controller_cq_completion_error(rc));
-                }
-            } else {
-                controller.invalidate_iotlb(domain_id, true)?;
-            }
-        } else {
-            // Page-selective invalidation with ATS awareness.
-            // Always use the direct QI path which supports page-level granularity.
-            controller.qi_invalidate_unmap(domain_id, device, iova, mapping.size as u64)?;
-        }
-
-        if pt_removed {
-            domain_arc.flush(controller, controller)?;
-        }
-
-        controller.free_iova(iova, mapping.size)?;
-        Ok(())
-    }
-
-    pub(crate) async fn unmap_for_device_async(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), IommuError> {
-        let registry = self.registry()?;
-        if registry.controllers.is_empty() {
-            return Err(IommuError::NotPresent);
-        }
-
-        for controller in &registry.controllers {
-            let domain_id = match controller.get_domain_for_device(*device) {
-                Ok(Some(id)) => id,
-                _ => continue,
-            };
-            let domain_arc = match controller.domain(domain_id) {
-                Some(d) => d,
-                None => continue,
-            };
-            if let Some(cq) = controller.command_queue_ref() {
-                return Self::try_cq_unmap_device_async(cq, controller, device, iova, size).await;
-            }
-            return Self::direct_unmap_invalidate_async(&domain_arc, controller, device, iova)
-                .await;
-        }
-
-        Err(IommuError::DomainNotFound)
+        Err(IommuError::DomainNotFound.into())
     }
 
     pub(crate) fn create_domain(

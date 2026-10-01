@@ -4,6 +4,7 @@
 
 //! AMD-Vi DMA mapping, IOVA allocation, and command queue dispatch.
 
+use crate::io::iommu::common::dma::mapping_outcome::{DeviceMapFailure, DeviceMappedRange};
 use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
@@ -78,7 +79,7 @@ impl AmdIommuDriver {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         unsafe { self.map_for_device_with_perms(device, phys_addr, size, true, true) }
     }
 
@@ -111,8 +112,9 @@ impl AmdIommuDriver {
         size: u64,
         read: bool,
         write: bool,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
+        let domain = self.domain_for_id(domain_id)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
                 device: *device,
@@ -126,24 +128,20 @@ impl AmdIommuDriver {
                 Ok(comp) => comp,
                 Err(_) => {
                     let _ = self.free_iova_fast(iova, size);
-                    return Err(self.cq_submit_error());
+                    return Err(self.cq_submit_error().into());
                 }
             };
             let rc = comp.wait_blocking();
+            let mapping = DeviceMappedRange { iova, domain };
             if rc == 0 {
-                return Ok(iova);
+                return Ok(mapping);
             }
-            return Err(Self::cq_completion_error(rc));
+            return Err(DeviceMapFailure::TranslationPending {
+                cause: Self::cq_completion_error(rc),
+                mapping,
+            });
         }
-        self.direct_map_device(
-            domain_id,
-            device,
-            iova,
-            phys_addr.as_u64(),
-            size,
-            read,
-            write,
-        )
+        self.direct_map_device(domain, device, iova, phys_addr.as_u64(), size, read, write)
     }
 
     pub(crate) async unsafe fn map_for_device_with_perms_async(
@@ -153,8 +151,9 @@ impl AmdIommuDriver {
         size: u64,
         read: bool,
         write: bool,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         let (domain_id, iova) = self.validate_and_allocate_device_iova(device, phys_addr, size)?;
+        let domain = self.domain_for_id(domain_id)?;
         if let Some(ref cq) = self.command_queue {
             let cmd = IommuCommandKind::MapRegionDevice {
                 device: *device,
@@ -168,25 +167,76 @@ impl AmdIommuDriver {
                 Ok(comp) => comp,
                 Err(_) => {
                     let _ = self.free_iova_fast(iova, size);
-                    return Err(self.cq_submit_error());
+                    return Err(self.cq_submit_error().into());
                 }
             };
             let rc = comp.await;
+            let mapping = DeviceMappedRange { iova, domain };
             if rc == 0 {
-                return Ok(iova);
+                return Ok(mapping);
             }
-            return Err(Self::cq_completion_error(rc));
+            return Err(DeviceMapFailure::TranslationPending {
+                cause: Self::cq_completion_error(rc),
+                mapping,
+            });
         }
-        self.direct_map_device_async(
-            domain_id,
-            device,
-            iova,
-            phys_addr.as_u64(),
-            size,
-            read,
-            write,
-        )
-        .await
+        self.direct_map_device_async(domain, device, iova, phys_addr.as_u64(), size, read, write)
+            .await
+    }
+
+    fn direct_map_device(
+        &self,
+        domain: alloc::sync::Arc<super::DomainState>,
+        device: &DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
+        if let Err(cause) = domain.map(iova, phys, size, read, write) {
+            if let Err(error) = self.free_iova_fast(iova, size) {
+                log::error!("unpublished IOVA retirement failed: {error:?}");
+            }
+            return Err(cause.into());
+        }
+        let mapping = DeviceMappedRange { iova, domain };
+        if let Err(cause) = self
+            .invalidate_iommu_pages(*device, mapping.domain.id(), iova, size)
+            .and_then(|_| self.invalidate_iotlb_pages(*device, iova, size))
+        {
+            return Err(DeviceMapFailure::TranslationPending { cause, mapping });
+        }
+        Ok(mapping)
+    }
+
+    async fn direct_map_device_async(
+        &self,
+        domain: alloc::sync::Arc<super::DomainState>,
+        device: &DeviceId,
+        iova: u64,
+        phys: u64,
+        size: u64,
+        read: bool,
+        write: bool,
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
+        if let Err(cause) = domain.map(iova, phys, size, read, write) {
+            if let Err(error) = self.free_iova_fast(iova, size) {
+                log::error!("unpublished IOVA retirement failed: {error:?}");
+            }
+            return Err(cause.into());
+        }
+        let mapping = DeviceMappedRange { iova, domain };
+        if let Err(cause) = self
+            .invalidate_iommu_pages_async(*device, mapping.domain.id(), iova, size)
+            .await
+        {
+            return Err(DeviceMapFailure::TranslationPending { cause, mapping });
+        }
+        if let Err(cause) = self.invalidate_iotlb_pages_async(*device, iova, size).await {
+            return Err(DeviceMapFailure::TranslationPending { cause, mapping });
+        }
+        Ok(mapping)
     }
 
     pub(crate) async unsafe fn map_for_device_async(
@@ -194,203 +244,11 @@ impl AmdIommuDriver {
         device: &DeviceId,
         phys_addr: PhysAddr,
         size: u64,
-    ) -> Result<u64, IommuError> {
+    ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         unsafe {
             self.map_for_device_with_perms_async(device, phys_addr, size, true, true)
                 .await
         }
     }
 
-    /// コマンドキュー経由で同期アンマップを実行する
-    fn unmap_via_command_queue(
-        &self,
-        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
-        device: &DeviceId,
-        domain: &crate::io::iommu::common::domain::IommuDomain,
-        iova: u64,
-    ) -> Result<(), IommuError> {
-        let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
-        let cmd = IommuCommandKind::UnmapRegionDevice {
-            device: *device,
-            iova,
-            size: mapping.size,
-        };
-        let comp = cq.submit(cmd).map_err(|_| self.cq_submit_error())?;
-        let rc = comp.wait_blocking();
-        if rc == 0 {
-            return Ok(());
-        }
-        log::error!(
-            "[IOMMU][AMD-Vi] unmap_via_command_queue failed (rc={}). Poisoning domain.",
-            rc
-        );
-        domain.poison();
-        Err(Self::cq_completion_error(rc))
-    }
-
-    pub(crate) fn unmap_for_device(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        _size: u64,
-    ) -> Result<(), IommuError> {
-        let domain_id = self.domain_id_for_device(*device)?;
-        let domain = self.domain_for_id(domain_id)?;
-        if let Some(ref cq) = self.command_queue {
-            return self.unmap_via_command_queue(cq, device, &domain, iova);
-        }
-
-        // 1. Monitor page table releases
-
-        let mapping = domain.unmap(iova)?;
-
-        let pt_removed = domain
-            .pending_pt_release
-            .lock()
-            .map(|pending| pending.has_pending())
-            .unwrap_or(true);
-
-        if pt_removed {
-            // SECURITY: Domain-wide invalidation to clear paging-structure caches
-            if let Err(err) = self.invalidate_domain_pages(domain_id, 0, u64::MAX) {
-                log::error!(
-                    "[IOMMU][AMD-Vi] unmap_for_device domain-wide invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(err);
-            }
-        } else {
-            if let Err(err) = self.invalidate_iommu_pages(*device, domain_id, iova, mapping.size) {
-                log::error!(
-                    "[IOMMU][AMD-Vi] unmap_for_device IOMMU invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(err);
-            }
-        }
-
-        if let Err(err) = self.invalidate_iotlb_pages(*device, iova, mapping.size) {
-            log::error!(
-                "[IOMMU][AMD-Vi] unmap_for_device IOTLB invalidation failed: {:?}. Poisoning domain.",
-                err
-            );
-            domain.poison();
-            return Err(err);
-        }
-
-        // 3. Reclaim released page tables
-        if pt_removed {
-            domain.flush(self, self)?;
-        }
-
-        // Rejected retirement remains allocated. Do not bypass quarantine after
-        // a failed flush, nor re-free a range whose prefix may already be queued.
-        self.free_iova_fast(iova, mapping.size)?;
-        Ok(())
-    }
-
-    /// コマンドキュー経由で非同期アンマップを実行する
-    async fn unmap_via_command_queue_async(
-        &self,
-        cq: &crate::io::iommu::runtime::command::queue::CommandQueue,
-        device: &DeviceId,
-        domain: &crate::io::iommu::common::domain::IommuDomain,
-        iova: u64,
-    ) -> Result<(), IommuError> {
-        let mapping = domain.mapping(iova).ok_or(IommuError::NotMapped)?;
-        let cmd = IommuCommandKind::UnmapRegionDevice {
-            device: *device,
-            iova,
-            size: mapping.size,
-        };
-        let comp = cq
-            .submit_async(cmd)
-            .await
-            .map_err(|_| self.cq_submit_error())?;
-        let rc = comp.await;
-        if rc == 0 {
-            return Ok(());
-        }
-        log::error!(
-            "[IOMMU][AMD-Vi] unmap_via_command_queue_async failed (rc={}). Poisoning domain.",
-            rc
-        );
-        domain.poison();
-        Err(Self::cq_completion_error(rc))
-    }
-
-    pub(crate) async fn unmap_for_device_async(
-        &self,
-        device: &DeviceId,
-        iova: u64,
-        _size: u64,
-    ) -> Result<(), IommuError> {
-        let domain_id = self.domain_id_for_device(*device)?;
-        let domain = self.domain_for_id(domain_id)?;
-        if let Some(ref cq) = self.command_queue {
-            return self
-                .unmap_via_command_queue_async(cq, device, &domain, iova)
-                .await;
-        }
-
-        // 1. Monitor page table releases
-
-        let mapping = domain.unmap(iova)?;
-
-        let pt_removed = domain
-            .pending_pt_release
-            .lock()
-            .map(|pending| pending.has_pending())
-            .unwrap_or(true);
-
-        if pt_removed {
-            // SECURITY: Domain-wide invalidation (async)
-            if let Err(err) = self
-                .invalidate_domain_pages_async(domain_id, 0, u64::MAX)
-                .await
-            {
-                log::error!(
-                    "[IOMMU][AMD-Vi] unmap_for_device_async domain-wide invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(err);
-            }
-        } else {
-            if let Err(err) = self
-                .invalidate_iommu_pages_async(*device, domain_id, iova, mapping.size)
-                .await
-            {
-                log::error!(
-                    "[IOMMU][AMD-Vi] unmap_for_device_async IOMMU invalidation failed: {:?}. Poisoning domain.",
-                    err
-                );
-                domain.poison();
-                return Err(err);
-            }
-        }
-
-        if let Err(err) = self
-            .invalidate_iotlb_pages_async(*device, iova, mapping.size)
-            .await
-        {
-            log::error!(
-                "[IOMMU][AMD-Vi] unmap_for_device_async IOTLB invalidation failed: {:?}. Poisoning domain.",
-                err
-            );
-            domain.poison();
-            return Err(err);
-        }
-
-        // 3. Reclaim released page tables
-        if pt_removed {
-            domain.flush(self, self)?;
-        }
-
-        // Failure must reach the DMA owner; no immediate-free fallback is valid.
-        self.free_iova_fast(iova, mapping.size)?;
-        Ok(())
-    }
 }

@@ -91,6 +91,14 @@ impl DomainManager for IommuController {
     }
 
     fn destroy_domain(&self, id: u16) -> Result<(), IommuError> {
+        // Exclude lookup/attach admission through completion. Every admitted
+        // attach retains an Arc until device-registry publication, so unique
+        // ownership excludes both CPU borrowers and in-flight publishers.
+        let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
+        let domain = domains.get(&id).ok_or(IommuError::DomainNotFound)?;
+        if Arc::strong_count(domain) != 1 || domain.active_dma_count() != 0 {
+            return Err(IommuError::InUse);
+        }
         // SECURITY: Check if any devices are still attached to this domain
         {
             let device_domains = self
@@ -106,31 +114,25 @@ impl DomainManager for IommuController {
             }
         }
 
-        let domain_arc = match self.domains.lock() {
-            Ok(mut domains) => domains.remove(&id).ok_or(IommuError::DomainNotFound)?,
-            Err(_) => return Err(IommuError::HardwareError),
-        };
-
-        // SECURITY: Force-unmap all remaining DMA mappings tracked in the registry.
-        // This prevents DMA-after-free and IOTLB inconsistency if some handles were leaked.
-        if let Ok(leaked_entries) = domain_arc.force_unmap_all_dma() {
-            for entry in leaked_entries {
-                // Free the IOVA in the controller context to ensure it can be reused later
-                let _ = self.free_iova(entry.iova, entry.size);
+        // Failure retains the registry's owner and every retirement cohort for
+        // retry. IOVA space is domain-owned and is destroyed with that domain.
+        domain.flush(self, self)?;
+        crate::io::iommu::common::domain::IommuInvalidator::invalidate(
+            self,
+            crate::io::iommu::common::domain::InvalidateRequest::domain(id).with_ats(),
+        )?;
+        let owner = domains.remove(&id).ok_or(IommuError::DomainNotFound)?;
+        let domain = match Arc::try_unwrap(owner) {
+            Ok(domain) => domain,
+            Err(owner) => {
+                domains.insert(id, owner);
+                return Err(IommuError::InUse);
             }
-        }
-
-        // Invalidate IOTLB for this domain to ensure hardware no longer has cached entries
-        if let Err(err) = self.invalidate_iotlb(id, true) {
-            log::error!(
-                "[IOMMU] Critical: Failed to invalidate IOTLB during domain {} destruction: {:?}",
-                id,
-                err
-            );
-            domain_arc.poison();
-            return Err(err);
-        }
-
+        };
+        drop(domains);
+        // SAFETY: admission was excluded, all attached contexts were removed
+        // with ATS closure, and domain paging-structure invalidation completed.
+        unsafe { domain.retire_after_invalidation() };
         Ok(())
     }
 
@@ -148,8 +150,9 @@ impl DomainManager for IommuController {
             }
         }
 
-        let (domain_type, page_table_addr, bus, devfn) =
-            self.resolve_domain_for_attach(domain_id, device)?;
+        let (domain, bus, devfn) = self.resolve_domain_for_attach(domain_id, device)?;
+        let domain_type = domain.domain_type();
+        let page_table_addr = domain.page_table_addr();
         let mut hw_guard = self
             .hardware
             .lock()
@@ -184,6 +187,7 @@ impl DomainManager for IommuController {
             .lock()
             .map_err(|_| IommuError::HardwareError)?
             .insert(device, domain_id);
+        drop(domain);
         Ok(())
     }
 
@@ -245,7 +249,11 @@ impl DomainManager for IommuController {
                 domain_arc
                     .map(*iova, *phys, *size, *read, *write)
                     .map_err(|_| ())?;
-                self.invalidate_iotlb(*domain, false).map_err(|_| ())?;
+                crate::io::iommu::common::domain::IommuInvalidator::invalidate(
+                    self,
+                    InvalidateRequest::domain(*domain).with_ats(),
+                )
+                .map_err(|_| ())?;
                 Ok(0)
             }
             IommuCommandKind::MapRegionDevice {
@@ -264,68 +272,15 @@ impl DomainManager for IommuController {
                     .map(*iova, *phys, *size, *read, *write)
                     .map_err(|_| ())?;
                 self.invalidate_iotlb(domain_id, false).map_err(|_| ())?;
-                if self.should_invalidate_device_tlb(device) {
+                if self.should_invalidate_device_tlb(device).map_err(|_| ())? {
                     self.qi_invalidate_device_tlb_all(device.requester_id())
                         .map_err(|_| ())?;
                     self.qi_wait_sync().map_err(|_| ())?;
                 }
                 Ok(0)
             }
-            IommuCommandKind::UnmapRegion {
-                domain,
-                iova,
-                size: _,
-            } => {
-                let domain_arc = self.domain(*domain).ok_or(())?;
-                let pts_before = domain_arc
-                    .pending_pt_release
-                    .lock()
-                    .map(|p| p.len())
-                    .unwrap_or(0);
-                let mapping = domain_arc.unmap(*iova).map_err(|_| ())?;
-                let pts_after = domain_arc
-                    .pending_pt_release
-                    .lock()
-                    .map(|p| p.len())
-                    .unwrap_or(0);
-                let pt_removed = pts_after > pts_before;
 
-                self.invalidate_iotlb(*domain, true).map_err(|_| ())?;
-                if pt_removed {
-                    domain_arc.flush(self, self).map_err(|_| ())?;
-                }
 
-                // A failed retirement is not permission to bypass quarantine.
-                self.free_iova(*iova, mapping.size).map_err(|_| ())?;
-                Ok(0)
-            }
-            IommuCommandKind::UnmapRegionDevice { device, iova, .. } => {
-                let (domain_id, domain_arc) = self.resolve_device_domain(device).map_err(|_| ())?;
-                let pts_before = domain_arc
-                    .pending_pt_release
-                    .lock()
-                    .map(|p| p.len())
-                    .unwrap_or(0);
-                let mapping = domain_arc.unmap(*iova).map_err(|_| ())?;
-                let pts_after = domain_arc
-                    .pending_pt_release
-                    .lock()
-                    .map(|p| p.len())
-                    .unwrap_or(0);
-                let pt_removed = pts_after > pts_before;
-
-                if pt_removed {
-                    self.invalidate_iotlb(domain_id, true).map_err(|_| ())?;
-                    domain_arc.flush(self, self).map_err(|_| ())?;
-                } else {
-                    self.qi_invalidate_unmap(domain_id, device, *iova, mapping.size as u64)
-                        .map_err(|_| ())?;
-                }
-
-                // Keep rejected IOVAs allocated and report failure to the owner.
-                self.free_iova(*iova, mapping.size).map_err(|_| ())?;
-                Ok(0)
-            }
             IommuCommandKind::InvalidateIotlbDomain { domain } => self
                 .invalidate_iotlb(*domain, true)
                 .map(|_| 0)

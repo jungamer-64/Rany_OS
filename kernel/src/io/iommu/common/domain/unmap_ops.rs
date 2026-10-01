@@ -120,70 +120,7 @@ impl IommuDomain {
     ///
     /// # Errors
     /// Returns `UnmapError<T>` containing the handle on failure.
-    pub fn unmap_buffer<T, I: IommuInvalidator>(
-        &self,
-        mut handle: crate::io::iommu::common::dma::handle::DmaHandle<T>,
-        context: &dyn IommuHardwareContext,
-        invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::common::dma::handle::UnmapError<T>> {
-        use crate::io::iommu::common::dma::handle::{UnmapError, UnmapErrorKind};
 
-        let iova = handle.iova();
-        let size = handle.size();
-
-        // Page-align the size (round up)
-        let aligned_size = (size + 4095) & !4095;
-
-        // 1. Monitor page table releases to detect if paging-structure caches need clearing
-        let pts_before = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
-
-        // Unmap from page tables
-        if let Err(e) = self.unmap(iova) {
-            return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
-        }
-
-        let pts_after = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        // 2. Invalidate IOTLB
-        let mut req = InvalidateRequest::pages(self.id, iova, aligned_size).with_ats();
-        if pt_removed {
-            // SECURITY: If a page table was removed, we MUST perform a domain-selective
-            // invalidation to clear cached paging-structure entries (Level 2/3/4 caches).
-            // Page-selective invalidation is NOT sufficient for clearing intermediate caches.
-            req = InvalidateRequest::domain(self.id).with_ats();
-        }
-
-        if let Err(e) = invalidator.invalidate(req) {
-            // IOTLB invalidation failed - this is critical!
-            // We can't return the RRef because device may still access it
-            return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
-        }
-
-        // 3. If we performed a domain-selective flush, it is safe to release the PTs now
-        if pt_removed {
-            let _ = self.flush(invalidator, context);
-        }
-
-        // SECURITY: Use immediate free because we have just confirmed IOTLB invalidation
-        // for this specific range (or the entire domain). Bypassing the allocator's
-        // internal quarantine is safe here and prevents permanent IOVA leaks since
-        // the per-domain allocator's epoch is not automatically advanced by the controller.
-        if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
-            log::error!(
-                "[IommuDomain] IOVA immediate free failed for 0x{:x}: {:?}",
-                iova,
-                e
-            );
-        }
-        let _ = context; // context kept for API compatibility
-
-        // Take the RRef from the handle (marks it as unmapped)
-        match handle.take_rref() {
-            Some(rref) => Ok(rref),
-            None => Err(UnmapError::new(handle, UnmapErrorKind::InvalidIova)),
-        }
-    }
 
     /// Unmap a DMA buffer asynchronously and return the RRef
     ///
@@ -201,67 +138,7 @@ impl IommuDomain {
     ///
     /// # Returns
     /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
-    pub async fn unmap_buffer_async<T, I: IommuInvalidator + Sync>(
-        &self,
-        mut handle: crate::io::iommu::common::dma::handle::DmaHandle<T>,
-        context: &dyn IommuHardwareContext,
-        invalidator: &I,
-    ) -> Result<crate::ipc::RRef<T>, crate::io::iommu::common::dma::handle::UnmapError<T>> {
-        use crate::io::iommu::common::dma::handle::{UnmapError, UnmapErrorKind};
 
-        let iova = handle.iova();
-        let size = handle.size();
-        let domain_id = self.id;
-
-        // Page-align the size (round up)
-        let aligned_size = (size + 4095) & !4095;
-
-        // 1. Monitor page table releases
-        let pts_before = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
-
-        // Unmap from page tables (sync)
-        if let Err(e) = self.unmap(iova) {
-            return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
-        }
-
-        let pts_after = self.pending_pt_release.lock().map(|p| p.len()).unwrap_or(0);
-        let pt_removed = pts_after > pts_before;
-
-        // 2. Invalidate IOTLB asynchronously
-        let mut req = InvalidateRequest::pages(domain_id, iova, aligned_size).with_ats();
-        if pt_removed {
-            // SECURITY: Clear paging-structure entries
-            req = InvalidateRequest::domain(domain_id).with_ats();
-        }
-
-        if let Err(e) = invalidator.invalidate_async(req).await {
-            // IOTLB invalidation failed - critical!
-            // We can't return the RRef because device may still access it
-            return Err(UnmapError::new(handle, UnmapErrorKind::IommuError(e)));
-        }
-
-        // 3. Cleanup released PTs after confirmed invalidation
-        if pt_removed {
-            let _ = self.flush(invalidator, context);
-        }
-
-        // SECURITY: Use immediate free because we have just confirmed IOTLB invalidation
-        // for this range (async). Bypassing the allocator's internal quarantine is safe
-        // here and prevents permanent IOVA leaks.
-        if let Err(e) = self.free_iova_immediate(iova, aligned_size) {
-            log::error!(
-                "[IommuDomain] IOVA async immediate free failed for 0x{:x}: {:?}",
-                iova,
-                e
-            );
-        }
-
-        // Take the RRef from the handle (marks it as unmapped)
-        match handle.take_rref() {
-            Some(rref) => Ok(rref),
-            None => Err(UnmapError::new(handle, UnmapErrorKind::InvalidIova)),
-        }
-    }
 
     /// Find the next child page table entry starting from `start_idx`.
     ///
@@ -313,12 +190,6 @@ impl IommuDomain {
     /// - The domain must not be in use by hardware and should already be detached
     pub(crate) unsafe fn deallocate_page_tables_iterative(&mut self) {
         unsafe {
-            let layout = alloc::alloc::Layout::from_size_align(
-                PT_ENTRIES * core::mem::size_of::<SlPte>(),
-                4096,
-            )
-            .expect("invalid page table layout");
-
             /// Stack entry for iterative page table traversal.
             /// Using a fixed-size array avoids heap allocation during Drop.
             #[derive(Clone, Copy)]
@@ -357,21 +228,17 @@ impl IommuDomain {
                 if level <= 1 || next_idx >= PT_ENTRIES {
                     stack_top -= 1;
 
-                    // Return table to pool (it will unregister if pool is full and truly deallocating)
+                    // SAFETY: caller retired the entire domain's hardware
+                    // context and translations before hierarchy traversal.
                     if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                        if let Some(pt) =
-                            crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(
+                        if let Some(table) =
+                            crate::io::iommu::common::dma::page_table_pool::take_unlinked_table(
                                 phys,
                             )
                         {
-                            self.page_table_pool.release(pt);
-                        } else {
-                            // Fallback for direct allocations not in registry
-                            unregister_page_table(phys);
-                            alloc::alloc::dealloc(table_ptr as *mut u8, layout);
+                            self.page_table_pool
+                                .release(table.complete_after_invalidation());
                         }
-                    } else {
-                        alloc::alloc::dealloc(table_ptr as *mut u8, layout);
                     }
                     continue;
                 }

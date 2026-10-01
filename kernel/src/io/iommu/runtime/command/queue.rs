@@ -4,7 +4,7 @@
 
 //!
 // Command Queue for IOMMU - initial implementation
-// - Per-controller MPSC queue using existing BoundedChannel
+// - Per-controller MPSC queue with controller-owned backing
 // - Preallocated completion slots (no per-command heap allocations)
 // - `submit()` + `CommandCompletion::wait_blocking()` for blocking callers
 // - process_once() worker to be called periodically by the Executor
@@ -12,19 +12,18 @@
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
 use crate::sync::lockfree::Backoff;
-use crate::sync::lockfree::BoundedChannel;
-use crate::sync::lockfree::BoundedReceiver;
-use crate::sync::lockfree::BoundedSender;
 use crate::sync::lockfree::DEFAULT_QUEUE_SIZE;
+use crate::sync::lockfree::MpscRingBuffer;
 use core::future::poll_fn;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
+#[cfg(test)]
 use alloc::vec::Vec;
 
-use crate::io::iommu::types::DeviceId;
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 /// Command kinds (initial subset)
 #[derive(Debug, Clone)]
@@ -50,18 +49,6 @@ pub enum IommuCommandKind {
         size: u64,
         read: bool,
         write: bool,
-    },
-    /// Unmap a region from the given domain (size may be 4KB-aligned)
-    UnmapRegion {
-        domain: u16,
-        iova: u64,
-        size: u64,
-    },
-    /// Unmap a region for a specific device
-    UnmapRegionDevice {
-        device: DeviceId,
-        iova: u64,
-        size: u64,
     },
     // TODO: PRQ/QR ops etc.
 }
@@ -302,14 +289,81 @@ impl core::future::Future for CommandCompletion<'_> {
     }
 }
 
-/// CommandQueue holds sender/receiver and completion slots
+/// CPU-owned completion storage has no hardware publication. Queue borrowing
+/// retains every initialized atomic slot through futures, workers and waiters;
+/// destroying the queue drops wakers and consumes its physical owner.
+struct CompletionRecords {
+    pointer: core::ptr::NonNull<CompletionSlot>,
+    backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
+    node: usize,
+}
+// SAFETY: records expose only shared atomic slot operations; initialization and
+// destruction require exclusive ownership, retained by CommandQueue borrows.
+unsafe impl Send for CompletionRecords {}
+unsafe impl Sync for CompletionRecords {}
+impl CompletionRecords {
+    fn new(numa_node: Option<usize>) -> Result<Self, IommuError> {
+        let bytes = core::mem::size_of::<CompletionSlot>() * DEFAULT_QUEUE_SIZE;
+        let frames = bytes.div_ceil(crate::mm::types::PAGE_SIZE_4K);
+        let alignment = core::mem::align_of::<CompletionSlot>().max(crate::mm::types::PAGE_SIZE_4K);
+        let backing = if let Some(node) = numa_node {
+            let node = u8::try_from(node).map_err(|_| IommuError::InvalidAddress)?;
+            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned_on_node(
+                crate::mm::types::NumaNodeId::new(node),
+                frames,
+                alignment,
+            )
+        } else {
+            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(frames, alignment)
+        }
+        .map_err(IommuError::PhysicalAllocation)?;
+        let node = backing.node().as_usize();
+        let address = crate::mm::virt::mapping::phys_to_virt(backing.start_address());
+        // SAFETY: the PMM owner admits nonzero aligned RAM and the HHDM retains
+        // its mapping. Every slot is initialized before any shared publication.
+        let pointer =
+            unsafe { core::ptr::NonNull::new_unchecked(address.as_u64() as *mut CompletionSlot) };
+        for index in 0..DEFAULT_QUEUE_SIZE {
+            unsafe { pointer.as_ptr().add(index).write(CompletionSlot::new()) };
+        }
+        Ok(Self {
+            pointer,
+            backing: Some(backing),
+            node,
+        })
+    }
+}
+impl core::ops::Deref for CompletionRecords {
+    type Target = [CompletionSlot];
+    fn deref(&self) -> &Self::Target {
+        // SAFETY: the owner retains exactly DEFAULT_QUEUE_SIZE initialized slots.
+        unsafe { core::slice::from_raw_parts(self.pointer.as_ptr(), DEFAULT_QUEUE_SIZE) }
+    }
+}
+impl Drop for CompletionRecords {
+    fn drop(&mut self) {
+        // SAFETY: no queue borrower remains; all slots and stored wakers retire
+        // before consuming RAM release authority. This metadata is never DMA-visible.
+        unsafe {
+            core::ptr::drop_in_place(core::ptr::slice_from_raw_parts_mut(
+                self.pointer.as_ptr(),
+                DEFAULT_QUEUE_SIZE,
+            ))
+        };
+        if let Some(backing) = self.backing.take() {
+            backing.release();
+        }
+    }
+}
+
+/// The queue owns its channel and completion slots. A completion/future cannot
+/// outlive, move or destroy the queue; bounded submission does not leak backing.
 pub struct CommandQueue {
+    commands: Box<MpscRingBuffer<IommuCommand, DEFAULT_QUEUE_SIZE>>,
     receiver: PoisonLock<()>,
-    slots: Box<[CompletionSlot]>,
+    slots: CompletionRecords,
     next_alloc: AtomicUsize,
     poisoned: AtomicBool,
-    /// Optional NUMA node hint used for allocating the slots array
-    numa_node: Option<usize>,
     /// Waker for tasks waiting for a free slot
     slot_waiter: AtomicWaker,
     /// Waker for tasks waiting for send space on the channel
@@ -329,7 +383,7 @@ impl core::fmt::Debug for CommandQueue {
         f.debug_struct("CommandQueue")
             .field("next_alloc", &self.next_alloc.load(Ordering::Relaxed))
             .field("poisoned", &self.is_poisoned())
-            .field("numa_node", &self.numa_node)
+            .field("numa_node", &self.slots.node)
             .field(
                 "processed_count",
                 &self.processed_count.load(Ordering::Relaxed),
@@ -347,6 +401,28 @@ impl core::fmt::Debug for CommandQueue {
 }
 
 impl CommandQueue {
+    /// Admit all storage before the queue is usable. An explicit node applies
+    /// strictly to the completion records; channel metadata follows heap locality.
+    pub fn new(numa_node: Option<usize>) -> Result<Self, IommuError> {
+        let commands =
+            Box::try_new(MpscRingBuffer::new()).map_err(|_| IommuError::MetadataAllocation)?;
+        let slots = CompletionRecords::new(numa_node)?;
+        Ok(Self {
+            commands,
+            receiver: PoisonLock::new(()),
+            slots,
+            next_alloc: AtomicUsize::new(0),
+            poisoned: AtomicBool::new(false),
+            slot_waiter: AtomicWaker::new(),
+            send_waiter: AtomicWaker::new(),
+            recv_waiter: AtomicWaker::new(),
+            processed_count: AtomicUsize::new(0),
+            cancelled_count: AtomicUsize::new(0),
+            cancel_attempts: AtomicUsize::new(0),
+            reclaimed_count: AtomicUsize::new(0),
+            send_backpressure_count: AtomicUsize::new(0),
+        })
+    }
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Acquire)
@@ -368,10 +444,10 @@ impl CommandQueue {
 
     fn with_receiver<R>(
         &self,
-        f: impl FnOnce(&BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>) -> R,
+        f: impl FnOnce(&MpscRingBuffer<IommuCommand, DEFAULT_QUEUE_SIZE>) -> R,
     ) -> Result<R, ()> {
         match self.receiver.lock() {
-            Ok(guard) => Ok(f(&guard)),
+            Ok(_guard) => Ok(f(&self.commands)),
             Err(poisoned) => {
                 drop(poisoned.into_inner());
                 self.poison();
@@ -505,7 +581,7 @@ impl CommandQueue {
                 self.release_unsubmitted_slot(slot_idx);
                 return Err(());
             }
-            match self.sender.send(cmd.clone()) {
+            match self.commands.push(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
                     return Ok(CommandCompletion {
@@ -589,7 +665,7 @@ impl CommandQueue {
                 self.release_unsubmitted_slot(slot_idx);
                 return Err(());
             }
-            match self.sender.send(cmd.clone()) {
+            match self.commands.push(cmd.clone()) {
                 Ok(_) => {
                     self.recv_waiter.wake();
                     submitted = true;
@@ -682,7 +758,7 @@ impl CommandQueue {
                 }
             }
 
-            let cmd = match self.with_receiver(|rx| rx.recv()) {
+            let cmd = match self.with_receiver(|rx| rx.pop()) {
                 Ok(cmd) => cmd,
                 Err(()) => break,
             };
@@ -752,7 +828,7 @@ impl CommandQueue {
                 }
             }
 
-            let cmd = match self.with_receiver(|rx| rx.recv()) {
+            let cmd = match self.with_receiver(|rx| rx.pop()) {
                 Ok(cmd) => cmd,
                 Err(()) => break,
             };
@@ -870,7 +946,7 @@ impl<'a> core::future::Future for SubmitFuture<'a> {
         };
 
         // Try non-busy send
-        match q.sender.send(cmd.clone()) {
+        match q.commands.push(cmd.clone()) {
             Ok(_) => {
                 q.recv_waiter.wake();
                 this.kind = None;
@@ -896,7 +972,7 @@ impl<'a> core::future::Future for SubmitFuture<'a> {
                     this.kind = None;
                     return Poll::Ready(Err(()));
                 }
-                if q.sender.send(cmd).is_ok() {
+                if q.commands.push(cmd).is_ok() {
                     q.recv_waiter.wake();
                     q.send_waiter.clear();
                     this.kind = None;
@@ -925,7 +1001,7 @@ impl Drop for SubmitFuture<'_> {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_reclaim_completed_slot() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new()));
+    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
     let comp1 = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
@@ -941,7 +1017,7 @@ pub(crate) fn qemu_smoke_reclaim_completed_slot() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_cancel_queued_command() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new()));
+    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
     let comp = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 })
@@ -961,7 +1037,7 @@ pub(crate) fn qemu_smoke_cancel_queued_command() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new()));
+    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
     let comp = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 })
@@ -980,7 +1056,7 @@ pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new()));
+    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
     let mut comps: Vec<CommandCompletion<'_>> = Vec::new();
     for i in 0..5 {
@@ -1024,7 +1100,7 @@ pub(crate) fn qemu_smoke_fuel_shim_basic() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_metrics_counts() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new()));
+    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
     if q.processed_total() != 0 || q.cancelled_total() != 0 || q.cancel_attempts_total() != 0 {
         return false;
     }
@@ -1050,9 +1126,9 @@ mod tests {
 
     #[cfg(feature = "std")]
     fn poison_receiver_lock(q: &CommandQueue) {
-        crate::sync::set_panicking(true);
         {
             let _guard = q.receiver.lock().unwrap();
+            crate::sync::set_panicking(true);
         }
         crate::sync::set_panicking(false);
         assert!(q.receiver.is_poisoned());
@@ -1063,7 +1139,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_queue_basic() {
         // Leak the queue to get a 'static reference for thread spawn in tests
-        let q = Box::leak(Box::new(CommandQueue::new()));
+        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
         // Worker thread: act as executor and process commands
         let worker_q: &'static CommandQueue = &*q;
@@ -1098,7 +1174,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_queue_map_unmap() {
         // Leak the queue to get a 'static reference for thread spawn in tests
-        let q = Box::leak(Box::new(CommandQueue::new()));
+        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
         // Worker thread: process incoming commands and validate content
         let worker_q: &'static CommandQueue = &*q;
@@ -1178,7 +1254,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_completion_future() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
+        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
         let worker_q: &'static CommandQueue = &*q;
 
         let worker = std::thread::spawn(move || {
@@ -1213,9 +1289,9 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_new_with_numa_allocates_slots() {
+    fn completion_records_obey_explicit_node_and_alignment() {
         // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
-        let q = CommandQueue::new_with_numa(Some(0));
+        let q = CommandQueue::new(Some(0)).expect("queue admission");
         assert_eq!(q.slots.len(), DEFAULT_QUEUE_SIZE);
         // try to acquire a slot and ensure completion works
         assert!(q.slots[0].try_acquire());
@@ -1223,7 +1299,21 @@ mod tests {
         let rc = q.slots[0].wait_result_spin();
         assert_eq!(rc, RESULT_OK);
         // sanity check
-        assert_eq!(q.numa_node, Some(0));
+        assert_eq!(q.slots.node, 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn completion_admission_preserves_invalid_node_failure() {
+        let error = CommandQueue::new(Some(usize::MAX)).unwrap_err();
+        assert_eq!(error, IommuError::InvalidAddress);
+        #[cfg(any(feature = "std", target_os = "linux"))]
+        assert_eq!(
+            CommandQueue::new(Some(1)).unwrap_err(),
+            IommuError::PhysicalAllocation(
+                crate::mm::phys::frame_allocator::FrameAllocError::InvalidNode
+            )
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1238,15 +1328,15 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_releases_slot_when_channel_remains_full() {
-        let q = CommandQueue::new();
+        let q = CommandQueue::new(None).expect("queue admission");
 
         for idx in 0..(q.slots.len() - 1) {
             assert!(q.slots[idx].try_acquire());
         }
 
         for domain in 0..bounded_channel_capacity() {
-            q.sender
-                .send(IommuCommand {
+            q.commands
+                .push(IommuCommand {
                     kind: IommuCommandKind::InvalidateIotlbDomain {
                         domain: domain as u16,
                     },
@@ -1266,7 +1356,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_detects_receiver_poison() {
-        let q = CommandQueue::new();
+        let q = CommandQueue::new(None).expect("queue admission");
         poison_receiver_lock(&q);
 
         assert!(
@@ -1280,7 +1370,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_detects_receiver_poison() {
-        let q = CommandQueue::new();
+        let q = CommandQueue::new(None).expect("queue admission");
         poison_receiver_lock(&q);
 
         let rc = crate::task::block_on(async {
@@ -1296,7 +1386,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_for_work_returns_when_queue_poisoned() {
-        let q = CommandQueue::new();
+        let q = CommandQueue::new(None).expect("queue admission");
 
         std::thread::scope(|scope| {
             let worker_q = &q;
@@ -1318,7 +1408,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_basic() {
-        let q = Box::leak(Box::new(CommandQueue::new()));
+        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
         let worker_q: &'static CommandQueue = &*q;
 
         let worker = std::thread::spawn(move || {

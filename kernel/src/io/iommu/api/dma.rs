@@ -6,6 +6,7 @@
 //!
 //! Functions for mapping/unmapping memory for DMA access.
 
+use crate::io::iommu::common::dma::mapping_outcome::{DeviceMapFailure, DeviceMappedRange};
 use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
@@ -59,7 +60,7 @@ pub(crate) unsafe fn map_for_device(
     device: &DeviceId,
     phys_addr: PhysAddr,
     size: u64,
-) -> Result<u64, IommuError> {
+) -> Result<DeviceMappedRange, DeviceMapFailure> {
     // Pre-validate that size can fit within device's DMA mask
     let _ = validate_dma_mask_pre_allocation(device, size)?;
 
@@ -77,7 +78,7 @@ pub(crate) unsafe fn map_for_device_with_perms(
     size: u64,
     read: bool,
     write: bool,
-) -> Result<u64, IommuError> {
+) -> Result<DeviceMappedRange, DeviceMapFailure> {
     // Pre-validate that size can fit within device's DMA mask
     let _ = validate_dma_mask_pre_allocation(device, size)?;
 
@@ -113,7 +114,7 @@ pub(crate) async unsafe fn map_for_device_async(
     device: &DeviceId,
     phys_addr: PhysAddr,
     size: u64,
-) -> Result<u64, IommuError> {
+) -> Result<DeviceMappedRange, DeviceMapFailure> {
     // Pre-validate that size can fit within device's DMA mask
     let _ = validate_dma_mask_pre_allocation(device, size)?;
 
@@ -124,32 +125,3 @@ pub(crate) async unsafe fn map_for_device_async(
     Ok(iova)
 }
 
-/// Unmap a DMA address range for a specific device
-pub fn unmap_for_device(device: &DeviceId, iova: u64, _size: u64) -> Result<(), IommuError> {
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.unmap_for_device(device, iova, _size)
-}
-
-pub(crate) fn domain_id_for_device(device: &DeviceId) -> Result<u16, IommuError> {
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    driver.domain_id_for_device(device)
-}
-
-/// Async variant of `unmap_for_device` that offloads to CQ and awaits completion
-///
-/// # Async Behavior
-/// Similar to `map_for_device_async`, this method submits the unmap/invalidate
-/// requests to the hardware Command Queue and resolves via interrupt-driven wakers,
-/// avoiding busy-waiting on the CPU.
-pub async fn unmap_for_device_async(
-    device: &DeviceId,
-    iova: u64,
-    _size: u64,
-) -> Result<(), IommuError> {
-    let driver = get_iommu_driver().ok_or(IommuError::NotInitialized)?;
-    let res = driver.unmap_for_device_async(device, iova, _size).await;
-    if res.is_ok() {
-        inc_unmap_count();
-    }
-    res
-}
