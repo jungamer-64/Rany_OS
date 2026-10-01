@@ -22,17 +22,13 @@
 //! - `context`: デバイスコンテキスト構造体
 //! - `controller`: xHCI コントローラ
 //! - `device`: USB デバイス実装
-//! - `command`: コマンド発行と完了待ち (NEW)
-//! - `event_handler`: イベントリング処理 (NEW)
-//! - `initialization`: コントローラ初期化 (NEW)
+//! - `event_handler`: イベントの形式と解釈
 use kernel_api::abi::driver::PackedPciLocation;
 
-pub mod command;
 pub mod context;
 pub mod controller;
 pub mod device;
 pub mod event_handler;
-pub mod port_manager;
 pub mod trb;
 
 use alloc::sync::Arc;
@@ -40,7 +36,6 @@ use alloc::sync::Arc;
 use crate::{PortNumber, UsbResult};
 
 // Re-exports
-pub use command::{CommandApi, CommandExecutor, CommandFuture};
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
 pub use controller::XhciController;
 pub use device::XhciDevice;
@@ -48,11 +43,7 @@ pub use event_handler::{
     CommandCompletionEvent, DeviceNotificationEvent, EventHandler, PortStatusChangeEvent,
     ProcessedEvent, TransferEvent,
 };
-pub use port_manager::{
-    PortChangeEvent, PortError, PortInfo, PortLinkState, PortProtocol, PortSpeed, PortState,
-    XhciPortManager,
-};
-pub use trb::{CompletionCode, ErstEntry, Trb, TrbRing, TrbType};
+pub use trb::{CompletionCode, ErstEntry, Trb, TrbType};
 
 // ============================================================================
 // xHCI Constants
