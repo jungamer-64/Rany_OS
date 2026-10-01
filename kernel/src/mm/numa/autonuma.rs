@@ -4,10 +4,11 @@
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
 
-use crate::mm::types::{FrameIndex, NumaNodeId};
+use crate::mm::phys::frame_allocator::{self as pmm, FrameAllocError, PhysicalAllocation};
+use crate::mm::types::{FixedVec, FrameIndex, NumaNodeId};
+use crate::mm::virt::higher_half::{MapError, VirtAddr};
 
 // ============================================================================
 // NUMA Hint Fault 定数
@@ -248,6 +249,7 @@ pub static NUMA_SCANNER: NumaScanner = NumaScanner::new();
 
 #[derive(Debug, Clone)]
 pub struct MigrationRequest {
+    pub address: VirtAddr,
     pub src_frame: FrameIndex,
     pub dest_node: u8,
     pub priority: u8,
@@ -255,16 +257,30 @@ pub struct MigrationRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MigrationResult {
-    Success,
-    NoMemory,
+pub enum MigrationFailure {
+    Allocation(FrameAllocError),
+    Mapping(MapError),
+    InvalidExtent,
     PageLocked,
     PagePinned,
-    Failed,
 }
 
+/// Failed preparation/publication keeps the original mapping and RAM owner.
+#[derive(Debug)]
+pub struct PageMigrationError {
+    pub cause: MigrationFailure,
+    pub allocation: PhysicalAllocation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MigrationQueueRejection {
+    Full,
+    Poisoned,
+}
+const MAX_PENDING_MIGRATIONS: usize = 256;
+
 pub struct MigrationEngine {
-    pending_requests: PoisonLock<Vec<MigrationRequest>>,
+    pending_requests: PoisonLock<FixedVec<MigrationRequest, MAX_PENDING_MIGRATIONS>>,
     successful: AtomicU64,
     failed: AtomicU64,
     migrated_bytes: AtomicU64,
@@ -274,7 +290,7 @@ pub struct MigrationEngine {
 impl MigrationEngine {
     pub const fn new() -> Self {
         Self {
-            pending_requests: PoisonLock::new(Vec::new()),
+            pending_requests: PoisonLock::new(FixedVec::new()),
             successful: AtomicU64::new(0),
             failed: AtomicU64::new(0),
             migrated_bytes: AtomicU64::new(0),
@@ -282,38 +298,51 @@ impl MigrationEngine {
         }
     }
 
-    pub fn queue_migration(&self, request: MigrationRequest) {
-        let mut pending = self
-            .pending_requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        pending.push(request);
-        pending.sort_by(|a, b| {
-            b.priority
-                .cmp(&a.priority)
-                .then_with(|| a.timestamp.cmp(&b.timestamp))
+    /// Hints do not confer RAM authority. Admission is bounded and returns
+    /// an unaccepted request, allowing its producer to defer or drop the hint.
+    pub fn queue_migration(
+        &self,
+        request: MigrationRequest,
+    ) -> Result<(), (MigrationQueueRejection, MigrationRequest)> {
+        let Ok(mut pending) = self.pending_requests.lock() else {
+            return Err((MigrationQueueRejection::Poisoned, request));
+        };
+        if pending.is_full() {
+            return Err((MigrationQueueRejection::Full, request));
+        }
+        assert!(pending.push(request));
+        // pop() selects highest priority then oldest timestamp without heap growth.
+        pending.as_mut_slice().sort_unstable_by(|a, b| {
+            a.priority
+                .cmp(&b.priority)
+                .then_with(|| b.timestamp.cmp(&a.timestamp))
         });
+        Ok(())
     }
 
-    pub unsafe fn process_batch<F>(&self, mut migrate_page: F) -> usize
+    /// The mapping owner resolves each hint to its current allocation; a frame
+    /// observation cannot recreate ownership after replacement or reuse. Work
+    /// executes outside the queue lock and processes at most one fixed batch.
+    pub fn process_batch<F>(&self, mut migrate_page: F) -> usize
     where
-        F: FnMut(FrameIndex, u8) -> MigrationResult,
+        F: FnMut(MigrationRequest) -> Result<(), MigrationFailure>,
     {
         let mut processed = 0;
-        let mut pending = self
-            .pending_requests
-            .lock()
-            .unwrap_or_else(|e| e.into_inner());
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while processed < self.batch_size && !pending.is_empty() {
-            let request = pending.remove(0);
-            let result = migrate_page(request.src_frame, request.dest_node);
-            match result {
-                MigrationResult::Success => {
+        for _ in 0..self.batch_size {
+            let request = self
+                .pending_requests
+                .lock()
+                .unwrap_or_else(|e| e.into_inner())
+                .pop();
+            let Some(request) = request else {
+                break;
+            };
+            match migrate_page(request) {
+                Ok(()) => {
                     self.successful.fetch_add(1, Ordering::Relaxed);
                     self.migrated_bytes.fetch_add(4096, Ordering::Relaxed);
                 }
-                _ => {
+                Err(_) => {
                     self.failed.fetch_add(1, Ordering::Relaxed);
                 }
             }
@@ -347,113 +376,69 @@ pub struct MigrationStats {
 pub static MIGRATION_ENGINE: MigrationEngine = MigrationEngine::new();
 
 // ============================================================================
-// NUMA Distance Cache
-// ============================================================================
-
-pub const MAX_NUMA_NODES: usize = 8;
-pub type NumaDistance = u8;
-
-pub struct NumaDistanceCache {
-    distance_table: [[AtomicU8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
-    sorted_nodes: [[AtomicU8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
-    num_nodes: AtomicU8,
-    initialized: AtomicU8,
-}
-
-impl NumaDistanceCache {
-    pub const fn new() -> Self {
-        const ZERO_U8: AtomicU8 = AtomicU8::new(0);
-        const ROW_ZERO: [AtomicU8; MAX_NUMA_NODES] = [ZERO_U8; MAX_NUMA_NODES];
-        const NODE_ZERO: [AtomicU8; MAX_NUMA_NODES] = [ZERO_U8; MAX_NUMA_NODES];
-        Self {
-            distance_table: [ROW_ZERO; MAX_NUMA_NODES],
-            sorted_nodes: [NODE_ZERO; MAX_NUMA_NODES],
-            num_nodes: AtomicU8::new(1),
-            initialized: AtomicU8::new(0),
-        }
-    }
-
-    pub fn init_from_slit(&self, num_nodes: usize, distances: &[&[u8]]) {
-        let num = num_nodes.min(MAX_NUMA_NODES);
-        self.num_nodes.store(num as u8, Ordering::Relaxed);
-        for from in 0..num {
-            for to in 0..num {
-                let dist = if from < distances.len() && to < distances[from].len() {
-                    distances[from][to]
-                } else if from == to {
-                    10
-                } else {
-                    20
-                };
-                self.distance_table[from][to].store(dist, Ordering::Relaxed);
-            }
-        }
-        self.compute_sorted_nodes(num);
-        self.initialized.store(1, Ordering::Release);
-    }
-
-    fn compute_sorted_nodes(&self, num_nodes: usize) {
-        for from in 0..num_nodes {
-            let mut nodes_with_dist: [(u8, u8); MAX_NUMA_NODES] = [(0, 255); MAX_NUMA_NODES];
-            for to in 0..num_nodes {
-                let dist = self.distance_table[from][to].load(Ordering::Relaxed);
-                nodes_with_dist[to] = (to as u8, dist);
-            }
-            for i in 1..num_nodes {
-                let mut j = i;
-                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                while j > 0 && nodes_with_dist[j - 1].1 > nodes_with_dist[j].1 {
-                    nodes_with_dist.swap(j - 1, j);
-                    j -= 1;
-                }
-            }
-            for (idx, (node_id, _)) in nodes_with_dist.iter().enumerate().take(num_nodes) {
-                self.sorted_nodes[from][idx].store(*node_id, Ordering::Relaxed);
-            }
-        }
-    }
-
-    #[inline]
-    pub fn nodes_by_distance(&self, from_node: usize) -> &[AtomicU8; MAX_NUMA_NODES] {
-        let from = from_node.min(MAX_NUMA_NODES - 1);
-        &self.sorted_nodes[from]
-    }
-
-    #[inline]
-    pub fn get_distance(&self, from: usize, to: usize) -> u8 {
-        if from >= MAX_NUMA_NODES || to >= MAX_NUMA_NODES {
-            return 255;
-        }
-        self.distance_table[from][to].load(Ordering::Relaxed)
-    }
-
-    #[inline]
-    pub fn node_count(&self) -> usize {
-        self.num_nodes.load(Ordering::Relaxed) as usize
-    }
-
-    #[inline]
-    pub fn is_initialized(&self) -> bool {
-        self.initialized.load(Ordering::Acquire) != 0
-    }
-
-    pub fn iter_by_distance(&self, from_node: usize) -> impl Iterator<Item = u8> + '_ {
-        let num = self.node_count();
-        let from = from_node.min(MAX_NUMA_NODES - 1);
-        (0..num).map(move |idx| self.sorted_nodes[from][idx].load(Ordering::Relaxed))
-    }
-}
-
-pub static NUMA_DISTANCE_CACHE: NumaDistanceCache = NumaDistanceCache::new();
-
-// ============================================================================
 // Phase 7: NUMA Page Migration Implementation
 // ============================================================================
+
+/// Move one exclusively owned 4KiB mapping to the explicitly requested node.
+/// Source RAM remains retained until one-leaf replacement and TLB completion.
+/// Failure returns the original owner and leaves its mapping unchanged.
+/// # Safety
+/// The caller owns this mapping and excludes payload borrowers, DMA and other
+/// aliases except the immutable HHDM. It must retain the returned owner for the
+/// mapping's lifetime, including on failure, and validate queued hint identity
+/// against its current owner before invoking this operation.
+pub unsafe fn migrate_numa_page(
+    allocation: PhysicalAllocation,
+    address: VirtAddr,
+    destination_node: NumaNodeId,
+) -> Result<PhysicalAllocation, PageMigrationError> {
+    if allocation.page_count() != 1 || !address.is_page_aligned() {
+        return Err(PageMigrationError {
+            cause: MigrationFailure::InvalidExtent,
+            allocation,
+        });
+    }
+    if allocation.node() == destination_node {
+        return Ok(allocation);
+    }
+    let destination = match pmm::alloc_contiguous_frames_aligned_on_node(destination_node, 1, 4096)
+    {
+        Ok(destination) => destination,
+        Err(cause) => {
+            return Err(PageMigrationError {
+                cause: MigrationFailure::Allocation(cause),
+                allocation,
+            });
+        }
+    };
+    let source_pointer =
+        crate::mm::virt::mapping::phys_to_virt(allocation.start_address()).as_ptr::<u8>();
+    let destination_pointer =
+        crate::mm::virt::mapping::phys_to_virt(destination.start_address()).as_mut_ptr::<u8>();
+    // SAFETY: the two exclusive physical owners prove disjoint valid 4KiB RAM;
+    // caller excludes all writers and retains their HHDM views for the copy.
+    unsafe { core::ptr::copy_nonoverlapping(source_pointer, destination_pointer, 4096) };
+    // SAFETY: caller owns this sole mutable mapping and both RAM allocations.
+    // Success consumes the old RAM only after its translation is retired.
+    match unsafe {
+        crate::mm::virt::higher_half::global_replace_owned_page(address, allocation, &destination)
+    } {
+        Ok(()) => Ok(destination),
+        Err((cause, allocation)) => {
+            destination.release();
+            Err(PageMigrationError {
+                cause: MigrationFailure::Mapping(cause),
+                allocation,
+            })
+        }
+    }
+}
 
 pub fn suggest_migration(
     task_preferred_node: u8,
     page_stats: &PageNumaStats,
     frame: FrameIndex,
+    address: VirtAddr,
     current_time: u64,
 ) -> Option<MigrationRequest> {
     let current_node = page_stats.current_node.load(Ordering::Acquire);
@@ -484,6 +469,7 @@ pub fn suggest_migration(
         }
     };
     Some(MigrationRequest {
+        address,
         src_frame: frame,
         dest_node,
         priority,
@@ -582,6 +568,54 @@ pub fn apply_config(config: &AutoNumaConfig) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn bounded_hint_queue_preserves_priority_and_releases_lock_before_work() {
+        let engine = MigrationEngine::new();
+        for index in 0..MAX_PENDING_MIGRATIONS {
+            engine
+                .queue_migration(MigrationRequest {
+                    address: VirtAddr::new((index as u64 + 1) * 4096),
+                    src_frame: FrameIndex::new(index + 1),
+                    dest_node: 1,
+                    priority: (index % 4) as u8,
+                    timestamp: index as u64,
+                })
+                .unwrap();
+        }
+        let extra = MigrationRequest {
+            address: VirtAddr::new(0x1000),
+            src_frame: FrameIndex::new(1),
+            dest_node: 1,
+            priority: 9,
+            timestamp: 999,
+        };
+        let (reason, returned) = engine.queue_migration(extra).unwrap_err();
+        assert_eq!(reason, MigrationQueueRejection::Full);
+        assert_eq!(returned.timestamp, 999);
+        let mut visited = 0;
+        assert_eq!(
+            engine.process_batch(|hint| {
+                assert_eq!(hint.priority, 3);
+                assert_eq!(hint.timestamp, 3 + visited * 4);
+                assert_eq!(
+                    engine.stats().pending,
+                    MAX_PENDING_MIGRATIONS - visited as usize - 1
+                );
+                visited += 1;
+                Ok(())
+            }),
+            32
+        );
+        assert_eq!(engine.stats().successful, 32);
+        assert_eq!(engine.stats().migrated_bytes, 32 * 4096);
+        assert_eq!(
+            engine.process_batch(|_| Err(MigrationFailure::PagePinned)),
+            32
+        );
+        assert_eq!(engine.stats().failed, 32);
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
