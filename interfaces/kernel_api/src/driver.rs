@@ -71,7 +71,10 @@ impl DriverStateBlob {
 /// │                              └──────────┘          │
 /// └─────────────────────────────────────────────────────┘
 /// ```
-pub trait Driver: Send + Sync {
+/// Lifecycle mutation is serialized by the service host. A driver can move
+/// between hosts at a completed call boundary, but its DMA owners need not allow
+/// concurrent shared access to their state.
+pub trait Driver: Send {
     /// ドライバ名（デバッグ・ログ用）
     ///
     /// 人間が読みやすい識別子を返す。
@@ -192,7 +195,7 @@ pub trait Driver: Send + Sync {
 /// # Async-First Design
 /// RanyOSは非同期中心主義を採用しているため、長時間かかる初期化処理（ハードウェア待ちなど）は
 /// 必ず非同期で行う必要がある。
-pub trait AsyncDriver: Send + Sync {
+pub trait AsyncDriver: Send {
     /// ドライバ名
     fn name(&self) -> &str;
 
@@ -212,7 +215,7 @@ pub trait AsyncDriver: Send + Sync {
     /// 非同期開始
     ///
     /// 割り込み待ち受けやバックグラウンドタスクの起動を行う。
-    /// `kernel_api::service::kernel::instance().spawn_task()` を使用してタスクを生成できる。
+    /// `kernel_api::service::kernel::instance().spawn(future, options)` を使用してタスクを生成できる。
     fn start(&mut self) -> DriverFuture<'_, KapiResult<()>> {
         Box::pin(core::future::ready(Ok(())))
     }
