@@ -14,7 +14,7 @@
 //! 1. **ノードローカルアロケーション**: タスクが実行中のCPUコアが属するNUMAノードから
 //!    メモリを割り当てる（First-Touch Policy）
 //! 2. **明示的なノード指定**: `alloc_on_numa_node(node_id, layout)` でノードを指定可能
-//! 3. **フォールバック**: 指定ノードにメモリがない場合は他のノードから割り当て
+//! 3. **フォールバック**: 通常の物理割り当ては PMM の距離順、明示指定は指定ノードのみ
 use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
@@ -43,83 +43,6 @@ impl CpuLocalityTopology {
             cpu_to_node,
             node_cpus: alloc::vec![cpus],
         }
-    }
-
-    fn from_firmware(
-        catalog: &acpi_driver::TableCatalog,
-        snapshot: &CpuSnapshot,
-    ) -> Result<Self, NumaTopologyError> {
-        let cpu_affinities = catalog.numa_cpu_affinity()?;
-        if cpu_affinities.is_empty() {
-            return Ok(Self::single_node(snapshot));
-        }
-        let memory_affinities = catalog.numa_memory_affinity()?;
-
-        let mut affinity_by_apic = BTreeMap::new();
-        let mut domains = BTreeSet::new();
-        for affinity in cpu_affinities
-            .into_iter()
-            .filter(|affinity| affinity.enabled)
-        {
-            let apic = ApicId::new(affinity.apic_id);
-            if affinity_by_apic
-                .insert(apic, affinity.proximity_domain)
-                .is_some()
-            {
-                return Err(NumaTopologyError::DuplicateCpuAffinity { apic_id: apic });
-            }
-            domains.insert(affinity.proximity_domain);
-        }
-        for affinity in memory_affinities
-            .into_iter()
-            .filter(|affinity| affinity.enabled)
-        {
-            domains.insert(affinity.proximity_domain);
-        }
-        if domains.len() > MAX_NUMA_NODES {
-            return Err(NumaTopologyError::TooManyNodes {
-                discovered: domains.len(),
-                supported: MAX_NUMA_NODES,
-            });
-        }
-
-        let domain_to_node = domains
-            .into_iter()
-            .enumerate()
-            .map(|(index, domain)| (domain, NumaNodeId::new(index as u8)))
-            .collect::<BTreeMap<_, _>>();
-        let mut topology = Self {
-            cpu_to_node: BTreeMap::new(),
-            node_cpus: alloc::vec![Vec::new(); domain_to_node.len()],
-        };
-
-        for slot in snapshot.slots() {
-            let apic_id = slot.firmware.apic_id;
-            let proximity_domain = affinity_by_apic
-                .get(&apic_id)
-                .copied()
-                .or(slot.firmware.proximity_domain)
-                .ok_or(NumaTopologyError::MissingCpuAffinity {
-                    cpu_id: slot.id,
-                    apic_id,
-                })?;
-            if let Some(slot_domain) = slot.firmware.proximity_domain
-                && slot_domain != proximity_domain
-            {
-                return Err(NumaTopologyError::ConflictingCpuAffinity {
-                    cpu_id: slot.id,
-                    madt_domain: proximity_domain,
-                    namespace_domain: slot_domain,
-                });
-            }
-            let node = domain_to_node
-                .get(&proximity_domain)
-                .copied()
-                .ok_or(NumaTopologyError::UnknownProximityDomain { proximity_domain })?;
-            topology.cpu_to_node.insert(slot.id, node);
-            topology.node_cpus[node.as_usize()].push(slot.id);
-        }
-        Ok(topology)
     }
 
     fn node_for_cpu(&self, cpu_id: CpuId) -> Option<NumaNodeId> {
@@ -162,43 +85,6 @@ impl CpuLocalityTopology {
     }
 }
 
-#[derive(Debug)]
-pub enum NumaTopologyError {
-    Acpi(acpi_driver::AcpiError),
-    CpuSet(crate::cpu::CpuSetError),
-    TooManyNodes {
-        discovered: usize,
-        supported: usize,
-    },
-    DuplicateCpuAffinity {
-        apic_id: ApicId,
-    },
-    MissingCpuAffinity {
-        cpu_id: CpuId,
-        apic_id: ApicId,
-    },
-    ConflictingCpuAffinity {
-        cpu_id: CpuId,
-        madt_domain: u32,
-        namespace_domain: u32,
-    },
-    UnknownProximityDomain {
-        proximity_domain: u32,
-    },
-}
-
-impl From<acpi_driver::AcpiError> for NumaTopologyError {
-    fn from(error: acpi_driver::AcpiError) -> Self {
-        Self::Acpi(error)
-    }
-}
-
-impl From<crate::cpu::CpuSetError> for NumaTopologyError {
-    fn from(error: crate::cpu::CpuSetError) -> Self {
-        Self::CpuSet(error)
-    }
-}
-
 static CPU_LOCALITY_TOPOLOGY: PoisonLock<Option<CpuLocalityTopology>> = PoisonLock::new(None);
 
 fn publish_cpu_locality(topology: &CpuLocalityTopology) {
@@ -220,29 +106,6 @@ fn with_cpu_locality<R>(f: impl FnOnce(&CpuLocalityTopology) -> R) -> R {
     let topology =
         guard.get_or_insert_with(|| CpuLocalityTopology::single_node(&crate::cpu::snapshot()));
     f(topology)
-}
-
-/// Publishes the CPU-to-NUMA mapping derived from SRAT and the CPU snapshot.
-///
-/// # Errors
-///
-/// Returns a typed topology error when firmware affinities are duplicated,
-/// incomplete, conflicting, or exceed the supported NUMA node count.
-pub fn configure_from_firmware(
-    catalog: Option<&acpi_driver::TableCatalog>,
-    snapshot: &CpuSnapshot,
-) -> Result<(), NumaTopologyError> {
-    let topology = match catalog {
-        Some(catalog) => CpuLocalityTopology::from_firmware(catalog, snapshot)?,
-        None => CpuLocalityTopology::single_node(snapshot),
-    };
-    publish_cpu_locality(&topology);
-
-    let mut guard = CPU_LOCALITY_TOPOLOGY
-        .lock()
-        .unwrap_or_else(|e| e.into_inner());
-    *guard = Some(topology);
-    Ok(())
 }
 
 pub fn apply_current_cpu_locality() {
@@ -333,12 +196,4 @@ mod tests {
         };
         assert_eq!(topology.node_for_cpu(cpu(1)), None);
     }
-}
-
-pub fn with_numa_topology_rcu<F, R>(f: F) -> R
-where
-    F: FnOnce(&RcuReadGuard) -> R,
-{
-    let guard = rcu_read_lock();
-    f(&guard)
 }

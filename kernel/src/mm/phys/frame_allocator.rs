@@ -1,240 +1,926 @@
-// ============================================================================
-// src/mm/frame_allocator.rs - Bitmap-based Physical Frame Allocator
-// 設計書 5.2 Tier1: 4KiB/2MiB/1GiB単位の物理フレーム管理
-// 設計書 5.3 NUMAアーキテクチャへの対応
-//
-// 注意: 構造体全体がMutexで保護されているため、内部フィールドは
-// 通常のu64を使用。Mutex + Atomicの二重ロックはオーバーヘッド。
-// ============================================================================
-extern crate alloc;
+//! Unique authority over admitted RAM. Subpools retain the allocation that
+//! lends their backing range. Addresses are observations, never free authority.
 
-use crate::mm::phys::fast_allocator::{FastBitmapAllocator, LocalCachePolicy, PageGranularity};
+use crate::mm::numa::topology::MAX_NUMA_NODES;
+use crate::mm::phys::fast_allocator::{AddressPoolError, FastBitmapAllocator};
+use crate::mm::types::{NumaNodeId, PAGE_SIZE_4K};
 use crate::sync::IrqPoisonLock;
-use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::ptr;
-use core::sync::atomic::{AtomicPtr, AtomicU64, Ordering};
+use core::num::NonZeroUsize;
 use x86_64::PhysAddr;
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
-
-// 共通型定義をインポート（IOVA_MM_MIGRATION_PLAN Phase 0.1）
-use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
-use crate::mm::numa::topology::{MAX_NUMA_NODES, NumaTopology};
-use crate::mm::types::{FrameIndex, NumaNodeId, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
-
-// ============================================================================
-// 型安全性: フレーム番号のNewtype
-// FrameIndex, PAGE_SIZE_* は crate::mm::types からインポート済み
-// (IOVA_MM_MIGRATION_PLAN Phase 0.1 による統一)
-// ============================================================================
-
-/// PMMが管理する最大ページ数 (IOVA bitmapと同等: 256GiB / 4KiB)
-mod numa;
-pub use numa::*;
-const PMM_MAX_PAGES: usize = 64 * 1024 * 1024;
+use x86_64::structures::paging::{PageSize, PhysFrame};
 
 pub(crate) const MANAGED_PHYS_START: u64 = PAGE_SIZE_4K as u64;
-// PMM Fast Allocator (IOVA-based Bitmap + Magazine)
-// ============================================================================
+const FRAME_CACHE_CAPACITY: usize = 64;
+const FRAME_BATCH: usize = 32;
+const ZERO_CACHE_CAPACITY: usize = 16;
+const ZERO_BATCH: usize = 8;
+const HUGE_CACHE_CAPACITY: usize = 4;
 
-/// PMM fast allocator wrapper (phys addr aware)
-pub(crate) struct PmmAllocatorFast {
-    inner: FastBitmapAllocator,
-    base: u64,
-    size: u64,
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameAllocError {
+    Uninitialized,
+    Exhausted,
+    InvalidRange,
+    Alignment,
+    MetadataAllocation,
+    AlreadyInitialized,
+    InvalidNode,
 }
 
-impl PmmAllocatorFast {
-    fn new(base: u64, size: u64) -> Self {
-        Self {
-            inner: FastBitmapAllocator::new(base, size, LocalCachePolicy::PerCpu),
-            base,
-            size,
+impl From<AddressPoolError> for FrameAllocError {
+    fn from(error: AddressPoolError) -> Self {
+        match error {
+            AddressPoolError::Exhausted => Self::Exhausted,
+            AddressPoolError::Alignment => Self::Alignment,
+            AddressPoolError::InvalidRange => Self::InvalidRange,
+            AddressPoolError::MetadataAllocation => Self::MetadataAllocation,
         }
     }
+}
 
-    fn provision_cpu_set(
-        &self,
-        cpu_ids: &crate::cpu::CpuSet,
-    ) -> Result<(), crate::mm::phys::fast_allocator::CpuCacheProvisionError> {
-        self.inner.provision_cpu_set(cpu_ids)
+/// Exclusive allocation and its return destination. This type is deliberately
+/// non-Copy and non-Clone. Dropping an owner without release leaks RAM rather
+/// than permitting reuse while an external translation may still reference it.
+#[must_use = "retain the allocation owner or explicitly release it after translation retirement"]
+pub struct PhysicalAllocation {
+    start: PhysAddr,
+    pages: NonZeroUsize,
+    owner: &'static NodePool,
+}
+
+impl core::fmt::Debug for PhysicalAllocation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PhysicalAllocation")
+            .field("start", &self.start)
+            .field("pages", &self.pages)
+            .field("node", &self.owner.node)
+            .finish()
     }
+}
 
-    fn quiesce_current_cpu(&self) -> crate::mm::phys::fast_allocator::CpuMagazineDrain {
-        self.inner.quiesce_current_cpu()
+impl PhysicalAllocation {
+    pub fn start_address(&self) -> PhysAddr {
+        self.start
     }
-
-    fn stats(&self) -> (u64, usize) {
-        self.inner.pmm_stats()
+    pub fn as_u64(&self) -> u64 {
+        self.start.as_u64()
     }
-
-    fn alloc_4k(&self) -> Option<PhysFrame<Size4KiB>> {
-        let addr = self.inner.allocate_4k()?;
-        PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
+    pub fn size_bytes(&self) -> u64 {
+        self.pages.get() as u64 * PAGE_SIZE_4K as u64
     }
-
-    fn alloc_2m(&self) -> Option<PhysFrame<Size2MiB>> {
-        let addr = self.inner.allocate_2m()?;
-        PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
+    pub fn page_count(&self) -> usize {
+        self.pages.get()
     }
-
-    fn alloc_1g(&self) -> Option<PhysFrame<Size1GiB>> {
-        let addr = self.inner.allocate_1g()?;
-        PhysFrame::from_start_address(PhysAddr::new(addr)).ok()
+    pub fn node(&self) -> NumaNodeId {
+        self.owner.node
     }
-
-    fn alloc_contiguous_aligned(&self, frames: usize, align_bytes: u64) -> Option<PhysAddr> {
-        if frames == 0 {
-            return None;
+    /// A frame view confers no return authority.
+    pub fn frame<S: PageSize>(&self) -> Result<PhysFrame<S>, FrameAllocError> {
+        if S::SIZE > self.size_bytes() {
+            return Err(FrameAllocError::InvalidRange);
         }
-        let size = (frames as u64).checked_mul(PAGE_SIZE_4K as u64)?;
-        let align = align_bytes.max(PAGE_SIZE_4K as u64);
-        let addr = self.inner.allocate_contiguous(size, align)?;
-        Some(PhysAddr::new(addr))
+        PhysFrame::from_start_address(self.start).map_err(|_| FrameAllocError::Alignment)
     }
-
-    fn free_4k(&self, frame: PhysFrame<Size4KiB>) {
-        let addr = frame.start_address().as_u64();
-        let _ = self.inner.free_immediate(addr, PageGranularity::Page4K);
+    /// Splits unique ownership without changing occupancy or allocating metadata.
+    pub fn split(self, first_pages: usize) -> Result<(Self, Self), Self> {
+        if first_pages == 0 || first_pages >= self.page_count() {
+            return Err(self);
+        }
+        let second = Self {
+            start: PhysAddr::new(self.as_u64() + first_pages as u64 * PAGE_SIZE_4K as u64),
+            pages: NonZeroUsize::new(self.page_count() - first_pages).expect("nonempty split"),
+            owner: self.owner,
+        };
+        let first = Self {
+            pages: NonZeroUsize::new(first_pages).expect("nonempty split"),
+            ..self
+        };
+        Ok((first, second))
     }
-
-    fn free_2m(&self, frame: PhysFrame<Size2MiB>) {
-        let addr = frame.start_address().as_u64();
-        let _ = self.inner.free_immediate(addr, PageGranularity::Page2M);
+    /// Returns unpublished RAM, or RAM whose users and translations have been
+    /// retired. Mapping/DMA owners must complete TLB/IOTLB before this call.
+    pub fn release(self) {
+        self.owner
+            .bitmap
+            .free_range_immediate(self.as_u64(), self.size_bytes())
+            .expect("owned allocation must remain within its originating pool");
     }
+}
 
-    fn free_1g(&self, frame: PhysFrame<Size1GiB>) {
-        let addr = frame.start_address().as_u64();
-        let _ = self.inner.free_immediate(addr, PageGranularity::Page1G);
+struct NodePool {
+    node: NumaNodeId,
+    bitmap: FastBitmapAllocator,
+    usable: Vec<(u64, u64)>,
+    huge: IrqPoisonLock<[Option<PhysicalAllocation>; HUGE_CACHE_CAPACITY]>,
+}
+
+impl NodePool {
+    fn allocate(
+        &'static self,
+        pages: usize,
+        alignment: usize,
+    ) -> Result<PhysicalAllocation, FrameAllocError> {
+        let pages = NonZeroUsize::new(pages).ok_or(FrameAllocError::InvalidRange)?;
+        let bytes = (pages.get() as u64)
+            .checked_mul(PAGE_SIZE_4K as u64)
+            .ok_or(FrameAllocError::InvalidRange)?;
+        let start = if pages.get() == 1 && alignment <= PAGE_SIZE_4K {
+            self.bitmap
+                .allocate_4k()
+                .ok_or(FrameAllocError::Exhausted)?
+        } else {
+            self.bitmap.allocate_contiguous_below(
+                bytes,
+                alignment as u64,
+                self.bitmap.base() + self.bitmap.size(),
+            )?
+        };
+        Ok(PhysicalAllocation {
+            start: PhysAddr::new(start),
+            pages,
+            owner: self,
+        })
     }
+}
 
-    fn reserve_range(&self, start: u64, size: u64) {
-        if size == 0 {
+struct Pmm {
+    known_nodes: [bool; MAX_NUMA_NODES],
+    nodes: [Option<NodePool>; MAX_NUMA_NODES],
+    distances: [[u8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    order: [[Option<NumaNodeId>; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+}
+
+impl Pmm {
+    fn pool(&'static self, node: NumaNodeId) -> Result<&NodePool, FrameAllocError> {
+        if !self
+            .known_nodes
+            .get(node.as_usize())
+            .copied()
+            .unwrap_or(false)
+        {
+            return Err(FrameAllocError::InvalidNode);
+        }
+        self.nodes[node.as_usize()]
+            .as_ref()
+            .ok_or(FrameAllocError::Exhausted)
+    }
+}
+
+static PMM: spin::Once<Pmm> = spin::Once::new();
+static INIT: IrqPoisonLock<()> = IrqPoisonLock::new(());
+
+fn normalized(start: u64, size: u64) -> Result<Option<(u64, u64)>, FrameAllocError> {
+    let end = start
+        .checked_add(size)
+        .ok_or(FrameAllocError::InvalidRange)?
+        & !(PAGE_SIZE_4K as u64 - 1);
+    if end > (1u64 << 52) {
+        return Err(FrameAllocError::InvalidRange);
+    }
+    let start = start
+        .max(MANAGED_PHYS_START)
+        .checked_add(PAGE_SIZE_4K as u64 - 1)
+        .ok_or(FrameAllocError::InvalidRange)?
+        & !(PAGE_SIZE_4K as u64 - 1);
+    Ok((start < end).then_some((start, end)))
+}
+
+fn build(regions: &[(PhysAddr, u64, NumaNodeId)]) -> Result<Pmm, FrameAllocError> {
+    let mut known_nodes = [false; MAX_NUMA_NODES];
+    let mut all = Vec::new();
+    all.try_reserve_exact(regions.len())
+        .map_err(|_| FrameAllocError::MetadataAllocation)?;
+    for &(start, size, node) in regions {
+        if node.as_usize() >= MAX_NUMA_NODES {
+            return Err(FrameAllocError::InvalidNode);
+        }
+        known_nodes[node.as_usize()] = true;
+        if let Some((start, end)) = normalized(start.as_u64(), size)? {
+            all.push((start, end, node));
+        }
+    }
+    all.sort_unstable_by_key(|region| region.0);
+    if all.is_empty() || all.windows(2).any(|pair| pair[0].1 > pair[1].0) {
+        return Err(FrameAllocError::InvalidRange);
+    }
+    let mut nodes = core::array::from_fn(|_| None);
+    for node_index in 0..MAX_NUMA_NODES {
+        let node = NumaNodeId::new(node_index as u8);
+        let mut usable = Vec::new();
+        usable
+            .try_reserve_exact(all.len())
+            .map_err(|_| FrameAllocError::MetadataAllocation)?;
+        for &(start, end, region_node) in &all {
+            if region_node == node {
+                usable.push((start, end));
+            }
+        }
+        let Some(&(base, _)) = usable.first() else {
+            continue;
+        };
+        let end = usable.last().expect("nonempty node ranges").1;
+        let bitmap = FastBitmapAllocator::try_new(base, end - base)?;
+        let mut cursor = base;
+        for &(start, end) in &usable {
+            if cursor < start {
+                bitmap.reserve(cursor, start - cursor)?;
+            }
+            cursor = end;
+        }
+        nodes[node_index] = Some(NodePool {
+            node,
+            bitmap,
+            usable,
+            huge: IrqPoisonLock::new(core::array::from_fn(|_| None)),
+        });
+    }
+    // A local node is always first. Firmware distances replace this ordering
+    // while constructing the unpublished PMM.
+    let order = core::array::from_fn(|from| {
+        let mut order = core::array::from_fn(|to| Some(NumaNodeId::new(to as u8)));
+        order.swap(0, from);
+        order
+    });
+    Ok(Pmm {
+        known_nodes,
+        nodes,
+        distances: core::array::from_fn(|from| {
+            core::array::from_fn(|to| if from == to { 10 } else { 20 })
+        }),
+        order,
+    })
+}
+
+/// # Safety
+/// The ranges must be exclusively transferred usable RAM, disjoint from loader
+/// heaps, live mappings, device memory, and every other physical pool.
+pub unsafe fn init_frame_allocator(regions: &[(PhysAddr, u64)]) -> Result<(), FrameAllocError> {
+    let mut tagged = Vec::new();
+    tagged
+        .try_reserve_exact(regions.len())
+        .map_err(|_| FrameAllocError::MetadataAllocation)?;
+    for &(start, size) in regions {
+        tagged.push((start, size, NumaNodeId::NODE_0));
+    }
+    unsafe { init_numa_frame_allocator(&tagged) }
+}
+
+/// # Safety
+/// The same exclusive RAM admission contract as `init_frame_allocator` applies.
+pub unsafe fn init_numa_frame_allocator(
+    regions: &[(PhysAddr, u64, NumaNodeId)],
+) -> Result<(), FrameAllocError> {
+    let _guard = INIT.lock().expect("PMM initialization lock poisoned");
+    if PMM.get().is_some() {
+        return Err(FrameAllocError::AlreadyInitialized);
+    }
+    let pmm = build(regions)?;
+    PMM.call_once(|| pmm);
+    Ok(())
+}
+
+fn local_node() -> NumaNodeId {
+    crate::cpu::CurrentCpu::acquire()
+        .and_then(|cpu| cpu.memory_node())
+        .unwrap_or(NumaNodeId::NODE_0)
+}
+
+fn allocate_on_node(
+    node: NumaNodeId,
+    pages: usize,
+    alignment: usize,
+) -> Result<PhysicalAllocation, FrameAllocError> {
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    let pool = pmm.pool(node)?;
+    pool.allocate(pages, alignment)
+}
+
+pub fn alloc_contiguous_frames_aligned_on_node(
+    node: NumaNodeId,
+    pages: usize,
+    alignment: usize,
+) -> Result<PhysicalAllocation, FrameAllocError> {
+    if !alignment.is_power_of_two() {
+        return Err(FrameAllocError::Alignment);
+    }
+    allocate_on_node(node, pages, alignment.max(PAGE_SIZE_4K))
+}
+
+pub fn alloc_contiguous_frames_aligned(
+    pages: usize,
+    alignment: usize,
+) -> Result<PhysicalAllocation, FrameAllocError> {
+    if !alignment.is_power_of_two() {
+        return Err(FrameAllocError::Alignment);
+    }
+    if pages == 0 {
+        return Err(FrameAllocError::InvalidRange);
+    }
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    for node in pmm.order[local_node().as_usize()].into_iter().flatten() {
+        if let Some(pool) = pmm.nodes[node.as_usize()].as_ref() {
+            match pool.allocate(pages, alignment.max(PAGE_SIZE_4K)) {
+                Ok(allocation) => return Ok(allocation),
+                Err(FrameAllocError::Exhausted) => {}
+                Err(error) => return Err(error),
+            }
+        }
+    }
+    Err(FrameAllocError::Exhausted)
+}
+
+pub fn alloc_contiguous_frames(pages: usize) -> Result<PhysicalAllocation, FrameAllocError> {
+    alloc_contiguous_frames_aligned(pages, PAGE_SIZE_4K)
+}
+pub fn alloc_frame_on_numa_node(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocError> {
+    cached_frame(Some(node))
+}
+pub fn alloc_frame() -> Result<PhysicalAllocation, FrameAllocError> {
+    cached_frame(None)
+}
+pub fn alloc_frame_local(cpu: crate::cpu::CpuId) -> Result<PhysicalAllocation, FrameAllocError> {
+    let node = get_cpu_numa_node(cpu);
+    cached_frame(Some(node)).or_else(|error| {
+        if error == FrameAllocError::Exhausted {
+            cached_frame(None)
+        } else {
+            Err(error)
+        }
+    })
+}
+pub fn alloc_frame_2m() -> Result<PhysicalAllocation, FrameAllocError> {
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    for node in pmm.order[local_node().as_usize()].into_iter().flatten() {
+        if pmm.nodes[node.as_usize()].is_none() {
+            continue;
+        }
+        match alloc_frame_2m_on_numa_node(node) {
+            Ok(frame) => return Ok(frame),
+            Err(FrameAllocError::Exhausted) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(FrameAllocError::Exhausted)
+}
+pub fn alloc_frame_2m_on_numa_node(
+    node: NumaNodeId,
+) -> Result<PhysicalAllocation, FrameAllocError> {
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    let pool = pmm.pool(node)?;
+    let cached = pool
+        .huge
+        .lock()
+        .expect("huge cache poisoned")
+        .iter_mut()
+        .find_map(Option::take);
+    match cached {
+        Some(frame) => Ok(frame),
+        None => pool.allocate(512, 2 * 1024 * 1024),
+    }
+}
+pub fn alloc_frame_1g() -> Result<PhysicalAllocation, FrameAllocError> {
+    alloc_contiguous_frames_aligned(262144, 1024 * 1024 * 1024)
+}
+
+fn cached_frame(node: Option<NumaNodeId>) -> Result<PhysicalAllocation, FrameAllocError> {
+    if let Some(node) = node {
+        return cached_on_node(node);
+    }
+    let home = local_node();
+    // Check and replenish the home node before taking a remote cached frame.
+    // The published distance order is immutable and never sorted here.
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    for node in pmm.order[home.as_usize()].into_iter().flatten() {
+        if pmm.nodes[node.as_usize()].is_none() {
+            continue;
+        }
+        match cached_on_node(node) {
+            Ok(frame) => return Ok(frame),
+            Err(FrameAllocError::Exhausted) => {}
+            Err(error) => return Err(error),
+        }
+    }
+    Err(FrameAllocError::Exhausted)
+}
+
+fn cached_on_node(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocError> {
+    if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+        if let Some(Some(frame)) = cpu.with_frame_cache(|cache| cache.pages.pop(Some(node))) {
+            return Ok(frame);
+        }
+        // Refill outside the short CPU borrow, from one node only. Fragmented
+        // RAM can supply the batch without any physically contiguous request.
+        let mut batch = [const { None }; FRAME_BATCH];
+        let mut failure = FrameAllocError::Exhausted;
+        for slot in &mut batch {
+            match allocate_on_node(node, 1, PAGE_SIZE_4K) {
+                Ok(frame) => *slot = Some(frame),
+                Err(error) => {
+                    failure = error;
+                    break;
+                }
+            }
+        }
+        let result = batch.iter_mut().find_map(Option::take).ok_or(failure)?;
+        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+            cpu.with_frame_cache(|cache| {
+                for slot in &mut batch {
+                    if let Some(frame) = slot.take() {
+                        *slot = cache.pages.push(frame).err();
+                    }
+                }
+            });
+        }
+        for frame in batch.into_iter().flatten() {
+            frame.release();
+        }
+        return Ok(result);
+    }
+    allocate_on_node(node, 1, PAGE_SIZE_4K)
+}
+
+pub fn dealloc_frame(frame: PhysicalAllocation) {
+    if frame.page_count() == 1 {
+        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+            let mut pending = Some(frame);
+            let mut returned = [const { None }; FRAME_BATCH];
+            cpu.with_frame_cache(|cache| {
+                if cache.pages.len == FRAME_CACHE_CAPACITY {
+                    returned = core::array::from_fn(|_| cache.pages.pop(None));
+                }
+                pending = cache
+                    .pages
+                    .push(pending.take().expect("pending frame"))
+                    .err();
+            });
+            // Shared occupancy and its counters are touched outside the CPU
+            // borrow, only when a full magazine returns its 32-page batch.
+            for frame in returned.into_iter().flatten() {
+                frame.release();
+            }
+            if let Some(frame) = pending {
+                frame.release();
+            }
             return;
         }
-        if let Err(err) = self.inner.reserve(start, size) {
-            log::warn!(
-                "[PMM] reserve failed: start={:#x} size={:#x} err={:?}",
-                start,
-                size,
-                err
-            );
+    }
+    frame.release();
+}
+pub fn dealloc_contiguous_frames(allocation: PhysicalAllocation) {
+    allocation.release();
+}
+pub fn dealloc_frame_2m(allocation: PhysicalAllocation) {
+    if allocation.page_count() != 512 {
+        allocation.release();
+        return;
+    }
+    let owner = allocation.owner;
+    let mut pending = Some(allocation);
+    {
+        let mut cache = owner.huge.lock().expect("huge cache poisoned");
+        if let Some(slot) = cache.iter_mut().find(|slot| slot.is_none()) {
+            *slot = pending.take();
         }
     }
+    if let Some(frame) = pending {
+        frame.release();
+    }
+}
+pub fn dealloc_frame_1g(allocation: PhysicalAllocation) {
+    allocation.release();
+}
 
-    fn reserve_gaps(&self, usable: &[(u64, u64)]) {
-        let end = self.base.saturating_add(self.size);
-        let mut cursor = self.base;
+/// Bounded CPU-owned slots, indexed by node. A node-specific pop/push is O(1)
+/// regardless of the mixture of local and remote frees in this CPU's cache.
+struct FrameEntry {
+    frame: PhysicalAllocation,
+    next: Option<usize>,
+}
+struct FrameStack<const N: usize> {
+    slots: [Option<FrameEntry>; N],
+    heads: [Option<usize>; MAX_NUMA_NODES],
+    vacant: [Option<usize>; N],
+    free_head: Option<usize>,
+    len: usize,
+}
+impl<const N: usize> FrameStack<N> {
+    const fn new() -> Self {
+        let mut vacant = [None; N];
+        let mut index = 0;
+        // LOOP_PROOF: mode=bounded; reason=index increases by one until the finite slot array has been linked.;
+        while index + 1 < N {
+            vacant[index] = Some(index + 1);
+            index += 1;
+        }
+        Self {
+            slots: [const { None }; N],
+            heads: [None; MAX_NUMA_NODES],
+            vacant,
+            free_head: if N == 0 { None } else { Some(0) },
+            len: 0,
+        }
+    }
+    fn pop(&mut self, node: Option<NumaNodeId>) -> Option<PhysicalAllocation> {
+        let node = match node {
+            Some(node) => node.as_usize(),
+            None => self.heads.iter().position(Option::is_some)?,
+        };
+        let index = self.heads.get(node).copied().flatten()?;
+        let entry = self.slots[index].take().expect("occupied node chain");
+        self.heads[node] = entry.next;
+        self.vacant[index] = self.free_head;
+        self.free_head = Some(index);
+        self.len -= 1;
+        Some(entry.frame)
+    }
+    fn push(&mut self, frame: PhysicalAllocation) -> Result<(), PhysicalAllocation> {
+        let Some(index) = self.free_head else {
+            return Err(frame);
+        };
+        let node = frame.node().as_usize();
+        self.free_head = self.vacant[index];
+        self.slots[index] = Some(FrameEntry {
+            frame,
+            next: self.heads[node],
+        });
+        self.heads[node] = Some(index);
+        self.len += 1;
+        Ok(())
+    }
+}
 
-        for &(start, end_region) in usable {
-            let start = start.max(self.base);
-            let end_region = end_region.min(end);
-            if end_region <= cursor {
-                continue;
+/// CPU-local storage is pinned in CpuLocal and has no cross-CPU access path.
+pub(crate) struct LocalFrameCache {
+    pages: FrameStack<FRAME_CACHE_CAPACITY>,
+    zeroed: FrameStack<ZERO_CACHE_CAPACITY>,
+}
+impl LocalFrameCache {
+    pub const fn new() -> Self {
+        Self {
+            pages: FrameStack::new(),
+            zeroed: FrameStack::new(),
+        }
+    }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.pages.len == 0 && self.zeroed.len == 0
+    }
+    fn take_batch(&mut self) -> [Option<PhysicalAllocation>; FRAME_BATCH] {
+        core::array::from_fn(|_| self.pages.pop(None).or_else(|| self.zeroed.pop(None)))
+    }
+}
+
+pub fn alloc_zeroed_frame(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocError> {
+    let cpu = crate::cpu::CurrentCpu::acquire();
+    if let Some(frame) = cpu
+        .as_ref()
+        .and_then(|cpu| cpu.with_frame_cache(|cache| cache.zeroed.pop(Some(node))))
+        .flatten()
+    {
+        return Ok(frame);
+    }
+    refill_zeroed_cache(node);
+    let cpu = crate::cpu::CurrentCpu::acquire();
+    if let Some(frame) = cpu
+        .as_ref()
+        .and_then(|cpu| cpu.with_frame_cache(|cache| cache.zeroed.pop(Some(node))))
+        .flatten()
+    {
+        return Ok(frame);
+    }
+    let frame = allocate_on_node(node, 1, PAGE_SIZE_4K)?;
+    unsafe {
+        crate::mm::cache::zero_page::clear_page_memset(
+            crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_u64() as *mut u8,
+        )
+    };
+    Ok(frame)
+}
+
+pub(crate) fn refill_zeroed_cache(node: NumaNodeId) -> usize {
+    let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
+        return 0;
+    };
+    let space = cpu
+        .with_frame_cache(|cache| ZERO_CACHE_CAPACITY - cache.zeroed.len)
+        .unwrap_or(0)
+        .min(ZERO_BATCH);
+    let mut batch = [const { None }; ZERO_BATCH];
+    for slot in batch.iter_mut().take(space) {
+        let Ok(frame) = allocate_on_node(node, 1, PAGE_SIZE_4K) else {
+            break;
+        };
+        unsafe {
+            crate::mm::cache::zero_page::clear_page_memset(
+                crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_u64() as *mut u8,
+            )
+        };
+        *slot = Some(frame);
+    }
+    let mut added = 0;
+    if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+        cpu.with_frame_cache(|cache| {
+            for slot in &mut batch {
+                if let Some(frame) = slot.take() {
+                    *slot = cache.zeroed.push(frame).err();
+                    if slot.is_none() {
+                        added += 1;
+                    }
+                }
             }
-            if start > cursor {
-                self.reserve_range(cursor, start - cursor);
-            }
-            cursor = end_region;
-        }
+        });
+    }
+    for frame in batch.into_iter().flatten() {
+        frame.release();
+    }
+    added
+}
 
-        if cursor < end {
-            self.reserve_range(cursor, end - cursor);
+pub(crate) fn reclaim_node_caches() -> usize {
+    let Some(pmm) = PMM.get() else { return 0 };
+    let mut bytes = 0;
+    for pool in pmm.nodes.iter().flatten() {
+        let cached = {
+            let mut cache = pool.huge.lock().expect("huge cache poisoned");
+            core::mem::replace(&mut *cache, core::array::from_fn(|_| None))
+        };
+        for frame in cached.into_iter().flatten() {
+            bytes += frame.size_bytes() as usize;
+            frame.release();
         }
     }
+    bytes
+}
 
-    fn release_range_direct(&self, start: u64, size: u64) -> u64 {
-        if size == 0 {
-            return 0;
-        }
-        let mut range_start = start.max(self.base);
-        let mut range_end = start.saturating_add(size);
-        let pmm_end = self.base.saturating_add(self.size);
-        if range_end > pmm_end {
-            range_end = pmm_end;
-        }
-        if range_end <= range_start {
-            return 0;
-        }
-
-        range_start = align_up(range_start, PAGE_SIZE_4K as u64);
-        range_end = align_down(range_end, PAGE_SIZE_4K as u64);
-        if range_end <= range_start {
-            return 0;
-        }
-
-        let len = range_end - range_start;
-        if self.inner.free_range_immediate(range_start, len).is_ok() {
-            len / (PAGE_SIZE_4K as u64)
-        } else {
-            0
-        }
+#[derive(Debug, Clone, Copy, Default)]
+pub struct CpuMagazineDrain {
+    pub page_4k: usize,
+    pub page_2m: usize,
+    pub page_1g: usize,
+}
+impl CpuMagazineDrain {
+    pub fn total(self) -> usize {
+        self.page_4k + self.page_2m + self.page_1g
     }
 }
 
-use crate::util::{align_down_u64 as align_down, align_up_u64 as align_up};
-
-fn align_size_to_page(size: usize) -> usize {
-    if size <= PAGE_SIZE_4K {
-        return PAGE_SIZE_4K;
+fn drain_frames(cpu: &crate::cpu::CurrentCpu) -> CpuMagazineDrain {
+    let mut drained = CpuMagazineDrain::default();
+    for _ in 0..(FRAME_CACHE_CAPACITY + ZERO_CACHE_CAPACITY).div_ceil(FRAME_BATCH) {
+        let Some(batch) = cpu.with_frame_cache(LocalFrameCache::take_batch) else {
+            break;
+        };
+        for frame in batch.into_iter().flatten() {
+            frame.release();
+            drained.page_4k += 1;
+        }
     }
-    size.saturating_add(PAGE_SIZE_4K - 1) / PAGE_SIZE_4K * PAGE_SIZE_4K
+    drained
 }
 
-pub(crate) fn sanitize_managed_region(start: u64, size: u64) -> Option<(u64, u64)> {
-    if size == 0 {
-        return None;
-    }
-
-    let end_raw = start.checked_add(size)?;
-    let start = align_up(start.max(MANAGED_PHYS_START), PAGE_SIZE_4K as u64);
-    let end = align_down(end_raw, PAGE_SIZE_4K as u64);
-    if end <= start {
-        return None;
-    }
-
-    Some((start, end))
+pub(crate) fn drain_current_cache() -> usize {
+    crate::cpu::CurrentCpu::acquire().map_or(0, |cpu| drain_frames(&cpu).page_4k * PAGE_SIZE_4K)
 }
 
-fn normalize_regions(usable_regions: &[(PhysAddr, u64)]) -> Vec<(u64, u64)> {
-    let mut regions: Vec<(u64, u64)> = usable_regions
+pub(crate) fn quiesce_current_cpu_for_offline() -> CpuMagazineDrain {
+    let cpu = crate::cpu::CurrentCpu::acquire().expect("owner CPU must drain its frame cache");
+    let drained = drain_frames(&cpu);
+    assert!(
+        cpu.with_frame_cache(|cache| cache.is_empty())
+            .is_some_and(|empty| empty),
+        "offline frame cache must be fully drained"
+    );
+    drained
+}
+
+pub fn pmm_initialized() -> bool {
+    PMM.get().is_some()
+}
+pub fn get_cpu_numa_node(cpu: crate::cpu::CpuId) -> NumaNodeId {
+    crate::mm::numa::topology::node_for_cpu(cpu).unwrap_or(NumaNodeId::NODE_0)
+}
+pub fn numa_node_for_addr(addr: PhysAddr) -> Option<NumaNodeId> {
+    PMM.get()?
+        .nodes
         .iter()
-        .filter_map(|&(addr, size)| sanitize_managed_region(addr.as_u64(), size))
-        .collect();
+        .flatten()
+        .find(|pool| {
+            pool.usable
+                .iter()
+                .any(|&(start, end)| start <= addr.as_u64() && addr.as_u64() < end)
+        })
+        .map(|pool| pool.node)
+}
+pub fn is_range_managed_by_pmm(start: PhysAddr, size: u64) -> bool {
+    let Some(end) = start.as_u64().checked_add(size) else {
+        return false;
+    };
+    size != 0
+        && PMM.get().is_some_and(|pmm| {
+            pmm.nodes.iter().flatten().any(|pool| {
+                pool.usable
+                    .iter()
+                    .any(|&(first, last)| first <= start.as_u64() && end <= last)
+            })
+        })
+}
+pub fn pmm_managed_end() -> Option<u64> {
+    PMM.get()?
+        .nodes
+        .iter()
+        .flatten()
+        .flat_map(|pool| pool.usable.iter().map(|range| range.1))
+        .max()
+}
+pub fn frame_allocator_stats() -> (u64, usize) {
+    PMM.get().map_or((0, 0), |pmm| {
+        pmm.nodes
+            .iter()
+            .flatten()
+            .fold((0, 0), |(free, total), pool| {
+                let admitted = pool
+                    .usable
+                    .iter()
+                    .map(|&(start, end)| ((end - start) / PAGE_SIZE_4K as u64) as usize)
+                    .sum::<usize>();
+                (free + pool.bitmap.free_count() as u64, total + admitted)
+            })
+    })
+}
+pub fn memory_pressure_level() -> u8 {
+    let (free, total) = frame_allocator_stats();
+    if total == 0 {
+        return 0;
+    }
+    (100 - (free * 100 / total as u64).min(100)) as u8
+}
 
-    regions.sort_by_key(|&(start, _)| start);
+/// Immutable node preference is an observation, never allocation authority.
+pub(crate) fn allocation_order(
+    node: NumaNodeId,
+) -> Option<&'static [Option<NumaNodeId>; MAX_NUMA_NODES]> {
+    PMM.get()?.order.get(node.as_usize())
+}
 
-    let mut merged: Vec<(u64, u64)> = Vec::with_capacity(regions.len());
-    for (start, end) in regions {
-        if let Some(last) = merged.last_mut() {
-            if start <= last.1 {
-                last.1 = last.1.max(end);
-                continue;
+/// Distance policy observes the same immutable SLIT facts as PMM fallback.
+/// Unknown nodes and unreachable pairs do not become migration destinations.
+pub(crate) fn node_distance(from: NumaNodeId, to: NumaNodeId) -> Option<u8> {
+    let pmm = PMM.get()?;
+    if !pmm
+        .known_nodes
+        .get(from.as_usize())
+        .copied()
+        .unwrap_or(false)
+        || !pmm.known_nodes.get(to.as_usize()).copied().unwrap_or(false)
+    {
+        return None;
+    }
+    let distance = pmm.distances[from.as_usize()][to.as_usize()];
+    (distance != u8::MAX).then_some(distance)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::boxed::Box;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn admission_rejects_overlap_overflow_and_invalid_nodes_and_reserves_holes() {
+        assert!(matches!(
+            build(&[
+                (PhysAddr::new(4096), 8192, NumaNodeId::NODE_0),
+                (PhysAddr::new(8192), 8192, NumaNodeId::new(1)),
+            ]),
+            Err(FrameAllocError::InvalidRange)
+        ));
+        assert_eq!(
+            normalized((1 << 52) - 4096, 8192),
+            Err(FrameAllocError::InvalidRange)
+        );
+        assert!(matches!(
+            build(&[(PhysAddr::new(4096), 4096, NumaNodeId::new(8))]),
+            Err(FrameAllocError::InvalidNode)
+        ));
+        let pmm = Box::leak(Box::new(
+            build(&[
+                (PhysAddr::new(0), 3 * 4096, NumaNodeId::NODE_0),
+                (PhysAddr::new(5 * 4096), 2 * 4096, NumaNodeId::NODE_0),
+            ])
+            .unwrap(),
+        ));
+        pmm.known_nodes[2] = true;
+        assert!(matches!(
+            pmm.pool(NumaNodeId::new(2)),
+            Err(FrameAllocError::Exhausted)
+        ));
+        assert!(matches!(
+            pmm.pool(NumaNodeId::new(3)),
+            Err(FrameAllocError::InvalidNode)
+        ));
+        let pool = pmm.nodes[0].as_ref().unwrap();
+        let mut frames = Vec::new();
+        for _ in 0..4 {
+            frames.push(pool.allocate(1, 4096).unwrap());
+        }
+        let mut addresses = frames
+            .iter()
+            .map(PhysicalAllocation::as_u64)
+            .collect::<Vec<_>>();
+        addresses.sort_unstable();
+        assert_eq!(addresses, [4096, 8192, 5 * 4096, 6 * 4096]);
+        assert!(matches!(
+            pool.allocate(1, 4096),
+            Err(FrameAllocError::Exhausted)
+        ));
+        for frame in frames {
+            frame.release();
+        }
+        assert_eq!(pool.bitmap.free_count(), 4);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn split_and_rejected_split_preserve_unique_return_destination() {
+        let pmm = Box::leak(Box::new(
+            build(&[(PhysAddr::new(4096), 16 * 4096, NumaNodeId::new(3))]).unwrap(),
+        ));
+        let pool = pmm.nodes[3].as_ref().unwrap();
+        let owner = pool.allocate(9, 4096).unwrap();
+        let start = owner.as_u64();
+        let owner = owner
+            .split(9)
+            .expect_err("empty split must return the incoming owner");
+        let (first, second) = owner.split(3).unwrap();
+        assert_eq!(
+            (first.as_u64(), first.page_count(), first.node()),
+            (start, 3, NumaNodeId::new(3))
+        );
+        assert_eq!(
+            (second.as_u64(), second.page_count()),
+            (start + 3 * 4096, 6)
+        );
+        first.release();
+        assert_eq!(pool.bitmap.free_count(), 10);
+        second.release();
+        assert_eq!(pool.bitmap.free_count(), 16);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn node_chains_and_full_cache_rejection_preserve_all_owners() {
+        let regions = core::array::from_fn::<_, MAX_NUMA_NODES, _>(|node| {
+            (
+                PhysAddr::new((node as u64 * 32 + 1) * 4096),
+                9 * 4096,
+                NumaNodeId::new(node as u8),
+            )
+        });
+        let pmm = Box::leak(Box::new(build(&regions).unwrap()));
+        let mut cache = FrameStack::<64>::new();
+        for _ in 0..8 {
+            for pool in pmm.nodes.iter().flatten() {
+                assert!(cache.push(pool.allocate(1, 4096).unwrap()).is_ok());
             }
         }
-        merged.push((start, end));
+        let pool = pmm.nodes[3].as_ref().unwrap();
+        let extra = pool.allocate(1, 4096).unwrap();
+        let address = extra.as_u64();
+        let returned = cache
+            .push(extra)
+            .expect_err("full cache returns sole owner");
+        assert_eq!(returned.as_u64(), address);
+        returned.release();
+        for node in (0..8).rev() {
+            for remaining in (0..8).rev() {
+                let frame = cache.pop(Some(NumaNodeId::new(node))).unwrap();
+                assert_eq!(frame.node(), NumaNodeId::new(node));
+                frame.release();
+                assert_eq!(
+                    pmm.nodes[node as usize]
+                        .as_ref()
+                        .unwrap()
+                        .bitmap
+                        .free_count(),
+                    9 - remaining
+                );
+            }
+        }
+        assert_eq!(cache.len, 0);
+        assert!(cache.pop(None).is_none());
+        for _ in 0..64 {
+            let node = NumaNodeId::NODE_0;
+            if let Ok(frame) = pmm.nodes[0].as_ref().unwrap().allocate(1, 4096) {
+                assert!(cache.push(frame).is_ok());
+            } else {
+                break;
+            }
+            assert_eq!(cache.heads[node.as_usize()].is_some(), true);
+        }
+        // LOOP_PROOF: mode=condition; reason=Each pop removes one of the finite cache entries.;
+        while let Some(frame) = cache.pop(None) {
+            frame.release();
+        }
+        assert_eq!(pmm.nodes[0].as_ref().unwrap().bitmap.free_count(), 9);
     }
-    merged
 }
-
-fn build_pmm_from_regions(usable_regions: &[(PhysAddr, u64)]) -> Option<PmmAllocatorFast> {
-    let merged = normalize_regions(usable_regions);
-    if merged.is_empty() {
-        return None;
-    }
-
-    let min_start = merged.iter().map(|&(start, _)| start).min()?;
-    let base = align_down(min_start, PAGE_SIZE_4K as u64);
-    let max_end = merged.iter().map(|&(_, end)| end).max()?;
-    let max_size = (PMM_MAX_PAGES as u64) * (PAGE_SIZE_4K as u64);
-    let size = align_down(max_end.saturating_sub(base), PAGE_SIZE_4K as u64).min(max_size);
-    if size == 0 {
-        return None;
-    }
-
-    let pmm = PmmAllocatorFast::new(base, size);
-    pmm.reserve_gaps(&merged);
-    Some(pmm)
-}
-
-// ============================================================================
