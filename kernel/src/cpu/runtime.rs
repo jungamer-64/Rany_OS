@@ -266,75 +266,6 @@ impl CpuRuntime {
         Some(unsafe { &*resource })
     }
 
-    pub(crate) fn identify_bootstrap(
-        &self,
-        firmware: FirmwareCpuIdentity,
-    ) -> Result<(), CpuTopologyIssue> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        if firmware.apic_id != state.slots[CpuId::BOOTSTRAP.as_usize()].firmware.apic_id {
-            return Err(CpuTopologyIssue::ConflictingFirmwareIdentity);
-        }
-        if let Some(uid) = firmware.uid.as_ref()
-            && state
-                .slots
-                .iter()
-                .skip(1)
-                .any(|slot| slot.firmware.uid.as_ref() == Some(uid))
-        {
-            return Err(CpuTopologyIssue::DuplicateUid { uid: uid.clone() });
-        }
-        let bootstrap = &mut state.slots[CpuId::BOOTSTRAP.as_usize()];
-        bootstrap.firmware.uid = firmware.uid;
-        bootstrap.firmware.proximity_domain = firmware.proximity_domain;
-        bootstrap.firmware.eject = super::CpuEjectCapability::Fixed;
-        state.publish()
-    }
-
-    pub(crate) fn discover_present(
-        &self,
-        firmware: FirmwareCpuIdentity,
-    ) -> Result<CpuId, CpuTopologyIssue> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let (id, metadata_changed) = ensure_possible_slot(&mut state, firmware)?;
-        let index = id.as_usize();
-        let became_present = if state.slots[index].state == CpuSlotState::FirmwareAbsent {
-            let local = state.locals[index].as_ref().get_ref();
-            // SAFETY: FirmwareAbsent is published only after the drain/park
-            // protocol and firmware-confirmed eject complete. The transition
-            // worker serializes discovery with launch, so no replacement CPU
-            // can use this stable CpuLocal until FirmwarePresent is committed.
-            unsafe { local.rearm_physical_generation() }
-                .map_err(|resource| CpuTopologyIssue::CpuGenerationNotQuiescent { id, resource })?;
-            state.slots[index]
-                .transition(CpuStateTransition::FirmwarePresent)
-                .map_err(map_state_error)?;
-            true
-        } else {
-            false
-        };
-        if metadata_changed || became_present {
-            state.publish()?;
-        }
-        Ok(id)
-    }
-
-    /// Registers a firmware-described CPU slot without asserting presence.
-    ///
-    /// Repeated namespace scans return the original `CpuId`; changing either
-    /// side of an established UID/APIC identity is rejected as a topology
-    /// conflict rather than allocating a replacement slot.
-    pub(crate) fn discover_possible(
-        &self,
-        firmware: FirmwareCpuIdentity,
-    ) -> Result<CpuId, CpuTopologyIssue> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let (id, metadata_changed) = ensure_possible_slot(&mut state, firmware)?;
-        if metadata_changed {
-            state.publish()?;
-        }
-        Ok(id)
-    }
-
     pub(crate) fn begin_start(&self, id: CpuId) -> Result<(), CpuRuntimeError> {
         self.transition(id, CpuStateTransition::BeginStart)
     }
@@ -410,55 +341,6 @@ impl CpuRuntime {
             .map_err(CpuRuntimeError::State)?;
         state.publish().map_err(CpuRuntimeError::Topology)
     }
-}
-
-fn ensure_possible_slot(
-    state: &mut CpuRuntimeState,
-    firmware: FirmwareCpuIdentity,
-) -> Result<(CpuId, bool), CpuTopologyIssue> {
-    if let Some(index) = state.slots.iter().position(|slot| {
-        slot.firmware.apic_id == firmware.apic_id && slot.firmware.uid == firmware.uid
-    }) {
-        let slot = &mut state.slots[index];
-        let metadata_changed = slot.firmware.proximity_domain != firmware.proximity_domain
-            || slot.firmware.eject != firmware.eject;
-        slot.firmware.proximity_domain = firmware.proximity_domain;
-        slot.firmware.eject = firmware.eject;
-        return Ok((slot.id, metadata_changed));
-    }
-
-    if let Some(uid) = firmware.uid.as_ref()
-        && state
-            .slots
-            .iter()
-            .any(|slot| slot.firmware.uid.as_ref() == Some(uid))
-    {
-        return Err(CpuTopologyIssue::DuplicateUid { uid: uid.clone() });
-    }
-    if state
-        .slots
-        .iter()
-        .any(|slot| slot.firmware.apic_id == firmware.apic_id)
-    {
-        return Err(CpuTopologyIssue::DuplicateApicId {
-            apic_id: firmware.apic_id,
-        });
-    }
-    if state.slots.len() >= MAX_POSSIBLE_CPUS {
-        return Err(CpuTopologyIssue::TooManyPossibleCpus {
-            limit: MAX_POSSIBLE_CPUS,
-        });
-    }
-
-    let id = CpuId::from_valid_index(state.slots.len());
-    let local = super::CpuLocal::allocate(id, state.tls_template)
-        .map_err(|_| CpuTopologyIssue::CpuLocalAllocationFailed { id })?;
-    state
-        .slots
-        .push(CpuSlot::absent(id, CpuRole::Application, firmware));
-    state.locals.push(local);
-    state.startup_resources.push(None);
-    Ok((id, true))
 }
 
 fn map_state_error(error: CpuStateTransitionError) -> CpuTopologyIssue {
