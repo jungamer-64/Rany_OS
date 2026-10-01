@@ -130,12 +130,8 @@ fn take_completed_result(slot: &CompletionSlot) -> Option<i32> {
 }
 
 #[inline]
-fn take_completed_result_and_notify(
-    slot: &CompletionSlot,
-    queue_ptr: *const CommandQueue,
-) -> Option<i32> {
+fn take_completed_result_and_notify(slot: &CompletionSlot, queue: &CommandQueue) -> Option<i32> {
     let result = take_completed_result(slot)?;
-    let queue = unsafe { &*queue_ptr };
     queue.notify_slot_available();
     Some(result)
 }
@@ -222,13 +218,13 @@ pub struct CommandCompletion<'a> {
     queue: &'a CommandQueue,
 }
 
-impl CommandCompletion {
+impl CommandCompletion<'_> {
     /// Blocking wait until command completes.
     pub fn wait_blocking(&self) -> i32 {
-        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        let slot = &self.queue.slots[self.slot_idx];
         let mut backoff = Backoff::new();
         for spins in 0..MAX_COMPLETION_SPINS {
-            if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+            if let Some(result) = take_completed_result_and_notify(slot, self.queue) {
                 return result;
             }
             if spins > 0 && spins % WAIT_WARN_INTERVAL == 0 {
@@ -244,10 +240,10 @@ impl CommandCompletion {
     where
         F: FnMut(&IommuCommandKind) -> Result<i32, ()>,
     {
-        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        let slot = &self.queue.slots[self.slot_idx];
         let mut backoff = Backoff::new();
         for spins in 0..MAX_COMPLETION_SPINS {
-            if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+            if let Some(result) = take_completed_result_and_notify(slot, self.queue) {
                 return result;
             }
 
@@ -268,37 +264,37 @@ impl CommandCompletion {
     }
 
     pub fn cancel(&self) -> bool {
-        let q = unsafe { &*self.queue_ptr };
+        let q = self.queue;
         // record an attempt to cancel
         q.cancel_attempts.fetch_add(1, Ordering::Relaxed);
-        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        let slot = &self.queue.slots[self.slot_idx];
         slot.cancel()
     }
 }
 
-impl Drop for CommandCompletion {
+impl Drop for CommandCompletion<'_> {
     fn drop(&mut self) {
-        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
+        let slot = &self.queue.slots[self.slot_idx];
         if slot.state.load(Ordering::Acquire) != 1 {
             return;
         }
         // Best-effort cancel when the completion object is dropped
-        let q = unsafe { &*self.queue_ptr };
+        let q = self.queue;
         q.cancel_attempts.fetch_add(1, Ordering::Relaxed);
         let _ = slot.cancel();
     }
 }
 
-impl core::future::Future for CommandCompletion {
+impl core::future::Future for CommandCompletion<'_> {
     type Output = i32;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let slot = unsafe { &*self.slots_ptr.add(self.slot_idx) };
-        if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+        let slot = &self.queue.slots[self.slot_idx];
+        if let Some(result) = take_completed_result_and_notify(slot, self.queue) {
             return Poll::Ready(result);
         }
 
         slot.waker.register(cx.waker());
-        if let Some(result) = take_completed_result_and_notify(slot, self.queue_ptr) {
+        if let Some(result) = take_completed_result_and_notify(slot, self.queue) {
             Poll::Ready(result)
         } else {
             Poll::Pending
@@ -308,8 +304,7 @@ impl core::future::Future for CommandCompletion {
 
 /// CommandQueue holds sender/receiver and completion slots
 pub struct CommandQueue {
-    sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
-    receiver: PoisonLock<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
+    receiver: PoisonLock<()>,
     slots: Box<[CompletionSlot]>,
     next_alloc: AtomicUsize,
     poisoned: AtomicBool,
@@ -352,38 +347,6 @@ impl core::fmt::Debug for CommandQueue {
 }
 
 impl CommandQueue {
-    pub fn new_with_numa(numa_node: Option<usize>) -> Self {
-        let (s, r) = BoundedChannel::<IommuCommand, DEFAULT_QUEUE_SIZE>::new();
-
-        // Completion records are ordinary CPU-owned metadata; their storage
-        // lives with the queue and is never published as an IOMMU hardware table.
-        let mut slots = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
-        for _ in 0..DEFAULT_QUEUE_SIZE { slots.push(CompletionSlot::new()); }
-        let slots = slots.into_boxed_slice();
-
-        Self {
-            sender: s,
-            receiver: PoisonLock::new(r),
-            slots,
-            next_alloc: AtomicUsize::new(0),
-            poisoned: AtomicBool::new(false),
-            numa_node,
-            slot_waiter: AtomicWaker::new(),
-            send_waiter: AtomicWaker::new(),
-            recv_waiter: AtomicWaker::new(),
-            processed_count: AtomicUsize::new(0),
-            cancelled_count: AtomicUsize::new(0),
-            cancel_attempts: AtomicUsize::new(0),
-            reclaimed_count: AtomicUsize::new(0),
-            send_backpressure_count: AtomicUsize::new(0),
-        }
-    }
-
-    /// Convenience constructor with no NUMA hint
-    pub fn new() -> Self {
-        Self::new_with_numa(None)
-    }
-
     #[inline]
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Acquire)
@@ -519,7 +482,7 @@ impl CommandQueue {
     }
 
     /// Non-blocking submit: returns a `CommandCompletion` which implements `Future`
-    pub fn submit(&self, kind: IommuCommandKind) -> Result<CommandCompletion, ()> {
+    pub fn submit(&self, kind: IommuCommandKind) -> Result<CommandCompletion<'_>, ()> {
         self.ensure_receiver_available()?;
         let slot_idx = match self.alloc_slot() {
             Some(i) => i,
@@ -547,8 +510,7 @@ impl CommandQueue {
                     self.recv_waiter.wake();
                     return Ok(CommandCompletion {
                         slot_idx,
-                        slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
-                        queue_ptr: self as *const CommandQueue,
+                        queue: self,
                     });
                 }
                 Err(_) => {
@@ -566,8 +528,8 @@ impl CommandQueue {
     }
 
     /// Async submit (non-busy): returns a Future that waits for slot & channel space
-    pub fn submit_async(&self, kind: IommuCommandKind) -> SubmitFuture {
-        SubmitFuture::new(self as *const CommandQueue, kind)
+    pub fn submit_async(&self, kind: IommuCommandKind) -> SubmitFuture<'_> {
+        SubmitFuture::new(self, kind)
     }
 
     /// Synchronous submit for environments that already have a worker draining the queue.
@@ -656,8 +618,7 @@ impl CommandQueue {
 
         let comp = CommandCompletion {
             slot_idx,
-            slots_ptr: self.slots.as_ptr() as *const CompletionSlot,
-            queue_ptr: self as *const CommandQueue,
+            queue: self,
         };
 
         let rc = comp.wait_sync_with_worker(self, &mut handler);
@@ -860,21 +821,21 @@ pub struct SubmitFuture<'a> {
     slot_idx: Option<usize>,
 }
 
-impl SubmitFuture {
-    fn new(queue_ptr: *const CommandQueue, kind: IommuCommandKind) -> Self {
+impl<'a> SubmitFuture<'a> {
+    fn new(queue: &'a CommandQueue, kind: IommuCommandKind) -> Self {
         Self {
-            queue_ptr,
+            queue,
             kind: Some(kind),
             slot_idx: None,
         }
     }
 }
 
-impl core::future::Future for SubmitFuture {
-    type Output = Result<CommandCompletion, ()>;
+impl<'a> core::future::Future for SubmitFuture<'a> {
+    type Output = Result<CommandCompletion<'a>, ()>;
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
-        let q = unsafe { &*this.queue_ptr };
+        let q = this.queue;
 
         if q.ensure_receiver_available().is_err() {
             q.release_future_slot(this.slot_idx.take());
@@ -915,8 +876,7 @@ impl core::future::Future for SubmitFuture {
                 this.kind = None;
                 let comp = CommandCompletion {
                     slot_idx: idx,
-                    slots_ptr: q.slots.as_ptr() as *const CompletionSlot,
-                    queue_ptr: this.queue_ptr,
+                    queue: this.queue,
                 };
                 Poll::Ready(Ok(comp))
             }
@@ -942,8 +902,7 @@ impl core::future::Future for SubmitFuture {
                     this.kind = None;
                     let comp = CommandCompletion {
                         slot_idx: idx,
-                        slots_ptr: q.slots.as_ptr() as *const CompletionSlot,
-                        queue_ptr: this.queue_ptr,
+                        queue: this.queue,
                     };
                     Poll::Ready(Ok(comp))
                 } else {
@@ -954,12 +913,12 @@ impl core::future::Future for SubmitFuture {
     }
 }
 
-impl Drop for SubmitFuture {
+impl Drop for SubmitFuture<'_> {
     fn drop(&mut self) {
         if self.kind.is_none() {
             return;
         }
-        let q = unsafe { &*self.queue_ptr };
+        let q = self.queue;
         q.release_future_slot(self.slot_idx.take());
     }
 }
@@ -1023,7 +982,7 @@ pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
 pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
     let q = Box::leak(Box::new(CommandQueue::new()));
 
-    let mut comps: Vec<CommandCompletion> = Vec::new();
+    let mut comps: Vec<CommandCompletion<'_>> = Vec::new();
     for i in 0..5 {
         comps.push(
             q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 })
