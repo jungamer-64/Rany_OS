@@ -182,190 +182,79 @@ impl SlPte {
 // SAFETY: SlPte with all zeros represents "not present" - a valid state
 unsafe impl Zeroable for SlPte {}
 
-/// RAII guard for an allocated page-table page
-///
-/// Ensures that allocated page-tables are deallocated on panic or error unless explicitly committed.
-///
-/// # Phase 6: Pool Support
-///
-/// If created via `new_with_pool()`, the page table is acquired from the pool and
-/// returned to the pool on Drop. Otherwise, direct allocation/deallocation is used.
-///
-/// # Lock Ordering
-///
-/// When acquiring pool pages, ensure domain lock is held BEFORE pool lock.
-pub struct PageTableScope {
-    /// Virtual pointer to the page table
-    ptr: *mut SlPte,
-    /// Physical address of the page table
-    phys: u64,
-    /// NUMA node where this table was allocated
-    node: usize,
-    /// Layout for direct deallocation (None if pool-managed)
-    layout: Option<alloc::alloc::Layout>,
-    /// Pool for release (Some if pool-managed)
-    pool: Option<alloc::sync::Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>>,
-    /// Parent entry pointer that references this table. If set and the scope is not committed,
-    /// Drop will clear the parent entry to avoid leaving stale pointers into freed memory.
+/// A not-yet-committed table owner. Unattached rollback returns directly to
+/// its pool; attached rollback clears the parent and retains RAM in quarantine.
+/// The pending queue outlives the scope, and admission reserves capacity before
+/// any parent publication. Mapping construction holds the domain paging lock.
+pub(in crate::io::iommu) struct PageTableScope<'a> {
+    allocation: Option<crate::io::iommu::common::dma::page_table_pool::PooledPt>,
+    pool: alloc::sync::Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
+    pending: &'a crate::sync::PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
     parent_entry: Option<*mut SlPte>,
     parent_phys: Option<u64>,
-    committed: bool,
 }
 
-impl PageTableScope {
-    #[cfg(test)]
-    pub fn new(numa_hint: Option<usize>) -> Result<Self, IommuError> {
-        let layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .map_err(|_| IommuError::HardwareError)?;
-
-        let node = numa_hint.unwrap_or(0);
-        let ptr = crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_hint)
-            .ok_or(IommuError::HardwareError)?
-            .as_ptr() as *mut SlPte;
-
-        let phys = virt_ptr_to_phys(ptr as *const u8)?;
-
-        // Security: Register and protect the page table IMMEDIATELY after allocation.
-        crate::io::iommu::common::dma::page_table_pool::register_page_table(
-            phys,
-            ptr as usize,
-            node,
-        );
-
-        Ok(Self {
-            ptr,
-            phys,
-            node,
-            layout: Some(layout),
-            pool: None,
-            parent_entry: None,
-            parent_phys: None,
-            committed: false,
-        })
-    }
-
-    /// Allocate a zeroed page table from the pool (Phase 6)
-    ///
-    /// The page table is returned to the pool on Drop (unless committed to a
-    /// structure that will manage lifetime separately).
-    ///
-    /// # Arguments
-    /// * `pool` - The page table pool to acquire from
-    /// * `node_hint` - Preferred NUMA node
-    pub fn new_with_pool(
+impl<'a> PageTableScope<'a> {
+    pub(in crate::io::iommu) fn new_with_pool(
         pool: alloc::sync::Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         node_hint: Option<usize>,
+        pending: &'a crate::sync::PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
     ) -> Result<Self, IommuError> {
-        let pt = pool.acquire(node_hint)?;
-
-        // Note: pt is already registered by the pool (in alloc_fresh or when released)
-
-        Ok(Self {
-            ptr: pt.ptr.as_ptr(),
-            phys: pt.phys,
-            node: pt.node,
-            layout: None, // Pool-managed, no layout needed
-            pool: Some(pool),
-            parent_entry: None,
-            parent_phys: None,
-            committed: false,
-        })
+        // At most four scopes exist in a 5-level path; capture holds the paging
+        // lock and cannot invalidate admission while these scopes remain live.
+        pending.lock().map_err(|_| IommuError::Poisoned)?
+            .reserve(4)?;
+        let allocation = pool.acquire(node_hint)?;
+        Ok(Self { allocation: Some(allocation), pool, pending, parent_entry: None, parent_phys: None })
     }
-
-    /// Attach the newly allocated table to the provided parent entry.
-    /// This writes the parent entry to point to the table and stores the parent information
-    /// so that Drop can clear it if this scope is not committed.
-    ///
-    /// # Arguments
-    /// * `parent_entry` - Pointer to the PTE in the parent table
-    /// * `parent_phys` - Physical address of the parent table (for accounting)
-    /// * `format` - PTE format (Intel or AMD)
-    /// * `next_level` - For AMD, the level of the table being attached (3=PDP, 2=PD, 1=PT)
-    pub fn attach_to_parent(
-        &mut self,
-        parent_entry: *mut SlPte,
-        parent_phys: u64,
-        format: PteFormat,
-        next_level: u8,
+    pub(in crate::io::iommu) fn ptr(&self) -> *mut SlPte {
+        self.allocation.as_ref().expect("uncommitted owner").ptr.as_ptr()
+    }
+    pub(in crate::io::iommu) fn phys(&self) -> u64 {
+        self.allocation.as_ref().expect("uncommitted owner").phys
+    }
+    /// # Safety
+    /// The parent entry is retained and exclusively mutated under its domain's
+    /// paging lock through this scope's completion. This admission may publish
+    /// to hardware; even a later rollback requires IOTLB retirement before reuse.
+    pub(in crate::io::iommu) unsafe fn attach_to_parent(
+        &mut self, parent_entry: *mut SlPte, parent_phys: u64, format: PteFormat, next_level: u8,
     ) {
-        unsafe {
-            match format {
-                PteFormat::Intel => {
-                    *parent_entry = SlPte::mapping(self.phys, true, true);
-                }
-                PteFormat::Amd => {
-                    // AMD directory entry needs correct Next Level field
-                    let amd_pte = AmdPte::table_pointer(self.phys, next_level);
-                    *parent_entry = SlPte(amd_pte.0);
-                }
-            }
-        }
+        assert!(self.parent_entry.is_none(), "one parent publication per scope");
+        let pte = match format {
+            PteFormat::Intel => SlPte::mapping(self.phys(), true, true),
+            PteFormat::Amd => SlPte(AmdPte::table_pointer(self.phys(), next_level).0),
+        };
+        // SAFETY: caller retains and exclusively mutates the aligned parent entry.
+        unsafe { parent_entry.write(pte) };
         self.parent_entry = Some(parent_entry);
         self.parent_phys = Some(parent_phys);
     }
-
-    /// Commit the allocation into the page table accounting structures.
-    /// This registers the table and increments the parent's usage count.
-    pub fn commit(&mut self) {
-        // Already registered at allocation time for safety.
+    /// Consume publication authority; the active registry retains the PMM owner.
+    pub(in crate::io::iommu) fn commit(mut self) {
         if let Some(parent_phys) = self.parent_phys {
             crate::io::iommu::common::dma::page_table_pool::inc_ref(parent_phys);
         }
-        self.committed = true;
-    }
-
-    #[inline]
-    #[cfg(test)]
-    pub fn ptr(&self) -> *mut SlPte {
-        self.ptr
-    }
-
-    #[inline]
-    #[cfg(test)]
-    pub fn phys(&self) -> u64 {
-        self.phys
-    }
-
-    #[inline]
-    #[cfg(test)]
-    pub fn node(&self) -> usize {
-        self.node
+        crate::io::iommu::common::dma::page_table_pool::publish_table(
+            self.allocation.take().expect("one table publication"));
     }
 }
 
-impl Drop for PageTableScope {
+impl Drop for PageTableScope<'_> {
     fn drop(&mut self) {
-        // If not committed, we must clear the parent entry (if any) and free the memory
-        if !self.committed {
-            if let Some(parent) = self.parent_entry {
-                unsafe {
-                    (*parent).0 = 0;
-                }
-            }
-
-            // Release to pool or direct dealloc
-            if let Some(ref pool) = self.pool {
-                // Pool-managed: reconstruct PooledPt and release
-                let pt = crate::io::iommu::common::dma::page_table_pool::PooledPt::new(
-                    unsafe { core::ptr::NonNull::new_unchecked(self.ptr) },
-                    self.phys,
-                    self.node,
-                );
-                // Note: We keep it registered while in the pool!
-                pool.release(pt);
-            } else if let Some(layout) = self.layout {
-                // Direct allocation: dealloc via NUMA helper
-                // Security: Unregister from DMA protection before deallocation.
-                crate::io::iommu::common::dma::page_table_pool::unregister_page_table(self.phys);
-                unsafe {
-                    crate::mm::numa::topology::deallocate_on_node(
-                        core::ptr::NonNull::new_unchecked(self.ptr as *mut u8),
-                        layout,
-                        Some(self.node),
-                    );
-                }
-            }
+        let Some(table) = self.allocation.take() else { return; };
+        if let Some(parent) = self.parent_entry {
+            // SAFETY: attach retains the parent and paging mutation authority
+            // through rollback; clearing removes the sole published reference.
+            unsafe { parent.write(SlPte::new()) };
+            // SAFETY: this scope cleared its sole parent. RAM stays quarantined.
+            let retired = unsafe {
+                crate::io::iommu::common::dma::page_table_pool::QuarantinedPt::from_unlinked(table)
+            };
+            let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
+            pending.push(retired);
+        } else {
+            self.pool.release(table);
         }
     }
 }
@@ -452,6 +341,11 @@ pub fn phys_to_virt_usize(phys: u64) -> usize {
 /// }
 /// ```
 #[derive(Debug)]
+enum HardwareTableBacking {
+    Frames(crate::mm::phys::frame_allocator::PhysicalAllocation),
+}
+
+#[derive(Debug)]
 pub struct HardwareTable<T: Sized + Copy> {
     /// Virtual address (NonNull for null safety)
     ptr: NonNull<T>,
@@ -462,9 +356,7 @@ pub struct HardwareTable<T: Sized + Copy> {
     /// Allocation size in bytes (rounded to page size)
     alloc_bytes: usize,
     /// Number of 4KiB frames backing the table
-    frame_count: usize,
-    /// True when backing storage comes from heap fallback (qemu-test-export).
-    heap_backed: bool,
+    backing: Option<HardwareTableBacking>,
     /// PhantomData for T
     _marker: PhantomData<T>,
 }
@@ -525,36 +417,6 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
         }
     }
 
-    /// Heap-backed allocation for qemu test suites.
-    #[cfg(feature = "qemu-test-export")]
-    fn new_heap_backed(
-        count: usize,
-        alloc_bytes: usize,
-        frame_count: usize,
-        page_size: usize,
-    ) -> Result<Self, IommuError> {
-        let layout = alloc::alloc::Layout::from_size_align(alloc_bytes, page_size)
-            .map_err(|_| IommuError::InvalidAddress)?;
-        let raw_ptr = crate::util::allocate_zeroed(layout)
-            .ok_or(IommuError::OutOfMemory)?
-            .as_ptr();
-        let ptr = NonNull::new(raw_ptr as *mut T).ok_or(IommuError::HardwareError)?;
-        let phys = virt_ptr_to_phys(raw_ptr as *const u8)?;
-
-        // Security: Register the hardware table as protected from DMA
-        crate::security::dma::register_protected_range(phys, alloc_bytes as u64);
-
-        Ok(Self {
-            ptr,
-            phys,
-            count,
-            alloc_bytes,
-            frame_count,
-            heap_backed: true,
-            _marker: PhantomData,
-        })
-    }
-
     /// Frame-backed allocation using the buddy frame allocator.
     #[cfg(not(feature = "qemu-test-export"))]
     fn new_frame_backed(
@@ -563,7 +425,8 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
         frame_count: usize,
         numa_hint: Option<usize>,
     ) -> Result<Self, IommuError> {
-        let phys = Self::alloc_phys_frames(frame_count, numa_hint)?;
+        let backing = Self::alloc_phys_frames(frame_count, numa_hint)?;
+        let phys = backing.as_u64();
 
         let virt_addr = crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new(phys));
         let raw_ptr = virt_addr.as_u64() as *mut u8;
@@ -583,32 +446,28 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             phys,
             count,
             alloc_bytes,
-            frame_count,
-            heap_backed: false,
+            backing: Some(HardwareTableBacking::Frames(backing)),
             _marker: PhantomData,
         })
     }
 
     /// Allocate physical frames (single or contiguous).
     #[cfg(not(feature = "qemu-test-export"))]
-    fn alloc_phys_frames(frame_count: usize, numa_hint: Option<usize>) -> Result<u64, IommuError> {
-        if frame_count == 1 {
-            let frame = if let Some(node) = numa_hint {
-                crate::mm::phys::frame_allocator::alloc_frame_on_numa_node(
-                    crate::mm::types::NumaNodeId::new(node as u8),
-                )
-            } else {
-                crate::mm::phys::frame_allocator::alloc_frame()
-            }
-            .ok_or(IommuError::OutOfMemory)?;
-            Ok(frame.start_address().as_u64())
+    fn alloc_phys_frames(
+        frame_count: usize,
+        numa_hint: Option<usize>,
+    ) -> Result<crate::mm::phys::frame_allocator::PhysicalAllocation, IommuError> {
+        if let Some(node) = numa_hint {
+            let node = u8::try_from(node).map_err(|_| IommuError::InvalidAddress)?;
+            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned_on_node(
+                crate::mm::types::NumaNodeId::new(node),
+                frame_count,
+                crate::mm::types::PAGE_SIZE_4K,
+            )
+            .map_err(|_| IommuError::OutOfMemory)
         } else {
-            if numa_hint.is_some() {
-                log::debug!("[IOMMU] NUMA hint ignored for contiguous table allocation");
-            }
             crate::mm::phys::frame_allocator::alloc_contiguous_frames(frame_count)
-                .ok_or(IommuError::OutOfMemory)
-                .map(|a| a.as_u64())
+                .map_err(|_| IommuError::OutOfMemory)
         }
     }
 
@@ -661,27 +520,15 @@ impl<T: Sized + Copy> Drop for HardwareTable<T> {
         // call in New, correctly handling both bitmap and regions list for any size.
         crate::security::dma::unregister_protected_range(self.phys, self.alloc_bytes as u64);
 
-        if self.heap_backed {
-            if let Ok(layout) = alloc::alloc::Layout::from_size_align(
-                self.alloc_bytes,
-                crate::mm::types::PAGE_SIZE_4K as usize,
-            ) {
-                // SAFETY: heap-backed tables were allocated via allocate_zeroed.
-                unsafe {
-                    alloc::alloc::dealloc(self.ptr.as_ptr() as *mut u8, layout);
-                }
-            }
-            return;
-        }
-
-        // SAFETY: We own the backing frames and they were allocated via PMM.
-        // The caller must ensure hardware is not using this table before drop.
-        use x86_64::structures::paging::{PhysFrame, Size4KiB};
-
-        for idx in 0..self.frame_count {
-            let addr = self.phys + (idx as u64) * (crate::mm::types::PAGE_SIZE_4K as u64);
-            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-            crate::mm::phys::frame_allocator::dealloc_frame(frame);
+        match self
+            .backing
+            .take()
+            .expect("table retains its backing owner")
+        {
+            HardwareTableBacking::Heap(layout) => unsafe {
+                alloc::alloc::dealloc(self.ptr.as_ptr().cast(), layout)
+            },
+            HardwareTableBacking::Frames(backing) => backing.release(),
         }
     }
 }
