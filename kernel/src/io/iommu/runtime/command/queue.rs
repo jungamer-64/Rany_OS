@@ -21,7 +21,6 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering};
 use core::task::{Context, Poll};
 
-use alloc::alloc::Layout;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 
@@ -218,10 +217,9 @@ impl CompletionSlot {
 }
 
 /// Completion object returned for a submitted command.
-pub struct CommandCompletion {
+pub struct CommandCompletion<'a> {
     slot_idx: usize,
-    slots_ptr: *const CompletionSlot,
-    queue_ptr: *const CommandQueue,
+    queue: &'a CommandQueue,
 }
 
 impl CommandCompletion {
@@ -312,7 +310,7 @@ impl core::future::Future for CommandCompletion {
 pub struct CommandQueue {
     sender: BoundedSender<IommuCommand, DEFAULT_QUEUE_SIZE>,
     receiver: PoisonLock<BoundedReceiver<IommuCommand, DEFAULT_QUEUE_SIZE>>,
-    slots: &'static [CompletionSlot],
+    slots: Box<[CompletionSlot]>,
     next_alloc: AtomicUsize,
     poisoned: AtomicBool,
     /// Optional NUMA node hint used for allocating the slots array
@@ -357,33 +355,11 @@ impl CommandQueue {
     pub fn new_with_numa(numa_node: Option<usize>) -> Self {
         let (s, r) = BoundedChannel::<IommuCommand, DEFAULT_QUEUE_SIZE>::new();
 
-        // Try to allocate slots on the given NUMA node for locality benefits.
-        let layout = Layout::array::<CompletionSlot>(DEFAULT_QUEUE_SIZE).expect("layout");
-        let slots: &'static [CompletionSlot] = if let Some(nonnull) =
-            crate::mm::numa::topology::allocate_zeroed_on_node(layout, numa_node)
-        {
-            unsafe {
-                let ptr = nonnull.as_ptr() as *mut CompletionSlot;
-                for i in 0..DEFAULT_QUEUE_SIZE {
-                    core::ptr::write(ptr.add(i), CompletionSlot::new());
-                }
-                let slice = core::slice::from_raw_parts_mut(ptr, DEFAULT_QUEUE_SIZE);
-                let boxed = Box::from_raw(slice as *mut [CompletionSlot]);
-                let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
-                let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
-                slot_ref
-            }
-        } else {
-            // Fallback to global allocator
-            let mut v: Vec<CompletionSlot> = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
-            for _ in 0..DEFAULT_QUEUE_SIZE {
-                v.push(CompletionSlot::new());
-            }
-            let boxed = v.into_boxed_slice();
-            let slot_mut_ref: &'static mut [CompletionSlot] = Box::leak(boxed);
-            let slot_ref: &'static [CompletionSlot] = &*slot_mut_ref;
-            slot_ref
-        };
+        // Completion records are ordinary CPU-owned metadata; their storage
+        // lives with the queue and is never published as an IOMMU hardware table.
+        let mut slots = Vec::with_capacity(DEFAULT_QUEUE_SIZE);
+        for _ in 0..DEFAULT_QUEUE_SIZE { slots.push(CompletionSlot::new()); }
+        let slots = slots.into_boxed_slice();
 
         Self {
             sender: s,
@@ -878,8 +854,8 @@ impl CommandQueue {
 }
 
 // Future returned by `submit_async()`
-pub struct SubmitFuture {
-    queue_ptr: *const CommandQueue,
+pub struct SubmitFuture<'a> {
+    queue: &'a CommandQueue,
     kind: Option<IommuCommandKind>,
     slot_idx: Option<usize>,
 }
