@@ -60,10 +60,6 @@ pub struct Mlx5Device {
 
     // Command IF
     pub(crate) cmd: Option<CmdQueue>,
-    pub(crate) cmd_in_mbox_virt: u64,
-    pub(crate) cmd_in_mbox_device: u64,
-    pub(crate) cmd_out_mbox_virt: u64,
-    pub(crate) cmd_out_mbox_device: u64,
 
     // Memory/Pages
     pub(crate) fw_function_id: u16,

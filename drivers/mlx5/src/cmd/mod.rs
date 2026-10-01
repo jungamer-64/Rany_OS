@@ -174,45 +174,6 @@ impl CmdEntry {
     }
 }
 
-/// コマンド転送抽象
-pub trait CommandTransport {
-    /// Safety: メールボックスポインタが有効なDMAメモリであること
-    /// # Errors
-    ///
-    /// Returns an error if the device is not ready, times out, or reports a failed completion.
-    unsafe fn execute(
-        &mut self,
-        opcode: CmdOpcode,
-        in_mbox_phys: u64,
-        in_len: u32,
-        out_mbox_phys: u64,
-        out_len: u32,
-    ) -> Mlx5Result<()>;
-
-    /// Snapshot the logical command input before a UID retry loop starts.
-    /// Default no-op for transports that don't rewrite input buffers.
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    unsafe fn snapshot_input(&mut self, _in_len: u32) -> Mlx5Result<()> {
-        Ok(())
-    }
-
-    /// Restore the logical command input before each UID retry attempt.
-    /// Default no-op for transports that don't rewrite input buffers.
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    unsafe fn restore_input(&mut self) -> Mlx5Result<()> {
-        Ok(())
-    }
-
-    fn set_uid(&mut self, _uid: u16) {}
-    fn uid(&self) -> u16 {
-        0
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CommandSlotState {
     Idle,
@@ -223,10 +184,6 @@ enum CommandSlotState {
 /// CMDQベースのコマンドインタフェース
 pub struct CmdQueueTransport {
     registers: crate::registers::CommandRegisters,
-    cmdq_phys: u64,
-    cmdq_virt: u64,
-    in_mbox_virt: u64,
-    out_mbox_virt: u64,
     next_token: u8,
     slot_state: CommandSlotState,
     uid: u16,
@@ -312,57 +269,6 @@ impl CmdQueueTransport {
             return Err(Mlx5Error::NotSupported);
         }
         Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    ///
-    /// # Safety
-    /// All supplied ranges must be distinct, live device-scoped DMA mappings,
-    /// retained throughout this transport's lifetime and uncertainty/recovery.
-    /// CMDQ contains at least `(1 << log_cmdq_size) * 64` aligned bytes. Both
-    /// mailboxes contain MLX5_CMD_MBOX_BACKING_SIZE bytes, aligned for CmdMailbox
-    /// and CmdProtBlock. No other CPU/device owner may access these ranges while
-    /// initializing. Register lifetime is retained by the supplied capability.
-    pub(crate) unsafe fn from_command_dma(
-        registers: crate::registers::CommandRegisters,
-        cmdq_phys: u64,
-        cmdq_virt: u64,
-        in_mbox_virt: u64,
-        out_mbox_virt: u64,
-        log_cmdq_size: u8,
-        log_cmd_stride: u8,
-    ) -> Mlx5Result<Self> {
-        if cmdq_phys == 0 || !cmdq_phys.is_multiple_of(crate::defs::MLX5_PAGE_SIZE as u64) {
-            return Err(Mlx5Error::InvalidParameter);
-        }
-        Self::validate_hw_cmdq_layout(log_cmdq_size, log_cmd_stride)?;
-        let cmdq_entries = 1usize
-            .checked_shl(log_cmdq_size as u32)
-            .ok_or(Mlx5Error::NotSupported)?;
-        let cmdq_bytes = cmdq_entries
-            .checked_mul(cmd_entry::ENTRY_SIZE)
-            .ok_or(Mlx5Error::NotSupported)?;
-        // SAFETY: caller retains an exclusive, aligned CMDQ range of cmdq_bytes.
-        unsafe { core::ptr::write_bytes(cmdq_virt as *mut u8, 0, cmdq_bytes) };
-        // SAFETY: caller retains a distinct exclusive input mailbox of this extent.
-        unsafe { core::ptr::write_bytes(in_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE) };
-        // SAFETY: caller retains a distinct exclusive output mailbox of this extent.
-        unsafe { core::ptr::write_bytes(out_mbox_virt as *mut u8, 0, MLX5_CMD_MBOX_BACKING_SIZE) };
-        Ok(Self {
-            cmdq_phys,
-            cmdq_virt,
-            registers,
-            in_mbox_virt,
-            out_mbox_virt,
-            next_token: 1,
-            slot_state: CommandSlotState::Idle,
-            uid: 0,
-            in_snapshot: [0u8; MLX5_CMD_MBOX_SIZE],
-            in_snapshot_len: 0,
-            out_reconstruct: [0u8; MLX5_CMD_MBOX_SIZE],
-        })
     }
 
     pub(crate) fn is_idle(&self) -> bool {
