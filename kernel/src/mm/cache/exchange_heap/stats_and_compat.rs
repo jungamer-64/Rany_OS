@@ -2,6 +2,192 @@ use super::*;
 
 pub use crate::heap::ExtendedHeapStats;
 
+/// CPU magazines retain backing independently of this facade's lifetime.
+/// Each CPU binds at most one backing and can only drain its own magazine.
+pub struct ExchangeHeap {
+    backing: spin::Once<Arc<PoisonLock<ExchangeBlocks>>>,
+    admission: PoisonLock<()>,
+}
+impl ExchangeHeap {
+    pub const fn new() -> Self {
+        Self {
+            backing: spin::Once::new(),
+            admission: PoisonLock::new(()),
+        }
+    }
+
+    /// Duplicate admission, poisoning or metadata allocation failure returns
+    /// incoming RAM untouched. Backing publication cannot replace a live owner.
+    pub(crate) fn initialize(
+        &self,
+        memory: crate::heap::HeapMemory,
+    ) -> Result<(), crate::heap::HeapMemory> {
+        let Ok(_admission) = self.admission.lock() else {
+            return Err(memory);
+        };
+        if self.backing.get().is_some() {
+            return Err(memory);
+        }
+        let Ok(backing) = Arc::try_new(PoisonLock::new(ExchangeBlocks::empty())) else {
+            return Err(memory);
+        };
+        match backing.lock() {
+            Ok(mut blocks) => blocks.initialize(memory)?,
+            Err(_) => return Err(memory),
+        }
+        self.backing.call_once(|| backing);
+        Ok(())
+    }
+
+    fn bind_current(backing: &Arc<PoisonLock<ExchangeBlocks>>) {
+        let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
+            return;
+        };
+        if cpu.with_exchange_cache(|cache| cache.matches(backing)) == Some(true) {
+            return;
+        }
+        if let Some(old) =
+            cpu.with_exchange_cache(|cache| core::mem::replace(cache, ExchangeMagazine::new()))
+        {
+            old.release();
+        }
+        // Establish the cold binding lease outside the short CPU borrow.
+        // Hot allocation/free only compares the retained identity.
+        let mut lease = Some(Arc::clone(backing));
+        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+            cpu.with_exchange_cache(|cache| {
+                if cache.backing.is_none() {
+                    cache.backing = lease.take();
+                }
+            });
+        }
+    }
+
+    pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
+        let backing = self.backing.get()?;
+        let class = CacheClass::for_layout(layout);
+        let mut bound = false;
+        if let Some(class) = class {
+            if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+                if let Some((matches, block)) = cpu.with_exchange_cache(|cache| {
+                    let matches = cache.matches(backing);
+                    (matches, matches.then(|| cache.cache.take(class)).flatten())
+                }) {
+                    if let Some(block) = block {
+                        return Some(block.into_pointer());
+                    }
+                    bound = matches;
+                }
+            }
+            if !bound {
+                Self::bind_current(backing);
+                bound = crate::cpu::CurrentCpu::acquire()
+                    .and_then(|cpu| cpu.with_exchange_cache(|cache| cache.matches(backing)))
+                    == Some(true);
+            }
+        }
+        let layout = class.map_or(layout, CacheClass::layout);
+        let mut batch = [const { None }; 8];
+        let result = {
+            let mut blocks = backing.lock().ok()?;
+            let result = blocks.allocate(layout)?;
+            if let Some(class) = class.filter(|_| bound) {
+                for slot in &mut batch {
+                    let Some(pointer) = blocks.allocate(layout) else {
+                        break;
+                    };
+                    // SAFETY: a fresh exclusive canonical allocation, retained
+                    // by this exact backing before magazine publication.
+                    *slot = Some(unsafe { CachedAllocation::retain(pointer, class) });
+                }
+            }
+            result
+        };
+        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+            cpu.with_exchange_cache(|cache| {
+                if cache.matches(backing) {
+                    for slot in &mut batch {
+                        if let Some(block) = slot.take() {
+                            *slot = cache.cache.insert(block).err();
+                        }
+                    }
+                }
+            });
+        }
+        if batch.iter().any(Option::is_some) {
+            if let Ok(mut blocks) = backing.lock() {
+                for block in batch.into_iter().flatten() {
+                    // SAFETY: rejected publication preserves the unique entry.
+                    unsafe { blocks.deallocate(block.into_pointer(), layout) };
+                }
+            }
+        }
+        Some(result)
+    }
+
+    /// # Safety
+    /// `ptr` is this heap's live exclusive allocation with the original Layout.
+    /// No payload borrow, prior return or outstanding DMA use remains.
+    pub unsafe fn deallocate(&self, ptr: NonNull<u8>, layout: Layout) {
+        let backing = self.backing.get().expect("live allocation retains backing");
+        let class = CacheClass::for_layout(layout);
+        let mut pointer = ptr;
+        if let Some(class) = class {
+            // SAFETY: caller consumes this backing's exclusive canonical block.
+            let mut pending = Some(unsafe { CachedAllocation::retain(pointer, class) });
+            let matches = crate::cpu::CurrentCpu::acquire().and_then(|cpu| {
+                cpu.with_exchange_cache(|cache| {
+                    if !cache.matches(backing) {
+                        return false;
+                    }
+                    pending = cache
+                        .cache
+                        .insert(pending.take().expect("pending owner"))
+                        .err();
+                    true
+                })
+            }) == Some(true);
+            if !matches {
+                Self::bind_current(backing);
+                if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
+                    cpu.with_exchange_cache(|cache| {
+                        if cache.matches(backing) {
+                            pending = cache
+                                .cache
+                                .insert(pending.take().expect("pending owner"))
+                                .err();
+                        }
+                    });
+                }
+            }
+            let Some(block) = pending else {
+                return;
+            };
+            pointer = block.into_pointer();
+        }
+        if let Ok(mut blocks) = backing.lock() {
+            // SAFETY: cache rejection leaves this block owned by the caller.
+            unsafe { blocks.deallocate(pointer, class.map_or(layout, CacheClass::layout)) };
+        }
+    }
+
+    pub fn stats(&self) -> HeapStats {
+        self.extended_stats().map_or(
+            HeapStats {
+                allocated: 0,
+                free: 0,
+            },
+            |stats| HeapStats {
+                allocated: stats.allocated,
+                free: stats.free,
+            },
+        )
+    }
+    pub fn extended_stats(&self) -> Option<ExtendedHeapStats> {
+        Some(self.backing.get()?.lock().ok()?.stats())
+    }
+}
+
 unsafe impl GlobalAlloc for ExchangeHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         self.allocate(layout)
@@ -358,20 +544,6 @@ impl<T: Sized> UninitializedSlice<T> {
     /// 完全に初期化されているか
     pub fn is_fully_initialized(&self) -> bool {
         self.initialized_count == self.len
-    }
-
-    /// 要素を初期化（インデックス指定）
-    ///
-    /// # Safety
-    /// 同じインデックスを2回初期化しないこと
-    pub unsafe fn init_at(&mut self, index: usize, value: T) {
-        debug_assert!(index < self.len);
-        unsafe {
-            self.ptr.as_ptr().add(index).write(MaybeUninit::new(value));
-        }
-        // 注: この実装では厳密な追跡は行わない
-        // より正確な追跡が必要な場合はビットマップを使用
-        self.initialized_count = self.initialized_count.max(index + 1);
     }
 
     /// 連続して要素を初期化
