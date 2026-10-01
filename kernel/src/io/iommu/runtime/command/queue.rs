@@ -32,24 +32,6 @@ pub enum IommuCommandKind {
         domain: u16,
     },
     InvalidateIotlbGlobal,
-    /// Map a region into the given domain
-    MapRegion {
-        domain: u16,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    },
-    /// Map a region for a specific device (device-scoped invalidation)
-    MapRegionDevice {
-        device: DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    },
     // TODO: PRQ/QR ops etc.
 }
 
