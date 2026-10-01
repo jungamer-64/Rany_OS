@@ -1,7 +1,5 @@
-//! Kernel DMA cache and IOMMU support.
-//!
-//! Allocation and transfer ownership are intentionally absent here while the
-//! resource registry becomes the single DMA authority.
+//! Cache operations for framework-owned coherent DMA allocations.
+//! Allocation and transfer authority belong to the resource registry.
 
 mod cache_ops;
 pub use cache_ops::*;
@@ -9,44 +7,6 @@ pub use cache_ops::*;
 use core::arch::asm;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::structures::paging::PageTableFlags;
-
-const DMA_ALIGNMENT: usize = 4096;
-
-fn align_up(value: usize, align: usize) -> Option<usize> {
-    if !align.is_power_of_two() {
-        return None;
-    }
-    value.checked_add(align - 1).map(|v| v & !(align - 1))
-}
-
-pub(crate) fn iommu_align_len(len: usize) -> Option<usize> {
-    align_up(len, DMA_ALIGNMENT)
-}
-
-pub(crate) fn iommu_needs_bounce(phys_addr: u64, len: usize) -> bool {
-    (phys_addr & (DMA_ALIGNMENT as u64 - 1) != 0) || (len & (DMA_ALIGNMENT - 1) != 0)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum IommuBounceAllocError {
-    InvalidLen,
-    AllocFailed,
-}
-
-pub(crate) fn allocate_iommu_bounce_bytes(
-    len: usize,
-) -> Result<crate::ipc::RRef<[u8]>, IommuBounceAllocError> {
-    let aligned_len = iommu_align_len(len).ok_or(IommuBounceAllocError::InvalidLen)?;
-    if aligned_len == 0 {
-        return Err(IommuBounceAllocError::InvalidLen);
-    }
-    crate::ipc::RRef::new_slice_default_aligned(
-        crate::ipc::DomainId::KERNEL,
-        aligned_len,
-        DMA_ALIGNMENT,
-    )
-    .ok_or(IommuBounceAllocError::AllocFailed)
-}
 
 /// Page-cache mode selected through the x86 page-table attributes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
