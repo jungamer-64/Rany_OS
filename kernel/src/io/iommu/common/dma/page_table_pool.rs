@@ -112,14 +112,6 @@ pub fn get_ref_count(phys: u64) -> u16 {
     registry.get(&phys).map(|e| e.ref_count).unwrap_or(0)
 }
 
-/// Reconstruct a PooledPt from its physical address using the registry.
-pub fn reconstruct_pooled_pt(phys: u64) -> Option<PooledPt> {
-    let registry = page_table_registry().lock();
-    let entry = registry.get(&phys)?;
-    let ptr = NonNull::new(entry.virt as *mut SlPte)?;
-    Some(PooledPt::new(ptr, phys, entry.node as usize))
-}
-
 // ============================================================================
 // PooledPt - Owned page table with NUMA node
 // ============================================================================
@@ -147,24 +139,6 @@ unsafe impl Send for PooledPt {}
 unsafe impl Sync for PooledPt {}
 
 impl PooledPt {
-    /// Create a new PooledPt
-    ///
-    /// Used by PageTableScope::Drop to reconstruct for pool release.
-    pub fn new(ptr: NonNull<SlPte>, phys: u64, node: usize) -> Self {
-        // Layout for a single page table (4KB, 4KB-aligned)
-        let layout =
-            alloc::alloc::Layout::from_size_align(PT_ENTRIES * core::mem::size_of::<SlPte>(), 4096)
-                .expect("Page table layout should be valid");
-
-        Self {
-            ptr,
-            phys,
-            node,
-            layout,
-            ref_count: AtomicU16::new(0),
-        }
-    }
-
     /// Increment reference count (called when parent entry points to this table)
     pub fn inc_ref(&self) -> u16 {
         self.ref_count.fetch_add(1, Ordering::Relaxed) + 1

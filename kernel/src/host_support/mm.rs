@@ -1,8 +1,5 @@
-use alloc::alloc::{Layout, alloc_zeroed, dealloc};
-use core::ptr::NonNull;
 use x86_64::PhysAddr;
 use x86_64::VirtAddr;
-use x86_64::structures::paging::{PhysFrame, Size4KiB};
 
 pub mod magazine {
     pub struct Magazine<T, const N: usize> {
@@ -32,144 +29,11 @@ pub mod memcg {
     }
 }
 
-// Minimal fast allocator shim used by IOMMU tests
-pub mod fast_allocator {
-
-    pub const PAGE_SIZE_4K: u64 = 4096;
-    pub const PAGE_SIZE_2M: u64 = 2 * 1024 * 1024;
-    pub const PAGE_SIZE_1G: u64 = 1024 * 1024 * 1024;
-
-    #[derive(Clone, Copy, Debug)]
-    pub enum PageGranularity {
-        Page4K,
-        Page2M,
-        Page1G,
-    }
-
-    #[derive(Clone, Copy, Debug)]
-    pub enum LocalCachePolicy {
-        PerCpu,
-        SharedBitmap,
-    }
-
-    impl PageGranularity {
-        pub fn size_bytes(&self) -> u64 {
-            match self {
-                PageGranularity::Page4K => PAGE_SIZE_4K,
-                PageGranularity::Page2M => PAGE_SIZE_2M,
-                PageGranularity::Page1G => PAGE_SIZE_1G,
-            }
-        }
-    }
-
-    use core::sync::atomic::{AtomicU64, Ordering};
-
-    #[derive(Debug)]
-    pub struct FastBitmapAllocator {
-        base: u64,
-        size: u64,
-        next: AtomicU64,
-    }
-
-    impl FastBitmapAllocator {
-        pub fn new(base: u64, size: u64, _cache_policy: LocalCachePolicy) -> Self {
-            Self {
-                base,
-                size,
-                next: AtomicU64::new(0),
-            }
-        }
-
-        pub fn allocate_4k(&self) -> Option<u64> {
-            self.allocate_with_size(PAGE_SIZE_4K)
-        }
-        pub fn allocate_2m(&self) -> Option<u64> {
-            self.allocate_with_size(PAGE_SIZE_2M)
-        }
-        pub fn allocate_1g(&self) -> Option<u64> {
-            self.allocate_with_size(PAGE_SIZE_1G)
-        }
-
-        fn allocate_with_size(&self, sz: u64) -> Option<u64> {
-            // Simple atomic bump allocator
-            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-            loop {
-                let cur = self.next.load(Ordering::Relaxed);
-                if cur + sz > self.size {
-                    return None;
-                }
-                if self
-                    .next
-                    .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return Some(self.base + cur);
-                }
-            }
-        }
-
-        pub fn allocate_4k_below(&self, limit: u64) -> Option<u64> {
-            self.allocate_below(PAGE_SIZE_4K, limit)
-        }
-        pub fn allocate_2m_below(&self, limit: u64) -> Option<u64> {
-            self.allocate_below(PAGE_SIZE_2M, limit)
-        }
-        pub fn allocate_1g_below(&self, limit: u64) -> Option<u64> {
-            self.allocate_below(PAGE_SIZE_1G, limit)
-        }
-
-        fn allocate_below(&self, sz: u64, limit: u64) -> Option<u64> {
-            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-            loop {
-                let cur = self.next.load(Ordering::Relaxed);
-                if cur + sz > self.size || self.base + cur + sz > limit {
-                    return None;
-                }
-                if self
-                    .next
-                    .compare_exchange(cur, cur + sz, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return Some(self.base + cur);
-                }
-            }
-        }
-
-        pub fn allocate_contiguous(&self, _size: u64, _align: u64) -> Option<u64> {
-            // Align up current pointer and allocate
-            // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-            loop {
-                let cur = self.next.load(Ordering::Relaxed);
-                let aligned = ((cur + (_align - 1)) / _align) * _align;
-                if aligned + _size > self.size {
-                    return None;
-                }
-                if self
-                    .next
-                    .compare_exchange(cur, aligned + _size, Ordering::AcqRel, Ordering::Relaxed)
-                    .is_ok()
-                {
-                    return Some(self.base + aligned);
-                }
-            }
-        }
-
-        pub fn free_immediate(&self, _addr: u64, _gran: PageGranularity) -> Result<(), ()> {
-            Ok(())
-        }
-
-        pub fn reserve(&self, _start: u64, _size: u64) -> Result<(), ()> {
-            Ok(())
-        }
-
-        pub fn base(&self) -> u64 {
-            self.base
-        }
-        pub fn size(&self) -> u64 {
-            self.size
-        }
-    }
-}
+// Address-space tests execute the production occupancy implementation.
+#[path = "../mm/bitmap.rs"]
+pub mod bitmap;
+#[path = "../mm/phys/fast_allocator.rs"]
+pub mod fast_allocator;
 
 // Minimal remote-free / quarantine shim used by IOVA allocator
 pub mod remote_free {
@@ -251,57 +115,182 @@ pub mod remote_free {
     }
 }
 
-pub mod types {
-    #[derive(Clone, Copy)]
-    pub struct NumaNodeId(pub u8);
-    impl NumaNodeId {
-        pub fn new(n: u8) -> Self {
-            Self(n)
-        }
-        pub fn as_usize(&self) -> usize {
-            self.0 as usize
-        }
-    }
-    pub const PAGE_SIZE_4K: usize = 4096;
-    pub const PAGE_SIZE_2M: usize = 2 * 1024 * 1024;
-    pub const PAGE_SIZE_1G: usize = 1024 * 1024 * 1024;
-}
+#[path = "../mm/types.rs"]
+pub mod types;
 
+/// Host RAM has the same exclusive release contract as admitted physical RAM.
+/// Identity mapping is the host boundary; the backing Layout is retained by its
+/// owner, so an address observation cannot reconstruct allocation authority.
 pub mod frame_allocator {
+    use super::types::NumaNodeId;
+    use alloc::alloc::{alloc_zeroed, dealloc};
+    use core::alloc::Layout;
+    use core::ptr::NonNull;
     use x86_64::PhysAddr;
-    use x86_64::structures::paging::{PhysFrame, Size4KiB};
+    use x86_64::structures::paging::{PageSize, PhysFrame};
 
-    pub fn alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-        super::buddy_alloc_frame()
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum FrameAllocError {
+        Uninitialized,
+        Exhausted,
+        InvalidRange,
+        Alignment,
+        MetadataAllocation,
+        AlreadyInitialized,
+        InvalidNode,
     }
 
-    pub fn alloc_frame_on_numa_node(node: super::types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-        super::buddy_alloc_frame_on_node(node)
+    #[derive(Debug)]
+    struct HostBacking {
+        pointer: NonNull<u8>,
+        layout: Layout,
     }
-
-    pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
-        super::buddy_alloc_contiguous_frames(frames)
+    // SAFETY: this immutable owner only releases storage after the last disjoint
+    // host physical extent has consumed its ownership; it never grants RAM access.
+    unsafe impl Send for HostBacking {}
+    unsafe impl Sync for HostBacking {}
+    impl Drop for HostBacking {
+        fn drop(&mut self) {
+            // SAFETY: all disjoint extent owners have released their references.
+            unsafe { dealloc(self.pointer.as_ptr(), self.layout) };
+        }
     }
-
-    pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
-        // No-op in test shim
+    #[derive(Debug)]
+    pub struct PhysicalAllocation {
+        backing: core::mem::ManuallyDrop<alloc::sync::Arc<HostBacking>>,
+        offset: usize,
+        bytes: usize,
+        node: NumaNodeId,
     }
-
+    // SAFETY: the owner transfers exclusive host allocation access; NonNull is
+    // never dereferenced through a shared reference or freed without consuming it.
+    unsafe impl Send for PhysicalAllocation {}
+    impl PhysicalAllocation {
+        pub fn start_address(&self) -> PhysAddr {
+            PhysAddr::new(self.as_u64())
+        }
+        pub fn as_u64(&self) -> u64 {
+            (self.backing.pointer.as_ptr().addr() + self.offset) as u64
+        }
+        pub fn size_bytes(&self) -> u64 {
+            self.bytes as u64
+        }
+        pub fn page_count(&self) -> usize {
+            self.bytes / 4096
+        }
+        pub fn node(&self) -> NumaNodeId {
+            self.node
+        }
+        pub fn frame<S: PageSize>(&self) -> Result<PhysFrame<S>, FrameAllocError> {
+            if S::SIZE > self.size_bytes() {
+                return Err(FrameAllocError::InvalidRange);
+            }
+            PhysFrame::from_start_address(self.start_address())
+                .map_err(|_| FrameAllocError::Alignment)
+        }
+        pub fn split(mut self, first_pages: usize) -> Result<(Self, Self), Self> {
+            if first_pages == 0 || first_pages >= self.page_count() {
+                return Err(self);
+            }
+            let bytes = first_pages * 4096;
+            let second = Self {
+                backing: core::mem::ManuallyDrop::new(alloc::sync::Arc::clone(&self.backing)),
+                offset: self.offset + bytes,
+                bytes: self.bytes - bytes,
+                node: self.node,
+            };
+            self.bytes = bytes;
+            Ok((self, second))
+        }
+        pub fn release(mut self) {
+            // SAFETY: this unique extent consumes exactly one retained backing
+            // reference. Forgetting an extent deliberately leaks that reference.
+            drop(unsafe { core::mem::ManuallyDrop::take(&mut self.backing) });
+        }
+    }
+    pub fn alloc_contiguous_frames_aligned_on_node(
+        node: NumaNodeId,
+        frames: usize,
+        alignment: usize,
+    ) -> Result<PhysicalAllocation, FrameAllocError> {
+        if node != NumaNodeId::NODE_0 {
+            return Err(FrameAllocError::InvalidNode);
+        }
+        if frames == 0 {
+            return Err(FrameAllocError::InvalidRange);
+        }
+        if !alignment.is_power_of_two() {
+            return Err(FrameAllocError::Alignment);
+        }
+        let bytes = frames
+            .checked_mul(4096)
+            .ok_or(FrameAllocError::InvalidRange)?;
+        let layout = Layout::from_size_align(bytes, alignment.max(4096))
+            .map_err(|_| FrameAllocError::InvalidRange)?;
+        // SAFETY: a valid nonzero Layout grants exclusive writable host RAM.
+        let backing =
+            NonNull::new(unsafe { alloc_zeroed(layout) }).ok_or(FrameAllocError::Exhausted)?;
+        // A failed Arc admission drops HostBacking and returns its RAM using
+        // the retained Layout; allocation and metadata exhaustion stay distinct.
+        let backing = alloc::sync::Arc::try_new(HostBacking {
+            pointer: backing,
+            layout,
+        })
+        .map_err(|_| FrameAllocError::MetadataAllocation)?;
+        Ok(PhysicalAllocation {
+            backing: core::mem::ManuallyDrop::new(backing),
+            offset: 0,
+            bytes,
+            node,
+        })
+    }
+    pub fn alloc_contiguous_frames_aligned(
+        frames: usize,
+        alignment: usize,
+    ) -> Result<PhysicalAllocation, FrameAllocError> {
+        alloc_contiguous_frames_aligned_on_node(NumaNodeId::NODE_0, frames, alignment)
+    }
+    pub fn alloc_contiguous_frames(frames: usize) -> Result<PhysicalAllocation, FrameAllocError> {
+        alloc_contiguous_frames_aligned(frames, 4096)
+    }
+    pub fn alloc_frame() -> Result<PhysicalAllocation, FrameAllocError> {
+        alloc_contiguous_frames(1)
+    }
+    pub(crate) fn node_distance(from: NumaNodeId, to: NumaNodeId) -> Option<u8> {
+        (from == NumaNodeId::NODE_0 && to == NumaNodeId::NODE_0).then_some(10)
+    }
+    pub fn alloc_frame_on_numa_node(
+        node: NumaNodeId,
+    ) -> Result<PhysicalAllocation, FrameAllocError> {
+        alloc_contiguous_frames_aligned_on_node(node, 1, 4096)
+    }
+    pub fn dealloc_frame(owner: PhysicalAllocation) {
+        owner.release();
+    }
+    pub fn dealloc_contiguous_frames(owner: PhysicalAllocation) {
+        owner.release();
+    }
     pub fn pmm_managed_end() -> Option<u64> {
         None
     }
-
-    pub fn is_range_managed_by_pmm(_addr: PhysAddr, _size: u64) -> bool {
-        true
+    pub fn is_range_managed_by_pmm(_addr: PhysAddr, size: u64) -> bool {
+        size != 0
     }
-
-    pub fn dealloc_frame(frame: PhysFrame<Size4KiB>) {
-        super::buddy_dealloc_frame(frame);
-    }
-
-    /// Memory pressure hint for tests (0 = no pressure)
     pub fn memory_pressure_level() -> u8 {
         0
+    }
+    pub(crate) fn allocation_order(_: NumaNodeId) -> Option<&'static [Option<NumaNodeId>; 8]> {
+        static ORDER: [Option<NumaNodeId>; 8] = [
+            Some(NumaNodeId::NODE_0),
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+            None,
+        ];
+        Some(&ORDER)
     }
 }
 
@@ -356,50 +345,6 @@ pub mod mapping {
     }
 }
 
-pub fn buddy_alloc_frame() -> Option<PhysFrame<Size4KiB>> {
-    let layout = Layout::from_size_align(4096, 4096).ok()?;
-    let ptr = unsafe { alloc_zeroed(layout) };
-    let ptr = NonNull::new(ptr)?;
-    let phys = PhysAddr::new(ptr.as_ptr() as u64);
-    match PhysFrame::from_start_address(phys) {
-        Ok(frame) => Some(frame),
-        Err(_) => {
-            unsafe { dealloc(ptr.as_ptr(), layout) };
-            None
-        }
-    }
-}
-
-pub fn buddy_alloc_frame_on_node(_node: types::NumaNodeId) -> Option<PhysFrame<Size4KiB>> {
-    buddy_alloc_frame()
-}
-
-pub fn buddy_alloc_contiguous_frames(frame_count: usize) -> Option<PhysAddr> {
-    if frame_count == 0 {
-        return None;
-    }
-    let bytes = frame_count.checked_mul(4096)?;
-    let layout = Layout::from_size_align(bytes, 4096).ok()?;
-    let ptr = unsafe { alloc_zeroed(layout) };
-    let ptr = NonNull::new(ptr)?;
-    Some(PhysAddr::new(ptr.as_ptr() as u64))
-}
-
-pub fn buddy_dealloc_frame(frame: PhysFrame<Size4KiB>) {
-    let layout = Layout::from_size_align(4096, 4096).expect("buddy layout");
-    let ptr = frame.start_address().as_u64() as *mut u8;
-    unsafe { dealloc(ptr, layout) };
-}
-
-// Convenience wrappers for IOMMU/legacy APIs used in some modules/tests
-pub fn alloc_contiguous_frames(frames: usize) -> Option<PhysAddr> {
-    buddy_alloc_contiguous_frames(frames)
-}
-
-pub fn dealloc_contiguous_frames(_phys: PhysAddr, _frames: usize) {
-    // Test shim: no-op - memory will be reclaimed when the test process exits.
-}
-
 pub fn mapping_phys_to_virt(phys: PhysAddr) -> VirtAddr {
     VirtAddr::new(phys.as_u64())
 }
@@ -419,30 +364,6 @@ pub mod phys {
         #[allow(clippy::wildcard_imports)]
         pub use super::super::frame_allocator::*;
     }
-    pub mod buddy_allocator {
-        /// Stub for buddy_allocator_stats (test shim)
-        pub struct BuddyAllocatorStats {
-            pub total_frames: usize,
-            pub free_frames: usize,
-            pub split_count: u64,
-            pub coalesce_count: u64,
-            pub order_stats: [(usize, usize); 19],
-        }
-        pub fn buddy_allocator_stats() -> BuddyAllocatorStats {
-            BuddyAllocatorStats {
-                total_frames: 0,
-                free_frames: 0,
-                split_count: 0,
-                coalesce_count: 0,
-                order_stats: [(0, 0); 19],
-            }
-        }
-    }
-    pub mod unified_alloc {
-        pub fn memory_pressure_level() -> u8 {
-            0
-        }
-    }
 }
 
 pub mod virt {
@@ -461,7 +382,11 @@ pub mod virt {
     }
 }
 
+#[path = "../mm/cache/exchange_heap.rs"]
+pub mod exchange_heap;
+
 pub mod cache {
+    pub use super::exchange_heap;
     pub mod magazine {
         #[allow(clippy::wildcard_imports)]
         pub use super::super::magazine::*;
@@ -491,31 +416,7 @@ pub mod numa {
             0
         }
 
-        pub fn allocate_zeroed_on_node(
-            layout: Layout,
-            _node: Option<usize>,
-        ) -> Option<NonNull<u8>> {
-            unsafe {
-                let ptr = alloc_zeroed(layout);
-                NonNull::new(ptr)
-            }
-        }
 
-        pub fn allocate_zeroed_on_node_with_info(
-            layout: Layout,
-            _node: Option<usize>,
-        ) -> Option<(NonNull<u8>, usize)> {
-            unsafe {
-                let ptr = alloc_zeroed(layout);
-                NonNull::new(ptr).map(|p| (p, 0))
-            }
-        }
-
-        pub unsafe fn deallocate_on_node(ptr: NonNull<u8>, layout: Layout, _node: Option<usize>) {
-            unsafe {
-                dealloc(ptr.as_ptr(), layout);
-            }
-        }
     }
 }
 
@@ -524,3 +425,7 @@ pub mod meta {
         pub use super::super::memcg::*;
     }
 }
+
+#[cfg(feature = "buddy_freelist")]
+#[path = "../mm/phys/buddy_freelist.rs"]
+pub mod buddy_freelist;
