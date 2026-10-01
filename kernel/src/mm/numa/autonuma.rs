@@ -450,50 +450,6 @@ pub static NUMA_DISTANCE_CACHE: NumaDistanceCache = NumaDistanceCache::new();
 // Phase 7: NUMA Page Migration Implementation
 // ============================================================================
 
-pub unsafe fn migrate_numa_page(src_frame: FrameIndex, dest_node: u8) -> MigrationResult {
-    use crate::mm::phys::buddy_allocator;
-    use crate::mm::types::PAGE_SIZE_4K;
-    let dest_frame = match buddy_allocator::buddy_alloc_frame_on_node(NumaNodeId::new(dest_node)) {
-        Some(frame) => frame,
-        None => return MigrationResult::NoMemory,
-    };
-    let src_phys = (src_frame.as_usize() * PAGE_SIZE_4K) as u64;
-    let dst_phys = dest_frame.start_address().as_u64();
-    let offset = crate::mm::virt::mapping::physical_memory_offset();
-    let src_virt = (src_phys + offset) as *const u8;
-    let dst_virt = (dst_phys + offset) as *mut u8;
-
-    #[cfg(all(target_arch = "x86_64", target_feature = "sse"))]
-    {
-        use core::arch::x86_64::{_mm_sfence, _mm_stream_si64};
-        let src_ptr = src_virt as *const i64;
-        let dst_ptr = dst_virt as *mut i64;
-        for i in 0..512 {
-            let val = core::ptr::read_volatile(src_ptr.add(i));
-            _mm_stream_si64(dst_ptr.add(i), val);
-        }
-        _mm_sfence();
-    }
-    #[cfg(not(all(target_arch = "x86_64", target_feature = "sse")))]
-    {
-        core::ptr::copy_nonoverlapping(src_virt, dst_virt, PAGE_SIZE_4K);
-    }
-    MIGRATION_ENGINE
-        .migrated_bytes
-        .fetch_add(PAGE_SIZE_4K as u64, Ordering::Relaxed);
-    use x86_64::structures::paging::PhysFrame;
-    let old_frame = PhysFrame::from_start_address(x86_64::PhysAddr::new(src_phys)).unwrap();
-    buddy_allocator::buddy_dealloc_frame(old_frame);
-    MigrationResult::Success
-}
-
-pub fn process_pending_migrations() -> usize {
-    unsafe {
-        MIGRATION_ENGINE
-            .process_batch(|src_frame, dest_node| migrate_numa_page(src_frame, dest_node))
-    }
-}
-
 pub fn suggest_migration(
     task_preferred_node: u8,
     page_stats: &PageNumaStats,
