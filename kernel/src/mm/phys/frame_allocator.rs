@@ -1,7 +1,6 @@
 //! Unique authority over admitted RAM. Subpools retain the allocation that
 //! lends their backing range. Addresses are observations, never free authority.
 
-use crate::mm::numa::topology::MAX_NUMA_NODES;
 use crate::mm::phys::fast_allocator::{AddressPoolError, FastBitmapAllocator};
 use crate::mm::types::{NumaNodeId, PAGE_SIZE_4K};
 use crate::sync::IrqPoisonLock;
@@ -145,10 +144,10 @@ impl NodePool {
 }
 
 struct Pmm {
-    known_nodes: [bool; MAX_NUMA_NODES],
-    nodes: [Option<NodePool>; MAX_NUMA_NODES],
-    distances: [[u8; MAX_NUMA_NODES]; MAX_NUMA_NODES],
-    order: [[Option<NumaNodeId>; MAX_NUMA_NODES]; MAX_NUMA_NODES],
+    known_nodes: [bool; NumaNodeId::MAX_NODES],
+    nodes: [Option<NodePool>; NumaNodeId::MAX_NODES],
+    distances: [[u8; NumaNodeId::MAX_NODES]; NumaNodeId::MAX_NODES],
+    order: [[Option<NumaNodeId>; NumaNodeId::MAX_NODES]; NumaNodeId::MAX_NODES],
 }
 
 impl Pmm {
@@ -187,12 +186,12 @@ fn normalized(start: u64, size: u64) -> Result<Option<(u64, u64)>, FrameAllocErr
 }
 
 fn build(regions: &[(PhysAddr, u64, NumaNodeId)]) -> Result<Pmm, FrameAllocError> {
-    let mut known_nodes = [false; MAX_NUMA_NODES];
+    let mut known_nodes = [false; NumaNodeId::MAX_NODES];
     let mut all = Vec::new();
     all.try_reserve_exact(regions.len())
         .map_err(|_| FrameAllocError::MetadataAllocation)?;
     for &(start, size, node) in regions {
-        if node.as_usize() >= MAX_NUMA_NODES {
+        if node.as_usize() >= NumaNodeId::MAX_NODES {
             return Err(FrameAllocError::InvalidNode);
         }
         known_nodes[node.as_usize()] = true;
@@ -205,7 +204,7 @@ fn build(regions: &[(PhysAddr, u64, NumaNodeId)]) -> Result<Pmm, FrameAllocError
         return Err(FrameAllocError::InvalidRange);
     }
     let mut nodes = core::array::from_fn(|_| None);
-    for node_index in 0..MAX_NUMA_NODES {
+    for node_index in 0..NumaNodeId::MAX_NODES {
         let node = NumaNodeId::new(node_index as u8);
         let mut usable = Vec::new();
         usable
@@ -276,6 +275,69 @@ pub unsafe fn init_numa_frame_allocator(
         return Err(FrameAllocError::AlreadyInitialized);
     }
     let pmm = build(regions)?;
+    PMM.call_once(|| pmm);
+    Ok(())
+}
+
+/// Admit exclusive boot RAM using the same normalized topology as CPU locality.
+/// Unassigned usable RAM belongs to node zero. Memory affinities intersect the
+/// transferred RAM; firmware holes are never admitted as a separate owner.
+/// # Safety
+/// `usable` excludes retained boot heaps and every live allocation or mapping.
+pub unsafe fn init_numa_frame_allocator_with_placement(
+    placement: &crate::mm::numa::placement::NumaPlacement,
+    usable: &[(PhysAddr, u64)],
+) -> Result<(), FrameAllocError> {
+    let mut regions = Vec::new();
+    for &(base, size) in usable {
+        let start = base.as_u64();
+        let end = start
+            .checked_add(size)
+            .ok_or(FrameAllocError::InvalidRange)?;
+        let mut cursor = start;
+        // The placement constructor sorted and validated disjoint affinities.
+        for &(affinity_base, affinity_size, node) in placement.memory() {
+            let first = start.max(affinity_base.as_u64());
+            let last = end.min(affinity_base.as_u64() + affinity_size);
+            if first >= last {
+                continue;
+            }
+            regions
+                .try_reserve(2)
+                .map_err(|_| FrameAllocError::MetadataAllocation)?;
+            if cursor < first {
+                regions.push((PhysAddr::new(cursor), first - cursor, NumaNodeId::NODE_0));
+            }
+            regions.push((PhysAddr::new(first), last - first, node));
+            cursor = last;
+        }
+        if cursor < end {
+            regions
+                .try_reserve(1)
+                .map_err(|_| FrameAllocError::MetadataAllocation)?;
+            regions.push((PhysAddr::new(cursor), end - cursor, NumaNodeId::NODE_0));
+        }
+    }
+    let mut pmm = build(&regions)?;
+    pmm.known_nodes[..placement.node_count()].fill(true);
+    pmm.distances = *placement.distances();
+    for from in 0..placement.node_count() {
+        let local = NumaNodeId::new(from as u8);
+        let mut admitted = placement
+            .node_order(local)
+            .into_iter()
+            .flatten()
+            .copied()
+            .filter(|node| {
+                pmm.nodes[node.as_usize()].is_some()
+                    && pmm.distances[from][node.as_usize()] != u8::MAX
+            });
+        pmm.order[from] = core::array::from_fn(|_| admitted.next());
+    }
+    let _guard = INIT.lock().expect("PMM initialization lock poisoned");
+    if PMM.get().is_some() {
+        return Err(FrameAllocError::AlreadyInitialized);
+    }
     PMM.call_once(|| pmm);
     Ok(())
 }
@@ -499,7 +561,7 @@ struct FrameEntry {
 }
 struct FrameStack<const N: usize> {
     slots: [Option<FrameEntry>; N],
-    heads: [Option<usize>; MAX_NUMA_NODES],
+    heads: [Option<usize>; NumaNodeId::MAX_NODES],
     vacant: [Option<usize>; N],
     free_head: Option<usize>,
     len: usize,
@@ -515,7 +577,7 @@ impl<const N: usize> FrameStack<N> {
         }
         Self {
             slots: [const { None }; N],
-            heads: [None; MAX_NUMA_NODES],
+            heads: [None; NumaNodeId::MAX_NODES],
             vacant,
             free_head: if N == 0 { None } else { Some(0) },
             len: 0,
@@ -636,61 +698,23 @@ pub(crate) fn refill_zeroed_cache(node: NumaNodeId) -> usize {
     added
 }
 
-pub(crate) fn reclaim_node_caches() -> usize {
-    let Some(pmm) = PMM.get() else { return 0 };
-    let mut bytes = 0;
-    for pool in pmm.nodes.iter().flatten() {
-        let cached = {
-            let mut cache = pool.huge.lock().expect("huge cache poisoned");
-            core::mem::replace(&mut *cache, core::array::from_fn(|_| None))
-        };
-        for frame in cached.into_iter().flatten() {
-            bytes += frame.size_bytes() as usize;
-            frame.release();
-        }
-    }
-    bytes
-}
 
-#[derive(Debug, Clone, Copy, Default)]
-pub struct CpuMagazineDrain {
-    pub page_4k: usize,
-    pub page_2m: usize,
-    pub page_1g: usize,
-}
-impl CpuMagazineDrain {
-    pub fn total(self) -> usize {
-        self.page_4k + self.page_2m + self.page_1g
-    }
-}
-
-fn drain_frames(cpu: &crate::cpu::CurrentCpu) -> CpuMagazineDrain {
-    let mut drained = CpuMagazineDrain::default();
+fn drain_frames(cpu: &crate::cpu::CurrentCpu) -> usize {
+    let mut drained_bytes = 0;
     for _ in 0..(FRAME_CACHE_CAPACITY + ZERO_CACHE_CAPACITY).div_ceil(FRAME_BATCH) {
         let Some(batch) = cpu.with_frame_cache(LocalFrameCache::take_batch) else {
             break;
         };
         for frame in batch.into_iter().flatten() {
             frame.release();
-            drained.page_4k += 1;
+            drained_bytes += PAGE_SIZE_4K;
         }
     }
-    drained
+    drained_bytes
 }
 
 pub(crate) fn drain_current_cache() -> usize {
-    crate::cpu::CurrentCpu::acquire().map_or(0, |cpu| drain_frames(&cpu).page_4k * PAGE_SIZE_4K)
-}
-
-pub(crate) fn quiesce_current_cpu_for_offline() -> CpuMagazineDrain {
-    let cpu = crate::cpu::CurrentCpu::acquire().expect("owner CPU must drain its frame cache");
-    let drained = drain_frames(&cpu);
-    assert!(
-        cpu.with_frame_cache(|cache| cache.is_empty())
-            .is_some_and(|empty| empty),
-        "offline frame cache must be fully drained"
-    );
-    drained
+    crate::cpu::CurrentCpu::acquire().map_or(0, |cpu| drain_frames(&cpu))
 }
 
 pub fn pmm_initialized() -> bool {
@@ -758,7 +782,7 @@ pub fn memory_pressure_level() -> u8 {
 /// Immutable node preference is an observation, never allocation authority.
 pub(crate) fn allocation_order(
     node: NumaNodeId,
-) -> Option<&'static [Option<NumaNodeId>; MAX_NUMA_NODES]> {
+) -> Option<&'static [Option<NumaNodeId>; NumaNodeId::MAX_NODES]> {
     PMM.get()?.order.get(node.as_usize())
 }
 
@@ -799,7 +823,11 @@ mod tests {
             Err(FrameAllocError::InvalidRange)
         );
         assert!(matches!(
-            build(&[(PhysAddr::new(4096), 4096, NumaNodeId::new(8))]),
+            build(&[(
+                PhysAddr::new(4096),
+                4096,
+                NumaNodeId::new(NumaNodeId::MAX_NODES as u8)
+            )]),
             Err(FrameAllocError::InvalidNode)
         ));
         let pmm = Box::leak(Box::new(
@@ -869,16 +897,17 @@ mod tests {
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn node_chains_and_full_cache_rejection_preserve_all_owners() {
-        let regions = core::array::from_fn::<_, MAX_NUMA_NODES, _>(|node| {
+        let per_node = FRAME_CACHE_CAPACITY / NumaNodeId::MAX_NODES;
+        let regions = core::array::from_fn::<_, { NumaNodeId::MAX_NODES }, _>(|node| {
             (
                 PhysAddr::new((node as u64 * 32 + 1) * 4096),
-                9 * 4096,
+                (per_node as u64 + 1) * 4096,
                 NumaNodeId::new(node as u8),
             )
         });
         let pmm = Box::leak(Box::new(build(&regions).unwrap()));
-        let mut cache = FrameStack::<64>::new();
-        for _ in 0..8 {
+        let mut cache = FrameStack::<FRAME_CACHE_CAPACITY>::new();
+        for _ in 0..per_node {
             for pool in pmm.nodes.iter().flatten() {
                 assert!(cache.push(pool.allocate(1, 4096).unwrap()).is_ok());
             }
@@ -891,10 +920,10 @@ mod tests {
             .expect_err("full cache returns sole owner");
         assert_eq!(returned.as_u64(), address);
         returned.release();
-        for node in (0..8).rev() {
-            for remaining in (0..8).rev() {
-                let frame = cache.pop(Some(NumaNodeId::new(node))).unwrap();
-                assert_eq!(frame.node(), NumaNodeId::new(node));
+        for node in (0..NumaNodeId::MAX_NODES).rev() {
+            for remaining in (0..per_node).rev() {
+                let frame = cache.pop(Some(NumaNodeId::new(node as u8))).unwrap();
+                assert_eq!(frame.node(), NumaNodeId::new(node as u8));
                 frame.release();
                 assert_eq!(
                     pmm.nodes[node as usize]
@@ -902,7 +931,7 @@ mod tests {
                         .unwrap()
                         .bitmap
                         .free_count(),
-                    9 - remaining
+                    per_node + 1 - remaining
                 );
             }
         }
@@ -921,6 +950,9 @@ mod tests {
         while let Some(frame) = cache.pop(None) {
             frame.release();
         }
-        assert_eq!(pmm.nodes[0].as_ref().unwrap().bitmap.free_count(), 9);
+        assert_eq!(
+            pmm.nodes[0].as_ref().unwrap().bitmap.free_count(),
+            per_node + 1
+        );
     }
 }
