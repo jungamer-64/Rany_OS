@@ -7,6 +7,7 @@ use super::HeapMemory;
 use super::buddy::BuddyHeapAllocator;
 use crate::cpu::{CpuId, CurrentCpu};
 use crate::mm::phys::frame_allocator::{self as pmm, PhysicalAllocation};
+use crate::mm::reclaim::PoolReclaim;
 use crate::mm::types::NumaNodeId;
 use crate::sync::IrqPoisonLock;
 use core::alloc::Layout;
@@ -295,49 +296,6 @@ fn slab_return(pointer: NonNull<u8>, page: NonNull<SlabPage>) {
     }
 }
 
-fn create_region(node: NumaNodeId, layout: Layout) -> Option<NonNull<BuddyRegion>> {
-    let block = layout
-        .size()
-        .max(layout.align())
-        .max(64)
-        .checked_next_power_of_two()?;
-    let bytes = block.checked_mul(2)?.max(REGION_BYTES);
-    let backing = pmm::alloc_contiguous_frames_aligned_on_node(node, bytes / PAGE, PAGE).ok()?;
-    let (metadata, data) = match backing.split(1) {
-        Ok(parts) => parts,
-        Err(backing) => {
-            backing.release();
-            return None;
-        }
-    };
-    let mut heap = BuddyHeapAllocator::new();
-    // SAFETY: this exact PMM loan transfers retained writable HHDM RAM; its
-    // metadata page is a disjoint owner and excluded from all buddy free lists.
-    let memory = unsafe { HeapMemory::from_physical(data) };
-    if let Err(memory) = heap.init(memory) {
-        memory
-            .into_physical()
-            .expect("node region is a PMM loan")
-            .release();
-        metadata.release();
-        return None;
-    }
-    let address = crate::mm::virt::mapping::phys_to_virt(metadata.start_address()).as_u64()
-        as *mut BuddyRegion;
-    // SAFETY: this metadata page is exclusively owned and large/aligned enough
-    // for the region header. Publication happens under the node lock afterward.
-    Some(unsafe {
-        address.write(BuddyRegion {
-            metadata,
-            heap,
-            node,
-            live: 0,
-            next: None,
-        });
-        NonNull::new_unchecked(address)
-    })
-}
-
 fn buddy_block(node: NumaNodeId, layout: Layout) -> Option<RawBlock> {
     let pool = &NODES[node.as_usize()].buddy;
     {
@@ -573,6 +531,58 @@ pub(crate) fn drain_current_cache() -> usize {
 /// The empty-loan retention policy admits at most one loan per node. Each
 /// reclaim pass detaches that loan under the lock and releases outside it;
 /// concurrent new frees are left for a later bounded pass.
+pub(crate) fn reclaim_buddy_loans() -> PoolReclaim {
+    NODES.iter().fold(PoolReclaim::default(), |progress, node| {
+        progress.merge(reclaim_buddy_pool(&node.buddy))
+    })
+}
+
+fn reclaim_buddy_pool(pool: &IrqPoisonLock<BuddyPool>) -> PoolReclaim {
+    let mut progress = PoolReclaim::default();
+    let retired = {
+        let mut list = match pool.try_lock() {
+            Ok(guard) => guard,
+            Err(crate::sync::poison_lock::TryLockError::WouldBlock) => {
+                progress.busy_pools = 1;
+                return progress;
+            }
+            Err(crate::sync::poison_lock::TryLockError::Poisoned(_)) => {
+                progress.poisoned_pools = 1;
+                return progress;
+            }
+        };
+        let mut link = &mut list.head;
+        let mut retired = None;
+        // LOOP_PROOF: mode=condition; reason=Each iteration advances through the finite locked region list or unlinks its first empty loan.;
+        while let Some(mut region) = *link {
+            // SAFETY: the node lock excludes allocation and retains metadata.
+            let region_ref = unsafe { region.as_mut() };
+            if region_ref.live == 0 {
+                // SAFETY: zero live blocks and unlinking exclude every accessor.
+                let empty = unsafe { region.as_ptr().read() };
+                *link = empty.next;
+                retired = Some(empty);
+                break;
+            }
+            link = &mut region_ref.next;
+        }
+        retired
+    };
+    if let Some(mut retired) = retired {
+        let backing = retired
+            .heap
+            .backing
+            .take()
+            .expect("region retains backing")
+            .into_physical()
+            .expect("node region is a PMM loan");
+        let bytes = backing.size_bytes() as usize + retired.metadata.size_bytes() as usize;
+        backing.release();
+        retired.metadata.release();
+        progress.reclaimed_bytes = bytes;
+    }
+    progress
+}
 
 /// Cold snapshot of retained pools. Magazine reservations remain allocated in
 /// occupancy; free capacity is available to node pools without owner-CPU drain.
@@ -616,6 +626,60 @@ pub(super) fn stats() -> (usize, usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn shared_buddy_reclaim_defers_busy_owners_and_never_retires_a_live_block() {
+        let layout = Layout::from_size_align(7000, 4096).unwrap();
+        let mut region = create_region(NumaNodeId::NODE_0, layout).unwrap();
+        // SAFETY: the unpublished region is uniquely retained by this fixture
+        // until publication into its independent pool. The reserved block lies
+        // in writable retained backing, disjoint from region metadata.
+        let pointer = unsafe {
+            let retained = region.as_mut();
+            let pointer = NonNull::new(retained.heap.allocate(layout)).unwrap();
+            retained.live = 1;
+            pointer.as_ptr().write_bytes(0x37, layout.size());
+            pointer
+        };
+        let pool = IrqPoisonLock::new(BuddyPool { head: Some(region) });
+        assert_eq!(reclaim_buddy_pool(&pool), PoolReclaim::default());
+        let held = pool
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture pool poisoned"));
+        assert_eq!(held.head, Some(region));
+        assert_eq!(
+            reclaim_buddy_pool(&pool),
+            PoolReclaim {
+                busy_pools: 1,
+                ..Default::default()
+            }
+        );
+        // SAFETY: the live block has not been returned and is exclusively used
+        // here. The pool guard prevents retirement while the block returns.
+        let bytes = unsafe {
+            assert_eq!(pointer.as_ptr().read(), 0x37);
+            let retained = region.as_mut();
+            retained.heap.deallocate(pointer.as_ptr(), layout);
+            retained.live = 0;
+            retained.heap.heap_size + retained.metadata.size_bytes() as usize
+        };
+        drop(held);
+        assert_eq!(
+            reclaim_buddy_pool(&pool),
+            PoolReclaim {
+                reclaimed_bytes: bytes,
+                ..Default::default()
+            }
+        );
+        assert!(
+            pool.lock()
+                .unwrap_or_else(|_| panic!("fixture pool poisoned"))
+                .head
+                .is_none()
+        );
+        assert_eq!(reclaim_buddy_pool(&pool), PoolReclaim::default());
+    }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
