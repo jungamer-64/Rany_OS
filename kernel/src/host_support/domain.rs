@@ -4,18 +4,7 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, Once};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub struct CapabilitySet(u64);
-
-impl CapabilitySet {
-    pub const fn empty() -> Self {
-        Self(0)
-    }
-
-    pub const fn full() -> Self {
-        Self(u64::MAX)
-    }
-}
+pub use crate::security::CapabilitySet;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainErrorKind {
@@ -29,136 +18,11 @@ pub enum KernelError {
     Domain(DomainErrorKind),
 }
 
-pub mod quota {
-    use super::DomainId;
-    use spin::Once;
-
-    #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-    pub enum DomainPriority {
-        Low = 0,
-        #[default]
-        Normal = 1,
-        High = 2,
-        Critical = 3,
-    }
-
-    #[derive(Debug, Clone)]
-    pub enum QuotaError {
-        AllocationRace,
-        MemoryExceeded {
-            requested: u64,
-            available: u64,
-            limit: u64,
-        },
-        Other,
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct MemoryQuota;
-    impl MemoryQuota {
-        pub fn new(_limit_mb: u64) -> Self {
-            Self
-        }
-        pub fn unlimited() -> Self {
-            Self
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct IoQuota;
-    impl IoQuota {
-        pub fn new(_rate_mbps: u64, _burst_mb: u64) -> Self {
-            Self
-        }
-        pub fn unlimited() -> Self {
-            Self
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct DomainQuota {
-        pub domain_id: DomainId,
-        pub priority: DomainPriority,
-        pub cpu_limit_percent: u64,
-        pub memory_limit: u64,
-        pub io_limit: u64,
-        pub memory: MemoryQuota,
-        pub network_io: IoQuota,
-        pub storage_io: IoQuota,
-    }
-
-    impl DomainQuota {
-        pub fn new(domain_id: DomainId, priority: DomainPriority) -> Self {
-            Self {
-                domain_id,
-                priority,
-                cpu_limit_percent: 100,
-                memory_limit: u64::MAX,
-                io_limit: 0,
-                memory: MemoryQuota::unlimited(),
-                network_io: IoQuota::unlimited(),
-                storage_io: IoQuota::unlimited(),
-            }
-        }
-
-        pub fn kernel() -> Self {
-            Self::new(DomainId::KERNEL, DomainPriority::Critical)
-        }
-
-        pub fn with_cpu_limit(mut self, limit_percent: u64, _period_ms: u64) -> Self {
-            self.cpu_limit_percent = limit_percent;
-            self
-        }
-    }
-
-    #[derive(Debug, Clone, Copy, Default)]
-    pub struct QuotaStats {
-        pub domain_id: DomainId,
-        pub priority: DomainPriority,
-        pub memory_used: u64,
-        pub memory_limit: u64,
-    }
-
-    #[derive(Debug, Clone, Copy)]
-    pub struct OomVictim {
-        pub domain_id: DomainId,
-        pub priority: DomainPriority,
-    }
-
-    pub struct QuotaManager;
-
-    impl QuotaManager {
-        pub fn register(&self, _quota: DomainQuota) {}
-        pub fn unregister(&self, _id: DomainId) {}
-        pub fn try_allocate_memory(
-            &self,
-            _domain: DomainId,
-            _bytes: u64,
-        ) -> Result<(), QuotaError> {
-            Ok(())
-        }
-        pub fn deallocate_memory(&self, _domain: DomainId, _bytes: u64) {}
-        pub fn get_stats(&self, domain: DomainId) -> Option<QuotaStats> {
-            Some(QuotaStats {
-                domain_id: domain,
-                priority: DomainPriority::Normal,
-                memory_used: 0,
-                memory_limit: u64::MAX,
-            })
-        }
-        pub fn select_oom_victim(&self) -> Option<OomVictim> {
-            None
-        }
-    }
-
-    static MANAGER: Once<QuotaManager> = Once::new();
-
-    pub fn init() {}
-
-    pub fn quota_manager() -> &'static QuotaManager {
-        MANAGER.call_once(|| QuotaManager)
-    }
-}
+#[path = "../domain/policy.rs"]
+pub mod policy;
+#[path = "../domain/quota.rs"]
+pub mod quota;
+pub use policy::DomainPolicyError;
 
 pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};
 
@@ -170,28 +34,6 @@ pub enum CpuQuotaAction {
     None,
     YieldDemote,
     Suspend { until_ns: u64 },
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(transparent)]
-pub struct DomainId(pub u64);
-
-impl DomainId {
-    pub const fn new(v: u64) -> Self {
-        DomainId(v)
-    }
-
-    pub const fn as_u64(&self) -> u64 {
-        self.0
-    }
-
-    pub const KERNEL: DomainId = DomainId(0);
-}
-
-impl core::fmt::Display for DomainId {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        write!(f, "Domain({})", self.0)
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -346,6 +188,9 @@ pub fn init() {
     if domains.iter().any(|domain| domain.id == DomainId::KERNEL) {
         return;
     }
+    quota_manager()
+        .register(DomainQuota::kernel())
+        .expect("host kernel quota metadata");
     domains.push(DomainRecord {
         id: DomainId::KERNEL,
         name: String::from("kernel"),
@@ -367,6 +212,9 @@ pub fn init() {
 pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     init();
     let id = DomainId::new(NEXT_ID.fetch_add(1, Ordering::Relaxed));
+    quota_manager()
+        .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(u64::MAX))
+        .map_err(|_| KernelError::Domain(DomainErrorKind::LifecycleError))?;
     DOMAINS.lock().push(DomainRecord {
         id,
         name,
@@ -391,7 +239,8 @@ pub fn spawn_domain_with_caps(
     _requested: &[RequestedCap],
 ) -> Result<(DomainId, Vec<u64>), KernelError> {
     let id = create_domain(name)?;
-    set_domain_state(id, DomainState::Running);
+    set_domain_state(id, DomainState::Running)
+        .map_err(|_| KernelError::Domain(DomainErrorKind::LifecycleError))?;
     Ok((id, Vec::new()))
 }
 
@@ -429,28 +278,41 @@ pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
     with_domain(id, to_snapshot)
 }
 
-pub fn set_domain_state(id: DomainId, state: DomainState) {
-    let _ = with_domain_mut(id, |domain| domain.state = state);
+pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPolicyError> {
+    with_domain_mut(id, |domain| {
+        if state == DomainState::Terminated {
+            quota_manager().unregister(id);
+        } else {
+            quota_manager()
+                .update_policy(host_quota(
+                    domain,
+                    domain.priority,
+                    domain.cpu_limit_percent,
+                    domain.memory_limit_bytes,
+                    domain.io_bandwidth_limit,
+                ))
+                .map_err(DomainPolicyError::Quota)?;
+        }
+        domain.state = state;
+        Ok(())
+    })
+    .ok_or(DomainPolicyError::NotFound)?
 }
 
 pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
-    set_domain_state(id, DomainState::Running);
-    Ok(())
+    set_domain_state(id, DomainState::Running).map_err(|_| "Domain state admission failed")
 }
 
 pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
-    set_domain_state(id, DomainState::Stopped);
-    Ok(())
+    set_domain_state(id, DomainState::Stopped).map_err(|_| "Domain state admission failed")
 }
 
 pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
-    set_domain_state(id, DomainState::Running);
-    Ok(())
+    set_domain_state(id, DomainState::Running).map_err(|_| "Domain state admission failed")
 }
 
 pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
-    set_domain_state(id, DomainState::Terminated);
-    Ok(())
+    set_domain_state(id, DomainState::Terminated).map_err(|_| "Domain state admission failed")
 }
 
 pub fn handle_domain_panic(id: DomainId, message: String) {
@@ -468,16 +330,54 @@ pub fn get_domain_numa(id: DomainId) -> Option<usize> {
     with_domain(id, |domain| domain.numa_node).flatten()
 }
 
-pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), &'static str> {
+pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
     with_domain_mut(id, |domain| Arc::make_mut(&mut domain.security).caps = caps)
         .map(|_| ())
-        .ok_or("Domain not found")
+        .ok_or(DomainPolicyError::NotFound)
 }
 
-pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(), &'static str> {
-    with_domain_mut(id, |domain| domain.priority = priority)
-        .map(|_| ())
-        .ok_or("Domain not found")
+pub fn set_domain_priority(
+    id: DomainId,
+    priority: DomainPriority,
+) -> Result<(), DomainPolicyError> {
+    with_domain_mut(id, |domain| {
+        let quota = host_quota(
+            domain,
+            priority,
+            domain.cpu_limit_percent,
+            domain.memory_limit_bytes,
+            domain.io_bandwidth_limit,
+        );
+        quota_manager()
+            .update_policy(quota)
+            .map_err(DomainPolicyError::Quota)?;
+        domain.priority = priority;
+        Ok(())
+    })
+    .ok_or(DomainPolicyError::NotFound)?
+}
+
+fn host_quota(
+    domain: &DomainRecord,
+    priority: DomainPriority,
+    cpu: u64,
+    memory: u64,
+    io: u64,
+) -> DomainQuota {
+    if domain.id == DomainId::KERNEL {
+        return DomainQuota::kernel();
+    }
+    let mut quota = DomainQuota::new(domain.id, priority).with_cpu_limit(cpu.min(100), 100);
+    quota.memory = quota::MemoryQuota::from_bytes(if memory == 0 { u64::MAX } else { memory });
+    if io == 0 || io == u64::MAX {
+        quota.network_io = quota::IoQuota::unlimited();
+        quota.storage_io = quota::IoQuota::unlimited();
+    } else {
+        let rate = io.div_ceil(1024 * 1024);
+        quota.network_io = quota::IoQuota::new(rate, rate);
+        quota.storage_io = quota::IoQuota::new(rate, rate);
+    }
+    quota
 }
 
 pub fn set_domain_resource_limits(
@@ -485,14 +385,24 @@ pub fn set_domain_resource_limits(
     cpu_limit_percent: u64,
     memory_limit_bytes: u64,
     io_bandwidth_limit: u64,
-) -> Result<(), &'static str> {
+) -> Result<(), DomainPolicyError> {
     with_domain_mut(id, |domain| {
+        let quota = host_quota(
+            domain,
+            domain.priority,
+            cpu_limit_percent,
+            memory_limit_bytes,
+            io_bandwidth_limit,
+        );
+        quota_manager()
+            .update_policy(quota)
+            .map_err(DomainPolicyError::Quota)?;
         domain.cpu_limit_percent = cpu_limit_percent;
         domain.memory_limit_bytes = memory_limit_bytes;
         domain.io_bandwidth_limit = io_bandwidth_limit;
+        Ok(())
     })
-    .map(|_| ())
-    .ok_or("Domain not found")
+    .ok_or(DomainPolicyError::NotFound)?
 }
 
 pub fn report_cpu_quota_exceeded(_id: DomainId, _now_ns: u64) -> CpuQuotaAction {

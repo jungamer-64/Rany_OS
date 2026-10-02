@@ -1,19 +1,3 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-#[repr(transparent)]
-pub struct DomainId(u64);
-
-impl DomainId {
-    pub const fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-
-    pub const KERNEL: DomainId = DomainId(0);
-}
-
 #[path = "ipc/rref.rs"]
 pub mod rref;
 
