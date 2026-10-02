@@ -275,27 +275,42 @@ pub(crate) fn enter_driver_execution_domain(
         .map_err(|_| DriverError::ExecutionContextUnavailable)
 }
 
-/// Registered driver entry
+/// A driver call owns the instance outside the registry lock. The slot keeps
+/// identity, state and code ownership visible throughout a preempted callback.
 struct DriverEntry {
-    /// The driver instance
-    driver: Box<dyn Driver>,
-    /// Domain whose authority applies while invoking this driver.
+    name: String,
+    driver_type: DriverType,
+    supported_devices: Vec<DeviceId>,
+    has_irq_handler: bool,
+    abi_context: Option<AbiDriverContext>,
     owner: crate::domain::DomainId,
-    /// Current state
-    state: DriverState,
+    code: Option<Arc<crate::loader::code::CodeLease>>,
+    slot: DriverSlot,
+}
+
+enum DriverSlot {
+    Available { driver: Box<dyn Driver>, state: DriverState },
+    Invoking { operation: DriverOperation, state: DriverState },
+    Removed,
+}
+
+/// Lifecycle operation whose completion or failure belongs to the driver owner.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriverOperation {
+    Probe,
+    Start,
+    Stop,
+    Remove,
+    Interrupt,
+    ExportState,
 }
 
 impl DriverEntry {
-    fn new(owner: crate::domain::DomainId, driver: Box<dyn Driver>) -> Self {
-        Self {
-            driver,
-            owner,
-            state: DriverState::Registered,
+    fn state(&self) -> DriverState {
+        match &self.slot {
+            DriverSlot::Available { state, .. } | DriverSlot::Invoking { state, .. } => *state,
+            DriverSlot::Removed => DriverState::Removed,
         }
-    }
-
-    fn enter_owner(&self) -> Result<Option<crate::cpu::ExecutionContextGuard>, DriverError> {
-        enter_driver_execution_domain(self.owner)
     }
 }
 

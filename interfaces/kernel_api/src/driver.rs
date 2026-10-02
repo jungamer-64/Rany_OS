@@ -357,14 +357,24 @@ pub struct DriverInfo {
 pub enum DriverState {
     /// 登録済み（未プローブ）
     Registered,
+    /// Probe has been requested and its completion has not been collected.
+    Probing,
     /// プローブ成功
     Probed,
+    /// Startup is incomplete; resources and the driver remain owned.
+    Starting,
     /// 動作中
     Running,
+    /// Stop has been requested but device completion is still outstanding.
+    Stopping,
+    /// Device stop completed; runtime resource finalization is outstanding.
+    Finalizing,
     /// 停止
     Stopped,
     /// エラー
     Error,
+    /// Remove has been requested but its completion is still outstanding.
+    Removing,
     /// 削除済み（ドライバがアンレジスターされた、またはロード解除済み）
     Removed,
 }
