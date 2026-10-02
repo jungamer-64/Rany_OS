@@ -29,24 +29,7 @@ pub(crate) fn register_exports_driver_owned_with_context(
         ctx,
         owner,
     );
-    if res.is_err() {
-        if let Some(fini) = prepared.fini {
-            let _ = fini();
-        }
-    }
     res
-}
-
-pub(crate) fn register_abi_driver_with_fini_and_context(
-    entry: AbiEntryFn,
-    exports_fini: Option<extern "C" fn() -> i32>,
-    provider_descriptors: Vec<ProviderDescriptorV1>,
-    state_hooks: AbiDriverStateHooks,
-    ctx: AbiDriverContext,
-    owner: crate::domain::DomainId,
-) -> Result<DriverHandle, DriverError> {
-    let abi_driver = build_abi_driver(entry, exports_fini, provider_descriptors, state_hooks, ctx)?;
-    DRIVER_REGISTRY.register_owned(owner, abi_driver)
 }
 
 /// Register a driver implemented as an ABI vtable
@@ -101,6 +84,43 @@ pub fn unregister_driver(handle: DriverHandle) -> Result<(), DriverError> {
     DRIVER_REGISTRY.unregister(handle)
 }
 
+pub(crate) fn prepare_driver_replacement(
+    handle: DriverHandle,
+    prepared: &PreparedDriverExports,
+    state: Option<Arc<DriverStateBlob>>,
+    mut context: AbiDriverContext,
+) -> Result<DriverReplacement, DriverError> {
+    let owner = DRIVER_REGISTRY
+        .driver_owner(handle)
+        .ok_or(DriverError::NotFound)?;
+    let _scope = match &prepared.code {
+        Some(code) => Some(
+            crate::task::enter_cell_domain(owner, code.cell())
+                .map_err(|_| DriverError::ExecutionContextUnavailable)?,
+        ),
+        None => super::enter_driver_execution_domain(owner)?,
+    };
+    context.driver_data = 0;
+    let mut providers = Vec::new();
+    providers
+        .try_reserve_exact(prepared.providers.len())
+        .map_err(|_| DriverError::OutOfMemory)?;
+    providers.extend_from_slice(&prepared.providers);
+    let driver = build_abi_driver(
+        prepared.entry,
+        prepared.fini,
+        providers,
+        prepared.state_hooks,
+        context,
+    )?;
+    let candidate = DriverEntry::prepare(owner, driver, prepared.code.clone())?;
+    Ok(DriverReplacement {
+        handle,
+        candidate: Some(candidate),
+        state,
+    })
+}
+
 // Adapter to delegate trait calls to ABI vtable
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct AbiDriverStateHooks {
@@ -112,7 +132,6 @@ pub(crate) struct AbiDriver {
     pub(crate) vtable: *const AbiDriverVTable,
     pub(crate) name: alloc::string::String,
     pub(crate) ctx: AbiDriverContext,
-    pub(crate) exports_fini: Option<extern "C" fn() -> i32>,
     pub(crate) provider_descriptors: Vec<ProviderDescriptorV1>,
     pub(crate) state_hooks: AbiDriverStateHooks,
 }
@@ -138,34 +157,6 @@ impl AbiDriver {
 
         let bytes = unsafe { Vec::from_raw_parts(state.data_ptr, state.data_len, state.data_cap) };
         Ok(DriverStateBlob::new(state.version, bytes))
-    }
-
-    fn state_blob_into_abi(
-        state: DriverStateBlob,
-    ) -> (
-        kernel_api::abi::driver::AbiExportedState,
-        *mut u8,
-        usize,
-        usize,
-    ) {
-        let version = state.version;
-        let mut bytes = core::mem::ManuallyDrop::new(state.bytes);
-        let data_ptr = bytes.as_mut_ptr();
-        let data_len = bytes.len();
-        let data_cap = bytes.capacity();
-        (
-            kernel_api::abi::driver::AbiExportedState {
-                version,
-                reserved0: 0,
-                data_ptr,
-                data_len,
-                data_cap,
-                reserved: [0; 4],
-            },
-            data_ptr,
-            data_len,
-            data_cap,
-        )
     }
 }
 
@@ -223,9 +214,6 @@ impl Driver for AbiDriver {
     fn remove(&mut self) -> KapiResult<()> {
         let res = (self.vtable().remove)(&mut self.ctx as *mut _);
         AbiErrorCode::from_raw(res).into_result()?;
-        if let Some(fini) = self.exports_fini {
-            AbiErrorCode::from_raw(fini()).into_result()?;
-        }
         Ok(())
     }
 
@@ -265,7 +253,7 @@ impl Driver for AbiDriver {
         Self::state_blob_from_abi(abi_state).map(Some)
     }
 
-    fn import_live_state(&mut self, state: DriverStateBlob) -> KapiResult<()> {
+    fn import_live_state(&mut self, state: &DriverStateBlob) -> KapiResult<()> {
         if state.bytes.is_empty()
             && self.ctx.driver_data == 0
             && self.state_hooks.import_state.is_none()
@@ -276,9 +264,22 @@ impl Driver for AbiDriver {
             return Err(KapiError::NotSupported);
         };
 
-        let (mut abi_state, data_ptr, data_len, data_cap) = Self::state_blob_into_abi(state);
+        // The foreign import borrows one owned copy only for this callback.
+        // Rollback retains the authoritative exported snapshot across retries.
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(state.bytes.len())
+            .map_err(|_| KapiError::OutOfMemory)?;
+        bytes.extend_from_slice(&state.bytes);
+        let mut abi_state = kernel_api::abi::driver::AbiExportedState {
+            version: state.version,
+            reserved0: 0,
+            data_ptr: bytes.as_mut_ptr(),
+            data_len: bytes.len(),
+            data_cap: bytes.capacity(),
+            reserved: [0; 4],
+        };
         let result = import_state(&mut self.ctx as *mut _, &mut abi_state);
-        let _ = unsafe { Vec::from_raw_parts(data_ptr, data_len, data_cap) };
         AbiErrorCode::from_raw(result).into_result()
     }
 }

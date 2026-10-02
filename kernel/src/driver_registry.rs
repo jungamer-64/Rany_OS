@@ -311,6 +311,7 @@ pub enum DriverOperation {
     Remove,
     Interrupt,
     ExportState,
+    ImportState,
 }
 
 impl DriverEntry {
@@ -506,11 +507,15 @@ impl DriverRegistry {
                 previous,
                 DriverState::Running | DriverState::Probed | DriverState::Stopped
             ),
+            DriverOperation::ImportState => {
+                matches!(previous, DriverState::Probed | DriverState::Importing)
+            }
         };
         if !valid {
             if matches!(
                 previous,
                 DriverState::Probing
+                    | DriverState::Importing
                     | DriverState::Starting
                     | DriverState::Stopping
                     | DriverState::Finalizing
@@ -525,6 +530,7 @@ impl DriverRegistry {
             DriverOperation::Start => DriverState::Starting,
             DriverOperation::Stop => DriverState::Stopping,
             DriverOperation::Remove => DriverState::Removing,
+            DriverOperation::ImportState => DriverState::Importing,
             _ => previous,
         };
         let DriverSlot::Available { driver, .. } =
@@ -836,7 +842,7 @@ impl DriverRegistry {
         );
     }
 
-    /// Unregister a driver and replace it with a null driver to allow cell unloading
+    /// Removal acknowledges device teardown before releasing the instance and code.
     pub fn unregister(&self, handle: DriverHandle) -> Result<(), DriverError> {
         if self.state(handle) == Some(DriverState::Removed) {
             return Ok(());
@@ -905,7 +911,83 @@ impl DriverRegistry {
         result
     }
 
+    fn import_live_state(
+        &self,
+        handle: DriverHandle,
+        state: &DriverStateBlob,
+    ) -> Result<(), DriverError> {
+        let mut call = self.begin(handle, DriverOperation::ImportState)?;
+        let _scope = call.enter()?;
+        let result = call.driver().import_live_state(state);
+        call.complete(match result {
+            Ok(()) => DriverState::Probed,
+            Err(KapiError::Busy) => DriverState::Importing,
+            Err(_) => DriverState::Error,
+        });
+        Self::operation_result(DriverOperation::ImportState, result)
+    }
+}
 
+/// Owns a prepared instance until publication, then the remaining startup steps.
+/// A Busy result preserves this object; retry does not reconstruct the candidate
+/// or replay a successful state import. The registry owns a published instance.
+pub(crate) struct DriverReplacement {
+    handle: DriverHandle,
+    candidate: Option<DriverEntry>,
+    state: Option<Arc<DriverStateBlob>>,
+}
+
+impl DriverReplacement {
+    pub(crate) fn published(&self) -> bool {
+        self.candidate.is_none()
+    }
+
+    pub(crate) fn advance(&mut self, registry: &DriverRegistry) -> Result<(), DriverError> {
+        if let Some(candidate) = &self.candidate {
+            if matches!(
+                registry.state(self.handle),
+                Some(
+                    DriverState::Running
+                        | DriverState::Stopping
+                        | DriverState::Finalizing
+                        | DriverState::Error
+                )
+            ) {
+                registry.stop(self.handle)?;
+            }
+            registry.unregister(self.handle)?;
+            if let Some(code) = &candidate.code {
+                if candidate.owner != crate::domain::DomainId::KERNEL {
+                    crate::domain::registry::bind_code_generation(candidate.owner, code.cell())
+                        .map_err(|_| DriverError::ExecutionContextUnavailable)?;
+                }
+            }
+            let mut entries = registry.drivers.lock().map_err(|_| DriverError::Poisoned)?;
+            let entry = entries
+                .get_mut(self.handle.0)
+                .ok_or(DriverError::NotFound)?;
+            if !matches!(entry.slot, DriverSlot::Removed) {
+                return Err(DriverError::Busy {
+                    operation: DriverOperation::Remove,
+                });
+            }
+            *entry = self
+                .candidate
+                .take()
+                .expect("publication consumes its prepared instance once");
+        }
+        if matches!(
+            registry.state(self.handle),
+            Some(DriverState::Registered | DriverState::Probing)
+        ) {
+            registry.probe(self.handle)?;
+        }
+        if let Some(state) = &self.state {
+            registry.import_live_state(self.handle, state)?;
+            self.state = None;
+        }
+        registry.probe_and_start(self.handle)
+    }
 }
 
 // ============================================================================
@@ -1850,7 +1932,6 @@ pub(crate) fn collect_provider_descriptors_from_vtable(
 
 fn build_abi_driver(
     entry: AbiEntryFn,
-    exports_fini: Option<extern "C" fn() -> i32>,
     provider_descriptors: Vec<ProviderDescriptorV1>,
     state_hooks: AbiDriverStateHooks,
     ctx: AbiDriverContext,
@@ -1902,7 +1983,6 @@ fn build_abi_driver(
         vtable: vtable_ptr,
         name,
         ctx,
-        exports_fini,
         provider_descriptors,
         state_hooks,
     });
