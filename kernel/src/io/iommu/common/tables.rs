@@ -9,30 +9,6 @@ use core::ptr::NonNull;
 // Import architecture specific PTEs for helper functions
 use crate::io::iommu::vendors::amd::tables::AmdPte;
 
-// ============================================================================
-// Zeroable Trait - Zero-initialization safety
-// ============================================================================
-
-/// Marker trait for types that can be safely zero-initialized.
-///
-/// # Safety
-///
-/// Implementing this trait guarantees that:
-/// - All-zeros is a valid bit pattern for this type
-/// - Creating a reference to a zeroed instance does not cause UB
-///
-/// Types like `NonZeroU64` or references MUST NOT implement this trait.
-///
-/// # Usage
-///
-/// ```ignore
-/// #[repr(C)]
-/// struct MyEntry { lo: u64, hi: u64 }
-/// // SAFETY: All-zeros is valid (represents "not present")
-/// unsafe impl Zeroable for MyEntry {}
-/// ```
-pub unsafe trait Zeroable: Copy {}
-
 /// Page table entries per level (512 for 4KB pages)
 pub const PT_ENTRIES: usize = 512;
 
@@ -189,7 +165,9 @@ unsafe impl Zeroable for SlPte {}
 pub(in crate::io::iommu) struct PageTableScope<'a> {
     allocation: Option<crate::io::iommu::common::dma::page_table_pool::PooledPt>,
     pool: alloc::sync::Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
-    pending: &'a crate::sync::PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
+    pending: &'a crate::sync::PoisonLock<
+        crate::io::iommu::common::dma::page_table_pool::TableRetirement,
+    >,
     parent_entry: Option<*mut SlPte>,
     parent_phys: Option<u64>,
 }
@@ -198,29 +176,50 @@ impl<'a> PageTableScope<'a> {
     pub(in crate::io::iommu) fn new_with_pool(
         pool: alloc::sync::Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
         node_hint: Option<usize>,
-        pending: &'a crate::sync::PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
+        pending: &'a crate::sync::PoisonLock<
+            crate::io::iommu::common::dma::page_table_pool::TableRetirement,
+        >,
     ) -> Result<Self, IommuError> {
         // At most four scopes exist in a 5-level path; capture holds the paging
         // lock and cannot invalidate admission while these scopes remain live.
-        pending.lock().map_err(|_| IommuError::Poisoned)?
+        pending
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?
             .reserve(4)?;
         let allocation = pool.acquire(node_hint)?;
-        Ok(Self { allocation: Some(allocation), pool, pending, parent_entry: None, parent_phys: None })
+        Ok(Self {
+            allocation: Some(allocation),
+            pool,
+            pending,
+            parent_entry: None,
+            parent_phys: None,
+        })
     }
     pub(in crate::io::iommu) fn ptr(&self) -> *mut SlPte {
-        self.allocation.as_ref().expect("uncommitted owner").ptr.as_ptr()
+        self.allocation
+            .as_ref()
+            .expect("uncommitted owner")
+            .ptr()
+            .as_ptr()
     }
     pub(in crate::io::iommu) fn phys(&self) -> u64 {
-        self.allocation.as_ref().expect("uncommitted owner").phys
+        self.allocation.as_ref().expect("uncommitted owner").phys()
     }
     /// # Safety
     /// The parent entry is retained and exclusively mutated under its domain's
     /// paging lock through this scope's completion. This admission may publish
     /// to hardware; even a later rollback requires IOTLB retirement before reuse.
     pub(in crate::io::iommu) unsafe fn attach_to_parent(
-        &mut self, parent_entry: *mut SlPte, parent_phys: u64, format: PteFormat, next_level: u8,
+        &mut self,
+        parent_entry: *mut SlPte,
+        parent_phys: u64,
+        format: PteFormat,
+        next_level: u8,
     ) {
-        assert!(self.parent_entry.is_none(), "one parent publication per scope");
+        assert!(
+            self.parent_entry.is_none(),
+            "one parent publication per scope"
+        );
         let pte = match format {
             PteFormat::Intel => SlPte::mapping(self.phys(), true, true),
             PteFormat::Amd => SlPte(AmdPte::table_pointer(self.phys(), next_level).0),
@@ -236,13 +235,16 @@ impl<'a> PageTableScope<'a> {
             crate::io::iommu::common::dma::page_table_pool::inc_ref(parent_phys);
         }
         crate::io::iommu::common::dma::page_table_pool::publish_table(
-            self.allocation.take().expect("one table publication"));
+            self.allocation.take().expect("one table publication"),
+        );
     }
 }
 
 impl Drop for PageTableScope<'_> {
     fn drop(&mut self) {
-        let Some(table) = self.allocation.take() else { return; };
+        let Some(table) = self.allocation.take() else {
+            return;
+        };
         if let Some(parent) = self.parent_entry {
             // SAFETY: attach retains the parent and paging mutation authority
             // through rollback; clearing removes the sole published reference.
@@ -251,7 +253,10 @@ impl Drop for PageTableScope<'_> {
             let retired = unsafe {
                 crate::io::iommu::common::dma::page_table_pool::QuarantinedPt::from_unlinked(table)
             };
-            let mut pending = self.pending.lock().unwrap_or_else(|error| error.into_inner());
+            let mut pending = self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
             pending.push(retired);
         } else {
             self.pool.release(table);
@@ -313,18 +318,17 @@ pub fn phys_to_virt_usize(phys: u64) -> usize {
 ///
 /// # Guarantees
 ///
-/// - **Physical Contiguity**: Always allocates exactly 1 page (4KB), ensuring
-///   the returned memory is physically contiguous (VT-d requirement).
+/// - **Physical Contiguity**: The complete table occupies an exclusive PMM
+///   extent, rounded to 4KiB frames and aligned for its entry type.
 /// - **Zero Initialization**: Memory is zeroed before use (hardware safety).
-/// - **NUMA Awareness**: Attempts NUMA-local allocation with automatic fallback.
-/// - **RAII Deallocation**: Memory is freed on Drop.
+/// - **NUMA Awareness**: Explicit hints allocate only on that node.
+/// - **Retirement**: RAM and DMA protection remain retained until explicit completion.
 ///
 /// # Safety
 ///
-/// The caller must ensure that the table is not in use by hardware when it
-/// is dropped. This typically means:
-/// - Disabling IOMMU translation before dropping root/context tables
-/// - Invalidating any TLB entries referencing this table
+/// Hardware publication retains this owner. Explicit retirement requires all
+/// controller/device references to be removed and translations to be invalidated.
+/// Dropping without completion conservatively retains RAM and DMA protection.
 ///
 /// # Example
 ///
@@ -341,11 +345,6 @@ pub fn phys_to_virt_usize(phys: u64) -> usize {
 /// }
 /// ```
 #[derive(Debug)]
-enum HardwareTableBacking {
-    Frames(crate::mm::phys::frame_allocator::PhysicalAllocation),
-}
-
-#[derive(Debug)]
 pub struct HardwareTable<T: Sized + Copy> {
     /// Virtual address (NonNull for null safety)
     ptr: NonNull<T>,
@@ -356,7 +355,7 @@ pub struct HardwareTable<T: Sized + Copy> {
     /// Allocation size in bytes (rounded to page size)
     alloc_bytes: usize,
     /// Number of 4KiB frames backing the table
-    backing: Option<HardwareTableBacking>,
+    backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     /// PhantomData for T
     _marker: PhantomData<T>,
 }
@@ -372,21 +371,21 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     /// Create a new hardware table with the specified number of entries
     ///
     /// # Arguments
-    /// * `count` - Number of entries (must fit within 4KB)
-    /// * `numa_hint` - Optional NUMA node preference (falls back to any node)
+    /// * `count` - Nonzero number of entries
+    /// * `numa_hint` - Exact NUMA node, or the PMM's locality policy
     ///
     /// # Errors
-    /// - `IommuError::InvalidAddress` - If `count * size_of::<T>()` exceeds 4KB
+    /// - `IommuError::InvalidAddress` - If the extent size overflows or is empty
     /// - `IommuError::OutOfMemory` - If allocation fails
     ///
     /// # Physical Contiguity Guarantee
     ///
-    /// This function guarantees physical contiguity by using the buddy frame
+    /// This function guarantees physical contiguity by using the PMM physical
     /// allocator to allocate a contiguous region sized for the table. This is a
     /// VT-d hardware requirement - root tables, context tables, and page tables
     /// must all be physically contiguous.
     pub fn new(count: usize, numa_hint: Option<usize>) -> Result<Self, IommuError> {
-        if count == 0 {
+        if count == 0 || core::mem::size_of::<T>() == 0 {
             return Err(IommuError::InvalidAddress);
         }
 
@@ -405,20 +404,10 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             return Err(IommuError::InvalidAddress);
         }
 
-        #[cfg(feature = "qemu-test-export")]
-        {
-            let _ = numa_hint;
-            return Self::new_heap_backed(count, alloc_bytes, frame_count, page_size);
-        }
-
-        #[cfg(not(feature = "qemu-test-export"))]
-        {
-            return Self::new_frame_backed(count, alloc_bytes, frame_count, numa_hint);
-        }
+        Self::new_frame_backed(count, alloc_bytes, frame_count, numa_hint)
     }
 
-    /// Frame-backed allocation using the buddy frame allocator.
-    #[cfg(not(feature = "qemu-test-export"))]
+    /// Frame-backed allocation from the sole physical RAM authority.
     fn new_frame_backed(
         count: usize,
         alloc_bytes: usize,
@@ -446,13 +435,12 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             phys,
             count,
             alloc_bytes,
-            backing: Some(HardwareTableBacking::Frames(backing)),
+            backing: Some(backing),
             _marker: PhantomData,
         })
     }
 
     /// Allocate physical frames (single or contiguous).
-    #[cfg(not(feature = "qemu-test-export"))]
     fn alloc_phys_frames(
         frame_count: usize,
         numa_hint: Option<usize>,
@@ -462,12 +450,15 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned_on_node(
                 crate::mm::types::NumaNodeId::new(node),
                 frame_count,
-                crate::mm::types::PAGE_SIZE_4K,
+                crate::mm::types::PAGE_SIZE_4K.max(core::mem::align_of::<T>()),
             )
             .map_err(|_| IommuError::OutOfMemory)
         } else {
-            crate::mm::phys::frame_allocator::alloc_contiguous_frames(frame_count)
-                .map_err(|_| IommuError::OutOfMemory)
+            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(
+                frame_count,
+                crate::mm::types::PAGE_SIZE_4K.max(core::mem::align_of::<T>()),
+            )
+            .map_err(|_| IommuError::OutOfMemory)
         }
     }
 
@@ -513,22 +504,17 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
     }
 }
 
-impl<T: Sized + Copy> Drop for HardwareTable<T> {
-    fn drop(&mut self) {
-        // Security: Unregister the entire range from DMA protection.
-        // Using unregister_protected_range ensures consistency with the registration
-        // call in New, correctly handling both bitmap and regions list for any size.
+impl<T: Sized + Copy> HardwareTable<T> {
+    /// Release a hardware table only after its last translation user retires.
+    /// # Safety
+    /// Every device/controller reference to this table has been removed, and
+    /// required context, paging-structure, IOTLB and ATS invalidations completed
+    /// after removal. No CPU borrower remains. Submission is insufficient.
+    pub(in crate::io::iommu) unsafe fn retire_after_invalidation(mut self) {
         crate::security::dma::unregister_protected_range(self.phys, self.alloc_bytes as u64);
-
-        match self
-            .backing
-            .take()
-            .expect("table retains its backing owner")
-        {
-            HardwareTableBacking::Heap(layout) => unsafe {
-                alloc::alloc::dealloc(self.ptr.as_ptr().cast(), layout)
-            },
-            HardwareTableBacking::Frames(backing) => backing.release(),
-        }
+        let Some(backing) = self.backing.take() else {
+            return;
+        };
+        backing.release();
     }
 }

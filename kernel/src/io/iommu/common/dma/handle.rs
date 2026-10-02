@@ -2,69 +2,19 @@
 // kernel/src/io/iommu/common/dma/handle.rs
 // ============================================================================
 
-//! DMA Handle - IOMMU-mapped buffer with ownership tracking
-//!
-//! This module provides `DmaHandle<T>`, a type-safe wrapper for IOMMU-mapped
-//! DMA buffers that integrates with `RRef<T>` for ownership tracking.
-//!
-//! # Key Features
-//!
-//! - **Leak Detection**: `Drop` logs and leaks if handle is dropped without proper unmap
-//! - **Backend Unmap**: `unmap()` routes through the global IOMMU API
-//! - **Ownership Safety**: Errors return the original `RRef<T>` or `DmaHandle<T>`
-//! - **Resource Registry Integration**: Handles are tracked per-domain for SAS safety
-//!
-//! # Async-First Design
-//!
-//! The module supports both synchronous and asynchronous IOTLB invalidation:
-//!
-//! | API                | Behavior                  | Feature Flag                   |
-//! |--------------------|---------------------------|--------------------------------|
-//! | `unmap()`          | Sync or Lazy (cfg)        | `async_unmap_default`          |
-//! | `unmap_sync()`     | Always synchronous        | Always available               |
-//! | `unmap_async()`    | Async completion          | Always available               |
-//!
-//! When `async_unmap_default` feature is enabled, `unmap()` uses deferred
-//! invalidation via Quarantine for improved throughput in high-frequency
-//! DMA workloads.
-//!
-//! # Resource Registry
-//!
-//! Each `DmaHandle` is registered with its domain's `DmaResourceRegistry`
-//! (if available). This enables:
-//!
-//! - **Leak Prevention**: Domain destruction can force-unmap leaked handles
-//! - **Resource Tracking**: Monitor active DMA mappings per domain
-//! - **SAS Safety**: Prevent memory reuse while DMA is active
-//!
-//! # Example
-//!
-//! ```ignore
-//! let rref = RRef::new_slice_default_aligned(
-//!     DomainId::KERNEL,
-//!     4096,
-//!     crate::mm::types::PAGE_SIZE_4K,
-//! )
-//! .expect("alloc rref slice");
-//! let device = crate::io::iommu::types::DeviceId::new(0, 0, 1, 0);
-//! let handle = crate::io::iommu::common::dma::handle::DmaHandle::map_rref_slice_for_device(
-//!     rref,
-//!     &device,
-//!     DmaDirection::ToDevice,
-//! )?;
-//!
-//! // Use handle.iova() for device programming
-//! device.set_dma_address(handle.iova());
-//!
-//! // When done, unmap to get RRef back
-//! let rref = handle.unmap()?;
-//! ```
+//! DMA ownership moves with its translation lease. Mapping rejection returns
+//! the `RRef`; publication followed by synchronization failure returns a DMA
+//! handle instead. A finite retirement slot is admitted before publication.
+//! Retirement retains progress and backing until IOTLB/ATS completion.
+//! Drop transfers both into its reserved reclamation slot and never
+//! performs blocking hardware operations.
 
-use core::marker::PhantomData;
-
-// use super::IommuController;
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
+
+#[path = "handle/bytes.rs"]
+mod bytes;
+pub(crate) use bytes::{DmaBytes, DmaBytesUnmapError};
 
 // ============================================================================
 // DMA Direction
@@ -90,8 +40,12 @@ pub enum DmaDirection {
 pub enum MapErrorKind {
     /// No IOVA space available
     OutOfIova,
+    /// The finite retirement-slot budget cannot admit this mapping.
+    RetirementCapacity,
     /// Page table is full
     PageTableFull,
+    /// The logical range is empty or exceeds its owned backing.
+    InvalidSize,
     /// Buffer is not properly aligned
     InvalidAlignment,
     /// Domain not found
@@ -104,7 +58,7 @@ pub enum MapErrorKind {
 /// published, the error retains a DMA handle instead; its backing cannot be
 /// accessed or returned to an allocator until explicit unmap completes.
 #[derive(Debug)]
-pub enum MapError<T: ?Sized + 'static> {
+pub enum MapError<T: Send + ?Sized + 'static> {
     Unmapped {
         rref: RRef<T>,
         kind: MapErrorKind,
@@ -114,7 +68,7 @@ pub enum MapError<T: ?Sized + 'static> {
         kind: MapErrorKind,
     },
 }
-impl<T: ?Sized + 'static> MapError<T> {
+impl<T: Send + ?Sized + 'static> MapError<T> {
     pub fn unmapped(rref: RRef<T>, kind: MapErrorKind) -> Self {
         Self::Unmapped { rref, kind }
     }
@@ -130,8 +84,6 @@ impl<T: ?Sized + 'static> MapError<T> {
 pub enum UnmapErrorKind {
     /// Invalid IOVA address
     InvalidIova,
-    /// Mapping requires a domain/context-specific unmap
-    InvalidContext,
     /// IOTLB invalidation timed out
     IoTlbTimeout,
     /// Domain not found
@@ -140,9 +92,7 @@ pub enum UnmapErrorKind {
     IommuError(IommuError),
     /// Called from ISR context where blocking operations are forbidden
     ///
-    /// Synchronous unmap waits for hardware IOTLB invalidation completion,
-    /// which is not allowed in interrupt handlers. Use `unmap()` with
-    /// `async_unmap_default` feature or `unmap_async()` instead.
+    /// Hardware completion may block; use async retirement from task context.
     CalledFromIsr,
     /// Blocking safety cannot be established without validated CPU-local state.
     CpuLocalUnavailable,
@@ -155,14 +105,14 @@ pub enum UnmapErrorKind {
 /// This error type returns the `DmaHandle<T>` so that ownership is not lost.
 /// The caller can retry the unmap or take other recovery action.
 #[derive(Debug)]
-pub struct UnmapError<T: ?Sized + 'static> {
+pub struct UnmapError<T: Send + ?Sized + 'static> {
     /// The handle - returned so caller can retry
     pub handle: DmaHandle<T>,
     /// Error kind
     pub kind: UnmapErrorKind,
 }
 
-impl<T: ?Sized + 'static> UnmapError<T> {
+impl<T: Send + ?Sized + 'static> UnmapError<T> {
     /// Create a new unmap error
     pub fn new(handle: DmaHandle<T>, kind: UnmapErrorKind) -> Self {
         Self { handle, kind }
@@ -173,3 +123,100 @@ impl<T: ?Sized + 'static> UnmapError<T> {
 // DmaHandle<T>
 // ============================================================================
 
+/// The CPU cannot access the `RRef` while this handle owns its DMA mapping.
+/// Unmap errors retain both the backing and the exact unfinished phase.
+#[derive(Debug)]
+pub struct DmaHandle<T: Send + ?Sized + 'static> {
+    rref: Option<RRef<T>>,
+    range: Option<super::mapping_outcome::DeviceMappedRange>,
+    direction: DmaDirection,
+    retirement: Option<crate::io::iommu::runtime::zombie::DmaRetirementReservation>,
+}
+impl<T: Send + ?Sized + 'static> DmaHandle<T> {
+    fn from_mapping(
+        rref: RRef<T>,
+        range: super::mapping_outcome::DeviceMappedRange,
+        direction: DmaDirection,
+        retirement: crate::io::iommu::runtime::zombie::DmaRetirementReservation,
+    ) -> Self {
+        Self {
+            rref: Some(rref),
+            range: Some(range),
+            direction,
+            retirement: Some(retirement),
+        }
+    }
+    fn range(&self) -> &super::mapping_outcome::DeviceMappedRange {
+        self.range
+            .as_ref()
+            .expect("DMA handle retains translation ownership")
+    }
+    pub fn iova(&self) -> u64 {
+        self.range().iova()
+    }
+    pub fn phys_addr(&self) -> u64 {
+        self.range().phys_addr()
+    }
+    pub fn size(&self) -> u64 {
+        self.range().size()
+    }
+    pub fn domain_id(&self) -> u16 {
+        self.range().domain_id()
+    }
+    pub fn direction(&self) -> DmaDirection {
+        self.direction
+    }
+    pub fn retirement_stage(&self) -> super::mapping_outcome::DmaRetirementStage {
+        self.range().retirement_stage()
+    }
+    pub fn unmap(self) -> Result<RRef<T>, UnmapError<T>> {
+        self.unmap_sync()
+    }
+    pub fn unmap_sync(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+            return Err(UnmapError::new(self, UnmapErrorKind::CpuLocalUnavailable));
+        };
+        if current.in_interrupt() {
+            return Err(UnmapError::new(self, UnmapErrorKind::CalledFromIsr));
+        }
+        if let Err(cause) = self
+            .range
+            .as_mut()
+            .expect("live translation")
+            .resume_retirement()
+        {
+            return Err(UnmapError::new(self, UnmapErrorKind::IommuError(cause)));
+        }
+        self.range.take();
+        Ok(self.rref.take().expect("live DMA backing"))
+    }
+    /// Cancellation drops this handle into reclamation with the same progress.
+    /// No CPU ownership is returned at submission, timeout or cancellation.
+    pub async fn unmap_async(mut self) -> Result<RRef<T>, UnmapError<T>> {
+        if let Err(cause) = self
+            .range
+            .as_mut()
+            .expect("live translation")
+            .resume_retirement_async()
+            .await
+        {
+            return Err(UnmapError::new(self, UnmapErrorKind::IommuError(cause)));
+        }
+        self.range.take();
+        Ok(self.rref.take().expect("live DMA backing"))
+    }
+}
+impl<T: Send + ?Sized + 'static> Drop for DmaHandle<T> {
+    fn drop(&mut self) {
+        if let Some(rref) = self.rref.take() {
+            let payload = crate::io::iommu::runtime::zombie::DroppedDma::new(
+                self.range.take().expect("DMA backing retains translation"),
+                rref,
+            );
+            self.retirement
+                .take()
+                .expect("DMA backing retains reclamation admission")
+                .publish(payload);
+        }
+    }
+}

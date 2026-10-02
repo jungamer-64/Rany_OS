@@ -271,32 +271,6 @@ pub fn exchange_heap_stats() -> HeapStats {
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
 
-/// Exchange Heap上にゼロ初期化されたスライスを割り当て
-///
-/// # Arguments
-/// * `len` - スライスの要素数
-///
-/// # Returns
-/// 初期化済みスライスへのポインタとレイアウト
-///
-/// # Safety Guarantee
-/// 返されるメモリは必ずゼロ初期化されている
-pub fn allocate_zeroed_slice<T: Sized>(len: usize) -> Option<(NonNull<T>, Layout)> {
-    if len == 0 {
-        return None;
-    }
-
-    let layout = Layout::array::<T>(len).ok()?;
-    let ptr = EXCHANGE_HEAP.allocate(layout)?;
-
-    // ゼロ初期化
-    unsafe {
-        core::ptr::write_bytes(ptr.as_ptr(), 0, layout.size());
-    }
-
-    Some((ptr.cast(), layout))
-}
-
 /// Exchange Heap上に未初期化スライスを割り当て
 ///
 /// MaybeUninit<T> の配列として返すことで、
@@ -412,12 +386,6 @@ impl<T: Sized> InitializedSlice<T> {
         }
     }
 
-    /// ゼロ初期化されたスライスを作成
-    pub fn zeroed(len: usize) -> Option<Self> {
-        let (ptr, layout) = allocate_zeroed_slice::<T>(len)?;
-        Some(Self::new(ptr, len, layout))
-    }
-
     /// 初期化関数でスライスを作成
     pub fn with_init<F>(len: usize, init: F) -> Option<Self>
     where
@@ -508,7 +476,7 @@ pub struct UninitializedSlice<T: Sized> {
     ptr: NonNull<MaybeUninit<T>>,
     len: usize,
     layout: Layout,
-    /// 初期化済み要素数
+    /// Exactly this prefix is initialized; no indexed writes can create holes.
     initialized_count: usize,
     _marker: PhantomData<T>,
 }
@@ -552,8 +520,13 @@ impl<T: Sized> UninitializedSlice<T> {
             return Err(ExchangeHeapError::SliceFull);
         }
 
+        // SAFETY: the prefix is initialized and initialized_count < len. This
+        // exclusive write initializes its next element exactly once.
         unsafe {
-            self.init_at(self.initialized_count, value);
+            self.ptr
+                .as_ptr()
+                .add(self.initialized_count)
+                .write(MaybeUninit::new(value));
         }
         self.initialized_count += 1;
         Ok(())
@@ -575,6 +548,8 @@ impl<T: Sized> UninitializedSlice<T> {
     /// 安全に初期化済みスライスに変換（全要素初期化済みの場合のみ）
     pub fn try_into_initialized(self) -> Result<InitializedSlice<T>, Self> {
         if self.is_fully_initialized() {
+            // SAFETY: the only initialization operation advances a contiguous
+            // prefix, which now covers every element retained by this owner.
             Ok(unsafe { self.assume_init() })
         } else {
             Err(self)
@@ -586,12 +561,12 @@ impl<T: Sized> UninitializedSlice<T> {
     where
         I: IntoIterator<Item = T>,
     {
-        for (i, value) in iter.into_iter().enumerate() {
-            if i >= self.len {
-                break;
-            }
-            unsafe {
-                self.init_at(i, value);
+        let remaining = self.len - self.initialized_count;
+        for value in iter.into_iter().take(remaining) {
+            // The remaining capacity is established before consuming each
+            // value. Continue an existing prefix without overwriting it.
+            if self.init_next(value).is_err() {
+                unreachable!("remaining prefix capacity checked");
             }
         }
 
