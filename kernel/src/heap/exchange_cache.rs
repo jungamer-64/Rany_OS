@@ -5,6 +5,9 @@
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
 
+use super::ExchangeBlocks;
+use crate::sync::PoisonLock;
+use alloc::sync::Arc;
 use core::alloc::Layout;
 use core::ptr::NonNull;
 
@@ -44,14 +47,14 @@ pub(crate) struct CachedAllocation {
 )]
 // SAFETY: the private entry owns one live allocation without a borrow or
 // reclaimer; moving it transfers exclusive reuse authority. The owning heap
-// retains stable CPU-independent RAM, and cache mutation is externally locked.
+// retains stable CPU-independent RAM; only the owner CPU mutates its magazine.
 unsafe impl Send for CachedAllocation {}
 
 impl CachedAllocation {
     /// # Safety
     /// Transfer one exclusive live block from the owning heap, using the class's
     /// canonical Layout. No aliases, independent cache entry or free operation
-    /// may survive this transfer. The owning cache registry retains that heap.
+    /// may survive this transfer. The enclosing magazine retains its backing owner.
     #[expect(
         unsafe_code,
         reason = "allocation release is the unique raw allocator ownership boundary"
@@ -100,12 +103,11 @@ impl ExchangeCache {
         Ok(())
     }
 
-    pub(crate) fn steal(&mut self, class: CacheClass) -> Option<CachedAllocation> {
-        // Keep the victim's reserve rather than draining its hot working set.
-        if self.counts[class.0] <= CAPACITY / 2 {
-            None
-        } else {
-            self.take(class)
-        }
+    pub(crate) fn is_empty(&self) -> bool {
+        self.counts.iter().all(|&count| count == 0)
+    }
+    pub(crate) fn take_batch(&mut self) -> [Option<CachedAllocation>; CAPACITY] {
+        core::array::from_fn(|_| (0..CLASSES).find_map(|index| self.take(CacheClass(index))))
     }
 }
+
