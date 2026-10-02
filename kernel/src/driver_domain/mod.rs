@@ -137,8 +137,8 @@ pub enum DriverDomainState {
     Stopped,
     /// 障害発生（パニック/エラー）
     Faulted,
-    /// 再起動中
-    Restarting,
+    /// Restart preserves its old owners until removal, then admits one startup.
+    Restarting(RestartPhase),
     /// ホットスワップ中
     Updating,
     /// アンロード済み（終了）
@@ -163,7 +163,10 @@ impl DriverDomainState {
     pub fn can_stop(&self) -> bool {
         matches!(
             self,
-            DriverDomainState::Running | DriverDomainState::Starting | DriverDomainState::Faulted
+            DriverDomainState::Running
+                | DriverDomainState::Starting
+                | DriverDomainState::Faulted
+                | DriverDomainState::Stopping
         )
     }
 
@@ -187,11 +190,17 @@ impl core::fmt::Display for DriverDomainState {
             Self::Stopping => write!(f, "Stopping"),
             Self::Stopped => write!(f, "Stopped"),
             Self::Faulted => write!(f, "Faulted"),
-            Self::Restarting => write!(f, "Restarting"),
+            Self::Restarting(phase) => write!(f, "Restarting({phase:?})"),
             Self::Updating => write!(f, "Updating"),
             Self::Unloaded => write!(f, "Unloaded"),
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestartPhase {
+    Removing,
+    Starting,
 }
 
 // ============================================================================
@@ -659,13 +668,26 @@ pub enum DriverDomainError {
     /// ドライバの停止に失敗
     DriverStopFailed(String),
     /// 再起動ポリシーで再起動回数を超過
-    RestartLimitExceeded { max_retries: u32, current: u32 },
+    RestartLimitExceeded {
+        max_retries: u32,
+        current: u32,
+    },
     /// ホットスワップ失敗
     HotSwapFailed(String),
     /// リソースクォータ超過
     QuotaExceeded(String),
     /// ケイパビリティ不足
     InsufficientCapabilities,
+    /// Unfinished lifecycle operations retain the DriverDomain and loaded code.
+    DomainLifecycle(crate::domain::DomainLifecycleError),
+    CodeReclamation(crate::loader::LoadError),
+    LiveUpdate(crate::loader::LiveUpdateError),
+    DriverOperation(crate::driver_registry::DriverError),
+    /// Startup is admitted; this existing domain and handle retain all resources.
+    StartupPending {
+        id: DriverDomainId,
+        handle: DriverHandle,
+    },
     /// アンロード時に依存関係がある
     HasDependents,
 }
@@ -707,6 +729,15 @@ impl core::fmt::Display for DriverDomainError {
             Self::HotSwapFailed(msg) => write!(f, "Hot-swap failed: {}", msg),
             Self::QuotaExceeded(msg) => write!(f, "Quota exceeded: {}", msg),
             Self::InsufficientCapabilities => write!(f, "Insufficient capabilities"),
+            Self::DomainLifecycle(error) => write!(f, "{error}"),
+            Self::CodeReclamation(error) => write!(f, "{error}"),
+            Self::LiveUpdate(error) => write!(f, "{error}"),
+            Self::DriverOperation(error) => write!(f, "{error}"),
+            Self::StartupPending { id, handle } => write!(
+                f,
+                "driver startup {id}/{} awaits completion",
+                handle.index()
+            ),
             Self::HasDependents => write!(f, "Cell has active dependents"),
         }
     }
