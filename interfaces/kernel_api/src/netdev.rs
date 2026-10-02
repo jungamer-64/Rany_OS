@@ -608,7 +608,11 @@ pub trait NetDevicePort: Send + Sync {
     ///
     /// Returns an error when DMA quiescence cannot be proven. The runtime must
     /// quarantine outstanding leases after such a failure.
-    fn stop(&self) -> Result<(), &'static str>;
+    /// Complete device shutdown or retain every callback/DMA owner on failure.
+    ///
+    /// # Errors
+    /// `Busy` means shutdown remains incomplete; the same owner may retry.
+    fn stop(&self) -> crate::error::KapiResult<()>;
 }
 
 pub struct NetPortRegistration {
