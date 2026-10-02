@@ -847,28 +847,6 @@ extern "C" fn mlx5_netdev_stats(_opaque: u64, out: *mut AbiNetPortStats) -> i32 
     AbiError::Success as i32
 }
 
-extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
-    let mut guard = MLX5_STANDALONE_STATE.lock();
-    if let Mlx5Slot::Live(state) = &mut *guard {
-        if state.device.is_active() && unsafe { state.device.disable_hca_hw() }.is_err() {
-            return AbiError::IoError as i32;
-        }
-        for queue in &mut state.rx_slots {
-            for buffer in queue {
-                let _ = buffer.take();
-            }
-        }
-        for queue in &mut state.tx_slots {
-            for lease in queue {
-                let _ = lease.take();
-            }
-        }
-        state.runtime = None;
-        state.poll_generation = state.poll_generation.wrapping_add(1);
-    }
-    AbiError::Success as i32
-}
-
 extern "C" fn mlx5_netdev_set_interrupts_enabled(_opaque: u64, _enabled: bool) -> i32 {
     AbiError::Success as i32
 }
