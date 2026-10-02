@@ -152,8 +152,17 @@ pub enum LiveUpdateError {
     QuiescentTimeout,
     /// セルが見つからない
     CellNotFound,
-    /// State export/import failed before the next dispatch publication.
-    StateMigrationFailed,
+    /// The same prepared transaction remains owned until this operation completes.
+    SwitchPending {
+        new_cell_id: u64,
+        handle: crate::driver_registry::DriverHandle,
+        cause: crate::driver_registry::DriverError,
+    },
+    DriverOperationFailed {
+        new_cell_id: u64,
+        handle: crate::driver_registry::DriverHandle,
+        cause: crate::driver_registry::DriverError,
+    },
     ReclamationBusy {
         cell_id: u64,
         leases: usize,
@@ -161,6 +170,7 @@ pub enum LiveUpdateError {
     ResolutionStarted,
     RollbackIncomplete {
         remaining_drivers: usize,
+        cause: crate::driver_registry::DriverError,
     },
     PartialPublication {
         new_cell_id: u64,
@@ -175,15 +185,38 @@ impl core::fmt::Display for LiveUpdateError {
             Self::LoadFailed => write!(f, "Failed to load new cell"),
             Self::QuiescentTimeout => write!(f, "Timeout waiting for quiescent state"),
             Self::CellNotFound => write!(f, "Cell not found"),
-            Self::StateMigrationFailed => write!(f, "State migration failed"),
+            Self::SwitchPending {
+                new_cell_id,
+                handle,
+                cause,
+            } => write!(
+                f,
+                "Update to cell {new_cell_id}, driver {} remains incomplete: {cause}",
+                handle.index()
+            ),
+            Self::DriverOperationFailed {
+                new_cell_id,
+                handle,
+                cause,
+            } => write!(
+                f,
+                "Update to cell {new_cell_id}, driver {} failed: {cause}",
+                handle.index()
+            ),
             Self::ReclamationBusy { cell_id, leases } => {
                 write!(f, "Cell {cell_id} is retained by {leases} code leases")
             }
             Self::ResolutionStarted => {
                 write!(f, "Update finalization direction is already committed")
             }
-            Self::RollbackIncomplete { remaining_drivers } => {
-                write!(f, "Rollback retains {remaining_drivers} drivers for retry")
+            Self::RollbackIncomplete {
+                remaining_drivers,
+                cause,
+            } => {
+                write!(
+                    f,
+                    "Rollback retains {remaining_drivers} drivers for retry: {cause}"
+                )
             }
             Self::PartialPublication {
                 new_cell_id,
@@ -201,29 +234,33 @@ pub struct PendingUpdateStatus {
     pub old_cell_id: u64,
     pub new_cell_id: u64,
     pub started_at_tick: u64,
-    pub deadline_tick: u64,
+    /// Validation starts only after every replacement has acknowledged startup.
+    pub deadline_tick: Option<u64>,
+    pub phase: UpdatePhase,
     pub health_failed: bool,
 }
 
 /// The direction becomes irreversible before closing a generation. A retry
 /// preserves completed driver publications instead of replaying their state import.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum UpdateResolution {
+pub enum UpdatePhase {
+    Switching,
     Validating,
     Committing,
     RollingBack,
     RollbackPublished,
 }
 
-#[derive(Debug)]
 struct PendingUpdateContext {
     old_cell_id: crate::loader::CellId,
     new_cell_id: crate::loader::CellId,
-    rollback_states: Vec<DriverRollbackState>,
+    changes: Vec<DriverChange>,
     old_entry: Option<crate::driver_registry::PreparedDriverExports>,
-    resolution: UpdateResolution,
+    new_entry: Option<crate::driver_registry::PreparedDriverExports>,
+    retirement_epoch: u64,
+    resolution: UpdatePhase,
     started_at_tick: u64,
-    deadline_tick: u64,
+    deadline_tick: Option<u64>,
     health_failed: bool,
     health_failure_reason: Option<String>,
 }
@@ -266,16 +303,25 @@ impl CompletedUpdateOutcome {
     }
 }
 
-#[derive(Debug)]
-struct SwapDriversResult {
-    rollback_states: Vec<DriverRollbackState>,
-    old_entry: Option<crate::driver_registry::PreparedDriverExports>,
+enum DriverChange {
+    AwaitingExport(crate::driver_registry::DriverHandle),
+    Installing {
+        backup: DriverRollbackState,
+        replacement: crate::driver_registry::DriverReplacement,
+    },
+    Active(DriverRollbackState),
+    Restoring {
+        handle: crate::driver_registry::DriverHandle,
+        replacement: crate::driver_registry::DriverReplacement,
+    },
 }
 
 #[derive(Debug, Clone)]
 struct DriverRollbackState {
     handle: crate::driver_registry::DriverHandle,
-    state: Option<kernel_api::driver::DriverStateBlob>,
+    state: Option<Arc<kernel_api::driver::DriverStateBlob>>,
+    /// Device coordinates survive removal; an instance's opaque pointer does not.
+    context: kernel_api::abi::driver::DriverContext,
 }
 
 struct UpdateOperation<'a>(&'a AtomicBool);
@@ -296,7 +342,7 @@ pub struct LiveUpdateManager {
     /// デフォルトロールバック猶予期間（ティック）
     rollback_grace_period: AtomicU64,
     /// 検証猶予中の更新コンテキスト
-    pending: PoisonLock<Option<PendingUpdateContext>>,
+    pending: PoisonLock<PendingUpdateSlot>,
     /// 直近の更新結果（DriverCell側の状態同期用）
     recent_outcomes: PoisonLock<Vec<CompletedUpdateOutcome>>,
 }
@@ -309,7 +355,7 @@ impl LiveUpdateManager {
             updating: AtomicBool::new(false),
             rollback_epoch: AtomicU64::new(0),
             rollback_grace_period: AtomicU64::new(60 * 1000), // 60秒（ミリ秒）
-            pending: PoisonLock::new(None),
+            pending: PoisonLock::new(PendingUpdateSlot::Empty),
             recent_outcomes: PoisonLock::new(Vec::new()),
         }
     }
@@ -377,52 +423,178 @@ impl LiveUpdateManager {
             Err(_) => return Err(LiveUpdateError::LoadFailed),
         };
 
-        // Step 2: Global Epoch Increment (Pre-swap)
-        let old_epoch = current_epoch();
-        let new_epoch = advance_epoch();
-        log::info!(
-            "[LIVE_UPDATE] Epoch incremented: {} -> {}\n",
-            old_epoch,
-            new_epoch
-        );
-
-        // Step 3: Swap (Update Driver Registry)
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
-
-        let (swap_result, failure) =
-            match Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
-                Ok(result) => result,
-                Err(error) => {
-                    // Preparation may have spawned Futures referencing candidate code.
-                    // Keep a retryable reclamation owner even when no dispatch was published.
-                    self.finalize_update(
-                        old_cell_id,
-                        new_cell_id,
-                        old_epoch,
-                        SwapDriversResult {
-                            rollback_states: Vec::new(),
-                            old_entry: None,
-                        },
-                        true,
-                    )?;
-                    return Err(error);
-                }
+        let retirement_epoch = advance_epoch();
+        let mut changes = Vec::new();
+        if changes.try_reserve_exact(old_drivers.len()).is_err() {
+            // Even a candidate with no published dispatch has a reclamation owner.
+            let context = PendingUpdateContext {
+                old_cell_id,
+                new_cell_id,
+                changes,
+                old_entry: None,
+                new_entry: None,
+                retirement_epoch,
+                resolution: UpdatePhase::RollingBack,
+                started_at_tick: crate::task::current_tick(),
+                deadline_tick: None,
+                health_failed: true,
+                health_failure_reason: Some("publication preparation exhausted memory".into()),
             };
-        let published = swap_result.rollback_states.len();
-        self.finalize_update(
+            self.retain_pending(context);
+            return Err(LiveUpdateError::LoadFailed);
+        }
+        changes.extend(old_drivers.into_iter().map(DriverChange::AwaitingExport));
+        let context = PendingUpdateContext {
             old_cell_id,
             new_cell_id,
-            old_epoch,
-            swap_result,
-            failure.is_some(),
-        )?;
-        if failure.is_some() {
-            return Err(LiveUpdateError::PartialPublication {
-                new_cell_id: new_cell_id.as_u64(),
-                updated_drivers: published,
-            });
+            changes,
+            old_entry: None,
+            new_entry: None,
+            retirement_epoch,
+            resolution: UpdatePhase::Switching,
+            started_at_tick: crate::task::current_tick(),
+            deadline_tick: None,
+            health_failed: false,
+            health_failure_reason: None,
+        };
+        self.switch_context(context)
+            .map(|transition| transition.new_cell_id)
+    }
+
+    fn switch_context(
+        &self,
+        mut context: PendingUpdateContext,
+    ) -> Result<UpdateTransition, LiveUpdateError> {
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Switching;
+        let result = Self::advance_publications(&mut context);
+        match result {
+            Ok(()) => {
+                crate::loader::with_registry(|registry| {
+                    if let Some(old) = registry.get(context.old_cell_id) {
+                        old.code.retire(context.retirement_epoch);
+                    }
+                });
+                let now = crate::task::current_tick();
+                context.started_at_tick = now;
+                context.deadline_tick =
+                    Some(now.saturating_add(self.rollback_grace_period.load(Ordering::Acquire)));
+                context.new_entry = None;
+                context.resolution = UpdatePhase::Validating;
+                let result = UpdateTransition {
+                    old_cell_id: context.old_cell_id.as_u64(),
+                    new_cell_id: context.new_cell_id.as_u64(),
+                };
+                self.rollback_epoch
+                    .store(context.retirement_epoch, Ordering::Release);
+                self.retain_pending(context);
+                *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
+                    LiveUpdateState::WaitingQuiescent;
+                Ok(result)
+            }
+            Err(error) => {
+                if !matches!(error, LiveUpdateError::SwitchPending { .. }) {
+                    context.health_failed = true;
+                    context.health_failure_reason = Some(alloc::format!("{error}"));
+                    context.resolution = UpdatePhase::RollingBack;
+                    *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
+                        LiveUpdateState::Error;
+                }
+                self.retain_pending(context);
+                Err(error)
+            }
         }
-        Ok(new_cell_id.as_u64())
+    }
+
+    fn advance_publications(context: &mut PendingUpdateContext) -> Result<(), LiveUpdateError> {
+        let registry = crate::driver_registry::driver_registry();
+        let handle = match context.changes.first() {
+            Some(DriverChange::AwaitingExport(handle)) => *handle,
+            Some(DriverChange::Installing { backup, .. } | DriverChange::Active(backup)) => {
+                backup.handle
+            }
+            _ => return Err(LiveUpdateError::CellNotFound),
+        };
+        let owner = registry
+            .driver_owner(handle)
+            .ok_or(LiveUpdateError::CellNotFound)?;
+        if context.old_entry.is_none() {
+            context.old_entry = Some(resolve_cell_entry(context.old_cell_id, owner, false)?);
+        }
+        if context.new_entry.is_none() {
+            crate::loader::with_registry_mut(|registry| {
+                registry
+                    .get_mut(context.new_cell_id)
+                    .ok_or(LiveUpdateError::CellNotFound)?
+                    .registered_drivers
+                    .try_reserve_exact(context.changes.len())
+                    .map_err(|_| LiveUpdateError::LoadFailed)
+            })?;
+            context.new_entry = Some(resolve_cell_entry(context.new_cell_id, owner, true)?);
+        }
+        for change in &mut context.changes {
+            if let DriverChange::AwaitingExport(handle) = change {
+                let handle = *handle;
+                let state = registry
+                    .export_live_state(handle)
+                    .map_err(|cause| publication_error(context.new_cell_id, handle, cause))?;
+                let state = state.map(Arc::try_new).transpose().map_err(|_| {
+                    publication_error(
+                        context.new_cell_id,
+                        handle,
+                        crate::driver_registry::DriverError::OutOfMemory,
+                    )
+                })?;
+                let prepared = context
+                    .new_entry
+                    .as_ref()
+                    .expect("candidate exports remain owned throughout switching");
+                let mut device = registry.driver_abi_context(handle)
+                    .ok_or(LiveUpdateError::CellNotFound)?;
+                device.driver_data = 0;
+                let replacement = crate::driver_registry::prepare_driver_replacement(
+                    handle,
+                    prepared,
+                    state.clone(),
+                    device,
+                )
+                .map_err(|cause| publication_error(context.new_cell_id, handle, cause))?;
+                *change = DriverChange::Installing {
+                    backup: DriverRollbackState { handle, state, context: device },
+                    replacement,
+                };
+            }
+            if let DriverChange::Installing {
+                backup,
+                replacement,
+            } = change
+            {
+                let was_published = replacement.published();
+                let result = replacement.advance(registry);
+                if !was_published && replacement.published() {
+                    Self::migrate_driver_ownership(
+                        context.old_cell_id,
+                        context.new_cell_id,
+                        core::slice::from_ref(&backup.handle),
+                    );
+                }
+                result.map_err(|cause| {
+                    publication_error(context.new_cell_id, backup.handle, cause)
+                })?;
+                *change = DriverChange::Active(backup.clone());
+            }
+        }
+        Ok(())
+    }
+
+    fn resume_switch(&self) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
+        let context = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+            .ok_or(LiveUpdateError::CellNotFound)?;
+        self.switch_context(context)
     }
 
     /// ドライバの所有権を旧セルから新セルへ移行
@@ -455,38 +627,6 @@ impl LiveUpdateManager {
         self.commit_pending_update_for(cell_id)
     }
 
-    pub fn pending_status(&self, cell_id: u64) -> Option<PendingUpdateStatus> {
-        let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let p = pending.as_ref()?;
-        if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
-            return None;
-        }
-        Some(PendingUpdateStatus {
-            old_cell_id: p.old_cell_id.as_u64(),
-            new_cell_id: p.new_cell_id.as_u64(),
-            started_at_tick: p.started_at_tick,
-            deadline_tick: p.deadline_tick,
-            health_failed: p.health_failed,
-        })
-    }
-
-    pub fn mark_health_failure(&self, cell_id: u64, reason: impl Into<String>) -> bool {
-        let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(p) = pending.as_mut() else {
-            return false;
-        };
-        if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
-            return false;
-        }
-        if p.resolution == UpdateResolution::Committing {
-            return false;
-        }
-        p.health_failed = true;
-        p.health_failure_reason = Some(reason.into());
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
-        true
-    }
-
     pub fn take_recent_outcome_for_cell(&self, cell_id: u64) -> Option<CompletedUpdateOutcome> {
         let mut outcomes = self
             .recent_outcomes
@@ -504,25 +644,30 @@ impl LiveUpdateManager {
             };
             (
                 p.resolution,
-                crate::task::current_tick() >= p.deadline_tick,
+                p.deadline_tick
+                    .is_some_and(|deadline| crate::task::current_tick() >= deadline),
                 p.health_failed,
             )
         };
 
         let result = match resolution {
-            UpdateResolution::RollingBack | UpdateResolution::RollbackPublished => {
+            UpdatePhase::Switching if health_failed => self.rollback_pending_update(),
+            UpdatePhase::Switching => self.resume_switch(),
+            UpdatePhase::RollingBack | UpdatePhase::RollbackPublished => {
                 self.rollback_pending_update()
             }
-            UpdateResolution::Committing => self.commit_pending_update(),
-            UpdateResolution::Validating if health_failed => self.rollback_pending_update(),
-            UpdateResolution::Validating if deadline_expired => self.commit_pending_update(),
-            UpdateResolution::Validating => return,
+            UpdatePhase::Committing => self.commit_pending_update(),
+            UpdatePhase::Validating if health_failed => self.rollback_pending_update(),
+            UpdatePhase::Validating if deadline_expired => self.commit_pending_update(),
+            UpdatePhase::Validating => return,
         };
         if let Err(error) = result {
             // Outstanding leases are expected until their Future or stack ends.
             if !matches!(
                 error,
-                LiveUpdateError::ReclamationBusy { .. } | LiveUpdateError::UpdateInProgress
+                LiveUpdateError::ReclamationBusy { .. }
+                    | LiveUpdateError::UpdateInProgress
+                    | LiveUpdateError::SwitchPending { .. }
             ) {
                 log::warn!("[LIVE_UPDATE] Pending resolution failed: {error}");
             }
@@ -567,15 +712,15 @@ impl LiveUpdateManager {
 
         if matches!(
             ctx.resolution,
-            UpdateResolution::RollingBack | UpdateResolution::RollbackPublished
+            UpdatePhase::Switching | UpdatePhase::RollingBack | UpdatePhase::RollbackPublished
         ) {
             *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
             return Err(LiveUpdateError::ResolutionStarted);
         }
-        ctx.resolution = UpdateResolution::Committing;
+        ctx.resolution = UpdatePhase::Committing;
         // Prepared rollback function pointers are code references too.
         ctx.old_entry = None;
-        ctx.rollback_states.clear();
+        ctx.changes.clear();
         if let Err(error) = crate::loader::unload_cell(ctx.old_cell_id) {
             let result = reclamation_error(ctx.old_cell_id, error);
             *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
@@ -635,36 +780,19 @@ impl LiveUpdateManager {
             ctx.new_cell_id.as_u64()
         );
 
-        if ctx.resolution == UpdateResolution::Committing {
+        if ctx.resolution == UpdatePhase::Committing {
             *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
             return Err(LiveUpdateError::ResolutionStarted);
         }
-        if ctx.resolution != UpdateResolution::RollbackPublished {
-            ctx.resolution = UpdateResolution::RollingBack;
-            // LOOP_PROOF: mode=condition; reason=Each completed rollback removes one retained driver, and failure returns with the remaining publications owned by pending.;
-            while let Some(rollback) = ctx.rollback_states.last() {
-                let Some(old_entry) = ctx.old_entry.clone() else {
-                    let remaining_drivers = ctx.rollback_states.len();
-                    *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-                    return Err(LiveUpdateError::RollbackIncomplete { remaining_drivers });
-                };
-                if crate::driver_registry::update_prepared_abi_driver(
-                    rollback.handle,
-                    old_entry,
-                    rollback.state.clone(),
-                )
-                .is_err()
-                {
-                    let remaining_drivers = ctx.rollback_states.len();
-                    *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-                    return Err(LiveUpdateError::RollbackIncomplete { remaining_drivers });
-                }
-                Self::migrate_driver_ownership(
-                    ctx.new_cell_id,
-                    ctx.old_cell_id,
-                    core::slice::from_ref(&rollback.handle),
-                );
-                ctx.rollback_states.pop();
+        if ctx.resolution != UpdatePhase::RollbackPublished {
+            ctx.resolution = UpdatePhase::RollingBack;
+            if let Err(cause) = Self::restore_publications(&mut ctx) {
+                let remaining_drivers = ctx.changes.len();
+                self.retain_pending(ctx);
+                return Err(LiveUpdateError::RollbackIncomplete {
+                    remaining_drivers,
+                    cause,
+                });
             }
             crate::loader::with_registry(|registry| {
                 if let Some(old) = registry.get(ctx.old_cell_id) {
@@ -675,7 +803,8 @@ impl LiveUpdateManager {
                 }
             });
             ctx.old_entry = None;
-            ctx.resolution = UpdateResolution::RollbackPublished;
+            ctx.new_entry = None;
+            ctx.resolution = UpdatePhase::RollbackPublished;
         }
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
         if let Err(error) = crate::loader::unload_cell(ctx.new_cell_id) {
@@ -697,6 +826,82 @@ impl LiveUpdateManager {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
         Ok(result)
+    }
+
+    fn restore_publications(
+        context: &mut PendingUpdateContext,
+    ) -> Result<(), crate::driver_registry::DriverError> {
+        use crate::driver_registry::DriverError;
+        use kernel_api::driver::DriverState;
+        let registry = crate::driver_registry::driver_registry();
+        // LOOP_PROOF: mode=condition; reason=Every completed restoration removes one retained change; an incomplete callback returns with the transaction owned for retry.;
+        while let Some(change) = context.changes.last_mut() {
+            match change {
+                DriverChange::AwaitingExport(_) => {}
+                DriverChange::Installing {
+                    backup,
+                    replacement,
+                } => {
+                    if replacement.published()
+                        && matches!(
+                            registry.state(backup.handle),
+                            Some(
+                                DriverState::Probing
+                                    | DriverState::Starting
+                                    | DriverState::Importing
+                            )
+                        )
+                    {
+                        // The original operation's task still owns its driver. Collect
+                        // its completion before admitting an opposite lifecycle call.
+                        replacement.advance(registry)?;
+                    }
+                    let prepared = context.old_entry.as_ref().ok_or(DriverError::NotFound)?;
+                    let restoring = crate::driver_registry::prepare_driver_replacement(
+                        backup.handle,
+                        prepared,
+                        backup.state.clone(),
+                        backup.context,
+                    )?;
+                    *change = DriverChange::Restoring {
+                        handle: backup.handle,
+                        replacement: restoring,
+                    };
+                    continue;
+                }
+                DriverChange::Active(backup) => {
+                    let prepared = context.old_entry.as_ref().ok_or(DriverError::NotFound)?;
+                    let restoring = crate::driver_registry::prepare_driver_replacement(
+                        backup.handle,
+                        prepared,
+                        backup.state.clone(),
+                        backup.context,
+                    )?;
+                    *change = DriverChange::Restoring {
+                        handle: backup.handle,
+                        replacement: restoring,
+                    };
+                    continue;
+                }
+                DriverChange::Restoring {
+                    handle,
+                    replacement,
+                } => {
+                    let was_published = replacement.published();
+                    let result = replacement.advance(registry);
+                    if !was_published && replacement.published() {
+                        Self::migrate_driver_ownership(
+                            context.new_cell_id,
+                            context.old_cell_id,
+                            core::slice::from_ref(handle),
+                        );
+                    }
+                    result?;
+                }
+            }
+            context.changes.pop();
+        }
+        Ok(())
     }
 
     fn push_outcome(&self, outcome: CompletedUpdateOutcome) {
@@ -777,6 +982,38 @@ fn resolve_cell_entry(
         providers,
         state_hooks: crate::driver_registry::AbiDriverStateHooks::default(),
     })
+}
+
+fn publication_error(
+    candidate: crate::loader::CellId,
+    handle: crate::driver_registry::DriverHandle,
+    cause: crate::driver_registry::DriverError,
+) -> LiveUpdateError {
+    match cause {
+        crate::driver_registry::DriverError::Busy { .. } => LiveUpdateError::SwitchPending {
+            new_cell_id: candidate.as_u64(),
+            handle,
+            cause,
+        },
+        crate::driver_registry::DriverError::ResourceCleanup(
+            crate::domain::DomainLifecycleError::Busy(_)
+            | crate::domain::DomainLifecycleError::CodeBusy { .. }
+            | crate::domain::DomainLifecycleError::ReclamationInProgress
+            | crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
+                cause: kernel_api::error::KapiError::Busy,
+                ..
+            },
+        ) => LiveUpdateError::SwitchPending {
+            new_cell_id: candidate.as_u64(),
+            handle,
+            cause,
+        },
+        _ => LiveUpdateError::DriverOperationFailed {
+            new_cell_id: candidate.as_u64(),
+            handle,
+            cause,
+        },
+    }
 }
 
 fn reclamation_error(
