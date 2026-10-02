@@ -2,12 +2,9 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::{Mutex, Once};
+use spin::Mutex;
 
 pub use crate::security::CapabilitySet;
-#[path = "../domain/identity.rs"]
-mod identity;
-pub use identity::DomainId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainErrorKind {
@@ -25,113 +22,9 @@ pub enum KernelError {
 pub mod policy;
 #[path = "../domain/quota.rs"]
 pub mod quota;
-pub use policy::DomainPolicyError;
+pub use policy::{DomainPolicyError, DomainTerminationError};
 
 pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};
-
-pub const CPU_QUOTA_SUSPEND_STREAK: u8 = 3;
-pub const CPU_QUOTA_SUSPEND_WINDOW_NS: u64 = 100_000_000;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuQuotaAction {
-    None,
-    YieldDemote,
-    Suspend { until_ns: u64 },
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomainState {
-    Initializing,
-    Running,
-    Suspended,
-    Stopped,
-    Terminated,
-}
-
-impl DomainState {
-    pub fn is_runnable(&self) -> bool {
-        matches!(self, DomainState::Initializing | DomainState::Running)
-    }
-}
-
-impl Default for DomainState {
-    fn default() -> Self {
-        Self::Initializing
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct DomainCredentials {
-    pub uid: u32,
-    pub gid: u32,
-}
-
-impl DomainCredentials {
-    pub const ROOT: Self = Self { uid: 0, gid: 0 };
-}
-
-#[derive(Debug, Clone)]
-pub struct DomainSecurity {
-    pub credentials: DomainCredentials,
-    pub caps: CapabilitySet,
-}
-
-impl DomainSecurity {
-    pub fn kernel() -> Self {
-        Self {
-            credentials: DomainCredentials::ROOT,
-            caps: CapabilitySet::full(),
-        }
-    }
-}
-
-impl Default for DomainSecurity {
-    fn default() -> Self {
-        Self {
-            credentials: DomainCredentials::ROOT,
-            caps: CapabilitySet::empty(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct RequestedCap {
-    pub cap: u64,
-    pub expires: Option<u64>,
-    pub delegatable: bool,
-}
-
-#[derive(Debug, Clone)]
-pub struct DomainSnapshot {
-    pub id: DomainId,
-    pub name: String,
-    pub state: DomainState,
-    pub tasks: usize,
-    pub task_ids: Vec<u64>,
-    pub memory_bytes: u64,
-    pub rrefs: u64,
-    pub runtime_ticks: u64,
-    pub context_switches: u64,
-    pub created_at: u64,
-    pub dependencies: Vec<DomainId>,
-    pub dependents: Vec<DomainId>,
-    pub numa_node: Option<usize>,
-    pub priority: DomainPriority,
-    pub cpu_limit_percent: u64,
-    pub memory_limit_bytes: u64,
-    pub io_bandwidth_limit: u64,
-    pub panic_message: Option<String>,
-}
-
-#[derive(Debug, Clone, Default)]
-pub struct DomainStats {
-    pub total: usize,
-    pub running: usize,
-    pub stopped: usize,
-    pub terminated: usize,
-    pub memory_used: u64,
-    pub total_rrefs: u64,
-}
 
 #[derive(Debug, Clone)]
 pub struct DomainRecord {
@@ -145,6 +38,8 @@ pub struct DomainRecord {
     pub numa_node: Option<usize>,
     pub security: Arc<DomainSecurity>,
     pub panic_message: Option<String>,
+    /// Most recent terminated dependency, recorded without allocating during recovery.
+    pub terminated_dependency: Option<DomainId>,
     pub tasks: Vec<u64>,
     pub dependencies: Vec<DomainId>,
     pub dependents: Vec<DomainId>,
@@ -152,13 +47,6 @@ pub struct DomainRecord {
 
 static DOMAINS: Mutex<Vec<DomainRecord>> = Mutex::new(Vec::new());
 static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-
-fn kernel_security_handle() -> Arc<DomainSecurity> {
-    static SECURITY: Once<Arc<DomainSecurity>> = Once::new();
-    SECURITY
-        .call_once(|| Arc::new(DomainSecurity::kernel()))
-        .clone()
-}
 
 fn to_snapshot(domain: &DomainRecord) -> DomainSnapshot {
     DomainSnapshot {
@@ -180,7 +68,7 @@ fn to_snapshot(domain: &DomainRecord) -> DomainSnapshot {
         memory_limit_bytes: domain.memory_limit_bytes,
         io_bandwidth_limit: domain.io_bandwidth_limit,
         panic_message: domain.panic_message.clone(),
-        last_error: domain.last_error.clone(),
+        terminated_dependency: domain.terminated_dependency,
     }
 }
 
@@ -203,7 +91,7 @@ pub fn init() {
         numa_node: None,
         security: kernel_security_handle(),
         panic_message: None,
-        last_error: None,
+        terminated_dependency: None,
         tasks: Vec::new(),
         dependencies: Vec::new(),
         dependents: Vec::new(),
@@ -227,7 +115,7 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
         numa_node: None,
         security: Arc::new(DomainSecurity::default()),
         panic_message: None,
-        last_error: None,
+        terminated_dependency: None,
         tasks: Vec::new(),
         dependencies: Vec::new(),
         dependents: Vec::new(),
@@ -280,20 +168,19 @@ pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
 }
 
 pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPolicyError> {
+    if state == DomainState::Terminated {
+        return terminate_domain(id).map_err(DomainPolicyError::Termination);
+    }
     with_domain_mut(id, |domain| {
-        if state == DomainState::Terminated {
-            quota_manager().unregister(id);
-        } else {
-            quota_manager()
-                .update_policy(host_quota(
-                    domain,
-                    domain.priority,
-                    domain.cpu_limit_percent,
-                    domain.memory_limit_bytes,
-                    domain.io_bandwidth_limit,
-                ))
-                .map_err(DomainPolicyError::Quota)?;
-        }
+        quota_manager()
+            .update_policy(host_quota(
+                domain,
+                domain.priority,
+                domain.cpu_limit_percent,
+                domain.memory_limit_bytes,
+                domain.io_bandwidth_limit,
+            ))
+            .map_err(DomainPolicyError::Quota)?;
         domain.state = state;
         Ok(())
     })
@@ -312,7 +199,40 @@ pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
     set_domain_state(id, DomainState::Running).map_err(|_| "Domain state admission failed")
 }
 
-
+pub fn terminate_domain(id: DomainId) -> Result<(), DomainTerminationError> {
+    if id == DomainId::KERNEL {
+        return Err(DomainTerminationError::KernelProtected);
+    }
+    let admission = {
+        let mut domains = DOMAINS.lock();
+        let index = domains
+            .iter()
+            .position(|domain| domain.id == id)
+            .ok_or(DomainTerminationError::NotFound)?;
+        let (before, rest) = domains.split_at_mut(index);
+        let (domain, after) = rest.split_first_mut().expect("existing domain index");
+        if domain.state == DomainState::Terminated {
+            return Ok(());
+        }
+        let admission = quota_manager()
+            .bind_memory(id)
+            .map_err(DomainTerminationError::Quota)?;
+        quota_manager().unregister(id);
+        domain.state = DomainState::Terminated;
+        if domain.dependents.contains(&id) {
+            domain.terminated_dependency = Some(id);
+        }
+        for dependent in before.iter_mut().chain(after.iter_mut()) {
+            if domain.dependents.contains(&dependent.id) {
+                dependent.terminated_dependency = Some(id);
+            }
+        }
+        admission
+    };
+    reclaim_domain_resources(id);
+    drop(admission);
+    Ok(())
+}
 
 pub fn handle_domain_panic(id: DomainId, message: String) {
     let _ = with_domain_mut(id, |domain| {
