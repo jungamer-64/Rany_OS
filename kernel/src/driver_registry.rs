@@ -51,8 +51,9 @@ mod registration_api;
 pub use registration_api::*;
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-fn cleanup_runtime_resources_for_driver_handle(handle: DriverHandle) {
-    crate::resource_registry::cleanup_for_driver_handle(handle);
+fn cleanup_runtime_resources_for_driver_handle(handle: DriverHandle) -> Result<(), DriverError> {
+    crate::resource_registry::cleanup_for_driver_handle(handle)
+        .map_err(DriverError::ResourceCleanup)
 }
 
 #[cfg(all(
@@ -60,7 +61,9 @@ fn cleanup_runtime_resources_for_driver_handle(handle: DriverHandle) {
     not(feature = "full_mm_tests"),
     not(feature = "qemu-test-export")
 ))]
-fn cleanup_runtime_resources_for_driver_handle(_handle: DriverHandle) {}
+fn cleanup_runtime_resources_for_driver_handle(_handle: DriverHandle) -> Result<(), DriverError> {
+    Ok(())
+}
 
 #[derive(Clone)]
 struct IrqBinding {
@@ -144,7 +147,7 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
         );
     }
 
-    let task = crate::task::Task::in_domain(
+    if crate::task::spawn_in_domain(
         async move {
             let source = crate::task::interrupt_waker::InterruptSource::Irq(vector);
             // LOOP_PROOF: mode=event; reason=Interrupt forwarder loop exits once the stop flag is observed and otherwise waits for the next IRQ event.;
@@ -163,13 +166,12 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
                 };
                 let _ = driver_registry().dispatch_irq(handle, vector as u32);
             }
-
-            crate::task::interrupt_waker::interrupt_waker_registry().unregister(source);
         },
-        crate::task::TaskPlacement::Any,
+        crate::task::TaskOptions::any(),
         owner,
-    );
-    if crate::task::spawn_task(task).is_err() {
+    )
+    .is_err()
+    {
         IRQ_BINDINGS
             .lock()
             .unwrap_or_else(|error| error.into_inner())
@@ -278,6 +280,7 @@ pub(crate) fn enter_driver_execution_domain(
 /// A driver call owns the instance outside the registry lock. The slot keeps
 /// identity, state and code ownership visible throughout a preempted callback.
 struct DriverEntry {
+    slot: DriverSlot,
     name: String,
     driver_type: DriverType,
     supported_devices: Vec<DeviceId>,
@@ -285,12 +288,17 @@ struct DriverEntry {
     abi_context: Option<AbiDriverContext>,
     owner: crate::domain::DomainId,
     code: Option<Arc<crate::loader::code::CodeLease>>,
-    slot: DriverSlot,
 }
 
 enum DriverSlot {
-    Available { driver: Box<dyn Driver>, state: DriverState },
-    Invoking { operation: DriverOperation, state: DriverState },
+    Available {
+        driver: Box<dyn Driver>,
+        state: DriverState,
+    },
+    Invoking {
+        operation: DriverOperation,
+        state: DriverState,
+    },
     Removed,
 }
 
@@ -314,6 +322,142 @@ impl DriverEntry {
     }
 }
 
+impl DriverEntry {
+    fn prepare(
+        owner: crate::domain::DomainId,
+        driver: Box<dyn Driver>,
+        code: Option<Arc<crate::loader::code::CodeLease>>,
+    ) -> Result<Self, DriverError> {
+        let mut name = String::new();
+        name.try_reserve(driver.name().len())
+            .map_err(|_| DriverError::OutOfMemory)?;
+        name.push_str(driver.name());
+        let mut supported_devices = Vec::new();
+        supported_devices
+            .try_reserve(driver.supported_devices().len())
+            .map_err(|_| DriverError::OutOfMemory)?;
+        supported_devices.extend_from_slice(driver.supported_devices());
+        Ok(Self {
+            driver_type: driver.driver_type(),
+            has_irq_handler: driver.has_irq_handler(),
+            abi_context: driver.abi_context(),
+            name,
+            supported_devices,
+            owner,
+            code,
+            slot: DriverSlot::Available {
+                driver,
+                state: DriverState::Registered,
+            },
+        })
+    }
+}
+
+/// Reserves the instance until the callback and its state publication complete.
+/// Dropping an unfinished invocation retains the driver as an uncertain failure.
+struct DriverInvocation<'a> {
+    driver: Option<Box<dyn Driver>>,
+    code: Option<Arc<crate::loader::code::CodeLease>>,
+    registry: &'a DriverRegistry,
+    handle: DriverHandle,
+    owner: crate::domain::DomainId,
+    previous: DriverState,
+    operation: DriverOperation,
+}
+
+impl DriverInvocation<'_> {
+    fn driver(&mut self) -> &mut dyn Driver {
+        self.driver
+            .as_deref_mut()
+            .expect("the invocation owns its driver until publication")
+    }
+    fn enter(&self) -> Result<Option<crate::cpu::ExecutionContextGuard>, DriverError> {
+        if matches!(
+            self.operation,
+            DriverOperation::Stop | DriverOperation::Remove
+        ) && (self.owner != crate::domain::DomainId::KERNEL || self.code.is_some())
+        {
+            crate::task::enter_domain_teardown(self.owner, self.code.as_ref())
+                .map(Some)
+                .map_err(|_| DriverError::ExecutionContextUnavailable)
+        } else {
+            match &self.code {
+                Some(code) => crate::task::enter_cell_domain(self.owner, code.cell())
+                    .map(Some)
+                    .map_err(|_| DriverError::ExecutionContextUnavailable),
+                None => enter_driver_execution_domain(self.owner),
+            }
+        }
+    }
+    fn complete(mut self, state: DriverState) {
+        let context = self.driver().abi_context();
+        let driver = self
+            .driver
+            .take()
+            .expect("completion consumes its reserved driver once");
+        let mut entries = self
+            .registry
+            .drivers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let entry = entries
+            .get_mut(self.handle.0)
+            .expect("a reserved slot cannot be removed");
+        assert!(
+            matches!(entry.slot, DriverSlot::Invoking { operation, .. } if operation == self.operation)
+        );
+        entry.abi_context = context;
+        entry.slot = DriverSlot::Available { driver, state };
+    }
+    fn removed(mut self) {
+        let driver = self
+            .driver
+            .take()
+            .expect("acknowledged removal owns its instance");
+        {
+            let mut entries = self
+                .registry
+                .drivers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let entry = entries
+                .get_mut(self.handle.0)
+                .expect("a reserved slot cannot be removed");
+            assert!(matches!(
+                entry.slot,
+                DriverSlot::Invoking {
+                    operation: DriverOperation::Remove,
+                    ..
+                }
+            ));
+            entry.slot = DriverSlot::Removed;
+            entry.abi_context = None;
+            entry.code = None;
+        }
+        // The invocation still leases code while the driver destructor runs.
+        drop(driver);
+    }
+}
+
+impl Drop for DriverInvocation<'_> {
+    fn drop(&mut self) {
+        if let Some(driver) = self.driver.take() {
+            let mut entries = self
+                .registry
+                .drivers
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            let entry = entries
+                .get_mut(self.handle.0)
+                .expect("a reserved slot cannot be removed");
+            entry.slot = DriverSlot::Available {
+                driver,
+                state: DriverState::Error,
+            };
+        }
+    }
+}
+
 /// Global driver registry
 pub struct DriverRegistry {
     /// All registered drivers
@@ -321,6 +465,97 @@ pub struct DriverRegistry {
 }
 
 impl DriverRegistry {
+    fn begin(
+        &self,
+        handle: DriverHandle,
+        operation: DriverOperation,
+    ) -> Result<DriverInvocation<'_>, DriverError> {
+        let mut entries = self.drivers.lock().map_err(|_| DriverError::Poisoned)?;
+        let entry = entries.get_mut(handle.0).ok_or(DriverError::NotFound)?;
+        if matches!(entry.slot, DriverSlot::Invoking { .. }) {
+            return Err(DriverError::Busy { operation });
+        }
+        let previous = entry.state();
+        let valid = match operation {
+            DriverOperation::Probe => {
+                matches!(previous, DriverState::Registered | DriverState::Probing)
+            }
+            DriverOperation::Start => matches!(
+                previous,
+                DriverState::Probed | DriverState::Stopped | DriverState::Starting
+            ),
+            DriverOperation::Stop => matches!(
+                previous,
+                DriverState::Registered
+                    | DriverState::Probed
+                    | DriverState::Running
+                    | DriverState::Stopping
+                    | DriverState::Finalizing
+                    | DriverState::Error
+            ),
+            DriverOperation::Remove => matches!(
+                previous,
+                DriverState::Registered
+                    | DriverState::Probed
+                    | DriverState::Stopped
+                    | DriverState::Removing
+                    | DriverState::Error
+            ),
+            DriverOperation::Interrupt => previous == DriverState::Running && entry.has_irq_handler,
+            DriverOperation::ExportState => matches!(
+                previous,
+                DriverState::Running | DriverState::Probed | DriverState::Stopped
+            ),
+        };
+        if !valid {
+            if matches!(
+                previous,
+                DriverState::Probing
+                    | DriverState::Starting
+                    | DriverState::Stopping
+                    | DriverState::Finalizing
+                    | DriverState::Removing
+            ) {
+                return Err(DriverError::Busy { operation });
+            }
+            return Err(DriverError::InvalidState);
+        }
+        let state = match operation {
+            DriverOperation::Probe => DriverState::Probing,
+            DriverOperation::Start => DriverState::Starting,
+            DriverOperation::Stop => DriverState::Stopping,
+            DriverOperation::Remove => DriverState::Removing,
+            _ => previous,
+        };
+        let DriverSlot::Available { driver, .. } =
+            core::mem::replace(&mut entry.slot, DriverSlot::Invoking { operation, state })
+        else {
+            unreachable!("only an available validated instance can enter a callback");
+        };
+        Ok(DriverInvocation {
+            driver: Some(driver),
+            code: entry.code.clone(),
+            registry: self,
+            handle,
+            owner: entry.owner,
+            previous,
+            operation,
+        })
+    }
+
+    fn operation_result(
+        operation: DriverOperation,
+        result: KapiResult<()>,
+    ) -> Result<(), DriverError> {
+        result.map_err(|cause| {
+            if cause == KapiError::Busy {
+                DriverError::Busy { operation }
+            } else {
+                DriverError::OperationFailed { operation, cause }
+            }
+        })
+    }
+
     /// Create a new registry
     pub const fn new() -> Self {
         Self {
@@ -346,187 +581,149 @@ impl DriverRegistry {
         owner: crate::domain::DomainId,
         driver: Box<dyn Driver>,
     ) -> Result<DriverHandle, DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during register!");
-            DriverError::Poisoned
-        })?;
-        let id = drivers.len();
-
-        log::info!(
-            "[DRIVER] Registering driver: {} (type: {:?})\n",
-            driver.name(),
-            driver.driver_type()
-        );
-
-        drivers.push(DriverEntry::new(owner, driver));
-        Ok(DriverHandle(id))
+        let code = match crate::task::current_execution_context().and_then(|context| context.cell) {
+            Some(cell) => Some(
+                Arc::try_new(
+                    crate::loader::acquire_code_lease(cell)
+                        .ok_or(DriverError::ExecutionContextUnavailable)?,
+                )
+                .map_err(|_| DriverError::OutOfMemory)?,
+            ),
+            None => None,
+        };
+        let entry = DriverEntry::prepare(owner, driver, code)?;
+        let mut drivers = self.drivers.lock().map_err(|_| DriverError::Poisoned)?;
+        drivers
+            .try_reserve(1)
+            .map_err(|_| DriverError::OutOfMemory)?;
+        let handle = DriverHandle(drivers.len());
+        drivers.push(entry);
+        Ok(handle)
     }
 
     /// Probe a specific driver
     pub fn probe(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during probe!");
-            DriverError::Poisoned
-        })?;
-        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
-
-        if entry.state != DriverState::Registered {
-            return Err(DriverError::InvalidState);
-        }
-
-        log::info!("[DRIVER] Probing driver: {}\n", entry.driver.name());
-
-        let _owner_guard = entry.enter_owner()?;
-        match entry.driver.probe() {
-            Ok(()) => {
-                entry.state = DriverState::Probed;
-                log::info!("[DRIVER] Probe successful: {}\n", entry.driver.name());
-                Ok(())
-            }
-            Err(e) => {
-                entry.state = DriverState::Error;
-                log::info!("[DRIVER] Probe failed: {} - {:?}\n", entry.driver.name(), e);
-                Err(DriverError::ProbeFailed)
-            }
-        }
+        let mut call = self.begin(handle, DriverOperation::Probe)?;
+        let _scope = call.enter()?;
+        let result = call.driver().probe();
+        let state = match result {
+            Ok(()) => DriverState::Probed,
+            Err(KapiError::Busy) => DriverState::Probing,
+            Err(_) => DriverState::Error,
+        };
+        call.complete(state);
+        Self::operation_result(DriverOperation::Probe, result)
     }
 
     /// Start a probed driver
     pub fn start(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let provider_descriptors = {
-            let mut drivers = self.drivers.lock().map_err(|_| {
-                log::error!("[DRIVER] Registry lock is poisoned during start!");
-                DriverError::Poisoned
-            })?;
-            let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
-
-            if entry.state != DriverState::Probed && entry.state != DriverState::Stopped {
-                return Err(DriverError::InvalidState);
-            }
-
-            log::info!("[DRIVER] Starting driver: {}\n", entry.driver.name());
-
-            let _owner_guard = entry.enter_owner()?;
-            match entry.driver.start() {
-                Ok(()) => {
-                    entry.state = DriverState::Running;
-                    entry.driver.provider_descriptors().to_vec()
-                }
-                Err(e) => {
-                    entry.state = DriverState::Error;
-                    log::info!("[DRIVER] Start failed: {} - {:?}\n", entry.driver.name(), e);
-                    return Err(DriverError::StartFailed);
-                }
-            }
-        };
-
-        if !provider_descriptors.is_empty() {
-            crate::provider_registry::provider_registry()
-                .register_driver_descriptors(handle, &provider_descriptors);
+        let mut call = self.begin(handle, DriverOperation::Start)?;
+        let _scope = call.enter()?;
+        let result = call.driver().start();
+        if let Err(cause) = result {
+            call.complete(if cause == KapiError::Busy {
+                DriverState::Starting
+            } else {
+                DriverState::Error
+            });
+            return Self::operation_result(DriverOperation::Start, Err(cause));
         }
-
+        let descriptors = call.driver().provider_descriptors();
+        if !descriptors.is_empty() {
+            crate::provider_registry::provider_registry()
+                .register_driver_descriptors(handle, descriptors);
+        }
+        call.complete(DriverState::Running);
         Ok(())
     }
 
     /// Stop a running driver
     pub fn stop(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let result = {
-            let mut drivers = self.drivers.lock().map_err(|_| {
-                log::error!("[DRIVER] Registry lock is poisoned during stop!");
-                DriverError::Poisoned
-            })?;
-            let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
-
-            if entry.state != DriverState::Running {
-                return Err(DriverError::InvalidState);
+        let mut call = self.begin(handle, DriverOperation::Stop)?;
+        let _scope = call.enter()?;
+        if call.previous != DriverState::Finalizing {
+            let result = call.driver().stop();
+            if let Err(cause) = result {
+                // Every failed stop retains its cleanup eligibility and driver.
+                call.complete(DriverState::Stopping);
+                return Self::operation_result(DriverOperation::Stop, Err(cause));
             }
-
-            log::info!("[DRIVER] Stopping driver: {}\n", entry.driver.name());
-
-            let _owner_guard = entry.enter_owner()?;
-            match entry.driver.stop() {
-                Ok(()) => {
-                    entry.state = DriverState::Stopped;
-                    Ok(())
-                }
-                Err(_e) => {
-                    entry.state = DriverState::Error;
-                    Err(DriverError::StopFailed)
-                }
-            }
-        };
-
-        if result.is_ok() {
-            cleanup_msix_for_driver_handle(handle);
-            cleanup_runtime_resources_for_driver_handle(handle);
-            crate::provider_registry::provider_registry().unregister_driver(handle);
         }
-
-        result
+        cleanup_msix_for_driver_handle(handle);
+        if let Err(cause) = cleanup_runtime_resources_for_driver_handle(handle) {
+            call.complete(DriverState::Finalizing);
+            return Err(cause);
+        }
+        crate::provider_registry::provider_registry().unregister_driver(handle);
+        call.complete(DriverState::Stopped);
+        Ok(())
     }
 
     /// Probe and start a driver in one call
     pub fn probe_and_start(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        self.probe(handle)?;
-        self.start(handle)
+        if matches!(
+            self.state(handle),
+            Some(DriverState::Registered | DriverState::Probing)
+        ) {
+            self.probe(handle)?;
+        }
+        match self.state(handle) {
+            Some(DriverState::Probed | DriverState::Stopped | DriverState::Starting) => {
+                self.start(handle)
+            }
+            Some(DriverState::Running) => Ok(()),
+            None => Err(DriverError::NotFound),
+            _ => Err(DriverError::InvalidState),
+        }
     }
 
     /// Get driver state
     pub fn state(&self, handle: DriverHandle) -> Option<DriverState> {
-        match self.drivers.lock() {
-            Ok(guard) => guard.get(handle.0).map(|e| e.state),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (state)");
-                None
-            }
-        }
+        self.drivers
+            .lock()
+            .ok()?
+            .get(handle.0)
+            .map(DriverEntry::state)
     }
 
     /// Get driver name
     pub fn name(&self, handle: DriverHandle) -> Option<String> {
-        match self.drivers.lock() {
-            Ok(guard) => guard.get(handle.0).map(|e| String::from(e.driver.name())),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (name)");
-                None
-            }
-        }
+        self.drivers
+            .lock()
+            .ok()?
+            .get(handle.0)
+            .map(|entry| entry.name.clone())
     }
 
     /// Find drivers by type
     pub fn find_by_type(&self, driver_type: DriverType) -> Vec<DriverHandle> {
         match self.drivers.lock() {
-            Ok(guard) => guard
+            Ok(entries) => entries
                 .iter()
                 .enumerate()
-                .filter(|(_, e)| e.driver.driver_type() == driver_type)
-                .map(|(i, _)| DriverHandle(i))
+                .filter(|(_, entry)| {
+                    entry.driver_type == driver_type && entry.state() != DriverState::Removed
+                })
+                .map(|(index, _)| DriverHandle(index))
                 .collect(),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (find_by_type)");
-                Vec::new()
-            }
+            Err(_) => Vec::new(),
         }
     }
 
     /// Find driver that supports a device
     pub fn find_for_device(&self, device_id: &DeviceId) -> Option<DriverHandle> {
-        match self.drivers.lock() {
-            Ok(guard) => guard
-                .iter()
-                .enumerate()
-                .find(|(_, e)| {
-                    e.driver
-                        .supported_devices()
-                        .iter()
-                        .any(|d| d.vendor == device_id.vendor && d.device == device_id.device)
-                })
-                .map(|(i, _)| DriverHandle(i)),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (find_for_device)");
-                None
-            }
-        }
+        self.drivers
+            .lock()
+            .ok()?
+            .iter()
+            .enumerate()
+            .find(|(_, entry)| {
+                entry.state() != DriverState::Removed
+                    && entry.supported_devices.iter().any(|device| {
+                        device.vendor == device_id.vendor && device.device == device_id.device
+                    })
+            })
+            .map(|(index, _)| DriverHandle(index))
     }
 
     /// Get count of registered drivers
@@ -542,34 +739,33 @@ impl DriverRegistry {
 
     /// Get count of running drivers
     pub fn running_count(&self) -> usize {
-        match self.drivers.lock() {
-            Ok(g) => g.iter().filter(|e| e.state == DriverState::Running).count(),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (running_count)");
-                0
-            }
-        }
+        self.drivers
+            .lock()
+            .map(|entries| {
+                entries
+                    .iter()
+                    .filter(|entry| entry.state() == DriverState::Running)
+                    .count()
+            })
+            .unwrap_or(0)
     }
 
     /// List all drivers with their states
     pub fn list(&self) -> Vec<(DriverHandle, String, DriverType, DriverState)> {
         match self.drivers.lock() {
-            Ok(g) => g
+            Ok(entries) => entries
                 .iter()
                 .enumerate()
-                .map(|(i, e)| {
+                .map(|(index, entry)| {
                     (
-                        DriverHandle(i),
-                        String::from(e.driver.name()),
-                        e.driver.driver_type(),
-                        e.state,
+                        DriverHandle(index),
+                        entry.name.clone(),
+                        entry.driver_type,
+                        entry.state(),
                     )
                 })
                 .collect(),
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (list)");
-                Vec::new()
-            }
+            Err(_) => Vec::new(),
         }
     }
 
@@ -642,65 +838,46 @@ impl DriverRegistry {
 
     /// Unregister a driver and replace it with a null driver to allow cell unloading
     pub fn unregister(&self, handle: DriverHandle) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during unregister!");
-            DriverError::Poisoned
-        })?;
-        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
-
-        if entry.state == DriverState::Running {
-            return Err(DriverError::InvalidState);
+        if self.state(handle) == Some(DriverState::Removed) {
+            return Ok(());
         }
-
-        // Preserve driver name and type for logging
-        let old_name = alloc::string::String::from(entry.driver.name());
-        let old_ty = entry.driver.driver_type();
-
+        let mut call = self.begin(handle, DriverOperation::Remove)?;
+        let _scope = call.enter()?;
         cleanup_msix_for_driver_handle(handle);
-        cleanup_runtime_resources_for_driver_handle(handle);
+        if let Err(cause) = cleanup_runtime_resources_for_driver_handle(handle) {
+            let previous = call.previous;
+            call.complete(previous);
+            return Err(cause);
+        }
+        let result = call.driver().remove();
+        if let Err(cause) = result {
+            call.complete(DriverState::Removing);
+            return Self::operation_result(DriverOperation::Remove, Err(cause));
+        }
         crate::provider_registry::provider_registry().unregister_driver(handle);
-
-        // Try to remove driver resources first
-        let _owner_guard = entry.enter_owner()?;
-        let _ = entry.driver.remove();
-
-        // Replace the driver with a null implementation and mark removed
-        entry.driver = Box::new(NullDriver::new(&old_name, old_ty));
-        entry.state = DriverState::Removed;
-
-        log::info!("[DRIVER] Unregistered driver: {}\n", old_name);
+        call.removed();
         Ok(())
     }
 
     pub(crate) fn dispatch_irq(&self, handle: DriverHandle, irq: u32) -> bool {
-        match self.drivers.lock() {
-            Ok(mut drivers) => {
-                let Some(entry) = drivers.get_mut(handle.0) else {
-                    return false;
-                };
-                if entry.state != DriverState::Running {
-                    return false;
-                }
-                let Ok(_owner_guard) = entry.enter_owner() else {
-                    log::error!("[DRIVER] IRQ dispatch has no execution context");
-                    return false;
-                };
-                entry.driver.handle_irq(irq)
-            }
-            Err(_) => {
-                log::error!("[DRIVER] Registry poisoned (dispatch_irq)");
-                false
-            }
-        }
+        let Ok(mut call) = self.begin(handle, DriverOperation::Interrupt) else {
+            return false;
+        };
+        let Ok(_scope) = call.enter() else {
+            return false;
+        };
+        let handled = call.driver().handle_irq(irq);
+        let previous = call.previous;
+        call.complete(previous);
+        handled
     }
 
     pub(crate) fn driver_abi_context(&self, handle: DriverHandle) -> Option<AbiDriverContext> {
-        match self.drivers.lock() {
-            Ok(drivers) => drivers
-                .get(handle.0)
-                .and_then(|entry| entry.driver.abi_context()),
-            Err(_) => None,
-        }
+        self.drivers
+            .lock()
+            .ok()?
+            .get(handle.0)
+            .and_then(|entry| entry.abi_context)
     }
 
     pub(crate) fn driver_owner(&self, handle: DriverHandle) -> Option<crate::domain::DomainId> {
@@ -714,55 +891,21 @@ impl DriverRegistry {
         &self,
         handle: DriverHandle,
     ) -> Result<Option<DriverStateBlob>, DriverError> {
-        let drivers = self.drivers.lock().map_err(|_| DriverError::Poisoned)?;
-        let entry = drivers.get(handle.0).ok_or(DriverError::NotFound)?;
-        let _owner_guard = entry.enter_owner()?;
-        entry
-            .driver
-            .export_live_state()
-            .map_err(|_| DriverError::InvalidState)
+        let mut call = self.begin(handle, DriverOperation::ExportState)?;
+        let _scope = call.enter()?;
+        let result =
+            call.driver()
+                .export_live_state()
+                .map_err(|cause| DriverError::OperationFailed {
+                    operation: DriverOperation::ExportState,
+                    cause,
+                });
+        let previous = call.previous;
+        call.complete(previous);
+        result
     }
 
-    /// Replace a driver implementation with a new one (Hot Swap)
-    ///
-    /// # Safety
-    /// Caller must ensure that the new driver is compatible with the old one's state requirements
-    /// if state migration is needed (currently starts fresh).
-    /// The old driver instance is dropped, but its code memory must valid until quiescent state.
-    pub fn replace_driver(
-        &self,
-        handle: DriverHandle,
-        new_driver: Box<dyn Driver>,
-    ) -> Result<(), DriverError> {
-        let mut drivers = self.drivers.lock().map_err(|_| {
-            log::error!("[DRIVER] Registry lock is poisoned during replace_driver!");
-            DriverError::Poisoned
-        })?;
-        let entry = drivers.get_mut(handle.0).ok_or(DriverError::NotFound)?;
 
-        log::info!(
-            "[DRIVER] Replacing driver {} ({}) with new version\n",
-            entry.driver.name(),
-            handle.index()
-        );
-
-        cleanup_msix_for_driver_handle(handle);
-        cleanup_runtime_resources_for_driver_handle(handle);
-        crate::provider_registry::provider_registry().unregister_driver(handle);
-
-        // We assume the new driver is in Registered state initially?
-        // Or do we expect it to be Probed/Started if the old one was?
-        // For simplicity, we just swap the implementation and keep the *Registry* state as is?
-        // No, the new driver instance is fresh. Its internal state is uninitialized.
-        // So we should likely transition the entry state to `Registered`.
-        // The caller (LiveUpdateManager) is responsible for re-probing/re-starting if needed.
-
-        // Swap the driver
-        entry.driver = new_driver;
-        entry.state = DriverState::Registered; // Reset state to Registered
-
-        Ok(())
-    }
 }
 
 // ============================================================================
@@ -796,12 +939,17 @@ pub enum DriverError {
     NotFound,
     /// Invalid state for operation
     InvalidState,
-    /// Probe failed
-    ProbeFailed,
-    /// Start failed
-    StartFailed,
-    /// Stop failed
-    StopFailed,
+    /// An admitted operation or reserved callback has not completed.
+    Busy { operation: DriverOperation },
+    /// The driver retained its resources and a classified operation failure.
+    OperationFailed {
+        operation: DriverOperation,
+        cause: KapiError,
+    },
+    /// Metadata preparation failed before registration or replacement publication.
+    OutOfMemory,
+    /// Hardware/DMA resources remain owned after a partial cleanup attempt.
+    ResourceCleanup(crate::domain::DomainLifecycleError),
     /// Registry lock is poisoned (previous holder panicked)
     Poisoned,
     /// The current CPU has no execution context for entering the driver owner domain.
@@ -813,9 +961,12 @@ impl fmt::Display for DriverError {
         match self {
             Self::NotFound => write!(f, "driver not found"),
             Self::InvalidState => write!(f, "invalid driver state for operation"),
-            Self::ProbeFailed => write!(f, "driver probe failed"),
-            Self::StartFailed => write!(f, "driver start failed"),
-            Self::StopFailed => write!(f, "driver stop failed"),
+            Self::Busy { operation } => write!(f, "driver {operation:?} incomplete"),
+            Self::OperationFailed { operation, cause } => {
+                write!(f, "driver {operation:?} failed: {cause}")
+            }
+            Self::OutOfMemory => write!(f, "driver metadata allocation failed"),
+            Self::ResourceCleanup(cause) => cause.fmt(f),
             Self::Poisoned => write!(f, "registry lock poisoned (holder panicked)"),
             Self::ExecutionContextUnavailable => {
                 write!(f, "driver execution context unavailable")
@@ -1114,14 +1265,6 @@ unsafe extern "C" fn kernel_abi_dma_write(
     )) as i32
 }
 
-extern "C" fn kernel_abi_port_read_u8(port: u16) -> u8 {
-    kernel_api::service::kernel::instance().port_read_u8(port)
-}
-
-extern "C" fn kernel_abi_port_write_u8(port: u16, value: u8) {
-    kernel_api::service::kernel::instance().port_write_u8(port, value);
-}
-
 extern "C" fn kernel_abi_enable_msix_raw(
     device_id: u64,
     requested_count: u16,
@@ -1244,11 +1387,18 @@ extern "C" fn kernel_abi_register_netdev_port(
     if registration.is_null() || out_handle.is_null() {
         return AbiErrorCode::InvalidParam as i32;
     }
+    // SAFETY: the ABI caller provides a writable aligned handle output.
+    unsafe { *out_handle = 0 };
     let registration = unsafe { &*registration };
     match kernel_api::service::kernel::instance().register_netdev_port(registration) {
         Ok(handle) => {
             unsafe { *out_handle = handle };
             AbiErrorCode::Success as i32
+        }
+        Err(kernel_api::error::KapiError::NetRegistrationRetained { handle }) => {
+            // SAFETY: the same validated output reports the live partial result.
+            unsafe { *out_handle = handle };
+            AbiErrorCode::DeviceBusy as i32
         }
         Err(err) => AbiErrorCode::from(err) as i32,
     }
@@ -1438,13 +1588,20 @@ extern "C" fn kernel_abi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> 
 pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     abi_version: KERNEL_API_ABI_VERSION,
     abi_size: core::mem::size_of::<KernelApiV4>() as u64,
+    task_waker_abi: kernel_api::abi::driver::TASK_WAKER_ABI,
     log: kernel_abi_log,
+    spawn: kernel_abi_spawn,
+    timer_register: kernel_abi_timer_register,
+    time_snapshot: kernel_abi_time_snapshot,
+    timer_statistics: kernel_abi_timer_statistics,
+    current_tick: kernel_abi_current_tick,
+    current_task_id: kernel_abi_current_task_id,
+    mmio_acquire: kernel_abi_mmio_acquire,
+    mmio_release: kernel_abi_mmio_release,
     dma_allocate: kernel_abi_dma_allocate,
     dma_command: kernel_abi_dma_command,
     dma_read: kernel_abi_dma_read,
     dma_write: kernel_abi_dma_write,
-    port_read_u8: kernel_abi_port_read_u8,
-    port_write_u8: kernel_abi_port_write_u8,
     irq_bind: kernel_abi_irq_bind,
     irq_unbind: kernel_abi_irq_unbind,
     heap_alloc: Some(kernel_abi_heap_alloc),
@@ -1468,6 +1625,141 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     enable_msix_raw: Some(kernel_abi_enable_msix_raw),
     disable_msix_raw: Some(kernel_abi_disable_msix_raw),
 };
+
+/// The importer retains both allocations and originating code throughout the
+/// call. A valid input capsule is consumed even when options are rejected.
+unsafe extern "C" fn kernel_abi_spawn(
+    future: *mut kernel_api::abi::driver::AbiTaskFuture,
+    options: *const kernel_api::abi::driver::AbiTaskOptions,
+) -> kernel_api::abi::driver::AbiTaskSpawnResult {
+    use kernel_api::abi::driver::{AbiTaskFuture, AbiTaskOptions, AbiTaskSpawnResult};
+    use kernel_api::resource::task::SpawnError;
+    let result = (|| {
+        if future.is_null()
+            || !future
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiTaskFuture>())
+        {
+            return Err(SpawnError::InvalidOptions);
+        }
+        // SAFETY: the importer exclusively borrows an initialized capsule.
+        let future = unsafe { (&mut *future).take() }.ok_or(SpawnError::InvalidOptions)?;
+        if options.is_null()
+            || !options
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiTaskOptions>())
+        {
+            return Err(SpawnError::InvalidOptions);
+        }
+        // SAFETY: the importer retains the initialized options for this call.
+        let options = unsafe { &*options }.decode()?;
+        crate::task::spawn(future, options)
+    })();
+    AbiTaskSpawnResult::from_result(result)
+}
+
+/// The importer retains the aligned schedule until this synchronous call ends.
+/// ABI envelope allocation and provider admission both precede publication.
+unsafe extern "C" fn kernel_abi_timer_register(
+    schedule: *const kernel_api::abi::driver::AbiTimerSchedule,
+) -> kernel_api::abi::driver::AbiTimerAdmission {
+    use kernel_api::abi::driver::{AbiTimerAdmission, AbiTimerRegistration, AbiTimerSchedule};
+    use kernel_api::service::time::TimerError;
+    let result = (|| {
+        if schedule.is_null()
+            || !schedule
+                .addr()
+                .is_multiple_of(core::mem::align_of::<AbiTimerSchedule>())
+        {
+            return Err(TimerError::InvalidOptions);
+        }
+        // SAFETY: the importer borrows initialized schedule storage for the call.
+        let schedule = unsafe { &*schedule }.decode()?;
+        let service =
+            kernel_api::service::time::try_instance().ok_or(TimerError::ServiceUnavailable)?;
+        AbiTimerRegistration::register(|| service.register_timer(schedule))
+    })();
+    AbiTimerAdmission::from_result(result)
+}
+
+extern "C" fn kernel_abi_current_task_id() -> u64 {
+    crate::task::current_task_id()
+}
+
+extern "C" fn kernel_abi_current_tick() -> u64 {
+    crate::task::current_tick()
+}
+
+extern "C" fn kernel_abi_time_snapshot() -> kernel_api::abi::driver::AbiTimeSnapshot {
+    let installed = kernel_api::service::time::try_instance();
+    let service = installed.unwrap_or_else(|| crate::drivers::time::concrete_service());
+    kernel_api::abi::driver::AbiTimeSnapshot {
+        available: u64::from(installed.is_some()),
+        tick_ms: service.current_tick_ms(),
+        uptime_ns: service.uptime_ns(),
+        unix_seconds: service.unix_timestamp(),
+        unix_ms: service.unix_timestamp_ms(),
+    }
+}
+
+extern "C" fn kernel_abi_timer_statistics() -> kernel_api::abi::driver::AbiTimerStatistics {
+    let service = kernel_api::service::time::try_instance()
+        .unwrap_or_else(|| crate::drivers::time::concrete_service());
+    let stats = service.stats();
+    kernel_api::abi::driver::AbiTimerStatistics {
+        active_timers: u64::try_from(stats.active_timers).unwrap_or(u64::MAX),
+        total_fired: stats.total_fired,
+        notifications: stats.notifications,
+        due_timers: u64::try_from(stats.due_timers).unwrap_or(u64::MAX),
+    }
+}
+
+/// The private ABI importer supplies exclusive aligned output storage; numeric
+/// request fields are validated before any resource admission or publication.
+unsafe extern "C" fn kernel_abi_mmio_acquire(
+    device: u64,
+    bar: u8,
+    aperture: u8,
+    offset: usize,
+    length: usize,
+    out: *mut kernel_api::abi::driver::AbiMmioGrant,
+) -> i32 {
+    use kernel_api::mmio::{MmioAcquireError, MmioByteRange, MmioRequestError, PciMmioRequest};
+    let operation = || {
+        if out.is_null()
+            || !(out as usize)
+                .is_multiple_of(core::mem::align_of::<kernel_api::abi::driver::AbiMmioGrant>())
+        {
+            return Err(MmioAcquireError::Request(MmioRequestError::InvalidDevice));
+        }
+        let device = PackedPciLocation::from_raw(device);
+        let request = match aperture {
+            0 if offset == 0 && length == 0 => PciMmioRequest::whole_bar(device, bar),
+            1 => MmioByteRange::new(offset, length)
+                .and_then(|range| PciMmioRequest::new(device, bar, range)),
+            _ => return Err(MmioAcquireError::Request(MmioRequestError::OutOfBounds)),
+        }
+        .map_err(MmioAcquireError::Request)?;
+        crate::services::authorize_pci_device_for_current_subject(device)
+            .map_err(|_| MmioAcquireError::PermissionDenied)?;
+        crate::resource_registry::mmio::export(crate::task::current_subject().domain, request)
+    };
+    match operation() {
+        Ok(grant) => {
+            // SAFETY: the ABI caller guarantees exclusive writable storage;
+            // success transfers this sole grant after all fallible work.
+            unsafe {
+                out.write(grant);
+            }
+            0
+        }
+        Err(error) => error.into_abi(),
+    }
+}
+
+unsafe extern "C" fn kernel_abi_mmio_release(identity: u64) {
+    crate::resource_registry::mmio::release(crate::task::current_subject().domain, identity);
+}
 
 pub(crate) fn kernel_api_v4() -> &'static KernelApiV4 {
     &__exorust_kernel_api_v4
@@ -1620,6 +1912,7 @@ fn build_abi_driver(
 
 #[derive(Debug, Clone)]
 pub(crate) struct PreparedDriverExports {
+    pub(crate) code: Option<Arc<crate::loader::code::CodeLease>>,
     pub entry: AbiEntryFn,
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Vec<ProviderDescriptorV1>,
@@ -1735,6 +2028,7 @@ pub(crate) fn prepare_driver_exports(
         .unwrap_or_default();
 
     Ok(PreparedDriverExports {
+        code: None,
         entry: exports_ref.entry,
         fini: exports_ref.fini,
         providers,

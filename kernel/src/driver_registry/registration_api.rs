@@ -101,65 +101,6 @@ pub fn unregister_driver(handle: DriverHandle) -> Result<(), DriverError> {
     DRIVER_REGISTRY.unregister(handle)
 }
 
-/// Update an existing driver with a new ABI implementation
-pub(crate) fn update_abi_driver_with_fini(
-    handle: DriverHandle,
-    entry: AbiEntryFn,
-    exports_fini: Option<extern "C" fn() -> i32>,
-) -> Result<(), DriverError> {
-    let owner = DRIVER_REGISTRY
-        .driver_owner(handle)
-        .ok_or(DriverError::NotFound)?;
-    let _owner_guard = super::enter_driver_execution_domain(owner)?;
-    let vtable_ptr = entry();
-    if vtable_ptr.is_null() {
-        return Err(DriverError::InvalidState);
-    }
-
-    let provider_descriptors =
-        super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
-    let abi_driver = build_abi_driver(
-        entry,
-        exports_fini,
-        provider_descriptors,
-        AbiDriverStateHooks::default(),
-        DRIVER_REGISTRY
-            .driver_abi_context(handle)
-            .unwrap_or_else(AbiDriverContext::new),
-    )?;
-    DRIVER_REGISTRY.replace_driver(handle, abi_driver)
-}
-
-pub fn update_abi_driver(handle: DriverHandle, entry: AbiEntryFn) -> Result<(), DriverError> {
-    update_abi_driver_with_fini(handle, entry, None)
-}
-
-pub(crate) fn update_prepared_abi_driver(
-    handle: DriverHandle,
-    prepared: PreparedDriverExports,
-    state: Option<DriverStateBlob>,
-) -> Result<(), DriverError> {
-    let owner = DRIVER_REGISTRY
-        .driver_owner(handle)
-        .ok_or(DriverError::NotFound)?;
-    let _owner_guard = super::enter_driver_execution_domain(owner)?;
-    let mut abi_driver = build_abi_driver(
-        prepared.entry,
-        prepared.fini,
-        prepared.providers,
-        prepared.state_hooks,
-        DRIVER_REGISTRY
-            .driver_abi_context(handle)
-            .unwrap_or_else(AbiDriverContext::new),
-    )?;
-    if let Some(state) = state {
-        abi_driver
-            .import_live_state(state)
-            .map_err(|_| DriverError::InvalidState)?;
-    }
-    DRIVER_REGISTRY.replace_driver(handle, abi_driver)
-}
-
 // Adapter to delegate trait calls to ABI vtable
 #[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct AbiDriverStateHooks {
@@ -228,51 +169,6 @@ impl AbiDriver {
     }
 }
 
-/// A null driver used to replace unregistered drivers in the registry.
-pub(crate) struct NullDriver {
-    name: alloc::string::String,
-    ty: DriverType,
-}
-
-impl NullDriver {
-    pub(super) fn new(name: &str, ty: DriverType) -> Self {
-        Self {
-            name: alloc::string::String::from(name),
-            ty,
-        }
-    }
-}
-
-impl Driver for NullDriver {
-    fn name(&self) -> &str {
-        &self.name
-    }
-
-    fn version(&self) -> kernel_api::driver::DriverVersion {
-        kernel_api::driver::DriverVersion::new(0, 0, 0)
-    }
-
-    fn driver_type(&self) -> DriverType {
-        self.ty
-    }
-
-    fn probe(&mut self) -> KapiResult<()> {
-        Err(KapiError::NotSupported)
-    }
-
-    fn start(&mut self) -> KapiResult<()> {
-        Err(KapiError::NotSupported)
-    }
-
-    fn stop(&mut self) -> KapiResult<()> {
-        Ok(())
-    }
-
-    fn supported_devices(&self) -> &[kernel_api::driver::DeviceId] {
-        &[]
-    }
-}
-
 impl Driver for AbiDriver {
     fn name(&self) -> &str {
         &self.name
@@ -326,14 +222,11 @@ impl Driver for AbiDriver {
 
     fn remove(&mut self) -> KapiResult<()> {
         let res = (self.vtable().remove)(&mut self.ctx as *mut _);
-        let mut out = AbiErrorCode::from_raw(res).into_result();
+        AbiErrorCode::from_raw(res).into_result()?;
         if let Some(fini) = self.exports_fini {
-            let fini_res = fini();
-            if out.is_ok() {
-                out = AbiErrorCode::from_raw(fini_res).into_result();
-            }
+            AbiErrorCode::from_raw(fini()).into_result()?;
         }
-        out
+        Ok(())
     }
 
     fn supported_devices(&self) -> &[DeviceId] {

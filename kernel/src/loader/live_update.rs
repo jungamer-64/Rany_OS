@@ -2,29 +2,10 @@
 // src/loader/live_update.rs - Epoch-based Reclamation for Live Updates
 // 設計書 3.5.3: クォーラムと一貫性: Epoch-based Reclamation
 // ============================================================================
-//!
-//! # ライブアップデートとEpoch-based Reclamation
-//!
-//! 高可用性環境でカーネル/ドライバの無停止更新を実現する。
-//! RCU (Read-Copy-Update) に類似したEpoch-basedメモリ回収を採用。
-//!
-//! ## 設計書準拠
-//!
-//! - セクション 3.5.1: セルのホットスワップ
-//! - セクション 3.5.2: 状態移行プロトコール
-//! - セクション 3.5.3: Epoch-based Reclamation
-//! - セクション 3.5.4: ロールバックと障害回復
-//!
-//! ## プロトコル概要
-//!
-//! ```text
-//! 1. 新セルをメモリにロード（旧セルは維持）
-//! 2. グローバルエポックをインクリメント
-//! 3. 新セルへのポインタをGOTに書き込み（アトミックスワップ）
-//! 4. Quiescent State Detection で全コアの離脱を確認
-//! 5. 旧セルのメモリを解放
-//! ```
-use crate::sync::{IrqMutex, PoisonLock};
+//! Live replacement publishes a new dispatch while retaining the old code.
+//! Epochs order publications. Reclamation depends on generation leases, which
+//! outlive interrupt returns, waiting Futures and suspended task stacks.
+use crate::sync::PoisonLock;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -40,140 +21,23 @@ use kernel_api::abi::driver::{
 /// グローバルエポックカウンタ
 pub static GLOBAL_EPOCH: AtomicU64 = AtomicU64::new(0);
 
-/// 各CPUコアのローカルエポック
-pub struct PerCoreEpoch {
-    /// 現在このコアが参照しているエポック
-    pub local_epoch: AtomicU64,
-    /// クリティカルセクション内かどうか
-    pub in_critical_section: AtomicBool,
+/// A retired generation is quiescent only after every code reference ends.
+pub fn generations_quiescent_through(target_epoch: u64) -> bool {
+    crate::loader::with_registry(|registry| {
+        registry
+            .all_cells()
+            .all(|cell| cell.code.quiescent_before(target_epoch))
+    })
 }
 
-impl PerCoreEpoch {
-    /// 新しいPerCoreEpochを作成
-    pub const fn new() -> Self {
-        Self {
-            local_epoch: AtomicU64::new(0),
-            in_critical_section: AtomicBool::new(false),
-        }
-    }
-}
-
-type EpochSnapshot = Arc<[Arc<PerCoreEpoch>]>;
-
-static PER_CORE_EPOCHS: spin::Once<IrqMutex<EpochSnapshot>> = spin::Once::new();
-
-fn epoch_for(cpu_id: crate::cpu::CpuId) -> Arc<PerCoreEpoch> {
-    let required_slots = crate::cpu::snapshot()
-        .slots()
-        .len()
-        .max(cpu_id.as_usize().saturating_add(1));
-    let registry = PER_CORE_EPOCHS.call_once(|| IrqMutex::new(Arc::from([])));
-
-    // LOOP_PROOF: mode=event; reason=Retry only when another CPU publishes a newer immutable slot snapshot; any snapshot containing cpu_id exits.;
-    loop {
-        let current = registry.lock().clone();
-        if let Some(epoch) = current.get(cpu_id.as_usize()) {
-            return Arc::clone(epoch);
-        }
-
-        let mut expanded = Vec::new();
-        expanded
-            .try_reserve_exact(required_slots)
-            .unwrap_or_else(|_| panic!("failed to provision live-update epoch slots"));
-        expanded.extend(current.iter().cloned());
-        expanded.resize_with(required_slots, || Arc::new(PerCoreEpoch::new()));
-        let expanded: EpochSnapshot = Arc::from(expanded.into_boxed_slice());
-
-        let mut published = registry.lock();
-        if Arc::ptr_eq(&published, &current) {
-            *published = expanded;
-            return Arc::clone(&published[cpu_id.as_usize()]);
-        }
-    }
-}
-
-fn current_epoch_slot() -> Arc<PerCoreEpoch> {
-    let current = crate::cpu::CurrentCpu::acquire()
-        .unwrap_or_else(|| panic!("live-update epoch operation requires a current CPU"));
-    epoch_for(current.id())
-}
-
-// ============================================================================
-// Quiescent State API
-// ============================================================================
-
-/// クリティカルセクションに入る
-///
-/// セルのコードを使用する前に呼び出す。
-/// 現在のグローバルエポックをローカルに記録する。
-#[inline]
-pub fn enter_critical_section() {
-    let epoch = current_epoch_slot();
-    // LOOP_PROOF: mode=event; reason=Retry only when a concurrent epoch advance changes the observed generation; a stable generation exits immediately.;
-    loop {
-        let observed = GLOBAL_EPOCH.load(Ordering::SeqCst);
-        epoch.in_critical_section.store(true, Ordering::SeqCst);
-        epoch.local_epoch.store(observed, Ordering::SeqCst);
-        if GLOBAL_EPOCH.load(Ordering::SeqCst) == observed {
-            break;
-        }
-        epoch.in_critical_section.store(false, Ordering::SeqCst);
-    }
-}
-
-/// クリティカルセクションから出る
-///
-/// セルのコードの使用が完了したら呼び出す。
-#[inline]
-pub fn leave_critical_section() {
-    let epoch = current_epoch_slot();
-    epoch.in_critical_section.store(false, Ordering::SeqCst);
-}
-
-/// Quiescent State（安全な状態）に入る
-///
-/// Executorのメインループで周期的に呼び出す。
-/// これにより、ライブアップデートの安全な切り替えポイントを提供する。
-#[inline]
-pub fn enter_quiescent_state() {
-    let epoch = current_epoch_slot();
-
-    // ローカルエポックをグローバルに同期
-    let global = GLOBAL_EPOCH.load(Ordering::Acquire);
-    epoch.local_epoch.store(global, Ordering::SeqCst);
-
-    // クリティカルセクション外であることを示す
-    epoch.in_critical_section.store(false, Ordering::SeqCst);
-}
-
-/// 全コアがQuiescent Stateに到達するのを待つ
-///
-/// 指定されたエポック以降に全コアが安全な状態に移行するまでブロック。
-pub fn wait_for_quiescent_state(old_epoch: u64) {
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while !all_cores_past_epoch(old_epoch) {
-        core::hint::spin_loop();
-    }
-}
-
-pub fn wait_for_quiescent_state_with_timeout(old_epoch: u64, max_attempts: u64) -> bool {
+pub fn wait_for_generations_with_timeout(target_epoch: u64, max_attempts: u64) -> bool {
     for _ in 0..max_attempts {
-        if all_cores_past_epoch(old_epoch) {
+        if generations_quiescent_through(target_epoch) {
             return true;
         }
         core::hint::spin_loop();
     }
     false
-}
-
-pub fn all_cores_past_epoch(target_epoch: u64) -> bool {
-    crate::cpu::snapshot().online().iter().all(|cpu_id| {
-        let epoch = epoch_for(cpu_id);
-        let core_epoch = epoch.local_epoch.load(Ordering::Acquire);
-        let in_cs = epoch.in_critical_section.load(Ordering::Acquire);
-
-        !in_cs || core_epoch > target_epoch
-    })
 }
 
 pub fn advance_epoch() -> u64 {
@@ -183,25 +47,19 @@ pub fn advance_epoch() -> u64 {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EpochStats {
     pub current_epoch: u64,
-    pub active_cores: usize,
-    pub in_critical_sections: usize,
+    pub retained_generations: usize,
 }
 
 pub fn epoch_stats() -> EpochStats {
-    let online = crate::cpu::snapshot().online().clone();
-    let in_critical_sections = online
-        .iter()
-        .filter(|cpu_id| {
-            epoch_for(*cpu_id)
-                .in_critical_section
-                .load(Ordering::Acquire)
-        })
-        .count();
-
+    let epoch = current_epoch();
     EpochStats {
-        current_epoch: current_epoch(),
-        active_cores: online.len(),
-        in_critical_sections,
+        current_epoch: epoch,
+        retained_generations: crate::loader::with_registry(|registry| {
+            registry
+                .all_cells()
+                .filter(|cell| !cell.code.quiescent_before(epoch))
+                .count()
+        }),
     }
 }
 
@@ -294,8 +152,20 @@ pub enum LiveUpdateError {
     QuiescentTimeout,
     /// セルが見つからない
     CellNotFound,
-    /// 状態移行失敗
+    /// State export/import failed before the next dispatch publication.
     StateMigrationFailed,
+    ReclamationBusy {
+        cell_id: u64,
+        leases: usize,
+    },
+    ResolutionStarted,
+    RollbackIncomplete {
+        remaining_drivers: usize,
+    },
+    PartialPublication {
+        new_cell_id: u64,
+        updated_drivers: usize,
+    },
 }
 
 impl core::fmt::Display for LiveUpdateError {
@@ -306,6 +176,22 @@ impl core::fmt::Display for LiveUpdateError {
             Self::QuiescentTimeout => write!(f, "Timeout waiting for quiescent state"),
             Self::CellNotFound => write!(f, "Cell not found"),
             Self::StateMigrationFailed => write!(f, "State migration failed"),
+            Self::ReclamationBusy { cell_id, leases } => {
+                write!(f, "Cell {cell_id} is retained by {leases} code leases")
+            }
+            Self::ResolutionStarted => {
+                write!(f, "Update finalization direction is already committed")
+            }
+            Self::RollbackIncomplete { remaining_drivers } => {
+                write!(f, "Rollback retains {remaining_drivers} drivers for retry")
+            }
+            Self::PartialPublication {
+                new_cell_id,
+                updated_drivers,
+            } => write!(
+                f,
+                "Update to cell {new_cell_id} published {updated_drivers} drivers; rollback remains pending"
+            ),
         }
     }
 }
@@ -319,14 +205,23 @@ pub struct PendingUpdateStatus {
     pub health_failed: bool,
 }
 
-#[derive(Debug, Clone)]
+/// The direction becomes irreversible before closing a generation. A retry
+/// preserves completed driver publications instead of replaying their state import.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum UpdateResolution {
+    Validating,
+    Committing,
+    RollingBack,
+    RollbackPublished,
+}
+
+#[derive(Debug)]
 struct PendingUpdateContext {
     old_cell_id: crate::loader::CellId,
     new_cell_id: crate::loader::CellId,
-    updated_handles: Vec<crate::driver_registry::DriverHandle>,
     rollback_states: Vec<DriverRollbackState>,
     old_entry: Option<crate::driver_registry::PreparedDriverExports>,
-    old_epoch: u64,
+    resolution: UpdateResolution,
     started_at_tick: u64,
     deadline_tick: u64,
     health_failed: bool,
@@ -373,7 +268,6 @@ impl CompletedUpdateOutcome {
 
 #[derive(Debug)]
 struct SwapDriversResult {
-    updated_handles: Vec<crate::driver_registry::DriverHandle>,
     rollback_states: Vec<DriverRollbackState>,
     old_entry: Option<crate::driver_registry::PreparedDriverExports>,
 }
@@ -382,6 +276,13 @@ struct SwapDriversResult {
 struct DriverRollbackState {
     handle: crate::driver_registry::DriverHandle,
     state: Option<kernel_api::driver::DriverStateBlob>,
+}
+
+struct UpdateOperation<'a>(&'a AtomicBool);
+impl Drop for UpdateOperation<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
 }
 
 /// ライブアップデートマネージャ
@@ -424,6 +325,7 @@ impl LiveUpdateManager {
         _cell_id: u64,
         _new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
         if self
             .pending
             .lock()
@@ -432,15 +334,14 @@ impl LiveUpdateManager {
         {
             return Err(LiveUpdateError::UpdateInProgress);
         }
-        // 排他制御
-        if self.updating.swap(true, Ordering::Acquire) {
-            return Err(LiveUpdateError::UpdateInProgress);
-        }
+        self.perform_update_inner(_cell_id, _new_elf_data)
+    }
 
-        let result = self.perform_update_inner(_cell_id, _new_elf_data);
-
-        self.updating.store(false, Ordering::Release);
-        result
+    fn begin_operation(&self) -> Result<UpdateOperation<'_>, LiveUpdateError> {
+        self.updating
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map_err(|_| LiveUpdateError::UpdateInProgress)?;
+        Ok(UpdateOperation(&self.updating))
     }
 
     fn perform_update_inner(
@@ -488,66 +389,40 @@ impl LiveUpdateManager {
         // Step 3: Swap (Update Driver Registry)
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
 
-        let swap_result = match Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
-            Ok(r) => r,
-            Err(e) => {
-                let _ = crate::loader::with_registry_mut(|r| r.unload(new_cell_id));
-                return Err(e);
-            }
-        };
-
-        // Step 3.5: Migrate ownership in Cell Registry
-        Self::migrate_driver_ownership(old_cell_id, new_cell_id, &old_drivers);
-
-        // Step 4-5: Wait for quiescent state and finalize
-        self.finalize_update(old_cell_id, new_cell_id, old_epoch, swap_result)
-    }
-
-    /// ドライバのエントリポイントをスワップし、失敗時にロールバック
-    fn swap_drivers(
-        old_cell_id: crate::loader::CellId,
-        new_cell_id: crate::loader::CellId,
-        old_drivers: &[crate::driver_registry::DriverHandle],
-    ) -> Result<SwapDriversResult, LiveUpdateError> {
-        // Resolve entry symbol in NEW cell
-        let new_entry = resolve_cell_entry(new_cell_id, true)?;
-
-        // Resolve entry symbol in OLD cell (for rollback)
-        let old_entry = resolve_cell_entry(old_cell_id, false).ok();
-
-        // Update all drivers registered to the old cell
-        let mut updated_handles = Vec::new();
-        let mut rollback_states = Vec::new();
-
-        for handle in old_drivers {
-            let exported_state = crate::driver_registry::driver_registry()
-                .export_live_state(*handle)
-                .map_err(|_| LiveUpdateError::StateMigrationFailed)?;
-            match crate::driver_registry::update_prepared_abi_driver(
-                *handle,
-                new_entry.clone(),
-                exported_state.clone(),
-            ) {
-                Ok(_) => updated_handles.push(*handle),
-                Err(_) => {
-                    log::error!(
-                        "[LIVE_UPDATE] Update failed, rolling back {} drivers...\n",
-                        updated_handles.len()
-                    );
-                    rollback_drivers(&rollback_states, old_entry.clone());
-                    return Err(LiveUpdateError::StateMigrationFailed);
+        let (swap_result, failure) =
+            match Self::swap_drivers(old_cell_id, new_cell_id, &old_drivers) {
+                Ok(result) => result,
+                Err(error) => {
+                    // Preparation may have spawned Futures referencing candidate code.
+                    // Keep a retryable reclamation owner even when no dispatch was published.
+                    self.finalize_update(
+                        old_cell_id,
+                        new_cell_id,
+                        old_epoch,
+                        SwapDriversResult {
+                            rollback_states: Vec::new(),
+                            old_entry: None,
+                        },
+                        true,
+                    )?;
+                    return Err(error);
                 }
-            }
-            rollback_states.push(DriverRollbackState {
-                handle: *handle,
-                state: exported_state,
+            };
+        let published = swap_result.rollback_states.len();
+        self.finalize_update(
+            old_cell_id,
+            new_cell_id,
+            old_epoch,
+            swap_result,
+            failure.is_some(),
+        )?;
+        if failure.is_some() {
+            return Err(LiveUpdateError::PartialPublication {
+                new_cell_id: new_cell_id.as_u64(),
+                updated_drivers: published,
             });
         }
-        Ok(SwapDriversResult {
-            updated_handles,
-            rollback_states,
-            old_entry,
-        })
+        Ok(new_cell_id.as_u64())
     }
 
     /// ドライバの所有権を旧セルから新セルへ移行
@@ -558,58 +433,18 @@ impl LiveUpdateManager {
     ) {
         crate::loader::with_registry_mut(|r| {
             if let Some(old_c) = r.get_mut(old_cell_id) {
-                old_c.registered_drivers.clear();
+                old_c
+                    .registered_drivers
+                    .retain(|handle| !old_drivers.contains(handle));
             }
             if let Some(new_c) = r.get_mut(new_cell_id) {
                 for h in old_drivers {
-                    new_c.registered_drivers.push(*h);
+                    if !new_c.registered_drivers.contains(h) {
+                        new_c.registered_drivers.push(*h);
+                    }
                 }
             }
         });
-    }
-
-    /// Quiescent state の待機と検証猶予コンテキストの作成
-    fn finalize_update(
-        &self,
-        old_cell_id: crate::loader::CellId,
-        new_cell_id: crate::loader::CellId,
-        old_epoch: u64,
-        swap_result: SwapDriversResult,
-    ) -> Result<u64, LiveUpdateError> {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
-        log::info!("[LIVE_UPDATE] Waiting for quiescent state...\n");
-        wait_for_quiescent_state(old_epoch);
-        log::info!("[LIVE_UPDATE] All cores reached quiescent state\n");
-
-        let now = crate::task::current_tick();
-        let grace = self.rollback_grace_period.load(Ordering::Acquire);
-        let deadline = now.saturating_add(grace);
-        {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            *pending = Some(PendingUpdateContext {
-                old_cell_id,
-                new_cell_id,
-                updated_handles: swap_result.updated_handles,
-                rollback_states: swap_result.rollback_states,
-                old_entry: swap_result.old_entry,
-                old_epoch,
-                started_at_tick: now,
-                deadline_tick: deadline,
-                health_failed: false,
-                health_failure_reason: None,
-            });
-        }
-
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Complete;
-        self.rollback_epoch.store(old_epoch + 1, Ordering::Release);
-
-        Ok(new_cell_id.as_u64())
-    }
-
-    /// ロールバックを実行
-    pub fn rollback(&self) -> Result<(), LiveUpdateError> {
-        log::info!("[LIVE_UPDATE] Rollback requested\n");
-        self.rollback_pending_update().map(|_| ())
     }
 
     pub fn rollback_for_cell(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
@@ -643,6 +478,9 @@ impl LiveUpdateManager {
         if p.old_cell_id.as_u64() != cell_id && p.new_cell_id.as_u64() != cell_id {
             return false;
         }
+        if p.resolution == UpdateResolution::Committing {
+            return false;
+        }
         p.health_failed = true;
         p.health_failure_reason = Some(reason.into());
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
@@ -659,32 +497,40 @@ impl LiveUpdateManager {
     }
 
     pub fn poll_pending_updates(&self) {
-        let (deadline_expired, health_failed) = {
+        let (resolution, deadline_expired, health_failed) = {
             let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let Some(p) = pending.as_ref() else {
                 return;
             };
             (
+                p.resolution,
                 crate::task::current_tick() >= p.deadline_tick,
                 p.health_failed,
             )
         };
 
-        if health_failed {
-            if let Err(e) = self.rollback() {
-                log::warn!("[LIVE_UPDATE] Auto-rollback failed during poll: {}\n", e);
+        let result = match resolution {
+            UpdateResolution::RollingBack | UpdateResolution::RollbackPublished => {
+                self.rollback_pending_update()
             }
-            return;
-        }
-
-        if deadline_expired {
-            if let Err(e) = self.commit_pending_update() {
-                log::warn!("[LIVE_UPDATE] Auto-commit failed during poll: {}\n", e);
+            UpdateResolution::Committing => self.commit_pending_update(),
+            UpdateResolution::Validating if health_failed => self.rollback_pending_update(),
+            UpdateResolution::Validating if deadline_expired => self.commit_pending_update(),
+            UpdateResolution::Validating => return,
+        };
+        if let Err(error) = result {
+            // Outstanding leases are expected until their Future or stack ends.
+            if !matches!(
+                error,
+                LiveUpdateError::ReclamationBusy { .. } | LiveUpdateError::UpdateInProgress
+            ) {
+                log::warn!("[LIVE_UPDATE] Pending resolution failed: {error}");
             }
         }
     }
 
     fn commit_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
         let ctx = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.take().ok_or(LiveUpdateError::CellNotFound)?
@@ -693,6 +539,7 @@ impl LiveUpdateManager {
     }
 
     fn commit_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
         let ctx = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let matches = pending
@@ -709,7 +556,7 @@ impl LiveUpdateManager {
 
     fn commit_context(
         &self,
-        ctx: PendingUpdateContext,
+        mut ctx: PendingUpdateContext,
     ) -> Result<UpdateTransition, LiveUpdateError> {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
         log::info!(
@@ -718,13 +565,21 @@ impl LiveUpdateManager {
             ctx.new_cell_id.as_u64()
         );
 
-        // Ensure all readers have moved past the swap epoch before freeing old code.
-        wait_for_quiescent_state(ctx.old_epoch);
-
-        if crate::loader::unload_cell(ctx.old_cell_id).is_err() {
+        if matches!(
+            ctx.resolution,
+            UpdateResolution::RollingBack | UpdateResolution::RollbackPublished
+        ) {
             *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
-            return Err(LiveUpdateError::LoadFailed);
+            return Err(LiveUpdateError::ResolutionStarted);
+        }
+        ctx.resolution = UpdateResolution::Committing;
+        // Prepared rollback function pointers are code references too.
+        ctx.old_entry = None;
+        ctx.rollback_states.clear();
+        if let Err(error) = crate::loader::unload_cell(ctx.old_cell_id) {
+            let result = reclamation_error(ctx.old_cell_id, error);
+            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+            return Err(result);
         }
 
         let result = UpdateTransition {
@@ -742,6 +597,7 @@ impl LiveUpdateManager {
     }
 
     fn rollback_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
         let ctx = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             pending.take().ok_or(LiveUpdateError::CellNotFound)?
@@ -753,6 +609,7 @@ impl LiveUpdateManager {
         &self,
         cell_id: u64,
     ) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
         let ctx = {
             let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
             let matches = pending
@@ -769,7 +626,7 @@ impl LiveUpdateManager {
 
     fn rollback_context(
         &self,
-        ctx: PendingUpdateContext,
+        mut ctx: PendingUpdateContext,
     ) -> Result<UpdateTransition, LiveUpdateError> {
         *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
         log::info!(
@@ -778,13 +635,53 @@ impl LiveUpdateManager {
             ctx.new_cell_id.as_u64()
         );
 
-        rollback_drivers(&ctx.rollback_states, ctx.old_entry.clone());
-        Self::migrate_driver_ownership(ctx.new_cell_id, ctx.old_cell_id, &ctx.updated_handles);
-
-        if crate::loader::unload_cell(ctx.new_cell_id).is_err() {
+        if ctx.resolution == UpdateResolution::Committing {
             *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Error;
-            return Err(LiveUpdateError::LoadFailed);
+            return Err(LiveUpdateError::ResolutionStarted);
+        }
+        if ctx.resolution != UpdateResolution::RollbackPublished {
+            ctx.resolution = UpdateResolution::RollingBack;
+            // LOOP_PROOF: mode=condition; reason=Each completed rollback removes one retained driver, and failure returns with the remaining publications owned by pending.;
+            while let Some(rollback) = ctx.rollback_states.last() {
+                let Some(old_entry) = ctx.old_entry.clone() else {
+                    let remaining_drivers = ctx.rollback_states.len();
+                    *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+                    return Err(LiveUpdateError::RollbackIncomplete { remaining_drivers });
+                };
+                if crate::driver_registry::update_prepared_abi_driver(
+                    rollback.handle,
+                    old_entry,
+                    rollback.state.clone(),
+                )
+                .is_err()
+                {
+                    let remaining_drivers = ctx.rollback_states.len();
+                    *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+                    return Err(LiveUpdateError::RollbackIncomplete { remaining_drivers });
+                }
+                Self::migrate_driver_ownership(
+                    ctx.new_cell_id,
+                    ctx.old_cell_id,
+                    core::slice::from_ref(&rollback.handle),
+                );
+                ctx.rollback_states.pop();
+            }
+            crate::loader::with_registry(|registry| {
+                if let Some(old) = registry.get(ctx.old_cell_id) {
+                    old.code.restore();
+                }
+                if let Some(new) = registry.get(ctx.new_cell_id) {
+                    new.code.retire(advance_epoch());
+                }
+            });
+            ctx.old_entry = None;
+            ctx.resolution = UpdateResolution::RollbackPublished;
+        }
+        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
+        if let Err(error) = crate::loader::unload_cell(ctx.new_cell_id) {
+            let result = reclamation_error(ctx.new_cell_id, error);
+            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
+            return Err(result);
         }
 
         let result = UpdateTransition {
@@ -829,8 +726,14 @@ impl Default for LiveUpdateManager {
 /// セルからドライバエントリポイントを解決
 fn resolve_cell_entry(
     cell_id: crate::loader::CellId,
+    owner: crate::domain::DomainId,
     call_init: bool,
 ) -> Result<crate::driver_registry::PreparedDriverExports, LiveUpdateError> {
+    let lease = alloc::sync::Arc::new(
+        crate::loader::acquire_code_lease(cell_id).ok_or(LiveUpdateError::CellNotFound)?,
+    );
+    let _entry_scope =
+        crate::task::enter_cell_domain(owner, cell_id).map_err(|_| LiveUpdateError::LoadFailed)?;
     let exports_addr = crate::loader::with_registry(|r| {
         let cell = r.get(cell_id)?;
         cell.exports
@@ -841,10 +744,10 @@ fn resolve_cell_entry(
 
     if let Some(addr) = exports_addr {
         let exports_ptr = addr as *const DriverExportsV1;
-        return Ok(
-            crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
-                .map_err(|_| LiveUpdateError::LoadFailed)?,
-        );
+        let mut prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
+            .map_err(|_| LiveUpdateError::LoadFailed)?;
+        prepared.code = Some(lease);
+        return Ok(prepared);
     }
 
     let entry_addr = crate::loader::with_registry(|r| {
@@ -868,6 +771,7 @@ fn resolve_cell_entry(
     let providers =
         crate::driver_registry::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
     Ok(crate::driver_registry::PreparedDriverExports {
+        code: Some(lease),
         entry: entry_fn,
         fini: None,
         providers,
@@ -875,27 +779,16 @@ fn resolve_cell_entry(
     })
 }
 
-/// 更新済みドライバをロールバック
-fn rollback_drivers(
-    rollback_states: &[DriverRollbackState],
-    old_entry: Option<crate::driver_registry::PreparedDriverExports>,
-) {
-    if let Some(old_entry) = old_entry {
-        for rollback in rollback_states {
-            if let Err(e) = crate::driver_registry::update_prepared_abi_driver(
-                rollback.handle,
-                old_entry.clone(),
-                rollback.state.clone(),
-            ) {
-                log::error!(
-                    "[LIVE_UPDATE] CRITICAL: Rollback failed for driver {:?}: {:?}\n",
-                    rollback.handle,
-                    e
-                );
-            }
-        }
-    } else {
-        log::error!("[LIVE_UPDATE] CRITICAL: Cannot rollback, old entry point not found\n");
+fn reclamation_error(
+    cell: crate::loader::CellId,
+    error: crate::loader::LoadError,
+) -> LiveUpdateError {
+    match error {
+        crate::loader::LoadError::CodeBusy { leases } => LiveUpdateError::ReclamationBusy {
+            cell_id: cell.as_u64(),
+            leases,
+        },
+        _ => LiveUpdateError::LoadFailed,
     }
 }
 
@@ -928,12 +821,9 @@ pub fn current_epoch() -> u64 {
 
 /// ライブアップデートサブシステムを初期化
 pub fn init() {
-    for cpu_id in crate::cpu::snapshot().possible() {
-        drop(epoch_for(cpu_id));
-    }
     // 初期エポックを1に設定
     GLOBAL_EPOCH.store(1, Ordering::Release);
-    log::info!("[LIVE_UPDATE] Epoch-based reclamation initialized\n");
+    log::info!("[LIVE_UPDATE] Code generation reclamation initialized\n");
 }
 
 // ============================================================================
