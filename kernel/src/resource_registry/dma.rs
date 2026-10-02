@@ -12,9 +12,7 @@ use kernel_api::dma::{
 };
 
 use crate::domain::DomainId;
-use crate::io::dma::{
-    self, DeviceDmaContext, RRefDmaBytes, RRefDmaBytesUnmapError, RRefSliceMapError,
-};
+use crate::io::iommu::common::dma::handle::{DmaBytes, DmaBytesUnmapError, MapError, MapErrorKind};
 use crate::sync::PoisonLock;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,7 +53,7 @@ enum EntryState {
 }
 
 struct DmaEntry {
-    mapping: Option<RRefDmaBytes>,
+    mapping: Option<DmaBytes>,
     owner: u64,
     device: PackedPciLocation,
     direction: DmaDirection,
@@ -64,11 +62,11 @@ struct DmaEntry {
 }
 
 impl DmaEntry {
-    fn mapping(&self) -> Result<&RRefDmaBytes, DmaLeaseError> {
+    fn mapping(&self) -> Result<&DmaBytes, DmaLeaseError> {
         self.mapping.as_ref().ok_or(DmaLeaseError::InvalidState)
     }
 
-    fn mapping_mut(&mut self) -> Result<&mut RRefDmaBytes, DmaLeaseError> {
+    fn mapping_mut(&mut self) -> Result<&mut DmaBytes, DmaLeaseError> {
         self.mapping.as_mut().ok_or(DmaLeaseError::InvalidState)
     }
 }
@@ -84,8 +82,11 @@ pub(crate) struct DmaCleanupStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DmaAllocationError {
     RegistryExhausted,
+    InvalidSize,
     AllocationFailed,
     MappingFailed,
+    MappingRejected(MapErrorKind),
+    TranslationPending(MapErrorKind),
 }
 
 pub(crate) enum DmaRegistryCommand {
@@ -119,72 +120,6 @@ pub(crate) enum DmaRegistryResponse {
     None,
     Scalar(u64),
     Queue(DmaQueueIdentity),
-}
-
-struct RegistryState {
-    entries: BTreeMap<u32, DmaEntry>,
-    generations: BTreeMap<u32, u32>,
-    reusable_slots: Vec<u32>,
-    next_slot: u32,
-}
-
-impl RegistryState {
-    const fn new() -> Self {
-        Self {
-            entries: BTreeMap::new(),
-            generations: BTreeMap::new(),
-            reusable_slots: Vec::new(),
-            next_slot: 1,
-        }
-    }
-
-    fn reserve_identity(&mut self) -> Option<DmaLeaseId> {
-        while let Some(slot) = self.reusable_slots.pop() {
-            let previous = self.generations.get(&slot).copied().unwrap_or(0);
-            let Some(generation) = previous.checked_add(1) else {
-                continue;
-            };
-            self.generations.insert(slot, generation);
-            return DmaLeaseId::from_parts(slot, generation);
-        }
-
-        let slot = self.next_slot;
-        self.next_slot = self.next_slot.checked_add(1)?;
-        self.generations.insert(slot, 1);
-        DmaLeaseId::from_parts(slot, 1)
-    }
-
-    fn release_identity(&mut self, lease: DmaLeaseId) {
-        self.reusable_slots.push(lease.slot());
-    }
-
-    fn entry(&self, lease: DmaLeaseId, owner: u64) -> Result<&DmaEntry, DmaLeaseError> {
-        let entry = self
-            .entries
-            .get(&lease.slot())
-            .ok_or(DmaLeaseError::StaleLease)?;
-        if self.generations.get(&lease.slot()).copied() != Some(lease.generation()) {
-            return Err(DmaLeaseError::StaleLease);
-        }
-        if entry.owner != owner {
-            return Err(DmaLeaseError::ForeignOwner);
-        }
-        Ok(entry)
-    }
-
-    fn entry_mut(&mut self, lease: DmaLeaseId, owner: u64) -> Result<&mut DmaEntry, DmaLeaseError> {
-        if self.generations.get(&lease.slot()).copied() != Some(lease.generation()) {
-            return Err(DmaLeaseError::StaleLease);
-        }
-        let entry = self
-            .entries
-            .get_mut(&lease.slot())
-            .ok_or(DmaLeaseError::StaleLease)?;
-        if entry.owner != owner {
-            return Err(DmaLeaseError::ForeignOwner);
-        }
-        Ok(entry)
-    }
 }
 
 struct DmaRegistry {
@@ -229,10 +164,10 @@ impl DmaRegistry {
         if entry.state != EntryState::CpuOwned {
             return Err(DmaLeaseError::InvalidState);
         }
-        let bytes = entry
-            .mapping()?
-            .cpu_bytes()
-            .ok_or(DmaLeaseError::AuthorityViolation)?;
+        // SAFETY: the locked entry is CPU-owned; the visit cannot publish a
+        // descriptor, retire backing, or admit another CPU mutation.
+        let bytes =
+            unsafe { entry.mapping()?.cpu_bytes() }.ok_or(DmaLeaseError::AuthorityViolation)?;
         visitor(bytes);
         Ok(())
     }
@@ -248,9 +183,9 @@ impl DmaRegistry {
         if entry.state != EntryState::CpuOwned {
             return Err(DmaLeaseError::InvalidState);
         }
-        let bytes = entry
-            .mapping_mut()?
-            .cpu_bytes_mut()
+        // SAFETY: this locked CPU-owned entry excludes hardware ownership,
+        // concurrent visits and reclamation for the entire mutable borrow.
+        let bytes = unsafe { entry.mapping_mut()?.cpu_bytes_mut() }
             .ok_or(DmaLeaseError::AuthorityViolation)?;
         visitor(bytes);
         Ok(())
@@ -272,11 +207,7 @@ impl DmaRegistry {
             });
         }
 
-        let bytes = entry
-            .mapping()?
-            .cpu_bytes()
-            .ok_or(DmaLeaseError::AuthorityViolation)?;
-        dma::flush_cache_range(bytes.as_ptr(), bytes.len());
+        entry.mapping()?.flush_for_device()?;
         entry.state = EntryState::Prepared { queue };
         Ok(())
     }
@@ -330,11 +261,7 @@ impl DmaRegistry {
         if entry.state != EntryState::CpuOwned {
             return Err(DmaLeaseError::InvalidState);
         }
-        let bytes = entry
-            .mapping()?
-            .cpu_bytes()
-            .ok_or(DmaLeaseError::AuthorityViolation)?;
-        dma::flush_cache_range(bytes.as_ptr(), bytes.len());
+        entry.mapping()?.flush_for_device()?;
         entry.state = EntryState::SharedPrepared { queue };
         Ok(())
     }
@@ -440,11 +367,7 @@ impl DmaRegistry {
             entry.direction,
             DmaDirection::FromDevice | DmaDirection::Bidirectional
         ) {
-            let bytes = entry
-                .mapping()?
-                .cpu_bytes()
-                .ok_or(DmaLeaseError::AuthorityViolation)?;
-            dma::invalidate_cache_range(bytes.as_ptr(), bytes.len());
+            entry.mapping()?.invalidate_for_cpu()?;
         }
         entry.state = EntryState::CpuOwned;
         Ok(())
@@ -523,11 +446,7 @@ impl DmaRegistry {
             entry.direction,
             DmaDirection::FromDevice | DmaDirection::Bidirectional
         ) {
-            let bytes = entry
-                .mapping()?
-                .cpu_bytes()
-                .ok_or(DmaLeaseError::AuthorityViolation)?;
-            dma::invalidate_cache_range(bytes.as_ptr(), bytes.len());
+            entry.mapping()?.invalidate_for_cpu()?;
         }
         entry.state = EntryState::CpuOwned;
         Ok(())
@@ -560,7 +479,7 @@ impl DmaRegistry {
                 drop(allocation);
                 Ok(())
             }
-            Err(RRefDmaBytesUnmapError { buffer, kind }) => {
+            Err(DmaBytesUnmapError { buffer, kind }) => {
                 log::error!(
                     "[DMA] quarantining lease {:?} after unmap failure: {:?}",
                     lease,
@@ -621,7 +540,7 @@ impl DmaRegistry {
                 drop(allocation);
                 Ok(())
             }
-            Err(RRefDmaBytesUnmapError { buffer, kind }) => {
+            Err(DmaBytesUnmapError { buffer, kind }) => {
                 log::error!(
                     "[DMA] reconciled unmap still failed for lease {:?}: {:?}",
                     lease,
@@ -790,11 +709,11 @@ unsafe impl DmaLeaseAuthority for KernelDmaLeaseAuthority {
     }
 }
 
-fn kernel_direction(direction: DmaDirection) -> dma::DmaDirection {
+fn kernel_direction(direction: DmaDirection) -> crate::io::iommu::api::DmaDirection {
     match direction {
-        DmaDirection::ToDevice => dma::DmaDirection::ToDevice,
-        DmaDirection::FromDevice => dma::DmaDirection::FromDevice,
-        DmaDirection::Bidirectional => dma::DmaDirection::Bidirectional,
+        DmaDirection::ToDevice => crate::io::iommu::api::DmaDirection::ToDevice,
+        DmaDirection::FromDevice => crate::io::iommu::api::DmaDirection::FromDevice,
+        DmaDirection::Bidirectional => crate::io::iommu::api::DmaDirection::Bidirectional,
     }
 }
 
@@ -804,16 +723,33 @@ pub(crate) fn allocate(
     iommu_device: crate::io::iommu::types::DeviceId,
     request: DmaAllocationRequest,
 ) -> Result<CpuDmaLease, DmaAllocationError> {
-    let context = DeviceDmaContext::for_attached_device(iommu_device);
-    let mapping = context
-        .try_map_rref_kernel_bytes(
-            request.byte_count().get(),
-            kernel_direction(request.direction()),
-        )
-        .map_err(|error| match error {
-            RRefSliceMapError::AllocFailed => DmaAllocationError::AllocationFailed,
-            RRefSliceMapError::MapError(_) => DmaAllocationError::MappingFailed,
-        })?;
+    let len = request.byte_count().get();
+    let page = crate::mm::types::PAGE_SIZE_4K;
+    let capacity = len
+        .checked_add(page - 1)
+        .map(|end| end & !(page - 1))
+        .ok_or(DmaAllocationError::InvalidSize)?;
+    let backing =
+        crate::ipc::RRef::new_slice_default_aligned(crate::ipc::DomainId::KERNEL, capacity, page)
+            .ok_or(DmaAllocationError::AllocationFailed)?;
+    let mapping = DmaBytes::map(
+        backing,
+        len,
+        &iommu_device,
+        kernel_direction(request.direction()),
+    )
+    .map_err(|error| match error {
+        MapError::Unmapped { rref, kind } => {
+            drop(rref);
+            DmaAllocationError::MappingRejected(kind)
+        }
+        MapError::TranslationPending { handle, kind } => {
+            // The reserved retirement slot receives mapping and backing;
+            // no ordinary CPU ownership is restored after publication.
+            drop(handle);
+            DmaAllocationError::TranslationPending(kind)
+        }
+    })?;
 
     let logical_len = request.byte_count();
     let direction = request.direction();
