@@ -1,6 +1,9 @@
 use x86_64::PhysAddr;
 use x86_64::VirtAddr;
 
+#[path = "../mm/reclaim/pool.rs"]
+pub(crate) mod reclaim;
+
 pub mod magazine {
     pub struct Magazine<T, const N: usize> {
         _marker: core::marker::PhantomData<T>,
@@ -131,16 +134,7 @@ pub mod frame_allocator {
     use x86_64::PhysAddr;
     use x86_64::structures::paging::{PageSize, PhysFrame};
 
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum FrameAllocError {
-        Uninitialized,
-        Exhausted,
-        InvalidRange,
-        Alignment,
-        MetadataAllocation,
-        AlreadyInitialized,
-        InvalidNode,
-    }
+    
 
     #[derive(Debug)]
     struct HostBacking {
@@ -412,7 +406,6 @@ pub mod numa {
     }
 
     pub mod topology {
-        
 
         pub fn num_nodes() -> usize {
             1

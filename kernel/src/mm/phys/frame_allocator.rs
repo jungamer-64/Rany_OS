@@ -16,16 +16,7 @@ const ZERO_CACHE_CAPACITY: usize = 16;
 const ZERO_BATCH: usize = 8;
 const HUGE_CACHE_CAPACITY: usize = 4;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum FrameAllocError {
-    Uninitialized,
-    Exhausted,
-    InvalidRange,
-    Alignment,
-    MetadataAllocation,
-    AlreadyInitialized,
-    InvalidNode,
-}
+
 
 impl From<AddressPoolError> for FrameAllocError {
     fn from(error: AddressPoolError) -> Self {
@@ -115,6 +106,31 @@ struct NodePool {
 }
 
 impl NodePool {
+    fn reclaim_huge_cache(&self) -> crate::mm::reclaim::PoolReclaim {
+        use crate::mm::reclaim::PoolReclaim;
+        let mut progress = PoolReclaim::default();
+        let cached = {
+            let mut cache = match self.huge.try_lock() {
+                Ok(guard) => guard,
+                Err(crate::sync::poison_lock::TryLockError::WouldBlock) => {
+                    progress.busy_pools = 1;
+                    return progress;
+                }
+                Err(crate::sync::poison_lock::TryLockError::Poisoned(_)) => {
+                    progress.poisoned_pools = 1;
+                    return progress;
+                }
+            };
+            core::mem::replace(&mut *cache, core::array::from_fn(|_| None))
+        };
+        for frame in cached.into_iter().flatten() {
+            let bytes = frame.size_bytes() as usize;
+            frame.release();
+            progress.reclaimed_bytes += bytes;
+        }
+        progress
+    }
+
     fn allocate(
         &'static self,
         pages: usize,
@@ -698,6 +714,17 @@ pub(crate) fn refill_zeroed_cache(node: NumaNodeId) -> usize {
     added
 }
 
+pub(crate) fn reclaim_node_caches() -> crate::mm::reclaim::PoolReclaim {
+    let Some(pmm) = PMM.get() else {
+        return Default::default();
+    };
+    pmm.nodes
+        .iter()
+        .flatten()
+        .fold(Default::default(), |progress, pool| {
+            progress.merge(pool.reclaim_huge_cache())
+        })
+}
 
 fn drain_frames(cpu: &crate::cpu::CurrentCpu) -> usize {
     let mut drained_bytes = 0;
@@ -807,6 +834,58 @@ pub(crate) fn node_distance(from: NumaNodeId, to: NumaNodeId) -> Option<u8> {
 mod tests {
     use super::*;
     use alloc::boxed::Box;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn busy_huge_cache_preserves_owners_and_retry_returns_only_cached_ram() {
+        const HUGE: usize = 2 * 1024 * 1024;
+        let pmm = Box::leak(Box::new(
+            build(&[(
+                PhysAddr::new(HUGE as u64),
+                5 * HUGE as u64,
+                NumaNodeId::NODE_0,
+            )])
+            .unwrap(),
+        ));
+        let pool = pmm.nodes[0].as_ref().unwrap();
+        let live = pool.allocate(512, HUGE).unwrap();
+        let live_address = live.as_u64();
+        let mut held = pool.huge.lock().unwrap();
+        for slot in held.iter_mut() {
+            *slot = Some(pool.allocate(512, HUGE).unwrap());
+        }
+        let addresses = held.each_ref().map(|slot| slot.as_ref().unwrap().as_u64());
+        assert_eq!(pool.bitmap.free_count(), 0);
+        assert_eq!(
+            pool.reclaim_huge_cache(),
+            crate::mm::reclaim::PoolReclaim {
+                busy_pools: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(
+            held.each_ref().map(|slot| slot.as_ref().unwrap().as_u64()),
+            addresses
+        );
+        assert_eq!(pool.bitmap.free_count(), 0);
+        drop(held);
+        assert_eq!(
+            pool.reclaim_huge_cache(),
+            crate::mm::reclaim::PoolReclaim {
+                reclaimed_bytes: HUGE * HUGE_CACHE_CAPACITY,
+                ..Default::default()
+            }
+        );
+        assert_eq!(pool.bitmap.free_count(), 512 * HUGE_CACHE_CAPACITY);
+        assert_eq!(live.as_u64(), live_address);
+        assert!(pool.huge.lock().unwrap().iter().all(Option::is_none));
+        let reused = pool.allocate(512, HUGE).unwrap();
+        assert!(addresses.contains(&reused.as_u64()));
+        assert_ne!(reused.as_u64(), live_address);
+        reused.release();
+        live.release();
+        assert_eq!(pool.bitmap.free_count(), 5 * 512);
+    }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
