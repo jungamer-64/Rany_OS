@@ -188,18 +188,6 @@ impl AbiDriver {
         unsafe { &*self.vtable }
     }
 
-    pub(super) fn map_abi_error(code: i32) -> Result<(), KapiError> {
-        let abi = AbiErrorCode::from_raw(code);
-        match abi {
-            AbiErrorCode::Success => Ok(()),
-            AbiErrorCode::DeviceNotFound => Err(KapiError::NotFound),
-            AbiErrorCode::OutOfMemory => Err(KapiError::OutOfMemory),
-            AbiErrorCode::NotSupported => Err(KapiError::NotSupported),
-            // generic fallback
-            _ => Err(KapiError::Internal(code)),
-        }
-    }
-
     fn state_blob_from_abi(
         state: kernel_api::abi::driver::AbiExportedState,
     ) -> KapiResult<DriverStateBlob> {

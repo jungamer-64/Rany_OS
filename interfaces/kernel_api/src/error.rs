@@ -83,12 +83,6 @@ impl fmt::Display for MemoryError {
     }
 }
 
-impl From<MemoryError> for KapiError {
-    fn from(_: MemoryError) -> Self {
-        KapiError::ResourceExhausted
-    }
-}
-
 /// I/O関連エラー
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum IoErrorKind {

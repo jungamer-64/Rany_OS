@@ -830,22 +830,6 @@ mod standalone {
         &STANDALONE_KERNEL
     }
 
-    fn map_abi_error(code: i32) -> KapiError {
-        match AbiError::from_raw(code) {
-            AbiError::Success => KapiError::Internal(code),
-            AbiError::InvalidParam => KapiError::InvalidHandle,
-            AbiError::OutOfMemory => KapiError::OutOfMemory,
-            AbiError::PermissionDenied => KapiError::PermissionDenied,
-            AbiError::NotSupported => KapiError::NotSupported,
-            AbiError::Timeout => KapiError::Timeout,
-            AbiError::DeviceNotFound => KapiError::NotFound,
-            AbiError::DeviceBusy => KapiError::ResourceExhausted,
-            AbiError::AlreadyInitialized => KapiError::AlreadyExists,
-            AbiError::NotInitialized => KapiError::NotFound,
-            AbiError::IoError | AbiError::Error => KapiError::IoError,
-        }
-    }
-
     fn unsupported_future<T: Send + 'static>() -> Pin<Box<dyn Future<Output = KapiResult<T>> + Send>>
     {
         Box::pin(async { Err(KapiError::NotSupported) })

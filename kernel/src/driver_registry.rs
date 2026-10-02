@@ -1174,20 +1174,6 @@ extern "C" fn kernel_abi_irq_unbind(irq: u32) -> i32 {
     }
 }
 
-fn map_kapi_error_to_abi(err: KapiError) -> i32 {
-    match err {
-        KapiError::OutOfMemory => AbiErrorCode::OutOfMemory as i32,
-        KapiError::PermissionDenied => AbiErrorCode::PermissionDenied as i32,
-        KapiError::NotSupported => AbiErrorCode::NotSupported as i32,
-        KapiError::Timeout => AbiErrorCode::Timeout as i32,
-        KapiError::NotFound => AbiErrorCode::DeviceNotFound as i32,
-        KapiError::AlreadyExists => AbiErrorCode::AlreadyInitialized as i32,
-        KapiError::ResourceExhausted => AbiErrorCode::DeviceBusy as i32,
-        KapiError::InvalidHandle => AbiErrorCode::InvalidParam as i32,
-        _ => AbiErrorCode::IoError as i32,
-    }
-}
-
 extern "C" fn kernel_abi_register_block_device(
     registration: *const AbiBlockDeviceRegistration,
     out_handle: *mut u64,
