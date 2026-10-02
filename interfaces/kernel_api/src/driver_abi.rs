@@ -41,10 +41,7 @@
 
 use crate::resource::net::PacketByteCount;
 use core::num::NonZeroU64;
-use core::sync::atomic::AtomicBool;
 
-#[path = "driver_abi/export_macro.rs"]
-mod export_macro;
 
 // ============================================================================
 // ABI Version
@@ -380,22 +377,6 @@ impl DriverContext {
 impl Default for DriverContext {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-/// Internal wrapper used by `export_async_driver!` to keep the async driver
-/// instance plus a minimal busy flag alongside the ABI driver context.
-pub struct AsyncDriverWrapper<T: crate::driver::AsyncDriver> {
-    pub driver: T,
-    pub busy: AtomicBool,
-}
-
-impl<T: crate::driver::AsyncDriver> AsyncDriverWrapper<T> {
-    pub fn new(driver: T) -> Self {
-        Self {
-            driver,
-            busy: AtomicBool::new(false),
-        }
     }
 }
 
