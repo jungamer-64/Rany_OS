@@ -1095,7 +1095,7 @@ static BLOCK_DEVICES: BlockBridgeRegistry = BlockBridgeRegistry::new();
 static NVME_NAMESPACES: NvmeNamespaceRegistry = NvmeNamespaceRegistry::new();
 static NETDEV_PORTS: NetdevBridgeRegistry = NetdevBridgeRegistry::new();
 
-pub(crate) fn cleanup_owner_domain(owner: DomainId) -> OwnerCleanupStats {
+pub(crate) fn cleanup_owner_domain(owner: DomainId) -> Result<OwnerCleanupStats, kernel_api::error::KapiError> {
     OwnerCleanupStats {
         files: fs::cleanup_owner(owner.as_u64()),
         channels: ipc::cleanup_owner(owner.as_u64()),

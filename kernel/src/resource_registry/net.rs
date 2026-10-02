@@ -12,6 +12,6 @@ pub(crate) fn unregister_port(owner: DomainId, handle: u64) -> Result<(), AbiErr
     NETDEV_PORTS.unregister(owner, handle)
 }
 
-pub(crate) fn cleanup_owner(owner: DomainId) -> usize {
+pub(crate) fn cleanup_owner(owner: DomainId) -> Result<usize, AbiErrorCode> {
     NETDEV_PORTS.cleanup_owner(owner)
 }
