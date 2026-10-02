@@ -121,7 +121,6 @@ pub struct DomainSnapshot {
     pub memory_limit_bytes: u64,
     pub io_bandwidth_limit: u64,
     pub panic_message: Option<String>,
-    pub last_error: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -146,7 +145,6 @@ pub struct DomainRecord {
     pub numa_node: Option<usize>,
     pub security: Arc<DomainSecurity>,
     pub panic_message: Option<String>,
-    pub last_error: Option<String>,
     pub tasks: Vec<u64>,
     pub dependencies: Vec<DomainId>,
     pub dependents: Vec<DomainId>,
@@ -314,9 +312,7 @@ pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
     set_domain_state(id, DomainState::Running).map_err(|_| "Domain state admission failed")
 }
 
-pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
-    set_domain_state(id, DomainState::Terminated).map_err(|_| "Domain state admission failed")
-}
+
 
 pub fn handle_domain_panic(id: DomainId, message: String) {
     let _ = with_domain_mut(id, |domain| {
@@ -331,6 +327,29 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
 
 pub fn get_domain_numa(id: DomainId) -> Option<usize> {
     with_domain(id, |domain| domain.numa_node).flatten()
+}
+
+pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
+    let observed =
+        with_domain(id, |domain| domain.security.clone()).ok_or(DomainPolicyError::NotFound)?;
+    let replacement = Arc::try_new(DomainSecurity {
+        credentials: observed.credentials,
+        caps,
+    })
+    .map_err(|_| DomainPolicyError::MetadataAllocationFailed)?;
+    let retired = {
+        let mut domains = DOMAINS.lock();
+        let domain = domains
+            .iter_mut()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainPolicyError::NotFound)?;
+        if !Arc::ptr_eq(&domain.security, &observed) {
+            return Err(DomainPolicyError::SecurityChanged);
+        }
+        core::mem::replace(&mut domain.security, replacement)
+    };
+    drop(retired);
+    Ok(())
 }
 
 pub fn set_domain_priority(

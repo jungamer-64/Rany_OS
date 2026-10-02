@@ -1,9 +1,12 @@
 //! Canonical domain types and snapshots.
 
+#[path = "identity.rs"]
+mod identity;
 use super::quota::DomainPriority;
 use crate::security::CapabilitySet;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+pub use identity::DomainId;
 use spin::Once;
 
 pub const CPU_QUOTA_SUSPEND_STREAK: u8 = 3;
@@ -107,7 +110,6 @@ pub struct DomainSnapshot {
     pub memory_limit_bytes: u64,
     pub io_bandwidth_limit: u64,
     pub panic_message: Option<alloc::string::String>,
-    pub last_error: Option<alloc::string::String>,
 }
 
 #[derive(Debug, Clone, Default)]

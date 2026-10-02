@@ -59,7 +59,6 @@ pub struct Domain {
     /// パニックメッセージ（クラッシュ時）
     pub panic_message: Option<String>,
     /// 最後のエラーメッセージ
-    pub last_error: Option<String>,
     /// NUMAノードアフィニティ（任意）
     pub numa_node: Option<usize>,
     /// スケジューリング/回収優先度（メタデータ）
@@ -598,22 +597,44 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
     }
 }
 
-/// Set capability set for a domain (DriverDomain metadata integration hook)
+/// Prepare replacement security outside the registry lock. Existing handles
+/// retain their snapshot; allocation failure or a concurrent security update
+/// publishes nothing. The caller may retry `SecurityChanged` with fresh policy.
 pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
-                domain.set_capabilities(caps);
-                Ok(())
-            } else {
-                Err(DomainPolicyError::NotFound)
-            }
+    let observed = {
+        let guard = REGISTRY
+            .lock()
+            .map_err(|_| DomainPolicyError::RegistryUnavailable)?;
+        guard
+            .domains
+            .iter()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainPolicyError::NotFound)?
+            .security
+            .clone()
+    };
+    let replacement = Arc::try_new(DomainSecurity {
+        credentials: observed.credentials,
+        caps,
+    })
+    .map_err(|_| DomainPolicyError::MetadataAllocationFailed)?;
+    let retired = {
+        let mut guard = REGISTRY
+            .lock()
+            .map_err(|_| DomainPolicyError::RegistryUnavailable)?;
+        let domain = guard
+            .domains
+            .iter_mut()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainPolicyError::NotFound)?;
+        if !Arc::ptr_eq(&domain.security, &observed) {
+            return Err(DomainPolicyError::SecurityChanged);
         }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (set_domain_capabilities)");
-            Err(DomainPolicyError::RegistryUnavailable)
-        }
-    }
+        core::mem::replace(&mut domain.security, replacement)
+    };
+    // The last snapshot may return heap RAM; release it after unlocking too.
+    drop(retired);
+    Ok(())
 }
 
 /// Set scheduling priority metadata for a domain
@@ -860,58 +881,7 @@ pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
 }
 
 /// ドメインを終了しリソースを回収
-pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
-    if id == DomainId::KERNEL {
-        return Err("Cannot terminate kernel domain");
-    }
 
-    // dependents をロック外で使うため clone() が必要
-    // Note: Vec<DomainId> の clone は DomainId が Copy なら
-    // 単純な memcpy に展開される（Vecヘッダーのみアロケート）
-    let dependents: Vec<DomainId>;
-
-    {
-        match REGISTRY.lock() {
-            Ok(mut registry) => {
-                if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
-                    domain.state = DomainState::Terminated;
-                    unregister_domain_quota(id);
-                    // clone() はロックを保持したままの処理を避けるため
-                    // デッドロック回避が clone のコストより重要
-                    dependents = domain.dependents.clone();
-                } else {
-                    return Err("Domain not found");
-                }
-            }
-            Err(_) => {
-                log::error!("[DOMAIN] Registry poisoned (terminate_domain)");
-                return Err("Domain registry poisoned");
-            }
-        }
-    }
-
-    // リソース回収（ロックを解放してから）
-    reclaim_domain_resources(id);
-
-    // 依存するドメインに通知
-    {
-        match REGISTRY.lock() {
-            Ok(mut registry) => {
-                for dep_id in dependents {
-                    if let Some(dep) = registry.domains.iter_mut().find(|d| d.id == dep_id) {
-                        dep.last_error = Some(format!("Dependency {} terminated", id.as_u64()));
-                    }
-                }
-            }
-            Err(_) => log::error!(
-                "[DOMAIN] Registry poisoned (terminate_domain notify) - skipping dependent updates"
-            ),
-        }
-    }
-
-    log::info!("[DOMAIN] Terminated {} and reclaimed resources\n", id);
-    Ok(())
-}
 
 /// ドメインがパニックした場合の処理
 pub fn handle_domain_panic(id: DomainId, message: String) {
@@ -944,5 +914,34 @@ pub fn add_task_to_domain(domain_id: DomainId, task_id: u64) {
             }
         }
         Err(_) => log::error!("[DOMAIN] Registry poisoned (add_task_to_domain) - no-op"),
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod security_tests {
+    use super::*;
+
+    #[test]
+    fn capability_publication_keeps_existing_security_snapshots_immutable() {
+        let id = create_domain(String::from("security_publication")).expect("domain admission");
+        let original = domain_security_handle(id);
+        assert_eq!(original.caps, CapabilitySet::empty());
+        set_domain_capabilities(id, CapabilitySet::full()).expect("security publication");
+        let granted = domain_security_handle(id);
+        assert_eq!(granted.caps, CapabilitySet::full());
+        assert_eq!(granted.credentials, original.credentials);
+        assert_eq!(original.caps, CapabilitySet::empty());
+        set_domain_capabilities(id, CapabilitySet::empty()).expect("security replacement");
+        assert_eq!(domain_security_handle(id).caps, CapabilitySet::empty());
+        assert_eq!(granted.caps, CapabilitySet::full());
+        terminate_domain(id).expect("domain cleanup");
+    }
+
+    #[test]
+    fn capability_publication_rejects_a_missing_domain() {
+        assert_eq!(
+            set_domain_capabilities(DomainId::new(u64::MAX), CapabilitySet::empty()),
+            Err(DomainPolicyError::NotFound)
+        );
     }
 }
