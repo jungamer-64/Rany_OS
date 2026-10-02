@@ -2,8 +2,6 @@
 // kernel/src/io/iommu/runtime/security/monitor_task.rs
 // ============================================================================
 
-use core::sync::atomic::{AtomicBool, Ordering};
-
 use crate::security::audit::{AuditEvent, AuditEventType};
 
 use super::{
@@ -44,7 +42,7 @@ impl core::future::Future for SecurityMonitorWaitFuture {
 }
 
 /// Drain IOMMU security events and forward them to the audit pipeline.
-pub async fn security_monitor_task() {
+pub async fn security_monitor_task() -> Result<(), kernel_api::service::time::TimerError> {
     let monitor = default_security_monitor();
     let mut gc_counter: u64 = 0;
     let mut aggregate_counter: u64 = 0;
@@ -104,11 +102,11 @@ pub async fn security_monitor_task() {
             run_zombie_dma_gc();
         }
 
-        #[cfg(test)]
-        crate::task::sleep_ms(SECURITY_MONITOR_INTERVAL_MS).await;
-        #[cfg(not(test))]
-        let _ = crate::task::with_timeout(SecurityMonitorWaitFuture, SECURITY_MONITOR_INTERVAL_MS)
-            .await;
+        if let crate::task::TimeoutResult::TimerFailed(cause) =
+            crate::task::with_timeout(SecurityMonitorWaitFuture, SECURITY_MONITOR_INTERVAL_MS).await
+        {
+            return Err(cause);
+        }
     }
 }
 
@@ -156,19 +154,3 @@ pub(crate) fn run_zombie_dma_gc() {
     }
 }
 
-static SECURITY_MONITOR_TASK_STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Spawn the default IOMMU security monitor task (idempotent).
-pub fn spawn_security_monitor_task() {
-    if SECURITY_MONITOR_TASK_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-    if let Err(error) = crate::task::spawn(security_monitor_task(), crate::task::TaskPlacement::Any)
-    {
-        SECURITY_MONITOR_TASK_STARTED.store(false, Ordering::Release);
-        log::error!("failed to schedule IOMMU security monitor: {:?}", error);
-    }
-}
