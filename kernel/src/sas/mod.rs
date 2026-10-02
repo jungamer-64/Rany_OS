@@ -290,29 +290,6 @@ pub fn register_object(ptr: usize, size: usize, owner: DomainId) {
     heap_registry().register_simple(ptr, size, owner);
 }
 
-/// オブジェクトを解除
-pub fn unregister_object(ptr: usize) -> Option<DomainId> {
-    // get_owner and unregister?
-    // unregister_object logic in original was: get_owner -> return owner.
-    // IT DID NOT UNREGISTER.
-    // "注意: 完全な解除ではなく所有者を返すのみ"
-    // "実際の解除は reclaim_domain_resources で行う"
-    //
-    // However, heap_registry.unregister exists.
-    // If the intention of `unregister_object` API was just "I am done with this, please free it",
-    // then we should unregister.
-    // But original code said: "Note: Not full unregister...".
-    // Wait, `heap_registry.unregister_simple` existed in previous `heap_registry.rs`.
-    // I need to implement `unregister_simple` in my new `heap_registry.rs` or just use `unregister`?
-    // In my new `heap_registry.rs`, `unregister` requires `owner`.
-    //
-    // The original `unregister_object` implementation called `self.heap_registry.get_owner(ptr)`.
-    // It didn't call `unregister`.
-    //
-    // If I want to match original behavior:
-    heap_registry().get_owner(ptr)
-}
-
 /// オブジェクトを無条件に登録解除し、情報を返す
 pub fn unregister_any(ptr: usize) -> Option<(DomainId, usize)> {
     heap_registry().unregister_any(ptr)
