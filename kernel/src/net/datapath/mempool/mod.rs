@@ -1012,21 +1012,6 @@ impl Mempool {
         self.free_count.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub fn return_rref(&self, rref: RRef<PacketBuffer>) {
-        let (ptr, owner) = rref.into_raw();
-        unsafe {
-            // Try to transfer ownership back to kernel (domain 0)
-            let _ = crate::sas::transfer_ownership(
-                ptr.as_ptr() as usize,
-                crate::sas::DomainId::new(owner.as_u64()),
-                crate::sas::DomainId::new(0),
-            );
-            // Always return to buffer pool to avoid leakage
-            ptr.as_ref().meta.ref_count.store(0, Ordering::Release);
-            self.return_buffer(ptr);
-        }
-    }
-
     pub fn stats(&self) -> MempoolStats {
         let total = self.buffers.lock().unwrap_or_else(|e| e.into_inner()).len();
         let mut free = self
