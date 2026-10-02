@@ -24,7 +24,7 @@
     all(any(not(test), feature = "full_mm_tests"), target_os = "none"),
     feature(alloc_error_handler)
 )]
-#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
+#![feature(abi_x86_interrupt)]
 #![feature(ptr_metadata)]
 #![feature(format_args_nl)]
 #![feature(allocator_api)]
@@ -299,428 +299,57 @@ pub fn exit_qemu(code: QemuExitCode) -> ! {
     loop {}
 }
 
-// For unit testing we expose a small set of modules via the library entry
-// point. This keeps most of the kernel as a binary-only crate while still
-// allowing targeted library-style tests (e.g. security/capability) to run
-// under `cargo test --lib` without pulling the entire binary test harness.
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-pub mod security;
-
-// QEMU test exports are compiled when `qemu-test-export` is enabled and are
-// consumed by the kernel full-boot runtime dispatcher. Pure host tests should
-// prefer crate-local `#[cfg(test)]`.
+// Native and QEMU verification compile the same ownership and execution
+// mechanisms. Platform admission determines whether hardware can be used.
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
-
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 mod async_boot_runtime_snapshot;
-
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn async_boot_stage_runtime_snapshot()
--> async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
+    -> async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
     async_boot_runtime_snapshot::async_boot_stage_runtime_snapshot()
 }
-
-// Expose additional modules when building tests so unit tests inside those
-// modules can be executed via `cargo test --lib`.
-// Also expose the `graphics` module when compiling benches via the
-// `bench` feature so Criterion benches can access framebuffer types and
-// helpers. This keeps the default binary layout unchanged while allowing
-// convenient benching during development.
-#[cfg(any(not(test), test, feature = "bench", feature = "full_mm_tests"))]
+pub use hal;
 pub mod graphics;
-
-// Provide fallback TLS symbols on host Windows builds where the kernel
-// linker script is not used. This prevents undefined reference linker
-// errors for `__tls_start` / `__tls_end` when building the binary for
-// `cargo test` on Windows hosts.
-#[cfg(target_os = "windows")]
-#[unsafe(no_mangle)]
-pub static __tls_start: u8 = 0;
-#[cfg(target_os = "windows")]
-#[unsafe(no_mangle)]
-pub static __tls_end: u8 = 0;
-
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod boot;
-
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod fs;
-
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod durability;
-
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod debug;
-
-// Intrusive collections for kernel use (always available)
 pub mod collections;
-
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod console;
 pub mod cpu;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod crypto;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod diag;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod domain;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-#[path = "host_support/domain.rs"]
-pub mod domain;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod driver_domain;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod drivers;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod error;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod heap;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-#[path = "host_support/heap.rs"]
-pub mod heap;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod integration;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod interrupts;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod io;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod ipc;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod loader;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod mm;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod monitor;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod net;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod panic_handler;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod platform;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod power;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod profiler;
-#[cfg(not(feature = "bench"))]
 pub mod provider_registry;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod sas;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod security;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub(crate) mod services;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod shell;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod sync;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod system_info;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod task;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 mod test;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod thermal;
-#[cfg(any(not(test), test, feature = "full_mm_tests"))]
 pub mod time;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod unwind;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod util;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod watchdog;
-
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-#[path = "host_support/ipc.rs"]
-pub mod ipc;
-#[cfg(not(feature = "full_mm_tests"))]
-#[cfg(any(test, feature = "bench"))]
-#[cfg(not(feature = "qemu-test-export"))]
-#[path = "host_support/mm.rs"]
-pub mod mm;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-#[path = "host_support/task.rs"]
-pub mod task;
-
-// time shim removed
-
-// pcid_support shim は未使用のため削除。本来の PCID 実装は mm/sync/pcid.rs を参照。
-
-#[cfg(all(
-    test,
-    not(feature = "bench"),
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-#[path = "host_support/io.rs"]
-pub mod io;
-
-// When building benches enable a *minimal* I/O module that only includes
-// `crate::io::log` so benchmark harnesses can access logging helpers while
-// avoiding the heavy dependencies of the full I/O subsystem.
-#[cfg(feature = "bench")]
-#[path = "io/bench_mod.rs"]
-pub mod io;
-
-#[cfg(any(test, feature = "bench"))]
-pub use hal;
-
-#[cfg(all(
-    any(test, feature = "bench"),
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-pub mod unwind;
-
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-pub mod crypto;
-#[cfg(any(not(any(test, feature = "bench")), test, feature = "full_mm_tests"))]
 pub mod driver_registry;
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-pub mod loader;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub mod resource_registry;
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub mod sync;
-
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-pub mod sas;
-
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub mod util;
-
-#[cfg(test)]
-pub mod nvme {
-    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-    pub use crate::drivers::nvme::*;
-    #[cfg(any(
-        all(
-            test,
-            not(feature = "full_mm_tests"),
-            not(feature = "qemu-test-export")
-        ),
-        feature = "bench"
-    ))]
-    pub use crate::task::io::nvme::*;
-}
-
-// Re-export the lightweight interrupt surface used by host task tests.
-#[cfg(any(
-    all(
-        test,
-        not(feature = "full_mm_tests"),
-        not(feature = "qemu-test-export")
-    ),
-    feature = "bench"
-))]
-pub use crate::task::interrupts;
