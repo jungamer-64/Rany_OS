@@ -24,7 +24,6 @@ use super::lockfree::Backoff;
 ///
 /// 設計書 8.4: 次にそのMutexをロックしようとしたドメインには、
 /// `Result::Err(PoisonError)` が返される。
-mod tests;
 #[derive(Debug)]
 pub struct PoisonError<T> {
     /// 毒入れされたガード（回復用）
@@ -704,30 +703,6 @@ impl<T: ?Sized> IrqPoisonLock<T> {
         }
     }
 
-    /// ロックを試行（取得できない場合は即座にNoneを返す）
-    pub fn try_lock(&self) -> Option<IrqPoisonLockGuard<'_, T>> {
-        let irq_was_enabled = super::irq_mutex::save_and_disable_interrupts();
-        if self
-            .locked
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .is_err()
-        {
-            super::irq_mutex::restore_interrupts(irq_was_enabled);
-            return None;
-        }
-
-        if self.poisoned.load(Ordering::Acquire) {
-            // Best-effort path for panic/debug output callers that cannot handle Result.
-            self.poisoned.store(false, Ordering::Release);
-        }
-
-        Some(IrqPoisonLockGuard {
-            lock: self,
-            irq_was_enabled,
-            panicking_at_acquire: is_panicking(),
-        })
-    }
-
     /// 毒入れ状態を確認
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Relaxed)
@@ -820,3 +795,7 @@ impl<T: fmt::Debug + ?Sized> fmt::Debug for IrqPoisonLock<T> {
         d.finish()
     }
 }
+
+#[cfg(test)]
+#[path = "poison_lock/tests.rs"]
+mod tests;
