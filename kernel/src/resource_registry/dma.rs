@@ -1,8 +1,6 @@
 //! Authoritative DMA allocation, mapping, and transfer registry.
 
-use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::dma::{
@@ -11,9 +9,14 @@ use kernel_api::dma::{
     DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness, DmaResetWitness,
 };
 
-use crate::domain::DomainId;
+use crate::domain::{DomainId, DomainResourceAdmission, DomainResourceAdmissionError};
 use crate::io::iommu::common::dma::handle::{DmaBytes, DmaBytesUnmapError, MapError, MapErrorKind};
+use crate::io::iommu::runtime::zombie::DMA_RETIREMENT_CAPACITY;
 use crate::sync::PoisonLock;
+
+#[path = "dma/slots.rs"]
+mod slots;
+use slots::{LeaseSlots, ScanCursor};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum QuarantineReason {
@@ -53,22 +56,10 @@ enum EntryState {
 }
 
 struct DmaEntry {
-    mapping: Option<DmaBytes>,
     owner: u64,
     device: PackedPciLocation,
     direction: DmaDirection,
     logical_len: DmaByteCount,
-    state: EntryState,
-}
-
-impl DmaEntry {
-    fn mapping(&self) -> Result<&DmaBytes, DmaLeaseError> {
-        self.mapping.as_ref().ok_or(DmaLeaseError::InvalidState)
-    }
-
-    fn mapping_mut(&mut self) -> Result<&mut DmaBytes, DmaLeaseError> {
-        self.mapping.as_mut().ok_or(DmaLeaseError::InvalidState)
-    }
 }
 
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -82,8 +73,11 @@ pub(crate) struct DmaCleanupStats {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum DmaAllocationError {
     RegistryExhausted,
+    OwnerAdmission(DomainResourceAdmissionError),
+    OwnerMismatch,
     InvalidSize,
     AllocationFailed,
+    MetadataAllocationFailed,
     MappingFailed,
     MappingRejected(MapErrorKind),
     TranslationPending(MapErrorKind),
@@ -122,73 +116,56 @@ pub(crate) enum DmaRegistryResponse {
     Queue(DmaQueueIdentity),
 }
 
+// The bound derives from mapping admission: every DmaBytes owner already
+// retains a retirement reservation. Metadata itself needs no allocator or OOM.
+impl<const N: usize> LeaseSlots<DmaEntry, N> {
+    fn entry(&self, lease: DmaLeaseId, owner: u64) -> Result<&DmaEntry, DmaLeaseError> {
+        let entry = self.get(lease).ok_or(DmaLeaseError::StaleLease)?;
+        if entry.owner != owner {
+            return Err(DmaLeaseError::ForeignOwner);
+        }
+        Ok(entry)
+    }
+    fn entry_mut(&mut self, lease: DmaLeaseId, owner: u64) -> Result<&mut DmaEntry, DmaLeaseError> {
+        let entry = self.get_mut(lease).ok_or(DmaLeaseError::StaleLease)?;
+        if entry.owner != owner {
+            return Err(DmaLeaseError::ForeignOwner);
+        }
+        Ok(entry)
+    }
+}
+
 struct DmaRegistry {
-    state: PoisonLock<RegistryState>,
+    state: PoisonLock<LeaseSlots<DmaEntry, DMA_RETIREMENT_CAPACITY>>,
 }
 
 impl DmaRegistry {
     const fn new() -> Self {
         Self {
-            state: PoisonLock::new(RegistryState::new()),
+            state: PoisonLock::new(LeaseSlots::new()),
         }
     }
 
     fn register(
         &self,
+        admission: &DomainResourceAdmission<'_>,
         entry: DmaEntry,
-    ) -> Result<(DmaLeaseId, DmaDeviceAddress), DmaAllocationError> {
-        let device_address = DmaDeviceAddress::from_abi(
-            entry
-                .mapping()
-                .map_err(|_| DmaAllocationError::MappingFailed)?
-                .iova(),
-        );
+    ) -> Result<(DmaLeaseId, DmaDeviceAddress), (DmaAllocationError, DmaEntry)> {
+        if entry.owner != admission.domain().as_u64() {
+            return Err((DmaAllocationError::OwnerMismatch, entry));
+        }
+        let device_address = match entry.mapping() {
+            Ok(mapping) => DmaDeviceAddress::from_abi(mapping.iova()),
+            Err(_) => return Err((DmaAllocationError::MappingFailed, entry)),
+        };
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let lease = state
-            .reserve_identity()
-            .ok_or(DmaAllocationError::RegistryExhausted)?;
-        if state.entries.insert(lease.slot(), entry).is_some() {
-            return Err(DmaAllocationError::RegistryExhausted);
-        }
-        Ok((lease, device_address))
-    }
-
-    fn with_cpu_bytes(
-        &self,
-        lease: DmaLeaseId,
-        owner: u64,
-        visitor: &mut dyn FnMut(&[u8]),
-    ) -> Result<(), DmaLeaseError> {
-        let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let entry = state.entry(lease, owner)?;
-        if entry.state != EntryState::CpuOwned {
-            return Err(DmaLeaseError::InvalidState);
-        }
-        // SAFETY: the locked entry is CPU-owned; the visit cannot publish a
-        // descriptor, retire backing, or admit another CPU mutation.
-        let bytes =
-            unsafe { entry.mapping()?.cpu_bytes() }.ok_or(DmaLeaseError::AuthorityViolation)?;
-        visitor(bytes);
-        Ok(())
-    }
-
-    fn with_cpu_bytes_mut(
-        &self,
-        lease: DmaLeaseId,
-        owner: u64,
-        visitor: &mut dyn FnMut(&mut [u8]),
-    ) -> Result<(), DmaLeaseError> {
-        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-        let entry = state.entry_mut(lease, owner)?;
-        if entry.state != EntryState::CpuOwned {
-            return Err(DmaLeaseError::InvalidState);
-        }
-        // SAFETY: this locked CPU-owned entry excludes hardware ownership,
-        // concurrent visits and reclamation for the entire mutable borrow.
-        let bytes = unsafe { entry.mapping_mut()?.cpu_bytes_mut() }
-            .ok_or(DmaLeaseError::AuthorityViolation)?;
-        visitor(bytes);
-        Ok(())
+        let admitted = state.insert(entry);
+        drop(state);
+        // Return rejection ownership through the enclosing domain admission
+        // scope. Neither registry may finalize the unaccepted mapping owner.
+        admitted
+            .map(|lease| (lease, device_address))
+            .map_err(|entry| (DmaAllocationError::RegistryExhausted, entry))
     }
 
     fn prepare(
@@ -468,13 +445,11 @@ impl DmaRegistry {
             Ok(allocation) => {
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let removed = state
-                    .entries
-                    .remove(&lease.slot())
+                    .remove(lease)
                     .expect("closing DMA entry must remain registered during synchronous unmap");
                 debug_assert_eq!(removed.owner, owner);
                 debug_assert_eq!(removed.state, EntryState::Closing);
                 debug_assert!(removed.mapping.is_none());
-                state.release_identity(lease);
                 drop(state);
                 drop(allocation);
                 Ok(())
@@ -529,13 +504,11 @@ impl DmaRegistry {
             Ok(allocation) => {
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
                 let removed = state
-                    .entries
-                    .remove(&lease.slot())
+                    .remove(lease)
                     .expect("reconciled DMA entry must remain registered during unmap");
                 debug_assert_eq!(removed.owner, owner);
                 debug_assert_eq!(removed.state, EntryState::Closing);
                 debug_assert!(removed.mapping.is_none());
-                state.release_identity(lease);
                 drop(state);
                 drop(allocation);
                 Ok(())
@@ -723,6 +696,11 @@ pub(crate) fn allocate(
     iommu_device: crate::io::iommu::types::DeviceId,
     request: DmaAllocationRequest,
 ) -> Result<CpuDmaLease, DmaAllocationError> {
+    // Acquire the capability's metadata before committing any registry owner.
+    // Initialization after admission is allocation-free and cannot reject a
+    // successfully published lease because of bookkeeping allocation failure.
+    let mut authority = Arc::<KernelDmaLeaseAuthority>::try_new_uninit()
+        .map_err(|_| DmaAllocationError::MetadataAllocationFailed)?;
     let len = request.byte_count().get();
     let page = crate::mm::types::PAGE_SIZE_4K;
     let capacity = len
@@ -761,16 +739,31 @@ pub(crate) fn allocate(
         logical_len,
         state: EntryState::CpuOwned,
     };
-    let (lease, device_address) = DMA_REGISTRY.register(entry)?;
-    Ok(CpuDmaLease::from_authority(Arc::new(
-        KernelDmaLeaseAuthority {
+    let registration = crate::domain::with_resource_admission(owner, entry, |admission, entry| {
+        DMA_REGISTRY.register(&admission, entry)
+    })
+    .map_err(|(cause, entry)| {
+        drop(entry);
+        DmaAllocationError::OwnerAdmission(cause)
+    })?;
+    let (lease, device_address) = registration.map_err(|(cause, entry)| {
+        drop(entry);
+        cause
+    })?;
+    Arc::get_mut(&mut authority)
+        .expect("unpublished capability metadata has one strong owner and no weak observers")
+        .write(KernelDmaLeaseAuthority {
             lease,
             owner: owner.as_u64(),
             device_address,
             byte_count: logical_len,
             direction,
-        },
-    )))
+        });
+    // SAFETY: the uniquely prepared Arc received the complete authority value
+    // above. No uninitialized observer or clone was published, and all fields
+    // refer to the successfully admitted generation and its retained mapping.
+    let authority = unsafe { authority.assume_init() };
+    Ok(CpuDmaLease::from_authority(authority))
 }
 
 pub(crate) fn with_cpu_bytes(
@@ -870,34 +863,27 @@ pub(crate) fn command(
 }
 
 pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
-    let leases: Vec<DmaLeaseId> = {
-        let state = DMA_REGISTRY
-            .state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        state
-            .entries
-            .iter()
-            .filter_map(|(slot, entry)| {
-                if entry.owner != owner.as_u64() {
-                    return None;
-                }
-                DmaLeaseId::from_parts(*slot, state.generations.get(slot).copied().unwrap_or(0))
-            })
-            .collect()
-    };
-
+    let mut cursor = ScanCursor::new();
     let mut stats = DmaCleanupStats::default();
-    for lease in leases {
-        let (logical_len, state_before) = {
+    // LOOP_PROOF: mode=event; reason=The cursor visits each bounded metadata slot at most once and returns when no further owner entry remains.;
+    loop {
+        let observed = {
             let state = DMA_REGISTRY
                 .state
                 .lock()
                 .unwrap_or_else(|error| error.into_inner());
-            let Ok(entry) = state.entry(lease, owner.as_u64()) else {
-                continue;
-            };
-            (entry.logical_len.get(), entry.state)
+            let mut observed = None;
+            // LOOP_PROOF: mode=condition; reason=Each next advances the finite slot cursor, including foreign-owner entries.;
+            while let Some((lease, entry)) = state.next(&mut cursor) {
+                if entry.owner == owner.as_u64() {
+                    observed = Some((lease, entry.logical_len.get(), entry.state));
+                    break;
+                }
+            }
+            observed
+        };
+        let Some((lease, logical_len, state_before)) = observed else {
+            break;
         };
 
         let close_candidate = match state_before {
@@ -975,21 +961,4 @@ pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
         }
     }
     stats
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn registry_identity_changes_when_a_slot_is_reused() {
-        let mut state = RegistryState::new();
-        let first = state.reserve_identity().expect("first identity");
-        state.release_identity(first);
-        let second = state.reserve_identity().expect("reused identity");
-
-        assert_eq!(first.slot(), second.slot());
-        assert_ne!(first.generation(), second.generation());
-        assert_ne!(first, second);
-    }
 }
