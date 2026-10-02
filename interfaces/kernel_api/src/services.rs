@@ -990,14 +990,6 @@ mod standalone {
     struct StandaloneKernelServices;
 
     impl KernelServices for StandaloneKernelServices {
-        fn spawn_task(
-            &self,
-            future: Pin<Box<dyn Future<Output = ()> + Send>>,
-        ) -> KapiResult<TaskHandle> {
-            core::mem::drop(future);
-            Err(KapiError::NotSupported)
-        }
-
         fn current_tick(&self) -> u64 {
             0
         }
