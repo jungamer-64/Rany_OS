@@ -1616,9 +1616,6 @@ pub struct KernelApiV4 {
         visitor: unsafe extern "C" fn(*mut u8, *mut u8, usize),
     ) -> i32,
 
-    pub port_read_u8: extern "C" fn(port: u16) -> u8,
-    pub port_write_u8: extern "C" fn(port: u16, value: u8),
-
     pub irq_bind: extern "C" fn(irq: u32, cookie: u64) -> i32,
     pub irq_unbind: extern "C" fn(irq: u32) -> i32,
 
