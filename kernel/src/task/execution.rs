@@ -61,6 +61,13 @@ impl core::fmt::Display for ExecutionAdmissionError {
 pub struct ExecutionContext {
     subject: Subject,
     memory: MemoryBinding,
+    pub(crate) cell: Option<crate::loader::CellId>,
+    pub(crate) finalization: Option<FinalizationAuthority>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct FinalizationAuthority {
+    pub(crate) code: Option<alloc::sync::Arc<crate::loader::code::CodeLease>>,
 }
 
 impl ExecutionContext {
@@ -73,6 +80,8 @@ impl ExecutionContext {
         Self {
             subject,
             memory: MemoryBinding::kernel(),
+            cell: None,
+            finalization: None,
         }
     }
 
@@ -85,12 +94,22 @@ impl ExecutionContext {
                 .bind_memory(domain)
                 .map_err(ExecutionAdmissionError::Quota)?
         };
-        Ok(Self { subject, memory })
+        Ok(Self { subject, memory, cell: None, finalization: None })
     }
 
     pub fn from_subject(subject: Subject) -> Result<Self, QuotaError> {
         let memory = crate::domain::quota::quota_manager().bind_memory(subject.domain)?;
-        Ok(Self { subject, memory })
+        Ok(Self { subject, memory, cell: None, finalization: None })
+    }
+
+    pub(crate) fn with_cell(mut self, cell: Option<crate::loader::CellId>) -> Self {
+        self.cell = cell;
+        self
+    }
+
+    pub(crate) fn with_finalization(mut self, authority: FinalizationAuthority) -> Self {
+        self.finalization = Some(authority);
+        self
     }
 
     pub(crate) fn subject(&self) -> Subject {
@@ -107,6 +126,7 @@ pub enum ExecutionContextUnavailable {
     UnboundCpu,
     NoExecution,
     Admission(ExecutionAdmissionError),
+    CodeUnavailable,
 }
 
 pub fn current_subject() -> Subject {
@@ -126,12 +146,54 @@ pub(crate) fn enter_domain(
     domain: DomainId,
 ) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
     let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
-    let subject = current
-        .execution()
-        .ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease = crate::domain::registry::acquire_execution_code_lease(domain)
+        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
     let context = ExecutionContext::for_task(subject.task, domain)
         .map_err(ExecutionContextUnavailable::Admission)?;
-    Ok(current.enter_execution(context))
+    Ok(current.enter_execution(context.with_cell(lease.cell())).retain_code(lease))
+}
+
+/// The nested entry owns its code lease on the executing task's stack.
+pub(crate) fn enter_cell_domain(
+    domain: DomainId,
+    cell: crate::loader::CellId,
+) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
+    let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
+    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease = crate::domain::registry::acquire_cell_execution_lease(domain, cell)
+        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
+    let context = ExecutionContext::for_task(subject.task, domain)
+        .map_err(ExecutionContextUnavailable::Admission)?;
+    Ok(current.enter_execution(context.with_cell(Some(cell))).retain_code(lease))
+}
+
+pub(crate) fn enter_domain_teardown(
+    domain: DomainId,
+    code: Option<&alloc::sync::Arc<crate::loader::code::CodeLease>>,
+) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
+    let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
+    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease = crate::domain::registry::acquire_teardown_code_lease(domain, code.map(|code| code.as_ref()))
+        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
+    let context = ExecutionContext::for_task(subject.task, domain)
+        .map_err(ExecutionContextUnavailable::Admission)?;
+    Ok(current.enter_execution(context.with_cell(lease.cell()).with_finalization(FinalizationAuthority { code: code.cloned() })).retain_code(lease))
+}
+
+/// Registered invocation keeps its owner's exact code generation until return.
+pub(crate) fn enter_resource_callback(
+    domain: DomainId,
+    resource: &crate::domain::DomainCodeLease,
+    invocation: crate::domain::registry::ResourceInvocation,
+) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
+    let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
+    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease = crate::domain::registry::acquire_resource_execution_lease(domain, resource, invocation)
+        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
+    let context = ExecutionContext::for_task(subject.task, domain)
+        .map_err(ExecutionContextUnavailable::Admission)?;
+    Ok(current.enter_execution(context.with_cell(lease.cell())).retain_code(lease))
 }
 
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
