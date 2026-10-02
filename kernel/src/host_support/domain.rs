@@ -5,6 +5,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::{Mutex, Once};
 
 pub use crate::security::CapabilitySet;
+#[path = "../domain/identity.rs"]
+mod identity;
+pub use identity::DomainId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainErrorKind {
@@ -98,7 +101,7 @@ pub struct RequestedCap {
     pub delegatable: bool,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct DomainSnapshot {
     pub id: DomainId,
     pub name: String,
@@ -328,12 +331,6 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
 
 pub fn get_domain_numa(id: DomainId) -> Option<usize> {
     with_domain(id, |domain| domain.numa_node).flatten()
-}
-
-pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
-    with_domain_mut(id, |domain| Arc::make_mut(&mut domain.security).caps = caps)
-        .map(|_| ())
-        .ok_or(DomainPolicyError::NotFound)
 }
 
 pub fn set_domain_priority(

@@ -1,10 +1,10 @@
 //! Domain registry and lifecycle internals.
 use super::{
     CPU_QUOTA_SUSPEND_STREAK, CPU_QUOTA_SUSPEND_WINDOW_NS, CpuQuotaAction, DomainId,
-    DomainSecurity, DomainSnapshot, DomainState, RequestedCap,
+    DomainPolicyError, DomainSecurity, DomainSnapshot, DomainState, RequestedCap,
     api::reclaim_domain_resources,
     kernel_security_handle,
-    quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, quota_manager},
+    quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager},
 };
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
@@ -77,15 +77,17 @@ pub struct Domain {
 }
 
 impl Domain {
-    /// 新しいドメインを作成
-    pub fn new(id: DomainId, name: String) -> Self {
+    /// Prepare metadata before publication. Allocation failure publishes no
+    /// domain or security handle; metadata prepared so far is dropped.
+    pub fn new(id: DomainId, name: String) -> Result<Self, KernelError> {
         let security = if id == DomainId::KERNEL {
             kernel_security_handle()
         } else {
-            Arc::new(DomainSecurity::default())
+            Arc::try_new(DomainSecurity::default())
+                .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?
         };
 
-        Self {
+        Ok(Self {
             id,
             name,
             state: DomainState::Initializing,
@@ -107,7 +109,7 @@ impl Domain {
             io_bandwidth_limit: 0,
             cpu_violation_streak: 0,
             quota_suspend_until_ns: 0,
-        }
+        })
     }
 
     /// 実行可能かどうか
@@ -178,11 +180,6 @@ impl Domain {
         self.numa_node
     }
 
-    /// ケイパビリティセットを設定（メタデータ + ポリシー入力）
-    pub fn set_capabilities(&mut self, caps: CapabilitySet) {
-        Arc::make_mut(&mut self.security).caps = caps;
-    }
-
     /// 優先度を設定
     pub fn set_priority(&mut self, priority: DomainPriority) {
         self.priority = priority;
@@ -213,16 +210,15 @@ fn bytes_to_mb_ceil(bytes: u64) -> u64 {
     bytes.div_ceil(BYTES_PER_MB).max(1)
 }
 
-fn sync_domain_quota(
+pub(crate) fn domain_quota_policy(
     id: DomainId,
     priority: DomainPriority,
     cpu_limit_percent: u64,
     memory_limit_bytes: u64,
     io_bandwidth_limit: u64,
-) {
+) -> DomainQuota {
     if id == DomainId::KERNEL {
-        quota_manager().register(DomainQuota::kernel());
-        return;
+        return DomainQuota::kernel();
     }
 
     let mut quota = DomainQuota::new(id, priority).with_cpu_limit(cpu_limit_percent.min(100), 100);
@@ -230,7 +226,7 @@ fn sync_domain_quota(
     quota.memory = if memory_limit_bytes == 0 || memory_limit_bytes == u64::MAX {
         MemoryQuota::unlimited()
     } else {
-        MemoryQuota::new(bytes_to_mb_ceil(memory_limit_bytes))
+        MemoryQuota::from_bytes(memory_limit_bytes)
     };
 
     if io_bandwidth_limit == 0 || io_bandwidth_limit == u64::MAX {
@@ -242,7 +238,7 @@ fn sync_domain_quota(
         quota.storage_io = IoQuota::new(mbps, mbps);
     }
 
-    quota_manager().register(quota);
+    quota
 }
 
 fn unregister_domain_quota(id: DomainId) {
@@ -306,49 +302,86 @@ pub fn init() {
         .expect("domain registry poisoned during init");
 
     // カーネルドメインを作成
-    let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into());
+    let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into())
+        .expect("kernel domain metadata required at startup");
     kernel.state = DomainState::Running;
     registry.domains.push(kernel);
-    sync_domain_quota(
-        DomainId::KERNEL,
-        DomainPriority::Critical,
-        100,
-        u64::MAX,
-        u64::MAX,
-    );
+    quota_manager()
+        .register(domain_quota_policy(
+            DomainId::KERNEL,
+            DomainPriority::Critical,
+            100,
+            u64::MAX,
+            u64::MAX,
+        ))
+        .expect("kernel quota policy required at startup");
 }
 
-/// 新しいドメインを作成
-///
-/// # パフォーマンス注意
-/// `name.clone()` は `crate::log!` マクロで使用するために必要。
-/// ドメイン作成は頻繁に呼ばれないため、このコストは許容される。
-/// 代替案: log を先に行い、name を消費するパターン
+/// Prepare security/account metadata outside the registries, then publish the
+/// domain without allocation. Rejection consumes an ID but publishes no domain.
 pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
-    // Runtime path: do not attempt best-effort recovery from a poisoned registry.
-    // If the registry lock is poisoned, return a conservative error so callers can
-    // decide how to proceed (e.g., abort, retry, or propagate the error).
-    match REGISTRY.lock() {
-        Ok(mut registry) => {
-            let id = registry.generate_id();
-            // Log before consuming `name` to avoid an extra clone
-            log::info!("[DOMAIN] Created domain {} ({})\n", id.as_u64(), &name);
-            let domain = Domain::new(id, name);
-            sync_domain_quota(
-                id,
-                domain.priority,
-                domain.cpu_limit_percent,
-                domain.memory_limit_bytes,
-                domain.io_bandwidth_limit,
-            );
-            registry.domains.push(domain);
-            Ok(id)
+    let (id, needed) = {
+        let registry = REGISTRY
+            .lock()
+            .map_err(|_| KernelError::Domain(DomainErrorKind::RegistryPoisoned))?;
+        let needed = registry
+            .domains
+            .len()
+            .checked_add(1)
+            .ok_or(KernelError::Domain(DomainErrorKind::RegistryFull))?;
+        (registry.generate_id(), needed)
+    };
+    // Metadata allocation can enter OOM/domain lookup; it must run without either
+    // registry lock. The final locked publication below performs no allocation.
+    let mut prepared = Vec::new();
+    prepared
+        .try_reserve_exact(needed)
+        .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?;
+    let domain = Domain::new(id, name)?;
+    quota_manager()
+        .register(domain_quota_policy(
+            id,
+            domain.priority,
+            domain.cpu_limit_percent,
+            domain.memory_limit_bytes,
+            domain.io_bandwidth_limit,
+        ))
+        .map_err(|error| match error {
+            QuotaError::MetadataAllocationFailed => {
+                KernelError::Memory(crate::error::MemoryError::OutOfMemory)
+            }
+            QuotaError::RegistryUnavailable => {
+                KernelError::Domain(DomainErrorKind::RegistryPoisoned)
+            }
+            error => KernelError::Domain(DomainErrorKind::Policy(DomainPolicyError::Quota(error))),
+        })?;
+    let result = {
+        match REGISTRY.lock() {
+            Ok(mut registry) => {
+                let required = registry.domains.len().checked_add(1);
+                if required.is_none_or(|required| {
+                    registry.domains.capacity() < required && prepared.capacity() < required
+                }) {
+                    Err(KernelError::Domain(DomainErrorKind::RegistryFull))
+                } else {
+                    if registry.domains.len() == registry.domains.capacity() {
+                        prepared.extend(registry.domains.drain(..));
+                        core::mem::swap(&mut registry.domains, &mut prepared);
+                    }
+                    registry.domains.push(domain);
+                    Ok(id)
+                }
+            }
+            Err(_) => Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned)),
         }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned during create_domain");
-            Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned))
-        }
+    };
+    // Rejection has consumed the ID but publishes no domain. Account rollback
+    // and metadata destruction occur after releasing the registry lock.
+    if result.is_err() {
+        unregister_domain_quota(id);
     }
+    drop(prepared);
+    result
 }
 
 /// Spawn a new domain and apply requested capability grants atomically.
@@ -504,28 +537,30 @@ pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
 }
 
 /// ドメインの状態を変更
-pub fn set_domain_state(id: DomainId, state: DomainState) {
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
-                let old_state = domain.state;
-                domain.state = state;
-                log::info!("[DOMAIN] {} state: {:?} -> {:?}\n", id, old_state, state);
-                if state == DomainState::Terminated {
-                    unregister_domain_quota(id);
-                } else {
-                    sync_domain_quota(
-                        id,
-                        domain.priority,
-                        domain.cpu_limit_percent,
-                        domain.memory_limit_bytes,
-                        domain.io_bandwidth_limit,
-                    );
-                }
-            }
-        }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (set_domain_state) - no-op"),
+pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPolicyError> {
+    let mut guard = REGISTRY
+        .lock()
+        .map_err(|_| DomainPolicyError::RegistryUnavailable)?;
+    let domain = guard
+        .domains
+        .iter_mut()
+        .find(|d| d.id == id)
+        .ok_or(DomainPolicyError::NotFound)?;
+    if state == DomainState::Terminated {
+        unregister_domain_quota(id);
+    } else {
+        quota_manager()
+            .update_policy(domain_quota_policy(
+                id,
+                domain.priority,
+                domain.cpu_limit_percent,
+                domain.memory_limit_bytes,
+                domain.io_bandwidth_limit,
+            ))
+            .map_err(DomainPolicyError::Quota)?;
     }
+    domain.state = state;
+    Ok(())
 }
 
 /// ドメインを開始
@@ -564,44 +599,49 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
 }
 
 /// Set capability set for a domain (DriverDomain metadata integration hook)
-pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), &'static str> {
+pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
     match REGISTRY.lock() {
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
                 domain.set_capabilities(caps);
                 Ok(())
             } else {
-                Err("Domain not found")
+                Err(DomainPolicyError::NotFound)
             }
         }
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (set_domain_capabilities)");
-            Err("Domain registry poisoned")
+            Err(DomainPolicyError::RegistryUnavailable)
         }
     }
 }
 
 /// Set scheduling priority metadata for a domain
-pub fn set_domain_priority(id: DomainId, priority: DomainPriority) -> Result<(), &'static str> {
+pub fn set_domain_priority(
+    id: DomainId,
+    priority: DomainPriority,
+) -> Result<(), DomainPolicyError> {
     match REGISTRY.lock() {
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                quota_manager()
+                    .update_policy(domain_quota_policy(
+                        id,
+                        priority,
+                        domain.cpu_limit_percent,
+                        domain.memory_limit_bytes,
+                        domain.io_bandwidth_limit,
+                    ))
+                    .map_err(DomainPolicyError::Quota)?;
                 domain.set_priority(priority);
-                sync_domain_quota(
-                    id,
-                    domain.priority,
-                    domain.cpu_limit_percent,
-                    domain.memory_limit_bytes,
-                    domain.io_bandwidth_limit,
-                );
                 Ok(())
             } else {
-                Err("Domain not found")
+                Err(DomainPolicyError::NotFound)
             }
         }
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (set_domain_priority)");
-            Err("Domain registry poisoned")
+            Err(DomainPolicyError::RegistryUnavailable)
         }
     }
 }
@@ -612,30 +652,32 @@ pub fn set_domain_resource_limits(
     cpu_limit_percent: u64,
     memory_limit_bytes: u64,
     io_bandwidth_limit: u64,
-) -> Result<(), &'static str> {
+) -> Result<(), DomainPolicyError> {
     match REGISTRY.lock() {
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                quota_manager()
+                    .update_policy(domain_quota_policy(
+                        id,
+                        domain.priority,
+                        cpu_limit_percent,
+                        memory_limit_bytes,
+                        io_bandwidth_limit,
+                    ))
+                    .map_err(DomainPolicyError::Quota)?;
                 domain.set_resource_limits(
                     cpu_limit_percent,
                     memory_limit_bytes,
                     io_bandwidth_limit,
                 );
-                sync_domain_quota(
-                    id,
-                    domain.priority,
-                    domain.cpu_limit_percent,
-                    domain.memory_limit_bytes,
-                    domain.io_bandwidth_limit,
-                );
                 Ok(())
             } else {
-                Err("Domain not found")
+                Err(DomainPolicyError::NotFound)
             }
         }
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (set_domain_resource_limits)");
-            Err("Domain registry poisoned")
+            Err(DomainPolicyError::RegistryUnavailable)
         }
     }
 }
@@ -670,13 +712,19 @@ pub fn report_cpu_quota_exceeded(id: DomainId, now_ns: u64) -> CpuQuotaAction {
                 domain.priority = next_priority;
             }
 
-            sync_domain_quota(
+            if let Err(error) = quota_manager().update_policy(domain_quota_policy(
                 id,
                 domain.priority,
                 domain.cpu_limit_percent,
                 domain.memory_limit_bytes,
                 domain.io_bandwidth_limit,
-            );
+            )) {
+                log::error!("Domain {} quota update failed: {}", id, error);
+                let until_ns = now_ns.saturating_add(CPU_QUOTA_SUSPEND_WINDOW_NS);
+                domain.quota_suspend_until_ns = until_ns;
+                domain.state = DomainState::Suspended;
+                return CpuQuotaAction::Suspend { until_ns };
+            }
 
             if domain.cpu_violation_streak >= CPU_QUOTA_SUSPEND_STREAK {
                 let until_ns = now_ns.saturating_add(CPU_QUOTA_SUSPEND_WINDOW_NS);
@@ -827,6 +875,7 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
             Ok(mut registry) => {
                 if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
                     domain.state = DomainState::Terminated;
+                    unregister_domain_quota(id);
                     // clone() はロックを保持したままの処理を避けるため
                     // デッドロック回避が clone のコストより重要
                     dependents = domain.dependents.clone();
@@ -843,7 +892,6 @@ pub fn terminate_domain(id: DomainId) -> Result<(), &'static str> {
 
     // リソース回収（ロックを解放してから）
     reclaim_domain_resources(id);
-    unregister_domain_quota(id);
 
     // 依存するドメインに通知
     {
