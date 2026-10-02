@@ -1,7 +1,8 @@
 //! Domain registry and lifecycle internals.
 use super::{
     CPU_QUOTA_SUSPEND_STREAK, CPU_QUOTA_SUSPEND_WINDOW_NS, CpuQuotaAction, DomainId,
-    DomainPolicyError, DomainSecurity, DomainSnapshot, DomainState, RequestedCap,
+    DomainPolicyError, DomainSecurity, DomainSnapshot, DomainState, DomainTerminationError,
+    RequestedCap,
     api::reclaim_domain_resources,
     kernel_security_handle,
     quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager},
@@ -9,7 +10,6 @@ use super::{
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
 use crate::sync::PoisonLock;
-use alloc::format;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -58,7 +58,8 @@ pub struct Domain {
     // エラー情報
     /// パニックメッセージ（クラッシュ時）
     pub panic_message: Option<String>,
-    /// 最後のエラーメッセージ
+    /// Most recent terminated dependency, recorded without allocating during recovery.
+    pub terminated_dependency: Option<DomainId>,
     /// NUMAノードアフィニティ（任意）
     pub numa_node: Option<usize>,
     /// スケジューリング/回収優先度（メタデータ）
@@ -100,7 +101,7 @@ impl Domain {
             context_switches: 0,
             created_at: crate::task::current_tick(),
             panic_message: None,
-            last_error: None,
+            terminated_dependency: None,
             numa_node: None,
             priority: DomainPriority::Normal,
             cpu_limit_percent: 100,
@@ -425,7 +426,13 @@ pub fn spawn_domain_with_caps(
                 for token_id in created_tokens.iter().copied() {
                     let _ = cap_mgr.revoke_grant(parent, token_id, true);
                 }
-                let _ = with_domain_mut(domain_id, |d| d.state = DomainState::Terminated);
+                if let Err(error) = terminate_domain(domain_id) {
+                    log::error!(
+                        "[DOMAIN] Failed grant rollback retained domain {}: {}",
+                        domain_id,
+                        error
+                    );
+                }
                 return Err(KernelError::Domain(DomainErrorKind::LifecycleError));
             }
         }
@@ -435,17 +442,6 @@ pub fn spawn_domain_with_caps(
 }
 
 /// ドメインのセキュリティハンドルを取得
-pub fn domain_security_handle(id: DomainId) -> Arc<DomainSecurity> {
-    match REGISTRY.lock() {
-        Ok(guard) => guard
-            .domains
-            .iter()
-            .find(|d| d.id == id)
-            .map(|d| d.security.clone())
-            .unwrap_or_else(kernel_security_handle),
-        Err(_) => kernel_security_handle(),
-    }
-}
 
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
@@ -454,6 +450,36 @@ pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (get_domain_state)");
             None
+        }
+    }
+}
+
+/// Commit prepared resource metadata while owner termination is excluded.
+/// The callback must perform only its allocation-free publication. Prepare
+/// fallible metadata and device authorization before entering this scope, and
+/// finalize payloads after leaving it. Rejection returns the prepared owner
+/// unchanged after unlocking. No admission can escape with the result.
+pub(crate) fn with_resource_admission<T, R>(
+    owner: DomainId,
+    prepared: T,
+    publish: impl FnOnce(super::DomainResourceAdmission<'_>, T) -> R,
+) -> Result<R, (super::DomainResourceAdmissionError, T)> {
+    use super::{DomainResourceAdmission, DomainResourceAdmissionError};
+    let registry = match REGISTRY.lock() {
+        Ok(registry) => registry,
+        Err(_) => return Err((DomainResourceAdmissionError::RegistryUnavailable, prepared)),
+    };
+    let admission = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == owner)
+        .ok_or(DomainResourceAdmissionError::UnknownOwner)
+        .and_then(|domain| DomainResourceAdmission::checked(&domain.id, &domain.state));
+    match admission {
+        Ok(admission) => Ok(publish(admission, prepared)),
+        Err(cause) => {
+            drop(registry);
+            Err((cause, prepared))
         }
     }
 }
@@ -509,7 +535,7 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
         memory_limit_bytes: domain.memory_limit_bytes,
         io_bandwidth_limit: domain.io_bandwidth_limit,
         panic_message: domain.panic_message.clone(),
-        last_error: domain.last_error.clone(),
+        terminated_dependency: domain.terminated_dependency,
     }
 }
 
@@ -537,6 +563,9 @@ pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
 
 /// ドメインの状態を変更
 pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPolicyError> {
+    if state == DomainState::Terminated {
+        return terminate_domain(id).map_err(DomainPolicyError::Termination);
+    }
     let mut guard = REGISTRY
         .lock()
         .map_err(|_| DomainPolicyError::RegistryUnavailable)?;
@@ -545,19 +574,15 @@ pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPo
         .iter_mut()
         .find(|d| d.id == id)
         .ok_or(DomainPolicyError::NotFound)?;
-    if state == DomainState::Terminated {
-        unregister_domain_quota(id);
-    } else {
-        quota_manager()
-            .update_policy(domain_quota_policy(
-                id,
-                domain.priority,
-                domain.cpu_limit_percent,
-                domain.memory_limit_bytes,
-                domain.io_bandwidth_limit,
-            ))
-            .map_err(DomainPolicyError::Quota)?;
-    }
+    quota_manager()
+        .update_policy(domain_quota_policy(
+            id,
+            domain.priority,
+            domain.cpu_limit_percent,
+            domain.memory_limit_bytes,
+            domain.io_bandwidth_limit,
+        ))
+        .map_err(DomainPolicyError::Quota)?;
     domain.state = state;
     Ok(())
 }
@@ -880,8 +905,52 @@ pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
     }
 }
 
-/// ドメインを終了しリソースを回収
-
+/// Stop admission and notify dependents in one registry publication, without
+/// allocating. Resource finalization runs after unlocking. The retained account
+/// binding rejects restart until this recovery pass has left its cleanup boundary.
+/// Rejection has zero progress. Success does not imply all RAM/DMA was returned.
+pub fn terminate_domain(id: DomainId) -> Result<(), DomainTerminationError> {
+    if id == DomainId::KERNEL {
+        return Err(DomainTerminationError::KernelProtected);
+    }
+    let admission = {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainTerminationError::RegistryUnavailable)?;
+        let index = registry
+            .domains
+            .iter()
+            .position(|domain| domain.id == id)
+            .ok_or(DomainTerminationError::NotFound)?;
+        let (before, rest) = registry.domains.split_at_mut(index);
+        let (domain, after) = rest
+            .split_first_mut()
+            .expect("index selected an existing domain");
+        if domain.state == DomainState::Terminated {
+            return Ok(());
+        }
+        // Binding and revocation acquire no metadata. Destruction of retired
+        // accounts is deferred to cold registration/observation outside this lock.
+        let admission = quota_manager()
+            .bind_memory(id)
+            .map_err(DomainTerminationError::Quota)?;
+        unregister_domain_quota(id);
+        domain.state = DomainState::Terminated;
+        if domain.dependents.contains(&id) {
+            domain.terminated_dependency = Some(id);
+        }
+        for dependent in before.iter_mut().chain(after.iter_mut()) {
+            if domain.dependents.contains(&dependent.id) {
+                dependent.terminated_dependency = Some(id);
+            }
+        }
+        admission
+    };
+    reclaim_domain_resources(id);
+    drop(admission);
+    log::info!("[DOMAIN] Terminated {} and initiated resource return", id);
+    Ok(())
+}
 
 /// ドメインがパニックした場合の処理
 pub fn handle_domain_panic(id: DomainId, message: String) {
@@ -943,5 +1012,86 @@ mod security_tests {
             set_domain_capabilities(DomainId::new(u64::MAX), CapabilitySet::empty()),
             Err(DomainPolicyError::NotFound)
         );
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod termination_tests {
+    use super::*;
+
+    #[test]
+    fn termination_notifies_only_dependents_and_retains_live_return_targets() {
+        let before = create_domain(String::from("dependent_before")).expect("domain admission");
+        let source = create_domain(String::from("dependency")).expect("domain admission");
+        let after = create_domain(String::from("dependent_after")).expect("domain admission");
+        let unrelated = create_domain(String::from("unrelated")).expect("domain admission");
+        crate::domain::lifecycle::add_domain_dependency(before, source).expect("dependency");
+        crate::domain::lifecycle::add_domain_dependency(after, source).expect("dependency");
+        let binding = quota_manager()
+            .bind_memory(source)
+            .expect("execution admission");
+        let credit = binding.reserve(37).expect("payload admission");
+        set_domain_state(source, DomainState::Terminated).expect("termination publication");
+        assert_eq!(get_domain_state(source), Some(DomainState::Terminated));
+        assert_eq!(
+            with_domain(before, |d| d.terminated_dependency),
+            Some(Some(source))
+        );
+        assert_eq!(
+            with_domain(after, |d| d.terminated_dependency),
+            Some(Some(source))
+        );
+        assert_eq!(
+            with_domain(unrelated, |d| d.terminated_dependency),
+            Some(None)
+        );
+        assert_eq!(quota_manager().get_stats(source).unwrap().memory_used, 37);
+        assert!(
+            matches!(binding.reserve(1), Err(QuotaError::Retired { domain_id }) if domain_id == source)
+        );
+        assert!(matches!(
+            crate::domain::lifecycle::restart_domain(source),
+            Err(crate::domain::lifecycle::DomainError::Policy(
+                DomainPolicyError::Quota(QuotaError::Retired { .. })
+            ))
+        ));
+        terminate_domain(source).expect("idempotent termination");
+        drop(credit);
+        drop(binding);
+        assert!(quota_manager().get_stats(source).is_none());
+        for id in [before, after, unrelated] {
+            terminate_domain(id).expect("fixture cleanup");
+        }
+    }
+
+    #[test]
+    fn termination_rejections_leave_the_domain_and_admission_unchanged() {
+        assert_eq!(
+            terminate_domain(DomainId::KERNEL),
+            Err(DomainTerminationError::KernelProtected)
+        );
+        assert_eq!(
+            set_domain_state(DomainId::KERNEL, DomainState::Terminated),
+            Err(DomainPolicyError::Termination(
+                DomainTerminationError::KernelProtected
+            ))
+        );
+        assert_eq!(
+            terminate_domain(DomainId::new(u64::MAX)),
+            Err(DomainTerminationError::NotFound)
+        );
+        let id = create_domain(String::from("termination_admission")).expect("domain admission");
+        quota_manager().unregister(id);
+        assert!(matches!(
+            terminate_domain(id),
+            Err(DomainTerminationError::Quota(_))
+        ));
+        assert_eq!(get_domain_state(id), Some(DomainState::Initializing));
+        assert_eq!(with_domain(id, |d| d.terminated_dependency), Some(None));
+        // Prepare a new account only after the rejected, zero-progress attempt.
+        quota_manager()
+            .register(DomainQuota::new(id, DomainPriority::Normal))
+            .expect("re-admission");
+        terminate_domain(id).expect("fixture cleanup");
     }
 }

@@ -5,6 +5,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 use spin::Mutex;
 
 pub use crate::security::CapabilitySet;
+#[path = "../domain/types.rs"]
+pub mod types;
+pub use types::*;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DomainErrorKind {
@@ -151,8 +154,27 @@ where
         .map(f)
 }
 
-pub fn domain_security_handle(id: DomainId) -> Arc<DomainSecurity> {
-    with_domain(id, |domain| domain.security.clone()).unwrap_or_else(kernel_security_handle)
+
+/// Only prepared, allocation-free resource publication may run in this scope.
+/// Rejection returns the prepared owner unchanged after releasing the registry.
+pub(crate) fn with_resource_admission<T, R>(
+    owner: DomainId,
+    prepared: T,
+    publish: impl FnOnce(DomainResourceAdmission<'_>, T) -> R,
+) -> Result<R, (DomainResourceAdmissionError, T)> {
+    let domains = DOMAINS.lock();
+    let admission = domains
+        .iter()
+        .find(|domain| domain.id == owner)
+        .ok_or(DomainResourceAdmissionError::UnknownOwner)
+        .and_then(|domain| DomainResourceAdmission::checked(&domain.id, &domain.state));
+    match admission {
+        Ok(admission) => Ok(publish(admission, prepared)),
+        Err(cause) => {
+            drop(domains);
+            Err((cause, prepared))
+        }
+    }
 }
 
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
