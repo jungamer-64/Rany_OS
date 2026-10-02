@@ -117,6 +117,8 @@ pub mod remote_free {
 
 #[path = "../mm/types.rs"]
 pub mod types;
+#[path = "../mm/value.rs"]
+pub mod value;
 
 /// Host RAM has the same exclusive release contract as admitted physical RAM.
 /// Identity mapping is the host boundary; the backing Layout is retained by its
@@ -267,6 +269,9 @@ pub mod frame_allocator {
     pub fn dealloc_frame(owner: PhysicalAllocation) {
         owner.release();
     }
+    pub(crate) fn drain_current_cache() -> usize {
+        0 // hosted RAM is returned directly; it has no CPU frame magazine
+    }
     pub fn dealloc_contiguous_frames(owner: PhysicalAllocation) {
         owner.release();
     }
@@ -393,7 +398,11 @@ pub mod cache {
     }
 }
 
+#[path = "../mm/numa/placement.rs"]
+pub mod numa_placement;
+
 pub mod numa {
+    pub use super::numa_placement as placement;
     pub fn num_nodes() -> usize {
         topology::num_nodes()
     }
@@ -403,11 +412,7 @@ pub mod numa {
     }
 
     pub mod topology {
-        use alloc::alloc::{alloc_zeroed, dealloc};
-        use core::alloc::Layout;
-        use core::ptr::NonNull;
-
-        pub const MAX_NUMA_NODES: usize = 8;
+        
 
         pub fn num_nodes() -> usize {
             1
@@ -415,8 +420,6 @@ pub mod numa {
         pub fn current_node() -> usize {
             0
         }
-
-
     }
 }
 
