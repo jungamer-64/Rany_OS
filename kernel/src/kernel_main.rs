@@ -624,7 +624,7 @@ async fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
     }
 }
 
-fn init_durability_and_kgdb(context: &KernelBootContext) {
+async fn init_durability_and_kgdb(context: &KernelBootContext) {
     info!(target: "init", "Initializing durability + kgdb subsystems");
     durability::init();
 
@@ -634,7 +634,12 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
     {
         let nsid = util::get_cmdline_option(cmdline, "wal_nsid")
             .and_then(parse_cmdline_u64)
-            .unwrap_or(0) as u32;
+            .and_then(|value| u32::try_from(value).ok())
+            .unwrap_or(0);
+        let controller = util::get_cmdline_option(cmdline, "wal_controller")
+            .and_then(parse_cmdline_u64)
+            .and_then(|value| u8::try_from(value).ok())
+            .unwrap_or(0);
         let lba_start = util::get_cmdline_option(cmdline, "wal_lba_start")
             .and_then(parse_cmdline_u64)
             .unwrap_or(0);
@@ -642,32 +647,43 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
             .and_then(parse_cmdline_u64)
             .unwrap_or(0);
         if nsid != 0 && lba_len != 0 {
-            if let Err(e) = durability::wal::set_backend_nvme_raw(nsid, lba_start, lba_len) {
-                warn!(target: "init", "WAL NVMe backend disabled: {:?}", e);
+            let device = io::io_scheduler::DeviceId::Nvme {
+                controller,
+                namespace: nsid,
+            };
+            let configured =
+                match durability::wal::BlockWalStorage::open(device, lba_start, lba_len) {
+                    Ok(storage) => {
+                        durability::wal::wal_manager()
+                            .configure(
+                                alloc::boxed::Box::new(storage),
+                                durability::wal::WalInitConfig::default(),
+                            )
+                            .await
+                    }
+                    Err(cause) => Err(cause),
+                };
+            if let Err(e) = configured {
+                panic!("requested WAL backend acquisition failed: {e:?}");
             } else {
                 info!(
                     target: "init",
-                    "WAL backend enabled: nvme_raw nsid={} lba_start={} lba_len={}",
+                    "WAL backend enabled: nvme_raw controller={} nsid={} lba_start={} lba_len={}",
+                    controller,
                     nsid,
                     lba_start,
                     lba_len
                 );
             }
         } else {
-            warn!(
-                target: "init",
-                "wal=nvme_raw requested but wal_nsid/wal_lba_len missing; WAL kept disabled"
-            );
+            panic!("wal=nvme_raw requires a valid wal_nsid and wal_lba_len");
         }
     }
 
-    if let Err(e) = durability::wal::recover_from_backend(|_tx_id, _op| {
-        // Recovery apply-hook is intentionally a no-op at kernel boot stage.
-    }) {
-        warn!(target: "init", "WAL recovery skipped: {:?}", e);
-    }
-    if let Err(e) = durability::wal::checkpoint() {
-        warn!(target: "init", "WAL checkpoint skipped: {:?}", e);
+    if let Err(e) = durability::wal::wal_manager()
+        .replay(|_tx_id, operation| fs::memfs::apply_journal_operation(operation))
+    {
+        panic!("WAL recovery application failed: {e:?}");
     }
 
     let kgdb_on = context
@@ -764,7 +780,7 @@ async fn phase_driver_bringup() -> bool {
     initialize_system_integration().await
 }
 
-fn phase_post_driver_services(context: &KernelBootContext) {
+async fn phase_post_driver_services(context: &KernelBootContext) {
     init_network_infra();
 
     // 3.7. ファイルシステム（memfs）の初期化
@@ -773,7 +789,7 @@ fn phase_post_driver_services(context: &KernelBootContext) {
     info!(target: "init", "Memory filesystem initialized");
 
     // 3.8. WAL / PMEM / KGDB initialization
-    init_durability_and_kgdb(context);
+    init_durability_and_kgdb(context).await;
 }
 
 fn runtime_interrupts_enabled(_context: &KernelBootContext) -> bool {

@@ -1,4 +1,5 @@
 use super::*;
+use kernel_api::resource::fs::FsMutationError;
 
 #[cfg(test)]
 mod fs_tests;
@@ -705,8 +706,16 @@ impl ShellServices for KernelServiceHost {
         Ok(bytes.into_inner())
     }
 
-    fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
-        crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
+    fn write_file<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::fs::write_file_content(path, "/", data)
+                .await
+                .map_err(super::fs::mutation_error)
+        })
     }
 
     fn stat_file(&self, path: &str) -> Result<kernel_api::shell::FileAttributes, &'static str> {
@@ -730,15 +739,36 @@ impl ShellServices for KernelServiceHost {
         }
     }
 
-    fn make_directory(&self, path: &str) -> Result<(), &'static str> {
-        crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
+    fn make_directory<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::fs::make_directory(path, "/")
+                .await
+                .map_err(super::fs::mutation_error)
+        })
     }
 
-    fn remove_file(&self, path: &str) -> Result<(), &'static str> {
-        crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::fs::remove_file(path, "/")
+                .await
+                .map_err(super::fs::mutation_error)
+        })
     }
 
-    fn remove_directory(&self, path: &str) -> Result<(), &'static str> {
-        crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")
+    fn remove_directory<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>> {
+        Box::pin(async move {
+            crate::fs::remove_directory(path, "/")
+                .await
+                .map_err(super::fs::mutation_error)
+        })
     }
 }

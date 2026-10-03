@@ -35,6 +35,33 @@ mod resource_mapping;
 pub use resource_mapping::*;
 mod manager_impl;
 
+/// A admitted operation keeps its grant counted across suspension and transfers
+/// this ownership to the published resource. Revocation closes new admission;
+/// reclamation waits for this owner to be dropped.
+pub(crate) struct TokenUse<'a> {
+    manager: &'a CapabilityManager,
+    token_id: u64,
+}
+
+impl core::fmt::Debug for TokenUse<'_> {
+    fn fmt(&self, out: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        out.debug_struct("TokenUse")
+            .field("token_id", &self.token_id)
+            .finish()
+    }
+}
+
+impl Drop for TokenUse<'_> {
+    fn drop(&mut self) {
+        if let Err(cause) = self.manager.decrement_in_flight(self.token_id) {
+            log::error!(
+                "grant usage ownership inconsistent: token={} cause={cause:?}",
+                self.token_id
+            );
+        }
+    }
+}
+
 // ============================================================================
 // カーネル固有の型定義（libs/security の型を拡張）
 // ============================================================================

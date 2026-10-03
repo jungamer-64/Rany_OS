@@ -8,6 +8,7 @@
 //! memfs とカーネル内ファイルサービスが共有する最小の型・トレイト群です。
 //! VFS や POSIX 互換 API は含めず、カーネル内で必要な操作だけを表現します。
 
+use crate::sync::{Mutex, RwLock};
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec;
@@ -16,7 +17,6 @@ use core::future::Future;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll, Waker};
-use spin::{Mutex, RwLock};
 
 // ============================================================================
 // Error Types
@@ -63,6 +63,14 @@ pub enum FsError {
     Interrupted,
     /// Corrupted filesystem (e.g., infinite cluster chain, invalid FAT entries)
     CorruptedFs,
+    /// The memory filesystem changed; WAL completion was not confirmed. Retry
+    /// must reconcile that mutation rather than assuming zero progress.
+    MemoryCommitted(crate::durability::wal::WalError),
+    /// No filesystem mutation occurred because journal admission/preparation failed.
+    JournalUnavailable(crate::durability::wal::WalError),
+    /// An earlier memory mutation retains its intent. Further mutations require
+    /// recovery before they can be admitted.
+    MutationRecoveryRequired { intent_bytes: usize },
 }
 
 /// Result type for filesystem operations
@@ -561,7 +569,7 @@ impl<'a> Future for AsyncReadFuture<'a> {
                         let result = inode.read(position, &mut data);
                         shared_for_task.complete(result, data);
                     },
-                    crate::task::TaskPlacement::Any,
+                    crate::task::TaskOptions::any(),
                 ) {
                     log::error!("failed to schedule filesystem read: {:?}", error);
                     this.state = ReadFutureState::Finished;
@@ -675,7 +683,7 @@ impl<'a> Future for AsyncWriteFuture<'a> {
                     async move {
                         shared_for_task.complete(inode.write(position, &data));
                     },
-                    crate::task::TaskPlacement::Any,
+                    crate::task::TaskOptions::any(),
                 ) {
                     log::error!("failed to schedule filesystem write: {:?}", error);
                     this.state = WriteFutureState::Finished;

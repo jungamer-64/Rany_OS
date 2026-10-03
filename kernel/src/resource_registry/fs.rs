@@ -3,9 +3,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::sync::PoisonLock;
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct FileHandleEntry {
-    pub(crate) token: Option<u64>,
+    pub(crate) token: Option<crate::security::capability::TokenUse<'static>>,
     pub(crate) owner: u64,
 }
 
@@ -81,11 +81,6 @@ pub(crate) fn cleanup_owner(owner: u64) -> usize {
         removed
     };
 
-    for entry in &entries {
-        if let Some(token) = entry.token {
-            let _ = crate::security::capability::manager().decrement_in_flight(token);
-        }
-    }
-
+    // Grant owners are dropped after releasing the registry lock.
     entries.len()
 }

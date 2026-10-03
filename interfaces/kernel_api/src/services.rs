@@ -276,12 +276,18 @@ pub trait KernelServices: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    fn fs_open_with_token(
-        &self,
-        path: &str,
+    fn fs_open_with_token<'a>(
+        &'a self,
+        path: &'a str,
         mode: OpenMode,
         token: Option<u64>,
-    ) -> KapiResult<FileHandle>;
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<FileHandle, crate::resource::fs::FsMutationError>>
+                + Send
+                + 'a,
+        >,
+    >;
 
     /// Close a file
     ///
@@ -1190,14 +1196,24 @@ mod standalone {
             })
         }
 
-        fn fs_open_with_token(
-            &self,
-            path: &str,
+        fn fs_open_with_token<'a>(
+            &'a self,
+            path: &'a str,
             mode: OpenMode,
             token: Option<u64>,
-        ) -> KapiResult<FileHandle> {
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<FileHandle, crate::resource::fs::FsMutationError>>
+                    + Send
+                    + 'a,
+            >,
+        > {
             let _ = (path, mode, token);
-            Err(KapiError::NotSupported)
+            Box::pin(async {
+                Err(crate::resource::fs::FsMutationError::Filesystem(
+                    KapiError::NotSupported,
+                ))
+            })
         }
 
         fn fs_close(&self, handle: FileHandle) -> KapiResult<()> {

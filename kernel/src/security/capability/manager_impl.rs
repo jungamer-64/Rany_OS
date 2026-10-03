@@ -398,17 +398,14 @@ impl CapabilityManager {
 
     /// Increment the in-flight counter for a token
     pub fn increment_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
-        {
-            let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
-            if let Some(t) = grants.iter().find(|t| t.id == token_id) {
-                if t.revoked {
-                    return Err(CapabilityError::InvalidCapability);
-                }
-            } else {
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(t) = grants.iter().find(|t| t.id == token_id) {
+            if t.revoked {
                 return Err(CapabilityError::InvalidCapability);
             }
+        } else {
+            return Err(CapabilityError::InvalidCapability);
         }
-
         let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pair) = m.iter_mut().find(|(id, _)| *id == token_id) {
             pair.1 += 1;
@@ -416,6 +413,44 @@ impl CapabilityManager {
             m.push((token_id, 1));
         }
         Ok(())
+    }
+
+    /// Validation and admission share the grant lock, so revocation cannot
+    /// reclaim the token between those two steps. No lock crosses suspension.
+    pub(crate) fn retain_token(
+        &self,
+        domain: u64,
+        token_id: u64,
+        required_cap: Capability,
+    ) -> Result<TokenUse<'_>, CapabilityError> {
+        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
+        let token = grants
+            .iter()
+            .find(|t| t.id == token_id)
+            .ok_or(CapabilityError::InvalidCapability)?;
+        if token.target != domain || token.cap != required_cap || token.revoked {
+            return Err(CapabilityError::NotPermitted);
+        }
+        if token
+            .expires
+            .is_some_and(|expires| crate::task::current_tick() >= expires)
+        {
+            return Err(CapabilityError::InvalidCapability);
+        }
+        let mut uses = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some((_, count)) = uses.iter_mut().find(|(id, _)| *id == token_id) {
+            *count = count
+                .checked_add(1)
+                .ok_or(CapabilityError::ReclamationBusy)?;
+        } else {
+            uses.try_reserve(1)
+                .map_err(|_| CapabilityError::ReclamationBusy)?;
+            uses.push((token_id, 1));
+        }
+        Ok(TokenUse {
+            manager: self,
+            token_id,
+        })
     }
 
     /// Decrement the in-flight counter for a token

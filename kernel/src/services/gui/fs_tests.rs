@@ -18,7 +18,7 @@ mod fs_tests {
         current.enter_execution(
             ExecutionContext::from_subject(Subject {
                 domain: domain_id,
-                task: TaskId::new(),
+                task: TaskId::from_raw(1),
                 cred: DomainCredentials::ROOT,
                 caps,
             })
@@ -54,13 +54,19 @@ mod fs_tests {
         // Target opens using token
         let handle = {
             let _target_guard = set_current_subject(target);
-            KERNEL_SERVICE_HOST
-                .fs_open_with_token(
-                    "test_token_file",
-                    kernel_api::resource::fs::OpenMode::Write,
-                    Some(token),
-                )
-                .expect("open should succeed")
+            let mut open = KERNEL_SERVICE_HOST.fs_open_with_token(
+                "test_token_file",
+                kernel_api::resource::fs::OpenMode::Write,
+                Some(token),
+            );
+            match open.as_mut().poll(&mut core::task::Context::from_waker(
+                core::task::Waker::noop(),
+            )) {
+                core::task::Poll::Ready(result) => result.expect("open should succeed"),
+                core::task::Poll::Pending => {
+                    panic!("volatile memfs open should complete immediately")
+                }
+            }
         };
         assert_eq!(
             crate::security::capability::manager().in_flight_count(token),

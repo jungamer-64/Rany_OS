@@ -261,8 +261,8 @@ pub fn read_file_zero_copy(path: &str) -> Result<Arc<Vec<u8>>, &'static str> {
     Ok(bytes.into_inner())
 }
 
-pub fn write_file(path: &str, data: &[u8]) -> Result<(), &'static str> {
-    crate::fs::write_file_content(path, "/", data).map_err(|_| "Failed to write file")
+pub async fn write_file(path: &str, data: &[u8]) -> crate::fs::FsResult<()> {
+    crate::fs::write_file_content(path, "/", data).await
 }
 
 pub fn stat_file(path: &str) -> Result<FileAttributes, &'static str> {
@@ -286,14 +286,14 @@ pub fn stat_file(path: &str) -> Result<FileAttributes, &'static str> {
     }
 }
 
-pub fn make_directory(path: &str) -> Result<(), &'static str> {
-    crate::fs::make_directory(path, "/").map_err(|_| "Failed to create directory")
+pub async fn make_directory(path: &str) -> crate::fs::FsResult<()> {
+    crate::fs::make_directory(path, "/").await
 }
 
-pub fn remove_file(path: &str) -> Result<(), &'static str> {
-    crate::fs::remove_file(path, "/").map_err(|_| "Failed to remove file")
+pub async fn remove_file(path: &str) -> crate::fs::FsResult<()> {
+    crate::fs::remove_file(path, "/").await
 }
 
-pub fn remove_directory(path: &str) -> Result<(), &'static str> {
-    crate::fs::remove_directory(path, "/").map_err(|_| "Failed to remove directory")
+pub async fn remove_directory(path: &str) -> crate::fs::FsResult<()> {
+    crate::fs::remove_directory(path, "/").await
 }

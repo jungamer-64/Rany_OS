@@ -16,15 +16,24 @@ use kernel_api::abi::driver::{
 use kernel_api::msix::MsixVectorInfo;
 
 impl KernelServices for KernelServiceHost {
+    fn acquire_pci_mmio(
+        &self,
+        request: kernel_api::mmio::PciMmioRequest,
+    ) -> Result<hal::MappedMmio, kernel_api::mmio::MmioAcquireError> {
+        super::device_registration::authorize_pci_device_for_current_subject(request.device())
+            .map_err(|_| kernel_api::mmio::MmioAcquireError::PermissionDenied)?;
+        crate::resource_registry::mmio::acquire_native(current_subject().domain, request)
+    }
     // ========================================================================
     // Task Management
     // ========================================================================
 
-    fn spawn_task(
+    fn spawn(
         &self,
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
-    ) -> Result<TaskHandle, KapiError> {
-        super::task::spawn_task(future)
+        options: TaskOptions,
+    ) -> Result<TaskId, SpawnError> {
+        super::task::spawn(future, options)
     }
 
     fn current_tick(&self) -> u64 {
@@ -89,18 +98,6 @@ impl KernelServices for KernelServiceHost {
         headroom: usize,
     ) -> Result<kernel_api::resource::net::PacketRef, KapiError> {
         crate::net::payload::alloc_packet_with_headroom(len, headroom).ok_or(KapiError::OutOfMemory)
-    }
-
-    // ========================================================================
-    // I/O Operations
-    // ========================================================================
-
-    fn port_read_u8(&self, port: u16) -> u8 {
-        hal::port_io::PortU8::new(port).read()
-    }
-
-    fn port_write_u8(&self, port: u16, value: u8) {
-        hal::port_io::PortU8::new(port).write(value)
     }
 
     // ========================================================================
@@ -395,13 +392,19 @@ impl KernelServices for KernelServiceHost {
     // Filesystem (Connected to memfs)
     // ========================================================================
 
-    fn fs_open_with_token(
-        &self,
-        path: &str,
+    fn fs_open_with_token<'a>(
+        &'a self,
+        path: &'a str,
         mode: OpenMode,
         token: Option<u64>,
-    ) -> Result<FileHandle, KapiError> {
-        super::fs::open_with_token(path, mode, token)
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<FileHandle, kernel_api::resource::fs::FsMutationError>>
+                + Send
+                + 'a,
+        >,
+    > {
+        Box::pin(super::fs::open_with_token(path, mode, token))
     }
 
     fn fs_close(&self, handle: FileHandle) -> Result<(), KapiError> {
@@ -427,7 +430,8 @@ impl KernelServices for KernelServiceHost {
         handle: DirectBlockHandle,
         block_offset: u64,
         buffer: CpuDmaLease,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = kernel_api::service::storage::BlockTransferOutcome> + Send>>
+    {
         super::storage::read_blocks_dma(handle, block_offset, buffer)
     }
 
@@ -436,7 +440,8 @@ impl KernelServices for KernelServiceHost {
         handle: DirectBlockHandle,
         block_offset: u64,
         buffer: CpuDmaLease,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
+    ) -> Pin<Box<dyn Future<Output = kernel_api::service::storage::BlockTransferOutcome> + Send>>
+    {
         super::storage::write_blocks_dma(handle, block_offset, buffer)
     }
 
@@ -462,29 +467,6 @@ impl KernelServices for KernelServiceHost {
 
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
         super::storage::sgl_max_entries(device_id)
-    }
-
-    fn nvme_submit_rw(
-        &self,
-        request: NvmeRwRequest,
-        io_type: NvmeIoType,
-    ) -> KapiResult<NvmeIoHandle> {
-        super::storage::submit_rw(request, io_type)
-    }
-
-    fn nvme_wait_io(
-        &self,
-        handle: NvmeIoHandle,
-    ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
-        super::storage::wait_io(handle)
-    }
-
-    fn nvme_register_completion_hook(
-        &self,
-        handle: NvmeIoHandle,
-        hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
-    ) {
-        super::storage::register_completion_hook(handle, hook)
     }
 
     fn ipc_create_channel(&self) -> Result<(ChannelHandle, ChannelHandle), KapiError> {
@@ -589,7 +571,7 @@ mod dma_tests {
         current.enter_execution(
             ExecutionContext::from_subject(Subject {
                 domain: domain_id,
-                task: TaskId::new(),
+                task: TaskId::from_raw(1),
                 cred: DomainCredentials::ROOT,
                 caps,
             })
@@ -662,9 +644,12 @@ mod dma_tests {
 
         let handle = {
             let _owner_guard = set_current_subject(owner);
-            KERNEL_SERVICE_HOST
-                .fs_open_with_token("foreign-close-test", OpenMode::Write, None)
-                .expect("owner should open file")
+            let mut open =
+                KERNEL_SERVICE_HOST.fs_open_with_token("foreign-close-test", OpenMode::Write, None);
+            match open.as_mut().poll(&mut core::task::Context::from_waker(core::task::Waker::noop())) {
+                core::task::Poll::Ready(result) => result.expect("owner should open file"),
+                core::task::Poll::Pending => panic!("volatile memfs open should complete immediately"),
+            }
         };
         let handle_id = handle.id();
         let mode = handle.mode();
@@ -690,7 +675,7 @@ mod dma_tests {
         let handle = {
             let _owner_guard = set_current_subject(owner);
             KERNEL_SERVICE_HOST
-                .nvme_open_direct_with_token(0, 0, 1, None)
+                .nvme_open_direct_with_token(0x0100_0000_0000_0001, 0, 1, None)
                 .expect("owner should open direct handle")
         };
 
@@ -717,7 +702,7 @@ mod dma_tests {
         let handle = {
             let _owner_guard = set_current_subject(owner);
             KERNEL_SERVICE_HOST
-                .nvme_open_direct_with_token(0, 0, 1, None)
+                .nvme_open_direct_with_token(0x0100_0000_0000_0001, 0, 1, None)
                 .expect("owner should open direct handle")
         };
 

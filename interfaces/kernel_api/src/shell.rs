@@ -9,8 +9,11 @@
 
 extern crate alloc;
 
+use crate::resource::fs::FsMutationError;
+use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::{future::Future, pin::Pin};
 
 // ============================================================================
 // Memory Information
@@ -294,7 +297,11 @@ pub trait ShellServices: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the request is invalid or the receiver cannot accept the operation.
-    fn write_file(&self, path: &str, data: &[u8]) -> Result<(), &'static str>;
+    fn write_file<'a>(
+        &'a self,
+        path: &'a str,
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>>;
 
     /// Get file attributes
     /// # Errors
@@ -306,17 +313,26 @@ pub trait ShellServices: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn make_directory(&self, path: &str) -> Result<(), &'static str>;
+    fn make_directory<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>>;
 
     /// Remove a file
     /// # Errors
     ///
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    fn remove_file(&self, path: &str) -> Result<(), &'static str>;
+    fn remove_file<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>>;
 
     /// Remove a directory
     /// # Errors
     ///
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    fn remove_directory(&self, path: &str) -> Result<(), &'static str>;
+    fn remove_directory<'a>(
+        &'a self,
+        path: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<(), FsMutationError>> + Send + 'a>>;
 }

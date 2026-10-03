@@ -439,7 +439,7 @@ async fn run_post_driver_stage(
         current_cpu,
         assigned_cpu
     );
-    phase_post_driver_services(&context);
+    phase_post_driver_services(&context).await;
     let current_cpu = current_boot_cpu();
     record_async_boot_stage_completed_cpu(AsyncBootStage::PostDriver, current_cpu);
     info!(
