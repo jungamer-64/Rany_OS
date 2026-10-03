@@ -11,7 +11,7 @@ pub(crate) fn unregister_block_device(owner: DomainId, handle: u64) -> Result<()
     BLOCK_DEVICES.unregister(owner, handle)
 }
 
-pub(crate) fn cleanup_owner(owner: DomainId) -> usize {
+pub(crate) fn cleanup_owner(owner: DomainId) -> Result<usize, BlockCleanupIncomplete> {
     BLOCK_DEVICES.cleanup_owner(owner)
 }
 

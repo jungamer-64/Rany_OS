@@ -11,8 +11,7 @@ use crate::domain::DomainId;
 use crate::driver_domain::driver_domain_manager;
 use crate::driver_registry::DriverHandle;
 use crate::io::io_scheduler::{
-    DeviceId as IoDeviceId, DeviceOps, IoCommand, IoError, IoRequest, IoRequestId, IoResult,
-    PollHandler, hybrid_coordinator, io_scheduler,
+    DeviceId as IoDeviceId, IoError, IoResult, hybrid_coordinator, io_scheduler,
 };
 use crate::io::iommu::types::DeviceId as IommuDeviceId;
 use crate::net::runtime::device::{self as net_device_runtime};
@@ -21,8 +20,8 @@ use crate::sync::{PoisonLock, PoisonRwLock};
 #[cfg(test)]
 use kernel_api::abi::driver::AbiNetPortOps;
 use kernel_api::abi::driver::{
-    AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
-    AbiError as AbiErrorCode, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind,
+    AbiBlockCommandKind, AbiBlockCompletion, AbiBlockDeviceInfo, AbiBlockDeviceRegistration,
+    AbiBlockTransport, AbiError as AbiErrorCode, AbiNetDriverEvent, AbiNetDriverEventKind,
     AbiNetPortInfo, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxMeta,
     AbiNetTxMeta, AbiNetTxSegment, AbiNetTxSubmission, AbiNvmeNamespaceInfo,
     AbiNvmeNamespaceRegistration, AbiRxLease, AbiRxWritableRegion, AbiTxDeviceOutcome,
@@ -37,6 +36,9 @@ use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
 use x86_64::PhysAddr;
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
+
+mod block;
+use block::BlockDeviceAdapter;
 
 pub mod direct_block;
 pub mod dma;
@@ -124,6 +126,13 @@ struct BlockDeviceEntry {
     owner: DomainId,
     info: AbiBlockDeviceInfo,
     scheduler_device: IoDeviceId,
+    adapter: Arc<BlockDeviceAdapter>,
+}
+
+pub(crate) struct BlockCleanupIncomplete {
+    pub(crate) completed: usize,
+    pub(crate) retained: usize,
+    pub(crate) cause: AbiErrorCode,
 }
 
 struct BlockBridgeRegistry {
@@ -144,76 +153,122 @@ impl BlockBridgeRegistry {
         owner: DomainId,
         registration: &AbiBlockDeviceRegistration,
     ) -> Result<u64, AbiErrorCode> {
-        let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
+        let handle = self
+            .next_handle
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
+                handle.checked_add(1)
+            })
+            .map_err(|_| AbiErrorCode::ResourceExhausted)?;
         let scheduler_device = IoDeviceId::RegisteredBlock { handle };
 
-        {
-            let entries = self.entries.read().unwrap_or_else(|e| e.into_inner());
+        let adapter = Arc::try_new(BlockDeviceAdapter::prepare(owner, *registration)?)
+            .map_err(|_| AbiErrorCode::OutOfMemory)?;
+        let queue = registration.queue.identity()?;
+        // Publication is serialized with domain admission closing. Prepare all
+        // callback and per-request storage before acquiring that authority.
+        crate::domain::with_resource_admission(owner, adapter, |_admission, adapter| {
+            let mut entries = self
+                .entries
+                .write()
+                .unwrap_or_else(|error| error.into_inner());
             if entries
                 .values()
-                .any(|entry| entry.scheduler_device == scheduler_device)
+                .any(|entry| entry.adapter.claims_queue(queue))
             {
                 return Err(AbiErrorCode::DeviceBusy);
             }
-        }
-
-        let adapter = Arc::new(BlockDeviceAdapter {
-            registration: *registration,
-            callbacks: CallbackOwner::acquire(owner).map_err(|_| AbiErrorCode::DeviceBusy)?,
-        });
-        io_scheduler().register_device(scheduler_device, Default::default());
-        io_scheduler().register_device_ops(scheduler_device, adapter.clone());
-        hybrid_coordinator()
-            .polling_executor()
-            .register_handler(scheduler_device, adapter);
-
-        self.entries
-            .write()
-            .unwrap_or_else(|e| e.into_inner())
-            .insert(
+            io_scheduler().register_device(scheduler_device, Default::default());
+            io_scheduler().register_device_ops(scheduler_device, adapter.clone());
+            hybrid_coordinator()
+                .polling_executor()
+                .register_handler(scheduler_device, adapter.clone());
+            entries.insert(
                 handle,
                 BlockDeviceEntry {
                     owner,
                     info: registration.info,
                     scheduler_device,
+                    adapter,
                 },
             );
-        Ok(handle)
+            Ok(handle)
+        })
+        .map_err(|(cause, _adapter)| match cause {
+            crate::domain::DomainResourceAdmissionError::UnknownOwner => {
+                AbiErrorCode::DeviceNotFound
+            }
+            crate::domain::DomainResourceAdmissionError::RegistryUnavailable => {
+                AbiErrorCode::IoError
+            }
+            crate::domain::DomainResourceAdmissionError::OwnerTerminated => {
+                AbiErrorCode::DeviceBusy
+            }
+        })?
     }
 
     fn unregister(&self, owner: DomainId, handle: u64) -> Result<(), AbiErrorCode> {
-        let entry = {
-            let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entry) = entries.get(&handle) else {
-                return Err(AbiErrorCode::DeviceNotFound);
-            };
+        let (scheduler_device, adapter) = {
+            let entries = self
+                .entries
+                .read()
+                .unwrap_or_else(|error| error.into_inner());
+            let entry = entries.get(&handle).ok_or(AbiErrorCode::DeviceNotFound)?;
             if entry.owner != owner {
                 return Err(AbiErrorCode::PermissionDenied);
             }
-            entries.remove(&handle)
+            (entry.scheduler_device, entry.adapter.clone())
         };
-
-        if let Some(entry) = entry {
-            io_scheduler().unregister_device(entry.scheduler_device);
-            hybrid_coordinator()
-                .polling_executor()
-                .unregister_handler(entry.scheduler_device);
-        }
+        // Closing is one-way. A preempted callback or accepted request keeps
+        // the registration indexed and permits finalization polling on retry.
+        adapter.stop()?;
+        io_scheduler().unregister_device(scheduler_device);
+        hybrid_coordinator()
+            .polling_executor()
+            .unregister_handler(scheduler_device);
+        self.entries
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&handle);
         Ok(())
     }
 
-    fn cleanup_owner(&self, owner: DomainId) -> usize {
-        let handles: Vec<u64> = self
+    fn cleanup_owner(&self, owner: DomainId) -> Result<usize, BlockCleanupIncomplete> {
+        let mut completed = 0;
+        let initial_count = self
             .entries
             .read()
-            .unwrap_or_else(|e| e.into_inner())
-            .iter()
-            .filter_map(|(handle, entry)| (entry.owner == owner).then_some(*handle))
-            .collect();
-        for &handle in &handles {
-            let _ = self.unregister(owner, handle);
+            .unwrap_or_else(|error| error.into_inner())
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .count();
+        // LOOP_PROOF: mode=bounded; reason=The entry snapshot bounds removals and closed domain admission prevents new registrations;
+        for _ in 0..initial_count {
+            let handle = self
+                .entries
+                .read()
+                .unwrap_or_else(|error| error.into_inner())
+                .iter()
+                .find_map(|(&handle, entry)| (entry.owner == owner).then_some(handle));
+            let Some(handle) = handle else {
+                return Ok(completed);
+            };
+            if let Err(cause) = self.unregister(owner, handle) {
+                let retained = self
+                    .entries
+                    .read()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .values()
+                    .filter(|entry| entry.owner == owner)
+                    .count();
+                return Err(BlockCleanupIncomplete {
+                    completed,
+                    retained,
+                    cause,
+                });
+            }
+            completed += 1;
         }
-        handles.len()
+        Ok(completed)
     }
 
     fn storage_devices(&self) -> Vec<StorageDeviceInfo> {
@@ -1173,9 +1228,26 @@ pub(crate) fn cleanup_owner_domain(
         crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
             completed_net_ports: failure.completed,
             retained_net_ports: failure.retained,
+            completed_block_devices: 0,
+            retained_block_devices: 0,
             completed_dma_leases: 0,
             retained_dma_leases: dma::owner_lease_count(owner),
             cause: failure.cause,
+        }
+    })?;
+    let block_devices = storage::cleanup_owner(owner).map_err(|failure| {
+        crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
+            completed_net_ports: net_ports,
+            retained_net_ports: 0,
+            completed_block_devices: failure.completed,
+            retained_block_devices: failure.retained,
+            completed_dma_leases: 0,
+            retained_dma_leases: dma::owner_lease_count(owner),
+            cause: failure
+                .cause
+                .into_result()
+                .err()
+                .unwrap_or(kernel_api::KapiError::IoError),
         }
     })?;
     let dma = dma::cleanup_owner(owner);
@@ -1185,6 +1257,8 @@ pub(crate) fn cleanup_owner_domain(
             crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
                 completed_net_ports: net_ports,
                 retained_net_ports: 0,
+                completed_block_devices: block_devices,
+                retained_block_devices: 0,
                 completed_dma_leases: dma.released_handles,
                 retained_dma_leases,
                 cause: kernel_api::error::KapiError::Busy,
@@ -1196,7 +1270,7 @@ pub(crate) fn cleanup_owner_domain(
         channels: ipc::cleanup_owner(owner.as_u64()),
         dma,
         direct_blocks: direct_block::cleanup_owner(owner.as_u64()),
-        block_devices: storage::cleanup_owner(owner),
+        block_devices,
         nvme_namespaces: nvme::cleanup_owner(owner),
         net_ports,
     })
@@ -1223,32 +1297,29 @@ mod tests {
     use crate::domain::DomainId;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-    extern "C" fn test_block_submit(
+    unsafe extern "C" fn test_block_submit(
         _opaque: u64,
-        _request_id: u64,
-        _command: u32,
-        _lba: u64,
-        _blocks: u32,
-        _bytes: usize,
-        _iova: u64,
-    ) -> i32 {
-        AbiErrorCode::Success as i32
+        _input: *const kernel_api::abi::driver::AbiBlockSubmission,
+    ) -> kernel_api::abi::driver::AbiBlockSubmitOutcome {
+        kernel_api::abi::driver::AbiBlockSubmitOutcome::rejected(AbiErrorCode::NotSupported)
     }
 
-    extern "C" fn test_block_poll(
+    unsafe extern "C" fn test_block_poll(
         _opaque: u64,
-        _out: *mut AbiIoCompletion,
+        _out: *mut kernel_api::abi::driver::AbiBlockCompletion,
         _capacity: usize,
         written: *mut usize,
     ) -> i32 {
-        unsafe {
-            *written = 0;
-        }
+        // SAFETY: the host supplies an exclusive output count for this callback.
+        unsafe { written.write(0) };
         AbiErrorCode::Success as i32
     }
 
     extern "C" fn test_block_ready(_opaque: u64) -> bool {
         true
+    }
+    unsafe extern "C" fn test_block_stop(_opaque: u64) -> i32 {
+        AbiErrorCode::Success as i32
     }
 
     static TEST_NET_INTERRUPT_CALLS: AtomicUsize = AtomicUsize::new(0);
@@ -1341,48 +1412,44 @@ mod tests {
     }
 
     fn test_block_registration(device_id: u64, namespace_id: u32) -> AbiBlockDeviceRegistration {
-        AbiBlockDeviceRegistration::new(
-            AbiBlockDeviceInfo {
+        AbiBlockDeviceRegistration {
+            abi_size: core::mem::size_of::<AbiBlockDeviceRegistration>() as u64,
+            info: AbiBlockDeviceInfo {
                 device_id,
                 namespace_id,
                 block_size: 512,
+                block_count: 2048,
                 max_transfer_blocks: 128,
                 transport: AbiBlockTransport::Nvme as u32,
                 flags: 0,
                 controller_id: 0,
                 port_id: 0,
             },
-            0,
-            test_block_submit,
-            test_block_poll,
-            test_block_ready,
-        )
+            queue: kernel_api::abi::driver::AbiBlockQueueInfo {
+                device: kernel_api::abi::driver::PackedPciLocation::new(0, 0, 4, 0),
+                index: 0,
+                capacity: 32,
+                generation: 1,
+            },
+            opaque: 0,
+            submit: test_block_submit,
+            poll: test_block_poll,
+            is_ready: test_block_ready,
+            stop: test_block_stop,
+        }
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn block_registry_rejects_duplicate_scheduler_device_and_cleans_owner() {
+    fn block_registration_validates_geometry_before_owner_admission() {
+        let mut registration = test_block_registration(0x100, 1);
+        registration.info.block_count = 0;
         let registry = BlockBridgeRegistry::new();
-        let owner_a = DomainId::new(11);
-        let owner_b = DomainId::new(12);
-
-        let first = registry
-            .register(owner_a, &test_block_registration(0x100, 1))
-            .expect("first block registration");
-        let duplicate = registry.register(owner_b, &test_block_registration(0x101, 1));
-        assert_eq!(duplicate, Err(AbiErrorCode::DeviceBusy));
-
-        let devices = registry.storage_devices();
-        assert_eq!(devices.len(), 1);
-        assert_eq!(devices[0].namespace_id, 1);
-        assert_eq!(devices[0].transport, StorageTransport::Nvme);
-
-        registry.cleanup_owner(owner_a);
-        assert!(registry.storage_devices().is_empty());
         assert_eq!(
-            registry.unregister(owner_a, first),
-            Err(AbiErrorCode::DeviceNotFound)
+            registry.register(DomainId::new(11), &registration),
+            Err(AbiErrorCode::InvalidParam)
         );
+        assert!(registry.storage_devices().is_empty());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

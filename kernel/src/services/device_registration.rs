@@ -55,6 +55,13 @@ pub(super) fn authorize_pci_locator_for_domain(
 pub(super) fn authorize_dma_device_for_current_subject(
     device_id: PackedPciLocation,
 ) -> Result<IommuDeviceId, KapiError> {
+    authorize_pci_device_for_current_subject(device_id)?;
+    Ok(unpack_device_id(device_id))
+}
+
+pub(crate) fn authorize_pci_device_for_current_subject(
+    device_id: PackedPciLocation,
+) -> Result<(), KapiError> {
     let caller = crate::task::current_subject().domain;
     let bound_locator = if caller == DomainId::KERNEL {
         None
@@ -62,8 +69,7 @@ pub(super) fn authorize_dma_device_for_current_subject(
         Some(bound_pci_locator_for_driver_domain(caller)?)
     };
 
-    authorize_pci_locator_for_domain(caller, device_id, bound_locator)?;
-    Ok(unpack_device_id(device_id))
+    authorize_pci_locator_for_domain(caller, device_id, bound_locator)
 }
 
 fn bound_pci_locator_for_driver_domain(caller: DomainId) -> Result<PackedPciLocation, KapiError> {
@@ -113,20 +119,16 @@ pub(super) fn current_driver_domain() -> Result<DomainId, KapiError> {
 }
 
 fn map_registry_error(error: AbiErrorCode) -> KapiError {
-    match error {
-        AbiErrorCode::PermissionDenied => KapiError::PermissionDenied,
-        AbiErrorCode::DeviceBusy => KapiError::ResourceExhausted,
-        AbiErrorCode::DeviceNotFound => KapiError::NotFound,
-        AbiErrorCode::NotSupported => KapiError::NotSupported,
-        AbiErrorCode::InvalidParam => KapiError::InvalidHandle,
-        _ => KapiError::IoError,
-    }
+    // All registry errors use the SDK's canonical status classification.
+    // In particular, a retained runtime is Busy and keeps its registration.
+    error.into_result().err().unwrap_or(KapiError::IoError)
 }
 
 pub(super) fn register_block_device_for_current_subject(
     registration: &AbiBlockDeviceRegistration,
 ) -> Result<u64, KapiError> {
     let owner = current_driver_domain()?;
+    authorize_pci_device_for_current_subject(registration.queue.device)?;
     crate::resource_registry::storage::register_block_device(owner, registration)
         .map_err(map_registry_error)
 }
@@ -156,10 +158,12 @@ pub(super) fn register_netdev_port_for_current_subject(
     let owner = current_driver_domain()?;
     let dma_device = dma_device_for_driver_domain(owner)?;
     crate::resource_registry::net::register_port(owner, dma_device, registration)
-        .map_err(map_registry_error)
 }
 
 pub(super) fn unregister_netdev_port_for_current_subject(handle: u64) -> Result<(), KapiError> {
     let owner = current_driver_domain()?;
-    crate::resource_registry::net::unregister_port(owner, handle).map_err(map_registry_error)
+    crate::resource_registry::net::unregister_port(owner, handle).map_err(|cause| match cause {
+        AbiErrorCode::DeviceBusy => KapiError::Busy,
+        other => map_registry_error(other),
+    })
 }
