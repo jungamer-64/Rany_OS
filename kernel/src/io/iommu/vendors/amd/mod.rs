@@ -74,6 +74,7 @@ pub(super) fn devid_to_bdf(devid: u16) -> (u8, u8, u8) {
 pub struct AmdIommuUnit {
     pub segment: u16,
     pub base_addr: u64,
+    pub(super) registers: Arc<registers::AmdRegisters>,
     pub flags: u8,
     pub device_id: u16,
     pub iommu_info: u16,
@@ -192,7 +193,7 @@ pub struct AmdIommuDriver {
     pub command_queue: Option<CommandQueue>,
     pub(super) iova_allocator: Arc<IovaAllocator>,
     pub(super) enabled: AtomicBool,
-    pub(super) security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
+    pub(super) security_notifier: crate::sync::InitOnce<Arc<dyn SecurityNotifier>>,
     pub(super) max_addr_bits: u8,
     pub(super) interrupt_remap_tables: Vec<Option<PoisonLock<AmdUnitIrt>>>,
 }
@@ -314,7 +315,7 @@ impl AmdIommuDriver {
             command_queue: Some(CommandQueue::new(None)?),
             iova_allocator,
             enabled: AtomicBool::new(false),
-            security_notifier: spin::Once::new(),
+            security_notifier: crate::sync::InitOnce::new(),
             max_addr_bits,
             interrupt_remap_tables,
         })

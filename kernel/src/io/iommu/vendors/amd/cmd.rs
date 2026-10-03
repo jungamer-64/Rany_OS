@@ -143,7 +143,7 @@ impl AmdCommand {
 }
 
 pub struct AmdCommandBuffer {
-    pub(crate) mmio_base: u64,
+    pub(super) registers: alloc::sync::Arc<super::registers::AmdRegisters>,
     pub(crate) phys_base: u64,
     pub(crate) entries: NonNull<AmdCommand>,
     pub(crate) entry_count: usize,
@@ -166,7 +166,7 @@ unsafe impl Sync for AmdCommandBuffer {}
 
 impl AmdCommandBuffer {
     pub unsafe fn new(
-        mmio_base: u64,
+        registers: alloc::sync::Arc<super::registers::AmdRegisters>,
         phys_base: u64,
         virt_base: NonNull<AmdCommand>,
         entry_count: usize,
@@ -182,7 +182,7 @@ impl AmdCommandBuffer {
         }
 
         Ok(Self {
-            mmio_base,
+            registers,
             phys_base,
             entries: virt_base,
             entry_count,
