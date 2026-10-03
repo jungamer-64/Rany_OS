@@ -120,6 +120,11 @@ debug = true
 # loadable segment file-offset overlaps when linking with lld.
 split-debuginfo = "unpacked"
 
+# Freestanding compiler intrinsics require the optimized libm paths; the
+# unoptimized f128 fallback emits a libc dependency that the kernel cannot supply.
+[profile.dev.package.compiler_builtins]
+opt-level = 2
+
 
 #[profile.dev.package."*"]
 #opt-level = 3

@@ -376,6 +376,9 @@ fn slugify(input: &str) -> String {
 
 fn fullboot_label(config: &RunConfig) -> String {
     let mut label = slugify(&config.profile);
+    if config.profile == "scheduler" {
+        label.push_str(&format!("__smp{}", config.smp));
+    }
     if let Some(case) = &config.case_filter {
         label.push_str("__");
         label.push_str(&slugify(case));
@@ -388,8 +391,10 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if !matches!(config.profile.as_str(), "boot-smoke" | "network" | "mm")
-        && cpu_hotplug_mode(&config.profile).is_none()
+    if !matches!(
+        config.profile.as_str(),
+        "boot-smoke" | "network" | "mm" | "scheduler"
+    ) && cpu_hotplug_mode(&config.profile).is_none()
     {
         parts.push(String::from("qemu_no_if=1"));
     }
@@ -566,10 +571,6 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
             "exoloader",
             "--target",
             "x86_64-unknown-uefi",
-            "-Z",
-            "build-std=core,compiler_builtins,alloc",
-            "-Z",
-            "build-std-features=compiler-builtins-mem",
         ],
     )?;
 
@@ -1469,6 +1470,16 @@ mod tests {
             args.iter()
                 .any(|arg| arg == "memory-backend-ram,id=mm-node1,size=513M")
         );
+    }
+
+    #[test]
+    fn scheduler_profile_requires_interrupts_and_distinguishes_topologies() {
+        let mut cfg = RunConfig::for_profile("scheduler");
+        assert!(!kernel_cmdline(&cfg).contains("qemu_no_if=1"));
+        cfg.smp = 1;
+        let single = fullboot_label(&cfg);
+        cfg.smp = 4;
+        assert_ne!(single, fullboot_label(&cfg));
     }
 
     #[test]

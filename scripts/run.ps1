@@ -290,7 +290,6 @@ function Invoke-Lints {
         "clippy",
         "-p", $LOADER_CRATE,
         "--target", $TARGET_LOADER,
-        "-Z", "build-std=core,compiler_builtins,alloc",
         "--", "-D", "warnings"
     )
     & cargo $clippyArgs
@@ -360,9 +359,7 @@ function Build-Loader {
         "build",
         "-p", $LOADER_CRATE,
         "--target", $TARGET_LOADER,
-        "--release",
-        "-Z", "build-std=core,compiler_builtins,alloc",
-        "-Z", "build-std-features=compiler-builtins-mem"
+        "--release"
     )
     
     if (-not $VerboseOutput) { $buildArgs += "--quiet" }
