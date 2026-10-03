@@ -28,6 +28,132 @@ use crate::types::{
 const PORT_COUNT: usize = 32;
 const HBA_REGISTER_BYTES: usize = PORT_BASE as usize + PORT_COUNT * PORT_SIZE as usize;
 const CAP_S64A: u32 = 1 << 31;
+const CAP2: usize = 0x24;
+const BOHC: usize = 0x28;
+const BOH: u32 = 1;
+const BIOS_OWNED: u32 = 1;
+const OS_OWNED: u32 = 1 << 1;
+const OWNERSHIP_SMI_ENABLE: u32 = 1 << 2;
+const BIOS_BUSY: u32 = 1 << 4;
+
+/// Exclusive aperture during BIOS/OS handoff. No port or DMA address is
+/// published until firmware ownership is observed released. A deadline is
+/// policy owned by the caller; expiry must retain this acquisition.
+#[derive(Debug)]
+pub struct AhciAcquisition {
+    mapping: MappedMmio,
+    device: PackedPciLocation,
+    handoff: FirmwareHandoff,
+}
+
+#[derive(Debug)]
+enum FirmwareHandoff {
+    NotImplemented,
+    Requested,
+}
+
+/// Observing ownership never synthesizes release from a timeout.
+#[derive(Debug)]
+#[expect(
+    clippy::large_enum_variant,
+    reason = "handoff transfers a fixed controller owner without allocating after firmware release"
+)]
+pub enum AhciAcquisitionPoll {
+    Waiting(AhciAcquisition),
+    Ready(AhciController),
+}
+
+impl AhciAcquisition {
+    /// Requests OS ownership using AHCI 1.3.1 section 10.6. Controllers before
+    /// AHCI 1.2 have no CAP2/BOHC protocol.
+    ///
+    /// # Safety
+    /// The mapping must be the complete UC AHCI BAR of `device`, reserved
+    /// against other drivers and PCI reconfiguration. Boot services have ended;
+    /// firmware DMA backing remains live until engines are observed stopped.
+    /// Bus mastering and coherent DMA must belong to this same PCI function.
+    ///
+    /// # Errors
+    /// Returns the complete mapping on validation or register failure. A BOHC
+    /// write may already have requested ownership; it is never rolled back.
+    #[expect(
+        unsafe_code,
+        reason = "exclusive PCI identity and firmware backing are platform facts"
+    )]
+    pub unsafe fn begin(
+        mapping: MappedMmio,
+        device: PackedPciLocation,
+    ) -> Result<Self, ControllerOpenError> {
+        if device.is_null() || mapping.len() < HBA_REGISTER_BYTES {
+            return Err(ControllerOpenError {
+                cause: if device.is_null() {
+                    ControllerOpenCause::NullDevice
+                } else {
+                    ControllerOpenCause::ApertureTooSmall
+                },
+                mapping,
+            });
+        }
+        let request = (|| {
+            let region = mapping.region();
+            let version = region.read_only::<u32>(GHC_VS as usize)?.read();
+            if version < 0x0001_0200 || region.read_only::<u32>(CAP2)?.read() & BOH == 0 {
+                return Ok(FirmwareHandoff::NotImplemented);
+            }
+            let status = region.read_only::<u32>(BOHC)?.read();
+            // Preserve RW firmware bits and SMI enable, but write zero to OOC
+            // (RWC). Reading that status is not an acknowledgement of release.
+            region
+                .write_only::<u32>(BOHC)?
+                .write((status & (BIOS_OWNED | BIOS_BUSY | OWNERSHIP_SMI_ENABLE)) | OS_OWNED);
+            Ok(FirmwareHandoff::Requested)
+        })();
+        match request {
+            Ok(handoff) => Ok(Self {
+                mapping,
+                device,
+                handoff,
+            }),
+            Err(cause) => Err(ControllerOpenError {
+                cause: ControllerOpenCause::Registers(cause),
+                mapping,
+            }),
+        }
+    }
+
+    /// Samples firmware ownership once, then either returns this same owner or
+    /// consumes it to acquire the controller. Does not allocate or wait.
+    ///
+    /// # Errors
+    /// Every failure returns the unsplit mapping and grants no port authority.
+    pub fn poll(self) -> Result<AhciAcquisitionPoll, ControllerOpenError> {
+        if matches!(self.handoff, FirmwareHandoff::Requested) {
+            let status = match self.mapping.region().read_only::<u32>(BOHC) {
+                Ok(register) => register.read(),
+                Err(cause) => {
+                    return Err(ControllerOpenError {
+                        cause: ControllerOpenCause::Registers(cause),
+                        mapping: self.mapping,
+                    });
+                }
+            };
+            if !firmware_released(status) {
+                return Ok(AhciAcquisitionPoll::Waiting(self));
+            }
+        }
+        #[expect(
+            unsafe_code,
+            reason = "acquisition owns the verified firmware handoff and PCI aperture"
+        )]
+        // SAFETY: begin established the external resource contract, and this
+        // ownership-consuming sample observed firmware release where supported.
+        unsafe { AhciController::open(self.mapping, self.device) }.map(AhciAcquisitionPoll::Ready)
+    }
+}
+
+fn firmware_released(status: u32) -> bool {
+    status & OS_OWNED != 0 && status & (BIOS_OWNED | BIOS_BUSY) == 0
+}
 
 /// Failure before the controller aperture has been split.
 #[derive(Debug)]
@@ -214,7 +340,7 @@ impl AhciController {
         unsafe_code,
         reason = "PCI resource identity and firmware handoff are external facts"
     )]
-    pub unsafe fn open(
+    unsafe fn open(
         mapping: MappedMmio,
         device: PackedPciLocation,
     ) -> Result<Self, ControllerOpenError> {
@@ -297,6 +423,11 @@ impl AhciController {
     /// Number of command slots advertised by CAP.NCS.
     pub const fn command_slots(&self) -> u8 {
         self.command_slots
+    }
+
+    /// Device DMA width used to admit matching IOMMU allocations.
+    pub const fn address_width(&self) -> DmaAddressWidth {
+        self.address_width
     }
 
     /// Returns whether a SATA port is attached to this owner.
@@ -660,5 +791,104 @@ mod tests {
             PORT_BASE as usize + 31 * PORT_SIZE as usize + PX_CI as usize + 4,
             0x10bc
         );
+    }
+
+    #[test]
+    fn ownership_requires_os_request_and_firmware_release() {
+        assert!(!firmware_released(0));
+        assert!(!firmware_released(BIOS_OWNED));
+        assert!(!firmware_released(OS_OWNED | BIOS_OWNED));
+        assert!(!firmware_released(OS_OWNED | BIOS_BUSY));
+        assert!(firmware_released(OS_OWNED));
+        assert!(firmware_released(OS_OWNED | OWNERSHIP_SMI_ENABLE));
+    }
+
+    struct RegisterRam(core::cell::UnsafeCell<[u32; HBA_REGISTER_BYTES / 4]>);
+
+    #[expect(
+        unsafe_code,
+        reason = "private MMIO fixture uses interior-mutable register storage"
+    )]
+    // SAFETY: this fixture is confined to one test thread; every register
+    // access uses a raw volatile operation, never an aliased Rust reference.
+    unsafe impl Sync for RegisterRam {}
+
+    impl RegisterRam {
+        #[expect(
+            unsafe_code,
+            reason = "register fixture simulates a firmware register write"
+        )]
+        fn write(&self, offset: usize, value: u32) {
+            assert!(offset.is_multiple_of(4) && offset < HBA_REGISTER_BYTES);
+            // SAFETY: the asserted offset belongs to the aligned UnsafeCell
+            // allocation; the single-threaded fixture has no CPU byte borrows.
+            unsafe {
+                self.0
+                    .get()
+                    .cast::<u32>()
+                    .add(offset / 4)
+                    .write_volatile(value)
+            };
+        }
+    }
+
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "private initialized register RAM supplies the simulated PCI resource facts"
+    )]
+    fn acquisition_keeps_registers_and_waits_for_actual_firmware_release() {
+        use alloc::sync::Arc;
+        let ram = Arc::new(RegisterRam(core::cell::UnsafeCell::new(
+            [0; HBA_REGISTER_BYTES / 4],
+        )));
+        ram.write(GHC_VS as usize, 0x0001_0301);
+        ram.write(CAP2, BOH);
+        ram.write(
+            BOHC,
+            BIOS_OWNED | BIOS_BUSY | OWNERSHIP_SMI_ENABLE | (1 << 3),
+        );
+        let weak = Arc::downgrade(&ram);
+        // SAFETY: the interior-mutable words are initialized and aligned; the
+        // retained Arc covers this complete aperture for every derived access.
+        let mapping = unsafe {
+            MappedMmio::from_raw_parts(ram.clone(), ram.0.get().addr(), HBA_REGISTER_BYTES)
+        }
+        .unwrap();
+        let device = PackedPciLocation::new(0, 0, 31, 2);
+        // SAFETY: this is the fixture's only register owner; no device DMA or
+        // real firmware exists, and the PCI identity is bound to this aperture.
+        let acquisition = unsafe { AhciAcquisition::begin(mapping, device) }.unwrap();
+        let AhciAcquisitionPoll::Waiting(acquisition) = acquisition.poll().unwrap() else {
+            panic!("BIOS ownership must prevent controller admission")
+        };
+        assert_eq!(
+            acquisition
+                .mapping
+                .region()
+                .read_only::<u32>(BOHC)
+                .unwrap()
+                .read(),
+            BIOS_OWNED | BIOS_BUSY | OWNERSHIP_SMI_ENABLE | OS_OWNED
+        );
+        assert_eq!(
+            acquisition
+                .mapping
+                .region()
+                .read_only::<u32>(GHC_GHC as usize)
+                .unwrap()
+                .read(),
+            0
+        );
+        ram.write(BOHC, OS_OWNED);
+        drop(ram);
+        let AhciAcquisitionPoll::Ready(controller) = acquisition.poll().unwrap() else {
+            panic!("released firmware ownership must admit the controller")
+        };
+        assert!(weak.upgrade().is_some());
+        assert_eq!(controller.device(), device);
+        assert_eq!(controller.registers.read(GHC_GHC), GHC_AE);
+        drop(controller);
+        assert!(weak.upgrade().is_none());
     }
 }

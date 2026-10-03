@@ -404,7 +404,7 @@ async fn run_driver_stage(
         current_cpu,
         assigned_cpu
     );
-    coordinator.set_integration_ready(phase_driver_bringup());
+    coordinator.set_integration_ready(phase_driver_bringup().await);
     let current_cpu = current_boot_cpu();
     record_async_boot_stage_completed_cpu(AsyncBootStage::Driver, current_cpu);
     info!(
@@ -451,7 +451,7 @@ async fn run_post_driver_stage(
     coordinator.mark_stage_complete(AsyncBootStage::PostDriver);
 }
 
-fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoordinator) {
+async fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoordinator) {
     info!(
         target: "init",
         "Finalizing async boot after early executor handoff"
@@ -473,7 +473,8 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     unwind::init_symbol_table();
     info!(target: "init", "Symbol table initialized");
 
-    let integration_ready = retry_system_integration_if_needed(coordinator.integration_ready());
+    let integration_ready =
+        retry_system_integration_if_needed(coordinator.integration_ready()).await;
     coordinator.set_integration_ready(integration_ready);
     crate::platform::acpi_hotplug::initialize();
 
@@ -545,6 +546,8 @@ fn finalize_runtime_boot(context: KernelBootContext, coordinator: &AsyncBootCoor
     });
 
     schedule_runtime_tests_if_requested(&context);
+    crate::services::start_runtime_maintenance()
+        .unwrap_or_else(|cause| panic!("essential runtime maintenance admission failed: {cause}"));
 }
 
 async fn run_finalizer_stage(
@@ -577,7 +580,7 @@ async fn run_finalizer_stage(
         current_cpu,
         assigned_cpu
     );
-    finalize_runtime_boot(context, &coordinator);
+    finalize_runtime_boot(context, &coordinator).await;
     let current_cpu = current_boot_cpu();
     record_async_boot_stage_completed_cpu(AsyncBootStage::Finalizer, current_cpu);
     info!(
@@ -604,7 +607,7 @@ where
         stage.label(),
         target_cpu
     );
-    crate::task::spawn(future, crate::task::TaskPlacement::Pinned(target_cpu)).map(|_| ())
+    crate::task::spawn(future, crate::task::TaskOptions::pinned(target_cpu)).map(|_| ())
 }
 
 fn spawn_async_boot_orchestrator(
@@ -772,7 +775,10 @@ async fn network_bootstrap_task() {
     let mut dhcp_bound = false;
     for _ in 0..100 {
         // 100ms × 100 = 最大10秒
-        task::sleep_ms(100).await;
+        if let Err(cause) = task::sleep_ms(100).await {
+            log::error!("network boot wait timer failed: {cause}");
+            return;
+        }
 
         let states =
             crate::net::api::dhcp::list_dhcp_states_in(crate::net::runtime::default_runtime())
@@ -851,6 +857,9 @@ async fn network_bootstrap_task() {
             crate::task::TimeoutResult::Completed(Err(e)) => {
                 warn!(target: "net_boot", "Async ping failed if{}: {:?}", if_id, e)
             }
+            crate::task::TimeoutResult::TimerFailed(cause) => {
+                warn!(target: "net_boot", "ping deadline unavailable if{}: {}", if_id, cause)
+            }
             crate::task::TimeoutResult::TimedOut => warn!(
                 target: "net_boot",
                 "Async ping timed out if{} after {} ms",
@@ -861,7 +870,10 @@ async fn network_bootstrap_task() {
     }
 
     if dhcp_bound {
-        task::sleep_ms(250).await;
+        if let Err(cause) = task::sleep_ms(250).await {
+            log::error!("network boot observation timer failed: {cause}");
+            return;
+        }
         log_network_port_snapshot("post-http-watch");
     }
 
@@ -911,7 +923,7 @@ where
             );
             future.await;
         },
-        crate::task::TaskPlacement::Any,
+        crate::task::TaskOptions::any(),
     )
     .map(|_| ())
 }
@@ -954,7 +966,7 @@ pub(crate) fn spawn_core_runtime_tasks() {
     for cpu_id in &online {
         if let Err(error) = crate::task::spawn(
             crate::net::runtime::command_loop::runtime_command_task_in(net_runtime, cpu_id),
-            crate::task::TaskPlacement::Prefer(cpu_id),
+            crate::task::TaskOptions::prefer_cpu(cpu_id),
         ) {
             warn!(
                 target: "net_boot",

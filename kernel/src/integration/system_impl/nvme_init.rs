@@ -429,6 +429,15 @@ impl SystemIntegration {
 
             let controller_id = u8::try_from(builtin_index);
             builtin_index = builtin_index.saturating_add(1);
+            // A cancelled later device phase must not acquire a second owner
+            // for an already published or quarantined physical function.
+            if self
+                .nvme_controllers
+                .iter()
+                .any(|owner| owner.locator == locator)
+            {
+                continue;
+            }
             let owner = match controller_id {
                 Ok(controller_id) => match bootstrap_controller(&device, controller_id) {
                     Ok(success) => {
@@ -469,6 +478,22 @@ impl SystemIntegration {
             }
         }
         Ok(())
+    }
+}
+
+impl SystemIntegration {
+    pub(super) fn progress_device_retirement(&mut self) {
+        self.progress_ahci_maintenance();
+        if !crate::io::io_scheduler::io_scheduler().is_shutdown() {
+            return;
+        }
+        // Rundown consumes the publication owner and retains every callback Arc
+        // and physical controller while hardware quiescence remains unfinished.
+        for index in 0..self.nvme_controllers.len() {
+            let owner = self.nvme_controllers.remove(index);
+            self.nvme_controllers
+                .insert(index, owner.begin_rundown().poll_rundown());
+        }
     }
 }
 

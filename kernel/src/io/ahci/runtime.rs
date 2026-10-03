@@ -11,6 +11,7 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use ahci_driver::controller::{
     AhciController, AhciControllerShutdown, ControllerPortCause, ControllerPortError,
@@ -21,13 +22,14 @@ use ahci_driver::port::{
 };
 use ahci_driver::{AtaCommand, PortNumber};
 use kernel_api::dma::{
-    CpuDmaLease, DmaLeaseError, DmaReconcileWitness, DmaTransitionError, PreparedDmaLease,
-    PreparedSharedDmaLease, UnmapFailedDmaLease,
+    CpuDmaLease, DmaAllocationRequest, DmaLeaseError, DmaReconcileWitness, DmaTransitionError,
+    PreparedDmaLease, PreparedSharedDmaLease, UnmapFailedDmaLease,
 };
 
 use crate::io::io_scheduler::{
-    DeviceCompletion, DeviceId, DeviceOps, IoCommand, IoCompletion, IoCompletionRoute, IoError,
-    IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity, PollHandler,
+    BlockGeometry, DeviceCompletion, DeviceId, DeviceOps, IoCommand, IoCompletion,
+    IoCompletionRoute, IoError, IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity,
+    PollHandler,
 };
 use crate::sync::PoisonLock;
 
@@ -47,6 +49,7 @@ enum RetainedLease {
 enum RuntimePortState {
     Unavailable,
     Idle,
+    Identifying,
     Submitted {
         route: IoCompletionRoute,
         operation: IoOperationType,
@@ -65,6 +68,24 @@ struct RuntimeState {
     controller: AhciController,
     ports: [RuntimePortState; PORT_COUNT],
     retained_initialization: Vec<RetainedLease>,
+}
+
+impl RuntimeState {
+    fn active_ports(&self) -> u32 {
+        self.ports
+            .iter()
+            .enumerate()
+            .fold(0u32, |mask, (index, port)| {
+                if matches!(
+                    port,
+                    RuntimePortState::Submitted { .. } | RuntimePortState::Identifying
+                ) {
+                    mask | (1u32 << index)
+                } else {
+                    mask
+                }
+            })
+    }
 }
 
 /// Result of attaching one implemented port and reclaiming any returned
@@ -95,6 +116,7 @@ pub(crate) enum AdmissionCleanup {
 #[derive(Debug)]
 pub(crate) struct AhciRuntime {
     state: PoisonLock<RuntimeState>,
+    accepting: AtomicBool,
 }
 
 /// Failure before the runtime can irreversibly enter shutdown.
@@ -151,13 +173,126 @@ enum RuntimeControllerShutdown {
 }
 
 impl AhciRuntime {
-    pub(crate) fn new(controller: AhciController) -> Self {
-        Self {
+    pub(crate) fn new(controller: AhciController) -> Result<Self, AhciController> {
+        let mut retained_initialization = Vec::new();
+        // A failed metadata admission and an IDENTIFY close can each retain
+        // one allocation per port. One more slot permits shutdown to gather
+        // a quarantined transfer without growing after hardware publication.
+        if retained_initialization
+            .try_reserve_exact(PORT_COUNT * 3)
+            .is_err()
+        {
+            return Err(controller);
+        }
+        Ok(Self {
+            accepting: AtomicBool::new(true),
             state: PoisonLock::new(RuntimeState {
                 controller,
                 ports: core::array::from_fn(|_| RuntimePortState::Unavailable),
-                retained_initialization: Vec::new(),
+                retained_initialization,
             }),
+        })
+    }
+
+    pub(crate) fn close_admission(&self) {
+        self.accepting.store(false, Ordering::Release);
+    }
+
+    /// Completion polling must remain registered until every accepted command
+    /// has left the hardware-active state, even after admission closes.
+    pub(crate) fn active_ports(&self) -> u32 {
+        self.state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .active_ports()
+    }
+
+    pub(crate) fn start_identify(
+        &self,
+        port: PortNumber,
+        buffer: CpuDmaLease,
+    ) -> Result<(), IoError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let index = port.as_usize();
+        if !matches!(state.ports.get(index), Some(RuntimePortState::Idle)) {
+            close_initialization_cpu(&mut state, buffer);
+            return Err(IoError::Busy);
+        }
+        state.ports[index] = RuntimePortState::Identifying;
+        let result = state
+            .controller
+            .port_mut(port)
+            .expect("idle runtime owns an attached port")
+            .submit(AtaCommand::identify(), buffer);
+        if let Err(error) = result {
+            let cause = map_submit_cause(error.cause);
+            state.ports[index] = RuntimePortState::PortQuarantined { cause };
+            match error.buffer {
+                RejectedBuffer::Cpu(buffer) => {
+                    close_initialization_cpu(&mut state, buffer);
+                }
+                RejectedBuffer::AbortFailed(failure) => {
+                    state
+                        .retained_initialization
+                        .push(RetainedLease::PreparedTransfer(failure));
+                }
+            }
+            return Err(cause);
+        }
+        Ok(())
+    }
+
+    /// Boot discovery consumes actual IDENTIFY completion. A waiting or faulted
+    /// transfer remains in the port owner and is never repolled as a new command.
+    pub(crate) fn poll_identify(&self, port: PortNumber) -> Result<Option<BlockGeometry>, IoError> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let index = port.as_usize();
+        if !matches!(state.ports.get(index), Some(RuntimePortState::Identifying)) {
+            return Err(IoError::InvalidParameter);
+        }
+        let polled = state
+            .controller
+            .port_mut(port)
+            .expect("identifying runtime owns the submitted port")
+            .poll();
+        match polled {
+            Ok(CommandPoll::Pending) => Ok(None),
+            Ok(CommandPoll::Completed(completion)) => {
+                let geometry = if completion.transferred == 512 {
+                    completion
+                        .buffer
+                        .read(ahci_driver::identify::AtaBlockGeometry::from_bytes)
+                        .map_err(|_| IoError::DeviceError)
+                        .and_then(|geometry| geometry.map_err(|_| IoError::NotSupported))
+                        .and_then(|geometry| {
+                            BlockGeometry::new(
+                                geometry.sector_bytes(),
+                                geometry.sector_count(),
+                                8192,
+                            )
+                            .ok_or(IoError::DeviceError)
+                        })
+                } else {
+                    Err(IoError::DeviceError)
+                };
+                close_initialization_cpu(&mut state, completion.buffer);
+                state.ports[index] = match geometry {
+                    Ok(_) => RuntimePortState::Idle,
+                    Err(cause) => RuntimePortState::PortQuarantined { cause },
+                };
+                geometry.map(Some)
+            }
+            Ok(CommandPoll::Idle) => {
+                state.ports[index] = RuntimePortState::PortQuarantined {
+                    cause: IoError::DeviceError,
+                };
+                Err(IoError::DeviceError)
+            }
+            Err(fault) => {
+                let cause = map_port_fault(fault);
+                state.ports[index] = RuntimePortState::PortQuarantined { cause };
+                Err(cause)
+            }
         }
     }
 
@@ -193,19 +328,6 @@ impl AhciRuntime {
         }
     }
 
-    pub(crate) fn attached_ports(&self) -> Vec<PortNumber> {
-        self.state
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .ports
-            .iter()
-            .enumerate()
-            .filter_map(|(index, state)| {
-                matches!(state, RuntimePortState::Idle).then_some(PortNumber::new(index as u8))
-            })
-            .collect()
-    }
-
     /// Enters shutdown only after requests are drained and every published
     /// scheduler/poller owner has released its `Arc`.
     pub(crate) fn begin_shutdown(
@@ -219,17 +341,7 @@ impl AhciRuntime {
                     return Err(RuntimeShutdownStartError::Poisoned(Arc::clone(&runtime)));
                 }
             };
-            let active_ports = state
-                .ports
-                .iter()
-                .enumerate()
-                .fold(0u32, |mask, (index, port)| {
-                    if matches!(port, RuntimePortState::Submitted { .. }) {
-                        mask | (1u32 << index)
-                    } else {
-                        mask
-                    }
-                });
+            let active_ports = state.active_ports();
             if active_ports != 0 {
                 drop(state);
                 return Err(RuntimeShutdownStartError::RequestsActive {
@@ -269,6 +381,9 @@ impl AhciRuntime {
 
     fn submit(&self, expected_port: PortNumber, submission: IoSubmission) -> IoSubmitOutcome {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        if !self.accepting.load(Ordering::Acquire) {
+            return rejected(IoError::Busy, submission);
+        }
         if submission.device()
             != (DeviceId::Ahci {
                 controller: state.controller.device(),
@@ -297,7 +412,9 @@ impl AhciRuntime {
         };
         match runtime_port {
             RuntimePortState::Idle => {}
-            RuntimePortState::Submitted { .. } => return rejected(IoError::Busy, submission),
+            RuntimePortState::Submitted { .. } | RuntimePortState::Identifying => {
+                return rejected(IoError::Busy, submission);
+            }
             RuntimePortState::Unavailable => return rejected(IoError::NotSupported, submission),
             RuntimePortState::AuthorityQuarantined { .. }
             | RuntimePortState::PortQuarantined { .. } => {
@@ -382,14 +499,15 @@ impl AhciRuntime {
     }
 
     fn is_ready(&self, port: PortNumber) -> bool {
-        matches!(
-            self.state
-                .lock()
-                .unwrap_or_else(|error| error.into_inner())
-                .ports
-                .get(port.as_usize()),
-            Some(RuntimePortState::Idle)
-        )
+        self.accepting.load(Ordering::Acquire)
+            && matches!(
+                self.state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .ports
+                    .get(port.as_usize()),
+                Some(RuntimePortState::Idle)
+            )
     }
 
     fn poll(&self) -> Vec<DeviceCompletion> {
@@ -471,11 +589,23 @@ impl BlockCommandIdentity {
 pub(crate) struct AhciPortOps {
     runtime: Arc<AhciRuntime>,
     port: PortNumber,
+    geometry: BlockGeometry,
+    device: kernel_api::abi::driver::PackedPciLocation,
 }
 
 impl AhciPortOps {
-    pub(crate) fn new(runtime: Arc<AhciRuntime>, port: PortNumber) -> Self {
-        Self { runtime, port }
+    pub(crate) fn new(
+        runtime: Arc<AhciRuntime>,
+        port: PortNumber,
+        geometry: BlockGeometry,
+        device: kernel_api::abi::driver::PackedPciLocation,
+    ) -> Self {
+        Self {
+            runtime,
+            port,
+            geometry,
+            device,
+        }
     }
 }
 
@@ -486,6 +616,28 @@ impl DeviceOps for AhciPortOps {
 
     fn is_ready(&self) -> bool {
         self.runtime.is_ready(self.port)
+    }
+
+    fn allocate_transfer(&self, request: DmaAllocationRequest) -> Result<CpuDmaLease, IoError> {
+        if !self.is_ready() {
+            return Err(IoError::Busy);
+        }
+        kernel_api::service::kernel::instance()
+            .alloc_dma_for_device(request, self.device)
+            .map_err(|cause| match cause {
+                kernel_api::KapiError::OutOfMemory | kernel_api::KapiError::ResourceExhausted => {
+                    IoError::NoResources
+                }
+                kernel_api::KapiError::Busy => IoError::Busy,
+                _ => IoError::DeviceError,
+            })
+    }
+
+    fn block_geometry(&self) -> Option<BlockGeometry> {
+        self.runtime
+            .accepting
+            .load(Ordering::Acquire)
+            .then_some(self.geometry)
     }
 }
 

@@ -1,9 +1,11 @@
 use super::*;
 use kernel_api::service::platform::PciDeviceInfo;
 
+mod ahci_init;
 mod global_init;
 mod lifecycle;
 mod nvme_init;
+pub(super) use self::ahci_init::AhciControllerOwner;
 pub use self::global_init::*;
 pub(super) use self::nvme_init::NvmeControllerOwner;
 
@@ -33,6 +35,7 @@ impl SystemIntegration {
             security: SecurityIntegration::new(),
             boot_log: Vec::new(),
             nvme_controllers: Vec::new(),
+            ahci_controllers: Vec::new(),
         }
     }
 
@@ -40,7 +43,7 @@ impl SystemIntegration {
     ///
     /// Completed phases are never replayed. This preserves device and DMA
     /// owners across a later retry instead of reconstructing a second authority.
-    pub fn integrate(&mut self) -> Result<(), IntegrationError> {
+    pub async fn integrate(&mut self) -> Result<(), IntegrationError> {
         if self.status == IntegrationStatus::Complete {
             return Ok(());
         }
@@ -59,7 +62,7 @@ impl SystemIntegration {
         }
 
         if self.status == IntegrationStatus::InterruptsConfigured {
-            self.integrate_devices()?;
+            self.integrate_devices().await?;
         }
 
         if self.status == IntegrationStatus::DevicesInitialized {
@@ -381,13 +384,14 @@ impl SystemIntegration {
     }
 
     /// Phase 4: Device initialization
-    pub(super) fn integrate_devices(&mut self) -> Result<(), IntegrationError> {
+    pub(super) async fn integrate_devices(&mut self) -> Result<(), IntegrationError> {
         self.log("Phase 4: Device initialization");
 
         self.start_staged_pci_drivers();
 
         // Initialize NVMe controllers
         self.init_nvme_devices()?;
+        self.init_ahci_devices().await?;
 
         self.status = IntegrationStatus::DevicesInitialized;
         Ok(())

@@ -39,6 +39,8 @@ fn register_pci_dma_width(
 pub enum IntegrationStatus {
     /// Not initialized
     Uninitialized,
+    /// The composition owner is currently advancing outside its storage lock.
+    InProgress,
     /// ACPI tables parsed
     AcpiParsed,
     /// PCI bus scanned
@@ -56,6 +58,8 @@ pub enum IntegrationStatus {
 /// Integration error
 #[derive(Debug, Clone)]
 pub enum IntegrationError {
+    /// Another integration operation currently owns the composition state.
+    Busy,
     /// ACPI initialization failed
     AcpiError(String),
     /// PCI initialization failed
@@ -80,4 +84,5 @@ pub struct SystemIntegration {
     boot_log: Vec<String>,
     /// Sole kernel owners for built-in NVMe controller generations.
     nvme_controllers: Vec<system_impl::NvmeControllerOwner>,
+    ahci_controllers: Vec<system_impl::AhciControllerOwner>,
 }

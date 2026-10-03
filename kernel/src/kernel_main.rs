@@ -145,6 +145,7 @@ impl KernelBootContext {
             .expect("bootloader handoff must validate before kernel initialization");
         let cmdline = kernel_cmdline(&boot_info_view);
         crate::util::set_boot_cmdline(cmdline);
+        crate::resource_registry::mmio::initialize(boot_info_view.memory_map());
         Self {
             boot_info_addr: boot_info as *const ExoBootInfo as usize,
             boot_info_view,
@@ -202,11 +203,8 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     init_early_serial();
     phase_bootloader_handoff(context);
     verify_boot_protocol_version(boot_info);
-    // SSE/SSE2を有効化（x86_64ではABIで必須）
-    init_sse();
-
-    // Enable AVX/AVX2 if available
-    init_avx();
+    crate::cpu::xstate::initialize_boot_cpu();
+    crate::cpu::cache_policy::initialize_boot_cpu();
 
     // Seed the monotonic clock before the logger comes up so structured logs
     // can carry timestamps even while IRQ delivery is still deferred.
@@ -282,6 +280,10 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     if let Err(error) = crate::resource_registry::mmio::prepare_boot_scanout(context.boot_info()) {
         warn!(target: "init", "Boot framebuffer preparation failed: {:?}", error);
     }
+
+    // Task admission retains a domain code lease even for the first boot
+    // Futures. Install the kernel domain before APs or boot tasks can run.
+    domain::init();
 
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
     // ページテーブル操作と TLB invalidation に必要な BSP CPU-local state は
@@ -592,9 +594,9 @@ fn log_driver_registry_summary() {
     info!(target: "init", "==============================");
 }
 
-fn initialize_system_integration() -> bool {
+async fn initialize_system_integration() -> bool {
     info!(target: "init", "Initializing system integration");
-    if let Err(e) = integration::init() {
+    if let Err(e) = integration::init().await {
         warn!(target: "init", "System integration failed: {:?}", e);
         false
     } else {
@@ -603,7 +605,7 @@ fn initialize_system_integration() -> bool {
     }
 }
 
-fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
+async fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
     if integration_ready {
         debug!(
             target: "init",
@@ -613,7 +615,7 @@ fn retry_system_integration_if_needed(integration_ready: bool) -> bool {
     }
 
     info!(target: "init", "(late) Initializing system integration");
-    if let Err(e) = integration::init() {
+    if let Err(e) = integration::init().await {
         warn!(target: "init", "(late) System integration failed: {:?}", e);
         false
     } else {
@@ -708,12 +710,6 @@ fn init_durability_and_kgdb(context: &KernelBootContext) {
 }
 
 fn phase_core_services_base(context: &KernelBootContext) {
-    // 2. ドメイン管理システムの初期化
-    info!(target: "init", "Initializing domain system");
-    domain::init();
-    info!(target: "init", "Domain system initialized");
-    crate::heap::verify_buddy_integrity();
-
     // 2.5. SAS（単一アドレス空間）の初期化
     info!(target: "init", "Initializing SAS");
     sas::init();
@@ -757,16 +753,15 @@ fn phase_core_services_base(context: &KernelBootContext) {
     }
 }
 
-fn phase_driver_bringup() -> bool {
+async fn phase_driver_bringup() -> bool {
     init_hid_drivers();
 
     // 3.5.5 - 3.5.7. Storage and USB controller scanning
-    init_ahci_controllers();
     init_usb_controllers();
     log_driver_registry_summary();
 
     // 3.6. システム統合 (PCI掃描/デバイス初期化) をネットワークより先に行う
-    initialize_system_integration()
+    initialize_system_integration().await
 }
 
 fn phase_post_driver_services(context: &KernelBootContext) {
@@ -792,18 +787,12 @@ struct RuntimeTestRequest {
 }
 
 fn exit_with_runtime_summary(summary: crate::test::runtime_dispatch::RuntimeRunSummary) -> ! {
-    use hal::port_io::PortU32;
-
-    let mut port = PortU32::new(0xf4);
-    if summary.is_success() {
-        port.write(0x10u32);
+    let code = if summary.is_success() {
+        crate::QemuExitCode::Success
     } else {
-        port.write(0x11u32);
-    }
-    // LOOP_PROOF: mode=halt; reason=Runtime summary path intentionally halts forever after publishing the terminal QEMU exit code.;
-    loop {
-        x86_64::instructions::hlt();
-    }
+        crate::QemuExitCode::Failed
+    };
+    crate::exit_qemu(code)
 }
 
 fn requested_runtime_test(context: &KernelBootContext) -> Option<RuntimeTestRequest> {
@@ -860,7 +849,7 @@ fn schedule_runtime_tests_if_requested(context: &KernelBootContext) {
                 crate::test::runtime_dispatch::run(request.profile, request.case_filter).await;
             exit_with_runtime_summary(summary);
         },
-        crate::task::TaskPlacement::Pinned(target_cpu),
+        crate::task::TaskOptions::pinned(target_cpu),
     ) {
         panic!(
             "failed to schedule runtime tests on CPU {}: {:?}",
@@ -969,7 +958,6 @@ pub(crate) fn init_usb_controllers() {
         }
 
         let usb_handle = register_driver(Box::new(UsbDriverWrapper::new(
-            base_virt,
             device_info.packed_locator(),
         )));
         if let Err(e) = driver_registry::driver_registry()

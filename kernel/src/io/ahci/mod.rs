@@ -7,9 +7,10 @@
 mod runtime;
 
 pub(crate) use ahci_driver::controller::{
-    AhciController, ControllerOpenError, ControllerPortError, ControllerPortMemory,
+    AhciAcquisition, AhciAcquisitionPoll, AhciController, ControllerOpenError, ControllerPortError,
+    ControllerPortMemory,
 };
-pub(crate) use ahci_driver::{AhciError, PORT_DMA_BYTES, PortNumber, SECTOR_SIZE};
+pub(crate) use ahci_driver::{AhciError, DmaAddressWidth, PORT_DMA_BYTES, PortNumber, SECTOR_SIZE};
 pub(crate) use runtime::{
     AdmissionCleanup, AhciPoller, AhciPortOps, AhciRuntime, AhciRuntimeShutdown, PortAdmission,
     RuntimeReconcileError, RuntimeShutdownCause, RuntimeShutdownError, RuntimeShutdownStartError,

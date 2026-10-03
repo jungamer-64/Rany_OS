@@ -15,7 +15,7 @@
 - ドライバがカーネル機能を必要とする場合は `interfaces/kernel_api` 経由で要求します。
 - 新しいカーネルコードは `crate::drivers::*` からデバイス機能にアクセスします。
 - `crate::io::*` はカーネル所有の I/O インフラです。
-  既存のドライバ互換 shim は残りますが、新規参照先としては使いません。
+  device の実行結果を scheduler の completion route と資源所有へ接続します。
 
 ## 置き場所
 
@@ -25,7 +25,7 @@
 - ISR から executor への橋渡し
 - `IoScheduler` や polling policy
 - DriverRegistry / DriverDomain / Capability / Quota
-- ドライバをカーネル実行系へ接続する薄い統合コード
+- ドライバの資源所有、completion、shutdown をカーネル実行系へ接続する統合コード
 
 `drivers/*` に置くもの:
 
@@ -43,9 +43,9 @@
 
 以下は「ドライバ本体」ではなく「カーネル統合アダプタ」として `kernel` 側に残します。
 
-- `kernel/src/io/nvme/scheduler.rs`
-- `kernel/src/io/ahci/poll_handler.rs`
-- ドライバの global registry や boot-time orchestration
+- `kernel/src/io/nvme/runtime.rs`
+- `kernel/src/io/ahci/runtime.rs`
+- `kernel/src/integration/system_impl/` による controller の起動・終了と資源所有
 
 これらはデバイス仕様ではなく、カーネルの executor / scheduler / global state に結びつくためです。
 

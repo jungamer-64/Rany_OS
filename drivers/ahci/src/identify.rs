@@ -5,6 +5,97 @@
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
+/// Geometry accepted by the driver's 48-bit, 512-byte ATA data commands.
+/// Strings and feature observations do not grant this validated geometry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AtaBlockGeometry {
+    sectors: u64,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IdentifyGeometryError {
+    Truncated,
+    NoLba48,
+    Empty,
+    AddressRange,
+    UnsupportedSectorSize,
+}
+
+impl AtaBlockGeometry {
+    /// Parses little-endian IDENTIFY words without allocating diagnostic strings.
+    ///
+    /// # Errors
+    /// Rejects truncated data, absent 48-bit addressing, an empty/out-of-range
+    /// extent, and logical sector sizes unsupported by the data command encoder.
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, IdentifyGeometryError> {
+        if bytes.len() < 512 {
+            return Err(IdentifyGeometryError::Truncated);
+        }
+        let word = |index: usize| u16::from_le_bytes([bytes[index * 2], bytes[index * 2 + 1]]);
+        if word(83) & (1 << 10) == 0 {
+            return Err(IdentifyGeometryError::NoLba48);
+        }
+        let sectors = u64::from(word(100))
+            | (u64::from(word(101)) << 16)
+            | (u64::from(word(102)) << 32)
+            | (u64::from(word(103)) << 48);
+        if sectors == 0 {
+            return Err(IdentifyGeometryError::Empty);
+        }
+        if sectors > 1 << 48 {
+            return Err(IdentifyGeometryError::AddressRange);
+        }
+        let sector_words = if word(106) & 0xc000 == 0x4000 && word(106) & (1 << 12) != 0 {
+            u32::from(word(117)) | (u32::from(word(118)) << 16)
+        } else {
+            256
+        };
+        if sector_words != 256 {
+            return Err(IdentifyGeometryError::UnsupportedSectorSize);
+        }
+        Ok(Self { sectors })
+    }
+
+    pub const fn sector_count(self) -> u64 {
+        self.sectors
+    }
+    pub const fn sector_bytes(self) -> u32 {
+        512
+    }
+}
+
+#[cfg(test)]
+mod geometry_tests {
+    use super::*;
+
+    #[test]
+    fn geometry_uses_full_lba48_capacity_and_valid_logical_sector_words() {
+        let mut bytes = [0u8; 512];
+        bytes[166..168].copy_from_slice(&0x4400u16.to_le_bytes());
+        bytes[200..208].copy_from_slice(&0x0000_0001_2345_6789u64.to_le_bytes());
+        let geometry = AtaBlockGeometry::from_bytes(&bytes).unwrap();
+        assert_eq!(geometry.sector_count(), 0x0000_0001_2345_6789);
+        assert_eq!(geometry.sector_bytes(), 512);
+        bytes[212..214].copy_from_slice(&0x5000u16.to_le_bytes());
+        bytes[234..238].copy_from_slice(&2048u32.to_le_bytes());
+        assert_eq!(
+            AtaBlockGeometry::from_bytes(&bytes),
+            Err(IdentifyGeometryError::UnsupportedSectorSize)
+        );
+        bytes[212..214].copy_from_slice(&0x1000u16.to_le_bytes());
+        assert!(AtaBlockGeometry::from_bytes(&bytes).is_ok());
+        bytes[200..208].fill(0);
+        assert_eq!(
+            AtaBlockGeometry::from_bytes(&bytes),
+            Err(IdentifyGeometryError::Empty)
+        );
+        assert_eq!(
+            AtaBlockGeometry::from_bytes(&bytes[..511]),
+            Err(IdentifyGeometryError::Truncated)
+        );
+    }
+}
+
 /// ATA IDENTIFY データ
 #[derive(Debug, Clone)]
 pub struct IdentifyData {
