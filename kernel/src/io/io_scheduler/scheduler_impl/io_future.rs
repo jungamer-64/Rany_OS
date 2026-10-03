@@ -84,18 +84,11 @@ impl HybridIoCoordinator {
                 Some(id) => id,
                 None => break,
             };
-            let submission = match self.scheduler.take_submission(id) {
+            let (submission, target) = match self.scheduler.take_submission(id) {
                 Some(submission) => submission,
                 None => continue,
             };
-            let device = submission.device();
-            let outcome = match self.scheduler.get_device_ops(device) {
-                Some(ops) => ops.submit(submission, cpu_id),
-                None => IoSubmitOutcome::Rejected {
-                    cause: IoError::NotSupported,
-                    submission,
-                },
-            };
+            let outcome = target.submit(submission, cpu_id);
             match outcome {
                 IoSubmitOutcome::Accepted => {}
                 IoSubmitOutcome::Rejected { cause, submission } => {
@@ -132,8 +125,10 @@ impl HybridIoCoordinator {
     }
 }
 
-pub(crate) static IO_SCHEDULER: spin::Once<Arc<IoScheduler>> = spin::Once::new();
-pub(crate) static HYBRID_COORDINATOR: spin::Once<Arc<HybridIoCoordinator>> = spin::Once::new();
+pub(crate) static IO_SCHEDULER: crate::sync::InitOnce<Arc<IoScheduler>> =
+    crate::sync::InitOnce::new();
+pub(crate) static HYBRID_COORDINATOR: crate::sync::InitOnce<Arc<HybridIoCoordinator>> =
+    crate::sync::InitOnce::new();
 
 pub fn init_io_scheduler() {
     let _ = io_scheduler();

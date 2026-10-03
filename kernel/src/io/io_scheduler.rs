@@ -110,6 +110,57 @@ pub enum DeviceId {
     Custom(u32),
 }
 
+impl DeviceId {
+    /// Storage discovery encodes transport, controller and namespace together.
+    /// The conversion owns this coordinate boundary; namespace numbers alone
+    /// cannot identify devices on different controllers.
+    pub(crate) fn nvme_storage_id(self) -> Option<u64> {
+        match self {
+            Self::Nvme {
+                controller,
+                namespace,
+            } if namespace != 0 => {
+                Some((1u64 << 56) | (u64::from(controller) << 32) | u64::from(namespace))
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_nvme_storage_id(raw: u64) -> Option<Self> {
+        if raw >> 56 != 1 || raw & 0x00ff_ff00_0000_0000 != 0 {
+            return None;
+        }
+        let namespace = u32::try_from(raw & u64::from(u32::MAX)).ok()?;
+        if namespace == 0 {
+            return None;
+        }
+        Some(Self::Nvme {
+            controller: u8::try_from((raw >> 32) & 255).ok()?,
+            namespace,
+        })
+    }
+}
+
+/// Geometry validated by the device owner. This is a discovery projection,
+/// not permission to submit or to reuse a withdrawn device registration.
+#[derive(Debug, Clone, Copy)]
+pub struct BlockGeometry {
+    pub(crate) block_size: core::num::NonZeroU32,
+    pub(crate) block_count: core::num::NonZeroU64,
+    pub(crate) max_transfer_blocks: core::num::NonZeroU16,
+}
+
+impl BlockGeometry {
+    pub(crate) fn new(block_size: u32, block_count: u64, max_transfer_blocks: u16) -> Option<Self> {
+        block_count.checked_mul(u64::from(block_size))?;
+        Some(Self {
+            block_size: core::num::NonZeroU32::new(block_size)?,
+            block_count: core::num::NonZeroU64::new(block_count)?,
+            max_transfer_blocks: core::num::NonZeroU16::new(max_transfer_blocks)?,
+        })
+    }
+}
+
 // ============================================================================
 // Device-Neutral I/O Command (新設計)
 // ============================================================================
@@ -128,6 +179,20 @@ pub trait DeviceOps: Send + Sync {
 
     /// デバイスが準備完了か
     fn is_ready(&self) -> bool;
+
+    /// Allocate a transfer for this device through its retained DMA capability.
+    /// Devices supporting only caller-owned transfers may reject allocation.
+    /// This does not submit or publish the buffer to hardware.
+    fn allocate_transfer(
+        &self,
+        _request: kernel_api::dma::DmaAllocationRequest,
+    ) -> Result<CpuDmaLease, IoError> {
+        Err(IoError::NotSupported)
+    }
+
+    fn block_geometry(&self) -> Option<BlockGeometry> {
+        None
+    }
 }
 
 /// I/Oコマンド（デバイス中立）
@@ -233,6 +298,7 @@ struct IoRequest {
     id: IoRequestId,
     device: DeviceId,
     phase: RequestPhase,
+    target: Option<Arc<dyn DeviceOps>>,
     submitted_at: u64,
     waker: Option<Waker>,
     hook: Option<CompletionHook>,

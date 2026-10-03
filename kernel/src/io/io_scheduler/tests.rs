@@ -1,5 +1,53 @@
 use super::*;
 
+struct CompletionDevice;
+impl DeviceOps for CompletionDevice {
+    fn submit(&self, submission: IoSubmission, _cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome {
+        IoSubmitOutcome::Rejected {
+            cause: IoError::NotSupported,
+            submission,
+        }
+    }
+    fn is_ready(&self) -> bool {
+        true
+    }
+}
+
+fn registered_scheduler() -> Arc<IoScheduler> {
+    let scheduler = Arc::new(IoScheduler::new());
+    scheduler.register_device_ops(DeviceId::Custom(1), Arc::new(CompletionDevice));
+    scheduler.register_device_ops(
+        DeviceId::Nvme {
+            controller: 0,
+            namespace: 1,
+        },
+        Arc::new(CompletionDevice),
+    );
+    scheduler
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn admitted_request_retains_the_original_device_through_registry_replacement() {
+    let scheduler = Arc::new(IoScheduler::new());
+    let device = DeviceId::Custom(1);
+    let original: Arc<dyn DeviceOps> = Arc::new(CompletionDevice);
+    scheduler.register_device_ops(device, original.clone());
+    let original_weak = Arc::downgrade(&original);
+    let mut future = scheduler.submit_command(device, IoCommand::Flush, IoPriority::Normal);
+    scheduler.register_device_ops(device, Arc::new(CompletionDevice));
+    let (submission, target) = scheduler.take_submission(future.request_id()).unwrap();
+    assert!(Arc::ptr_eq(&target, &original));
+    assert!(scheduler.unregister_device(device));
+    drop(original);
+    let (route, _) = submission.into_parts();
+    scheduler.complete_request(route.finish(IoCompletion::control(Ok(0))));
+    drop(target);
+    assert!(original_weak.upgrade().is_some());
+    assert_eq!(ready_result(&mut future), IoResult::Success(0));
+    assert!(original_weak.upgrade().is_none());
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_io_priority_ordering() {
@@ -24,7 +72,7 @@ fn test_io_mode_stats() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_scheduler_submit() {
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let device = DeviceId::Nvme {
         controller: 0,
         namespace: 1,
@@ -33,7 +81,7 @@ fn test_scheduler_submit() {
     let mut future = scheduler.submit_command(device, IoCommand::Flush, IoPriority::Normal);
     let id = future.request_id();
     assert_eq!(scheduler.get_state(id), Some(IoState::Pending));
-    let (route, command) = scheduler.take_submission(id).unwrap().into_parts();
+    let (route, command) = scheduler.take_submission(id).unwrap().0.into_parts();
     assert!(matches!(command, IoCommand::Flush));
     assert!(!future.cancel());
     scheduler.complete_request(route.finish(IoCompletion::control(Ok(0))));
@@ -53,7 +101,7 @@ fn ready_result(future: &mut IoFuture) -> IoResult {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn queued_cancellation_preserves_one_terminal_result() {
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let mut future =
         scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
     let id = future.request_id();
@@ -74,11 +122,11 @@ fn queued_cancellation_preserves_one_terminal_result() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn abandoned_in_flight_request_remains_owned_until_completion() {
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let future =
         scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
     let id = future.request_id();
-    let (route, _) = scheduler.take_submission(id).unwrap().into_parts();
+    let (route, _) = scheduler.take_submission(id).unwrap().0.into_parts();
     drop(future);
     assert_eq!(scheduler.get_state(id), Some(IoState::InProgress));
     scheduler.complete_request(route.finish(IoCompletion::outcome_unknown(
@@ -103,12 +151,13 @@ fn abandoned_in_flight_request_remains_owned_until_completion() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn shutdown_cancels_only_queued_commands() {
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let device = DeviceId::Custom(1);
     let mut active = scheduler.submit_command(device, IoCommand::Flush, IoPriority::Normal);
     let (route, _) = scheduler
         .take_submission(active.request_id())
         .unwrap()
+        .0
         .into_parts();
     let mut queued = scheduler.submit_command(device, IoCommand::Flush, IoPriority::Normal);
     scheduler.shutdown();
@@ -134,7 +183,7 @@ fn shutdown_cancels_only_queued_commands() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn completion_hook_can_reenter_scheduler() {
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let mut future =
         scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
     let id = future.request_id();
@@ -153,7 +202,7 @@ fn completion_hook_can_reenter_scheduler() {
             )
             .is_ok()
     );
-    let (route, _) = scheduler.take_submission(id).unwrap().into_parts();
+    let (route, _) = scheduler.take_submission(id).unwrap().0.into_parts();
     scheduler.complete_request(route.finish(IoCompletion::control(Ok(0))));
     assert!(observed.load(Ordering::Acquire));
     assert_eq!(ready_result(&mut future), IoResult::Success(0));
@@ -181,7 +230,7 @@ fn replacing_waker_drops_its_owner_outside_scheduler_lock() {
             self.dropped.store(true, Ordering::Release);
         }
     }
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let mut future =
         scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
     let dropped = Arc::new(AtomicBool::new(false));
@@ -219,7 +268,7 @@ fn completion_wakes_only_the_current_observer() {
             self.0.fetch_add(1, Ordering::Relaxed);
         }
     }
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let mut future =
         scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
     let first = Arc::new(CountWake(AtomicU64::new(0)));
@@ -235,6 +284,7 @@ fn completion_wakes_only_the_current_observer() {
     let (route, _) = scheduler
         .take_submission(future.request_id())
         .unwrap()
+        .0
         .into_parts();
     scheduler.complete_request(route.finish(IoCompletion::control(Ok(0))));
     assert_eq!(first.0.load(Ordering::Relaxed), 0);
@@ -269,13 +319,14 @@ fn poll_callback_can_unregister_without_losing_completion() {
                 .collect()
         }
     }
-    let scheduler = Arc::new(IoScheduler::new());
+    let scheduler = registered_scheduler();
     let executor = Arc::new(PollingExecutor::new(scheduler.clone()));
     let device = DeviceId::Custom(1);
     let mut future = scheduler.submit_command(device, IoCommand::Flush, IoPriority::Normal);
     let (route, _) = scheduler
         .take_submission(future.request_id())
         .unwrap()
+        .0
         .into_parts();
     executor.register_handler(
         device,
@@ -296,7 +347,7 @@ fn poll_callback_can_unregister_without_losing_completion() {
 fn cancelling_and_dispatching_on_different_threads_has_one_winner() {
     use std::sync::Barrier;
     for _ in 0..128 {
-        let scheduler = Arc::new(IoScheduler::new());
+        let scheduler = registered_scheduler();
         let future =
             scheduler.submit_command(DeviceId::Custom(1), IoCommand::Flush, IoPriority::Normal);
         let id = future.request_id();
@@ -311,7 +362,7 @@ fn cancelling_and_dispatching_on_different_threads_has_one_winner() {
             let submitted = scheduler.take_submission(id);
             let (cancelled, mut future) = cancel.join().unwrap();
             match submitted {
-                Some(submission) => {
+                Some((submission, _target)) => {
                     assert!(!cancelled);
                     let (route, _) = submission.into_parts();
                     scheduler.complete_request(route.finish(IoCompletion::control(Ok(0))));

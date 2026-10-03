@@ -40,10 +40,12 @@ impl IoScheduler {
     }
 
     pub fn register_device_ops(&self, device: DeviceId, ops: Arc<dyn DeviceOps>) {
-        self.device_ops
+        let retired = self
+            .device_ops
             .write()
             .unwrap_or_else(|error| error.into_inner())
             .insert(device, ops);
+        drop(retired);
     }
 
     pub fn unregister_device(&self, device: DeviceId) -> bool {
@@ -51,11 +53,14 @@ impl IoScheduler {
             .write()
             .unwrap_or_else(|error| error.into_inner())
             .remove(&device);
-        self.device_ops
+        let retired = self
+            .device_ops
             .write()
             .unwrap_or_else(|error| error.into_inner())
-            .remove(&device)
-            .is_some()
+            .remove(&device);
+        let removed = retired.is_some();
+        drop(retired);
+        removed
     }
 
     pub fn get_device_ops(&self, device: DeviceId) -> Option<Arc<dyn DeviceOps>> {
@@ -87,6 +92,28 @@ impl IoScheduler {
         command: IoCommand,
         priority: IoPriority,
     ) -> IoFuture {
+        self.enqueue(device, self.get_device_ops(device), command, priority)
+    }
+
+    /// A retained device lease binds admission to this owner. Queue dispatch
+    /// cannot resolve the locator to a replacement device after a wait.
+    pub(crate) fn submit_to_device(
+        self: &Arc<Self>,
+        device: DeviceId,
+        target: Arc<dyn DeviceOps>,
+        command: IoCommand,
+        priority: IoPriority,
+    ) -> IoFuture {
+        self.enqueue(device, Some(target), command, priority)
+    }
+
+    fn enqueue(
+        self: &Arc<Self>,
+        device: DeviceId,
+        target: Option<Arc<dyn DeviceOps>>,
+        command: IoCommand,
+        priority: IoPriority,
+    ) -> IoFuture {
         let id = IoRequestId::next();
         let mut requests = self
             .requests
@@ -94,8 +121,10 @@ impl IoScheduler {
             .unwrap_or_else(|error| error.into_inner());
         let phase = if self.shutdown.load(Ordering::Acquire) {
             RequestPhase::Finished(IoCompletion::rejected(command, IoError::Cancelled))
-        } else {
+        } else if target.is_some() {
             RequestPhase::Queued(command)
+        } else {
+            RequestPhase::Finished(IoCompletion::rejected(command, IoError::NotSupported))
         };
         let pending = matches!(phase, RequestPhase::Queued(_));
         requests.insert(
@@ -104,6 +133,7 @@ impl IoScheduler {
                 id,
                 device,
                 phase,
+                target,
                 submitted_at: current_tick(),
                 waker: None,
                 hook: None,
@@ -149,7 +179,7 @@ impl IoScheduler {
 
     /// Dispatch and cancellation both consume Queued under the same lock.
     /// No command can be borrowed, cloned, or dispatched twice.
-    fn take_submission(&self, id: IoRequestId) -> Option<IoSubmission> {
+    fn take_submission(&self, id: IoRequestId) -> Option<(IoSubmission, Arc<dyn DeviceOps>)> {
         let mut requests = self
             .requests
             .lock()
@@ -166,13 +196,21 @@ impl IoScheduler {
         else {
             unreachable!("queued phase was checked under exclusive ownership")
         };
-        Some(IoSubmission {
-            completion: IoCompletionRoute {
-                request_id: request.id,
-                device: request.device,
+        Some((
+            IoSubmission {
+                completion: IoCompletionRoute {
+                    request_id: request.id,
+                    device: request.device,
+                },
+                command,
             },
-            command,
-        })
+            Arc::clone(
+                request
+                    .target
+                    .as_ref()
+                    .expect("queued request admitted a device owner"),
+            ),
+        ))
     }
 
     fn report_completion_stats(&self, device: DeviceId, submitted_at: u64, status: IoResult) {
@@ -204,7 +242,7 @@ impl IoScheduler {
         let DeviceCompletion { route, completion } = event;
         let id = route.request_id;
         let status = completion.result();
-        let notification = {
+        let (notification, retired) = {
             let mut requests = self
                 .requests
                 .lock()
@@ -226,17 +264,19 @@ impl IoScheduler {
                 request.waker.take(),
                 request.hook.take(),
             );
-            if request.abandoned {
-                let request = requests
-                    .remove(&id)
-                    .expect("request remains under the same lock");
-                let RequestPhase::Finished(completion) = request.phase else {
-                    unreachable!("terminal phase was just installed")
-                };
-                self.retain_abandoned(completion);
-            }
-            notification
+            let retired = if request.abandoned {
+                requests.remove(&id)
+            } else {
+                None
+            };
+            (notification, retired)
         };
+        if let Some(request) = retired {
+            let RequestPhase::Finished(completion) = request.phase else {
+                unreachable!("retired request reached completion");
+            };
+            self.retain_abandoned(completion);
+        }
         self.deliver_completion(notification, status);
     }
 
@@ -259,7 +299,7 @@ impl IoScheduler {
     /// dispatched, cancellation is only abandonment of observation, never a
     /// claim that device access has stopped.
     pub(super) fn cancel_request(&self, id: IoRequestId) -> bool {
-        let notification = {
+        let (notification, retired) = {
             let mut requests = self
                 .requests
                 .lock()
@@ -276,17 +316,19 @@ impl IoScheduler {
                 request.waker.take(),
                 request.hook.take(),
             );
-            if request.abandoned {
-                let request = requests
-                    .remove(&id)
-                    .expect("request remains under the same lock");
-                let RequestPhase::Finished(completion) = request.phase else {
-                    unreachable!("terminal phase was just installed")
-                };
-                self.retain_abandoned(completion);
-            }
-            notification
+            let retired = if request.abandoned {
+                requests.remove(&id)
+            } else {
+                None
+            };
+            (notification, retired)
         };
+        if let Some(request) = retired {
+            let RequestPhase::Finished(completion) = request.phase else {
+                unreachable!("retired request reached completion");
+            };
+            self.retain_abandoned(completion);
+        }
         self.deliver_completion(notification, IoResult::Error(IoError::Cancelled));
         true
     }
@@ -294,7 +336,7 @@ impl IoScheduler {
     /// A dropped future cannot release a driver's in-flight buffer. A returned
     /// or not-yet-submitted lease is moved to this scheduler's finalization owner.
     fn abandon_request(&self, id: IoRequestId) {
-        let (retired_waker, notification) = {
+        let (retired_waker, notification, retired) = {
             let mut requests = self
                 .requests
                 .lock()
@@ -312,17 +354,19 @@ impl IoScheduler {
                     request.hook.take(),
                 )
             });
-            if matches!(request.phase, RequestPhase::Finished(_)) {
-                let request = requests
-                    .remove(&id)
-                    .expect("request remains under the same lock");
-                let RequestPhase::Finished(completion) = request.phase else {
-                    unreachable!("terminal phase was checked under exclusive ownership")
-                };
-                self.retain_abandoned(completion);
-            }
-            (retired_waker, notification)
+            let retired = if matches!(request.phase, RequestPhase::Finished(_)) {
+                requests.remove(&id)
+            } else {
+                None
+            };
+            (retired_waker, notification, retired)
         };
+        if let Some(request) = retired {
+            let RequestPhase::Finished(completion) = request.phase else {
+                unreachable!("retired request reached completion");
+            };
+            self.retain_abandoned(completion);
+        }
         drop(retired_waker);
         if let Some(notification) = notification {
             self.deliver_completion(notification, IoResult::Error(IoError::Cancelled));
@@ -365,6 +409,7 @@ impl IoScheduler {
             let request = requests
                 .remove(&id)
                 .expect("request remains under the same lock");
+            drop(requests);
             let RequestPhase::Finished(completion) = request.phase else {
                 unreachable!("terminal phase was checked under exclusive ownership")
             };
@@ -425,6 +470,25 @@ impl IoScheduler {
             .push(completion);
     }
 
+    /// Consume a returned CPU lease. A failed unmap stays with this scheduler's
+    /// reconciliation owner; callers receive the cause, never an implied retry.
+    pub(crate) fn finalize_transfer(
+        &self,
+        buffer: CpuDmaLease,
+    ) -> Result<(), kernel_api::dma::DmaLeaseError> {
+        match buffer.close() {
+            Ok(()) => Ok(()),
+            Err(failure) => {
+                let cause = failure.cause();
+                self.failed_closes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push(failure);
+                Err(cause)
+            }
+        }
+    }
+
     /// Attempt fallible finalization outside the request lock. Failed unmaps
     /// remain owned here until the device-reset reconciliation owner claims them.
     pub fn reap_abandoned(&self) {
@@ -435,13 +499,11 @@ impl IoScheduler {
                 .unwrap_or_else(|error| error.into_inner()),
         );
         for completion in completions {
-            if let IoCompletion::TransferReturned { buffer, .. } = completion
-                && let Err(failure) = buffer.close()
-            {
-                self.failed_closes
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner())
-                    .push(failure);
+            if let IoCompletion::TransferReturned { buffer, .. } = completion {
+                // The reconciliation owner retains the entire failed close.
+                if let Err(cause) = self.finalize_transfer(buffer) {
+                    log::warn!("abandoned I/O transfer close retained: {cause:?}");
+                }
             }
         }
     }
