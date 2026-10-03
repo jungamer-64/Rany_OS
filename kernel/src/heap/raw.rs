@@ -5,6 +5,7 @@
 
 use super::HeapMemory;
 use super::buddy::BuddyHeapAllocator;
+use super::reclaim::CacheDrainProgress;
 use crate::cpu::{CpuId, CurrentCpu};
 use crate::mm::phys::frame_allocator::{self as pmm, PhysicalAllocation};
 use crate::mm::reclaim::PoolReclaim;
@@ -105,24 +106,23 @@ impl HeapCache {
         replacement.node = Some(node);
         Some(core::mem::replace(self, replacement))
     }
-    fn release(mut self) -> usize {
-        let mut bytes = 0;
+    fn release(mut self) -> CacheDrainProgress {
+        let mut progress = CacheDrainProgress::default();
         for class in 0..CLASSES {
             let layout = Layout::from_size_align(64 << class, 64).expect("canonical slab class");
             // LOOP_PROOF: mode=condition; reason=Each take consumes one of at most 32 magazine reservations.;
             while let Some(block) = self.magazines[class].take() {
-                bytes += layout.size();
-                release(block, layout);
+                progress.heap_returned_bytes += layout.size();
+                progress.physical_reclaimed_bytes += release(block, layout);
             }
         }
-        bytes
+        progress
     }
 }
 
 #[repr(C, align(64))]
 pub(super) struct SlabPage {
     backing: PhysicalAllocation,
-    home: CpuId,
     class: SlabClass,
     free: AtomicU64,
     mask: u64,
@@ -249,24 +249,35 @@ fn slab_block(node: NumaNodeId, class: SlabClass, home: CpuId) -> Option<RawBloc
     claim_block(page)
 }
 
-fn slab_return(pointer: NonNull<u8>, page: NonNull<SlabPage>) {
+fn slab_return(
+    pointer: NonNull<u8>,
+    page: NonNull<SlabPage>,
+    pool: &IrqPoisonLock<SlabPool>,
+) -> usize {
     // SAFETY: consuming a unique block retains the page until its last atomic
     // return. All metadata needed after that publication is copied beforehand.
-    let (class, node, mask, bit) = unsafe {
+    let (mask, bit) = unsafe {
         let slab = page.as_ref();
         let index =
             (pointer.as_ptr().addr() - page.as_ptr().addr() - SlabPage::DATA) / slab.class.size();
-        (slab.class, slab.backing.node(), slab.mask, 1u64 << index)
+        (slab.mask, 1u64 << index)
     };
     // SAFETY: this block exclusively owns the bit; publishing it is the final
     // access through this block's page reference. A pool lock owns reclamation.
     let old = unsafe { (*page.as_ptr()).free.fetch_or(bit, Ordering::Release) };
     assert_eq!(old & bit, 0, "a slab block must be returned exactly once");
     if old | bit != mask {
-        return;
+        return 0;
     }
-    let Ok(mut list) = NODES[node.as_usize()].slabs[class.0].lock() else {
-        return;
+    reclaim_empty_slab(pool, page)
+}
+
+/// A matching page is claimed for retirement only while the pool guard proves
+/// that every reservation has returned. Address observation alone never grants
+/// backing ownership. The PMM return happens after detachment and unlocking.
+fn reclaim_empty_slab(pool: &IrqPoisonLock<SlabPool>, page: NonNull<SlabPage>) -> usize {
+    let Ok(mut list) = pool.lock() else {
+        return 0;
     };
     let mut link = &mut list.head;
     // LOOP_PROOF: mode=condition; reason=Each step advances through the finite slab list, a matching empty page is unlinked once.;
@@ -275,31 +286,146 @@ fn slab_return(pointer: NonNull<u8>, page: NonNull<SlabPage>) {
             // SAFETY: the lock prevents new claims. A complete free mask proves
             // that no client/magazine still owns any block or page reference.
             let can_reclaim = unsafe {
-                candidate
-                    .as_ref()
+                let retained = candidate.as_ref();
+                retained
                     .free
-                    .compare_exchange(mask, 0, Ordering::AcqRel, Ordering::Acquire)
+                    .compare_exchange(retained.mask, 0, Ordering::AcqRel, Ordering::Acquire)
                     .is_ok()
             };
             if !can_reclaim {
-                return;
+                return 0;
             }
             // SAFETY: zero occupancy ownership and unlinking exclude all users.
             let retired = unsafe { candidate.as_ptr().read() };
             *link = retired.next;
             drop(list);
+            let bytes = retired.backing.size_bytes() as usize;
             retired.backing.release();
-            return;
+            return bytes;
         }
         // SAFETY: exclusive list mutation is serialized by this pool lock.
         link = unsafe { &mut candidate.as_mut().next };
     }
+    0
+}
+
+/// A node loan has no published address until the pool consumes this owner.
+/// Rejected publication returns the same owner; dropping it returns both RAM
+/// extents because no client, device, or secondary translation has seen them.
+struct PreparedBuddyRegion {
+    region: Option<BuddyRegion>,
+}
+impl PreparedBuddyRegion {
+    fn allocate(node: NumaNodeId, layout: Layout) -> Option<Self> {
+        let block = layout
+            .size()
+            .max(layout.align())
+            .max(64)
+            .checked_next_power_of_two()?;
+        let bytes = block.checked_mul(2)?.max(REGION_BYTES);
+        let backing =
+            pmm::alloc_contiguous_frames_aligned_on_node(node, bytes / PAGE, PAGE).ok()?;
+        let (metadata, data) = match backing.split(1) {
+            Ok(parts) => parts,
+            Err(backing) => {
+                backing.release();
+                return None;
+            }
+        };
+        let mut heap = BuddyHeapAllocator::new();
+        // SAFETY: this exact PMM loan transfers retained writable HHDM RAM;
+        // the disjoint metadata page never enters the buddy free lists.
+        let memory = unsafe { HeapMemory::from_physical(data) };
+        if let Err(memory) = heap.init(memory) {
+            memory
+                .into_physical()
+                .expect("node region is a PMM loan")
+                .release();
+            metadata.release();
+            return None;
+        }
+        Some(Self {
+            region: Some(BuddyRegion {
+                metadata,
+                heap,
+                node,
+                live: 0,
+                next: None,
+            }),
+        })
+    }
+
+    /// One acquisition attempt. Busy/poisoned pools and an unsatisfied layout
+    /// leave publication uncommitted and return the complete retryable owner.
+    /// On success the first live reservation and list link become visible
+    /// together. Cleanup of a rejected owner occurs after this guard is gone.
+    fn publish(
+        mut self,
+        pool: &IrqPoisonLock<BuddyPool>,
+        layout: Layout,
+    ) -> Result<RawBlock, Self> {
+        let mut list = match pool.try_lock() {
+            Ok(list) => list,
+            Err(_) => return Err(self),
+        };
+        let region = self.region.as_mut().expect("unpublished region owner");
+        let Some(pointer) = NonNull::new(region.heap.allocate(layout)) else {
+            return Err(self);
+        };
+        let address = crate::mm::virt::mapping::phys_to_virt(region.metadata.start_address())
+            .as_u64() as *mut BuddyRegion;
+        let mut region = self.region.take().expect("unpublished region owner");
+        region.live = 1;
+        region.next = list.head;
+        // SAFETY: the metadata page is retained exclusively and fits this
+        // header. No pointer escapes until both the header and pool link are
+        // initialized. Taking the owner prevents rollback after publication.
+        let published = unsafe {
+            address.write(region);
+            NonNull::new_unchecked(address)
+        };
+        list.head = Some(published);
+        Ok(RawBlock {
+            pointer,
+            source: AllocationSource::Buddy(published),
+        })
+    }
+}
+impl Drop for PreparedBuddyRegion {
+    fn drop(&mut self) {
+        if let Some(region) = self.region.take() {
+            release_empty_region(region);
+        }
+    }
+}
+
+const _: () = {
+    assert!(core::mem::size_of::<BuddyRegion>() <= PAGE);
+    assert!(core::mem::align_of::<BuddyRegion>() <= PAGE);
+};
+
+/// Caller has excluded publication or detached the region while proving that
+/// no live block remains. There is no secondary mapping/device owner. This
+/// consumes the sole PMM return rights outside the shared heap-pool guard.
+fn release_empty_region(mut region: BuddyRegion) -> usize {
+    assert_eq!(region.live, 0, "only empty regions may return their RAM");
+    let backing = region
+        .heap
+        .backing
+        .take()
+        .expect("region retains backing")
+        .into_physical()
+        .expect("node region is a PMM loan");
+    let bytes = backing.size_bytes() as usize + region.metadata.size_bytes() as usize;
+    backing.release();
+    region.metadata.release();
+    bytes
 }
 
 fn buddy_block(node: NumaNodeId, layout: Layout) -> Option<RawBlock> {
     let pool = &NODES[node.as_usize()].buddy;
     {
-        let list = pool.lock().ok()?;
+        let list = pool.try_lock().ok()?;
         let mut cursor = list.head;
         // LOOP_PROOF: mode=condition; reason=The cursor advances through the finite node region list.;
         while let Some(mut region) = cursor {
@@ -315,19 +441,8 @@ fn buddy_block(node: NumaNodeId, layout: Layout) -> Option<RawBlock> {
             cursor = region_ref.next;
         }
     }
-    let mut region = create_region(node, layout)?;
-    let mut list = pool.lock().ok()?;
-    // SAFETY: unpublished region is exclusively owned; the node lock consumes
-    // it into the region list before returning its first reserved block.
-    let region_ref = unsafe { region.as_mut() };
-    region_ref.next = list.head;
-    list.head = Some(region);
-    let pointer = NonNull::new(region_ref.heap.allocate(layout))?;
-    region_ref.live += 1;
-    Some(RawBlock {
-        pointer,
-        source: AllocationSource::Buddy(region),
-    })
+    let prepared = PreparedBuddyRegion::allocate(node, layout)?;
+    prepared.publish(pool, layout).ok()
 }
 
 fn direct_block(node: NumaNodeId, layout: Layout) -> Option<RawBlock> {
@@ -418,20 +533,29 @@ pub(super) fn allocate(layout: Layout) -> Option<RawBlock> {
     None
 }
 
-pub(super) fn release(block: RawBlock, layout: Layout) {
+/// Consumes one source reservation. The result counts only whole physical
+/// extents returned to PMM; a return to a retained heap pool contributes zero.
+pub(super) fn release(block: RawBlock, layout: Layout) -> usize {
     match block.source {
-        AllocationSource::Slab(page) => slab_return(block.pointer, page),
+        AllocationSource::Slab(page) => {
+            // SAFETY: this consumed reservation retains immutable source
+            // identity until its final bitmap publication.
+            let (node, class) = unsafe { (page.as_ref().backing.node(), page.as_ref().class) };
+            slab_return(block.pointer, page, &NODES[node.as_usize()].slabs[class.0])
+        }
         AllocationSource::Extent(extent) => {
             // SAFETY: this header is retained exclusively by the consumed block.
             let backing = unsafe { extent.as_ptr().read().backing };
-            DIRECT_RETAINED_BYTES.fetch_sub(backing.size_bytes(), Ordering::Relaxed);
+            let bytes = backing.size_bytes() as usize;
+            DIRECT_RETAINED_BYTES.fetch_sub(bytes as u64, Ordering::Relaxed);
             backing.release();
+            bytes
         }
         AllocationSource::Buddy(mut region) => {
             // SAFETY: a live block keeps its immutable node identity valid.
             let node = unsafe { region.as_ref().node };
             let Ok(mut list) = NODES[node.as_usize()].buddy.lock() else {
-                return;
+                return 0;
             };
             // SAFETY: the node lock exclusively owns allocation/free metadata.
             let region_ref = unsafe { region.as_mut() };
@@ -441,7 +565,7 @@ pub(super) fn release(block: RawBlock, layout: Layout) {
                 .checked_sub(1)
                 .expect("buddy block has a live reservation");
             if region_ref.live != 0 {
-                return;
+                return 0;
             }
             // One empty 2MiB loan per node bounds retained Buddy backing while
             // allowing repeated large/aligned allocations to reuse a warm pool.
@@ -459,7 +583,7 @@ pub(super) fn release(block: RawBlock, layout: Layout) {
                     cursor = candidate_ref.next;
                 }
                 if !other_empty {
-                    return;
+                    return 0;
                 }
             }
             let mut link = &mut list.head;
@@ -468,23 +592,15 @@ pub(super) fn release(block: RawBlock, layout: Layout) {
                 if candidate == region {
                     // SAFETY: all blocks have returned and the node lock prevents
                     // allocation. Unlink before consuming either backing owner.
-                    let mut retired = unsafe { candidate.as_ptr().read() };
+                    let retired = unsafe { candidate.as_ptr().read() };
                     *link = retired.next;
                     drop(list);
-                    retired
-                        .heap
-                        .backing
-                        .take()
-                        .expect("retained PMM loan")
-                        .into_physical()
-                        .expect("node region is a PMM loan")
-                        .release();
-                    retired.metadata.release();
-                    return;
+                    return release_empty_region(retired);
                 }
                 // SAFETY: list links remain exclusively owned under the lock.
                 link = unsafe { &mut candidate.as_mut().next };
             }
+            0
         }
         AllocationSource::Bootstrap => {
             unreachable!("bootstrap blocks return to their bootstrap owner")
@@ -522,10 +638,10 @@ pub(super) fn cache_or_release(block: RawBlock, layout: Layout) {
     release(block, layout);
 }
 
-pub(crate) fn drain_current_cache() -> usize {
+pub(crate) fn drain_current_cache() -> CacheDrainProgress {
     CurrentCpu::acquire()
         .and_then(|cpu| cpu.with_heap_cache(|cache| core::mem::replace(cache, HeapCache::new())))
-        .map_or(0, HeapCache::release)
+        .map_or_else(CacheDrainProgress::default, HeapCache::release)
 }
 
 /// The empty-loan retention policy admits at most one loan per node. Each
@@ -568,18 +684,8 @@ fn reclaim_buddy_pool(pool: &IrqPoisonLock<BuddyPool>) -> PoolReclaim {
         }
         retired
     };
-    if let Some(mut retired) = retired {
-        let backing = retired
-            .heap
-            .backing
-            .take()
-            .expect("region retains backing")
-            .into_physical()
-            .expect("node region is a PMM loan");
-        let bytes = backing.size_bytes() as usize + retired.metadata.size_bytes() as usize;
-        backing.release();
-        retired.metadata.release();
-        progress.reclaimed_bytes = bytes;
+    if let Some(retired) = retired {
+        progress.reclaimed_bytes = release_empty_region(retired);
     }
     progress
 }
@@ -629,20 +735,128 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn physical_slab_progress_counts_only_the_last_reservations_whole_page() {
+        let backing = pmm::alloc_contiguous_frames_aligned_on_node(NumaNodeId::NODE_0, 1, PAGE)
+            .expect("fixture RAM");
+        let address = crate::mm::virt::mapping::phys_to_virt(backing.start_address()).as_u64()
+            as *mut SlabPage;
+        let class = SlabClass::for_layout(Layout::from_size_align(256, 64).unwrap()).unwrap();
+        let mask = (1u64 << SlabPage::count(class)) - 1;
+        // SAFETY: the fixture transfers one retained writable physical page
+        // into a disjoint header and payload, then publishes its sole pool link.
+        let page = unsafe {
+            address.write(SlabPage {
+                backing,
+                home: CpuId::BOOTSTRAP,
+                class,
+                free: AtomicU64::new(mask),
+                mask,
+                next: None,
+            });
+            NonNull::new_unchecked(address)
+        };
+        let pool = IrqPoisonLock::new(SlabPool { head: Some(page) });
+        let first = claim_block(page).expect("first reservation");
+        let second = claim_block(page).expect("second reservation");
+        // SAFETY: the second reservation exclusively retains its whole payload.
+        unsafe { second.pointer.as_ptr().write_bytes(0x37, 256) };
+        let return_to_pool = |block: RawBlock| {
+            let AllocationSource::Slab(source) = block.source else {
+                panic!("fixture requires a slab reservation");
+            };
+            slab_return(block.pointer, source, &pool)
+        };
+        assert_eq!(return_to_pool(first), 0);
+        assert_eq!(reclaim_empty_slab(&pool, page), 0);
+        // SAFETY: the second reservation remains live across the first return.
+        unsafe { assert_eq!(second.pointer.as_ptr().read(), 0x37) };
+        assert_eq!(return_to_pool(second), 4096);
+        assert!(
+            pool.lock()
+                .unwrap_or_else(|_| panic!("fixture pool poisoned"))
+                .head
+                .is_none()
+        );
+        assert_eq!(reclaim_empty_slab(&pool, page), 0);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn rejected_buddy_publication_retains_the_owner_for_retry() {
+        let layout = Layout::from_size_align(7000, 4096).unwrap();
+        let prepared = PreparedBuddyRegion::allocate(NumaNodeId::NODE_0, layout).unwrap();
+        let retained = prepared.region.as_ref().unwrap();
+        let addresses = (retained.metadata.start_address(), retained.heap.heap_start);
+        let bytes = retained.metadata.size_bytes() as usize + retained.heap.heap_size;
+        let pool = IrqPoisonLock::new(BuddyPool { head: None });
+        let held = pool
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture pool poisoned"));
+        let prepared = prepared
+            .publish(&pool, layout)
+            .err()
+            .expect("busy publication must preserve its owner");
+        assert!(held.head.is_none());
+        let retained = prepared.region.as_ref().unwrap();
+        assert_eq!(
+            (retained.metadata.start_address(), retained.heap.heap_start),
+            addresses
+        );
+        assert_eq!(retained.live, 0);
+        drop(held);
+
+        let too_large = Layout::from_size_align(bytes * 2, 4096).unwrap();
+        let prepared = prepared
+            .publish(&pool, too_large)
+            .err()
+            .expect("unsatisfied layout must preserve its owner");
+        assert!(
+            pool.lock()
+                .unwrap_or_else(|_| panic!("fixture pool poisoned"))
+                .head
+                .is_none()
+        );
+        let block = prepared
+            .publish(&pool, layout)
+            .unwrap_or_else(|_| panic!("retry should publish the same loan"));
+        let AllocationSource::Buddy(mut region) = block.source else {
+            panic!("fixture requires a buddy reservation");
+        };
+        let held = pool
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture pool poisoned"));
+        assert_eq!(held.head, Some(region));
+        // SAFETY: the retained pool guard excludes allocation/reclamation;
+        // this fixture consumes its sole live block before retiring the loan.
+        unsafe {
+            assert_eq!(region.as_ref().metadata.start_address(), addresses.0);
+            region
+                .as_mut()
+                .heap
+                .deallocate(block.pointer.as_ptr(), layout);
+            region.as_mut().live = 0;
+        }
+        drop(held);
+        assert_eq!(reclaim_buddy_pool(&pool).reclaimed_bytes, bytes);
+        assert_eq!(reclaim_buddy_pool(&pool), PoolReclaim::default());
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn shared_buddy_reclaim_defers_busy_owners_and_never_retires_a_live_block() {
         let layout = Layout::from_size_align(7000, 4096).unwrap();
-        let mut region = create_region(NumaNodeId::NODE_0, layout).unwrap();
-        // SAFETY: the unpublished region is uniquely retained by this fixture
-        // until publication into its independent pool. The reserved block lies
-        // in writable retained backing, disjoint from region metadata.
-        let pointer = unsafe {
-            let retained = region.as_mut();
-            let pointer = NonNull::new(retained.heap.allocate(layout)).unwrap();
-            retained.live = 1;
-            pointer.as_ptr().write_bytes(0x37, layout.size());
-            pointer
+        let prepared = PreparedBuddyRegion::allocate(NumaNodeId::NODE_0, layout).unwrap();
+        let pool = IrqPoisonLock::new(BuddyPool { head: None });
+        let block = prepared
+            .publish(&pool, layout)
+            .unwrap_or_else(|_| panic!("fixture region publication rejected"));
+        let AllocationSource::Buddy(mut region) = block.source else {
+            panic!("fixture requires a buddy reservation");
         };
-        let pool = IrqPoisonLock::new(BuddyPool { head: Some(region) });
+        let pointer = block.pointer;
+        // SAFETY: this fixture exclusively retains the live reservation and
+        // its writable payload, disjoint from region metadata.
+        unsafe { pointer.as_ptr().write_bytes(0x37, layout.size()) };
         assert_eq!(reclaim_buddy_pool(&pool), PoolReclaim::default());
         let held = pool
             .lock()
@@ -759,7 +973,9 @@ mod tests {
         assert!(cache.bind_node(NumaNodeId::NODE_0).is_none());
         let retired = cache.bind_node(NumaNodeId::new(1)).unwrap();
         assert!(cache.magazines[2].take().is_none());
-        assert_eq!(retired.release(), MAGAZINE * layout.size());
+        let progress = retired.release();
+        assert_eq!(progress.heap_returned_bytes, MAGAZINE * layout.size());
+        assert!(progress.physical_reclaimed_bytes <= MAGAZINE * PAGE);
         assert!(cache.bind_node(NumaNodeId::NODE_0).unwrap().is_empty());
         assert!(cache.is_empty());
     }
