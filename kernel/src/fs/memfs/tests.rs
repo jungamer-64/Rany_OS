@@ -2,6 +2,45 @@
 use super::*;
 use alloc::vec;
 
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn prepared_contents_replace_a_file_without_changing_its_identity() {
+    let root = MemoryInode::new_dir(1, FileMode::DEFAULT_DIR);
+    let mut first = PagedContent::new();
+    first.write(0, b"first contents");
+    root.replace_child_file("file", first, 14).unwrap();
+    let file = root.lookup("file").unwrap();
+    let original_id = file.getattr().unwrap().ino;
+    let mut second = PagedContent::new();
+    second.write(0, b"new");
+    root.replace_child_file("file", second, 3).unwrap();
+    assert_eq!(
+        root.lookup("file").unwrap().getattr().unwrap().ino,
+        original_id
+    );
+    assert_eq!(file.getattr().unwrap().size, 3);
+    let mut bytes = [0; 14];
+    assert_eq!(file.read(0, &mut bytes).unwrap(), 3);
+    assert_eq!(&bytes[..3], b"new");
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn rejected_file_replacement_preserves_directory_entries() {
+    let root = MemoryInode::new_dir(1, FileMode::DEFAULT_DIR);
+    let child = root.mkdir("directory", FileMode::DEFAULT_DIR).unwrap();
+    child
+        .create("kept", FileMode::DEFAULT_FILE, OpenFlags::default())
+        .unwrap();
+    let mut content = PagedContent::new();
+    content.write(0, b"replacement");
+    assert_eq!(
+        root.replace_child_file("directory", content, 11),
+        Err(FsError::IsDirectory)
+    );
+    assert!(root.lookup("directory").unwrap().lookup("kept").is_ok());
+}
+
 #[cfg_attr(test, test_case)]
 pub fn test_paged_content_in_inode() {
     let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);

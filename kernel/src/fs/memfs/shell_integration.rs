@@ -427,20 +427,7 @@ pub async fn copy_file(src: &str, dst: &str, cwd: &str) -> FsResult<()> {
     let content = read_file_content(src, cwd)?;
 
     mutate(MutationKind::Copy, dst, cwd, &content, || {
-        // 宛先に書き込み
-        let (dst_parent_path, dst_name) = split_path(dst, cwd);
-        let dst_parent = resolve_path(&dst_parent_path, cwd)?;
-
-        let dst_inode = match dst_parent.lookup(&dst_name) {
-            Ok(inode) => inode,
-            Err(FsError::NotFound) => {
-                dst_parent.create(&dst_name, FileMode::DEFAULT_FILE, OpenFlags::default())?
-            }
-            Err(e) => return Err(e),
-        };
-
-        replace_content(&dst_inode, &content)?;
-        Ok(())
+        replace_file(dst, cwd, &content)
     })
     .await
 }
@@ -461,40 +448,21 @@ pub fn copy_file_cow(src_inode: &MemoryInode, dst_inode: &MemoryInode) {
 /// ファイルに内容を書き込み
 pub async fn write_file_content(path: &str, cwd: &str, content: &[u8]) -> FsResult<()> {
     mutate(MutationKind::Write, path, cwd, content, || {
-        let inode = match resolve_path(path, cwd) {
-            Ok(inode) => inode,
-            Err(FsError::NotFound) => {
-                let (parent_path, name) = split_path(path, cwd);
-                let parent = resolve_path(&parent_path, cwd)?;
-                parent.create(&name, FileMode::DEFAULT_FILE, OpenFlags::default())?
-            }
-            Err(e) => return Err(e),
-        };
-
-        replace_content(&inode, content)?;
-        Ok(())
+        replace_file(path, cwd, content)
     })
     .await
 }
 
-fn replace_content(inode: &Arc<dyn Inode>, bytes: &[u8]) -> FsResult<()> {
-    let inode = inode
+fn replace_file(path: &str, cwd: &str, bytes: &[u8]) -> FsResult<()> {
+    let (parent_path, name) = split_path(path, cwd);
+    let parent = resolve_path(&parent_path, cwd)?;
+    let parent = parent
         .as_any()
         .downcast_ref::<MemoryInode>()
         .ok_or(FsError::CrossDeviceLink)?;
-    if inode.file_type() != FileType::Regular {
-        return Err(if inode.file_type() == FileType::Directory {
-            FsError::IsDirectory
-        } else {
-            FsError::InvalidArgument
-        });
-    }
-    // Prepare pages without truncating the published inode. Its kind is
-    // immutable, so installing the prepared content cannot fail.
     let mut content = PagedContent::new();
     content.write(0, bytes);
-    inode.set_content_cow(content, bytes.len() as u64);
-    Ok(())
+    parent.replace_child_file(&name, content, bytes.len() as u64)
 }
 
 /// パスを親パスとファイル名に分割

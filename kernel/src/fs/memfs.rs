@@ -6,12 +6,12 @@
 //! シェルコマンドの動作検証用のインメモリファイルシステム
 //! 実際のストレージバックエンドなしで動作するファイルシステム
 
+use crate::sync::RwLock;
 use alloc::string::{String, ToString};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use hashbrown::HashMap;
-use spin::RwLock;
 
 use super::page::PagedContent;
 mod shell_integration;
@@ -236,6 +236,34 @@ impl MemoryInode {
             self.mtime.store(now, Ordering::Relaxed);
             self.ctime.store(now, Ordering::Relaxed);
         }
+    }
+
+    /// Installs complete contents before publishing a new directory entry.
+    /// Existing file contents change under their own write lock; a rejected
+    /// kind/name leaves both namespace and contents unchanged.
+    fn replace_child_file(&self, name: &str, content: PagedContent, size: u64) -> FsResult<()> {
+        let mut parent = self.kind.write();
+        let InodeKind::Directory(children) = &mut *parent else {
+            return Err(FsError::NotDirectory);
+        };
+        if let Some(inode) = children.get(name) {
+            match inode.file_type() {
+                FileType::Regular => inode.set_content_cow(content, size),
+                FileType::Directory => return Err(FsError::IsDirectory),
+                _ => return Err(FsError::InvalidArgument),
+            }
+        } else {
+            let inode = Arc::new(MemoryInode::new_file(
+                self.alloc_child_ino(),
+                FileMode::DEFAULT_FILE,
+            ));
+            inode.set_content_cow(content, size);
+            children.insert(name.to_string(), inode);
+            let now = wall_clock_now_ns();
+            self.mtime.store(now, Ordering::Relaxed);
+            self.ctime.store(now, Ordering::Relaxed);
+        }
+        Ok(())
     }
 }
 
