@@ -283,6 +283,15 @@ impl TableCatalog {
         parse_fadt_fixed_events(self.required(TableSignature::FACP)?.bytes())
     }
 
+    /// Decodes fixed power geometry from the retained FADT. No hardware access
+    /// or ownership admission occurs during decoding.
+    ///
+    /// # Errors
+    /// Returns an error for an absent FADT or invalid register geometry.
+    pub fn power_registers(&self) -> Result<crate::power::PowerRegisterDescription, AcpiError> {
+        crate::power::parse(self.required(TableSignature::FACP)?.bytes())
+    }
+
     /// Parses all MADT processor entries without truncating x2APIC IDs.
     ///
     /// # Errors
@@ -821,6 +830,12 @@ const GENERIC_ADDRESS_LENGTH: usize = 12;
 
 fn parse_fadt_fixed_events(bytes: &[u8]) -> Result<FixedEventDescription, AcpiError> {
     let sci_interrupt = read_u16(bytes, FADT_SCI_INTERRUPT_OFFSET)?;
+    if bytes.len() >= 116 && read_u32(bytes, 112)? & (1 << 20) != 0 {
+        return Ok(FixedEventDescription {
+            sci_interrupt,
+            gpe_blocks: Vec::new(),
+        });
+    }
     let gpe0_length = *bytes
         .get(FADT_GPE0_LENGTH_OFFSET)
         .ok_or_else(|| table_length_error(*b"FACP", "FADT is too short for GPE0_BLK_LEN"))?;
@@ -950,7 +965,7 @@ fn parse_fadt_gpe_block(
     }))
 }
 
-fn parse_generic_address(bytes: &[u8]) -> Result<GenericAddress, AcpiError> {
+pub(crate) fn parse_generic_address(bytes: &[u8]) -> Result<GenericAddress, AcpiError> {
     if bytes.len() != GENERIC_ADDRESS_LENGTH {
         return Err(table_length_error(
             *b"FACP",

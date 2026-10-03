@@ -37,17 +37,17 @@ pub use execution::{
 pub(crate) use execution::{enter_cell_domain, enter_domain, enter_domain_teardown};
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
-    handle_timer_interrupt_waker, interrupt_waker_registry,
-    wait_for_interrupt, wake_from_interrupt,
+    handle_timer_interrupt_waker, interrupt_waker_registry, wait_for_interrupt,
+    wake_from_interrupt,
 };
 pub use scheduler::{
     CpuRunQueueSnapshot, PlacementError, SchedulerSnapshot, SpawnError, TaskOptions, TaskPlacement,
     TaskPriority, initialize_scheduler, run_forever, scheduler_snapshot, spawn,
 };
 pub(crate) use scheduler::{
-    PollBudget, abort_cpu_online, domain_stop_boundary, domain_task_ids, prepare_cpu_offline,
-    prepare_cpu_online, publish_cpu_online, quiesce_current_cpu_deferred_work, retire_domain_tasks,
-    run_until_parked, spawn_in_domain,
+    PollBudget, abort_cpu_online, domain_stop_boundary, domain_task_ids, idle_entries,
+    prepare_cpu_offline, prepare_cpu_online, publish_cpu_online, quiesce_current_cpu_deferred_work,
+    retire_domain_tasks, run_until_parked, spawn_in_domain,
 };
 pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};
 

@@ -13,6 +13,7 @@ pub mod dmar;
 mod error;
 mod events;
 pub mod ivrs;
+pub mod power;
 mod runtime;
 mod slit;
 mod tables;

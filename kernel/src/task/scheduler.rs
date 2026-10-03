@@ -1400,6 +1400,13 @@ fn notify_target(cpu: CpuId) {
     }
 }
 
+static IDLE_ENTRIES: AtomicU64 = AtomicU64::new(0);
+
+/// Counts scheduler idle entries after the final runnable-work and wake check.
+pub(crate) fn idle_entries() -> u64 {
+    IDLE_ENTRIES.load(Ordering::Relaxed)
+}
+
 fn idle_once(cpu: CpuId, observed_wake_revision: u64) {
     #[cfg(any(test, feature = "std", target_os = "linux", target_os = "windows"))]
     {
@@ -1422,6 +1429,7 @@ fn idle_once(cpu: CpuId, observed_wake_revision: u64) {
             unsafe { core::arch::asm!("sti", options(nomem, nostack)) };
             return;
         }
+        IDLE_ENTRIES.fetch_add(1, Ordering::Relaxed);
         unsafe { core::arch::asm!("sti; hlt", options(nomem, nostack)) };
     }
 }

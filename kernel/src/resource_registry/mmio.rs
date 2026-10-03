@@ -29,6 +29,9 @@ enum MappingResource {
     Pci {
         _function: Arc<crate::drivers::pci::resource::FunctionResources>,
     },
+    AcpiFirmware {
+        _source: &'static (dyn Send + Sync),
+    },
     IntelFirmware {
         _table: Arc<crate::drivers::acpi::AcpiTable>,
     },
@@ -276,6 +279,23 @@ fn acquire_aperture(
     let mut claims = CLAIMS.lock();
     let geometry = validate_aperture(start, length, &claims)?;
     publish_aperture(domain, geometry, resource, &mut claims)
+}
+
+/// Admission accepts only a claim derived from the retained immutable firmware
+/// namespace. The common index keeps PCI and firmware mappings disjoint.
+pub(crate) fn acquire_firmware_registers(
+    claim: &crate::platform::firmware_registers::FirmwareMemoryClaim,
+) -> Result<hal::MappedMmio, MmioAcquireError> {
+    let (base, length) = claim.range();
+    acquire_aperture(
+        DomainId::KERNEL,
+        base,
+        length,
+        MappingResource::AcpiFirmware {
+            _source: claim.retained_source(),
+        },
+    )
+    .map(|grant| grant.mapping)
 }
 
 pub(crate) fn acquire_native(

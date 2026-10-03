@@ -72,6 +72,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
   - `post_driver_task`: pre-executor network infra、memfs、durability/kgdb
 - `graphics_task` は `platform_task` と並行に走り、それ以外は dependency latch に従って段階実行される。
 - Intel IOMMU は firmware が所有するレジスタ範囲を検証し、controller を registry が保持してから hardware pointer を公開する。応答失敗でも mapping・queue・table を保持し、依存する device の起動は完了させない。
+- ACPI firmware service は固定レジスタと AML OperationRegion の寿命を保持し、SCI 通知・電源要求を一つの interpreter environment で処理する。割込みではレジスタ処理と通知のみを行う。電源 command の受付と hardware の完了を区別し、未確認の publication は失敗理由と資源を保持して自動再試行しない。CPU idle の観測値は scheduler が最終 wake 確認後に入った待機から得る。
 - `integration::init()` は引き続き driver bring-up 後、network infra 前が正位置である。
 - `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は runtime task に残す。
 

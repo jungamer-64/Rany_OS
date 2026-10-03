@@ -9,17 +9,9 @@ use kernel_api::shell::{
     TaskMonitorInfo, ThermalInfo, ThermalSensorInfo, WatchdogInfo,
 };
 
-fn map_domain_state(state: crate::domain::DomainState) -> DomainState {
-    match state {
-        crate::domain::DomainState::Initializing => DomainState::Initializing,
-        crate::domain::DomainState::Running => DomainState::Running,
-        crate::domain::DomainState::Suspended => DomainState::Suspended,
-        crate::domain::DomainState::Stopped => DomainState::Stopped,
-        crate::domain::DomainState::Terminated => DomainState::Terminated,
-    }
-}
-
-fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static str> {
+fn ensure_domain_control(
+    target: crate::domain::DomainId,
+) -> Result<(), crate::domain::DomainLifecycleError> {
     let subject = crate::task::current_subject();
     if subject.domain == target {
         return Ok(());
@@ -30,7 +22,7 @@ fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static
     {
         return Ok(());
     }
-    Err("Permission denied: owner or CAP_KILL required")
+    Err(crate::domain::DomainLifecycleError::PermissionDenied)
 }
 
 pub fn memory_stats() -> MemoryStats {
@@ -57,7 +49,7 @@ pub fn list_domains() -> Vec<DomainInfo> {
             .map(|snap| DomainInfo {
                 id: snap.id.as_u64(),
                 name: snap.name,
-                state: map_domain_state(snap.state),
+                state: snap.state,
                 tasks: snap.tasks,
                 memory_kb: (snap.memory_bytes / 1024) as usize,
                 rrefs: snap.rrefs,
@@ -73,7 +65,7 @@ pub fn list_domains() -> Vec<DomainInfo> {
             alloc::vec![DomainInfo {
                 id: snap.id.as_u64(),
                 name: snap.name,
-                state: map_domain_state(snap.state),
+                state: snap.state,
                 tasks: snap.tasks,
                 memory_kb: (snap.memory_bytes / 1024) as usize,
                 rrefs: snap.rrefs,
@@ -95,7 +87,7 @@ pub fn get_domain(id: u64) -> Option<DomainInfo> {
     crate::domain::get_domain_snapshot(target).map(|snap| DomainInfo {
         id: snap.id.as_u64(),
         name: snap.name,
-        state: map_domain_state(snap.state),
+        state: snap.state,
         tasks: snap.tasks,
         memory_kb: (snap.memory_bytes / 1024) as usize,
         rrefs: snap.rrefs,
@@ -105,24 +97,21 @@ pub fn get_domain(id: u64) -> Option<DomainInfo> {
     })
 }
 
-pub fn terminate_domain(id: u64) -> Result<(), &'static str> {
+pub fn terminate_domain(id: u64) -> Result<(), crate::domain::DomainLifecycleError> {
     let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
-    crate::domain::terminate_domain(target).map_err(|error| match error {
-        crate::domain::DomainTerminationError::KernelProtected => "Cannot terminate kernel domain",
-        crate::domain::DomainTerminationError::NotFound => "Domain not found",
-        crate::domain::DomainTerminationError::RegistryUnavailable => "Domain registry unavailable",
-        crate::domain::DomainTerminationError::Quota(_) => "Domain termination admission failed",
-    })
+    crate::domain::terminate_domain(target)
 }
 
-pub fn stop_domain(id: u64) -> Result<(), &'static str> {
+pub fn stop_domain(
+    id: u64,
+) -> Result<crate::domain::DomainStopOutcome, crate::domain::DomainLifecycleError> {
     let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
     crate::domain::stop_domain(target)
 }
 
-pub fn resume_domain(id: u64) -> Result<(), &'static str> {
+pub fn resume_domain(id: u64) -> Result<(), crate::domain::DomainLifecycleError> {
     let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
     crate::domain::resume_domain(target)
@@ -207,23 +196,19 @@ pub fn watchdog_info() -> WatchdogInfo {
 }
 
 pub fn power_info() -> PowerInfo {
-    let pm = crate::power::power_manager();
-    let idle = crate::power::cpu_idle();
-    let (c1, c2, c3) = idle.stats();
-    let stats = pm.stats();
-
+    let power = crate::power::snapshot();
     PowerInfo {
-        state: alloc::format!("{:?}", pm.current_state()),
-        power_button_presses: stats
-            .power_button_presses
-            .load(core::sync::atomic::Ordering::Relaxed),
-        sleep_button_presses: stats
-            .sleep_button_presses
-            .load(core::sync::atomic::Ordering::Relaxed),
+        state: match (&power.failure, &power.worker_failure) {
+            (Some(failure), _) => alloc::format!("{:?}: {failure:?}", power.state),
+            (_, Some(failure)) => alloc::format!("{:?}: {failure:?}", power.state),
+            _ => alloc::format!("{:?}", power.state),
+        },
+        power_button_presses: power.power_button_presses,
+        sleep_button_presses: power.sleep_button_presses,
         cpu_idle: CpuIdleInfo {
-            c1_count: c1,
-            c2_count: c2,
-            c3_count: c3,
+            c1_count: power.idle_entries,
+            c2_count: 0,
+            c3_count: 0,
         },
     }
 }

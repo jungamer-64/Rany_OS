@@ -22,7 +22,6 @@ use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTr
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 
-const STORAGE_KIND_NVME: u8 = 1;
 const STORAGE_KIND_AHCI: u8 = 3;
 
 fn provider_device_id(kind: u8, index: u64) -> u64 {
@@ -107,37 +106,27 @@ fn storage_devices_snapshot() -> alloc::vec::Vec<StorageDeviceInfo> {
         }
     }
 
-    if let Some(Some(info)) = crate::drivers::nvme::with_driver(|driver| {
-        if !driver.is_active() {
-            return None;
-        }
-
-        let block_size = driver.namespace_block_size(driver.nsid);
-        if block_size == 0 {
-            return None;
-        }
-
-        let max_transfer_blocks =
-            (driver.max_transfer_size() / block_size as usize).min(u32::MAX as usize) as u32;
-
-        Some(StorageDeviceInfo {
-            device_id: provider_device_id(STORAGE_KIND_NVME, driver.nsid as u64),
-            namespace_id: driver.nsid,
-            block_size,
-            max_transfer_blocks,
-            transport: StorageTransport::Nvme,
-            flags: STORAGE_FLAG_ACTIVE,
-        })
-    }) {
-        if !devices
-            .iter()
-            .any(|existing| existing.device_id == info.device_id)
-        {
-            devices.push(info);
-        }
-    }
-
     for device in crate::io::io_scheduler::io_scheduler().registered_devices() {
+        if let Some(device_id) = device.nvme_storage_id() {
+            let Some(geometry) = crate::io::io_scheduler::io_scheduler()
+                .get_device_ops(device)
+                .and_then(|ops| ops.block_geometry())
+            else {
+                continue;
+            };
+            let crate::io::io_scheduler::DeviceId::Nvme { namespace, .. } = device else {
+                unreachable!();
+            };
+            devices.push(StorageDeviceInfo {
+                device_id,
+                namespace_id: namespace,
+                block_size: geometry.block_size.get(),
+                max_transfer_blocks: u32::from(geometry.max_transfer_blocks.get()),
+                transport: StorageTransport::Nvme,
+                flags: STORAGE_FLAG_ACTIVE,
+            });
+            continue;
+        }
         if let crate::io::io_scheduler::DeviceId::Ahci { controller, port } = device {
             let info = StorageDeviceInfo {
                 device_id: ahci_storage_device_id(controller, port),
@@ -371,21 +360,13 @@ mod gui_input_queue_tests {
 
 use crate::security::capability::{CAP_SYS_ADMIN, CAP_SYS_PTRACE};
 use kernel_api::shell::{
-    DirEntry as KapiDirEntry, DomainInfo, DomainState as KapiDomainState, MemoryStats,
-    ShellServices, ShellSystemInfo as KapiSystemInfo,
+    DirEntry as KapiDirEntry, DomainInfo, MemoryStats, ShellServices,
+    ShellSystemInfo as KapiSystemInfo,
 };
 
-pub(super) fn map_domain_state(state: crate::domain::DomainState) -> KapiDomainState {
-    match state {
-        crate::domain::DomainState::Initializing => KapiDomainState::Initializing,
-        crate::domain::DomainState::Running => KapiDomainState::Running,
-        crate::domain::DomainState::Suspended => KapiDomainState::Suspended,
-        crate::domain::DomainState::Stopped => KapiDomainState::Stopped,
-        crate::domain::DomainState::Terminated => KapiDomainState::Terminated,
-    }
-}
-
-pub(super) fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(), &'static str> {
+pub(super) fn ensure_domain_control(
+    target: crate::domain::DomainId,
+) -> Result<(), crate::domain::DomainLifecycleError> {
     let subject = crate::task::current_subject();
     if subject.domain == target {
         return Ok(());
@@ -396,7 +377,7 @@ pub(super) fn ensure_domain_control(target: crate::domain::DomainId) -> Result<(
     {
         return Ok(());
     }
-    Err("Permission denied: owner or CAP_KILL required")
+    Err(crate::domain::DomainLifecycleError::PermissionDenied)
 }
 
 impl ShellServices for KernelServiceHost {
@@ -420,7 +401,7 @@ impl ShellServices for KernelServiceHost {
                 .map(|snap| DomainInfo {
                     id: snap.id.as_u64(),
                     name: snap.name,
-                    state: map_domain_state(snap.state),
+                    state: snap.state,
                     tasks: snap.tasks,
                     memory_kb: (snap.memory_bytes / 1024) as usize,
                     rrefs: snap.rrefs,
@@ -436,7 +417,7 @@ impl ShellServices for KernelServiceHost {
                 alloc::vec![DomainInfo {
                     id: snap.id.as_u64(),
                     name: snap.name,
-                    state: map_domain_state(snap.state),
+                    state: snap.state,
                     tasks: snap.tasks,
                     memory_kb: (snap.memory_bytes / 1024) as usize,
                     rrefs: snap.rrefs,
@@ -458,7 +439,7 @@ impl ShellServices for KernelServiceHost {
         crate::domain::get_domain_snapshot(target).map(|snap| DomainInfo {
             id: snap.id.as_u64(),
             name: snap.name,
-            state: map_domain_state(snap.state),
+            state: snap.state,
             tasks: snap.tasks,
             memory_kb: (snap.memory_bytes / 1024) as usize,
             rrefs: snap.rrefs,
@@ -468,30 +449,22 @@ impl ShellServices for KernelServiceHost {
         })
     }
 
-    fn terminate_domain(&self, id: u64) -> Result<(), &'static str> {
+    fn terminate_domain(&self, id: u64) -> Result<(), crate::domain::DomainLifecycleError> {
         let target = crate::domain::DomainId::new(id);
         ensure_domain_control(target)?;
-        crate::domain::terminate_domain(target).map_err(|error| match error {
-            crate::domain::DomainTerminationError::KernelProtected => {
-                "Cannot terminate kernel domain"
-            }
-            crate::domain::DomainTerminationError::NotFound => "Domain not found",
-            crate::domain::DomainTerminationError::RegistryUnavailable => {
-                "Domain registry unavailable"
-            }
-            crate::domain::DomainTerminationError::Quota(_) => {
-                "Domain termination admission failed"
-            }
-        })
+        crate::domain::terminate_domain(target)
     }
 
-    fn stop_domain(&self, id: u64) -> Result<(), &'static str> {
+    fn stop_domain(
+        &self,
+        id: u64,
+    ) -> Result<crate::domain::DomainStopOutcome, crate::domain::DomainLifecycleError> {
         let target = crate::domain::DomainId::new(id);
         ensure_domain_control(target)?;
         crate::domain::stop_domain(target)
     }
 
-    fn resume_domain(&self, id: u64) -> Result<(), &'static str> {
+    fn resume_domain(&self, id: u64) -> Result<(), crate::domain::DomainLifecycleError> {
         let target = crate::domain::DomainId::new(id);
         ensure_domain_control(target)?;
         crate::domain::resume_domain(target)
@@ -642,23 +615,19 @@ impl ShellServices for KernelServiceHost {
             };
         }
 
-        let pm = crate::power::power_manager();
-        let idle = crate::power::cpu_idle();
-        let (c1, c2, c3) = idle.stats();
-        let stats = pm.stats();
-
+        let power = crate::power::snapshot();
         kernel_api::shell::PowerInfo {
-            state: alloc::format!("{:?}", pm.current_state()),
-            power_button_presses: stats
-                .power_button_presses
-                .load(core::sync::atomic::Ordering::Relaxed),
-            sleep_button_presses: stats
-                .sleep_button_presses
-                .load(core::sync::atomic::Ordering::Relaxed),
+            state: match (&power.failure, &power.worker_failure) {
+                (Some(failure), _) => alloc::format!("{:?}: {failure:?}", power.state),
+                (_, Some(failure)) => alloc::format!("{:?}: {failure:?}", power.state),
+                _ => alloc::format!("{:?}", power.state),
+            },
+            power_button_presses: power.power_button_presses,
+            sleep_button_presses: power.sleep_button_presses,
             cpu_idle: kernel_api::shell::CpuIdleInfo {
-                c1_count: c1,
-                c2_count: c2,
-                c3_count: c3,
+                c1_count: power.idle_entries,
+                c2_count: 0,
+                c3_count: 0,
             },
         }
     }

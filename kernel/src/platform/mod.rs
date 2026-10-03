@@ -3,6 +3,7 @@
 pub mod acpi_hotplug;
 pub mod apic;
 pub mod firmware;
+pub(crate) mod firmware_registers;
 pub mod pci;
 
 pub fn register_builtin_services() {
