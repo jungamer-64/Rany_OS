@@ -539,8 +539,7 @@ pub fn test_release_clears_lease_and_sets_last_released() {
     assert_eq!(client.last_released_ip(), Some(lease.ip_address));
 }
 
-#[cfg_attr(test, test_case)]
-pub fn test_parse_t1_t2_and_timeout_transitions() {
+pub async fn test_parse_t1_t2_and_timeout_transitions() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
         crate::net::runtime::manager::NetIfId(1),
@@ -607,11 +606,11 @@ pub fn test_parse_t1_t2_and_timeout_transitions() {
             }
             client.lease.lock().unwrap().as_mut().unwrap().obtained_at = 0;
             // current_tick passes T1
-            assert!(crate::task::block_on(client.check_timeout(31, 1)));
+            assert!(client.check_timeout(31, 1).await);
             assert_eq!(client.state(), DhcpState::Renewing);
 
             // advance past T2 -> Rebinding
-            assert!(crate::task::block_on(client.check_timeout(61, 1)));
+            assert!(client.check_timeout(61, 1).await);
             assert_eq!(client.state(), DhcpState::Rebinding);
         }
         _ => panic!("expected Ack"),

@@ -7,6 +7,13 @@ mod network_case_table;
 
 use network_case_table::NETWORK_RUNTIME_CASES;
 
+enum NetworkRuntimeCase {
+    Sync(fn() -> bool),
+    Async(
+        fn() -> core::pin::Pin<alloc::boxed::Box<dyn core::future::Future<Output = bool> + Send>>,
+    ),
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct NetworkRuntimeSuiteSummary {
     pub passed: u32,
@@ -157,7 +164,11 @@ pub async fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRunt
         }
 
         selected_any = true;
-        if run_case() {
+        let passed = match run_case {
+            NetworkRuntimeCase::Sync(run) => run(),
+            NetworkRuntimeCase::Async(run) => run().await,
+        };
+        if passed {
             summary.passed += 1;
             info!(target: "init", "[kernel-test][net] case {id} ok");
         } else {

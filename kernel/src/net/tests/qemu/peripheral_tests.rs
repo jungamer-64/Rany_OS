@@ -77,11 +77,12 @@ pub fn dhcp_v4_release_clears_lease_and_sets_last_released_smoke() -> bool {
     run_case!(dhcp::qemu_v4_tests::test_release_clears_lease_and_sets_last_released)
 }
 
-pub fn dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke() -> bool {
-    run_case!(dhcp::qemu_v4_tests::test_parse_t1_t2_and_timeout_transitions)
+pub async fn dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke() -> bool {
+    dhcp::qemu_v4_tests::test_parse_t1_t2_and_timeout_transitions().await;
+    true
 }
 
-pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
+pub async fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
     use crate::net::l2::ethernet::MacAddress;
     use crate::net::runtime::stack;
     use crate::net::services::dhcp::{
@@ -122,7 +123,7 @@ pub fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
     if client.process_response(&buf, 100).is_err() {
         return false;
     }
-    let _ = client.check_timeout(102, 1);
+    let _ = client.check_timeout(102, 1).await;
     client
         .last_declined_ip()
         .map(|ip| ip == crate::net::l3::ipv4::Ipv4Address::new([10, 0, 0, 9]))

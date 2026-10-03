@@ -37,12 +37,12 @@ pub fn net_peripheral_dhcp_v4_release_clears_lease_and_sets_last_released_smoke(
     crate::net::qemu_tests::dhcp_v4_release_clears_lease_and_sets_last_released_smoke()
 }
 
-pub fn net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke()
+pub async fn net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke() -> bool {
+    crate::net::qemu_tests::dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke().await
 }
 
-pub fn net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
-    crate::net::qemu_tests::dhcp_v4_offer_probe_and_decline_flow_smoke()
+pub async fn net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
+    crate::net::qemu_tests::dhcp_v4_offer_probe_and_decline_flow_smoke().await
 }
 
 pub fn net_peripheral_dhcp_v6_build_solicit_min_size_smoke() -> bool {

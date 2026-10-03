@@ -100,6 +100,23 @@ where
     }
 }
 
+async fn run_async_case(
+    name: &str,
+    case: impl core::future::Future<Output = Result<String, String>>,
+) -> IntegrationTestResult {
+    let start = crate::time::precise_time_nanos();
+    let (passed, message) = match case.await {
+        Ok(message) => (true, message),
+        Err(message) => (false, message),
+    };
+    IntegrationTestResult {
+        name: String::from(name),
+        passed,
+        message,
+        duration_us: crate::time::precise_time_nanos().saturating_sub(start) / 1_000,
+    }
+}
+
 /// Read TSC for timing
 #[inline]
 fn rdtsc_timestamp() -> u64 {
@@ -250,29 +267,53 @@ pub fn test_network() -> IntegrationTestSuite {
 // Storage Test
 // ============================================================================
 
-pub fn test_storage() -> IntegrationTestSuite {
+pub async fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
 
-    suite.add_result(run_test("nvme_polling_basic", || {
-        let active = crate::drivers::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
-        if !active {
-            return Ok(String::from("NVMe driver not initialized; skipped"));
-        }
+    suite.add_result(
+        run_async_case("nvme_polling_basic", async {
+            let device = crate::io::io_scheduler::DeviceId::Nvme {
+                controller: 0,
+                namespace: 1,
+            };
+            let Some(ops) = crate::io::io_scheduler::io_scheduler().get_device_ops(device) else {
+                return Err(String::from("NVMe runtime is not published"));
+            };
+            let geometry = ops
+                .block_geometry()
+                .ok_or_else(|| String::from("NVMe runtime is not admitting block operations"))?;
 
-        let queue_ready =
-            crate::drivers::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
-        if !queue_ready {
-            return Err(String::from("NVMe queue missing for core 0"));
-        }
+            let handle = crate::fs::DirectBlockHandle::new(
+                crate::io::io_scheduler::DeviceId::Nvme {
+                    controller: 0,
+                    namespace: 1,
+                },
+                0,
+                1,
+                geometry.block_size.get(),
+            )
+            .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
+            let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
+            match (handle.read_blocks(0, &mut buf)).await {
+                Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
+                Ok(n) => Err(alloc::format!("NVMe read size mismatch: {}", n)),
+                Err(e) => Err(alloc::format!("NVMe read failed: {:?}", e)),
+            }
+        })
+        .await,
+    );
 
-        let handle = crate::fs::DirectBlockHandle::new(1, 0, 1, 512);
-        let mut buf = [0u8; 512];
-        match crate::task::block_on(handle.read_blocks(0, &mut buf)) {
-            Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
-            Ok(n) => Err(alloc::format!("NVMe read size mismatch: {}", n)),
-            Err(e) => Err(alloc::format!("NVMe read failed: {:?}", e)),
-        }
-    }));
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(
+        run_async_case("page_cluster_owned_roundtrip", async {
+            crate::fs::page_cluster_buffer::tests::test_page_cluster_buffer_zero_copy_roundtrip()
+                .await;
+            Ok(String::from(
+                "owned logical block buffer roundtrip completed",
+            ))
+        })
+        .await,
+    );
 
     suite
 }
@@ -281,7 +322,7 @@ pub fn test_storage() -> IntegrationTestSuite {
 // IOMMU Test Suite
 // ============================================================================
 
-pub fn test_iommu() -> IntegrationTestSuite {
+pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
     // Test IOMMU detection
@@ -293,113 +334,112 @@ pub fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
-    // Test IOMMU DMA mapping
-    suite.add_result(run_test("iommu_dma_map_basic", || {
-        if !crate::io::iommu::api::is_iommu_enabled() {
-            return Err(String::from(
-                "IOMMU is mandatory but was not enabled for the DMA mapping test",
-            ));
-        }
-
+    suite.add_result(run_async_case("iommu_dma_map_basic", async {
+        use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
         use crate::io::iommu::types::DeviceId;
-
-        let _driver = crate::io::iommu::runtime::registry::get_iommu_driver()
-            .ok_or_else(|| String::from("IOMMU driver not initialized"))?;
-        crate::io::iommu::api::reset_map_unmap_counts();
-
-        // Test basic mapping through the public API
-        let phys_addr = 0x2000_0000; // Assume this is safe in QEMU
-        let size = 0x1000;
-        let candidates = [
-            DeviceId::new(0, 0, 31, 2), // AHCI
-            DeviceId::new(0, 0, 0, 0),  // host bridge
-        ];
-
-        let mut last_err: Option<(DeviceId, crate::io::iommu::types::IommuError)> = None;
-        for device_id in candidates {
-            match unsafe { crate::io::iommu::api::map_for_device(&device_id, PhysAddr::new(phys_addr), size) } {
-                Ok(mapped_iova) => {
-                    let _ = crate::io::iommu::api::unmap_for_device(&device_id, mapped_iova, size);
-                    if mapped_iova == phys_addr {
-                        return Err(String::from(
-                            "device DMA map unexpectedly returned an identity-mapped address",
-                        ));
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Err(String::from("IOMMU must be enabled for DMA mapping verification"));
+        }
+        let size = crate::mm::types::PAGE_SIZE_4K;
+        let allocation = crate::ipc::RRef::<[u8]>::new_slice_default_aligned(
+            crate::domain::DomainId::KERNEL, size, size,
+        ).ok_or_else(|| String::from("owned DMA test allocation failed"))?;
+        let pointer = allocation.as_ptr().addr();
+        let mut backing = Some(allocation);
+        let candidates = [DeviceId::new(0, 0, 31, 2), DeviceId::new(0, 0, 0, 0)];
+        let mut last_rejection = None;
+        // LOOP_PROOF: mode=bounded; reason=The fixed candidate list bounds mapping admission and unpublished rejection returns the same RAM owner;
+        for device in candidates {
+            let allocation = backing.take().expect("unpublished rejection returns backing");
+            match DmaHandle::map_rref_slice_for_device(allocation, &device, DmaDirection::Bidirectional) {
+                Ok(mapping) => {
+                    let iova = mapping.iova();
+                    let returned = mapping.unmap_async().await.map_err(|failure| {
+                        let message = alloc::format!("DMA retirement incomplete: {:?}", failure.kind);
+                        // The handle transfers backing and exact retirement
+                        // progress to its pre-admitted reclamation owner.
+                        drop(failure.handle);
+                        message
+                    })?;
+                    if returned.as_ptr().addr() != pointer || returned.len() != size {
+                        return Err(String::from("DMA retirement returned different backing"));
                     }
-                    return Ok(alloc::format!(
-                        "Successfully mapped/unmapped device {:04x}:{:02x}:{:02x}.{} at IOVA 0x{:x}",
-                        device_id.segment,
-                        device_id.bus,
-                        device_id.device,
-                        device_id.function,
-                        mapped_iova
+                    return Ok(alloc::format!("Owned DMA map/unmap completed for {:04x}:{:02x}:{:02x}.{} at IOVA {iova:#x}",
+                        device.segment, device.bus, device.device, device.function));
+                }
+                Err(MapError::Unmapped { rref, kind }) => {
+                    backing = Some(rref);
+                    last_rejection = Some(kind);
+                }
+                Err(MapError::TranslationPending { handle, kind }) => {
+                    // Publication occurred. The reserved reclamation owner
+                    // keeps RAM and translation origin through synchronization.
+                    drop(handle);
+                    return Err(alloc::format!("DMA publication remains incomplete: {kind:?}"));
+                }
+            }
+        }
+        Err(alloc::format!("DMA admission rejected all candidates: {last_rejection:?}"))
+    }).await);
+
+    suite.add_result(
+        run_async_case("iommu_nvme_block_io_path", async {
+            let device = crate::io::io_scheduler::DeviceId::Nvme {
+                controller: 0,
+                namespace: 1,
+            };
+            let Some(ops) = crate::io::io_scheduler::io_scheduler().get_device_ops(device) else {
+                return Err(String::from("NVMe runtime is not published"));
+            };
+            let geometry = ops
+                .block_geometry()
+                .ok_or_else(|| String::from("NVMe runtime is not admitting block operations"))?;
+
+            let handle = crate::fs::DirectBlockHandle::new(
+                crate::io::io_scheduler::DeviceId::Nvme {
+                    controller: 0,
+                    namespace: 1,
+                },
+                0,
+                1,
+                geometry.block_size.get(),
+            )
+            .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
+            let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
+
+            crate::io::iommu::api::reset_map_unmap_counts();
+            match (handle.read_blocks(0, &mut buf)).await {
+                Ok(n) if n == buf.len() => {}
+                Ok(n) => {
+                    return Err(alloc::format!(
+                        "NVMe direct block read size mismatch: expected {}, got {}",
+                        buf.len(),
+                        n
                     ));
                 }
-                Err(e) => {
-                    last_err = Some((device_id, e));
-                }
+                Err(e) => return Err(alloc::format!("NVMe direct block read failed: {:?}", e)),
             }
-        }
 
-        if let Some((device_id, err)) = last_err {
-            Err(alloc::format!(
-                "IOMMU mapping failed for all candidate devices; last={} on {:04x}:{:02x}:{:02x}.{}",
-                alloc::format!("{:?}", err),
-                device_id.segment,
-                device_id.bus,
-                device_id.device,
-                device_id.function
-            ))
-        } else {
-            Err(String::from("IOMMU mapping failed: no candidate devices tested"))
-        }
-    }));
-
-    suite.add_result(run_test("iommu_nvme_block_io_path", || {
-        let active = crate::drivers::nvme::with_driver(|d| d.is_active()).unwrap_or(false);
-        if !active {
-            return Ok(String::from("NVMe driver not initialized; skipped"));
-        }
-
-        let queue_ready =
-            crate::drivers::nvme::with_driver(|d| d.get_queue(0).is_some()).unwrap_or(false);
-        if !queue_ready {
-            return Err(String::from("NVMe queue missing for core 0"));
-        }
-
-        let handle = crate::fs::DirectBlockHandle::new(1, 0, 1, 512);
-        let mut buf = [0u8; 512];
-
-        crate::io::iommu::api::reset_map_unmap_counts();
-        match crate::task::block_on(handle.read_blocks(0, &mut buf)) {
-            Ok(n) if n == buf.len() => {}
-            Ok(n) => {
-                return Err(alloc::format!(
-                    "NVMe direct block read size mismatch: expected {}, got {}",
-                    buf.len(),
-                    n
-                ));
-            }
-            Err(e) => return Err(alloc::format!("NVMe direct block read failed: {:?}", e)),
-        }
-
-        if !crate::io::iommu::api::is_iommu_enabled() {
-            Err(String::from(
-                "IOMMU is mandatory but NVMe direct block I/O ran without IOMMU enabled",
-            ))
-        } else {
-            let maps = crate::io::iommu::api::get_map_count();
-            if maps == 0 {
+            if !crate::io::iommu::api::is_iommu_enabled() {
                 Err(String::from(
-                    "IOMMU enabled but NVMe direct block path recorded no map calls",
+                    "IOMMU is mandatory but NVMe direct block I/O ran without IOMMU enabled",
                 ))
             } else {
-                Ok(alloc::format!(
-                    "NVMe direct block read ok ({} IOMMU map calls)",
-                    maps
-                ))
+                let maps = crate::io::iommu::api::get_map_count();
+                if maps == 0 {
+                    Err(String::from(
+                        "IOMMU enabled but NVMe direct block path recorded no map calls",
+                    ))
+                } else {
+                    Ok(alloc::format!(
+                        "NVMe direct block read ok ({} IOMMU map calls)",
+                        maps
+                    ))
+                }
             }
-        }
-    }));
+        })
+        .await,
+    );
 
     suite
 }
@@ -409,7 +449,7 @@ pub fn test_iommu() -> IntegrationTestSuite {
 // ============================================================================
 
 /// Run all integration tests
-pub fn run_all_integration_tests() -> (usize, usize) {
+pub async fn run_all_integration_tests() -> (usize, usize) {
     log::info!("\n========================================\n");
     log::info!("   ExoRust Integration Test Suite\n");
     log::info!("========================================\n");
@@ -420,14 +460,14 @@ pub fn run_all_integration_tests() -> (usize, usize) {
     // Run each test suite
     let suites = [
         test_pci(),
-        test_iommu(),
+        test_iommu().await,
         test_memory(),
         test_tasks(),
         test_ipc(),
         test_domains(),
         test_security(),
         test_network(),
-        test_storage(),
+        test_storage().await,
     ];
 
     for suite in suites {
