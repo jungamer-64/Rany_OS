@@ -68,7 +68,11 @@ ExoRust は、次の三原則を採用します。
 - Tier 2: グローバルヒープ
 - Tier 3: Per-core cache
 
-この三層をベースに、NUMA ローカル割り当てと per-core 高速化を両立する。
+この三層をベースに、NUMA ローカル割り当てと per-core 高速化を両立する。 RAM の所有元は一意にし、サブプールは借用領域の所有値を保持する。ブートで移譲されたヒープ領域は PMM と重複して登録しない。
+
+ヒープの slab はノード別の pool が所有し、サイズクラスは quota header を含む layout から選ぶ。CPU magazine はその pool で予約されたブロックを保持し、返却先 CPU は各予約に属する。同じ slab を複数 CPU が使っても、ページを最初に作った CPU が他の予約の返却先を決めない。slab の占有情報は magazine の予約も含む。全予約の返却を確認してからページを PMM へ返す。ゼロ済みフレームも PMM の CPU-local cache に属し、通常フレームと同じ offline・回収手順で返却する。
+
+CPU キャッシュは固定された CPU-local storage に属し、通常のローカル割り当てで共有レジストリのロックや backing の参照カウント更新を必要としない。保持量は明示した有限容量で制限する。遠隔回収は所有 CPU が処理し、offline の完了はキャッシュ drain の完了を必要とする。Exchange の返却中は再入処理による補充・backing の置換を拒否する。失敗時は所有値を同じ CPU storage へ戻し、圧迫回収では返却済み量だけを計上する。offline は失敗理由を保持して Draining に留まり、所有 CPU は TLB IPI を処理しながら次の offline 要求による明示 retry を待つ。park 承認前に CPU の再利用・eject を許可しない。
 
 - 既定ポリシーは first-touch と同一 NUMA 優先配置とする。
 - `alloc_on_numa_node(node_id, layout)` 相当の明示ノード指定は canonical target interface とする。
@@ -78,13 +82,17 @@ ExoRust は、次の三原則を採用します。
 
 - ドメイン間で移動するデータは Exchange Heap に置く。
 - `RRef<T>` により所有者を追跡し、送信元は move 後にアクセス権を失う。
+- `RRef` は追加 alignment を含む確保時の layout を保持する。型消去でも所有値を複製せず、payload の参照を作らずに metadata を保存する。型の再構築に失敗した場合は、元の所有値を返す。DMA から CPU へ戻す、または解放する前には必要な translation 完了を保証する。
 - ドメインクラッシュ時は owner tracking を用いて回収する。
 
 ### 3.3 DMA と IOMMU
 
 - DMA は IOMMU を必須前提とする。
-- ドライバは `alloc_dma_buffer()` のような Framework API 経由でのみ DMA バッファを取得する。
+- ドライバの DMA 確保と転送状態は Framework の単一レジストリが所有する。CPU lease は参照による訪問、共有 descriptor lease は整数アクセスへ制限し、公開後の RAM を通常のヒープへ返す権限を持たせない。 CPU 訪問は mapping の所有値を短い借用へ移してから、共有ロックの外で実行する。訪問中は競合する CPU 参照・device publication・返却を拒否し、終了要求は最後の参照が消えるまで backing を保持する。返却待ちと IOTLB 失敗による quarantine は区別し、visitor の unwind でも所有値を失わない。
 - 任意アドレス DMA、IOMMU バイパス、DMA 中の CPU 側アクセスは設計上禁止する。
+- DMA mapping の公開前の拒否は CPU の所有値を返し、公開後の同期失敗は mapping と backing の所有値を保持する。解放は割り当て時の domain・IOVA allocator・hardware source を使い、削除済み範囲の進捗を残して IOTLB / ATS 完了後に再利用を許可する。
+- DMA の owner publication は、準備済みの metadata と domain registry の短い admission scope を使い、domain 終了と直列化する。この admission は device の認可や allocation の課金先とは別であり、終了後の新規 publication を拒否する。capability の metadata 確保も publication 前に済ませる。DMA registry の metadata は回収予約の最大保持量から導く有限スロットに置き、登録・返却・owner 回収で動的な一覧や空きスロットを確保しない。占有と generation を同じ state として公開し、古い identity は再利用後の参照・変更・返却を許可しない。generation の上限ではスロットを退役させ、満杯の admission は未受理の所有値を返す。owner 回収の走査は各スロットを一度だけ訪れ、未完了の DMA quarantine は登録した所有者に保持する。
+- DMA handle は公開前に有限の回収容量を予約する。予約拒否では CPU 所有権を保持し、`Drop` と非同期処理の取消は予約済みの回収先へ所有権を移す。`Drop` は hardware 完了を待たない。
 
 ### 3.4 Durability
 

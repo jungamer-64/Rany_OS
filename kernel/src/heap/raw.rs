@@ -15,7 +15,10 @@ use core::alloc::Layout;
 use core::ptr::NonNull;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-const CLASSES: usize = 6;
+pub(super) const SMALLEST_CLASS_BYTES: usize = 64;
+const LARGEST_CLASS_BYTES: usize = 2048;
+const SLAB_ALIGNMENT: usize = 64;
+const CLASSES: usize = (LARGEST_CLASS_BYTES / SMALLEST_CLASS_BYTES).ilog2() as usize + 1;
 const MAGAZINE: usize = 32;
 const PAGE: usize = 4096;
 const REGION_BYTES: usize = 2 * 1024 * 1024;
@@ -24,27 +27,78 @@ const REGION_BYTES: usize = 2 * 1024 * 1024;
 struct SlabClass(usize);
 impl SlabClass {
     fn for_layout(layout: Layout) -> Option<Self> {
-        if layout.align() > 64 || layout.size() > 2048 {
+        if layout.align() > SLAB_ALIGNMENT || layout.size() > LARGEST_CLASS_BYTES {
             return None;
         }
         Some(Self(
-            layout.size().max(64).next_power_of_two().trailing_zeros() as usize - 6,
+            (layout
+                .size()
+                .max(SMALLEST_CLASS_BYTES)
+                .next_power_of_two()
+                .trailing_zeros()
+                - SMALLEST_CLASS_BYTES.trailing_zeros()) as usize,
         ))
     }
     fn size(self) -> usize {
-        64 << self.0
+        SMALLEST_CLASS_BYTES << self.0
     }
 }
 
 // This is ownership, not an address tag: only RawBlock construction and unique
 // header consumption may create/transfer it. It is deliberately non-Clone.
+// Slab backing belongs to the node; each reservation separately names the CPU
+// whose bounded magazine may accept its return. Page creation grants no CPU
+// authority over other reservations in the same page.
 #[derive(Debug)]
 pub(super) enum AllocationSource {
     Bootstrap,
-    Slab(NonNull<SlabPage>),
+    Slab(SlabReservation),
     Buddy(NonNull<BuddyRegion>),
     Extent(NonNull<DirectExtent>),
 }
+
+/// A whole slab page is 4KiB-aligned and CPU IDs fit in its address's spare
+/// low bits. Tagging preserves pointer provenance and keeps quota + source
+/// metadata small enough for a one-byte allocation in the 64-byte class.
+/// The tagged pointer is never dereferenced; only `page` decodes a header view.
+#[derive(Debug)]
+pub(super) struct SlabReservation {
+    tagged_page: NonNull<SlabPage>,
+}
+
+impl SlabReservation {
+    fn new(page: NonNull<SlabPage>, home: CpuId) -> Self {
+        assert_eq!(
+            page.as_ptr().addr() & (PAGE - 1),
+            0,
+            "slab backing is page-aligned"
+        );
+        let tagged = page.as_ptr().map_addr(|address| address | home.as_usize());
+        // SAFETY: the non-null page address only gains bounded low bits. The
+        // pointer keeps the same page provenance and is not dereferenced here.
+        Self {
+            tagged_page: unsafe { NonNull::new_unchecked(tagged) },
+        }
+    }
+
+    fn page(&self) -> NonNull<SlabPage> {
+        let page = self
+            .tagged_page
+            .as_ptr()
+            .map_addr(|address| address & !(PAGE - 1));
+        // SAFETY: construction retained this exact non-null aligned page; this
+        // conversion removes only the CPU tag and preserves its provenance.
+        unsafe { NonNull::new_unchecked(page) }
+    }
+
+    fn home(&self) -> CpuId {
+        // The constructor only encoded a validated CpuId; the static bound
+        // below proves that no bit of the original page address overlaps it.
+        CpuId::from_valid_index(self.tagged_page.as_ptr().addr() & (PAGE - 1))
+    }
+}
+
+const _: () = assert!(crate::cpu::MAX_POSSIBLE_CPUS <= PAGE);
 
 pub(super) struct RawBlock {
     pub pointer: NonNull<u8>,
@@ -109,7 +163,8 @@ impl HeapCache {
     fn release(mut self) -> CacheDrainProgress {
         let mut progress = CacheDrainProgress::default();
         for class in 0..CLASSES {
-            let layout = Layout::from_size_align(64 << class, 64).expect("canonical slab class");
+            let layout = Layout::from_size_align(SlabClass(class).size(), SLAB_ALIGNMENT)
+                .expect("canonical slab class");
             // LOOP_PROOF: mode=condition; reason=Each take consumes one of at most 32 magazine reservations.;
             while let Some(block) = self.magazines[class].take() {
                 progress.heap_returned_bytes += layout.size();
@@ -129,7 +184,7 @@ pub(super) struct SlabPage {
     next: Option<NonNull<Self>>,
 }
 impl SlabPage {
-    const DATA: usize = core::mem::size_of::<Self>().next_multiple_of(64);
+    const DATA: usize = core::mem::size_of::<Self>().next_multiple_of(SLAB_ALIGNMENT);
     fn count(class: SlabClass) -> usize {
         (PAGE - Self::DATA) / class.size()
     }
@@ -173,7 +228,7 @@ static DIRECT_RETAINED_BYTES: AtomicU64 = AtomicU64::new(0);
 static NODES: [NodeHeap; crate::mm::types::NumaNodeId::MAX_NODES] =
     [const { NodeHeap::new() }; crate::mm::types::NumaNodeId::MAX_NODES];
 
-fn claim_block(page: NonNull<SlabPage>) -> Option<RawBlock> {
+fn claim_block(page: NonNull<SlabPage>, home: CpuId) -> Option<RawBlock> {
     // SAFETY: the node lock retains this page while refill reserves a block.
     let slab = unsafe { page.as_ref() };
     let mut free = slab.free.load(Ordering::Acquire);
@@ -198,7 +253,7 @@ fn claim_block(page: NonNull<SlabPage>) -> Option<RawBlock> {
                 };
                 return Some(RawBlock {
                     pointer,
-                    source: AllocationSource::Slab(page),
+                    source: AllocationSource::Slab(SlabReservation::new(page, home)),
                 });
             }
             Err(current) => free = current,
@@ -214,7 +269,7 @@ fn slab_block(node: NumaNodeId, class: SlabClass, home: CpuId) -> Option<RawBloc
         let mut cursor = list.head;
         // LOOP_PROOF: mode=condition; reason=Each step advances through the finite acyclic node-owned slab list.;
         while let Some(page) = cursor {
-            if let Some(block) = claim_block(page) {
+            if let Some(block) = claim_block(page, home) {
                 return Some(block);
             }
             // SAFETY: links are immutable while this pool lock is held.
@@ -237,7 +292,6 @@ fn slab_block(node: NumaNodeId, class: SlabClass, home: CpuId) -> Option<RawBloc
     let page = unsafe {
         base.write(SlabPage {
             backing,
-            home,
             class,
             free: AtomicU64::new(mask),
             mask,
@@ -246,7 +300,7 @@ fn slab_block(node: NumaNodeId, class: SlabClass, home: CpuId) -> Option<RawBloc
         NonNull::new_unchecked(base)
     };
     list.head = Some(page);
-    claim_block(page)
+    claim_block(page, home)
 }
 
 fn slab_return(
@@ -537,7 +591,8 @@ pub(super) fn allocate(layout: Layout) -> Option<RawBlock> {
 /// extents returned to PMM; a return to a retained heap pool contributes zero.
 pub(super) fn release(block: RawBlock, layout: Layout) -> usize {
     match block.source {
-        AllocationSource::Slab(page) => {
+        AllocationSource::Slab(reservation) => {
+            let page = reservation.page();
             // SAFETY: this consumed reservation retains immutable source
             // identity until its final bitmap publication.
             let (node, class) = unsafe { (page.as_ref().backing.node(), page.as_ref().class) };
@@ -608,12 +663,15 @@ pub(super) fn release(block: RawBlock, layout: Layout) -> usize {
     }
 }
 
-/// Same-CPU frees stay in its bounded magazine; remote frees publish directly
-/// to the source node's occupancy and never borrow the originating CPU cache.
+/// Same-CPU frees follow the reservation's CPU, even when its slab was first
+/// created or concurrently used by another CPU in this node. Remote frees
+/// publish to source occupancy and never borrow the originating CPU cache.
 pub(super) fn cache_or_release(block: RawBlock, layout: Layout) {
-    if let AllocationSource::Slab(page) = &block.source {
+    if let AllocationSource::Slab(reservation) = &block.source {
+        let page = reservation.page();
+        let home = reservation.home();
         // SAFETY: the block reservation retains its immutable page metadata.
-        let (home, node) = unsafe { (page.as_ref().home, page.as_ref().backing.node()) };
+        let node = unsafe { page.as_ref().backing.node() };
         if let (Some(class), Some(cpu)) = (
             SlabClass::for_layout(layout),
             CurrentCpu::acquire().filter(|cpu| {
@@ -735,6 +793,89 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn same_cpu_return_keeps_its_reservation_when_another_cpu_shares_the_slab() {
+        let Some(cpu) = CurrentCpu::acquire() else {
+            return; // Hosted platform without an owner binding uses pool returns.
+        };
+        drain_current_cache();
+        let node = cpu.memory_node().unwrap_or(NumaNodeId::NODE_0);
+        let layout = Layout::from_size_align(256, 64).unwrap();
+        let class = SlabClass::for_layout(layout).unwrap();
+        let last_cpu = CpuId::new((crate::cpu::MAX_POSSIBLE_CPUS - 1) as u16).unwrap();
+        let other = if cpu.id() == last_cpu {
+            CpuId::BOOTSTRAP
+        } else {
+            last_cpu
+        };
+        if let Some(retired) = cpu.with_heap_cache(|cache| cache.bind_node(node)).flatten() {
+            retired.release();
+        }
+        let backing =
+            pmm::alloc_contiguous_frames_aligned_on_node(node, 1, PAGE).expect("fixture slab RAM");
+        let address = crate::mm::virt::mapping::phys_to_virt(backing.start_address())
+            .as_mut_ptr::<SlabPage>();
+        let pool = &NODES[node.as_usize()].slabs[class.0];
+        let mut held = pool
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture slab pool poisoned"));
+        let mask = (1u64 << SlabPage::count(class)) - 1;
+        // SAFETY: one unique mapped page is initialized before its sole list
+        // publication; the guard retains metadata and excludes new claimants.
+        let page = unsafe {
+            address.write(SlabPage {
+                backing,
+                class,
+                free: AtomicU64::new(mask),
+                mask,
+                next: held.head,
+            });
+            NonNull::new_unchecked(address)
+        };
+        held.head = Some(page);
+        let remote = claim_block(page, other).expect("other CPU reservation");
+        let local = claim_block(page, cpu.id()).expect("current CPU reservation");
+        let local_pointer = local.pointer;
+        // SAFETY: the guard and both live reservations retain page occupancy.
+        let occupied_before = unsafe { page.as_ref().free.load(Ordering::Acquire) };
+        // The shared pool remains locked throughout the local return and hit.
+        // A magazine return must retain its reservation rather than publish a
+        // free bit merely because another CPU was the page's first claimant.
+        cache_or_release(local, layout);
+        // SAFETY: the guard and remote reservation still retain the page.
+        assert_eq!(
+            unsafe { page.as_ref().free.load(Ordering::Acquire) },
+            occupied_before
+        );
+        let cached = cpu
+            .with_heap_cache(|cache| cache.magazines[class.0].take())
+            .flatten()
+            .expect("same-CPU return belongs to its magazine");
+        assert_eq!(cached.pointer, local_pointer);
+        cache_or_release(remote, layout);
+        assert!(
+            cpu.with_heap_cache(|cache| cache.magazines[class.0].take())
+                .flatten()
+                .is_none()
+        );
+        // SAFETY: the pool guard and cached reservation still retain the page.
+        assert_ne!(
+            unsafe { page.as_ref().free.load(Ordering::Acquire) },
+            occupied_before
+        );
+        drop(held);
+        assert_eq!(release(cached, layout), 4096);
+        assert!(
+            !pool
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture slab pool poisoned"))
+                .head
+                .is_some_and(|head| head == page)
+        );
+        drain_current_cache();
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn physical_slab_progress_counts_only_the_last_reservations_whole_page() {
         let backing = pmm::alloc_contiguous_frames_aligned_on_node(NumaNodeId::NODE_0, 1, PAGE)
             .expect("fixture RAM");
@@ -747,7 +888,6 @@ mod tests {
         let page = unsafe {
             address.write(SlabPage {
                 backing,
-                home: CpuId::BOOTSTRAP,
                 class,
                 free: AtomicU64::new(mask),
                 mask,
@@ -756,15 +896,15 @@ mod tests {
             NonNull::new_unchecked(address)
         };
         let pool = IrqPoisonLock::new(SlabPool { head: Some(page) });
-        let first = claim_block(page).expect("first reservation");
-        let second = claim_block(page).expect("second reservation");
+        let first = claim_block(page, CpuId::BOOTSTRAP).expect("first reservation");
+        let second = claim_block(page, CpuId::BOOTSTRAP).expect("second reservation");
         // SAFETY: the second reservation exclusively retains its whole payload.
         unsafe { second.pointer.as_ptr().write_bytes(0x37, 256) };
         let return_to_pool = |block: RawBlock| {
-            let AllocationSource::Slab(source) = block.source else {
+            let AllocationSource::Slab(reservation) = block.source else {
                 panic!("fixture requires a slab reservation");
             };
-            slab_return(block.pointer, source, &pool)
+            slab_return(block.pointer, reservation.page(), &pool)
         };
         assert_eq!(return_to_pool(first), 0);
         assert_eq!(reclaim_empty_slab(&pool, page), 0);

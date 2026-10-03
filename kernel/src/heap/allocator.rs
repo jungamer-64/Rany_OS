@@ -27,410 +27,34 @@ const ALLOC_HEADER_MAGIC: u64 = 0x514f_5441_4d45_4d31;
 const QUOTA_ALLOCATION_RACE_RETRY: usize = 3;
 const ALLOC_OOM_RETRY: usize = 1;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum QuotaChargeOutcome {
-    Charged,
-    Exceeded,
-    Retry,
-}
-
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-#[inline]
-fn current_allocation_domain() -> crate::domain::DomainId {
-    crate::domain::current_domain()
-}
-
-#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-#[inline]
-fn current_allocation_domain() -> crate::domain::DomainId {
-    crate::domain::DomainId::KERNEL
-}
-
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-#[inline]
-fn quota_try_charge(domain: crate::domain::DomainId, bytes: u64) -> QuotaChargeOutcome {
-    match crate::domain::quota::quota_manager().try_allocate_memory(domain, bytes) {
-        Ok(()) => QuotaChargeOutcome::Charged,
-        Err(crate::domain::quota::QuotaError::AllocationRace) => QuotaChargeOutcome::Retry,
-        Err(_) => QuotaChargeOutcome::Exceeded,
-    }
-}
-
-#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-#[inline]
-fn quota_try_charge(_domain: crate::domain::DomainId, _bytes: u64) -> QuotaChargeOutcome {
-    QuotaChargeOutcome::Charged
-}
-
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-#[inline]
-fn quota_uncharge(domain: crate::domain::DomainId, bytes: u64) {
-    crate::domain::quota::quota_manager().deallocate_memory(domain, bytes);
-}
-
-#[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-#[inline]
-fn quota_uncharge(_domain: crate::domain::DomainId, _bytes: u64) {}
-
-// ============================================================================
-// Buddy-Based Kernel Heap Allocator
-// 設計理念: O(log n)割り当てを保証し、<100ns per allocation を達成
-// ============================================================================
-
-/// カーネルヒープ用のBuddy Allocator
-/// linked_list_allocator (O(n)) の代わりに使用
-#[derive(Debug)]
-struct BuddyHeapAllocator {
-    /// ヒープの開始アドレス
-    heap_start: usize,
-    /// ヒープのサイズ
-    heap_size: usize,
-    /// Sole backing owner. Geometry fields below/above are immutable projections
-    /// after admission; metadata cannot manufacture or repair this ownership.
-    backing: Option<HeapMemory>,
-    /// Buddy システム: 各オーダーの空きブロックリスト
-    /// オーダー0 = 最小ブロック (MIN_BLOCK_SIZE)
-    /// オーダーN = 2^N * MIN_BLOCK_SIZE
-    free_lists: [Option<usize>; Self::MAX_ORDER + 1],
-}
-
-impl BuddyHeapAllocator {
-    /// 最小ブロックサイズ（64バイト = キャッシュライン）
-    const MIN_BLOCK_SIZE: usize = 64;
-    /// 最大オーダー（64バイト * 2^20 = 64MB最大ブロック）
-    const MAX_ORDER: usize = 20;
-
-    const fn new() -> Self {
-        Self {
-            heap_start: 0,
-            heap_size: 0,
-            backing: None,
-            free_lists: [None; Self::MAX_ORDER + 1],
-        }
-    }
-
-    /// 現在のアドレスに対するアラインメント対応ブロックオーダーを計算
-    fn find_aligned_order(current: usize, end: usize) -> Option<(usize, usize)> {
-        let remaining = end - current;
-        if remaining < Self::MIN_BLOCK_SIZE {
-            return None;
-        }
-        let mut order = Self::size_to_order(remaining).min(Self::MAX_ORDER);
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while order > 0 {
-            let block_size = Self::order_to_size(order);
-            if current % block_size == 0 && current + block_size <= end {
-                break;
-            }
-            order -= 1;
-        }
-        Some((order, Self::order_to_size(order)))
-    }
-
-    /// ヒープを初期化
-    fn init(&mut self, memory: HeapMemory) -> Result<(), HeapMemory> {
-        if self.backing.is_some() {
-            return Err(memory);
-        }
-        let heap_start = memory.start();
-        let heap_size = memory.size();
-        crate::io::log::early_print("[BUD] init\n");
-        self.heap_start = heap_start;
-        self.heap_size = heap_size;
-        self.backing = Some(memory);
-
-        crate::io::log::early_print("[BUD] clear\n");
-        // 全てのフリーリストをクリア
-        for list in self.free_lists.iter_mut() {
-            *list = None;
-        }
-
-        crate::io::log::early_print("[BUD] loop\n");
-        // ヒープ全体を適切なオーダーのブロックとして登録
-        // 各オーダーのブロックは自身のサイズでアラインされている必要がある
-        let mut current = heap_start;
-        let end = heap_start + heap_size;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while current < end {
-            let (order, block_size) = match Self::find_aligned_order(current, end) {
-                Some(v) => v,
-                None => break,
-            };
-
-            // Order 0のアラインメントチェック（MIN_BLOCK_SIZE=64バイト）
-            if current % block_size != 0 {
-                // アラインメントを満たすまで進める
-                let aligned = (current + block_size - 1) & !(block_size - 1);
-                if aligned >= end {
-                    break;
-                }
-                current = aligned;
+/// The current execution supplies a stable account; this boundary never looks
+/// up a domain in a registry. Contention remains bounded inside GlobalAlloc.
+fn reserve_quota(
+    bytes: u64,
+) -> Result<Option<crate::domain::quota::MemoryCredit>, crate::domain::quota::QuotaError> {
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return Ok(None);
+    };
+    for attempt in 0..=QUOTA_ALLOCATION_RACE_RETRY {
+        match current.reserve_memory(bytes) {
+            Err(crate::domain::quota::QuotaError::AllocationRace)
+                if attempt < QUOTA_ALLOCATION_RACE_RETRY =>
+            {
                 continue;
             }
-
-            if current + block_size <= end {
-                crate::io::log::early_print("[BUD] add\n");
-                self.add_to_free_list(current, order);
-                current += block_size;
-            } else {
-                break;
-            }
-        }
-        crate::io::log::early_print("[BUD] done\n");
-        Ok(())
-    }
-
-    /// サイズから必要なオーダーを計算
-    #[inline]
-    fn size_to_order(size: usize) -> usize {
-        let blocks = size.div_ceil(Self::MIN_BLOCK_SIZE);
-        if blocks <= 1 {
-            0
-        } else {
-            (usize::BITS - (blocks - 1).leading_zeros()) as usize
+            result => return result,
         }
     }
-
-    /// オーダーからサイズを計算
-    #[inline]
-    const fn order_to_size(order: usize) -> usize {
-        Self::MIN_BLOCK_SIZE << order
-    }
-
-    /// フリーリストにブロックを追加
-    fn add_to_free_list(&mut self, addr: usize, order: usize) {
-        // Security check: Range validation
-        if addr < self.heap_start || addr >= self.heap_start + self.heap_size {
-            crate::io::log::early_print("[BUD] WARN: add_to_free_list invalid addr=");
-            crate::io::log::early_print_hex(addr as u64);
-            crate::io::log::early_print(" order=");
-            crate::io::log::early_print_dec(order as u64);
-            crate::io::log::early_print(" heap=");
-            crate::io::log::early_print_hex(self.heap_start as u64);
-            crate::io::log::early_print("-");
-            crate::io::log::early_print_hex((self.heap_start + self.heap_size) as u64);
-            crate::io::log::early_print("\n");
-            return; // graceful skip
-        }
-
-        // Security check: Alignment validation
-        let block_size = Self::order_to_size(order);
-        if addr % block_size != 0 {
-            crate::io::log::early_print("[BUD] WARN: add_to_free_list unaligned addr=");
-            crate::io::log::early_print_hex(addr as u64);
-            crate::io::log::early_print(" order=");
-            crate::io::log::early_print_dec(order as u64);
-            crate::io::log::early_print("\n");
-            return; // graceful skip
-        }
-
-        let old_head = self.free_lists[order].unwrap_or(0);
-
-        // アドレスに次のフリーブロックへのポインタを格納
-        let ptr_addr = addr as usize;
-
-        // SAFETY: the lock exclusively owns this free block in backing RAM.
-        // Its aligned header is initialized before the head is published.
-        unsafe {
-            core::ptr::write(ptr_addr as *mut usize, old_head);
-        }
-        self.free_lists[order] = Some(addr);
-    }
-
-    /// フリーリストからブロックを取得
-    fn remove_from_free_list(&mut self, order: usize) -> Option<usize> {
-        let addr = self.free_lists[order].take()?;
-
-        let head_valid = addr >= self.heap_start
-            && addr < self.heap_start + self.heap_size
-            && addr % Self::MIN_BLOCK_SIZE == 0;
-        if !head_valid {
-            crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt head=");
-            crate::io::log::early_print_hex(addr as u64);
-            crate::io::log::early_print(" order=");
-            crate::io::log::early_print_dec(order as u64);
-            crate::io::log::early_print("\n");
-            self.free_lists[order] = None;
-            return None;
-        }
-
-        // SAFETY: the free-list header was initialized on insertion, belongs
-        // to retained backing RAM, and metadata access is exclusive under lock.
-        let next = unsafe { core::ptr::read(addr as *const usize) };
-        if next != 0 {
-            let next_valid = next >= self.heap_start
-                && next < self.heap_start + self.heap_size
-                && next % Self::MIN_BLOCK_SIZE == 0;
-            if !next_valid {
-                crate::io::log::early_print("[BUD] WARN: remove_from_free_list corrupt next=");
-                crate::io::log::early_print_hex(next as u64);
-                crate::io::log::early_print(" at head=");
-                crate::io::log::early_print_hex(addr as u64);
-                crate::io::log::early_print(" order=");
-                crate::io::log::early_print_dec(order as u64);
-                crate::io::log::early_print("\n");
-                self.free_lists[order] = None;
-                return Some(addr);
-            }
-        }
-
-        self.free_lists[order] = if next == 0 { None } else { Some(next) };
-        Some(addr)
-    }
-
-    /// 特定アドレスのブロックをフリーリストから削除
-    fn remove_specific(&mut self, addr: usize, order: usize) -> bool {
-        let mut prev: Option<usize> = None;
-        let mut current = self.free_lists[order];
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while let Some(curr_addr) = current {
-            if curr_addr == addr {
-                // 見つかった - リストから削除
-                let next_ptr = curr_addr as usize;
-                // SAFETY: linked free blocks have initialized usize headers,
-                // and this allocator lock excludes simultaneous list mutation.
-                let next = unsafe { core::ptr::read(next_ptr as *const usize) };
-                let next_opt = if next == 0 { None } else { Some(next) };
-
-                if let Some(prev_addr) = prev {
-                    // SAFETY: prev_addr is an initialized free block reached
-                    // under the same exclusive allocator lock.
-                    unsafe {
-                        core::ptr::write(prev_addr as *mut usize, next);
-                    }
-                } else {
-                    self.free_lists[order] = next_opt;
-                }
-                return true;
-            }
-            prev = current;
-            let next_ptr = curr_addr as *const usize;
-            // SAFETY: current is a retained, initialized free-list header.
-            let next = unsafe { core::ptr::read(next_ptr) };
-            current = if next == 0 { None } else { Some(next) };
-        }
-        false
-    }
-
-    /// メモリを割り当て（O(log n)）
-    fn allocate(&mut self, layout: Layout) -> *mut u8 {
-        if self.backing.is_none() {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] allocate: not initialized\n");
-            return null_mut();
-        }
-
-        // アラインメント要求を満たすために、
-        // size と align の両方を満たす最小のブロックを使用
-        let align = layout.align();
-        let size = layout.size();
-
-        // 必要なサイズ: sizeとalignの大きい方（最低 MIN_BLOCK_SIZE）
-        // Buddyアロケータでは、ブロックは常に2のべき乗サイズで、
-        // 自身のサイズでアラインされているため、
-        // align <= block_size を満たせばアラインメントも満たす
-        let alloc_size = size.max(align).max(Self::MIN_BLOCK_SIZE);
-        let order = Self::size_to_order(alloc_size);
-
-        if order > Self::MAX_ORDER {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] allocate: order too large\n");
-            return null_mut();
-        }
-
-        // 要求オーダー以上の空きブロックを探す
-        for current_order in order..=Self::MAX_ORDER {
-            if let Some(block) = self.remove_from_free_list(current_order) {
-                // 必要に応じて分割
-                self.split_block(block, current_order, order);
-
-                // Buddyブロックは自身のサイズでアラインされているため、
-                // block_size >= align なら自動的にアラインメントを満たす
-                return block as *mut u8;
-            }
-        }
-
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] allocate: out of memory\n");
-        null_mut()
-    }
-
-    /// ブロックを目標オーダーまで分割
-    fn split_block(&mut self, addr: usize, from_order: usize, to_order: usize) {
-        let mut current_order = from_order;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while current_order > to_order {
-            current_order -= 1;
-            let buddy_addr = addr + Self::order_to_size(current_order);
-            self.add_to_free_list(buddy_addr, current_order);
-        }
-    }
-
-    /// メモリを解放（O(log n)）
-    fn deallocate(&mut self, ptr: *mut u8, layout: Layout) {
-        if ptr.is_null() {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] deallocate: null or not init\n");
-            return;
-        }
-
-        if self.backing.is_none() {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] deallocate: null or not init\n");
-            return;
-        }
-
-        let size = layout.size().max(layout.align()).max(Self::MIN_BLOCK_SIZE);
-        let order = Self::size_to_order(size);
-        let addr = ptr as usize;
-
-        if addr < self.heap_start || addr >= self.heap_start + self.heap_size {
-            crate::io::log::early_print("[HEAP] ERROR: deallocate got invalid ptr!\n");
-            return;
-        }
-
-        self.coalesce(addr, order);
-    }
-
-    /// Buddyとの合体を反復的に試みる
-    fn coalesce(&mut self, addr: usize, order: usize) {
-        let mut current_addr = addr;
-        let mut current_order = order;
-
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while current_order < Self::MAX_ORDER {
-            let buddy_addr = self.buddy_addr(current_addr, current_order);
-
-            // Buddyがフリーリストにあるか確認
-            if !self.remove_specific(buddy_addr, current_order) {
-                break;
-            }
-
-            // 合体: 小さい方のアドレスを使用
-            current_addr = current_addr.min(buddy_addr);
-            current_order += 1;
-        }
-
-        self.add_to_free_list(current_addr, current_order);
-    }
-
-    /// Buddyのアドレスを計算
-    #[inline]
-    fn buddy_addr(&self, addr: usize, order: usize) -> usize {
-        let block_size = Self::order_to_size(order);
-        // Blocks are aligned to absolute addresses during admission, not to
-        // the slab origin. XOR must use that same coordinate system.
-        addr ^ block_size
-    }
+    unreachable!("bounded quota attempts return on their last iteration")
 }
 
-/// スレッドセーフなグローバルアロケータラッパー
-pub struct LockedBuddyHeap(PoisonLock<BuddyHeapAllocator>);
+use super::buddy::BuddyHeapAllocator;
 
-impl LockedBuddyHeap {
+/// Kernel allocations use bounded CPU magazines and node-owned slab/Buddy pools.
+/// The mutex retains only the separately transferred loader bootstrap heap.
+pub struct KernelHeap(PoisonLock<BuddyHeapAllocator>);
+
+impl KernelHeap {
     pub const fn new() -> Self {
         Self(PoisonLock::new(BuddyHeapAllocator::new()))
     }
@@ -441,76 +65,109 @@ impl LockedBuddyHeap {
     }
 }
 
-impl LockedBuddyHeap {
-    fn dump_alloc_failure(guard: &BuddyHeapAllocator, layout: Layout, size: usize) {
-        crate::io::log::early_print("[ALLOC] FAILED size=");
-        let mut s = size;
-        let mut buf = [0u8; 20];
-        let mut i = 19;
-        if s == 0 {
-            buf[i] = b'0';
-            i -= 1;
-        } else {
-            // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-            while s > 0 {
-                buf[i] = b'0' + (s % 10) as u8;
-                s /= 10;
-                i -= 1;
+/// The unique source is transferred into/out of this header exactly once.
+/// Class selection uses the full extended Layout, including quota metadata.
+#[repr(C)]
+struct AllocHeader {
+    magic: u64,
+    quota: Option<crate::domain::quota::MemoryCredit>,
+    raw_size: usize,
+    raw_align: usize,
+    source: super::raw::AllocationSource,
+}
+
+// Quota and source metadata must leave room for a nonzero payload in the
+// smallest slab class. CPU-affinity changes cannot silently double the small
+// allocation footprint by making that class unreachable.
+const _: () = assert!(core::mem::size_of::<AllocHeader>() < super::raw::SMALLEST_CLASS_BYTES);
+
+unsafe impl GlobalAlloc for KernelHeap {
+    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let requested = layout.size() as u64;
+        let Ok((extended, offset)) = Layout::new::<AllocHeader>().extend(layout) else {
+            return null_mut();
+        };
+        let raw_layout = extended.pad_to_align();
+        for attempt in 0..=ALLOC_OOM_RETRY {
+            let Ok(quota) = reserve_quota(requested) else {
+                return null_mut();
+            };
+            let block = super::raw::allocate(raw_layout).or_else(|| {
+                // The loader transferred this disjoint pool separately from
+                // PMM RAM. It serves early boot and bounded slow-path fallback.
+                let mut heap = self.0.lock().ok()?;
+                core::ptr::NonNull::new(heap.allocate(raw_layout)).map(|pointer| {
+                    super::raw::RawBlock {
+                        pointer,
+                        source: super::raw::AllocationSource::Bootstrap,
+                    }
+                })
+            });
+            if let Some(block) = block {
+                // SAFETY: the raw owner reserves enough aligned writable RAM
+                // for this header and the requested payload; source is consumed.
+                unsafe {
+                    block
+                        .pointer
+                        .as_ptr()
+                        .cast::<AllocHeader>()
+                        .write(AllocHeader {
+                            magic: ALLOC_HEADER_MAGIC,
+                            quota,
+                            raw_size: raw_layout.size(),
+                            raw_align: raw_layout.align(),
+                            source: block.source,
+                        });
+                    crate::profiler::record_kernel_heap_allocation();
+                    return block.pointer.as_ptr().add(offset);
+                }
+            }
+            drop(quota);
+            if attempt == ALLOC_OOM_RETRY || !crate::heap::oom::try_free_memory() {
+                break;
             }
         }
-        for k in (i + 1)..20 {
-            crate::io::log::early_print_char(buf[k]);
-        }
-
-        crate::io::log::early_print(" align=");
-        crate::io::log::early_print_dec(layout.align() as u64);
-        crate::io::log::early_print("\n");
-
-        crate::io::log::early_print("[ALLOC] guard.initialized=");
-        crate::io::log::early_print_dec(if guard.backing.is_some() { 1 } else { 0 });
-        crate::io::log::early_print("\n");
-
-        crate::io::log::early_print("[ALLOC] Dumping free_lists:\n");
-        for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-            crate::io::log::early_print("[ALLOC] free_lists[");
-            crate::io::log::early_print_dec(i as u64);
-            crate::io::log::early_print("] = ");
-            let head = guard.free_lists[i].unwrap_or(0);
-            crate::io::log::early_print_hex(head as u64);
-            crate::io::log::early_print("\n");
-        }
-
-        crate::io::log::early_print("[ALLOC] Backtrace:\n");
-        let bt = crate::unwind::Backtrace::capture();
-        for entry in bt.iter() {
-            crate::io::log::early_print("[ALLOC][BT] IP=");
-            crate::io::log::early_print_hex(entry.frame.instruction_pointer as u64);
-            crate::io::log::early_print("\n");
-        }
+        null_mut()
     }
 
-    fn dump_poisoned_state(guard_ref: &crate::sync::PoisonLockGuard<BuddyHeapAllocator>) {
-        crate::io::log::early_print("[ALLOC] Dumping buddy free_lists (poisoned)\n");
-        let alloc_ref: &BuddyHeapAllocator = &*guard_ref;
-        for i in 0..=BuddyHeapAllocator::MAX_ORDER {
-            crate::io::log::early_print("[ALLOC] free_lists[");
-            crate::io::log::early_print_dec(i as u64);
-            crate::io::log::early_print("] = ");
-            let head = alloc_ref.free_lists[i].unwrap_or(0);
-            crate::io::log::early_print_hex(head as u64);
-            crate::io::log::early_print("\n");
+    unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        let Ok((_, offset)) = Layout::new::<AllocHeader>().extend(layout) else {
+            return;
+        };
+        // SAFETY: GlobalAlloc callers provide this exact live pointer/Layout.
+        // Header consumption transfers the unique source and quota return right.
+        let raw = unsafe { pointer.sub(offset) };
+        // SAFETY: every successful allocation initialized this disjoint header.
+        let header = unsafe { raw.cast::<AllocHeader>().read() };
+        assert_eq!(
+            header.magic, ALLOC_HEADER_MAGIC,
+            "allocation header must belong to this heap"
+        );
+        let raw_layout = Layout::from_size_align(header.raw_size, header.raw_align)
+            .expect("retained allocation layout");
+        drop(header.quota);
+        match header.source {
+            super::raw::AllocationSource::Bootstrap => {
+                if let Ok(mut heap) = self.0.lock() {
+                    heap.deallocate(raw, raw_layout);
+                }
+            }
+            source => {
+                // SAFETY: the consumed header retains this exact raw pointer.
+                let pointer = unsafe { core::ptr::NonNull::new_unchecked(raw) };
+                super::raw::cache_or_release(super::raw::RawBlock { pointer, source }, raw_layout);
+            }
         }
     }
 }
 
-/// グローバルヒープアロケータ（Buddy Allocatorベース）
-/// 設計理念: O(log n)割り当てで <100ns を達成
+/// GlobalAlloc source ownership and quota accounting are retained across CPU moves.
 #[cfg(any(
     not(feature = "full_mm_tests"),
     all(feature = "full_mm_tests", not(test)),
     all(test, feature = "std")
 ))]
-pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
+pub static ALLOCATOR: KernelHeap = KernelHeap::new();
 
 #[cfg(all(feature = "full_mm_tests", test, not(feature = "std")))]
 pub use crate::ALLOCATOR;
@@ -665,7 +322,7 @@ fn hhdm_ptr_to_phys(ptr: u64) -> Option<u64> {
     if ptr == 0 {
         return None;
     }
-    let hhdm = physical_memory_offset();
+    let hhdm = crate::heap::physical_memory_offset();
     if ptr < hhdm {
         return None;
     }
@@ -676,7 +333,7 @@ fn addr_to_phys(addr: u64) -> Option<u64> {
     if addr == 0 {
         return None;
     }
-    let hhdm = physical_memory_offset();
+    let hhdm = crate::heap::physical_memory_offset();
     if addr >= hhdm {
         Some(addr - hhdm)
     } else {
