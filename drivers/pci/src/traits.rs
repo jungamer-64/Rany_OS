@@ -187,6 +187,38 @@ pub trait ConfigSpaceAccessor {
 
     /// BAR 情報を取得
     fn read_bar_info(&self, bdf: BdfAddress, bar_index: u8) -> BarInfo {
+        crate::resource::with_configuration(bdf, |retained| {
+            if let Some(info) = retained {
+                let bar = info.bars.get(usize::from(bar_index)).copied().flatten();
+                let (bar_type, base_address, size) = match bar {
+                    Some(crate::types::Bar::Io { base, size }) => (BarType::Io, base, size),
+                    Some(crate::types::Bar::Memory32 {
+                        base,
+                        size,
+                        prefetchable,
+                    }) => (BarType::Memory32 { prefetchable }, base, size),
+                    Some(crate::types::Bar::Memory64 {
+                        base,
+                        size,
+                        prefetchable,
+                    }) => (BarType::Memory64 { prefetchable }, base, size),
+                    None => (BarType::Unused, 0, 0),
+                };
+                BarInfo {
+                    index: bar_index,
+                    bar_type,
+                    base_address,
+                    size,
+                }
+            } else {
+                self.probe_bar_info(bdf, bar_index)
+            }
+        })
+    }
+
+    /// Destructive sizing is serialized with function-resource acquisition.
+    /// Calling this while the function is retained is a kernel protocol error.
+    fn probe_bar_info(&self, bdf: BdfAddress, bar_index: u8) -> BarInfo {
         if bar_index > 5 {
             return BarInfo {
                 index: bar_index,

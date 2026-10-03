@@ -110,7 +110,7 @@ impl IommuController {
             }
         } else {
             unsafe {
-                self.invalidate_iotlb_direct(domain_id);
+                self.invalidate_iotlb_direct(domain_id)?;
             }
         }
         Ok(())
@@ -172,7 +172,7 @@ impl IommuController {
                 self.invalidate_device_tlbs(domain_id, None, None)?;
             }
         } else {
-            unsafe { self.invalidate_iotlb_direct(domain_id) };
+            unsafe { self.invalidate_iotlb_direct(domain_id)? };
         }
         Ok(())
     }

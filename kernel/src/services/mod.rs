@@ -14,10 +14,8 @@ use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest};
 use kernel_api::error::KapiError;
 use kernel_api::ipc::ChannelHandle;
 use kernel_api::resource::fs::{FileHandle, OpenMode};
-use kernel_api::resource::storage::{
-    DirectBlockHandle, NvmeIoHandle, NvmeIoPriority, NvmeIoResult, NvmeIoType, NvmeRwRequest,
-};
-use kernel_api::resource::task::TaskHandle;
+use kernel_api::resource::storage::DirectBlockHandle;
+use kernel_api::resource::task::{SpawnError, TaskId, TaskOptions};
 use kernel_api::service::kernel::KernelServices;
 
 use crate::task::{current_subject, current_task_id};
@@ -30,10 +28,15 @@ mod gui;
 mod host;
 mod ipc;
 mod kernel;
+mod maintenance;
 mod net;
 mod providers;
 mod storage;
 mod task;
 
 pub(crate) use bootstrap::{install, install_builtin_providers};
+pub(crate) use device_registration::authorize_pci_device_for_current_subject;
 use host::KernelServiceHost;
+pub(crate) use maintenance::{
+    start_amd_services, start_intel_services, start_runtime_maintenance, start_security_monitor,
+};

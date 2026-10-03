@@ -14,12 +14,21 @@ pub enum IommuError {
     NotInitialized,
     /// Kernel task runtime cannot host an IOMMU service task.
     RuntimeUnavailable,
+    /// The published backend and any admitted service task remain owned;
+    /// retrying service admission must use their existing owners.
+    ServiceAdmission(kernel_api::resource::task::SpawnError),
     /// IOMMU not present
     NotPresent,
     /// Not supported
     NotSupported,
     /// PCI configuration failure retains the precise hardware/resource cause.
     PciConfiguration(PcieError),
+    /// Firmware PCI paths or bridge bus ranges cannot be resolved.
+    FirmwareScope,
+    /// Firmware resource admission or cache/mapping validation failed.
+    RegisterMapping(kernel_api::mmio::MmioAcquireError),
+    /// A register layout is outside its admitted aperture or misaligned.
+    RegisterAccess(hal::mmio::MmioAccessError),
     /// Device trust policy does not admit ATS.
     AtsPolicyDenied,
     /// Already initialized
@@ -211,90 +220,31 @@ pub struct DmaMapping {
     pub domain_id_placeholder: u16,
 }
 
-/// Device scope type (from DRHD device scope structure)
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
-pub enum DeviceScopeType {
-    /// PCI Endpoint Device
-    PciEndpoint = 1,
-    /// PCI Sub-hierarchy (bridge and all downstream devices)
-    PciSubHierarchy = 2,
-    /// IOAPIC
-    Ioapic = 3,
-    /// MSI-capable HPET
-    MsiCapableHpet = 4,
-    /// ACPI namespace device
-    AcpiNamespaceDevice = 5,
-}
-
-impl DeviceScopeType {
-    pub fn from_u8(value: u8) -> Option<Self> {
-        match value {
-            1 => Some(Self::PciEndpoint),
-            2 => Some(Self::PciSubHierarchy),
-            3 => Some(Self::Ioapic),
-            4 => Some(Self::MsiCapableHpet),
-            5 => Some(Self::AcpiNamespaceDevice),
-            _ => None,
-        }
-    }
-}
-
-/// Device scope entry (from DRHD structure)
-#[derive(Debug, Clone)]
-pub struct IommuDeviceScope {
-    /// Scope type
-    pub scope_type: DeviceScopeType,
-    /// Enumeration ID (for IOAPIC, HPET)
-    pub enumeration_id: u8,
-    /// Start bus number
-    pub start_bus: u8,
-    /// Path (device, function pairs)
-    pub path: Vec<(u8, u8)>,
+/// A resolved firmware PCI scope. Bus ranges come from the final retained
+/// bridge, never from a comparison against the firmware path's starting bus.
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum IommuDeviceScope {
+    Endpoint(DeviceId),
+    SubHierarchy {
+        bridge: DeviceId,
+        secondary: u8,
+        subordinate: u8,
+    },
 }
 
 impl IommuDeviceScope {
-    /// Create a new device scope
-    pub fn new(
-        scope_type: DeviceScopeType,
-        enumeration_id: u8,
-        start_bus: u8,
-        path: Vec<(u8, u8)>,
-    ) -> Self {
-        Self {
-            scope_type,
-            enumeration_id,
-            start_bus,
-            path,
-        }
-    }
-
-    /// Check if a device (bus, device, function) matches this scope
-    pub fn matches(&self, bus: u8, device: u8, function: u8) -> bool {
-        if self.path.is_empty() {
-            return false;
-        }
-
-        match self.scope_type {
-            DeviceScopeType::PciEndpoint => {
-                // Endpoint: exact match required
-                let (target_dev, target_func) = self.path[self.path.len() - 1];
-                [bus, device, function] == [self.start_bus, target_dev, target_func]
+    pub(crate) fn matches(&self, device: DeviceId) -> bool {
+        match *self {
+            Self::Endpoint(target) => device == target,
+            Self::SubHierarchy {
+                bridge,
+                secondary,
+                subordinate,
+            } => {
+                device == bridge
+                    || (device.segment == bridge.segment
+                        && (secondary..=subordinate).contains(&device.bus))
             }
-            DeviceScopeType::PciSubHierarchy => {
-                // Sub-hierarchy: matches if bus >= start_bus
-                if bus < self.start_bus {
-                    return false;
-                }
-                // If device is directly on start_bus, check path
-                if bus == self.start_bus {
-                    let (bridge_dev, bridge_func) = self.path[0];
-                    return device == bridge_dev && function == bridge_func;
-                }
-                // Device is downstream of start_bus - matches sub-hierarchy
-                true
-            }
-            _ => false, // IOAPIC, HPET, etc. don't match PCI devices
         }
     }
 }
@@ -355,5 +305,29 @@ impl From<u8> for FaultReason {
             0x9 => FaultReason::ContextTableInvalid,
             n => FaultReason::Unknown(n),
         }
+    }
+}
+
+#[cfg(test)]
+mod scope_tests {
+    use super::*;
+    #[cfg_attr(feature = "std", test)]
+    #[cfg_attr(not(feature = "std"), test_case)]
+    fn resolved_scope_matches_only_its_actual_segment_and_bridge_extent() {
+        let endpoint = IommuDeviceScope::Endpoint(DeviceId::new(2, 7, 3, 1));
+        assert!(endpoint.matches(DeviceId::new(2, 7, 3, 1)));
+        assert!(!endpoint.matches(DeviceId::new(2, 0, 3, 1)));
+        assert!(!endpoint.matches(DeviceId::new(0, 7, 3, 1)));
+        let scope = IommuDeviceScope::SubHierarchy {
+            bridge: DeviceId::new(2, 0, 3, 0),
+            secondary: 7,
+            subordinate: 9,
+        };
+        assert!(scope.matches(DeviceId::new(2, 0, 3, 0)));
+        assert!(scope.matches(DeviceId::new(2, 7, 0, 0)));
+        assert!(scope.matches(DeviceId::new(2, 9, 31, 7)));
+        assert!(!scope.matches(DeviceId::new(2, 6, 0, 0)));
+        assert!(!scope.matches(DeviceId::new(2, 10, 0, 0)));
+        assert!(!scope.matches(DeviceId::new(0, 7, 0, 0)));
     }
 }

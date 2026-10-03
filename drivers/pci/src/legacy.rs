@@ -9,9 +9,9 @@
 
 use crate::traits::ConfigSpaceAccessor;
 use crate::types::BdfAddress;
+use exorust_sync::InitOnce;
 use exorust_sync::IrqPoisonLock;
 use hal::IoPortRange;
-use spin::Once;
 
 // ============================================================================
 // Constants
@@ -42,7 +42,7 @@ impl LegacyPciPorts {
 }
 
 /// グローバルな Legacy PCI アクセサ
-static LEGACY_PCI: Once<IrqPoisonLock<LegacyPciPorts>> = Once::new();
+static LEGACY_PCI: InitOnce<IrqPoisonLock<LegacyPciPorts>> = InitOnce::new();
 
 fn legacy_ports() -> &'static IrqPoisonLock<LegacyPciPorts> {
     LEGACY_PCI.call_once(|| IrqPoisonLock::new(LegacyPciPorts::new()))
@@ -129,6 +129,7 @@ impl ConfigSpaceAccessor for LegacyPciAccessor {
     }
 
     fn write8(&self, bdf: BdfAddress, offset: u16, value: u8) {
+        crate::resource::assert_configuration_write(bdf, offset, 1);
         if offset >= 256 {
             return;
         }
@@ -141,6 +142,7 @@ impl ConfigSpaceAccessor for LegacyPciAccessor {
     }
 
     fn write16(&self, bdf: BdfAddress, offset: u16, value: u16) {
+        crate::resource::assert_configuration_write(bdf, offset, 2);
         if offset >= 256 || (offset & 1) != 0 {
             return;
         }
@@ -153,6 +155,7 @@ impl ConfigSpaceAccessor for LegacyPciAccessor {
     }
 
     fn write32(&self, bdf: BdfAddress, offset: u16, value: u32) {
+        crate::resource::assert_configuration_write(bdf, offset, 4);
         if offset >= 256 || (offset & 3) != 0 {
             return;
         }

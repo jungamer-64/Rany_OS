@@ -139,63 +139,33 @@ impl IommuController {
         sid: u16,
         isolated_domain_id: Option<u16>,
         isolation_reason: crate::io::iommu::runtime::security::IsolationReason,
-    ) {
+    ) -> Result<(), IommuError> {
         use crate::io::iommu::runtime::security::SecurityEvent;
-
-        // Intel VT-d: After modifying context entry, must invalidate caches
-        // 1. Context Cache Invalidation
-        // 2. IOTLB Invalidation
-        // 3. Device-TLB (ATS) Invalidation
-        unsafe {
-            let use_device_scope = self.is_queued_invalidation_enabled()
-                && (self.ecap & ecap_bits::ECAP_DT != 0)
-                && isolated_domain_id.is_some();
-
-            if use_device_scope {
-                let did = isolated_domain_id.unwrap();
-                self.qi_invalidate_context_device(sid, did).unwrap_or_else(|e| {
-                    log::warn!(
-                        "[IOMMU] Device context invalidation failed: {:?}; falling back to global",
-                        e
-                    );
-                    let _ = self.qi_invalidate_context_global();
-                });
+        if self.is_queued_invalidation_enabled() {
+            if let Some(did) = isolated_domain_id.filter(|_| self.ecap & ecap_bits::ECAP_DT != 0) {
+                self.qi_invalidate_context_device(sid, did)?;
             } else {
-                // Global context cache invalidation
-                if self.is_queued_invalidation_enabled() {
-                    self.qi_invalidate_context_global().unwrap_or_else(|e| {
-                        log::warn!("[IOMMU] Context invalidation failed: {:?}", e)
-                    });
-                } else {
-                    self.invalidate_context_global_direct();
-                }
+                self.qi_invalidate_context_global()?;
             }
-
-            // Sync context invalidation before IOTLB
-            if self.is_queued_invalidation_enabled() {
-                let _ = self.qi_wait_sync();
+            self.qi_wait_sync()?;
+        } else {
+            // SAFETY: this controller retains its register aperture and serializes
+            // direct commands until completion or a bounded timeout.
+            unsafe {
+                self.invalidate_context_global_direct()?;
             }
-
-            // IOTLB invalidation: prefer domain-specific if we have domain_id
-            if let Some(did) = isolated_domain_id {
-                if let Err(e) = self.invalidate_iotlb(did, true) {
-                    log::warn!(
-                        "[IOMMU] Domain IOTLB invalidation failed during isolation: {:?}",
-                        e
-                    );
-                }
-            } else {
-                let _ = self.invalidate_iotlb_global_sync();
-            }
-
-            // Domain/global invalidation above also covers every owned ATS
-            // resource; no second presence flag selects an independent flush.
         }
-
-        // Phase 7: Notify security event AFTER lock is released and invalidation done
+        if let Some(did) = isolated_domain_id {
+            self.invalidate_iotlb(did, true)?;
+        } else {
+            self.invalidate_iotlb_global_sync()?;
+        }
+        // Hardware completion precedes notification; failed isolation retains all
+        // tables and mappings without claiming that cached access was revoked.
         self.notify_security(SecurityEvent::DeviceIsolated {
             source_id: sid,
             reason: isolation_reason,
         });
+        Ok(())
     }
 }

@@ -463,8 +463,8 @@ impl PcieExtManager {
 // 初期化
 // ============================================================================
 
-pub static PCIE_EXT_CONFIG: spin::Once<PcieConfig> = spin::Once::new();
-pub static PCIE_EXT_MANAGER: spin::Once<PcieExtManager> = spin::Once::new();
+pub static PCIE_EXT_CONFIG: exorust_sync::InitOnce<PcieConfig> = exorust_sync::InitOnce::new();
+pub static PCIE_EXT_MANAGER: exorust_sync::InitOnce<PcieExtManager> = exorust_sync::InitOnce::new();
 
 /// Publishes an owned, validated ECAM window before enumerating its buses.
 pub fn init_pcie_ext(config: PcieConfig) {

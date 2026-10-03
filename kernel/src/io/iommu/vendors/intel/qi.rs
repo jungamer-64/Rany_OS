@@ -2,9 +2,6 @@
 // kernel/src/io/iommu/vendors/intel/qi.rs
 // ============================================================================
 
-use crate::io::iommu::common::tables::virt_ptr_to_phys;
-use alloc::alloc::Layout;
-
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default)]
@@ -210,6 +207,8 @@ pub struct QiStats {
 /// Invalidation Queue Manager
 #[derive(Debug)]
 pub struct InvalidationQueue {
+    queue_backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
+    status_backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     /// Queue base virtual address (CPU writes descriptors here)
     queue_virt: usize,
     /// Queue base physical address (programmed to IQA)
@@ -232,61 +231,43 @@ pub struct InvalidationQueue {
 }
 
 impl InvalidationQueue {
-    /// Create a new Invalidation Queue
-    pub fn new(size_log2: u8) -> Option<Self> {
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] InvalidationQueue::new start: size_log2={}",
-            size_log2
-        );
-
-        let size = 1usize << (size_log2.clamp(8, 16) as usize);
-        let total_bytes = size * core::mem::size_of::<InvalidationQueueEntry>();
-
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] allocating queue: total_bytes={} entries={}",
-            total_bytes,
-            size
-        );
-
-        // Allocate 4KB-aligned queue
-        let layout = Layout::from_size_align(total_bytes, 4096).ok()?;
-        let base_ptr = crate::util::allocate_zeroed(layout);
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] allocate_zeroed(queue_layout) returned: {:?}",
-            base_ptr.map(|p| p.as_ptr() as usize)
-        );
-        let queue_virt = base_ptr?.as_ptr() as usize;
-        let queue_phys = virt_ptr_to_phys(queue_virt as *const u8).ok()?;
-
-        // Allocate status page
-        let status_layout = Layout::from_size_align(4096, 4096).ok()?;
-        let status_ptr = crate::util::allocate_zeroed(status_layout);
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] allocate_zeroed(status_layout) returned: {:?}",
-            status_ptr.map(|p| p.as_ptr() as usize)
-        );
-        let status_virt = status_ptr?.as_ptr() as usize;
-        let status_phys = virt_ptr_to_phys(status_virt as *const u8).ok()?;
-
-        #[cfg(test)]
-        log::info!(
-            "[test][IOMMU] InvalidationQueue::new success base=0x{:x} status_addr=0x{:x} size={}",
-            queue_phys,
-            status_phys,
-            size
-        );
-
-        // Security: Register the queue and status page as protected from DMA.
-        // This prevents malicious devices from tampering with invalidation commands
-        // or spoofing completion status.
-        crate::security::dma::register_protected_range(queue_phys, total_bytes as u64);
+    /// Admits physically contiguous queue and status backing before IQA publication.
+    /// Queue size encoding is three bits for 128-bit descriptors (256..32768).
+    pub fn new(size_log2: u8) -> Result<Self, crate::io::iommu::types::IommuError> {
+        use crate::io::iommu::types::IommuError;
+        if !(8..=15).contains(&size_log2) {
+            return Err(IommuError::InvalidAddress);
+        }
+        let size = 1usize << size_log2;
+        let queue_bytes = size * core::mem::size_of::<InvalidationQueueEntry>();
+        let queue = crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(
+            queue_bytes / 4096,
+            4096,
+        )
+        .map_err(IommuError::PhysicalAllocation)?;
+        let status = match crate::mm::phys::frame_allocator::alloc_frame() {
+            Ok(status) => status,
+            Err(cause) => {
+                crate::mm::phys::frame_allocator::dealloc_contiguous_frames(queue);
+                return Err(IommuError::PhysicalAllocation(cause));
+            }
+        };
+        let queue_phys = queue.as_u64();
+        let status_phys = status.as_u64();
+        let queue_virt = crate::io::iommu::common::tables::phys_to_virt_usize(queue_phys);
+        let status_virt = crate::io::iommu::common::tables::phys_to_virt_usize(status_phys);
+        // SAFETY: both PMM allocations retain exclusive physical ownership, the
+        // direct map covers their complete spans, and no hardware pointer has
+        // been published. The backing contains integer descriptors/status only.
+        unsafe {
+            core::ptr::write_bytes(queue_virt as *mut u8, 0, queue_bytes);
+            core::ptr::write_bytes(status_virt as *mut u8, 0, 4096);
+        }
+        crate::security::dma::register_protected_range(queue_phys, queue_bytes as u64);
         crate::security::dma::register_protected_range(status_phys, 4096);
-
-        Some(Self {
+        Ok(Self {
+            queue_backing: Some(queue),
+            status_backing: Some(status),
             queue_virt,
             queue_phys,
             size,
@@ -294,7 +275,7 @@ impl InvalidationQueue {
             cached_head: 0,
             status_virt,
             status_phys,
-            next_wait_seq: 1, // Start from 1
+            next_wait_seq: 1,
             stats: QiStats::default(),
         })
     }
@@ -302,22 +283,18 @@ impl InvalidationQueue {
 
 impl Drop for InvalidationQueue {
     fn drop(&mut self) {
-        // Security: Unregister from DMA protection
-        let total_bytes = self.size * core::mem::size_of::<InvalidationQueueEntry>();
-        crate::security::dma::unregister_protected_range(self.queue_phys, total_bytes as u64);
+        // Controllers remain registry-owned through every uncertain hardware
+        // outcome. A published queue is not removed or replaced while enabled.
+        crate::security::dma::unregister_protected_range(
+            self.queue_phys,
+            (self.size * core::mem::size_of::<InvalidationQueueEntry>()) as u64,
+        );
         crate::security::dma::unregister_protected_range(self.status_phys, 4096);
-
-        // Free memory (RAII)
-        let layout = Layout::from_size_align(total_bytes, 4096).ok();
-        let status_layout = Layout::from_size_align(4096, 4096).ok();
-
-        unsafe {
-            if let Some(l) = layout {
-                alloc::alloc::dealloc(self.queue_virt as *mut u8, l);
-            }
-            if let Some(l) = status_layout {
-                alloc::alloc::dealloc(self.status_virt as *mut u8, l);
-            }
+        if let Some(status) = self.status_backing.take() {
+            crate::mm::phys::frame_allocator::dealloc_frame(status);
+        }
+        if let Some(queue) = self.queue_backing.take() {
+            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(queue);
         }
     }
 }

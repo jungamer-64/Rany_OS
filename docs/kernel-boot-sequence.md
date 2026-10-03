@@ -25,7 +25,6 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `kernel/src/lib.rs` はカーネルの正規 module graph 定義点とし、大きな inline shim や `include!` による合成は行わない。
 - `kernel/src/boot/` はエントリとブート配線のみを持ち、サブシステム実装詳細を抱え込まない。
 - `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、旧 `filesystems/kernel_fs` への cross-tree path include は使わない。
-- `kernel/src/host_support/` は unit test / bench 専用の軽量差し替え面であり、本番ブート経路とは明確に分離する。
 - `kernel/src/services/` は `kernel_api` の共有サービス契約を実装するカーネル内部境界であり、実装型と子 module は非公開とする。boot は `services::install_builtin_providers()` で provider を登録した後、`services::install()` で共有サービス入口を公開する。
 - `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者であり、domain/driver teardown はここ経由で handle cleanup を行う。
 
@@ -72,6 +71,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
   - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration
   - `post_driver_task`: pre-executor network infra、memfs、durability/kgdb
 - `graphics_task` は `platform_task` と並行に走り、それ以外は dependency latch に従って段階実行される。
+- Intel IOMMU は firmware が所有するレジスタ範囲を検証し、controller を registry が保持してから hardware pointer を公開する。応答失敗でも mapping・queue・table を保持し、依存する device の起動は完了させない。
 - `integration::init()` は引き続き driver bring-up 後、network infra 前が正位置である。
 - `init_network_infra()` は同期の stack/endpoint/timer wheel 準備だけを担当し、VirtIO-Net 登録、DHCP、ping は runtime task に残す。
 
@@ -79,6 +79,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 
 - 実装単位: `finalizer_task` / `finalize_runtime_boot()`
 - `graphics_task` と `post_driver_task` の完了を待って、shell mode 決定、symbol table、test framework、late integration retry、IOMMU runtime services、runtime local timer 切替、stats 出力、runtime task spawn、runtime test dispatchを行う。
+- IOMMU の command/fault worker は kernel service host が所有する通常タスクであり、通知用 queue とタスクの admission が完了してから割込みを有効化する。保守処理の失敗は service host が保持・観測する。
 - `BOOT COMPLETE!` はこの finalization 完了時点でのみ出力される。
 - `Starting per-core executor main loop` は Phase 4 に前倒しされるため、`BOOT COMPLETE!` より先に現れる。
 - 依存:

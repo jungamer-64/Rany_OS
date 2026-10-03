@@ -263,7 +263,7 @@ impl IommuController {
     }
 
     pub(crate) fn prepare_interrupt_remapping(
-        &mut self,
+        &self,
         mode: InterruptRemapMode,
     ) -> Result<(), IommuError> {
         if !self.supports_interrupt_remapping() || !self.is_queued_invalidation_enabled() {
@@ -288,6 +288,7 @@ impl IommuController {
     }
 
     pub(crate) unsafe fn enable_interrupt_remapping(&self) -> Result<(), IommuError> {
+        let _control = self.controls.lock().map_err(|_| IommuError::Poisoned)?;
         if self.is_interrupt_remapping_enabled() {
             return Ok(());
         }
@@ -310,12 +311,14 @@ impl IommuController {
         };
 
         use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
-        use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits, regs};
+        use crate::io::iommu::vendors::intel::registers::{gcmd_bits, gsts_bits};
 
-        self.write64(regs::IRTA, table_address);
+        self.registers
+            .interrupt_table_address()
+            .write(table_address);
         self.write_gcmd_with_state(gcmd_bits::GCMD_SIRTP);
         self.wait_for_condition(
-            || self.read32(regs::GSTS) & gsts_bits::GSTS_IRTPS != 0,
+            || self.registers.global_status().read() & gsts_bits::GSTS_IRTPS != 0,
             100_000,
             false,
         )?;
@@ -323,7 +326,7 @@ impl IommuController {
 
         self.write_gcmd_with_state(gcmd_bits::GCMD_IRE);
         self.wait_for_condition(
-            || self.read32(regs::GSTS) & gsts_bits::GSTS_IRES != 0,
+            || self.registers.global_status().read() & gsts_bits::GSTS_IRES != 0,
             100_000,
             false,
         )?;

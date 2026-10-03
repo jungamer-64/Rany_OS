@@ -12,18 +12,18 @@
 //! guidelines, we:
 //! - **Do NOT** call `log::error!` or any allocating/locking operations in ISR
 //! - **Push** raw fault records to a lock-free deferred queue
-//! - Actual logging is done by `drain_deferred_faults()` in a safe async context
+//! - The service host drains each controller's queue outside interrupt context
 
 use super::dma::DomainManager;
 use super::qi_ops::InvalidationOps; // For qi_invalidate_context_global
 use super::{HardwareContext, IommuController};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::types::{DeviceId, IommuError};
-use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits, regs};
+use crate::io::iommu::vendors::intel::registers::{ecap_bits, fsts_bits};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, ScalableContextEntry};
 use crate::sync::MpscRingBuffer;
 use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicU8, AtomicUsize, Ordering};
 
 // ============================================================================
 // ISR-Safe Deferred Fault Queue (ExoRust Compliance)
@@ -193,7 +193,7 @@ impl CriticalFaultSlot {
 // Deferred Fault Queue
 // ============================================================================
 
-struct DeferredFaultQueue {
+pub(super) struct DeferredFaultQueue {
     queue: MpscRingBuffer<RawFaultEvent, DEFERRED_QUEUE_BACKING_SIZE>,
     dropped: AtomicUsize,
     /// Reserved slot for critical faults (Unknown reason, etc.)
@@ -203,7 +203,7 @@ struct DeferredFaultQueue {
 impl DeferredFaultQueue {
     const CAPACITY: usize = DEFERRED_QUEUE_SIZE;
 
-    const fn new() -> Self {
+    pub(super) const fn new() -> Self {
         Self {
             queue: MpscRingBuffer::new(),
             dropped: AtomicUsize::new(0),
@@ -357,25 +357,6 @@ mod tests {
 }
 
 /// Global deferred fault queue (ISR writes, async task reads)
-static DEFERRED_FAULT_QUEUE: DeferredFaultQueue = DeferredFaultQueue::new();
-
-#[cfg(test)]
-pub(crate) fn push_deferred_fault_for_test(event: RawFaultEvent) {
-    DEFERRED_FAULT_QUEUE.push(event);
-}
-
-/// Drain deferred faults and process them (call from safe async context)
-///
-/// This function handles ALL fault processing that was deferred from ISR:
-/// - Logging faults to console
-/// - Adding to fault history log
-/// - Notifying security monitor
-///
-/// Returns number of faults processed.
-pub fn drain_deferred_faults() -> usize {
-    drain_deferred_faults_with_controller(None)
-}
-
 /// Process a single non-overflow fault event with controller
 fn process_fault_with_controller(event: &RawFaultEvent, controller: &IommuController) {
     use crate::io::iommu::runtime::security::SecurityEvent;
@@ -436,127 +417,71 @@ fn log_critical_qi_stats(controller: &IommuController) {
     }
 }
 
-/// Drain deferred faults with optional controller access for full processing
-///
-/// When controller is provided, also updates fault_log and notifies security.
-pub fn drain_deferred_faults_with_controller<'a>(controller: Option<&'a IommuController>) -> usize {
-    use crate::io::iommu::runtime::security::SecurityEvent;
-
-    let mut count = 0;
-    let mut _overflow_cleared = false;
-
-    // LOOP_PROOF: mode=condition; reason=Deferred-fault drain consumes one queued event per pass and exits once the queue becomes empty.;
-    while let Some(event) = DEFERRED_FAULT_QUEUE.pop() {
-        if event.is_overflow {
-            log::warn!("[IOMMU] Fault overflow cleared");
-            _overflow_cleared = true;
-        } else {
-            log::error!(
-                "[IOMMU] Fault: reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}",
-                event.reason,
-                event.source_id,
-                event.fault_address,
-                event.pasid
-            );
-
-            if let Some(ctrl) = controller {
-                process_fault_with_controller(&event, ctrl);
+impl IommuController {
+    /// Events are owned by the controller that captured them. Equal requester
+    /// IDs on another segment cannot select another controller's security state.
+    pub(crate) fn drain_deferred_faults(&self) -> usize {
+        use crate::io::iommu::runtime::security::SecurityEvent;
+        let mut count = 0;
+        // LOOP_PROOF: mode=bounded; reason=One pass consumes at most the fixed ring capacity plus its single reserved critical slot.;
+        for _ in 0..=DEFERRED_QUEUE_SIZE {
+            let Some(event) = self.fault_events.pop() else {
+                break;
+            };
+            if event.is_overflow {
+                log::warn!("[IOMMU] fault overflow cleared on segment {}", self.segment);
+            } else {
+                log::error!(
+                    "[IOMMU] fault: segment={}, reason={:#x}, source={:04x}, addr={:#x}, pasid={:?}",
+                    self.segment,
+                    event.reason,
+                    event.source_id,
+                    event.fault_address,
+                    event.pasid
+                );
+                process_fault_with_controller(&event, self);
             }
-        }
-
-        if let Some(ctrl) = controller {
             if event.is_critical() {
-                log_critical_qi_stats(ctrl);
+                log_critical_qi_stats(self);
             }
+            count += 1;
         }
-        count += 1;
-    }
-
-    // Report dropped events
-    let dropped = DEFERRED_FAULT_QUEUE.take_dropped();
-    if dropped > 0 {
-        log::warn!(
-            "[IOMMU] {} fault events dropped due to queue overflow",
-            dropped
-        );
-        if let Some(ctrl) = controller {
-            ctrl.notify_security(SecurityEvent::EventsDropped {
+        let dropped = self.fault_events.take_dropped();
+        if dropped != 0 {
+            log::warn!(
+                "[IOMMU] {} fault events dropped on segment {}",
+                dropped,
+                self.segment
+            );
+            self.notify_security(SecurityEvent::EventsDropped {
                 count: dropped as u64,
             });
         }
+        count
     }
-
-    count
 }
 
-// ============================================================================
-// Fault Handler Task (ExoRust Async Pattern)
-// ============================================================================
-
-/// Interval for fault handler polling (milliseconds)
-const FAULT_HANDLER_INTERVAL_MS: u64 = 100;
-
-/// Async Fault Handler Task
-///
-/// This task runs periodically to drain the deferred fault queue and log
-/// faults in a safe (non-ISR) context. It should be spawned during kernel
-/// initialization.
-///
-/// # Cancellation
-///
-/// The task runs indefinitely. To stop it, the spawning code should hold
-/// the task handle and cancel it when shutting down.
-pub async fn fault_handler_task() {
-    log::info!("[IOMMU] Fault handler task started");
-
-    // LOOP_PROOF: mode=event; reason=Fault-handler task intentionally runs for system lifetime and yields between bounded drain passes.;
+/// The image-lifetime service host observes timer failure and retains this
+/// registry's controllers. Each pass is bounded even under continuous faults.
+pub(crate) async fn fault_handler_task() -> Result<(), kernel_api::service::time::TimerError> {
+    let registry = super::super::registry::get_iommu_registry()
+        .expect("the service host admits Intel workers only after registry publication");
+    // LOOP_PROOF: mode=event; reason=The image-lifetime host owns the worker, and every bounded drain pass awaits an admitted timer or returns its failure.;
     loop {
-        // Drain any pending faults
-        let count = drain_deferred_faults();
-        if count > 0 {
-            log::debug!("[IOMMU] Fault handler processed {} events", count);
+        // LOOP_PROOF: mode=bounded; reason=The immutable registry contains a finite list of firmware controllers.;
+        for controller in &registry.controllers {
+            controller.drain_deferred_faults();
         }
-
-        // Yield to other tasks for the interval period
-        // Using timer-based delay if available
-        crate::task::sleep_ms(FAULT_HANDLER_INTERVAL_MS).await;
+        kernel_api::service::time::sleep_ms(100).await?;
     }
 }
-
-static FAULT_HANDLER_TASK_STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Spawn the fault handler task
-///
-/// Call this during kernel initialization after the scheduler is ready.
-/// The task will run in the background, draining ISR-queued faults.
-pub fn spawn_fault_handler_task() -> Result<(), crate::task::SpawnError> {
-    if FAULT_HANDLER_TASK_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return Ok(());
-    }
-    match crate::task::spawn(fault_handler_task(), crate::task::TaskPlacement::Any) {
-        Ok(_) => {
-            log::info!("[IOMMU] Fault handler task spawned");
-            Ok(())
-        }
-        Err(error) => {
-            FAULT_HANDLER_TASK_STARTED.store(false, Ordering::Release);
-            Err(error)
-        }
-    }
-}
-
-// Constants
-const FAULT_LOG_RATE_LIMIT: usize = 128; // Max faults to log per batch
 
 pub trait FaultHandler {
     /// Process pending faults
     fn process_faults(&self) -> usize;
 
     /// Enable fault interrupts with a specific vector
-    fn enable_fault_interrupt(&self, vector: u8);
+    fn enable_fault_interrupt(&self, vector: u8, destination: u8);
 
     /// Isolate a faulting device
     fn isolate_faulting_device(&self, fault: FaultRecord) -> Result<(), IommuError>;
@@ -568,56 +493,32 @@ impl FaultHandler for IommuController {
     fn process_faults(&self) -> usize {
         use fsts_bits::*;
 
-        let fsts = self.read32(regs::FSTS);
+        let fsts = self.registers.fault_status().read();
         let mut processed = 0;
 
-        // Check if there's a pending fault
-        if fsts & FSTS_PPF == 0 {
-            return 0;
-        }
-
-        // Get the fault record index
-        let fri = ((fsts & FSTS_FRI_MASK) >> 8) as usize;
-
-        // Read capability to get number of fault records and offset
-        let nfr = ((self.cap >> 40) & 0xFF) as usize + 1;
-        let fro = ((self.cap >> 24) & 0x3FF) as usize * 16;
-
-        // ====================================================================
-        // ISR-SAFE: Read fault records and push to lock-free queue ONLY
-        // No locks, no logging, no security notify - all deferred to async task
-        // (ExoRust Guideline: ISR must be Wait-Free / Lock-Free)
-        // ====================================================================
-
-        // Read fault records
-        for _ in 0..nfr {
-            let fr_offset = (fro + fri * 16) as u64;
-            let lo = self.read64(fr_offset);
-            let hi = self.read64(fr_offset + 8);
-
-            let record = FaultRecord { lo, hi };
-
-            if record.is_valid() {
-                // ISR-SAFE: Push to deferred queue (lock-free)
-                // All processing (logging, fault_log, security) done by async task
-                if processed < FAULT_LOG_RATE_LIMIT {
-                    DEFERRED_FAULT_QUEUE.push(RawFaultEvent::from(&record));
-                }
-                // Note: Rate limit exceeded events tracked by queue's dropped counter
-
-                // Clear the fault by writing 1 to F bit
-                self.write64(fr_offset, lo | FaultRecord::FAULT);
-
-                processed += 1;
-            }
+        let count = self.registers.fault_count();
+        let first = ((fsts & FSTS_FRI_MASK) >> 8) as usize;
+        // LOOP_PROOF: mode=bounded; reason=CAP admits at most 256 fault records; each FIFO index is visited once before overflow acknowledgement.;
+        for step in 0..if fsts & FSTS_PPF != 0 { count } else { 0 } {
+            let index = (first + step) % count;
+            let mut registers = self
+                .registers
+                .fault_record(index)
+                .expect("modulo the validated fault count selects an admitted register");
+            let Some(record) = registers.pending() else {
+                break;
+            };
+            self.fault_events.push(RawFaultEvent::from(&record));
+            registers.acknowledge();
+            processed += 1;
         }
 
         // Clear the primary fault overflow (PFO) if set
         // Push a special overflow event to queue instead of logging here
         if fsts & FSTS_PFO != 0 {
-            self.write32(regs::FSTS, FSTS_PFO);
+            self.registers.fault_status().write(FSTS_PFO);
             // ISR-SAFE: Push overflow marker event (no log here!)
-            DEFERRED_FAULT_QUEUE.push(RawFaultEvent {
+            self.fault_events.push(RawFaultEvent {
                 source_id: 0,
                 fault_address: 0,
                 reason: 0,
@@ -628,8 +529,6 @@ impl FaultHandler for IommuController {
             });
         }
 
-        // NOTE: security notification moved to drain_deferred_faults_with_controller()
-
         processed
     }
 
@@ -637,24 +536,24 @@ impl FaultHandler for IommuController {
     ///
     /// # Arguments
     /// * `vector` - IDT vector to use for fault interrupts
-    fn enable_fault_interrupt(&self, vector: u8) {
+    fn enable_fault_interrupt(&self, vector: u8, destination: u8) {
         // 1. Clear any pending faults first
         self.process_faults();
 
         // 2. Configure Fault Event Data (FED)
         let fed_data: u32 = vector as u32;
-        self.write32(regs::FEDATA, fed_data);
+        self.registers.fault_data().write(fed_data);
 
         // 3. Configure Fault Event Address (FEADDR)
-        let fe_addr: u32 = 0xFEE0_0000;
-        self.write32(regs::FEADDR, fe_addr);
+        let fe_addr = 0xFEE0_0000 | (u32::from(destination) << 12);
+        self.registers.fault_address().write(fe_addr);
 
         // 4. Configure Fault Event Upper Address (FEUADDR)
-        self.write32(regs::FEUADDR, 0);
+        self.registers.fault_upper_address().write(0);
 
         // 5. Unmask Fault Interrupts in FECTL
-        let fectl = self.read32(regs::FECTL);
-        self.write32(regs::FECTL, fectl & !0x8000_0000); // Clear IM bit (31)
+        let fectl = self.registers.fault_control().read();
+        self.registers.fault_control().write(fectl & !0x8000_0000); // Clear IM bit (31)
         log::info!("[IOMMU] Fault Interrupts enabled (Vector: {:#x})", vector);
     }
 
@@ -683,7 +582,7 @@ impl FaultHandler for IommuController {
             self.disable_device_context_entry(bus, dev, func);
 
         if need_invalidation {
-            self.perform_isolation_invalidation(sid, isolated_domain_id, isolation_reason);
+            self.perform_isolation_invalidation(sid, isolated_domain_id, isolation_reason)?;
         }
 
         Ok(())

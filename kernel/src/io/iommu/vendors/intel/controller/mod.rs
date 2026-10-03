@@ -6,7 +6,6 @@
 //!
 //! Contains `IommuController` and its implementation modules.
 
-pub mod command_queue;
 pub mod dma;
 pub mod fault;
 pub mod init;
@@ -16,9 +15,9 @@ pub mod iova;
 pub mod ir;
 pub mod qi_init;
 pub mod qi_ops;
+mod scope;
 pub mod utils;
 
-use self::utils::IommuUtils;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -42,17 +41,12 @@ use crate::io::iommu::runtime::fault_log::FaultLog;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDeviceScope, IommuError};
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, QiStats};
-use crate::io::iommu::vendors::intel::registers::{
-    fsts_bits, gcmd_bits, gsts_bits, regs, rtaddr_bits,
-};
+use crate::io::iommu::vendors::intel::registers::{fsts_bits, gcmd_bits, gsts_bits, rtaddr_bits};
 use crate::io::iommu::vendors::intel::tables::{
     ContextEntry, PasidTable, RootEntry, ScalableContextEntry,
 };
 
 use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
-
-// use self::cpu_cache::HardwareContext; // Removed duplicate import
-// In previous file (Step 587), HardwareContext was defined inline.
 
 // ============================================================================
 // Hardware Context
@@ -100,7 +94,10 @@ unsafe impl Send for HardwareContext {}
 /// IOMMU Controller
 pub struct IommuController {
     /// Retains the firmware register aperture through IRQs and deferred work.
-    registers: hal::MappedMmio,
+    registers: super::registers::RegisterBlock,
+    direct_commands: PoisonLock<()>,
+    controls: PoisonLock<()>,
+    initialization: crate::sync::InitOnce<Result<(), IommuError>>,
     /// Capabilities
     pub(crate) cap: u64,
     /// Extended capabilities
@@ -143,8 +140,10 @@ pub struct IommuController {
     ats_devices: PoisonLock<BTreeMap<DeviceId, AtsDevice>>,
     /// Fault log ring buffer
     pub(crate) fault_log: IrqMutex<Option<FaultLog>>,
+    fault_events: fault::DeferredFaultQueue,
     /// Device scopes
     pub(crate) device_scopes: Vec<IommuDeviceScope>,
+    scope_resources: Vec<Arc<crate::drivers::pci::resource::FunctionResources>>,
     /// Include all devices
     pub(crate) include_all: bool,
     /// Pending wakers for async invalidation completion
@@ -159,20 +158,34 @@ pub struct IommuController {
     security_notifier: crate::sync::InitOnce<Arc<dyn SecurityNotifier>>,
 }
 
-unsafe impl Send for IommuController {}
-unsafe impl Sync for IommuController {}
-
 impl IommuController {
     /// Create a new IOMMU controller
-    pub fn new(registers: hal::MappedMmio, segment: u16) -> Self {
-        Self {
+    pub fn new(registers: hal::MappedMmio, segment: u16) -> Result<Self, IommuError> {
+        let registers =
+            super::registers::RegisterBlock::new(registers).map_err(IommuError::RegisterAccess)?;
+        if registers.global_status().read()
+            & (gsts_bits::GSTS_TES | gsts_bits::GSTS_QIES | gsts_bits::GSTS_IRES)
+            != 0
+        {
+            // Existing firmware hardware references have no ownership transfer
+            // contract here. Reject admission before publishing our table addresses.
+            return Err(IommuError::InUse);
+        }
+        let cap = registers.capabilities().read();
+        let ecap = registers.extended_capabilities().read();
+        let (selected_agaw_code, selected_addr_bits, selected_levels) =
+            Self::select_agaw(((cap >> 8) & 0x1f) as u8, ((cap >> 16) & 0x3f) as u8 + 1)?;
+        Ok(Self {
             registers,
+            direct_commands: PoisonLock::new(()),
+            controls: PoisonLock::new(()),
+            initialization: crate::sync::InitOnce::new(),
             segment,
-            cap: 0,
-            ecap: 0,
-            selected_agaw_code: 2,
-            selected_addr_bits: 48,
-            selected_levels: 4,
+            cap,
+            ecap,
+            selected_agaw_code,
+            selected_addr_bits,
+            selected_levels,
             hardware: PoisonLock::new(HardwareContext::default()),
             domains: PoisonLock::new(HashMap::new()),
             device_domains: PoisonLock::new(HashMap::new()),
@@ -188,14 +201,16 @@ impl IommuController {
             iova_allocator: PoisonLock::new(None),
             ats_devices: PoisonLock::new(BTreeMap::new()),
             fault_log: IrqMutex::new(None),
+            fault_events: fault::DeferredFaultQueue::new(),
             device_scopes: Vec::new(),
+            scope_resources: Vec::new(),
             include_all: false,
             pending_waiters: WakerQueue::new(),
             command_queue: crate::sync::InitOnce::new(),
             runtime_services_started: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
             security_notifier: crate::sync::InitOnce::new(),
-        }
+        })
     }
 
     pub(crate) fn command_queue_ref(&self) -> Option<&CommandQueue> {
@@ -311,55 +326,49 @@ impl IommuController {
         }
     }
 
-    /// Initialize the IOMMU controller hardware
-    pub unsafe fn init(&mut self, enable_scalable_mode: bool) -> Result<(), IommuError> {
-        if self.mmio_base == 0 {
-            log::error!("IOMMU MMIO Base is NULL");
-            return Err(IommuError::HardwareError);
-        }
+    /// Initializes hardware whose backing this controller owns.
+    ///
+    /// # Safety
+    /// Retain the controller through every published hardware reference, including
+    /// timeout/error. Reclamation requires observed hardware quiescence; returning
+    /// to the scheduler or requesting shutdown does not provide that observation.
+    pub unsafe fn init(&self, enable_scalable_mode: bool) -> Result<(), IommuError> {
+        // Cache failure as well as success: hardware may have accepted a pointer
+        // before a timeout. Retrying must never replace that retained backing.
+        *self
+            .initialization
+            .call_once(|| unsafe { self.initialize_hardware(enable_scalable_mode) })
+    }
 
+    unsafe fn initialize_hardware(&self, enable_scalable_mode: bool) -> Result<(), IommuError> {
         // Clear any pending faults
-        self.write32(
-            regs::FSTS,
-            fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE,
-        );
+        self.registers
+            .fault_status()
+            .write(fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE);
 
-        self.read_and_log_caps()?;
+        self.log_caps();
         let scalable_enabled = self.resolve_scalable_mode(enable_scalable_mode);
         unsafe {
-            self.setup_and_program_root_table()?;
             self.allocate_context_tables(scalable_enabled)?;
+            self.setup_and_program_root_table()?;
         }
 
         Ok(())
     }
 
-    /// Read capability registers and log address width information.
-    fn read_and_log_caps(&mut self) -> Result<(), IommuError> {
-        self.cap = self.read64(regs::CAP);
-        log::info!("IOMMU init: CAP read success: {:#x}", self.cap);
-
-        self.ecap = self.read64(regs::ECAP);
-        log::info!("IOMMU init: ECAP read success: {:#x}", self.ecap);
-
-        let sagaw = self.sagaw_mask();
-        let mgaw = self.max_guest_address_width();
-        log::info!("IOMMU init: MGAW={} bits, SAGAW=0x{:02x}", mgaw, sagaw);
-        let (agaw_code, addr_bits, levels) = Self::select_agaw(sagaw, mgaw)?;
-        self.selected_agaw_code = agaw_code;
-        self.selected_addr_bits = addr_bits;
-        self.selected_levels = levels;
+    fn log_caps(&self) {
         log::info!(
-            "IOMMU init: selected AGAW={} ({} bits, {} levels)",
-            agaw_code,
-            addr_bits,
-            levels
+            "IOMMU: CAP={:#x}, ECAP={:#x}, AGAW={} ({} bits, {} levels)",
+            self.cap,
+            self.ecap,
+            self.selected_agaw_code,
+            self.selected_addr_bits,
+            self.selected_levels
         );
-        Ok(())
     }
 
     /// Resolve whether scalable mode should be enabled.
-    fn resolve_scalable_mode(&mut self, enable_scalable_mode: bool) -> bool {
+    fn resolve_scalable_mode(&self, enable_scalable_mode: bool) -> bool {
         if enable_scalable_mode && !self.supports_scalable_mode() {
             log::warn!("[IOMMU] Scalable mode requested but not supported");
         }
@@ -374,7 +383,7 @@ impl IommuController {
     }
 
     /// Allocate root table, program its address, and wait for hardware acknowledgment.
-    unsafe fn setup_and_program_root_table(&mut self) -> Result<(), IommuError> {
+    unsafe fn setup_and_program_root_table(&self) -> Result<(), IommuError> {
         let root_phys = {
             let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
             let root_table = HardwareTable::new(256, None)?;
@@ -390,31 +399,39 @@ impl IommuController {
             }
             root_phys
         };
-        self.write64(regs::RTADDR, root_phys);
+        let _control = self.controls.lock().map_err(|_| IommuError::Poisoned)?;
+        self.registers.root_table_address().write(root_phys);
 
         self.write_gcmd_with_state(gcmd_bits::GCMD_SRTP);
 
         use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_RTPS) != 0,
+            || (self.registers.global_status().read() & gsts_bits::GSTS_RTPS) != 0,
             100_000,
             false,
         )
     }
 
     /// Allocate context tables (legacy or scalable depending on mode).
-    unsafe fn allocate_context_tables(&mut self, scalable: bool) -> Result<(), IommuError> {
+    unsafe fn allocate_context_tables(&self, scalable: bool) -> Result<(), IommuError> {
         let mut hw = self.hardware.lock().map_err(|_| IommuError::Poisoned)?;
         if scalable {
-            let mut context_tables: Vec<HardwareTable<ScalableContextEntry>> =
-                Vec::with_capacity(256);
+            let mut context_tables: Vec<HardwareTable<ScalableContextEntry>> = Vec::new();
+            context_tables
+                .try_reserve_exact(256)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            // LOOP_PROOF: mode=bounded; reason=Each of the 256 PCI bus context tables is prepared before root-table publication.;
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
             hw.scalable_context_tables = context_tables;
             hw.legacy_context_tables.clear();
         } else {
-            let mut context_tables: Vec<HardwareTable<ContextEntry>> = Vec::with_capacity(256);
+            let mut context_tables: Vec<HardwareTable<ContextEntry>> = Vec::new();
+            context_tables
+                .try_reserve_exact(256)
+                .map_err(|_| IommuError::MetadataAllocation)?;
+            // LOOP_PROOF: mode=bounded; reason=Each of the 256 PCI bus context tables is prepared before root-table publication.;
             for _ in 0..256 {
                 context_tables.push(HardwareTable::new(256, None)?);
             }
@@ -425,21 +442,9 @@ impl IommuController {
         Ok(())
     }
 
-    /// Get IOTLB register offset from ECAP
-    fn iotlb_reg_offset(&self) -> u64 {
-        use crate::io::iommu::vendors::intel::registers::ecap_bits;
-        ((self.ecap & ecap_bits::ECAP_IRO_MASK) >> 8) * 16
-    }
-
     /// Invalidate IOTLB for a specific domain (Register-based / Direct)
-    pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) {
-        #[cfg(feature = "qemu-test-export")]
-        if self.mmio_base == 0 {
-            return;
-        }
-
-        use crate::io::iommu::vendors::intel::registers::{iotlb_bits, iotlb_regs};
-        let offset = self.iotlb_reg_offset();
+    pub unsafe fn invalidate_iotlb_direct(&self, domain_id: u16) -> Result<(), IommuError> {
+        use crate::io::iommu::vendors::intel::registers::iotlb_bits;
 
         let cmd = iotlb_bits::IOTLB_IIRG_DOMAIN
             | iotlb_bits::IOTLB_DR
@@ -447,36 +452,45 @@ impl IommuController {
             | ((domain_id as u64) << iotlb_bits::IOTLB_DID_SHIFT)
             | iotlb_bits::IOTLB_IVT;
 
-        // Write command (IVT bit must be set in the upper 64-bit write or simultaneous)
-        self.write64(offset + iotlb_regs::IOTLB, cmd);
-        crate::io::log::early_print("[DMA] invalidate_iotlb_direct: waiting for IVT clear\n");
-
-        // Wait for completion (IVT bit cleared)
-        // LOOP_PROOF: mode=condition; reason=Hardware wait loop exits once IOTLB IVT bit clears after domain invalidation command.;
-        while (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) != 0 {
-            core::hint::spin_loop();
-        }
-        crate::io::log::early_print("[DMA] invalidate_iotlb_direct: IVT cleared\n");
+        let _command = self
+            .direct_commands
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        self.wait_for_condition(
+            || self.registers.iotlb_command().read() & iotlb_bits::IOTLB_IVT == 0,
+            100_000,
+            false,
+        )?;
+        self.registers.iotlb_command().write(cmd);
+        self.wait_for_condition(
+            || self.registers.iotlb_command().read() & iotlb_bits::IOTLB_IVT == 0,
+            100_000,
+            false,
+        )
     }
 
     /// Invalidate Global IOTLB (Register-based / Direct)
     unsafe fn invalidate_iotlb_global(&self) -> Result<(), IommuError> {
-        if self.mmio_base == 0 {
-            return Err(IommuError::NotPresent);
-        }
-
-        use crate::io::iommu::vendors::intel::registers::{iotlb_bits, iotlb_regs};
-        let offset = self.iotlb_reg_offset();
+        use crate::io::iommu::vendors::intel::registers::iotlb_bits;
 
         let cmd = iotlb_bits::IOTLB_IIRG_GLOBAL
             | iotlb_bits::IOTLB_DR
             | iotlb_bits::IOTLB_DW
             | iotlb_bits::IOTLB_IVT;
 
-        self.write64(offset + iotlb_regs::IOTLB, cmd);
+        let _command = self
+            .direct_commands
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        self.wait_for_condition(
+            || self.registers.iotlb_command().read() & iotlb_bits::IOTLB_IVT == 0,
+            100_000,
+            false,
+        )?;
+        self.registers.iotlb_command().write(cmd);
 
         self.wait_for_condition(
-            || (self.read64(offset + iotlb_regs::IOTLB) & iotlb_bits::IOTLB_IVT) == 0,
+            || (self.registers.iotlb_command().read() & iotlb_bits::IOTLB_IVT) == 0,
             100_000,
             true,
         )
@@ -526,7 +540,7 @@ impl IommuController {
         } else {
             // Register-based context invalidation
             unsafe {
-                self.invalidate_context_global_direct();
+                self.invalidate_context_global_direct()?;
             }
         }
         // Context-cache completion does not invalidate cached IOVA translations.
@@ -534,25 +548,28 @@ impl IommuController {
     }
 
     /// Register-based global context cache invalidation.
-    unsafe fn invalidate_context_global_direct(&self) {
-        #[cfg(feature = "qemu-test-export")]
-        if self.mmio_base == 0 {
-            return;
-        }
-
+    unsafe fn invalidate_context_global_direct(&self) -> Result<(), IommuError> {
         use crate::io::iommu::vendors::intel::registers::ccmd_bits;
 
         // Global context invalidation command
         let cmd: u64 = ccmd_bits::CCMD_ICC
             | ((ccmd_bits::CCMD_CIRG_GLOBAL as u64) << ccmd_bits::CCMD_CIRG_SHIFT);
 
-        self.write64(regs::CCMD, cmd);
-
-        // Wait for completion (ICC bit cleared)
-        // LOOP_PROOF: mode=condition; reason=Context invalidate wait exits when CCMD ICC bit clears indicating command completion.;
-        while (self.read64(regs::CCMD) & ccmd_bits::CCMD_ICC) != 0 {
-            core::hint::spin_loop();
-        }
+        let _command = self
+            .direct_commands
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
+        self.wait_for_condition(
+            || self.registers.context_command().read() & ccmd_bits::CCMD_ICC == 0,
+            100_000,
+            false,
+        )?;
+        self.registers.context_command().write(cmd);
+        self.wait_for_condition(
+            || self.registers.context_command().read() & ccmd_bits::CCMD_ICC == 0,
+            100_000,
+            false,
+        )
     }
 
     /// Lookup device to domain mapping.
@@ -568,12 +585,16 @@ impl IommuController {
 
     /// Enable IOMMU Translation
     pub unsafe fn enable(&self) -> Result<(), IommuError> {
+        let _control = self.controls.lock().map_err(|_| IommuError::Poisoned)?;
+        if self.enabled.load(Ordering::Acquire) {
+            return Ok(());
+        }
         // Enable Translation (TE) while preserving already-enabled control bits.
         self.write_gcmd_with_state(gcmd_bits::GCMD_TE);
 
         use crate::io::iommu::vendors::intel::controller::utils::IommuUtils;
         self.wait_for_condition(
-            || (self.read32(regs::GSTS) & gsts_bits::GSTS_TES) != 0,
+            || (self.registers.global_status().read() & gsts_bits::GSTS_TES) != 0,
             100_000,
             false,
         )?;
@@ -582,15 +603,19 @@ impl IommuController {
         Ok(())
     }
 
-    /// Disable IOMMU Translation
+    /// Disable translation only after hardware acknowledges the GCMD transition.
+    /// A timeout retains the controller and its enabled ownership state.
     pub unsafe fn disable(&self) -> Result<(), IommuError> {
-        // We generally shouldn't disable but if requested, we try.
-        // Clearing TE bit might not be straightforward if it's Write-1-to-Enable.
-        // Assuming writing 0 to register or implementing Read-Modify-Write if needed.
-        // But for GCMD, usually we write the single command bit we want.
-        // It's possible we can't easily disable without reset.
-        // For now, mark as disabled in software.
-        self.enabled.store(false, Ordering::SeqCst);
+        let _control = self.controls.lock().map_err(|_| IommuError::Poisoned)?;
+        self.registers
+            .global_command()
+            .write(self.gcmd_enabled_mask() & !gcmd_bits::GCMD_TE);
+        self.wait_for_condition(
+            || self.registers.global_status().read() & gsts_bits::GSTS_TES == 0,
+            100_000,
+            false,
+        )?;
+        self.enabled.store(false, Ordering::Release);
         Ok(())
     }
 
@@ -600,19 +625,11 @@ impl IommuController {
             return true;
         }
         for scope in &self.device_scopes {
-            if scope.matches(bus, device, function) {
+            if scope.matches(DeviceId::new(self.segment, bus, device, function)) {
                 return true;
             }
         }
         false
-    }
-
-    pub(crate) fn read32(&self, offset: u64) -> u32 {
-        crate::io::mmio::mmio_read_u32((self.mmio_base + offset) as usize)
-    }
-
-    pub(crate) fn write32(&self, offset: u64, value: u32) {
-        crate::io::mmio::mmio_write_u32((self.mmio_base + offset) as usize, value)
     }
 
     #[inline]
@@ -632,15 +649,9 @@ impl IommuController {
 
     #[inline]
     pub(crate) fn write_gcmd_with_state(&self, cmd_bits: u32) {
-        self.write32(regs::GCMD, cmd_bits | self.gcmd_enabled_mask());
-    }
-
-    pub(crate) fn read64(&self, offset: u64) -> u64 {
-        crate::io::mmio::mmio_read_u64((self.mmio_base + offset) as usize)
-    }
-
-    pub(crate) fn write64(&self, offset: u64, value: u64) {
-        crate::io::mmio::mmio_write_u64((self.mmio_base + offset) as usize, value)
+        self.registers
+            .global_command()
+            .write(cmd_bits | self.gcmd_enabled_mask());
     }
 
     pub fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
@@ -672,27 +683,5 @@ impl IommuController {
         if let Some(notifier) = self.security_notifier.get() {
             notifier.notify(event);
         }
-    }
-}
-
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_setup_root_table_returns_poisoned_on_hardware_lock_poison() {
-        let mut controller = IommuController::new(0x1000, 0);
-
-        crate::sync::set_panicking(true);
-        {
-            let _guard = controller.hardware.lock().unwrap();
-        }
-        crate::sync::set_panicking(false);
-
-        let err = unsafe { controller.setup_and_program_root_table() }
-            .expect_err("poisoned hardware lock must fail closed");
-
-        assert_eq!(err, IommuError::Poisoned);
     }
 }

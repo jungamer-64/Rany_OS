@@ -5,14 +5,13 @@
 //! Global Initialization (from ACPI)
 //!
 //! This module contains functions to initialize the IOMMU subsystem
-//! from ACPI DMAR tables or manually.
+//! from owned, checksum-validated ACPI DMAR catalog tables.
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::config::{IommuConfig, ReservedMemoryRegion};
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::types::IommuError;
 // Intel-specific imports
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
@@ -26,15 +25,6 @@ use super::ir::InterruptRemapMode;
 use super::qi_init::QIManager;
 use super::qi_ops::InvalidationOps;
 
-fn align_down(value: u64, align: usize) -> u64 {
-    crate::util::align_down_u64(value, align as u64)
-}
-
-fn align_up(value: u64, align: usize) -> u64 {
-    crate::util::align_up_u64(value, align as u64)
-}
-
-#[cfg(not(test))]
 const COMMAND_QUEUE_BATCH: usize = 64;
 
 const RUNTIME_INTERRUPT_VECTOR: u8 = 0x50;
@@ -55,55 +45,43 @@ fn early_stage_marker_controller(stage: &str, idx: usize) {
     crate::io::log::early_print("\n");
 }
 
-#[cfg(not(test))]
-async fn command_queue_worker(controller: Arc<IommuController>) {
-    // LOOP_PROOF: mode=event; reason=Command worker exits when queue is unavailable and otherwise awaits new work after finite processing.;
+pub(crate) async fn command_queue_worker() -> Result<(), IommuError> {
+    use core::future::{Future, poll_fn};
+    use core::task::Poll;
+    let registry =
+        super::super::registry::get_iommu_registry().ok_or(IommuError::NotInitialized)?;
+    // LOOP_PROOF: mode=event; reason=The service host owns the worker, each finite pass yields and then awaits work on the immutable set of owned controller queues.;
     loop {
-        let cq = match controller.command_queue_ref() {
-            Some(cq) => cq,
-            None => break,
-        };
-        let processed = cq.process_up_to(
-            |kind| controller.handle_command_queue_entry(kind).map_err(|_| ()),
-            COMMAND_QUEUE_BATCH,
-        );
-        if processed == 0 {
-            cq.wait_for_work().await;
+        // LOOP_PROOF: mode=bounded; reason=One pass handles at most COMMAND_QUEUE_BATCH requests per firmware controller.;
+        for controller in &registry.controllers {
+            let cq = controller
+                .command_queue_ref()
+                .ok_or(IommuError::NotInitialized)?;
             if cq.is_poisoned() {
-                break;
+                return Err(IommuError::Poisoned);
             }
+            cq.process_up_to(
+                |kind| controller.handle_command_queue_entry(kind).map_err(|_| ()),
+                COMMAND_QUEUE_BATCH,
+            );
         }
+        crate::task::yield_now().await;
+        poll_fn(|cx| {
+            // LOOP_PROOF: mode=bounded; reason=Each queue is checked once, with notification registration and the queue's own second check closing the sleep race.;
+            for controller in &registry.controllers {
+                let Some(cq) = controller.command_queue_ref() else {
+                    return Poll::Ready(());
+                };
+                let wait = cq.wait_for_work();
+                let mut wait = core::pin::pin!(wait);
+                if wait.as_mut().poll(cx).is_ready() {
+                    return Poll::Ready(());
+                }
+            }
+            Poll::Pending
+        })
+        .await;
     }
-}
-
-#[cfg(not(test))]
-fn spawn_command_queue_worker(controller: Arc<IommuController>) -> Result<(), IommuError> {
-    let future = command_queue_worker(controller);
-    crate::task::spawn(future, crate::task::TaskPlacement::Any)
-        .map(|_| ())
-        .map_err(|_| IommuError::RuntimeUnavailable)
-}
-
-fn activate_runtime_services_for_controller(
-    controller: &Arc<IommuController>,
-) -> Result<bool, IommuError> {
-    if controller.runtime_services_started() {
-        return Ok(false);
-    }
-
-    controller.ensure_command_queue()?;
-
-    #[cfg(not(test))]
-    spawn_command_queue_worker(Arc::clone(controller))?;
-
-    controller.enable_fault_interrupt(RUNTIME_INTERRUPT_VECTOR);
-
-    if controller.is_queued_invalidation_enabled() {
-        controller.enable_queued_invalidation_interrupt(RUNTIME_INTERRUPT_VECTOR);
-    }
-
-    controller.mark_runtime_services_started();
-    Ok(true)
 }
 
 #[cfg(not(test))]
@@ -111,26 +89,49 @@ pub(crate) fn start_runtime_services() -> Result<usize, IommuError> {
     let Some(registry) = super::super::registry::get_iommu_registry() else {
         return Ok(0);
     };
-
-    super::fault::spawn_fault_handler_task().map_err(|_| IommuError::RuntimeUnavailable)?;
-
-    let mut started = 0;
+    // Queue backing is admitted before tasks and before interrupts can publish
+    // notifications. The host retains each successful admission on partial failure.
+    // LOOP_PROOF: mode=bounded; reason=The registry's firmware controller list is immutable and finite.;
     for controller in &registry.controllers {
-        if activate_runtime_services_for_controller(controller)? {
-            started += 1;
-        }
+        controller.ensure_command_queue()?;
     }
-
+    let apic = crate::drivers::apic::local_apic().map_err(|_| IommuError::RuntimeUnavailable)?;
+    let destination = u8::try_from(apic.id()).map_err(|_| IommuError::NotSupported)?;
+    crate::services::start_intel_services()?;
+    let mut started = 0;
+    // LOOP_PROOF: mode=bounded; reason=Each controller's interrupt source is armed at most once after both host-owned workers were admitted.;
+    for controller in &registry.controllers {
+        if controller.runtime_services_started() {
+            continue;
+        }
+        controller.enable_fault_interrupt(RUNTIME_INTERRUPT_VECTOR, destination);
+        if controller.is_queued_invalidation_enabled() {
+            controller.enable_queued_invalidation_interrupt(RUNTIME_INTERRUPT_VECTOR, destination);
+        }
+        controller.mark_runtime_services_started();
+        started += 1;
+    }
     Ok(started)
 }
 
 /// Initializes IOMMU controllers from owned ACPI DMAR bytes.
 pub fn init_iommu_from_dmar(dmar: &[u8], config: IommuConfig) -> Result<(), IommuError> {
+    if super::super::registry::get_iommu_registry().is_some() {
+        return Err(IommuError::AlreadyInitialized);
+    }
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();
 
+    let catalogued = crate::platform::firmware::tables()
+        .and_then(|catalog| catalog.first(crate::drivers::acpi::TableSignature::DMAR))
+        .ok_or(IommuError::NotPresent)?;
+    if catalogued.bytes() != dmar {
+        return Err(IommuError::RegisterMapping(
+            kernel_api::mmio::MmioAcquireError::PermissionDenied,
+        ));
+    }
     // Parse DMAR using canonical ACPI parser from drivers/acpi
-    let dmar_info = match acpi_driver::dmar::parse(dmar) {
+    let dmar_info = match crate::drivers::acpi::dmar::parse(dmar) {
         Ok(info) => info,
         Err(e) => {
             log::error!("Failed to parse DMAR: {:?}", e);
@@ -139,40 +140,49 @@ pub fn init_iommu_from_dmar(dmar: &[u8], config: IommuConfig) -> Result<(), Iomm
     };
 
     // Initialize controllers from DRHD units
-    let (controllers, default_idx) = unsafe { init_controllers_from_drhd(&dmar_info, &config) }?;
-
-    let default_iommu_idx = default_idx.or(Some(0));
+    let controllers = init_controllers_from_drhd(&dmar_info)?;
 
     // Build reserved region list from RMRR
-    let reserved_regions = build_rmrr_regions(&dmar_info);
+    let reserved_regions = build_rmrr_regions(&dmar_info)?;
 
     let registry = IommuRegistry {
         controllers,
-        default_iommu_idx,
         reserved_regions,
     };
 
-    // Apply Reserved Regions (RMRR) before publishing registry
-    apply_rmrr_reservations(&registry);
-
     #[cfg(not(test))]
     early_stage_marker("publishing registry");
-    init_registry(registry);
+    let registry = init_registry(registry)?;
 
+    // The registry retains all mappings and hardware tables before the first
+    // register publication. Timeout/error never destroys an uncertain hardware
+    // reference. Boot observes failure and cannot admit dependent devices.
+    // LOOP_PROOF: mode=bounded; reason=Every published controller is initialized once from its immutable firmware unit.;
+    for controller in &registry.controllers {
+        unsafe {
+            controller.init(config.scalable_mode)?;
+            init_controller_iova(controller)?;
+            init_controller_qi(controller)?;
+            init_controller_interrupt_remapping(controller, &dmar_info);
+        }
+    }
+    apply_rmrr_reservations(registry)?;
     #[cfg(not(test))]
-    finalize_iommu_setup();
+    finalize_iommu_setup()?;
 
     Ok(())
 }
 
 /// Initialize IOMMU controllers from DRHD units parsed from the DMAR table.
-unsafe fn init_controllers_from_drhd(
-    dmar_info: &acpi_driver::dmar::DmarInfo,
-    config: &IommuConfig,
-) -> Result<(Vec<Arc<IommuController>>, Option<usize>), IommuError> {
+fn init_controllers_from_drhd(
+    dmar_info: &crate::drivers::acpi::dmar::DmarInfo,
+) -> Result<Vec<Arc<IommuController>>, IommuError> {
     let mut controllers = Vec::new();
-    let mut default_idx = None;
+    controllers
+        .try_reserve_exact(dmar_info.drhd_units.len())
+        .map_err(|_| IommuError::MetadataAllocation)?;
 
+    // LOOP_PROOF: mode=bounded; reason=The checksum-validated DMAR contains a finite DRHD list, all metadata is admitted before hardware publication.;
     for unit in &dmar_info.drhd_units {
         log::info!(
             "Initializing IOMMU Controller at {:#x} (Segment: {}, All: {})",
@@ -181,75 +191,49 @@ unsafe fn init_controllers_from_drhd(
             unit.include_all
         );
 
-        let mmio_virt = phys_to_virt_usize(unit.register_base) as u64;
-        log::info!(
-            "Mapped IOMMU Base: Phys {:#x} -> Virt {:#x}",
-            unit.register_base,
-            mmio_virt
-        );
-
-        let mut controller = IommuController::new(mmio_virt, unit.segment);
-
-        // Security: Register IOMMU register range as protected to prevent DMA access
+        let registers = crate::resource_registry::mmio::acquire_intel_iommu(unit)
+            .map_err(IommuError::RegisterMapping)?;
+        let extent = registers.len() as u64;
+        let mut controller = IommuController::new(registers, unit.segment)?;
+        let scopes = super::scope::resolve(unit.segment, &unit.devices)?;
+        controller.device_scopes = scopes.scopes;
+        controller.scope_resources = scopes.resources;
+        controller.include_all = unit.include_all;
         crate::io::iommu::runtime::security::register_protected_region(
             unit.register_base,
-            8192, // VT-d registers are at least 4KB, but can be 8KB with extended caps
+            extent,
             "Intel VT-d IOMMU",
         );
-
-        unsafe {
-            if let Err(e) = controller.init(config.scalable_mode) {
-                log::error!("Failed to initialize IOMMU controller: {:?}", e);
-                continue;
-            }
-
-            init_controller_iova(&mut controller);
-            init_controller_qi(&mut controller);
-            init_controller_interrupt_remapping(&mut controller, &dmar_info);
-        }
-
-        controllers.push(Arc::new(controller));
-        if unit.include_all {
-            default_idx = Some(controllers.len() - 1);
-        }
+        controllers.push(Arc::try_new(controller).map_err(|_| IommuError::MetadataAllocation)?);
     }
 
     if controllers.is_empty() {
         return Err(IommuError::NotPresent);
     }
 
-    Ok((controllers, default_idx))
+    Ok(controllers)
 }
 
 /// Initialize IOVA allocator for a single controller (cap at 36 bits).
-unsafe fn init_controller_iova(controller: &mut IommuController) {
-    let iova_bits = controller.max_guest_address_width().min(36).max(12);
-    let iova_base: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
-    let iova_limit = 1u64 << iova_bits;
-    let iova_size = iova_limit.saturating_sub(iova_base);
-    if iova_size == 0 {
-        log::warn!("[IOMMU] Skipping IOVA allocator init: invalid size");
-    } else if let Err(e) = controller.init_iova(iova_base, iova_size) {
-        log::warn!("[IOMMU] Failed to init IOVA allocator: {:?}", e);
-    }
+unsafe fn init_controller_iova(controller: &IommuController) -> Result<(), IommuError> {
+    let iova_bits = controller.max_guest_address_width().clamp(12, 36);
+    let iova_base = crate::mm::types::PAGE_SIZE_4K as u64;
+    controller.init_iova(iova_base, (1u64 << iova_bits) - iova_base)
 }
 
-/// Setup Queued Invalidation if the controller supports it.
-unsafe fn init_controller_qi(controller: &mut IommuController) {
+unsafe fn init_controller_qi(controller: &IommuController) -> Result<(), IommuError> {
     if controller.supports_queued_invalidation() {
-        if let Err(e) = controller.init_queued_invalidation(8) {
-            log::warn!("Failed to init Queued Invalidation: {:?}", e);
-        } else if let Err(e) = unsafe { controller.enable_queued_invalidation() } {
-            log::warn!("Failed to enable Queued Invalidation: {:?}", e);
-        } else {
-            log::info!("Queued Invalidation enabled for controller");
+        controller.init_queued_invalidation(8)?;
+        unsafe {
+            controller.enable_queued_invalidation()?;
         }
     }
+    Ok(())
 }
 
 unsafe fn init_controller_interrupt_remapping(
-    controller: &mut IommuController,
-    dmar: &acpi_driver::dmar::DmarInfo,
+    controller: &IommuController,
+    dmar: &crate::drivers::acpi::dmar::DmarInfo,
 ) {
     if !dmar.supports_interrupt_remapping() {
         log::info!("DMAR does not advertise interrupt remapping");
@@ -295,113 +279,76 @@ unsafe fn init_controller_interrupt_remapping(
     log::info!("VT-d interrupt remapping enabled in {mode:?} mode");
 }
 
-/// Build reserved memory regions from the DMAR RMRR entries.
-fn build_rmrr_regions(dmar_info: &acpi_driver::dmar::DmarInfo) -> Vec<ReservedMemoryRegion> {
-    let mut reserved_regions = Vec::new();
-
-    for region in &dmar_info.rmrr_regions {
-        let mut devices = Vec::new();
-        for scope in &region.devices {
-            let bus = scope.start_bus;
-            if let Some(last_path) = scope.path.last() {
-                let device_id =
-                    DeviceId::new(region.segment, bus, last_path.device, last_path.function);
-                devices.push(device_id);
-            }
+/// RMRR addresses and PCI scopes are validated before any hardware pointer
+/// publication. The registry retains all resources used to resolve the paths.
+fn build_rmrr_regions(
+    dmar: &crate::drivers::acpi::dmar::DmarInfo,
+) -> Result<Vec<ReservedMemoryRegion>, IommuError> {
+    let mut regions = Vec::new();
+    regions
+        .try_reserve_exact(dmar.rmrr_regions.len())
+        .map_err(|_| IommuError::MetadataAllocation)?;
+    // LOOP_PROOF: mode=bounded; reason=Every checksum-validated RMRR descriptor is resolved once.;
+    for region in &dmar.rmrr_regions {
+        let end = region
+            .limit
+            .checked_add(1)
+            .ok_or(IommuError::InvalidAddress)?;
+        if !region.base.is_multiple_of(4096) || !end.is_multiple_of(4096) || end <= region.base {
+            return Err(IommuError::InvalidAlignment);
         }
-
-        reserved_regions.push(ReservedMemoryRegion {
+        let scopes = super::scope::resolve(region.segment, &region.devices)?;
+        if scopes.scopes.is_empty() {
+            return Err(IommuError::FirmwareScope);
+        }
+        regions.push(ReservedMemoryRegion {
             segment: region.segment,
             base: region.base,
             limit: region.limit,
-            devices,
+            scopes: scopes.scopes,
+            _resources: scopes.resources,
         });
     }
-
-    reserved_regions
+    Ok(regions)
 }
 
-/// Apply RMRR reservations to IOVA allocators on all controllers.
-fn apply_rmrr_reservations(registry: &IommuRegistry) {
-    let page_size = crate::mm::types::PAGE_SIZE_4K;
-
+/// Reserve each identity-mapped RMRR portion inside the allocator's window
+/// before any ordinary DMA address is admitted. Regions outside the window
+/// cannot overlap addresses allocated from it and need no bitmap reservation.
+fn apply_rmrr_reservations(registry: &IommuRegistry) -> Result<(), IommuError> {
+    // LOOP_PROOF: mode=bounded; reason=The published registry contains finite immutable RMRR and controller lists.;
     for region in &registry.reserved_regions {
-        let start = align_down(region.base, page_size);
-        let end = align_up(region.limit.saturating_add(1), page_size);
-        if end <= start {
-            continue;
-        }
-
+        let end = region
+            .limit
+            .checked_add(1)
+            .ok_or(IommuError::InvalidAddress)?;
+        // LOOP_PROOF: mode=bounded; reason=Each controller in the region's segment reserves the applicable finite interval exactly once.;
         for controller in &registry.controllers {
             if controller.segment != region.segment {
                 continue;
             }
-            reserve_rmrr_on_controller(controller, region.segment, start, end);
+            let guard = controller
+                .iova_allocator
+                .lock()
+                .map_err(|_| IommuError::Poisoned)?;
+            let allocator = guard.as_ref().ok_or(IommuError::NotInitialized)?;
+            let allocator_end = allocator
+                .base()
+                .checked_add(allocator.size())
+                .ok_or(IommuError::InvalidAddress)?;
+            let start = region.base.max(allocator.base());
+            let end = end.min(allocator_end);
+            if start < end {
+                allocator.reserve(start, end - start)?;
+            }
         }
     }
-}
-
-/// Reserve a single RMRR range on a controller's IOVA allocator.
-fn reserve_rmrr_on_controller(
-    controller: &Arc<IommuController>,
-    segment: u16,
-    start: u64,
-    end: u64,
-) {
-    let guard = match controller.iova_allocator.lock() {
-        Ok(guard) => guard,
-        Err(_) => {
-            log::warn!(
-                "[IOMMU] iova_allocator lock poisoned while reserving RMRR: seg={}",
-                segment
-            );
-            return;
-        }
-    };
-
-    let alloc = match guard.as_ref() {
-        Some(alloc) => alloc,
-        None => {
-            log::warn!(
-                "[IOMMU] iova_allocator not initialized while reserving RMRR: seg={}",
-                segment
-            );
-            return;
-        }
-    };
-
-    let alloc_base = alloc.base();
-    let alloc_end = alloc_base.saturating_add(alloc.size());
-    let clamped_start = start.max(alloc_base);
-    let clamped_end = end.min(alloc_end);
-    if clamped_end <= clamped_start {
-        return;
-    }
-
-    let reserve_size = clamped_end - clamped_start;
-    match alloc.reserve(clamped_start, reserve_size) {
-        Ok(()) | Err(IommuError::AlreadyMapped) => {}
-        Err(IommuError::InvalidAddress) => {
-            log::warn!(
-                "[IOMMU] RMRR reservation outside IOVA window: seg={}, range={:#x}-{:#x}",
-                segment,
-                clamped_start,
-                clamped_end
-            );
-        }
-        Err(err) => {
-            log::warn!(
-                "[IOMMU] Failed to reserve RMRR IOVA: seg={}, err={:?}",
-                segment,
-                err
-            );
-        }
-    }
+    Ok(())
 }
 
 /// Final setup: register driver and synchronously enable translation.
 #[cfg(not(test))]
-fn finalize_iommu_setup() {
+fn finalize_iommu_setup() -> Result<(), IommuError> {
     super::super::IntelIommuDriver::register_driver();
 
     // Enable IOMMU translation directly via the Intel registry.
@@ -410,56 +357,12 @@ fn finalize_iommu_setup() {
     if let Some(registry) = super::super::registry::get_iommu_registry() {
         for (idx, controller) in registry.controllers.iter().enumerate() {
             early_stage_marker_controller("translation enable start", idx);
-            match unsafe { controller.enable() } {
-                Ok(()) => {
-                    early_stage_marker_controller("translation enable done", idx);
-                }
-                Err(_e) => {
-                    crate::io::log::early_print("[IOMMU] Controller ");
-                    crate::io::log::early_print_dec(idx as u64);
-                    crate::io::log::early_print(" enable FAILED\n");
-                }
+            unsafe {
+                controller.enable()?;
             }
+            early_stage_marker_controller("translation enable done", idx);
         }
         early_stage_marker("runtime services deferred");
     }
-}
-
-#[cfg(all(test, feature = "std"))]
-mod tests {
-    use super::*;
-    use crate::io::iommu::vendors::intel::registers::ecap_bits;
-    use core::sync::atomic::Ordering;
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn controller_boot_phase_keeps_runtime_services_deferred() {
-        let controller = IommuController::new(0x1000, 0);
-
-        assert!(controller.command_queue_ref().is_none());
-        assert!(!controller.runtime_services_started());
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn runtime_activation_is_idempotent() {
-        let mut controller = IommuController::new(0x1000, 0);
-        controller.ecap = ecap_bits::ECAP_QI;
-        controller.qi_enabled.store(true, Ordering::Release);
-        let controller = Arc::new(controller);
-
-        assert!(activate_runtime_services_for_controller(&controller).unwrap());
-        let first_queue = controller
-            .command_queue_ref()
-            .map(|cq| cq as *const _)
-            .expect("command queue should be installed");
-        assert!(controller.runtime_services_started());
-
-        assert!(!activate_runtime_services_for_controller(&controller).unwrap());
-        let second_queue = controller
-            .command_queue_ref()
-            .map(|cq| cq as *const _)
-            .expect("command queue should stay installed");
-        assert_eq!(first_queue, second_queue);
-    }
+    Ok(())
 }

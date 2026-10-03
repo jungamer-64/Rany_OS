@@ -12,7 +12,7 @@ use super::utils::IommuUtils;
 use super::{InvalidationWaiter, IommuController};
 use crate::io::iommu::types::IommuError;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
-use crate::io::iommu::vendors::intel::registers::{fsts_bits, regs};
+use crate::io::iommu::vendors::intel::registers::fsts_bits;
 
 fn submit_invalidation_locked(
     controller: &IommuController,
@@ -21,7 +21,7 @@ fn submit_invalidation_locked(
 ) -> Result<u64, IommuError> {
     // Security: Check for existing hardware faults before submitting new commands.
     // If the queue is in an error state (IQE/ICE/ITE), it will not process new entries.
-    let fsts = controller.read32(regs::FSTS);
+    let fsts = controller.registers.fault_status().read();
     if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
         log::error!(
             "[IOMMU][QI] Cannot submit: hardware fault detected in FSTS: {:#x}",
@@ -32,21 +32,21 @@ fn submit_invalidation_locked(
 
     if iq.is_full() {
         iq.record_full_check();
-        let head = (controller.read64(regs::IQH) >> 4) as usize;
+        let head = (controller.registers.queue_head().read() >> 4) as usize;
         iq.record_head_refresh();
         iq.update_head(head);
         if iq.is_full() {
             iq.record_wait();
             let cached_head = iq.cached_head() as u64;
             if let Err(e) = controller.wait_for_condition(
-                || (controller.read64(regs::IQH) >> 4) != cached_head,
+                || (controller.registers.queue_head().read() >> 4) != cached_head,
                 100_000, // 100ms
                 true,
             ) {
                 iq.record_wait_timeout();
                 return Err(e);
             }
-            let head = (controller.read64(regs::IQH) >> 4) as usize;
+            let head = (controller.registers.queue_head().read() >> 4) as usize;
             iq.record_head_refresh();
             iq.update_head(head);
             if iq.is_full() {
@@ -59,7 +59,7 @@ fn submit_invalidation_locked(
     iq.submit(entry);
     iq.record_submit();
     let tail = iq.tail() as u64; // Tail is in entry units
-    controller.write64(regs::IQT, tail << 4);
+    controller.registers.queue_tail().write(tail << 4);
     Ok(tail)
 }
 
@@ -250,7 +250,7 @@ impl InvalidationOps for IommuController {
             || {
                 // Security: Check for hardware faults during wait.
                 // If an error occurs, the wait will never complete successfully.
-                let fsts = self.read32(regs::FSTS);
+                let fsts = self.registers.fault_status().read();
                 if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
                     return true; // Stop waiting, the check below will fail
                 }
@@ -264,7 +264,7 @@ impl InvalidationOps for IommuController {
         )?;
 
         // Final validation: Ensure it actually completed and didn't just exit due to a fault.
-        let fsts = self.read32(regs::FSTS);
+        let fsts = self.registers.fault_status().read();
         if (fsts & (fsts_bits::FSTS_IQE | fsts_bits::FSTS_ICE | fsts_bits::FSTS_ITE)) != 0 {
             log::error!(
                 "[IOMMU][QI] Wait failed: hardware fault detected in FSTS: {:#x}",

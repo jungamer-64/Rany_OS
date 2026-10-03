@@ -12,69 +12,42 @@
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct FaultRecord {
-    /// Lower 64 bits (Source ID, Fault Reason, etc.)
+    /// Fault info, including the faulted page address (bits 63:12).
     pub lo: u64,
-    /// Upper 64 bits (Fault Address)
+    /// Intel FRCD bits 127:64, including F, PASID, reason and requester ID.
     pub hi: u64,
 }
 
 impl FaultRecord {
-    /// Fault reason mask (bits 0-7 of lo)
-    pub const REASON_MASK: u64 = 0xFF;
-    /// PASID value mask (bits 8-27 of lo)
-    pub const PASID_MASK: u64 = 0xFFFFF00;
-    pub const PASID_SHIFT: u64 = 8;
-    /// PASID present (bit 28 of lo)
-    pub const PASID_PRESENT: u64 = 1 << 28;
-    /// Execute request (bit 29 of lo)
-    pub const ERQ: u64 = 1 << 29;
-    /// Privilege mode requested (bit 30 of lo)
-    pub const PRIV: u64 = 1 << 30;
-    /// Supervisor request (bit 31 of lo)
-    pub const SUPERV: u64 = 1 << 31;
-    /// Source ID mask (bits 32-47 of lo)
-    pub const SID_MASK: u64 = 0xFFFF_0000_0000;
-    pub const SID_SHIFT: u64 = 32;
-    /// Type (bits 48-49 of lo)
-    pub const TYPE_MASK: u64 = 0x3_0000_0000_0000;
-    pub const TYPE_SHIFT: u64 = 48;
-    /// Fault (bit 63 of lo)
+    /// Fault reason occupies bits 103:96 of FRCD.
+    pub const REASON_MASK: u64 = 0xff << 32;
+    pub const REASON_SHIFT: u64 = 32;
+    /// PASID occupies bits 123:104, interpreted only when PP is set.
+    pub const PASID_MASK: u64 = 0xfffff << 40;
+    pub const PASID_SHIFT: u64 = 40;
+    pub const PASID_PRESENT: u64 = 1 << 31;
+    /// Requester ID occupies bits 79:64.
+    pub const SID_MASK: u64 = 0xffff;
+    pub const SID_SHIFT: u64 = 0;
+    /// Fault publication/completion acknowledgement bit 127 (high word bit 63).
     pub const FAULT: u64 = 1 << 63;
-    /// Fault address mask (bits 12-63 of hi)
-    pub const ADDR_MASK: u64 = !0xFFF;
+    pub const ADDR_MASK: u64 = !0xfff;
 
-    /// Get fault reason code
     pub fn reason(&self) -> u8 {
-        (self.lo & Self::REASON_MASK) as u8
+        ((self.hi & Self::REASON_MASK) >> Self::REASON_SHIFT) as u8
     }
-
-    /// Get source ID (BDF)
     pub fn source_id(&self) -> u16 {
-        ((self.lo & Self::SID_MASK) >> Self::SID_SHIFT) as u16
+        (self.hi & Self::SID_MASK) as u16
     }
-
-    /// Get fault address
     pub fn fault_address(&self) -> u64 {
-        self.hi & Self::ADDR_MASK
+        self.lo & Self::ADDR_MASK
     }
-
-    /// Get PASID (if present)
     pub fn pasid(&self) -> Option<u32> {
-        if self.lo & Self::PASID_PRESENT != 0 {
-            Some(((self.lo & Self::PASID_MASK) >> Self::PASID_SHIFT) as u32)
-        } else {
-            None
-        }
+        (self.hi & Self::PASID_PRESENT != 0)
+            .then_some(((self.hi & Self::PASID_MASK) >> Self::PASID_SHIFT) as u32)
     }
-
-    /// Check if this is a valid fault record
     pub fn is_valid(&self) -> bool {
-        self.lo & Self::FAULT != 0
-    }
-
-    /// Clear the fault bit
-    pub fn clear(&mut self) {
-        self.lo &= !Self::FAULT;
+        self.hi & Self::FAULT != 0
     }
 }
 
@@ -118,5 +91,31 @@ impl FaultLog {
 impl Default for FaultLog {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(feature = "std", test)]
+    #[cfg_attr(not(feature = "std"), test_case)]
+    fn decodes_independent_intel_fault_register_vector() {
+        // FRCD[127:64]: F=1, PV=0xabcde, FR=0x42, PP=1, SID=0x1234.
+        let record = FaultRecord {
+            lo: 0x1234_5678_9abc_d000,
+            hi: 0x8abc_de42_8000_1234,
+        };
+        assert!(record.is_valid());
+        assert_eq!(record.reason(), 0x42);
+        assert_eq!(record.source_id(), 0x1234);
+        assert_eq!(record.fault_address(), 0x1234_5678_9abc_d000);
+        assert_eq!(record.pasid(), Some(0xabcde));
+        let absent = FaultRecord {
+            lo: u64::MAX,
+            hi: 0x0abc_de42_0000_1234,
+        };
+        assert!(!absent.is_valid());
+        assert_eq!(absent.pasid(), None);
     }
 }

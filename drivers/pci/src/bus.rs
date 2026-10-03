@@ -310,6 +310,14 @@ impl<'a> PciBusScanner<'a> {
 
     /// デバイス情報を読み取り
     pub fn read_device(&self, bdf: BdfAddress) -> Option<PciDeviceInfo> {
+        crate::resource::with_configuration(bdf, |retained| {
+            retained
+                .cloned()
+                .or_else(|| self.read_unretained_device(bdf))
+        })
+    }
+
+    pub(crate) fn read_unretained_device(&self, bdf: BdfAddress) -> Option<PciDeviceInfo> {
         let vendor_id = self.accessor.read_vendor_id(bdf);
         if vendor_id == 0xFFFF {
             return None;

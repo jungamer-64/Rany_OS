@@ -56,7 +56,9 @@ fn map_rmrr_for_device(domain: &IommuDomain, device: DeviceId) -> Result<(), Iom
     };
     let page_size = crate::mm::types::PAGE_SIZE_4K;
     for region in registry.reserved_regions() {
-        if region.segment != device.segment || !region.devices.iter().any(|d| *d == device) {
+        if region.segment != device.segment
+            || !region.scopes.iter().any(|scope| scope.matches(device))
+        {
             continue;
         }
         let start = align_down(region.base, page_size);

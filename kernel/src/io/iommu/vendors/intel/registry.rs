@@ -10,20 +10,15 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 
 use super::controller::IommuController;
-pub use crate::io::iommu::runtime::config::ReservedMemoryRegion; // Will be moved? RMRR is defined in mod?
+pub use crate::io::iommu::runtime::config::ReservedMemoryRegion;
 
 /// Intel IOMMU Registry
 pub struct IommuRegistry {
     /// List of IOMMU controllers
     pub controllers: Vec<Arc<IommuController>>,
-    /// Default IOMMU index
-    pub(crate) default_iommu_idx: Option<usize>,
     /// Reserved memory regions (ACPI RMRR)
     pub(crate) reserved_regions: Vec<ReservedMemoryRegion>,
 }
-
-unsafe impl Send for IommuRegistry {}
-unsafe impl Sync for IommuRegistry {}
 
 impl IommuRegistry {
     pub fn find_controller_index_for_device(
@@ -51,7 +46,7 @@ impl IommuRegistry {
             }
         }
 
-        self.default_iommu_idx
+        None
     }
 
     pub fn reserved_regions(&self) -> &[ReservedMemoryRegion] {
@@ -59,16 +54,27 @@ impl IommuRegistry {
     }
 }
 
-/// Global Intel IOMMU Registry stored in a lock-free spin::Once.
+/// Global Intel IOMMU Registry stored in a lock-free crate::sync::InitOnce.
 /// Written exactly once during boot via init_registry(), then read-only.
 /// This avoids deadlocks when IOMMU fault interrupts fire while
 /// the boot context is reading the registry.
-static IOMMU_REGISTRY: spin::Once<IommuRegistry> = spin::Once::new();
+static IOMMU_REGISTRY: crate::sync::InitOnce<IommuRegistry> = crate::sync::InitOnce::new();
 
 pub fn get_iommu_registry() -> Option<&'static IommuRegistry> {
     IOMMU_REGISTRY.get()
 }
 
-pub fn init_registry(registry: IommuRegistry) {
-    IOMMU_REGISTRY.call_once(|| registry);
+pub fn init_registry(
+    registry: IommuRegistry,
+) -> Result<&'static IommuRegistry, crate::io::iommu::types::IommuError> {
+    let mut installed = false;
+    let published = IOMMU_REGISTRY.call_once(|| {
+        installed = true;
+        registry
+    });
+    if installed {
+        Ok(published)
+    } else {
+        Err(crate::io::iommu::types::IommuError::AlreadyInitialized)
+    }
 }

@@ -77,6 +77,7 @@ pub fn parse(bytes: &[u8]) -> Result<DmarInfo, AcpiError> {
     let mut drhd_units = Vec::new();
     let mut rmrr_regions = Vec::new();
     let mut offset = DMAR_FIXED_LENGTH;
+    // LOOP_PROOF: mode=condition; reason=Each validated next offset consumes at least four bytes from the finite table and malformed lengths return before advancing.;
     while offset < bytes.len() {
         let kind = read_u16(bytes, offset)?;
         let length = usize::from(read_u16(bytes, offset + 2)?);
@@ -128,6 +129,7 @@ pub fn parse(bytes: &[u8]) -> Result<DmarInfo, AcpiError> {
 
 fn parse_scopes(mut bytes: &[u8]) -> Result<Vec<DeviceScope>, AcpiError> {
     let mut scopes = Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Each validated scope consumes at least six bytes from the remaining finite slice and malformed or truncated scopes return an error.;
     while !bytes.is_empty() {
         if bytes.len() < 6 {
             return Err(error("DMAR device scope header is truncated"));
@@ -136,15 +138,27 @@ fn parse_scopes(mut bytes: &[u8]) -> Result<Vec<DeviceScope>, AcpiError> {
         if length < 6 || length > bytes.len() || !(length - 6).is_multiple_of(2) {
             return Err(error("DMAR device scope length is invalid"));
         }
-        let path = bytes[6..length]
-            .as_chunks::<2>()
-            .0
-            .iter()
-            .map(|entry| PciPath {
+        if matches!(bytes[0], 1..=4) && length == 6 {
+            return Err(AcpiError::table(
+                AcpiErrorKind::InvalidEncoding,
+                *b"DMAR",
+                "DMAR PCI device scope has an empty path",
+            ));
+        }
+        let mut path = Vec::new();
+        for entry in bytes[6..length].as_chunks::<2>().0 {
+            if entry[0] >= 32 || entry[1] >= 8 {
+                return Err(AcpiError::table(
+                    AcpiErrorKind::InvalidEncoding,
+                    *b"DMAR",
+                    "DMAR PCI path coordinates exceed device/function widths",
+                ));
+            }
+            path.push(PciPath {
                 device: entry[0],
                 function: entry[1],
-            })
-            .collect();
+            });
+        }
         scopes.push(DeviceScope {
             scope_type: bytes[0],
             enumeration_id: bytes[4],
@@ -187,4 +201,48 @@ fn read_u64(bytes: &[u8], offset: usize) -> Result<u64, AcpiError> {
 
 fn error(detail: &'static str) -> AcpiError {
     AcpiError::table(AcpiErrorKind::InvalidLength, *b"DMAR", detail)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_multibridge_pci_path_without_collapsing_its_start_bus() {
+        // Independent device-scope bytes: type=endpoint, length=10, bus=2,
+        // followed by a bridge at 3.0 and an endpoint at 31.7.
+        let scopes = parse_scopes(&[1, 10, 0, 0, 0, 2, 3, 0, 31, 7]).unwrap();
+        assert_eq!(scopes[0].start_bus, 2);
+        assert_eq!(
+            scopes[0].path,
+            [
+                PciPath {
+                    device: 3,
+                    function: 0
+                },
+                PciPath {
+                    device: 31,
+                    function: 7
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn invalid_pci_coordinates_and_missing_path_are_encoding_failures() {
+        for bytes in [
+            &[1, 8, 0, 0, 0, 0, 32, 0][..],
+            &[1, 8, 0, 0, 0, 0, 31, 8][..],
+            &[1, 6, 0, 0, 0, 0][..],
+        ] {
+            assert_eq!(
+                parse_scopes(bytes).unwrap_err().kind,
+                AcpiErrorKind::InvalidEncoding
+            );
+        }
+        assert_eq!(
+            parse_scopes(&[1, 7, 0, 0, 0, 0, 3]).unwrap_err().kind,
+            AcpiErrorKind::InvalidLength
+        );
+    }
 }

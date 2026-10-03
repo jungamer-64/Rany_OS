@@ -8,7 +8,7 @@
 
 use alloc::vec::Vec;
 
-use crate::io::iommu::types::DeviceId;
+use crate::io::iommu::types::IommuDeviceScope;
 
 // ============================================================================
 // Configuration
@@ -47,7 +47,6 @@ impl Default for IommuConfig {
 ///
 /// Represents a region of physical memory that must remain identity-mapped
 /// for certain devices (e.g., legacy USB controllers).
-#[derive(Debug, Clone)]
 pub struct ReservedMemoryRegion {
     /// PCI segment number
     pub segment: u16,
@@ -55,7 +54,7 @@ pub struct ReservedMemoryRegion {
     pub base: u64,
     /// Limit (end) physical address of the reserved region
     pub limit: u64,
-    /// Devices this region applies to (Segment, Bus, Device, Function)
-    /// If empty, might apply to all? (Spec usually says explicit scope)
-    pub devices: Vec<DeviceId>,
+    pub(crate) scopes: Vec<IommuDeviceScope>,
+    /// Pins keep the resolved bridge bus numbers valid until registry retirement.
+    pub(crate) _resources: Vec<alloc::sync::Arc<crate::drivers::pci::resource::FunctionResources>>,
 }

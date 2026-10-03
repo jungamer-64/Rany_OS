@@ -41,6 +41,7 @@ pub mod legacy;
 
 // Bus scanning
 pub mod bus;
+pub mod resource;
 
 // MSI/MSI-X support
 pub mod msi;

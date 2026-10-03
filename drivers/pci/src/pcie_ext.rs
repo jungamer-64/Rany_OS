@@ -233,6 +233,9 @@ impl PcieConfig {
 
     /// コンフィグ空間に書き込み
     pub fn write32(&self, bdf: PcieBdf, offset: u16, value: u32) -> Option<()> {
+        if self.segment == 0 {
+            crate::resource::assert_configuration_write(bdf.to_bdf_address(), offset, 4);
+        }
         let offset = self.buses.config_offset::<u32>(bdf, offset)?;
         let mut register = self.registers.region().write_only::<u32>(offset).ok()?;
         register.write(value);
@@ -240,6 +243,9 @@ impl PcieConfig {
     }
 
     pub fn write16(&self, bdf: PcieBdf, offset: u16, value: u16) -> Option<()> {
+        if self.segment == 0 {
+            crate::resource::assert_configuration_write(bdf.to_bdf_address(), offset, 2);
+        }
         let offset = self.buses.config_offset::<u16>(bdf, offset)?;
         self.registers
             .region()
@@ -250,6 +256,9 @@ impl PcieConfig {
     }
 
     pub fn write8(&self, bdf: PcieBdf, offset: u16, value: u8) -> Option<()> {
+        if self.segment == 0 {
+            crate::resource::assert_configuration_write(bdf.to_bdf_address(), offset, 1);
+        }
         let offset = self.buses.config_offset::<u8>(bdf, offset)?;
         self.registers
             .region()

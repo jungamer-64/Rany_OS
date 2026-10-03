@@ -492,8 +492,8 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
 
     // Call isolate - it should attempt best-effort isolation and clear the Present bit
     let fault = FaultRecord {
-        lo: FaultRecord::FAULT,
-        hi: 0,
+        lo: 0,
+        hi: FaultRecord::FAULT,
     };
     let _ = ctrl.isolate_faulting_device(fault);
 
@@ -1370,7 +1370,8 @@ fn test_page_table_scope_drop_rolls_back_parent() {
     /// Mock SecurityNotifier for testing (alloc-free, fixed-size ring)
     #[derive(Debug)]
     struct MockSecurityNotifier {
-        events: spin::Mutex<[Option<crate::io::iommu::runtime::security::SecurityEvent>; 16]>,
+        events:
+            crate::sync::Mutex<[Option<crate::io::iommu::runtime::security::SecurityEvent>; 16]>,
         event_count: core::sync::atomic::AtomicUsize,
         isolation_decision: crate::io::iommu::runtime::security::IsolationDecision,
     }
@@ -1378,7 +1379,7 @@ fn test_page_table_scope_drop_rolls_back_parent() {
     impl MockSecurityNotifier {
         fn new() -> Self {
             Self {
-                events: spin::Mutex::new([None; 16]),
+                events: crate::sync::Mutex::new([None; 16]),
                 event_count: core::sync::atomic::AtomicUsize::new(0),
                 isolation_decision: crate::io::iommu::runtime::security::IsolationDecision::default(
                 ),
@@ -1387,7 +1388,7 @@ fn test_page_table_scope_drop_rolls_back_parent() {
 
         fn with_decision(decision: crate::io::iommu::runtime::security::IsolationDecision) -> Self {
             Self {
-                events: spin::Mutex::new([None; 16]),
+                events: crate::sync::Mutex::new([None; 16]),
                 event_count: core::sync::atomic::AtomicUsize::new(0),
                 isolation_decision: decision,
             }
@@ -1513,8 +1514,8 @@ fn test_page_table_scope_drop_rolls_back_parent() {
 
         // Create a mock FaultRecord
         let record = FaultRecord {
-            lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42, // source_id=0x0108, reason=0x42
-            hi: 0x2000,                                       // fault_address=0x2000
+            lo: 0x2000,
+            hi: 0x8000_0042_0000_0108,
         };
 
         let summary = FaultSummary::from(&record);

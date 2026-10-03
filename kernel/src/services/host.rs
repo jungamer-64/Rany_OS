@@ -2,9 +2,23 @@
 
 /// Connects shared service contracts to kernel-owned subsystems.
 ///
-/// This instance carries neither caller identity nor resource ownership.
-/// Authorization belongs to the service operations; subsystem state stays with
-/// its owner.
-pub(super) struct KernelServiceHost;
+/// Authorization belongs to each service operation. The host owns admission and
+/// unexpected termination of its image-lifetime maintenance tasks; device and
+/// caller resources remain with their subsystem owners.
+pub(super) struct KernelServiceHost {
+    pub(super) maintenance: crate::sync::Mutex<super::maintenance::State>,
+    pub(super) security_monitor: crate::sync::Mutex<super::maintenance::State>,
+    pub(super) intel_commands: crate::sync::Mutex<super::maintenance::State>,
+    pub(super) intel_faults: crate::sync::Mutex<super::maintenance::State>,
+    pub(super) amd_commands: crate::sync::Mutex<super::maintenance::State>,
+    pub(super) amd_faults: crate::sync::Mutex<super::maintenance::State>,
+}
 
-pub(super) static KERNEL_SERVICE_HOST: KernelServiceHost = KernelServiceHost;
+pub(super) static KERNEL_SERVICE_HOST: KernelServiceHost = KernelServiceHost {
+    maintenance: crate::sync::Mutex::new(super::maintenance::State::Idle),
+    security_monitor: crate::sync::Mutex::new(super::maintenance::State::Idle),
+    intel_commands: crate::sync::Mutex::new(super::maintenance::State::Idle),
+    intel_faults: crate::sync::Mutex::new(super::maintenance::State::Idle),
+    amd_commands: crate::sync::Mutex::new(super::maintenance::State::Idle),
+    amd_faults: crate::sync::Mutex::new(super::maintenance::State::Idle),
+};

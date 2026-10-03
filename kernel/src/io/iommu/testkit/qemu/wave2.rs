@@ -35,7 +35,7 @@ use crate::io::iommu::vendors::intel::tables::{ContextEntry, RootEntry, Scalable
 
 #[derive(Debug)]
 pub struct MockSecurityNotifier {
-    events: spin::Mutex<[Option<SecurityEvent>; 16]>,
+    events: crate::sync::Mutex<[Option<SecurityEvent>; 16]>,
     event_count: AtomicUsize,
     isolation_decision: IsolationDecision,
 }
@@ -43,7 +43,7 @@ pub struct MockSecurityNotifier {
 impl MockSecurityNotifier {
     pub fn new() -> Self {
         Self {
-            events: spin::Mutex::new([None; 16]),
+            events: crate::sync::Mutex::new([None; 16]),
             event_count: AtomicUsize::new(0),
             isolation_decision: IsolationDecision::default(),
         }
@@ -623,8 +623,8 @@ pub fn wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
 
     pub fn wave2_fault_summary_from_fault_record_smoke() -> bool {
         let record = FaultRecord {
-            lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42,
-            hi: 0x2000,
+            lo: 0x2000,
+            hi: 0x8000_0042_0000_0108,
         };
 
         let summary = FaultSummary::from(&record);
@@ -795,8 +795,8 @@ pub fn wave2_isolate_faulting_device_poisoned_attempts_isolation_smoke() -> bool
     }
 
     let isolate_result = ctrl.isolate_faulting_device(FaultRecord {
-        lo: FaultRecord::FAULT,
-        hi: 0,
+        lo: 0,
+        hi: FaultRecord::FAULT,
     });
     if isolate_result.is_err() {
         crate::io::log::early_print(
@@ -947,7 +947,7 @@ pub fn wave2_qi_wait_sync_poisoned_returns_error_smoke() -> bool {
     ctrl.qi_wait_sync() == Err(IommuError::HardwareError)
 }
 
-pub fn wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
+pub async fn wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
     let mut ctrl = IommuController::new(0x0, 0);
     ctrl.ecap = ecap_bits::ECAP_QI;
     if ctrl.init_queued_invalidation(8).is_err() {
@@ -958,7 +958,7 @@ pub fn wave2_qi_wait_async_poisoned_returns_error_smoke() -> bool {
     if let Ok(_g) = ctrl.invalidation_queue.lock() {}
     crate::sync::set_panicking(false);
 
-    crate::task::block_on(async { ctrl.qi_wait_async().await }) == Err(IommuError::HardwareError)
+    (async { ctrl.qi_wait_async().await }).await == Err(IommuError::HardwareError)
 }
 
 pub fn wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
@@ -1510,8 +1510,8 @@ pub fn cmdqueue_reclaim_completed_slot_smoke() -> bool {
     crate::io::iommu::runtime::command::queue::qemu_smoke_reclaim_completed_slot()
 }
 
-pub fn cmdqueue_cancel_queued_command_smoke() -> bool {
-    crate::io::iommu::runtime::command::queue::qemu_smoke_cancel_queued_command()
+pub async fn cmdqueue_cancel_queued_command_smoke() -> bool {
+    crate::io::iommu::runtime::command::queue::qemu_smoke_cancel_queued_command().await
 }
 
 pub fn cmdqueue_drop_triggers_cancel_smoke() -> bool {
@@ -1520,10 +1520,6 @@ pub fn cmdqueue_drop_triggers_cancel_smoke() -> bool {
 
 pub fn cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
     crate::io::iommu::runtime::command::queue::qemu_smoke_process_up_to_respects_fuel()
-}
-
-pub fn cmdqueue_fuel_shim_basic_smoke() -> bool {
-    crate::io::iommu::runtime::command::queue::qemu_smoke_fuel_shim_basic()
 }
 
 pub fn cmdqueue_metrics_counts_smoke() -> bool {
@@ -2044,7 +2040,7 @@ fn wave5_cmdqueue_map_unmap_with_domain_impl() -> bool {
     domain_arc.mapping(0x1000).is_none()
 }
 
-fn wave5_map_for_device_async_and_unmap_impl() -> bool {
+async fn wave5_map_for_device_async_and_unmap_impl() -> bool {
     use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
     use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 
@@ -2108,7 +2104,7 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
         device,
     };
 
-    let iova = match crate::task::block_on(async {
+    let iova = match (async {
         // SAFETY: fixed, aligned physical test address used only by deterministic no_std smoke.
         unsafe {
             crate::io::iommu::api::map_for_device_async(
@@ -2118,7 +2114,9 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
             )
             .await
         }
-    }) {
+    })
+    .await
+    {
         Ok(iova) => iova,
         Err(_) => return false,
     };
@@ -2126,24 +2124,24 @@ fn wave5_map_for_device_async_and_unmap_impl() -> bool {
     let domain_arc = match controller.domain(domain_id) {
         Some(domain) => domain,
         None => {
-            let _ = crate::task::block_on(async {
+            let _ = (async {
                 crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await
-            });
+            })
+            .await;
             return false;
         }
     };
 
     if domain_arc.mapping(iova).is_none() {
-        let _ = crate::task::block_on(async {
-            crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await
-        });
+        let _ =
+            (async { crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await })
+                .await;
         return false;
     }
 
-    if crate::task::block_on(async {
-        crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await
-    })
-    .is_err()
+    if (async { crate::io::iommu::api::unmap_for_device_async(&device, iova, 0x1000).await })
+        .await
+        .is_err()
     {
         let _ = domain_arc.unmap(iova);
         let _ = controller.free_iova(iova, 0x1000);
@@ -2314,8 +2312,8 @@ pub fn wave5_cmdqueue_map_unmap_with_domain_canonical_smoke() -> bool {
 }
 
 /// Wave5 canonical no_std smoke.
-pub fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_impl()
+pub async fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
+    wave5_map_for_device_async_and_unmap_impl().await
 }
 
 /// Wave5 canonical no_std smoke.

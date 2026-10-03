@@ -113,7 +113,7 @@ pub mod ecap_bits {
     pub const ECAP_IR: u64 = 1 << 3;
     /// Extended interrupt mode support
     pub const ECAP_EIM: u64 = 1 << 4;
-    /// Interrupt Remapping Table Offset (bits 8-17)
+    /// IOTLB register offset in 16-byte units (bits 8-17)
     pub const ECAP_IRO_MASK: u64 = 0x3FF << 8;
     /// Scalable Mode Translation Support
     pub const ECAP_SMTS: u64 = 1 << 43;
@@ -122,9 +122,9 @@ pub mod ecap_bits {
 /// Fault status register bits
 pub mod fsts_bits {
     /// Primary Pending Fault
-    pub const FSTS_PPF: u32 = 1 << 0;
+    pub const FSTS_PPF: u32 = 1 << 1;
     /// Primary Fault Overflow
-    pub const FSTS_PFO: u32 = 1 << 1;
+    pub const FSTS_PFO: u32 = 1 << 0;
     /// Invalidation Queue Error
     pub const FSTS_IQE: u32 = 1 << 4;
     /// Interrupt Condition Error
@@ -154,4 +154,186 @@ pub mod iotlb_bits {
     pub const IOTLB_DID_SHIFT: u64 = 32;
     /// Invalidation In Progress
     pub const IOTLB_IVT: u64 = 1 << 63;
+}
+
+/// CAP/ECAP-defined register geometry. These registers are immutable for the
+/// lifetime of a firmware unit. No register address is accepted from a caller.
+#[derive(Debug, Clone, Copy)]
+struct RegisterLayout {
+    fault_offset: usize,
+    fault_count: usize,
+    iotlb_offset: usize,
+    extent: usize,
+}
+
+impl RegisterLayout {
+    fn decode(cap: u64, ecap: u64) -> Result<Self, hal::mmio::MmioAccessError> {
+        use hal::mmio::MmioAccessError::OutOfBounds;
+        let fault_offset = ((cap >> 24) & 0x3ff) as usize * 16;
+        let fault_count = ((cap >> 40) & 0xff) as usize + 1;
+        let iotlb_offset = ((ecap >> 8) & 0x3ff) as usize * 16;
+        let fault_end = fault_offset + fault_count * 16;
+        let iotlb_end = iotlb_offset + 16;
+        // The fixed register prefix ends after IRTA. Neither variable register
+        // bank may alias it or the other bank, including the IOTLB address word.
+        if fault_offset < 0xc0
+            || iotlb_offset < 0xc0
+            || (fault_offset < iotlb_end && iotlb_offset < fault_end)
+        {
+            return Err(OutOfBounds);
+        }
+        let extent = (fault_end.max(iotlb_end).max(4096) + 4095) & !4095;
+        Ok(Self {
+            fault_offset,
+            fault_count,
+            iotlb_offset,
+            extent,
+        })
+    }
+}
+
+/// The probe's immutable capability fields determine the whole claim, including
+/// all 256 possible fault records and the complete IOTLB register bank.
+pub(crate) fn register_extent(cap: u64, ecap: u64) -> Result<usize, hal::mmio::MmioAccessError> {
+    RegisterLayout::decode(cap, ecap).map(|layout| layout.extent)
+}
+
+/// Checked Intel register accesses borrow their firmware mapping owner. IRQs
+/// perform no allocation, owner lookup, or lock acquisition to derive a register.
+pub(crate) struct RegisterBlock {
+    mapping: hal::MappedMmio,
+    layout: RegisterLayout,
+}
+
+macro_rules! fixed_registers {
+    ($($name:ident: $value:ty, $access:ident, $constructor:ident, $offset:ident;)*) => {
+        impl RegisterBlock {
+            $(pub(super) fn $name(&self) -> hal::mmio::MmioRegister<'_, $value, hal::mmio::$access> {
+                self.mapping.region().$constructor::<$value>(regs::$offset as usize)
+                    .expect("register block construction checked the fixed register prefix")
+            })*
+        }
+    };
+}
+
+fixed_registers! {
+    capabilities: u64, ReadOnly, read_only, CAP;
+    extended_capabilities: u64, ReadOnly, read_only, ECAP;
+    global_command: u32, WriteOnly, write_only, GCMD;
+    global_status: u32, ReadOnly, read_only, GSTS;
+    root_table_address: u64, WriteOnly, write_only, RTADDR;
+    context_command: u64, ReadWrite, read_write, CCMD;
+    fault_status: u32, ReadWrite, read_write, FSTS;
+    fault_control: u32, ReadWrite, read_write, FECTL;
+    fault_data: u32, WriteOnly, write_only, FEDATA;
+    fault_address: u32, WriteOnly, write_only, FEADDR;
+    fault_upper_address: u32, WriteOnly, write_only, FEUADDR;
+    queue_head: u64, ReadOnly, read_only, IQH;
+    queue_tail: u64, WriteOnly, write_only, IQT;
+    queue_address: u64, WriteOnly, write_only, IQA;
+    invalidation_control: u32, ReadWrite, read_write, IECTL;
+    invalidation_data: u32, WriteOnly, write_only, IEDATA;
+    invalidation_address: u32, WriteOnly, write_only, IEADDR;
+    invalidation_upper_address: u32, WriteOnly, write_only, IEUADDR;
+    interrupt_table_address: u64, WriteOnly, write_only, IRTA;
+}
+
+impl RegisterBlock {
+    pub(super) fn new(mapping: hal::MappedMmio) -> Result<Self, hal::mmio::MmioAccessError> {
+        let region = mapping.region();
+        let cap = region.read_only::<u64>(regs::CAP as usize)?.read();
+        let ecap = region.read_only::<u64>(regs::ECAP as usize)?.read();
+        let layout = RegisterLayout::decode(cap, ecap)?;
+        if mapping.len() < layout.extent {
+            return Err(hal::mmio::MmioAccessError::OutOfBounds);
+        }
+        // Validate the widest fixed access; page alignment was required by
+        // firmware admission. Dynamic banks are naturally 16-byte aligned.
+        region.read_only::<u64>(regs::IRTA as usize)?;
+        region.read_only::<u64>(layout.fault_offset)?;
+        region.read_only::<u64>(layout.iotlb_offset)?;
+        Ok(Self { mapping, layout })
+    }
+
+    pub(super) fn fault_count(&self) -> usize {
+        self.layout.fault_count
+    }
+
+    pub(super) fn fault_record(&self, index: usize) -> Option<FaultRegisters<'_>> {
+        if index >= self.layout.fault_count {
+            return None;
+        }
+        let offset = self.layout.fault_offset + index * 16;
+        let region = self.mapping.region();
+        Some(FaultRegisters {
+            low: region
+                .read_only::<u64>(offset)
+                .expect("validated fault bank has a complete aligned low word"),
+            high: region
+                .read_only::<u64>(offset + 8)
+                .expect("validated fault bank has a complete aligned high word"),
+            publication: region
+                .read_write::<u32>(offset + 12)
+                .expect("validated fault bank contains its highest doubleword"),
+        })
+    }
+
+    pub(super) fn iotlb_command(&self) -> hal::mmio::MmioRegister<'_, u64, hal::mmio::ReadWrite> {
+        self.mapping
+            .region()
+            .read_write::<u64>(self.layout.iotlb_offset + 8)
+            .expect("validated IOTLB bank contains the command word")
+    }
+}
+
+pub(super) struct FaultRegisters<'mapping> {
+    low: hal::mmio::MmioRegister<'mapping, u64, hal::mmio::ReadOnly>,
+    high: hal::mmio::MmioRegister<'mapping, u64, hal::mmio::ReadOnly>,
+    publication: hal::mmio::MmioRegister<'mapping, u32, hal::mmio::ReadWrite>,
+}
+
+impl FaultRegisters<'_> {
+    /// Intel VT-d section 11.4.7.6: hardware publishes F last. Check the high
+    /// doubleword before reading the remaining fields; hardware may publish using
+    /// multiple doubleword writes. Acknowledge only F (RW1CS bit 127).
+    pub(super) fn pending(&self) -> Option<crate::io::iommu::runtime::fault_log::FaultRecord> {
+        if self.publication.read() & (1 << 31) == 0 {
+            return None;
+        }
+        Some(crate::io::iommu::runtime::fault_log::FaultRecord {
+            lo: self.low.read(),
+            hi: self.high.read(),
+        })
+    }
+
+    pub(super) fn acknowledge(&mut self) {
+        self.publication.write(1 << 31);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(feature = "std", test)]
+    #[cfg_attr(not(feature = "std"), test_case)]
+    fn variable_banks_determine_the_claim_extent() {
+        // Independent field encodings: FRO=0x3ff, NFR=255, IRO=0x10.
+        assert_eq!(
+            register_extent((0x3ff << 24) | (255 << 40), 0x10 << 8),
+            Ok(0x5000)
+        );
+        assert_eq!(register_extent(0x10 << 24, 0x3ff << 8), Ok(0x4000));
+        assert_eq!(register_extent(0x10 << 24, 0x20 << 8), Ok(0x1000));
+    }
+
+    #[cfg_attr(feature = "std", test)]
+    #[cfg_attr(not(feature = "std"), test_case)]
+    fn register_banks_cannot_alias_fixed_or_variable_registers() {
+        assert!(register_extent(0, 0x20 << 8).is_err());
+        assert!(register_extent(0x10 << 24, 0).is_err());
+        assert!(register_extent(0x20 << 24, 0x20 << 8).is_err());
+        assert!(register_extent((0x20 << 24) | (1 << 40), 0x21 << 8).is_err());
+        assert_eq!(register_extent(0x20 << 24, 0x21 << 8), Ok(4096));
+    }
 }

@@ -75,9 +75,7 @@ impl<'a> Future for InvalidationWaiter<'a> {
             Err(e) => return Poll::Ready(Err(e)),
             Ok(()) => {
                 // Security: Check for hardware faults during poll.
-                let fsts = self
-                    .controller
-                    .read32(crate::io::iommu::vendors::intel::registers::regs::FSTS);
+                let fsts = self.controller.registers.fault_status().read();
                 if (fsts
                     & (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_IQE
                         | crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ICE
