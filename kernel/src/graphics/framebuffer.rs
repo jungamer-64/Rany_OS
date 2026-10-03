@@ -224,7 +224,7 @@ pub struct PerfStats {
 
 /// フレームバッファの内部状態
 pub struct Framebuffer {
-    buffer: *mut u8,
+    pixels: PixelBuffer,
     info: FramebufferInfo,
     back_buffer: Option<Vec<u32>>,
     clip: Rect,
@@ -242,69 +242,10 @@ mod tests;
 #[cfg(feature = "qemu-test-export")]
 pub mod qemu_tests;
 
-unsafe impl Send for Framebuffer {}
-unsafe impl Sync for Framebuffer {}
-
 impl Framebuffer {
-    /// 新しいフレームバッファを作成
-    pub unsafe fn new(info: FramebufferInfo) -> Self {
-        let clip = Rect::new(0, 0, info.width, info.height);
-        // Compute sizes before moving `info` into the struct
-        let width_usize = info.width as usize;
-        Self {
-            buffer: info.address as *mut u8,
-            info,
-            back_buffer: None,
-            clip,
-            scratch_u8: Vec::with_capacity(width_usize * 4),
-            dirty_rects: [None, None, None, None],
-            stats: PerfStats::default(),
-        }
-    }
-
-    /// Access raw buffer pointer (unsafe)
-    pub fn raw_buffer_ptr(&self) -> *mut u8 {
-        self.buffer
-    }
-
     /// Get stride (bytes per line)
     pub fn stride(&self) -> u32 {
         self.info.stride
-    }
-
-    /// Create a framebuffer from kernel_api::gui::FramebufferInfo
-    ///
-    /// # Safety
-    /// The vaddr in kapi_info must be a valid readable/writable framebuffer address
-    pub unsafe fn from_kapi_info(kapi_info: &kernel_api::gui::FramebufferInfo) -> Self {
-        use kernel_api::gui::PixelFormat as KapiPixelFormat;
-
-        // Convert pixel format
-        let format = match kapi_info.format {
-            KapiPixelFormat::Rgb32 => PixelFormat::Rgba8888,
-            KapiPixelFormat::Bgr32 => PixelFormat::Bgra8888,
-            KapiPixelFormat::Rgb24 => PixelFormat::Rgb888,
-            KapiPixelFormat::Bgr24 => PixelFormat::Bgr888,
-            KapiPixelFormat::Unknown => PixelFormat::Bgra8888, // Default fallback
-        };
-
-        let bpp = match format.bytes_per_pixel() {
-            4 => 32,
-            3 => 24,
-            2 => 16,
-            _ => 32,
-        };
-
-        let info = FramebufferInfo {
-            address: kapi_info.vaddr as u64,
-            width: kapi_info.width as u32,
-            height: kapi_info.height as u32,
-            stride: kapi_info.stride as u32,
-            format,
-            bpp,
-        };
-
-        unsafe { Self::new(info) }
     }
 
     /// Ensure scratch_u8 has at least `capacity` bytes
