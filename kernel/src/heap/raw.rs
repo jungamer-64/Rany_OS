@@ -95,7 +95,8 @@ impl SlabReservation {
     fn home(&self) -> CpuId {
         // The constructor only encoded a validated CpuId; the static bound
         // below proves that no bit of the original page address overlaps it.
-        CpuId::from_valid_index(self.tagged_page.as_ptr().addr() & (PAGE - 1))
+        CpuId::try_from(self.tagged_page.as_ptr().addr() & (PAGE - 1))
+            .expect("reservation construction stores a validated CPU ID")
     }
 }
 
