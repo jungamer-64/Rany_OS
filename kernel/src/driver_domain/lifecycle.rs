@@ -212,6 +212,9 @@ pub fn load(
         }
     };
 
+    crate::domain::registry::bind_code_generation(domain_id, cell_id)
+        .map_err(|error| DriverDomainError::DomainCreationFailed(format!("{error}")))?;
+
     // 3. DriverCell設定をDomainへ反映（メタデータ + セキュリティ）
     let (numa_node, caps, priority, cpu_limit, mem_limit, io_limit) =
         manager.with_cell(id, |cell| {
@@ -286,92 +289,6 @@ pub fn load(
 /// 4. DomainをRunning状態に遷移
 ///
 /// 全ての操作はDomainProxyを経由し、パニック時は安全に捕捉される。
-pub fn start(id: DriverDomainId) -> Result<Vec<DriverHandle>, DriverDomainError> {
-    let manager = driver_domain_manager();
-
-    // 状態チェック
-    let (cell_id, abi_driver_context, owner) = manager.with_cell(id, |cell| {
-        if cell.state != DriverDomainState::Loaded && cell.state != DriverDomainState::Stopped {
-            return Err(DriverDomainError::InvalidStateTransition {
-                from: cell.state,
-                to: DriverDomainState::Starting,
-            });
-        }
-        Ok((
-            cell.cell_id
-                .ok_or(DriverDomainError::LoadFailed("Cell not loaded".into()))?,
-            cell.abi_driver_context,
-            cell.domain_id.ok_or(DriverDomainError::LoadFailed(
-                "Driver domain authority not established".into(),
-            ))?,
-        ))
-    })??;
-
-    // Starting状態に遷移
-    manager.with_cell_mut(id, |cell| {
-        cell.transition_to(DriverDomainState::Starting);
-    })?;
-
-    // ドライバをCellから登録
-    crate::io::log::early_print("[DCELL] start: register_driver_from_cell begin\n");
-    let handle = match crate::loader::register_driver_from_cell_with_context(
-        cell_id,
-        abi_driver_context,
-        owner,
-    ) {
-        Ok(h) => h,
-        Err(e) => {
-            let msg = format!("{}", e);
-            manager
-                .with_cell_mut(id, |cell| {
-                    cell.transition_to(DriverDomainState::Faulted);
-                })
-                .ok();
-            return Err(DriverDomainError::DriverInitFailed(msg));
-        }
-    };
-    crate::io::log::early_print("[DCELL] start: register_driver_from_cell done\n");
-
-    // ドライバをprobe + start
-    let registry = crate::driver_registry::driver_registry();
-    crate::io::log::early_print("[DCELL] start: probe_and_start begin\n");
-    if let Err(e) = registry.probe_and_start(handle) {
-        let msg = format!("{}", e);
-        manager
-            .with_cell_mut(id, |cell| {
-                cell.transition_to(DriverDomainState::Faulted);
-            })
-            .ok();
-        return Err(DriverDomainError::DriverInitFailed(msg));
-    }
-    crate::io::log::early_print("[DCELL] start: probe_and_start done\n");
-
-    // DomainをRunning状態に
-    let domain_id = manager.with_cell(id, |cell| cell.domain_id)?;
-    if let Some(did) = domain_id {
-        crate::io::log::early_print("[DCELL] start: domain start begin\n");
-        crate::domain::start_domain(did).ok();
-        crate::io::log::early_print("[DCELL] start: domain start done\n");
-    }
-
-    // DriverCellをRunning状態に
-    manager.with_cell_mut(id, |cell| {
-        cell.add_driver_handle(handle);
-        cell.transition_to(DriverDomainState::Running);
-        cell.reset_fault_count();
-        cell.stats.record_start();
-    })?;
-
-    let name = manager.with_cell(id, |cell| cell.name.clone())?;
-    log::info!(
-        "[DriverDomain] Started: {} (driver={:?})\n",
-        name,
-        handle.index()
-    );
-
-    Ok(alloc::vec![handle])
-}
-
 /// DriverCellを停止
 ///
 /// 1. 全ドライバをstop
@@ -396,21 +313,28 @@ pub fn stop(id: DriverDomainId) -> Result<(), DriverDomainError> {
         cell.transition_to(DriverDomainState::Stopping);
     })?;
 
-    // 全ドライバを停止
-    let registry = crate::driver_registry::driver_registry();
-    for handle in &driver_handles {
-        if let Err(e) = registry.stop(*handle) {
-            log::warn!(
-                "[DriverDomain] Failed to stop driver {:?}: {}\n",
-                handle.index(),
-                e
-            );
+    if let Some(domain) = domain_id {
+        match crate::domain::stop_domain(domain).map_err(DriverDomainError::DomainLifecycle)? {
+            crate::domain::DomainStopOutcome::Complete => {}
+            pending => {
+                return Err(DriverDomainError::DomainLifecycle(
+                    crate::domain::DomainLifecycleError::Busy(pending),
+                ));
+            }
         }
     }
-
-    // Domainを停止
-    if let Some(did) = domain_id {
-        crate::domain::stop_domain(did).ok();
+    let registry = crate::driver_registry::driver_registry();
+    for handle in &driver_handles {
+        if !matches!(
+            registry.state(*handle),
+            Some(
+                kernel_api::driver::DriverState::Stopped | kernel_api::driver::DriverState::Removed
+            )
+        ) {
+            registry
+                .stop(*handle)
+                .map_err(DriverDomainError::DriverOperation)?;
+        }
     }
 
     // Stopped状態に遷移
@@ -450,33 +374,19 @@ pub fn unload(id: DriverDomainId) -> Result<(), DriverDomainError> {
         )
     })?;
 
-    // ドライバをunregister
+    // Remove each successfully retired handle from the owner before retry.
     for handle in &driver_handles {
-        if let Err(e) = crate::loader::unload_driver(*handle) {
-            log::warn!(
-                "[DriverDomain] Failed to unload driver {:?}: {}\n",
-                handle.index(),
-                e
-            );
-        }
+        crate::loader::unload_driver(*handle).map_err(DriverDomainError::CodeReclamation)?;
+        manager.with_cell_mut(id, |cell| {
+            cell.driver_handles.retain(|current| current != handle)
+        })?;
     }
-
-    // Cellをアンロード
-    if let Some(cid) = cell_id {
-        if let Err(e) = crate::loader::unload_cell(cid) {
-            log::warn!(
-                "[DriverDomain] Failed to unload cell {:?}: {}\n",
-                cid.as_u64(),
-                e
-            );
-        }
+    // Future destruction runs while the old code remains mapped.
+    if let Some(domain) = domain_id {
+        crate::domain::terminate_domain(domain).map_err(DriverDomainError::DomainLifecycle)?;
     }
-
-    // Domainを終了
-    if let Some(did) = domain_id {
-        if let Err(e) = crate::domain::terminate_domain(did) {
-            log::warn!("[DriverDomain] Failed to terminate domain {}: {}\n", did, e);
-        }
+    if let Some(cell) = cell_id {
+        crate::loader::unload_cell(cell).map_err(DriverDomainError::CodeReclamation)?;
     }
 
     // ManagerからDriverCellを削除
@@ -512,10 +422,11 @@ pub fn create_and_start(
     // 3. 開始
     match start(id) {
         Ok(handles) => Ok((id, handles)),
-        Err(e) => {
-            // ロールバック
-            let _ = unload(id);
-            Err(e)
+        Err(error @ DriverDomainError::StartupPending { .. }) => Err(error),
+        Err(error) => {
+            // Startup may already have published hardware state. Its owner and
+            // claim remain registered until explicit shutdown acknowledges it.
+            Err(error)
         }
     }
 }
@@ -557,6 +468,24 @@ pub fn unload_all() {
             if let Err(e) = unload(snap.id) {
                 log::warn!("[DriverDomain] Failed to unload {}: {}\n", snap.id, e);
             }
+        }
+    }
+}
+
+/// Collect lifecycle completions in ordinary service-host execution. Callback
+/// work runs outside the DriverDomain registry; Busy preserves its owner.
+pub(crate) fn progress_startups() {
+    let manager = driver_domain_manager();
+    for snapshot in manager.list_snapshots() {
+        if snapshot.state != DriverDomainState::Starting {
+            continue;
+        }
+        match start(snapshot.id) {
+            Ok(_) | Err(DriverDomainError::StartupPending { .. }) => {}
+            Err(cause) => log::error!(
+                "driver startup {} failed with its owner retained: {cause}",
+                snapshot.id
+            ),
         }
     }
 }
