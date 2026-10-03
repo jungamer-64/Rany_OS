@@ -198,10 +198,7 @@ unsafe impl Send for SlabPool {}
 
 pub(super) struct BuddyRegion {
     metadata: PhysicalAllocation,
-    heap: BuddyHeapAllocator,
     node: NumaNodeId,
-    live: usize,
-    next: Option<NonNull<Self>>,
 }
 struct BuddyPool {
     head: Option<NonNull<BuddyRegion>>,
