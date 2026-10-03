@@ -1,7 +1,6 @@
 // ============================================================================
 // kernel/src/boot/entry.rs
 // ============================================================================
-use super::ahci_ensure_mapping;
 use crate::{drivers, io};
 use boot_proto::ExoBootInfo;
 use log::{info, warn};
@@ -57,10 +56,14 @@ pub(super) fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u6
                     crate::mm::virt::higher_half::MapError::FrameAllocation(_) => "FrameAllocation",
                     crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
                     crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
+                    crate::mm::virt::higher_half::MapError::MappingChanged => "MappingChanged",
                     crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
                     crate::mm::virt::higher_half::MapError::AlignmentError => "AlignmentError",
                     crate::mm::virt::higher_half::MapError::ParentEntryHugePage => {
                         "ParentEntryHugePage"
+                    }
+                    crate::mm::virt::higher_half::MapError::ParentPermissionDenied => {
+                        "ParentPermissionDenied"
                     }
                     crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
                     crate::mm::virt::higher_half::MapError::MetadataAllocation => {
@@ -188,74 +191,6 @@ pub(super) fn init_early_serial() {
         core::arch::asm!("out dx, al", in("dx") port, in("al") b'M');
         for byte in b"RanyOS UEFI Boot OK!\r\n" {
             core::arch::asm!("out dx, al", in("dx") port, in("al") *byte);
-        }
-    }
-}
-
-/// Enable SSE/SSE2 (required by x86_64 ABI).
-pub(super) fn init_sse() {
-    io::log::early_print("[BOOT] Enabling SSE...\n");
-    unsafe {
-        use core::arch::asm;
-        let mut cr0: u64;
-        asm!("mov {}, cr0", out(reg) cr0);
-        cr0 &= !(1 << 2); // EM=0
-        cr0 &= !(1 << 3); // TS=0
-        asm!("mov cr0, {}", in(reg) cr0);
-
-        let mut cr4: u64;
-        asm!("mov {}, cr4", out(reg) cr4);
-        cr4 |= 1 << 9; // OSFXSR
-        cr4 |= 1 << 10; // OSXMMEXCPT
-        asm!("mov cr4, {}", in(reg) cr4);
-    }
-    io::log::early_print("[BOOT] SSE enabled\n");
-}
-
-/// Detect and enable AVX/AVX2 if the CPU supports them.
-pub(super) fn init_avx() {
-    unsafe {
-        use core::arch::x86_64::{__cpuid, __cpuid_count};
-
-        let res = __cpuid(1);
-        let has_avx = (res.ecx & (1 << 28)) != 0;
-        let has_osxsave = (res.ecx & (1 << 27)) != 0;
-
-        if has_avx && has_osxsave {
-            io::log::early_print("[BOOT] Enabling AVX...\n");
-
-            let mut cr4: u64;
-            core::arch::asm!("mov {}, cr4", out(reg) cr4);
-            cr4 |= 1 << 18;
-            core::arch::asm!("mov cr4, {}", in(reg) cr4);
-
-            let xcr0_low: u32;
-            let xcr0_high: u32;
-            core::arch::asm!(
-                "xgetbv",
-                in("ecx") 0,
-                out("eax") xcr0_low,
-                out("edx") xcr0_high,
-            );
-
-            let new_xcr0_low = xcr0_low | 6;
-            core::arch::asm!(
-                "xsetbv",
-                in("ecx") 0,
-                in("eax") new_xcr0_low,
-                in("edx") xcr0_high,
-            );
-
-            io::log::early_print("[BOOT] AVX enabled (XCR0 set)\n");
-            hal::mmio::set_simd_level(hal::mmio::simd_level::AVX);
-
-            let res7 = __cpuid_count(7, 0);
-            if (res7.ebx & (1 << 5)) != 0 {
-                io::log::early_print("[BOOT] AVX2 detected\n");
-                hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
-            }
-        } else {
-            io::log::early_print("[BOOT] AVX not supported\n");
         }
     }
 }
@@ -429,129 +364,3 @@ fn init_iommu_driver(
     }
 }
 
-/// Scan PCI bus for AHCI controllers and initialize them.
-pub(super) fn init_ahci_controllers() {
-    info!(target: "init", "Scanning for AHCI controllers...");
-
-    let ahci_devices = crate::platform::pci::find_by_class(0x01, 0x06);
-    for dev in ahci_devices {
-        info!(target: "init", "AHCI controller found at {}", dev.bdf);
-        init_single_ahci_controller(&dev);
-    }
-}
-
-/// Initialize a single AHCI controller from its BAR5 address.
-fn init_single_ahci_controller(dev: &kernel_api::service::platform::PciDeviceInfo) {
-    let bar5 = match dev.bars[5] {
-        Some(b) => b,
-        None => {
-            warn!(target: "init", "AHCI controller found but BAR5 is missing");
-            return;
-        }
-    };
-
-    let base_phys = bar5.base();
-    let bar_size = bar5.size();
-    let base_virt =
-        crate::mm::virt::mapping::phys_to_virt(x86_64::PhysAddr::new_truncate(base_phys)).as_u64();
-
-    crate::io::log::early_print("[AHCI] BAR5 phys=");
-    crate::io::log::early_print_hex(base_phys);
-    crate::io::log::early_print(" size=");
-    crate::io::log::early_print_hex(bar_size);
-    crate::io::log::early_print(" base_virt=");
-    crate::io::log::early_print_hex(base_virt);
-    crate::io::log::early_print("\n");
-
-    let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
-    let phys_expected = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
-
-    let mapping_ok = ahci_ensure_mapping(virt_start, phys_expected, base_phys, base_virt, bar_size);
-
-    if !mapping_ok {
-        warn!(target: "init", "AHCI controller mapping failed or mismatched - skipping init");
-        return;
-    }
-
-    // Diagnostic PTE log
-    if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(
-        crate::mm::virt::higher_half::VirtAddr::new(base_virt),
-    ) {
-        crate::io::log::early_print("[AHCI] PTE: present=");
-        crate::io::log::early_print_hex(if pte.is_present() { 1 } else { 0 });
-        crate::io::log::early_print(" phys=");
-        crate::io::log::early_print_hex(pte.phys_addr().as_u64());
-        crate::io::log::early_print(" flags=");
-        crate::io::log::early_print_hex(pte.flags().as_u64());
-        crate::io::log::early_print("\n");
-    } else {
-        crate::io::log::early_print("[AHCI] PTE: not present in page tables\n");
-    }
-
-    let iommu_device = crate::io::iommu::types::DeviceId::new(
-        dev.segment,
-        dev.bdf.bus(),
-        dev.bdf.device(),
-        dev.bdf.function(),
-    );
-
-    let mut standalone_ctx = kernel_api::abi::driver::DriverContext::for_pci(
-        base_virt,
-        dev.interrupt_line as u32,
-        dev.vendor_id.0,
-        dev.device_id.0,
-        ((dev.class_code.class as u32) << 16)
-            | ((dev.class_code.subclass as u32) << 8)
-            | dev.class_code.prog_if as u32,
-        dev.packed_locator(),
-    );
-    standalone_ctx.device_address_secondary = 0;
-    match crate::loader::staged_pci::claim_and_start_for_device(dev, standalone_ctx) {
-        crate::loader::staged_pci::StagedPciClaimOutcome::Started { .. } => {
-            info!(target: "init", "AHCI controller initialized via staged standalone driver");
-            return;
-        }
-        crate::loader::staged_pci::StagedPciClaimOutcome::AlreadyClaimed => {
-            info!(target: "init", "AHCI controller authority was already claimed; built-in acquisition skipped");
-            return;
-        }
-        crate::loader::staged_pci::StagedPciClaimOutcome::Failed(reason) => {
-            warn!(target: "init", "{}; built-in AHCI acquisition is prohibited", reason);
-            return;
-        }
-        crate::loader::staged_pci::StagedPciClaimOutcome::NoMatch => {}
-    }
-
-    let Some(pci) = kernel_api::service::platform::try_pci() else {
-        warn!(target: "init", "AHCI PCI services unavailable; built-in acquisition skipped");
-        return;
-    };
-    if let Err(cause) = pci.set_memory_space(dev.bdf, true) {
-        warn!(target: "init", "AHCI memory decoding could not be enabled: {}", cause);
-        return;
-    }
-    if let Err(cause) = pci.set_bus_master(dev.bdf, true) {
-        let memory_rollback = pci.set_memory_space(dev.bdf, false);
-        warn!(
-            target: "init",
-            "AHCI bus mastering could not be enabled: {}; memory rollback: {:?}",
-            cause,
-            memory_rollback
-        );
-        return;
-    }
-
-    match crate::drivers::ahci::init_from_pci(base_virt, iommu_device) {
-        Ok(controller) => {
-            info!(target: "init", "AHCI controller initialized");
-            let first_port = controller
-                .lock()
-                .unwrap_or_else(|e| e.into_inner())
-                .get_port_start_index()
-                .unwrap_or(0) as u8;
-            crate::drivers::ahci::register_ahci_with_io_scheduler(controller.clone(), first_port);
-            crate::heap::verify_buddy_integrity();
-        }
-        Err(e) => warn!(target: "init", "AHCI init failed: {:?}", e),
-    }
-}
