@@ -4,10 +4,8 @@ use alloc::collections::BTreeSet;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 
-mod backend_nvme;
 mod codec;
 
-pub use backend_nvme::NvmeRawWalBackend;
 use codec::{SuperblockState, decode_record, decode_superblock, encode_record, encode_superblock};
 
 /// Logical write operation recorded in the WAL.
@@ -74,14 +72,6 @@ pub enum WalError {
     InvalidConfig,
     Codec,
     OutOfSpace,
-}
-
-/// Durable WAL storage backend.
-pub trait WalBackend: Send {
-    fn len(&self) -> Result<u64, WalError>;
-    fn read_at(&self, offset: u64, out: &mut [u8]) -> Result<(), WalError>;
-    fn write_at(&mut self, offset: u64, data: &[u8]) -> Result<(), WalError>;
-    fn sync(&mut self) -> Result<(), WalError>;
 }
 
 struct BackendState {
@@ -489,8 +479,8 @@ pub fn set_backend_nvme_raw(nsid: u32, lba_start: u64, lba_len: u64) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::sync::Mutex;
     use alloc::sync::Arc;
-    use spin::Mutex;
 
     #[derive(Clone)]
     struct SharedMemBackend {
