@@ -473,6 +473,28 @@ impl WalManager {
         let mut owner = self.acquire().map_err(WalApplyError::Wal)?;
         // All payload allocation precedes the first home-storage effect.
         let prepared = copy_records(&owner.data().records).map_err(WalApplyError::Wal)?;
+        let retirement = match &owner.data().storage {
+            StorageState::Volatile => None,
+            StorageState::Durable { layout, root, .. } => {
+                let root = RootState {
+                    generation: root
+                        .generation
+                        .checked_add(1)
+                        .ok_or(WalApplyError::Wal(WalError::IdentityExhausted))?,
+                    bank: root.bank.other(),
+                    log_len: 0,
+                    ..*root
+                };
+                Some(Publication {
+                    bytes: Vec::new(),
+                    records: Vec::new(),
+                    root,
+                    data_offset: layout.bank_offset(root.bank),
+                    disposition: RecordDisposition::Checkpoint,
+                })
+            }
+            StorageState::Opening { .. } => unreachable!("opening blocks checkpoint admission"),
+        };
         owner.start(WalStage::ApplyingHome, Work::ApplyHome { completed: 0 });
         let mut applied = 0;
         for record in prepared {
@@ -493,35 +515,15 @@ impl WalManager {
             );
         }
         let removed = owner.data().records.len();
-        match &owner.data().storage {
-            StorageState::Volatile => {
+        match retirement {
+            None => {
                 owner.data_mut().records.clear();
                 owner.operation = Operation::Idle;
             }
-            StorageState::Durable { layout, root, .. } => {
-                let root = RootState {
-                    generation: root
-                        .generation
-                        .checked_add(1)
-                        .ok_or(WalApplyError::Wal(WalError::IdentityExhausted))?,
-                    bank: root.bank.other(),
-                    log_len: 0,
-                    ..*root
-                };
-                let data_offset = layout.bank_offset(root.bank);
-                owner.start(
-                    WalStage::DataWrite,
-                    Work::Publish(Publication {
-                        bytes: Vec::new(),
-                        records: Vec::new(),
-                        root,
-                        data_offset,
-                        disposition: RecordDisposition::Checkpoint,
-                    }),
-                );
+            Some(publication) => {
+                owner.start(WalStage::DataWrite, Work::Publish(publication));
                 owner.publish().await.map_err(WalApplyError::Wal)?;
             }
-            StorageState::Opening { .. } => unreachable!("opening blocks checkpoint admission"),
         }
         Ok(removed)
     }

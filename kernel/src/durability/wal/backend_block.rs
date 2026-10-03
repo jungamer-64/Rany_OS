@@ -93,10 +93,12 @@ impl BlockWalStorage {
         transfer: Transfer,
     ) -> Result<CpuDmaLease, WalStorageError> {
         let expected = buffer.byte_count().get();
-        let end = block
-            .checked_add(u64::from(blocks))
-            .ok_or(WalStorageError::InvalidRange)?;
-        if blocks == 0 || end > self.block_count || blocks > self.max_blocks {
+        if blocks == 0
+            || blocks > self.max_blocks
+            || !block
+                .checked_add(u64::from(blocks))
+                .is_some_and(|end| end <= self.block_count)
+        {
             io_scheduler()
                 .finalize_transfer(buffer)
                 .map_err(WalStorageError::Close)?;
