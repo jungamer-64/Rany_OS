@@ -198,26 +198,6 @@ impl NetVirtQueue {
         Ok(desc_idx)
     }
 
-    /// Add a TX buffer chain backed by caller-retained packet segments.
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the device operation fails.
-    pub unsafe fn add_tx_buffer_chain(
-        &self,
-        header: &VirtioNetHeader,
-        segments: &[NetTxSegment],
-    ) -> Result<u16, VirtioNetError> {
-        unsafe {
-            self.add_tx_buffer_segments(
-                header,
-                segments.len(),
-                segments
-                    .iter()
-                    .map(|segment| (segment.device_addr().get(), segment.len())),
-            )
-        }
-    }
-
     /// Add a checked iterator of caller-retained DMA segments to the TX queue.
     ///
     /// # Safety
