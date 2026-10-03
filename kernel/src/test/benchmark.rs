@@ -13,7 +13,7 @@ use kernel_api::service::netdev::{
     MacAddress as PortMacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
     NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
     NetPortRuntimeHandle, NetPortStats, NetRxFrameLayout, NetRxMeta, NetTxMeta, PrimaryPortPolicy,
-    TxDeviceOutcome, TxSubmission,
+    TxDeviceOutcome, TxPacketSubmission,
 };
 
 use crate::net::l3::ipv4::Ipv4Address;
@@ -106,17 +106,22 @@ impl BenchmarkPortState {
             .lease_rx_buffer()
             .ok_or("benchmark port could not lease an RX buffer")?;
         let region = buffer.writable_region();
-        if frame.len() > region.writable_len() {
+        if frame.len() > region.len().get() {
             return Err("benchmark RX frame exceeds DMA region");
         }
         // SAFETY: the runtime lease grants this benchmark driver exclusive
         // write authority over the advertised region until completion.
         unsafe {
-            core::ptr::copy_nonoverlapping(frame.as_ptr(), region.cpu_ptr(), frame.len());
+            core::ptr::copy_nonoverlapping(
+                frame.as_ptr(),
+                region.cpu_ptr().cast_mut(),
+                frame.len(),
+            );
         }
-        let device_addr = region.device_addr().get();
-        let received = buffer
-            .complete(NetRxMeta::new(0, layout, 0))
+        let device_addr = region.physical_address().as_u64();
+        // SAFETY: this CPU-only benchmark initialized exactly the validated
+        // frame prefix above. No device was given the lease or can write it.
+        let received = unsafe { buffer.complete(NetRxMeta::new(0, layout, 0)) }
             .map_err(|_| "benchmark RX completion layout is invalid")?;
         runtime.submit_rx(received)?;
         Ok(device_addr)
@@ -128,7 +133,8 @@ struct BenchmarkPort {
     info: NetDeviceInfo,
 }
 
-impl NetDevicePort for BenchmarkPort {
+// SAFETY: this fixture performs no hardware access and holds no DMA authority after rejection or completion.
+unsafe impl NetDevicePort for BenchmarkPort {
     fn info(&self) -> NetDeviceInfo {
         self.info
     }
@@ -144,7 +150,7 @@ impl NetDevicePort for BenchmarkPort {
 
     fn submit_tx_chain(
         &self,
-        submission: TxSubmission<'_>,
+        submission: TxPacketSubmission<'_>,
         _meta: NetTxMeta,
     ) -> Result<(), &'static str> {
         let expected_payload = self
@@ -154,11 +160,11 @@ impl NetDevicePort for BenchmarkPort {
             .map_err(|_| "benchmark TX expectation lock poisoned")?
             .clone();
         if let Some(expected) = expected_payload {
-            if !valid_benchmark_tcp_frame(submission) {
+            if !valid_benchmark_tcp_frame(&submission) {
                 self.state.tx_invalid_frames.fetch_add(1, Ordering::Relaxed);
             }
-            let preserved = submission.segments().iter().any(|segment| {
-                let start = segment.device_addr().get();
+            let preserved = submission.regions().iter().any(|segment| {
+                let start = segment.physical_address().as_u64();
                 let end = start.saturating_add(segment.len().get() as u64);
                 start <= expected.start && expected.end <= end
             });
@@ -168,7 +174,7 @@ impl NetDevicePort for BenchmarkPort {
                     .fetch_add(1, Ordering::Relaxed);
             }
         }
-        let frame_bytes = submission.segments().iter().fold(0u64, |total, segment| {
+        let frame_bytes = submission.regions().iter().fold(0u64, |total, segment| {
             total.saturating_add(segment.len().get() as u64)
         });
         let runtime = self
@@ -206,12 +212,12 @@ impl NetDevicePort for BenchmarkPort {
         }
     }
 
-    fn stop(&self) -> Result<(), &'static str> {
+    fn stop(&self) -> kernel_api::error::KapiResult<()> {
         *self
             .state
             .runtime
             .lock()
-            .map_err(|_| "benchmark port runtime lock poisoned")? = None;
+            .map_err(|_| kernel_api::KapiError::Busy)? = None;
         Ok(())
     }
 }
@@ -254,10 +260,10 @@ fn internet_checksum(mut bytes: impl Iterator<Item = u8>) -> u16 {
 
 /// Observe the complete descriptor stream before returning the DMA lease.
 /// Wire checks deliberately do not use the stack's parsers or checksum code.
-fn valid_benchmark_tcp_frame(submission: TxSubmission<'_>) -> bool {
-    let frame_len: usize = submission.segments().iter().map(|s| s.len().get()).sum();
+fn valid_benchmark_tcp_frame(submission: &TxPacketSubmission<'_>) -> bool {
+    let frame_len: usize = submission.regions().iter().map(|s| s.len().get()).sum();
     let bytes = || {
-        submission.segments().iter().flat_map(|segment| {
+        submission.regions().iter().flat_map(|segment| {
             // SAFETY: the driver submission holds read authority for every
             // initialized segment until complete_tx_lease, which is called
             // only after this validation has finished. No view escapes.
@@ -337,7 +343,11 @@ fn verify_tcp_segment_vectors(runtime: NetRuntimeHandle) -> Result<(), &'static 
                         .data_mut()
                         .copy_from_slice(&b"abcde"[offset..offset + len]);
                     offset += len;
-                    identities.push(packet.device_address()..packet.device_address() + len as u64);
+                    let start = packet.data().as_ptr().addr();
+                    let end = start
+                        .checked_add(len)
+                        .ok_or("TCP vector CPU address overflow")?;
+                    identities.push(start..end);
                     packets.push(packet);
                 }
                 let payload = PacketPayload::try_from_segments(packets)
@@ -358,8 +368,11 @@ fn verify_tcp_segment_vectors(runtime: NetRuntimeHandle) -> Result<(), &'static 
                     || view.read_array::<5>(24) != Some(*b"abcde")
                     || !identities.iter().all(|identity| {
                         segment.segments().iter().any(|packet| {
-                            packet.device_address() <= identity.start
-                                && identity.end <= packet.device_address() + packet.len() as u64
+                            let start = packet.data().as_ptr().addr();
+                            start <= identity.start
+                                && start
+                                    .checked_add(packet.len())
+                                    .is_some_and(|end| identity.end <= end)
                         })
                     })
                 {
@@ -592,7 +605,8 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
     let if_id = crate::net::runtime::device::register_port_in(
         runtime,
         NetPortRegistration::new(info, driver, PrimaryPortPolicy::Auto),
-    )?;
+    )
+    .map_err(|_| "network benchmark registration failed")?;
     crate::net::services::dhcp::unregister_interface_runtime_in(runtime, if_id);
 
     let benchmark_result = async {
@@ -651,7 +665,7 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
             .checked_add((ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN) as u64)
             .ok_or("network benchmark RX address overflow")?;
         if warmup_payload.segments().len() != 1
-            || warmup_payload.segments()[0].device_address() != warmup_expected
+            || warmup_payload.segments()[0].phys_addr().as_u64() != warmup_expected
             || !payload_matches(&warmup_payload, &payload_bytes)
         {
             return Err("network benchmark RX warmup changed packet backing");
@@ -677,7 +691,7 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
                 .checked_add((ETHERNET_HEADER_LEN + IPV4_HEADER_LEN + UDP_HEADER_LEN) as u64)
                 .ok_or("network benchmark RX address overflow")?;
             rx_identity_preserved &= received.segments().len() == 1
-                && received.segments()[0].device_address() == expected_payload_addr
+                && received.segments()[0].phys_addr().as_u64() == expected_payload_addr
                 && payload_matches(&received, &payload_bytes);
             rx_cycles = rx_cycles.saturating_add(end.saturating_sub(start));
         }
@@ -714,7 +728,7 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
                 .try_resize(NETWORK_PATH_PAYLOAD_LEN)
                 .map_err(|_| "network benchmark TCP payload resize failed")?;
             packet.data_mut().fill(0xa5);
-            let owner_addr = packet.device_address();
+            let owner_addr = packet.phys_addr().as_u64();
             let payload_end = owner_addr
                 .checked_add(NETWORK_PATH_PAYLOAD_LEN as u64)
                 .ok_or("network benchmark TX address overflow")?;
@@ -729,9 +743,10 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
                 .build_checked_packet(local, remote)
                 .map_err(|_| "network benchmark TCP segment construction failed")?;
             if !segment.segments().iter().any(|packet| {
-                let start = packet.device_address();
-                let end = start.saturating_add(packet.len() as u64);
-                start <= owner_addr && payload_end <= end
+                let address = packet.phys_addr().as_u64();
+                address
+                    .checked_add(packet.len() as u64)
+                    .is_some_and(|end| address <= owner_addr && payload_end <= end)
             }) {
                 return Err("network benchmark TCP builder changed payload backing");
             }
@@ -756,6 +771,10 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
         clear_tx_completion_waiter(&state);
         match warmup_result {
             crate::task::TimeoutResult::Completed(result) => result?,
+            crate::task::TimeoutResult::TimerFailed(cause) => {
+                log::error!("network benchmark deadline unavailable: {cause}");
+                return Err("network benchmark timer admission failed");
+            }
             crate::task::TimeoutResult::TimedOut => {
                 return Err("network benchmark TX warmup did not complete the lease");
             }
@@ -787,6 +806,10 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
         clear_tx_completion_waiter(&state);
         match measured_result {
             crate::task::TimeoutResult::Completed(result) => result?,
+            crate::task::TimeoutResult::TimerFailed(cause) => {
+                log::error!("network benchmark deadline unavailable: {cause}");
+                return Err("network benchmark timer admission failed");
+            }
             crate::task::TimeoutResult::TimedOut => {
                 return Err("network benchmark TX measurement did not complete all leases");
             }
@@ -828,7 +851,8 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
     }
     .await;
 
-    let unregistered = crate::net::runtime::device::unregister_port_in(runtime, if_id)?;
+    let unregistered = crate::net::runtime::device::unregister_port_in(runtime, if_id)
+        .map_err(|_| "network benchmark shutdown remains incomplete")?;
     if !unregistered {
         return Err("network benchmark port was not registered during cleanup");
     }

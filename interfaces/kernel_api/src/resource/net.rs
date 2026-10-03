@@ -4,7 +4,8 @@
 
 mod packet;
 pub use packet::{
-    PacketAcquireError, PacketBufferMemory, PacketFront, PacketPayloadFront, PacketRef,
+    PacketAcquireError, PacketBackingLease, PacketBufferMemory, PacketDmaRegion, PacketFront,
+    PacketPayloadFront, PacketRef,
 };
 
 use crate::service::kernel;

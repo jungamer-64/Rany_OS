@@ -4,14 +4,13 @@
 
 extern crate alloc;
 
-use crate::resource::net::{PacketByteCount, PacketRef};
+use crate::resource::net::{PacketByteCount, PacketDmaRegion, PacketRef};
 use crate::service::kernel;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 use core::num::NonZeroU64;
 use core::num::NonZeroUsize;
-use core::ptr::NonNull;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct MacAddress(pub [u8; 6]);
@@ -187,6 +186,32 @@ pub enum TxDeviceOutcome {
     OutcomeUnknown,
 }
 
+/// One published completion route over retained packet regions. The regions
+/// carry backing lifetime; the runtime owns CPU access through completion.
+pub struct TxPacketSubmission<'a> {
+    lease_id: TxLeaseId,
+    regions: &'a [PacketDmaRegion],
+}
+impl<'a> TxPacketSubmission<'a> {
+    /// # Safety
+    /// The runtime has published `lease_id` before calling the driver and keeps
+    /// every packet CPU-inaccessible until exactly-once DMA completion or proven
+    /// rejection. The driver may complete synchronously; regions retain backing
+    /// until this descriptor visit ends. No DMA is authorized by addresses alone.
+    ///
+    /// # Errors
+    /// Empty region lists grant no submission authority.
+    pub unsafe fn new(lease_id: TxLeaseId, regions: &'a [PacketDmaRegion]) -> Option<Self> {
+        (!regions.is_empty()).then_some(Self { lease_id, regions })
+    }
+    pub const fn lease_id(&self) -> TxLeaseId {
+        self.lease_id
+    }
+    pub const fn regions(&self) -> &'a [PacketDmaRegion] {
+        self.regions
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NetPortStats {
     pub tx_packets: u64,
@@ -250,31 +275,9 @@ impl NetPortRuntimeCookie {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct RxWritableRegion {
-    cpu_ptr: NonNull<u8>,
-    device_addr: NonZeroU64,
-    writable_len: NonZeroUsize,
-}
-
-impl RxWritableRegion {
-    pub const fn cpu_ptr(self) -> *mut u8 {
-        self.cpu_ptr.as_ptr()
-    }
-
-    pub const fn device_addr(self) -> NonZeroU64 {
-        self.device_addr
-    }
-
-    pub const fn writable_len(self) -> usize {
-        self.writable_len.get()
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RxBufferErrorCause {
     VisibleData,
     EmptyWritableRegion,
-    MissingDeviceAddress,
 }
 
 #[derive(Debug)]
@@ -296,62 +299,31 @@ impl RxBufferBuildError {
 #[derive(Debug)]
 pub struct RxBuffer {
     packet: PacketRef,
-    region: RxWritableRegion,
+    region: PacketDmaRegion,
 }
 
 impl RxBuffer {
     /// # Errors
-    /// Returns the unchanged packet if it already exposes data, has no writable
-    /// capacity, or lacks a mapped device address. No device access is granted.
-    pub fn try_from_empty_packet(mut packet: PacketRef) -> Result<Self, RxBufferBuildError> {
+    /// Returns the unchanged packet if it already exposes data or has no writable
+    /// capacity. Device admission is performed against the retained region.
+    pub fn try_from_empty_packet(packet: PacketRef) -> Result<Self, RxBufferBuildError> {
         if !packet.is_empty() {
             return Err(RxBufferBuildError {
                 cause: RxBufferErrorCause::VisibleData,
                 packet,
             });
         }
-        let Some((cpu_ptr, device_addr, writable_len)) = packet.unpublished_writable_region()
-        else {
+        let Some(region) = packet.rx_dma_region() else {
             return Err(RxBufferBuildError {
                 cause: RxBufferErrorCause::EmptyWritableRegion,
                 packet,
             });
         };
-        let Some(cpu_ptr) = NonNull::new(cpu_ptr) else {
-            return Err(RxBufferBuildError {
-                cause: RxBufferErrorCause::EmptyWritableRegion,
-                packet,
-            });
-        };
-        let Some(device_addr) = device_addr.and_then(|address| NonZeroU64::new(address.get()))
-        else {
-            return Err(RxBufferBuildError {
-                cause: RxBufferErrorCause::MissingDeviceAddress,
-                packet,
-            });
-        };
-        let Some(writable_len) = NonZeroUsize::new(writable_len) else {
-            return Err(RxBufferBuildError {
-                cause: RxBufferErrorCause::EmptyWritableRegion,
-                packet,
-            });
-        };
-        Ok(Self {
-            packet,
-            region: RxWritableRegion {
-                cpu_ptr,
-                device_addr,
-                writable_len,
-            },
-        })
+        Ok(Self { packet, region })
     }
 
-    pub const fn writable_region(&self) -> RxWritableRegion {
-        self.region
-    }
-
-    pub fn physical_addr(&self) -> u64 {
-        self.packet.phys_addr().as_u64()
+    pub const fn writable_region(&self) -> &PacketDmaRegion {
+        &self.region
     }
 
     /// Complete a device write without initializing or exposing the unused tail.
@@ -525,7 +497,14 @@ impl core::fmt::Debug for NetPortRuntimeHandle {
     }
 }
 
-pub trait NetDevicePort: Send + Sync {
+/// A device implementation owns every accepted DMA operation and completion.
+///
+/// # Safety
+/// TX rejection must retain no device access. Acceptance grants reads until an
+/// exactly-once completion after hardware access ends. RX writes stay within a
+/// retained leased region and publication proves completion/initialization.
+/// Successful stop ends every access and callback; failure retains their owners.
+pub unsafe trait NetDevicePort: Send + Sync {
     fn info(&self) -> NetDeviceInfo;
 
     /// # Errors
@@ -545,7 +524,7 @@ pub trait NetDevicePort: Send + Sync {
     /// Returns an error if the request is invalid or the receiver cannot accept the operation.
     fn submit_tx_chain(
         &self,
-        submission: TxSubmission<'_>,
+        submission: TxPacketSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str>;
 
@@ -659,7 +638,8 @@ mod tests {
         stats: NetPortStats,
     }
 
-    impl NetDevicePort for FakePort {
+    // SAFETY: this metadata fixture performs no DMA and retains no callbacks.
+    unsafe impl NetDevicePort for FakePort {
         fn info(&self) -> NetDeviceInfo {
             self.info
         }
@@ -670,7 +650,7 @@ mod tests {
 
         fn submit_tx_chain(
             &self,
-            _submission: TxSubmission<'_>,
+            _submission: TxPacketSubmission<'_>,
             _meta: NetTxMeta,
         ) -> Result<(), &'static str> {
             Ok(())

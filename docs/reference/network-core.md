@@ -4,8 +4,7 @@
 - Audience: ネットワーク実装、レビュー、性能設計、datapath 整理の前提を確認したい contributor
 - Related: [ドキュメントハブ](../README.md), [アーキテクチャ概要](../architecture.md), [API リファレンス](api-reference.md), [性能目標](performance-targets.md), [Kernel Roadmap](../proposals/kernel-roadmap.md)
 
-この文書は、旧設計案 `rust-kernel-design-proposal.md` の 6.1 / 6.2 で定義していた
-ネットワーク原則を、現行 `docs/` 配下の Reference として再配置したものです。
+この文書は、ネットワーク datapath の所有権、非同期処理、性能モデルの contract を定義します。
 ExoRust のネットワークについて語彙・優先順位・性能モデルを確認したい場合は、
 まず本書を参照してください。
 
@@ -56,7 +55,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 | end-to-end zero-copy | driver -> protocol -> app まで packet ownership を維持する経路 | `Canonical target` |
 | adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::adaptive_polling`, runtime device control |
 | batch processing | 複数 packet をまとめて処理する最適化 | `PacketBatch`, `BatchProcessor` |
-| scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` / `NetTxSegment` による driver queue submission |
+| scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` と backing を保持する packet region による driver queue submission |
 
 ## 3. Datapath and polling
 
@@ -67,15 +66,16 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - packet の drop / recycle は pool 回収と結び付け、再利用可能な ownership cycle を維持する。
 - `PacketPayload` は常に非空であり、空 segment、総長 overflow、3 segment 以上の storage allocation failure を fallible constructor で区別する。所有権を消費する構築・prepend・split に失敗した場合は input owner を error とともに返す。
 - payload 内の変更可能な借用は初期化済み byte に限る。segment window と総長は payload が一体として管理し、headroom への in-place prepend は両者を同時に更新する。失敗時には可視領域・内容・所有権を変更しない。
+- packet の backing は最後の window が返却されるまで保持する。分割は可視領域に加えてアクセス可能な領域も分割し、resize・headroom 操作で他の window の範囲へ戻れないようにする。最後の返却は pool への再利用、または未完了の DMA を保持する退役 owner への移譲を行う。
 - `PacketRef` が安全に公開するのは初期化済みの可視領域だけとする。`data_capacity`、`headroom`、`tailroom` は別の数量であり、software growth が新たに可視化する byte は初期化してから公開する。
-- network TX の正規所有権単位は `PacketPayload` であり、旧 `datapath::zero_copy`
-  facade や byte-slice TX surface を再導入しない。
+- network TX の正規所有権単位は `PacketPayload` とし、byte-slice への統合を送信の前提にしない。
 
 ### 3.2 Normative: RX DMA authority と TX lease を分離する
 
-- RX posting は `RxBuffer` が持つ `RxWritableRegion { cpu_ptr, device_addr, writable_len }` だけを driver へ委譲する。`writable_len` は backing の現在の data origin から末尾までであり、headroom を含めない。
+- RX posting は `RxBuffer` の空 window から作る、backing を保持した writable region を使う。容量は現在の data origin から末尾までであり、headroom を含めない。device address は port ごとの DMA admission で確立し、packet の属性として保持しない。
 - completion は device が書き終えた frame layout を検証して `ReceivedPacket` へ一方向に遷移する。frame length より後ろの tail は初期化済みデータとして公開しない。
-- TX queue の受理は DMA read authority の取得を意味し、driver は buffer を参照しなくなった後に exactly-once completion を返す。拒否は buffer を一切保持していないことを意味する。
+- TX queue の受理は DMA read authority の取得を意味し、driver は buffer を参照しなくなった後に exactly-once completion を返す。拒否は buffer を一切保持していないことを意味する。descriptor visit は packet header を保持し、同期 completion による pool 再利用を visit の終了まで保留する。
+- port の mapping owner は packet window と独立に物理 backing を保持する。固定 pool は mapping を保ったまま window を再利用できる。動的 packet の header が返却されても、IOTLB の退役完了まで RAM を解放しない。translation の未完了状態は再投稿へ使わず、port の終了は owner を保持して `Busy` を返す。
 - TX lease は `Queued -> Submitting -> DeviceOwned -> Released(outcome)` の順序を持つ。同期 completion、重複 completion、reset を同じ state transition で扱い、caller 向け送信通知と DMA lease の解放を同一視しない。
 - completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別する。stop/reset で DMA authority の安全な失効を証明できない owner は再利用せず quarantine する。
 - device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP/IP はこの上限へ分割し、分割不能な RAW frame は未消費の payload owner を typed error で返す。
@@ -124,4 +124,3 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - 広域の公開 API 形状は [api-reference.md](api-reference.md) を参照する。
 - 性能 gate と測定基準は [performance-targets.md](performance-targets.md) を参照する。
 - 実装順序と real NIC / offload workstream は [../proposals/kernel-roadmap.md](../proposals/kernel-roadmap.md) を参照する。
-- 旧設計案本文の背景説明は引き続き archive に残すが、現行の network 語彙は本書を正とする。

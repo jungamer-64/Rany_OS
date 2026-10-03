@@ -3,6 +3,7 @@
 //! retirement. Window mutation and splitting are owned here, independently of
 //! the allocator and of device submission.
 
+use alloc::sync::Arc;
 use core::fmt;
 use core::marker::PhantomData;
 use core::mem::ManuallyDrop;
@@ -10,7 +11,7 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
 use super::{PacketByteCount, PacketMeta, PacketOwnershipError, PacketPayload, PacketWindowError};
-use crate::dma::{DmaByteCount, DmaDeviceAddress};
+use crate::dma::DmaByteCount;
 use crate::resource::memory::PhysicalAddress;
 
 /// Stable backing retained by its allocator until all packet windows return.
@@ -21,8 +22,8 @@ pub struct PacketBufferMemory {
     data: NonNull<u8>,
     capacity: DmaByteCount,
     physical: PhysicalAddress,
-    device: Option<DmaDeviceAddress>,
     references: AtomicUsize,
+    allocation: Arc<dyn Send + Sync>,
     owner: NonNull<()>,
     retire: unsafe fn(NonNull<()>),
 }
@@ -39,9 +40,13 @@ impl PacketBufferMemory {
     ///
     /// # Safety
     /// `data` must describe `capacity` initialized bytes in one live allocation.
-    /// Physical and device addresses must describe that same region, with their
-    /// entire ranges fitting in `u64`. `None` denotes memory for which device
-    /// posting has not been admitted; an address alone does not admit DMA.
+    /// The physical address must describe that same region, with its entire
+    /// range fitting in `u64`. Device admission belongs to the submitting port;
+    /// packet metadata and physical addresses never grant DMA authority.
+    /// `allocation` independently retains the entire physical backing, even
+    /// after the last CPU window returns, including every containing physical
+    /// page needed for IOMMU granularity. It confers no byte access or release
+    /// authority. Mapping owners retain it until IOTLB retirement completes.
     /// The owner must keep the header, backing, mapping and callback code valid
     /// until every acquired window returns, including during owner shutdown.
     /// No independent mutable reference may access an acquired window. DMA may
@@ -54,7 +59,7 @@ impl PacketBufferMemory {
         data: NonNull<u8>,
         capacity: DmaByteCount,
         physical: PhysicalAddress,
-        device: Option<DmaDeviceAddress>,
+        allocation: Arc<dyn Send + Sync>,
         owner: NonNull<()>,
         retire: unsafe fn(NonNull<()>),
     ) -> Self {
@@ -62,8 +67,8 @@ impl PacketBufferMemory {
             data,
             capacity,
             physical,
-            device,
             references: AtomicUsize::new(0),
+            allocation,
             owner,
             retire,
         }
@@ -85,6 +90,101 @@ impl fmt::Debug for PacketBufferMemory {
             .field("capacity", &self.capacity)
             .field("references", &self.references.load(Ordering::Acquire))
             .finish_non_exhaustive()
+    }
+}
+
+/// Physical backing retained independently of packet recycling. This lease
+/// grants no CPU byte access and no authority to submit or retire DMA.
+#[derive(Clone)]
+pub struct PacketBackingLease {
+    physical: PhysicalAddress,
+    capacity: DmaByteCount,
+    allocation: Arc<dyn Send + Sync>,
+}
+impl PacketBackingLease {
+    pub const fn physical_address(&self) -> PhysicalAddress {
+        self.physical
+    }
+    pub const fn capacity(&self) -> DmaByteCount {
+        self.capacity
+    }
+}
+impl fmt::Debug for PacketBackingLease {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PacketBackingLease")
+            .field("physical", &self.physical)
+            .field("capacity", &self.capacity)
+            .finish_non_exhaustive()
+    }
+}
+
+/// An observed packet range retains its header until descriptor construction
+/// ends. It exposes addresses only; device access requires a separate submission
+/// authority. Keeping it across synchronous completion prevents pool reuse.
+pub struct PacketDmaRegion {
+    memory: NonNull<PacketBufferMemory>,
+    offset: usize,
+    len: PacketByteCount,
+}
+// SAFETY: this counted lease keeps a thread-safe header alive. It never exposes
+// Rust byte references or CPU access authority, and retirement permits any CPU.
+unsafe impl Send for PacketDmaRegion {}
+// SAFETY: observations only read immutable header fields. No shared operation
+// mutates packet bytes or releases the last lease.
+unsafe impl Sync for PacketDmaRegion {}
+impl PacketDmaRegion {
+    fn backing(&self) -> &PacketBufferMemory {
+        // SAFETY: the counted region retains the header through this borrow.
+        unsafe { self.memory.as_ref() }
+    }
+    pub fn cpu_ptr(&self) -> *const u8 {
+        // SAFETY: creation bounds the range within initialized backing.
+        unsafe { self.backing().data.as_ptr().add(self.offset).cast_const() }
+    }
+    pub fn physical_address(&self) -> PhysicalAddress {
+        PhysicalAddress::new(self.backing().physical.as_u64() + self.offset as u64)
+    }
+    pub const fn len(&self) -> PacketByteCount {
+        self.len
+    }
+    pub fn retains_backing(&self, lease: &PacketBackingLease) -> bool {
+        Arc::ptr_eq(&self.backing().allocation, &lease.allocation)
+    }
+    pub fn backing_lease(&self) -> PacketBackingLease {
+        let backing = self.backing();
+        PacketBackingLease {
+            physical: backing.physical,
+            capacity: backing.capacity,
+            allocation: Arc::clone(&backing.allocation),
+        }
+    }
+}
+impl fmt::Debug for PacketDmaRegion {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("PacketDmaRegion")
+            .field("physical", &self.physical_address())
+            .field("len", &self.len)
+            .finish_non_exhaustive()
+    }
+}
+impl Drop for PacketDmaRegion {
+    fn drop(&mut self) {
+        release_reference(self.memory);
+    }
+}
+
+fn release_reference(memory: NonNull<PacketBufferMemory>) {
+    // SAFETY: the caller consumes one retained reference to this live header.
+    let backing = unsafe { memory.as_ref() };
+    if backing.references.fetch_sub(1, Ordering::AcqRel) == 1 {
+        let owner = backing.owner;
+        let retire = backing.retire;
+        // SAFETY: this was the last window/descriptor. The constructor keeps
+        // unfinished mappings independently retained; never access the header
+        // after this callback may reclaim it.
+        unsafe { retire(owner) };
     }
 }
 
@@ -179,6 +279,47 @@ impl PacketRef {
         unsafe { self.backing().data.as_ptr().add(self.window.offset) }
     }
 
+    /// Observe an initialized visible range without granting device access.
+    ///
+    /// # Errors
+    /// Out-of-bounds ranges and a saturated retention count do not publish a
+    /// descriptor. An empty range is excluded by `PacketByteCount`.
+    pub fn dma_region(
+        &self,
+        offset: usize,
+        len: PacketByteCount,
+    ) -> Result<PacketDmaRegion, PacketWindowError> {
+        if offset > self.len() || len.get() > self.len() - offset {
+            return Err(PacketWindowError::OutOfBounds);
+        }
+        self.retain_dma_region(self.window.offset + offset, len)
+    }
+
+    fn retain_dma_region(
+        &self,
+        offset: usize,
+        len: PacketByteCount,
+    ) -> Result<PacketDmaRegion, PacketWindowError> {
+        if !self.backing().retain() {
+            return Err(PacketWindowError::ReferenceLimit);
+        }
+        Ok(PacketDmaRegion {
+            memory: self.memory,
+            offset,
+            len,
+        })
+    }
+
+    /// Observe an empty packet's writable capacity for RX admission. The owner
+    /// remains inaccessible inside `RxBuffer` until hardware completion.
+    pub(crate) fn rx_dma_region(&self) -> Option<PacketDmaRegion> {
+        if !self.is_empty() {
+            return None;
+        }
+        let len = PacketByteCount::new(self.data_capacity())?;
+        self.retain_dma_region(self.window.offset, len).ok()
+    }
+
     pub fn data(&self) -> &[u8] {
         // SAFETY: the visible window is initialized and CPU-owned for this
         // borrow. Device submission consumes access to the containing packet.
@@ -209,12 +350,6 @@ impl PacketRef {
 
     pub fn phys_addr(&self) -> PhysicalAddress {
         PhysicalAddress::new(self.backing().physical.as_u64() + self.window.offset as u64)
-    }
-
-    pub fn device_address(&self) -> Option<DmaDeviceAddress> {
-        self.backing()
-            .device
-            .and_then(|address| address.checked_add(self.window.offset))
     }
 
     /// # Errors
@@ -312,19 +447,6 @@ impl PacketRef {
         })
     }
 
-    pub(crate) fn unpublished_writable_region(
-        &mut self,
-    ) -> Option<(*mut u8, Option<DmaDeviceAddress>, usize)> {
-        if !self.is_empty() || self.data_capacity() == 0 {
-            return None;
-        }
-        Some((
-            self.as_ptr().cast_mut(),
-            self.device_address(),
-            self.data_capacity(),
-        ))
-    }
-
     /// # Safety
     /// The device has finished writing `len` initialized bytes in this window
     /// and no longer has write access. Completion must belong to this lease.
@@ -352,15 +474,7 @@ impl PacketRef {
 
 impl Drop for PacketRef {
     fn drop(&mut self) {
-        let backing = self.backing();
-        if backing.references.fetch_sub(1, Ordering::AcqRel) == 1 {
-            let owner = backing.owner;
-            let retire = backing.retire;
-            // SAFETY: this was the last window. The constructor's owner
-            // contract retains unfinished DMA and permits retirement on this
-            // CPU. Do not access the header after this call may reclaim it.
-            unsafe { retire(owner) };
-        }
+        release_reference(self.memory);
     }
 }
 
@@ -387,27 +501,38 @@ mod tests {
     use alloc::sync::Arc;
     use core::mem::MaybeUninit;
 
+    struct Bytes(core::cell::UnsafeCell<Box<[u8]>>);
+    // SAFETY: the fixture exposes no byte access; packet windows own disjoint
+    // initialized ranges and mapping leases only retain allocation lifetime.
+    unsafe impl Sync for Bytes {}
+
     struct Allocation {
         header: MaybeUninit<PacketBufferMemory>,
-        _bytes: Box<[u8]>,
+        bytes: Arc<Bytes>,
         returns: Arc<AtomicUsize>,
     }
 
     unsafe fn retire_allocation(owner: NonNull<()>) {
         // SAFETY: fixture construction transferred one Box to the last-window
         // retirement callback. This call consumes it exactly once.
-        let allocation = unsafe { Box::from_raw(owner.cast::<Allocation>().as_ptr()) };
+        let mut allocation = unsafe { Box::from_raw(owner.cast::<Allocation>().as_ptr()) };
         allocation.returns.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: this last-reference callback consumes the initialized header.
+        unsafe { allocation.header.assume_init_drop() };
     }
 
     fn packet(capacity: usize, headroom: usize) -> (PacketRef, Arc<AtomicUsize>) {
         let returns = Arc::new(AtomicUsize::new(0));
+        let mut bytes = Arc::new(Bytes(core::cell::UnsafeCell::new(
+            alloc::vec![0xab; capacity].into_boxed_slice(),
+        )));
+        let data =
+            NonNull::new(Arc::get_mut(&mut bytes).unwrap().0.get_mut().as_mut_ptr()).unwrap();
         let mut allocation = Box::new(Allocation {
             header: MaybeUninit::uninit(),
-            _bytes: alloc::vec![0xab; capacity].into_boxed_slice(),
+            bytes,
             returns: Arc::clone(&returns),
         });
-        let data = NonNull::new(allocation._bytes.as_mut_ptr()).unwrap();
         let owner = NonNull::from(allocation.as_mut()).cast();
         // SAFETY: this Box retains initialized backing and the stable header.
         // Its unique ownership moves to the callback after acquisition below;
@@ -417,7 +542,7 @@ mod tests {
                 data,
                 DmaByteCount::new(capacity).unwrap(),
                 PhysicalAddress::new(0x1000),
-                Some(DmaDeviceAddress::from_abi(0x4000)),
+                Arc::clone(&allocation.bytes) as Arc<dyn Send + Sync>,
                 owner,
                 retire_allocation,
             )
@@ -428,6 +553,62 @@ mod tests {
         let packet = unsafe { PacketRef::acquire(header, headroom) }.unwrap();
         let _owner = Box::into_raw(allocation);
         (packet, returns)
+    }
+
+    #[test]
+    fn descriptor_visit_and_mapping_retention_have_separate_lifetimes() {
+        let (mut packet, returns) = packet(32, 8);
+        packet.try_resize(8).unwrap();
+        let region = packet
+            .dma_region(2, PacketByteCount::new(4).unwrap())
+            .unwrap();
+        let mapping_backing = region.backing_lease();
+        let allocation = Arc::downgrade(&mapping_backing.allocation);
+        assert_eq!(region.physical_address().as_u64(), 0x100a);
+        assert_eq!(region.len().get(), 4);
+        drop(packet);
+        assert_eq!(returns.load(Ordering::SeqCst), 0);
+        drop(region);
+        assert_eq!(returns.load(Ordering::SeqCst), 1);
+        assert!(allocation.upgrade().is_some());
+        drop(mapping_backing);
+        assert!(allocation.upgrade().is_none());
+    }
+
+    #[test]
+    fn descriptor_bounds_are_visible_bytes_and_split_views_share_backing() {
+        let (mut packet, returns) = packet(32, 8);
+        packet.try_resize(8).unwrap();
+        assert!(matches!(
+            packet.dma_region(7, PacketByteCount::new(2).unwrap()),
+            Err(PacketWindowError::OutOfBounds)
+        ));
+        let backing = packet
+            .dma_region(0, PacketByteCount::new(1).unwrap())
+            .unwrap()
+            .backing_lease();
+        let PacketFront::Prefix { front, remainder } = packet
+            .try_take_front(PacketByteCount::new(3).unwrap())
+            .unwrap()
+        else {
+            panic!("partial split");
+        };
+        let a = front
+            .dma_region(0, PacketByteCount::new(3).unwrap())
+            .unwrap();
+        let b = remainder
+            .dma_region(0, PacketByteCount::new(5).unwrap())
+            .unwrap();
+        assert!(a.retains_backing(&backing));
+        assert!(b.retains_backing(&backing));
+        assert_eq!(
+            b.physical_address().as_u64() - a.physical_address().as_u64(),
+            3
+        );
+        drop((front, remainder, a));
+        assert_eq!(returns.load(Ordering::SeqCst), 0);
+        drop(b);
+        assert_eq!(returns.load(Ordering::SeqCst), 1);
     }
 
     #[test]
@@ -542,7 +723,13 @@ mod tests {
         let buffer = RxBuffer::try_from_empty_packet(packet).unwrap();
         // SAFETY: the fixture exclusively owns this unpublished region and
         // simulates a device write that is finished before completion.
-        unsafe { buffer.writable_region().cpu_ptr().write_bytes(0x3e, 3) };
+        unsafe {
+            buffer
+                .writable_region()
+                .cpu_ptr()
+                .cast_mut()
+                .write_bytes(0x3e, 3)
+        };
         let invalid = NetRxMeta::new(
             0,
             NetRxFrameLayout::whole_payload(PacketByteCount::new(13).unwrap()).unwrap(),

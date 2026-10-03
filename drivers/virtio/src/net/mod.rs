@@ -5,7 +5,7 @@
 use core::ptr::NonNull;
 use kernel_api::abi::driver::{AbiError, AbiNetRxMeta, AbiRxLeaseGuard};
 use kernel_api::dma::{CpuOwned, DmaSlice};
-use kernel_api::netdev::{NetTxSegment, TxLeaseId};
+use kernel_api::netdev::TxLeaseId;
 use kernel_api::resource::net::PacketByteCount;
 
 pub mod device;

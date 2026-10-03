@@ -33,8 +33,8 @@ use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
     NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeCookie, NetPortRuntimeHandle,
-    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, NetTxSegment, NonEmptyTxSegments,
-    PrimaryPortPolicy, ReceivedPacket, RxBuffer, TxDeviceOutcome, TxLeaseId, TxSubmission,
+    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, PrimaryPortPolicy, ReceivedPacket,
+    RxBuffer, TxDeviceOutcome, TxLeaseId, TxPacketSubmission,
 };
 
 const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
@@ -678,18 +678,14 @@ pub fn complete_tx_request_in(
     }
 }
 
-fn packet_to_tx_segment(packet: &PacketRef) -> Option<NetTxSegment> {
-    let len = PacketByteCount::new(packet.len())?;
-    NetTxSegment::from_dma(
-        packet.data().as_ptr(),
-        packet.phys_addr().as_u64(),
-        packet.device_address(),
-        len,
-    )
+fn packet_to_tx_region(packet: &PacketRef) -> Option<kernel_api::resource::net::PacketDmaRegion> {
+    packet
+        .dma_region(0, PacketByteCount::new(packet.len())?)
+        .ok()
 }
 
 fn append_tx_payload_segments(
-    descriptors: &mut Vec<NetTxSegment>,
+    descriptors: &mut Vec<kernel_api::resource::net::PacketDmaRegion>,
     packets: &[PacketRef],
     max_segments: usize,
 ) -> Option<()> {
@@ -697,13 +693,13 @@ fn append_tx_payload_segments(
         if descriptors.len() >= max_segments {
             return None;
         }
-        descriptors.push(packet_to_tx_segment(packet)?);
+        descriptors.push(packet_to_tx_region(packet)?);
     }
     Some(())
 }
 
 fn append_tx_payload_window_segments(
-    descriptors: &mut Vec<NetTxSegment>,
+    descriptors: &mut Vec<kernel_api::resource::net::PacketDmaRegion>,
     packets: &[PacketRef],
     bounds: TxPayloadWindowBounds,
     max_segments: usize,
@@ -727,18 +723,7 @@ fn append_tx_payload_window_segments(
             return None;
         }
         let descriptor_len = PacketByteCount::new(local_end - local_start)?;
-        let cpu_ptr = unsafe { packet.data().as_ptr().add(local_start) };
-        let physical_addr = packet
-            .phys_addr()
-            .as_u64()
-            .checked_add(local_start as u64)?;
-        let device_addr = packet.device_address().checked_add(local_start as u64)?;
-        descriptors.push(NetTxSegment::from_dma(
-            cpu_ptr,
-            physical_addr,
-            device_addr,
-            descriptor_len,
-        )?);
+        descriptors.push(packet.dma_region(local_start, descriptor_len).ok()?);
     }
 
     Some(())
@@ -747,7 +732,7 @@ fn append_tx_payload_window_segments(
 fn build_tx_descriptors_in(
     runtime: NetRuntimeHandle,
     lease_id: TxLeaseId,
-    descriptors: &mut Vec<NetTxSegment>,
+    descriptors: &mut Vec<kernel_api::resource::net::PacketDmaRegion>,
     max_segments: usize,
 ) -> Option<()> {
     descriptors.clear();
@@ -1342,7 +1327,7 @@ impl NetDeviceHandle {
         Ok(())
     }
 
-    fn stop(&self) -> Result<(), &'static str> {
+    fn stop(&self) -> kernel_api::error::KapiResult<()> {
         self.active.store(false, Ordering::Release);
         self.tx_queue.wake();
         self.event_sink.wake();
@@ -1403,13 +1388,13 @@ fn start_workers_for_port_in(
         return Err("device handle missing before worker startup");
     };
     if start_tx {
-        crate::task::spawn(tx_worker(runtime, if_id), crate::task::TaskPlacement::Any)
+        crate::task::spawn(tx_worker(runtime, if_id), crate::task::TaskOptions::any())
             .map_err(|_| "failed to spawn network TX worker")?;
     }
     if start_event {
         crate::task::spawn(
             event_worker(runtime, if_id),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         )
         .map_err(|_| "failed to spawn network event worker")?;
     }
@@ -1529,9 +1514,6 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                 pending = pop_tx_request_in(runtime, if_id);
                 continue;
             }
-            let segments = NonEmptyTxSegments::new(&descriptor_scratch)
-                .expect("validated TX descriptor plan is non-empty");
-            let submission = TxSubmission::new(request.lease_id, segments);
             let attempt = with_port_handle_in(runtime, if_id, |handle| {
                 let _driver_guard = handle
                     .driver_gate
@@ -1543,6 +1525,13 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                     return SubmissionAttempt::LeaseUnavailable;
                 }
                 let port_id = handle.binding().port_id;
+                // SAFETY: Submitting is published above. The registry retains
+                // CPU-inaccessible packet owners until rejection or completion;
+                // counted regions keep the backing live through synchronous
+                // completion without holding the lease registry lock.
+                let submission =
+                    unsafe { TxPacketSubmission::new(request.lease_id, &descriptor_scratch) }
+                        .expect("validated nonempty packet regions");
                 match handle.driver.submit_tx_chain(submission, request.meta) {
                     Err(error) => {
                         let _ = reject_tx_lease_in(runtime, request.lease_id, error);
@@ -1554,6 +1543,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
                     Ok(()) => SubmissionAttempt::InvalidTransition,
                 }
             });
+            descriptor_scratch.clear();
             match attempt {
                 Some(SubmissionAttempt::Rejected(port_id, err)) => {
                     log::warn!(
@@ -1643,7 +1633,6 @@ async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
 pub struct NetDeviceManager {
     handles: BTreeMap<NetIfId, Arc<NetDeviceHandle>>,
     port_map: BTreeMap<NetPortId, NetIfId>,
-    quarantined: Vec<Arc<NetDeviceHandle>>,
 }
 
 impl NetDeviceManager {
@@ -1651,7 +1640,6 @@ impl NetDeviceManager {
         Self {
             handles: BTreeMap::new(),
             port_map: BTreeMap::new(),
-            quarantined: Vec::new(),
         }
     }
 }
@@ -1791,31 +1779,50 @@ fn rollback_interface_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId)
     crate::net::runtime::bridge::remove_stack_glue_interface_in(runtime, if_id);
 }
 
-fn rollback_port_registration_in(runtime: NetRuntimeHandle, if_id: NetIfId, port_id: NetPortId) {
-    let removed = {
-        let mut guard = device_manager_in(runtime)
-            .write()
-            .unwrap_or_else(|e| e.into_inner());
-        if guard.port_map.get(&port_id) == Some(&if_id) {
-            guard.port_map.remove(&port_id);
-        }
-        guard.handles.remove(&if_id)
-    };
-    if let Some(handle) = removed {
-        if let Err(error) = handle.stop() {
-            log::error!(
-                target: "net::device",
-                "port rollback could not prove DMA quiescence: {}",
-                error
-            );
-            device_manager_in(runtime)
-                .write()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
-                .quarantined
-                .push(handle);
+/// Registration failure distinguishes completed rollback from an interface
+/// whose callbacks or DMA remain owned by the runtime for shutdown retry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetPortRegistrationError {
+    NotPublished(&'static str),
+    /// Startup had side effects, followed by acknowledged shutdown/release.
+    Released(&'static str),
+    Retained {
+        if_id: NetIfId,
+        cause: &'static str,
+        shutdown: kernel_api::error::KapiError,
+    },
+}
+
+impl core::fmt::Display for NetPortRegistrationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::NotPublished(cause) | Self::Released(cause) => f.write_str(cause),
+            Self::Retained {
+                if_id,
+                cause,
+                shutdown,
+            } => write!(f, "{cause}; if{} retained: {shutdown}", if_id.0),
         }
     }
-    rollback_interface_registration_in(runtime, if_id);
+}
+
+fn finish_failed_registration(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    cause: &'static str,
+) -> NetPortRegistrationError {
+    match unregister_port_in(runtime, if_id) {
+        Ok(true) => NetPortRegistrationError::Released(cause),
+        outcome => NetPortRegistrationError::Retained {
+            if_id,
+            cause,
+            shutdown: match outcome {
+                Err(cause) => cause,
+                Ok(false) => kernel_api::error::KapiError::NotFound,
+                Ok(true) => unreachable!(),
+            },
+        },
+    }
 }
 
 const fn manager_primary_preference(policy: PrimaryPortPolicy) -> manager::PrimaryPreference {
@@ -1847,16 +1854,21 @@ fn default_config_for_port(info: NetDeviceInfo) -> NetworkConfig {
 pub fn register_port_in(
     runtime: NetRuntimeHandle,
     registration: NetPortRegistration,
-) -> Result<NetIfId, &'static str> {
+) -> Result<NetIfId, NetPortRegistrationError> {
     let driver = registration.driver;
     let info = registration.info;
     let config = default_config_for_port(info);
-    ensure_stack_initialized_in(runtime)?;
+    ensure_stack_initialized_in(runtime).map_err(NetPortRegistrationError::NotPublished)?;
 
     let primary_preference = manager_primary_preference(registration.primary_policy);
     if let Some(existing) = lookup_if_by_port_id_in(runtime, info.port_id) {
-        manager::set_primary_preference_in(runtime, existing, primary_preference)
-            .map_err(|_| "failed to update network interface preference")?;
+        manager::set_primary_preference_in(runtime, existing, primary_preference).map_err(
+            |_| {
+                NetPortRegistrationError::NotPublished(
+                    "failed to update network interface preference",
+                )
+            },
+        )?;
         return Ok(existing);
     }
 
@@ -1867,7 +1879,8 @@ pub fn register_port_in(
         config,
         base.driver_name,
         primary_preference,
-    )?;
+    )
+    .map_err(NetPortRegistrationError::NotPublished)?;
     let binding = NetDeviceBinding {
         port_id: info.port_id,
         if_id,
@@ -1879,7 +1892,7 @@ pub fn register_port_in(
     ));
     if let Err(err) = handle.driver.bind(if_id.0) {
         rollback_interface_registration_in(runtime, if_id);
-        return Err(err);
+        return Err(NetPortRegistrationError::NotPublished(err));
     }
     let runtime_handle = handle.runtime;
 
@@ -1895,12 +1908,14 @@ pub fn register_port_in(
         with_port_handle_in(runtime, if_id, |handle| handle.driver.start(runtime_handle))
     {
         if let Err(err) = start_result {
-            rollback_port_registration_in(runtime, if_id, info.port_id);
-            return Err(err);
+            return Err(finish_failed_registration(runtime, if_id, err));
         }
     } else {
-        rollback_port_registration_in(runtime, if_id, info.port_id);
-        return Err("device handle missing after registration");
+        return Err(finish_failed_registration(
+            runtime,
+            if_id,
+            "device handle missing after registration",
+        ));
     }
 
     let initial_link_state = if info.flags & NETDEV_FLAG_LINK_UP != 0 {
@@ -1908,12 +1923,16 @@ pub fn register_port_in(
     } else {
         manager::LinkState::Down
     };
-    manager::set_interface_link_state_in(runtime, if_id, initial_link_state)
-        .map_err(|_| "failed to publish initial network link state")?;
+    if manager::set_interface_link_state_in(runtime, if_id, initial_link_state).is_err() {
+        return Err(finish_failed_registration(
+            runtime,
+            if_id,
+            "failed to publish initial network link state",
+        ));
+    }
 
     if let Err(error) = start_workers_for_port_in(runtime, if_id) {
-        rollback_port_registration_in(runtime, if_id, info.port_id);
-        return Err(error);
+        return Err(finish_failed_registration(runtime, if_id, error));
     }
 
     if let Err(err) =
@@ -1930,7 +1949,10 @@ pub fn register_port_in(
     Ok(if_id)
 }
 
-pub fn unregister_port_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Result<bool, &'static str> {
+pub fn unregister_port_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> kernel_api::error::KapiResult<bool> {
     let previous_primary = manager::primary_interface_in(runtime);
     let handle = device_manager_in(runtime)
         .read()
@@ -2175,7 +2197,7 @@ mod tests {
         state: &'static FakeDriverState,
         driver_name: &'static str,
         start_error: Option<&'static str>,
-        stop_error: Option<&'static str>,
+        stop_error: Option<kernel_api::error::KapiError>,
     }
 
     impl FakeDriver {
@@ -2204,7 +2226,7 @@ mod tests {
         const fn with_stop_error(
             state: &'static FakeDriverState,
             driver_name: &'static str,
-            stop_error: &'static str,
+            stop_error: kernel_api::error::KapiError,
         ) -> Self {
             Self {
                 state,
@@ -2237,7 +2259,7 @@ mod tests {
 
     fn fake_driver_with_stop_error(
         driver_name: &'static str,
-        stop_error: &'static str,
+        stop_error: kernel_api::error::KapiError,
     ) -> (&'static FakeDriverState, Box<dyn NetDevicePort>) {
         let state = Box::leak(Box::new(FakeDriverState::new()));
         (
@@ -2246,7 +2268,8 @@ mod tests {
         )
     }
 
-    impl NetDevicePort for FakeDriver {
+    // SAFETY: this fixture performs no hardware access and holds no DMA authority after rejection or completion.
+    unsafe impl NetDevicePort for FakeDriver {
         fn info(&self) -> NetDeviceInfo {
             NetDeviceInfo {
                 port_id: NetPortId::new(0x9009),
@@ -2282,7 +2305,7 @@ mod tests {
 
         fn submit_tx_chain(
             &self,
-            _submission: TxSubmission<'_>,
+            _submission: TxPacketSubmission<'_>,
             _meta: NetTxMeta,
         ) -> Result<(), &'static str> {
             Ok(())
@@ -2314,7 +2337,7 @@ mod tests {
             }
         }
 
-        fn stop(&self) -> Result<(), &'static str> {
+        fn stop(&self) -> kernel_api::error::KapiResult<()> {
             let stop_index = self.state.stop_calls.fetch_add(1, Ordering::Relaxed);
             match (self.stop_error, stop_index) {
                 (Some(error), 0) => Err(error),
@@ -2331,7 +2354,7 @@ mod tests {
         index: u16,
         driver: Box<dyn NetDevicePort>,
         primary_policy: PrimaryPortPolicy,
-    ) -> Result<NetIfId, &'static str> {
+    ) -> Result<NetIfId, NetPortRegistrationError> {
         let info = NetDeviceInfo {
             port_id: test_port_id(index),
             driver_name: "fake",
@@ -2351,191 +2374,58 @@ mod tests {
         unregister_port_in(default_runtime(), if_id).expect("fake driver quiesces during stop")
     }
 
-    #[derive(Clone, Copy)]
-    struct TestPacketRefState {
-        ptr: *mut u8,
-        len: usize,
-        capacity: usize,
-        device_addr: u64,
-        release_counter: *const AtomicUsize,
+    struct PacketFixtureBytes(core::cell::UnsafeCell<Box<[u8]>>);
+    // SAFETY: this storage provides no access independently of packet windows.
+    // Descriptor and mapping leases only retain its allocation lifetime.
+    unsafe impl Sync for PacketFixtureBytes {}
+    struct PacketFixture {
+        header: core::mem::MaybeUninit<kernel_api::resource::net::PacketBufferMemory>,
+        releases: Arc<AtomicUsize>,
     }
-
-    unsafe fn test_packet_state(
-        storage: &kernel_api::resource::net::PacketRefStorage,
-    ) -> &TestPacketRefState {
-        unsafe { storage.as_state_ref::<TestPacketRefState>() }
+    unsafe fn retire_packet_fixture(owner: core::ptr::NonNull<()>) {
+        // SAFETY: construction transfers this sole Box to the last counted
+        // window/descriptor; the retained counter remains valid on any CPU.
+        let mut fixture = unsafe { Box::from_raw(owner.cast::<PacketFixture>().as_ptr()) };
+        fixture.releases.fetch_add(1, Ordering::SeqCst);
+        // SAFETY: the fixture initialized this header before sole acquisition.
+        unsafe { fixture.header.assume_init_drop() };
     }
-
-    unsafe fn test_packet_state_mut(
-        storage: &mut kernel_api::resource::net::PacketRefStorage,
-    ) -> &mut TestPacketRefState {
-        unsafe { storage.as_state_mut::<TestPacketRefState>() }
+    fn packet_fixture(len: usize, physical: u64) -> PacketRef {
+        counted_packet_fixture(len, physical, &Arc::new(AtomicUsize::new(0)))
     }
-
-    unsafe fn test_packet_data_ptr(
-        storage: &kernel_api::resource::net::PacketRefStorage,
-    ) -> *const u8 {
-        unsafe { test_packet_state(storage).ptr.cast_const() }
-    }
-
-    unsafe fn test_packet_data_mut_ptr(
-        storage: &mut kernel_api::resource::net::PacketRefStorage,
-    ) -> *mut u8 {
-        unsafe { test_packet_state_mut(storage).ptr }
-    }
-
-    unsafe fn test_packet_len(storage: &kernel_api::resource::net::PacketRefStorage) -> usize {
-        unsafe { test_packet_state(storage).len }
-    }
-
-    unsafe fn test_packet_set_len(
-        storage: &mut kernel_api::resource::net::PacketRefStorage,
-        len: usize,
-    ) -> bool {
-        let state = unsafe { test_packet_state_mut(storage) };
-        if len > state.capacity {
-            return false;
-        }
-        state.len = len;
-        true
-    }
-
-    unsafe fn test_packet_capacity(storage: &kernel_api::resource::net::PacketRefStorage) -> usize {
-        unsafe { test_packet_state(storage).capacity }
-    }
-
-    unsafe fn test_packet_phys_addr(storage: &kernel_api::resource::net::PacketRefStorage) -> u64 {
-        unsafe { test_packet_state(storage).device_addr }
-    }
-
-    unsafe fn test_packet_device_address(
-        storage: &kernel_api::resource::net::PacketRefStorage,
-    ) -> u64 {
-        unsafe { test_packet_state(storage).device_addr }
-    }
-
-    unsafe fn test_packet_headroom(_: &kernel_api::resource::net::PacketRefStorage) -> usize {
-        0
-    }
-
-    unsafe fn test_packet_advance(
-        storage: &mut kernel_api::resource::net::PacketRefStorage,
-        size: PacketByteCount,
-    ) -> bool {
-        let state = unsafe { test_packet_state_mut(storage) };
-        let size = size.get();
-        if size > state.len {
-            return false;
-        }
-        state.ptr = unsafe { state.ptr.add(size) };
-        state.len -= size;
-        state.device_addr = state.device_addr.wrapping_add(size as u64);
-        true
-    }
-
-    unsafe fn test_packet_retreat(
-        _storage: &mut kernel_api::resource::net::PacketRefStorage,
-        _size: PacketByteCount,
-    ) -> bool {
-        false
-    }
-
-    unsafe fn test_packet_drop(storage: &mut kernel_api::resource::net::PacketRefStorage) {
-        let counter = unsafe { test_packet_state(storage) }.release_counter;
-        if let Some(counter) = unsafe { counter.as_ref() } {
-            counter.fetch_add(1, Ordering::SeqCst);
-        }
-    }
-
-    unsafe fn test_packet_split_front(
-        storage: &kernel_api::resource::net::PacketRefStorage,
-        len: PacketByteCount,
-    ) -> Option<(
-        kernel_api::resource::net::PacketRefStorage,
-        kernel_api::resource::net::PacketRefStorage,
-    )> {
-        let state = *unsafe { test_packet_state(storage) };
-        let len = len.get();
-        if len == 0 || len >= state.len {
-            return None;
-        }
-        let front = TestPacketRefState { len, ..state };
-        let remainder = TestPacketRefState {
-            ptr: unsafe { state.ptr.add(len) },
-            len: state.len - len,
-            capacity: state.capacity.saturating_sub(len),
-            device_addr: state.device_addr.wrapping_add(len as u64),
-            release_counter: state.release_counter,
-        };
-        Some((
-            unsafe { kernel_api::resource::net::PacketRefStorage::from_state(front) },
-            unsafe { kernel_api::resource::net::PacketRefStorage::from_state(remainder) },
-        ))
-    }
-
-    static TEST_PACKET_REF_VTABLE: kernel_api::resource::net::PacketRefVTable =
-        kernel_api::resource::net::PacketRefVTable {
-            data_ptr: test_packet_data_ptr,
-            data_mut_ptr: test_packet_data_mut_ptr,
-            len: test_packet_len,
-            resize: test_packet_set_len,
-            data_capacity: test_packet_capacity,
-            phys_addr: test_packet_phys_addr,
-            device_address: test_packet_device_address,
-            headroom: test_packet_headroom,
-            advance: test_packet_advance,
-            retreat: test_packet_retreat,
-            split_front: test_packet_split_front,
-            drop_storage: test_packet_drop,
-        };
-
-    fn test_packet_ref_with_device_addr(len: usize, device_addr: u64) -> PacketRef {
-        let backing = Box::leak(Box::new([0u8; 64]));
-        let state = TestPacketRefState {
-            ptr: backing.as_mut_ptr(),
-            len,
-            capacity: backing.len(),
-            device_addr,
-            release_counter: core::ptr::null(),
-        };
-        unsafe {
-            PacketRef::from_opaque_parts(
-                kernel_api::resource::net::PacketRefStorage::from_state(state),
-                &TEST_PACKET_REF_VTABLE,
+    fn counted_packet_fixture(len: usize, physical: u64, releases: &Arc<AtomicUsize>) -> PacketRef {
+        let capacity = len.max(64);
+        assert!(physical.checked_add(capacity as u64 - 1).is_some());
+        let mut storage = Arc::new(PacketFixtureBytes(core::cell::UnsafeCell::new(
+            alloc::vec![0u8; capacity].into_boxed_slice(),
+        )));
+        let data =
+            core::ptr::NonNull::new(Arc::get_mut(&mut storage).unwrap().0.get_mut().as_mut_ptr())
+                .unwrap();
+        let mut fixture = Box::new(PacketFixture {
+            header: core::mem::MaybeUninit::uninit(),
+            releases: Arc::clone(releases),
+        });
+        let owner = core::ptr::NonNull::from(fixture.as_mut()).cast();
+        // SAFETY: this fixture models a physical RAM range without submitting
+        // hardware access. Initialized retained storage has a stable header and
+        // no independent CPU access; mapping retention owns a separate Arc.
+        fixture.header.write(unsafe {
+            kernel_api::resource::net::PacketBufferMemory::new(
+                data,
+                kernel_api::dma::DmaByteCount::new(capacity).unwrap(),
+                kernel_api::resource::memory::PhysicalAddress::new(physical),
+                storage,
+                owner,
+                retire_packet_fixture,
             )
-        }
-    }
-
-    fn test_counted_packet_ref(
-        len: usize,
-        device_addr: u64,
-        release_counter: &AtomicUsize,
-    ) -> PacketRef {
-        let backing = Box::leak(Box::new([0u8; 64]));
-        let state = TestPacketRefState {
-            ptr: backing.as_mut_ptr(),
-            len,
-            capacity: backing.len(),
-            device_addr,
-            release_counter: core::ptr::from_ref(release_counter),
-        };
-        unsafe {
-            PacketRef::from_opaque_parts(
-                kernel_api::resource::net::PacketRefStorage::from_state(state),
-                &TEST_PACKET_REF_VTABLE,
-            )
-        }
-    }
-
-    fn test_tx_segment(device_addr: u64, len: usize) -> NetTxSegment {
-        static TEST_TX_BYTES: [u8; 64] = [0; 64];
-        NetTxSegment::from_dma(
-            TEST_TX_BYTES.as_ptr(),
-            device_addr,
-            device_addr,
-            PacketByteCount::new(len).expect("test segment length is non-zero"),
-        )
-        .expect("test descriptor is valid")
+        });
+        let header = core::ptr::NonNull::new(fixture.header.as_mut_ptr()).unwrap();
+        // SAFETY: the fixture owns the live header at its first sole acquisition.
+        let mut packet = unsafe { PacketRef::acquire(header, 0) }.unwrap();
+        let _retirement_owner = Box::into_raw(fixture);
+        packet.try_resize(len).unwrap();
+        packet
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2655,7 +2545,7 @@ mod tests {
 
         assert_eq!(
             register_test_port(88, driver, PrimaryPortPolicy::Never),
-            Err("start failed")
+            Err(NetPortRegistrationError::Released("start failed"))
         );
         assert_eq!(
             lookup_if_by_port_id_in(default_runtime(), test_port_id(88)),
@@ -2667,6 +2557,36 @@ mod tests {
                 .expect("manager query")
                 .iter()
                 .all(|iface| iface.name != "start-fail")
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn failed_start_retains_owned_interface_until_shutdown_acknowledges() {
+        let state = Box::leak(Box::new(FakeDriverState::new()));
+        let driver = Box::new(FakeDriver {
+            state,
+            driver_name: "start-retained",
+            start_error: Some("start failed"),
+            stop_error: Some(kernel_api::error::KapiError::Busy),
+        });
+        let result = register_test_port(84, driver, PrimaryPortPolicy::Never);
+        let if_id = lookup_if_by_port_id_in(default_runtime(), test_port_id(84))
+            .expect("failed shutdown retains the owned index");
+        assert_eq!(
+            result,
+            Err(NetPortRegistrationError::Retained {
+                if_id,
+                cause: "start failed",
+                shutdown: kernel_api::error::KapiError::Busy,
+            })
+        );
+        assert_eq!(state.stop_calls.load(Ordering::Acquire), 1);
+        assert!(unregister_test_port(if_id));
+        assert_eq!(state.stop_calls.load(Ordering::Acquire), 2);
+        assert_eq!(
+            lookup_if_by_port_id_in(default_runtime(), test_port_id(84)),
+            None
         );
     }
 
@@ -2741,7 +2661,7 @@ mod tests {
             default_runtime(),
             if_b
         ));
-        let payload = PacketPayload::try_single(test_packet_ref_with_device_addr(1, 0x4000))
+        let payload = PacketPayload::try_single(packet_fixture(1, 0x4000))
             .expect("test payload is non-empty");
         assert!(
             transmit_packet_in(default_runtime(), if_a, payload, NetTxMeta::default(),).is_err()
@@ -2799,7 +2719,7 @@ mod tests {
         let frame_len = PacketByteCount::new(14).expect("non-empty frame");
         let layout = kernel_api::service::netdev::NetRxFrameLayout::whole_payload(frame_len)
             .expect("valid frame layout");
-        let packet = test_packet_ref_with_device_addr(frame_len.get(), 0x3000);
+        let packet = packet_fixture(frame_len.get(), 0x3000);
         assert_eq!(
             state.submit_rx(packet, NetRxMeta::new(0, layout, 0)),
             Err("network interface is not operational")
@@ -2835,8 +2755,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_payload_lease_derives_descriptor_for_each_owner() {
-        let first = test_packet_ref_with_device_addr(8, 0x1000);
-        let second = test_packet_ref_with_device_addr(16, 0x2000);
+        let first = packet_fixture(8, 0x1000);
+        let second = packet_fixture(16, 0x2000);
         let payload = PacketPayload::try_pair(first, second).expect("non-empty test segments");
 
         let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
@@ -2858,9 +2778,9 @@ mod tests {
                 .is_some()
         );
         assert_eq!(descriptors.len(), 2);
-        assert_eq!(descriptors[0].device_addr().get(), 0x1000);
+        assert_eq!(descriptors[0].physical_address().as_u64(), 0x1000);
         assert_eq!(descriptors[0].len().get(), 8);
-        assert_eq!(descriptors[1].device_addr().get(), 0x2000);
+        assert_eq!(descriptors[1].physical_address().as_u64(), 0x2000);
         assert_eq!(descriptors[1].len().get(), 16);
         assert!(reject_registered_tx_lease_in(
             default_runtime(),
@@ -2871,9 +2791,9 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn tx_descriptor_plan_rejects_invalid_packet_descriptor() {
-        let payload = PacketPayload::try_single(test_packet_ref_with_device_addr(8, 0))
-            .expect("non-empty test packet");
+    fn tx_descriptor_plan_rejects_device_fanout_limit() {
+        let payload = PacketPayload::try_pair(packet_fixture(8, 0x1000), packet_fixture(8, 0x2000))
+            .expect("two retained test packets");
         let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
         let registered = register_tx_payload_lease_in(
             default_runtime(),
@@ -2906,9 +2826,9 @@ mod tests {
         let mut packet = crate::net::datapath::mempool::alloc_packet().expect("packet");
         packet.try_resize(32).expect("test packet resize succeeds");
         let base_ptr = packet.data().as_ptr() as usize;
-        let base_device_addr = packet.device_address();
+        let base_physical = packet.phys_addr().as_u64();
         let owners = TxPayloadOwners::from_packets(alloc::vec![packet]).expect("owners");
-        let header = test_packet_ref_with_device_addr(8, 0x40);
+        let header = packet_fixture(8, 0x40);
 
         let bounds = TxPayloadWindowBounds::checked(
             &owners,
@@ -2944,52 +2864,11 @@ mod tests {
 
         assert_eq!(descriptors.len(), 2);
         assert_eq!(payload_descriptor.cpu_ptr(), (base_ptr + 8) as *const u8);
-        assert_eq!(payload_descriptor.device_addr().get(), base_device_addr + 8);
+        assert_eq!(
+            payload_descriptor.physical_address().as_u64(),
+            base_physical + 8
+        );
         assert_eq!(payload_descriptor.len().get(), 16);
-        assert!(reject_registered_tx_lease_in(
-            default_runtime(),
-            request.lease_id,
-            "test cleanup",
-        ));
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn packet_window_descriptor_rejects_device_address_overflow() {
-        let packet = test_packet_ref_with_device_addr(16, u64::MAX - 4);
-        let owners = TxPayloadOwners::from_packets(alloc::vec![packet]).expect("owners");
-        let header = test_packet_ref_with_device_addr(8, 0x40);
-
-        let bounds = TxPayloadWindowBounds::checked(
-            &owners,
-            8,
-            PacketByteCount::new(4).expect("non-empty window"),
-        )
-        .expect("owner-bound window");
-        let lease = TxPayloadLease::from_header_and_owner_window(header, &owners, bounds)
-            .expect("bounds are valid independently of DMA arithmetic");
-        let group_id = register_tx_owner_group_in(
-            default_runtime(),
-            owners,
-            TxOwnerGroupLeaseCount::new(1).expect("one lease"),
-            None,
-        );
-        let request = register_grouped_tx_payload_lease_in(
-            default_runtime(),
-            NetIfId(1),
-            lease,
-            group_id,
-            NetTxMeta::default(),
-        )
-        .expect("registered fragment lease");
-        let mut descriptors = Vec::new();
-        descriptors
-            .try_reserve_exact(2)
-            .expect("descriptor scratch");
-        assert!(
-            build_tx_descriptors_in(default_runtime(), request.lease_id, &mut descriptors, 2,)
-                .is_none()
-        );
         assert!(reject_registered_tx_lease_in(
             default_runtime(),
             request.lease_id,
@@ -3090,8 +2969,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn accepted_tx_lease_retains_backing_until_exactly_one_completion() {
-        let releases = AtomicUsize::new(0);
-        let payload = PacketPayload::try_single(test_counted_packet_ref(8, 0x9100, &releases))
+        let releases = Arc::new(AtomicUsize::new(0));
+        let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9100, &releases))
             .expect("counted payload is non-empty");
         let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
         let request = register_tx_payload_lease_in(
@@ -3126,8 +3005,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn synchronous_completion_consumes_submitting_lease_without_recycling_early() {
-        let releases = AtomicUsize::new(0);
-        let payload = PacketPayload::try_single(test_counted_packet_ref(8, 0x9200, &releases))
+        let releases = Arc::new(AtomicUsize::new(0));
+        let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9200, &releases))
             .expect("counted payload is non-empty");
         let request = register_tx_payload_lease_in(
             default_runtime(),
@@ -3139,6 +3018,11 @@ mod tests {
         .expect("registered lease")
         .into_request();
 
+        let mut regions = Vec::new();
+        regions.try_reserve_exact(1).unwrap();
+        assert!(
+            build_tx_descriptors_in(default_runtime(), request.lease_id, &mut regions, 1).is_some()
+        );
         assert!(begin_tx_submission_in(default_runtime(), request.lease_id));
         assert_eq!(releases.load(Ordering::SeqCst), 0);
         assert!(complete_tx_lease_in(
@@ -3146,6 +3030,8 @@ mod tests {
             request.lease_id,
             TxDeviceOutcome::Transmitted,
         ));
+        assert_eq!(releases.load(Ordering::SeqCst), 0);
+        regions.clear();
         assert_eq!(releases.load(Ordering::SeqCst), 1);
         assert!(mark_tx_device_owned_in(default_runtime(), request.lease_id));
         assert!(!complete_tx_lease_in(
@@ -3158,8 +3044,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn rejected_tx_lease_returns_backing_without_device_ownership() {
-        let releases = AtomicUsize::new(0);
-        let payload = PacketPayload::try_single(test_counted_packet_ref(8, 0x9300, &releases))
+        let releases = Arc::new(AtomicUsize::new(0));
+        let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9300, &releases))
             .expect("counted payload is non-empty");
         let request = register_tx_payload_lease_in(
             default_runtime(),
@@ -3198,9 +3084,9 @@ mod tests {
             },
             default_runtime_context(),
         );
-        let queued_releases = AtomicUsize::new(0);
+        let queued_releases = Arc::new(AtomicUsize::new(0));
         let queued_payload =
-            PacketPayload::try_single(test_counted_packet_ref(8, 0x9400, &queued_releases))
+            PacketPayload::try_single(counted_packet_fixture(8, 0x9400, &queued_releases))
                 .expect("queued payload is non-empty");
         assert!(
             handle
@@ -3208,9 +3094,9 @@ mod tests {
                 .is_ok()
         );
 
-        let owned_releases = AtomicUsize::new(0);
+        let owned_releases = Arc::new(AtomicUsize::new(0));
         let owned_payload =
-            PacketPayload::try_single(test_counted_packet_ref(8, 0x9500, &owned_releases))
+            PacketPayload::try_single(counted_packet_fixture(8, 0x9500, &owned_releases))
                 .expect("owned payload is non-empty");
         let owned_request = register_tx_payload_lease_in(
             default_runtime(),
@@ -3241,11 +3127,12 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn failed_stop_keeps_port_and_device_owned_lease_quarantined_until_completion() {
-        let (_state, driver) = fake_driver_with_stop_error("stop-fail", "quiesce failed");
+        let (_state, driver) =
+            fake_driver_with_stop_error("stop-fail", kernel_api::error::KapiError::Busy);
         let if_id = register_test_port(85, driver, PrimaryPortPolicy::Never)
             .expect("register stop-failure port");
-        let releases = AtomicUsize::new(0);
-        let payload = PacketPayload::try_single(test_counted_packet_ref(8, 0x9600, &releases))
+        let releases = Arc::new(AtomicUsize::new(0));
+        let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9600, &releases))
             .expect("counted payload is non-empty");
         let request = register_tx_payload_lease_in(
             default_runtime(),
@@ -3261,7 +3148,7 @@ mod tests {
 
         assert_eq!(
             unregister_port_in(default_runtime(), if_id),
-            Err("quiesce failed")
+            Err(kernel_api::error::KapiError::Busy)
         );
         assert_eq!(
             lookup_if_by_port_id_in(default_runtime(), test_port_id(85)),

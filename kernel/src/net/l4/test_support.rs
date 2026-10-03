@@ -57,23 +57,67 @@ pub(crate) fn counting_waker(counter: &'static AtomicUsize) -> Waker {
     }
 }
 
-pub(crate) fn leaked_test_packet(cap: usize) -> PacketRef {
-    assert!(cap > 0, "test packet capacity must be non-zero");
-    let backing = Box::leak(alloc::vec![0u8; cap].into_boxed_slice());
-    // SAFETY: `backing` is intentionally leaked for the duration of the test process,
-    // so the raw pointer remains valid for any borrowed `PacketRef` created from it.
-    unsafe {
-        crate::net::datapath::mempool::packet_ref_from_static_raw_for_tests(
-            backing.as_mut_ptr(),
-            backing.len(),
-        )
-        .expect("create leaked test packet")
-    }
+struct FixtureBytes(core::cell::UnsafeCell<Box<[u8]>>);
+// SAFETY: storage grants no byte access independently of acquired packet
+// windows. Its only shared operation is lifetime retention by mapping owners.
+unsafe impl Sync for FixtureBytes {}
+
+struct PacketFixture {
+    memory: core::mem::MaybeUninit<kernel_api::resource::net::PacketBufferMemory>,
+    bytes: alloc::sync::Arc<FixtureBytes>,
 }
 
-pub(crate) fn leaked_test_packet_with_data(data: &[u8]) -> PacketRef {
+unsafe fn retire_fixture(owner: core::ptr::NonNull<()>) {
+    // SAFETY: fixture construction transfers this sole Box to the callback,
+    // which runs after the last packet partition returns.
+    let mut fixture = unsafe { Box::from_raw(owner.cast::<PacketFixture>().as_ptr()) };
+    // SAFETY: construction initialized the header before first acquisition;
+    // this last-reference callback ends all header users.
+    unsafe { fixture.memory.assume_init_drop() };
+}
+
+pub(crate) fn packet_fixture(cap: usize) -> PacketRef {
+    let capacity = kernel_api::dma::DmaByteCount::new(cap).expect("valid fixture capacity");
+    let mut bytes = alloc::sync::Arc::new(FixtureBytes(core::cell::UnsafeCell::new(
+        alloc::vec![0u8; cap].into_boxed_slice(),
+    )));
+    let data = core::ptr::NonNull::new(
+        alloc::sync::Arc::get_mut(&mut bytes)
+            .expect("sole fixture storage")
+            .0
+            .get_mut()
+            .as_mut_ptr(),
+    )
+    .expect("fixture bytes");
+    let mut allocation = Box::new(PacketFixture {
+        memory: core::mem::MaybeUninit::uninit(),
+        bytes,
+    });
+    let owner = core::ptr::NonNull::from(allocation.as_mut()).cast();
+    // SAFETY: this fixture retains initialized bytes and the stable header in
+    // one Box. No device accesses it, and the callback reclaims it once after
+    // every disjoint packet window has returned.
+    allocation.memory.write(unsafe {
+        kernel_api::resource::net::PacketBufferMemory::new(
+            data,
+            capacity,
+            kernel_api::resource::memory::PhysicalAddress::new(0),
+            alloc::sync::Arc::clone(&allocation.bytes) as alloc::sync::Arc<dyn Send + Sync>,
+            owner,
+            retire_fixture,
+        )
+    });
+    let memory = core::ptr::NonNull::new(allocation.memory.as_mut_ptr()).expect("fixture header");
+    // SAFETY: this live header belongs to the retained fixture Box. The sole
+    // acquisition transfers its retirement responsibility to the packet.
+    let packet = unsafe { PacketRef::acquire(memory, 0) }.expect("fixture acquisition");
+    let _owner = Box::into_raw(allocation);
+    packet
+}
+
+pub(crate) fn packet_fixture_with_data(data: &[u8]) -> PacketRef {
     let cap = data.len().max(1);
-    let mut packet = leaked_test_packet(cap);
+    let mut packet = packet_fixture(cap);
     packet
         .try_resize(data.len())
         .expect("test packet fits its backing");

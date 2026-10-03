@@ -839,9 +839,8 @@ pub fn alloc_packet_with_headroom_in(
     }
 
     let dma_len = len.checked_add(headroom)?;
-    let dma_buf = crate::io::dma::TypedDmaSlice::<crate::io::dma::CpuOwned>::new(dma_len)?;
     let mut packet =
-        crate::net::datapath::mempool::packet_ref_from_dma_slice_with_headroom(dma_buf, headroom)?;
+        crate::net::datapath::mempool::allocate_packet_backing(dma_len, headroom).ok()?;
     packet.try_resize(len).ok()?;
     Some(packet)
 }

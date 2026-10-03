@@ -21,7 +21,7 @@ use kernel_api::service::netdev::{
     MacAddress as PortMacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP,
     NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
     NetPortRuntimeHandle, NetPortStats, NetRxFrameLayout, NetRxMeta, NetTxMeta, PrimaryPortPolicy,
-    TxDeviceOutcome, TxSubmission,
+    TxDeviceOutcome, TxPacketSubmission,
 };
 
 macro_rules! run_case {
@@ -333,16 +333,21 @@ impl QemuFakePortState {
             .lease_rx_buffer()
             .ok_or("fake port could not lease an RX buffer")?;
         let region = buffer.writable_region();
-        if packet.len() > region.writable_len() {
+        if packet.len() > region.len().get() {
             return Err("fake RX frame exceeds writable DMA region");
         }
         // SAFETY: the runtime lease grants this driver exclusive write authority
         // over the advertised region until `complete` consumes the lease.
         unsafe {
-            core::ptr::copy_nonoverlapping(packet.data().as_ptr(), region.cpu_ptr(), packet.len());
+            core::ptr::copy_nonoverlapping(
+                packet.data().as_ptr(),
+                region.cpu_ptr().cast_mut(),
+                packet.len(),
+            );
         }
-        let received = buffer
-            .complete(NetRxMeta::new(0, layout, 0))
+        // SAFETY: this CPU-only fixture initialized exactly the validated
+        // frame prefix above. No device was given the lease or can write it.
+        let received = unsafe { buffer.complete(NetRxMeta::new(0, layout, 0)) }
             .map_err(|_| "fake RX completion layout is invalid")?;
         runtime.submit_rx(received)
     }
@@ -353,7 +358,8 @@ struct QemuFakePort {
     info: NetDeviceInfo,
 }
 
-impl NetDevicePort for QemuFakePort {
+// SAFETY: this fixture performs no hardware access and holds no DMA authority after rejection or completion.
+unsafe impl NetDevicePort for QemuFakePort {
     fn info(&self) -> NetDeviceInfo {
         self.info
     }
@@ -369,7 +375,7 @@ impl NetDevicePort for QemuFakePort {
 
     fn submit_tx_chain(
         &self,
-        submission: TxSubmission<'_>,
+        submission: TxPacketSubmission<'_>,
         _meta: NetTxMeta,
     ) -> Result<(), &'static str> {
         self.state.tx_packets.fetch_add(1, Ordering::Relaxed);
@@ -397,7 +403,7 @@ impl NetDevicePort for QemuFakePort {
         }
     }
 
-    fn stop(&self) -> Result<(), &'static str> {
+    fn stop(&self) -> kernel_api::error::KapiResult<()> {
         Ok(())
     }
 }

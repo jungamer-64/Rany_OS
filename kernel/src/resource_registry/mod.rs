@@ -30,7 +30,7 @@ use kernel_api::resource::net::PacketByteCount;
 use kernel_api::service::netdev::{
     MacAddress, NetDeviceInfo, NetDevicePort, NetDriverEvent, NetPortId, NetPortRegistration,
     NetPortRuntimeHandle, NetPortStats, NetRxFrameLayout, NetRxMeta, NetTxMeta, PrimaryPortPolicy,
-    RxBuffer, TxLeaseId, TxSubmission,
+    RxBuffer, TxLeaseId, TxPacketSubmission,
 };
 use kernel_api::service::storage::{StorageDeviceInfo, StorageTransport};
 use x86_64::PhysAddr;
@@ -390,17 +390,61 @@ struct NetRuntimeState {
 
 const NET_PACKET_DMA_PAGE_SIZE: u64 = crate::mm::types::PAGE_SIZE_4K as u64;
 
-#[derive(Clone, Copy)]
-struct NetPacketDmaPage {
+#[derive(Debug)]
+enum PacketTranslation {
+    Ready(crate::io::iommu::api::DeviceMappedRange),
+    Incomplete(crate::io::iommu::api::DeviceMappedRange),
+}
+impl PacketTranslation {
+    fn into_mapping(self) -> crate::io::iommu::api::DeviceMappedRange {
+        match self {
+            Self::Ready(mapping) | Self::Incomplete(mapping) => mapping,
+        }
+    }
+}
+
+struct PacketMapping {
     physical_base: u64,
-    device_base: u64,
+    byte_len: u64,
+    translation: Option<PacketTranslation>,
+    backing: Option<kernel_api::resource::net::PacketBackingLease>,
+}
+impl Drop for PacketMapping {
+    fn drop(&mut self) {
+        if self.translation.is_some() {
+            // Dropping an observation is not DMA retirement. DeviceMappedRange
+            // retains translation origin; this owner must also retain RAM.
+            if let Some(backing) = self.backing.take() {
+                core::mem::forget(backing);
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
+enum NetPacketMappingError {
+    InvalidRange,
+    MetadataAllocation,
+    TranslationIncomplete,
+    BackingConflict,
+    Iommu(crate::io::iommu::types::IommuError),
+}
+impl NetPacketMappingError {
+    fn as_str(&self) -> &'static str {
+        match self {
+            Self::InvalidRange => "network DMA range is invalid",
+            Self::MetadataAllocation => "network DMA mapping registry allocation failed",
+            Self::TranslationIncomplete => "network DMA translation retirement is incomplete",
+            Self::BackingConflict => "network DMA range conflicts with retained backing",
+            Self::Iommu(_) => "network packet IOMMU mapping failed",
+        }
+    }
 }
 
 struct NetPacketDmaMappings {
     device: IommuDeviceId,
-    pages: PoisonLock<Vec<NetPacketDmaPage>>,
+    pages: PoisonLock<Vec<PacketMapping>>,
 }
-
 impl NetPacketDmaMappings {
     fn new(device: IommuDeviceId) -> Self {
         Self {
@@ -408,7 +452,117 @@ impl NetPacketDmaMappings {
             pages: PoisonLock::new(Vec::new()),
         }
     }
-
+    fn map_region(
+        &self,
+        region: &kernel_api::resource::net::PacketDmaRegion,
+    ) -> Result<u64, NetPacketMappingError> {
+        use crate::io::iommu::api::DeviceMapFailure;
+        let physical = region.physical_address().as_u64();
+        let last = physical
+            .checked_add(region.len().get() as u64 - 1)
+            .ok_or(NetPacketMappingError::InvalidRange)?;
+        if physical == 0 {
+            return Err(NetPacketMappingError::InvalidRange);
+        }
+        if !crate::io::iommu::api::is_iommu_enabled() {
+            return Ok(physical);
+        }
+        let mut pages = self.pages.lock().unwrap_or_else(|error| error.into_inner());
+        if let Some(page) = pages.iter().find(|page| {
+            physical >= page.physical_base && last - page.physical_base < page.byte_len
+        }) {
+            let backing = page.backing.as_ref().expect("retained mapping backing");
+            if !region.retains_backing(backing) {
+                return Err(NetPacketMappingError::BackingConflict);
+            }
+            let Some(PacketTranslation::Ready(mapping)) = &page.translation else {
+                return Err(NetPacketMappingError::TranslationIncomplete);
+            };
+            return mapping
+                .iova()
+                .checked_add(physical - page.physical_base)
+                .ok_or(NetPacketMappingError::InvalidRange);
+        }
+        let backing = region.backing_lease();
+        let backing_start = backing.physical_address().as_u64();
+        let backing_last = backing_start
+            .checked_add(backing.capacity().get() as u64 - 1)
+            .ok_or(NetPacketMappingError::InvalidRange)?;
+        if physical < backing_start || last > backing_last {
+            return Err(NetPacketMappingError::InvalidRange);
+        }
+        let base = backing_start & !(NET_PACKET_DMA_PAGE_SIZE - 1);
+        let end = (backing_last | (NET_PACKET_DMA_PAGE_SIZE - 1))
+            .checked_add(1)
+            .ok_or(NetPacketMappingError::InvalidRange)?;
+        let size = end - base;
+        if pages
+            .iter()
+            .any(|page| base < page.physical_base + page.byte_len && page.physical_base < end)
+        {
+            return Err(NetPacketMappingError::BackingConflict);
+        }
+        pages
+            .try_reserve(1)
+            .map_err(|_| NetPacketMappingError::MetadataAllocation)?;
+        // SAFETY: the region came from a retained initialized packet allocation.
+        // Its backing lease retains the containing physical pages independently
+        // of CPU window/header recycling. Publication failure is stored below.
+        let mapped = unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(
+                &self.device,
+                PhysAddr::new(base),
+                size,
+                true,
+                true,
+            )
+        };
+        match mapped {
+            Ok(mapping) => {
+                let address = mapping.iova().checked_add(physical - base);
+                pages.push(PacketMapping {
+                    physical_base: base,
+                    byte_len: size,
+                    translation: Some(PacketTranslation::Ready(mapping)),
+                    backing: Some(backing),
+                });
+                address.ok_or(NetPacketMappingError::InvalidRange)
+            }
+            Err(DeviceMapFailure::Unpublished(cause)) => Err(NetPacketMappingError::Iommu(cause)),
+            Err(DeviceMapFailure::TranslationPending { cause, mapping }) => {
+                pages.push(PacketMapping {
+                    physical_base: base,
+                    byte_len: size,
+                    translation: Some(PacketTranslation::Incomplete(mapping)),
+                    backing: Some(backing),
+                });
+                Err(NetPacketMappingError::Iommu(cause))
+            }
+        }
+    }
+    fn revoke_all(&self) -> Result<(), NetPacketMappingError> {
+        let mut pages = self.pages.lock().unwrap_or_else(|error| error.into_inner());
+        let initial = pages.len();
+        let mut failure = None;
+        // LOOP_PROOF: mode=bounded; reason=The retained mapping snapshot bounds retirement attempts and the port has stopped new DMA admission;
+        for index in (0..initial).rev() {
+            let page = &mut pages[index];
+            let translation = page.translation.take().expect("retained translation");
+            match translation.into_mapping().unmap() {
+                Ok(()) => {
+                    pages.swap_remove(index);
+                }
+                Err(error) => {
+                    page.translation = Some(PacketTranslation::Incomplete(error.mapping));
+                    failure = Some(NetPacketMappingError::Iommu(error.cause));
+                }
+            }
+        }
+        match failure {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
+    }
 }
 
 const ABI_RX_LEASE_INDEX_BITS: u32 = 16;
@@ -529,17 +683,14 @@ extern "C" fn runtime_lease_rx_buffer(runtime_cookie: u64, out_lease: *mut AbiRx
             return AbiErrorCode::OutOfMemory as i32;
         };
         let writable = buffer.writable_region();
-        let device_addr = match state
-            .dma_mappings
-            .map_region(buffer.physical_addr(), writable.writable_len())
-        {
+        let device_addr = match state.dma_mappings.map_region(writable) {
             Ok(device_addr) => device_addr,
             Err(_) => return AbiErrorCode::IoError as i32,
         };
         let region = AbiRxWritableRegion {
-            cpu_ptr: writable.cpu_ptr(),
+            cpu_ptr: writable.cpu_ptr().cast_mut(),
             device_addr,
-            writable_len: writable.writable_len(),
+            writable_len: writable.len().get(),
         };
         let lease_id = match state
             .rx_leases
@@ -745,12 +896,14 @@ impl NetdevPortAdapter {
             runtime_state: PoisonLock::new(None),
             max_tx_segments,
             tx_abi_scratch: PoisonLock::new(tx_abi_scratch),
-            dma_mappings: Arc::new(NetPacketDmaMappings::new(dma_device)),
+            dma_mappings: Arc::try_new(NetPacketDmaMappings::new(dma_device))
+                .map_err(|_| AbiErrorCode::OutOfMemory)?,
         })
     }
 }
 
-impl NetDevicePort for NetdevPortAdapter {
+// SAFETY: the retained runtime and callback code owners outlive DMA; accepted routes complete only after device release and stop preserves failures.
+unsafe impl NetDevicePort for NetdevPortAdapter {
     fn info(&self) -> NetDeviceInfo {
         let info = self.registration.info;
         NetDeviceInfo {
@@ -770,7 +923,7 @@ impl NetDevicePort for NetdevPortAdapter {
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
-        let mut state = Box::new(NetRuntimeState {
+        let mut state = Box::try_new(NetRuntimeState {
             runtime,
             table: AbiNetPortRuntime::new(
                 0,
@@ -784,7 +937,8 @@ impl NetDevicePort for NetdevPortAdapter {
             ),
             rx_leases: PoisonLock::new(RxLeaseTable::default()),
             dma_mappings: Arc::clone(&self.dma_mappings),
-        });
+        })
+        .map_err(|_| "network runtime callback storage allocation failed")?;
         state.table.runtime_cookie = NetRuntimeStateCookie::from_state(&mut state).as_raw();
         let table_ptr = &state.table as *const AbiNetPortRuntime;
         // Publish the callback owner before the first foreign call. Failure
@@ -816,7 +970,7 @@ impl NetDevicePort for NetdevPortAdapter {
 
     fn submit_tx_chain(
         &self,
-        submission: TxSubmission<'_>,
+        submission: TxPacketSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
         let _execution = self
@@ -828,16 +982,17 @@ impl NetDevicePort for NetdevPortAdapter {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         abi_segments.clear();
-        if submission.segments().len() > abi_segments.capacity() {
+        if submission.regions().len() > abi_segments.capacity() {
             return Err("standalone netdev TX segment limit exceeded");
         }
-        for segment in submission.segments() {
-            let device_addr = self
-                .dma_mappings
-                .map_region(segment.physical_addr().get(), segment.len().get())?;
+        for segment in submission.regions() {
+            let device_addr = self.dma_mappings.map_region(segment).map_err(|cause| {
+                log::warn!("network packet DMA admission failed: {cause:?}");
+                cause.as_str()
+            })?;
             abi_segments.push(
                 AbiNetTxSegment::from_checked_parts(segment.cpu_ptr(), device_addr, segment.len())
-                    .expect("NetTxSegment already validates ABI descriptor invariants"),
+                    .ok_or("mapped packet range is not representable in the driver ABI")?,
             );
         }
         let abi_submission = AbiNetTxSubmission::new(submission.lease_id(), &abi_segments)
@@ -950,9 +1105,10 @@ impl NetDevicePort for NetdevPortAdapter {
             AbiErrorCode::DeviceBusy => return Err(kernel_api::error::KapiError::Busy),
             _ => return Err(kernel_api::error::KapiError::IoError),
         }
-        self.dma_mappings
-            .revoke_all()
-            .map_err(|_| kernel_api::error::KapiError::IoError)?;
+        self.dma_mappings.revoke_all().map_err(|cause| {
+            log::warn!("network packet translation retirement remains incomplete: {cause:?}");
+            kernel_api::error::KapiError::Busy
+        })?;
         let _ = self
             .runtime_state
             .lock()
@@ -1258,7 +1414,7 @@ mod tests {
             return AbiErrorCode::InvalidParam as i32;
         }
         let submission = unsafe { &*submission };
-        let Some(_segments) = submission.segments() else {
+        let Some(_segments) = submission.regions() else {
             return AbiErrorCode::InvalidParam as i32;
         };
         AbiErrorCode::Success as i32

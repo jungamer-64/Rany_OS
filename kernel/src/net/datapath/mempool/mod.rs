@@ -9,24 +9,22 @@
 
 // Building block: Memory pool types
 
-use crate::ipc::rref::RRef;
 use crate::sync::{PoisonLock, PoisonRwLock};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt;
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicU64, Ordering, fence};
-use kernel_api::resource::net::{
-    DEFAULT_PACKET_HEADROOM, PacketByteCount, PacketRefStorage, PacketRefVTable,
-};
+use core::sync::atomic::{AtomicU64, Ordering};
+use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketAcquireError, PacketBufferMemory};
 pub use kernel_api::resource::net::{PacketMeta, PacketRef, PacketType};
-use x86_64::PhysAddr;
 
 use crate::mm::types::PAGE_SIZE_4K;
 
 /// DMAページサイズ
+mod backing;
 mod pool_impl;
+pub(crate) use backing::allocate_packet as allocate_packet_backing;
 pub use pool_impl::*;
 
 #[cfg(test)]
@@ -34,84 +32,36 @@ mod tests;
 
 const DMA_PAGE_SIZE: usize = PAGE_SIZE_4K;
 
-/// パケットバッファのメタデータ
+/// Pool identity and recycle owner are separate from the packet's byte window.
 #[repr(C)]
 #[derive(Debug)]
 struct PacketBufferMeta {
-    phys_addr: PhysAddr,
-    device_addr: u64,
-    pool_id: u32,
+    pool: &'static Mempool,
     index: u32,
-    ref_count: AtomicU64,
-    _padding: [u8; 8],
 }
 
-const PACKET_META_SIZE: usize = core::mem::size_of::<PacketBufferMeta>();
-const PACKET_META_ALIGN: usize = core::mem::align_of::<PacketBufferMeta>();
+const PACKET_META_ALIGN: usize = core::mem::align_of::<PacketBufferMemory>();
+const PACKET_META_SIZE: usize =
+    core::mem::size_of::<PacketBufferMemory>() + core::mem::size_of::<PacketBufferMeta>();
 const DEFAULT_BUFFER_SIZE: usize = (DMA_PAGE_SIZE - PACKET_META_SIZE) & !(PACKET_META_ALIGN - 1);
 
 #[repr(C, align(4096))]
 #[derive(Debug)]
 pub struct PacketBuffer {
     data: [u8; DEFAULT_BUFFER_SIZE],
+    memory: PacketBufferMemory,
     meta: PacketBufferMeta,
 }
 
-impl PacketBuffer {
-    pub fn as_ptr(&self) -> *const u8 {
-        self.data.as_ptr()
-    }
-    pub fn as_mut_ptr(&mut self) -> *mut u8 {
-        self.data.as_mut_ptr()
-    }
-    pub fn phys_addr(&self) -> PhysAddr {
-        self.meta.phys_addr
-    }
-    pub fn device_address(&self) -> u64 {
-        if self.meta.device_addr != 0 {
-            self.meta.device_addr
-        } else {
-            self.meta.phys_addr.as_u64()
-        }
-    }
-    pub fn set_device_address(&mut self, addr: u64) {
-        self.meta.device_addr = addr;
-    }
-    pub fn add_ref(&self) -> bool {
-        self.meta
-            .ref_count
-            .try_update(Ordering::AcqRel, Ordering::Acquire, |current| {
-                if current == 0 {
-                    return None;
-                }
-                current.checked_add(1)
-            })
-            .is_ok()
-    }
-
-    pub fn release(&self) -> bool {
-        loop {
-            let current = self.meta.ref_count.load(Ordering::Acquire);
-            debug_assert!(current > 0);
-            if current == 0 {
-                return false;
-            }
-            let next = current - 1;
-            if self
-                .meta
-                .ref_count
-                .compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                if next == 0 {
-                    fence(Ordering::Acquire);
-                    return true;
-                }
-                return false;
-            }
-        }
-    }
+unsafe fn recycle_packet(owner: NonNull<()>) {
+    let buffer = owner.cast::<PacketBuffer>();
+    // SAFETY: the pool supplies its retained allocation as retirement owner.
+    // PacketBufferMemory invokes this only after its last window has returned.
+    let pool = unsafe { buffer.as_ref().meta.pool };
+    pool.return_buffer(buffer);
 }
+
+const _: () = assert!(core::mem::size_of::<PacketBuffer>() == DMA_PAGE_SIZE);
 
 const CPU_CACHE_CAPACITY: usize = 32;
 const BATCH_SIZE: usize = 16;
@@ -126,7 +76,11 @@ pub struct Mempool {
     alloc_failed: AtomicU64,
 }
 
+// SAFETY: every stable packet page belongs to the permanent pool registry;
+// counted packet leases recycle once, and every free/cache index is locked.
 unsafe impl Send for Mempool {}
+// SAFETY: shared access serializes indexes and acquisition grants one CPU
+// window. Backing retention by device mappings grants no CPU byte access.
 unsafe impl Sync for Mempool {}
 
 impl fmt::Debug for Mempool {
@@ -155,6 +109,8 @@ pub enum MempoolError {
     NoCurrentCpu,
     CpuNotProvisioned(crate::cpu::CpuId),
     BufferAllocationFailed,
+    BufferMetadataAllocationFailed,
+    BackingUnavailable(PacketAcquireError),
     OutOfBuffers,
 }
 
@@ -168,6 +124,8 @@ impl MempoolError {
             Self::NoCurrentCpu => "mempool allocation requires a current CPU",
             Self::CpuNotProvisioned(_) => "mempool cache is not provisioned for the current CPU",
             Self::BufferAllocationFailed => "mempool buffer allocation failed",
+            Self::BufferMetadataAllocationFailed => "mempool buffer registry allocation failed",
+            Self::BackingUnavailable(_) => "mempool backing acquisition rejected",
             Self::OutOfBuffers => "mempool exhausted",
         }
     }
@@ -180,6 +138,13 @@ impl fmt::Display for MempoolError {
 }
 
 impl Mempool {
+    fn prepare_cpu_cache() -> Result<Arc<PoisonLock<Vec<NonNull<PacketBuffer>>>>, MempoolError> {
+        let mut slots = Vec::new();
+        slots
+            .try_reserve_exact(CPU_CACHE_CAPACITY)
+            .map_err(|_| MempoolError::CpuCacheAllocationFailed)?;
+        Arc::try_new(PoisonLock::new(slots)).map_err(|_| MempoolError::CpuCacheAllocationFailed)
+    }
     pub fn new(id: u32, cpu_snapshot: &crate::cpu::CpuSnapshot) -> Result<Self, MempoolError> {
         let mut local_caches = Vec::new();
         local_caches
@@ -189,7 +154,7 @@ impl Mempool {
             if slot.id.as_usize() != local_caches.len() {
                 return Err(MempoolError::CpuNotProvisioned(slot.id));
             }
-            local_caches.push(Arc::new(PoisonLock::new(Vec::new())));
+            local_caches.push(Self::prepare_cpu_cache()?);
         }
 
         Ok(Self {
@@ -203,7 +168,7 @@ impl Mempool {
         })
     }
 
-    pub fn init(&self, capacity: usize) -> Result<(), MempoolError> {
+    pub fn init(&'static self, capacity: usize) -> Result<(), MempoolError> {
         let mut buffers = self
             .buffers
             .lock()
@@ -212,17 +177,26 @@ impl Mempool {
             .free_list
             .lock()
             .map_err(|_| MempoolError::LockPoisoned(MempoolLock::FreeList))?;
-        for i in 0..capacity {
-            let layout = alloc::alloc::Layout::new::<PacketBuffer>();
-            let nn = crate::mm::cache::exchange_heap::allocate_raw(layout)
-                .ok_or(MempoolError::BufferAllocationFailed)?;
-            let non_null = nn.cast::<PacketBuffer>();
-            crate::sas::register_object(
-                non_null.as_ptr() as usize,
-                layout.size(),
-                crate::sas::DomainId::new(0),
-            );
-            unsafe { Self::write_initial_packet_buffer(non_null, self.id, i as u32) };
+        buffers
+            .try_reserve_exact(capacity)
+            .map_err(|_| MempoolError::BufferMetadataAllocationFailed)?;
+        free_list
+            .try_reserve_exact(capacity)
+            .map_err(|_| MempoolError::BufferMetadataAllocationFailed)?;
+        // LOOP_PROOF: mode=bounded; reason=Initialization admits exactly the requested fixed number of physical packet pages;
+        for _ in 0..capacity {
+            let index =
+                u32::try_from(buffers.len()).map_err(|_| MempoolError::BufferAllocationFailed)?;
+            let storage = backing::PacketStorage::allocate(DMA_PAGE_SIZE)
+                .map_err(|_| MempoolError::BufferAllocationFailed)?;
+            let non_null = storage
+                .pointer()
+                .map_err(|_| MempoolError::BufferAllocationFailed)?
+                .cast::<PacketBuffer>();
+            // SAFETY: this freshly initialized page is exclusively owned by
+            // storage. The permanent pool registry keeps its stable header;
+            // its embedded storage Arc retains RAM through every reuse cycle.
+            unsafe { Self::write_initial_packet_buffer(non_null, self, index, storage) };
             buffers.push(non_null);
             free_list.push(non_null);
         }
@@ -258,7 +232,7 @@ impl Mempool {
             if slot.id.as_usize() != local_caches.len() {
                 return Err(MempoolError::CpuNotProvisioned(slot.id));
             }
-            local_caches.push(Arc::new(PoisonLock::new(Vec::new())));
+            local_caches.push(Self::prepare_cpu_cache()?);
         }
         Ok(())
     }
@@ -275,27 +249,34 @@ impl Mempool {
             .ok_or(MempoolError::CpuNotProvisioned(cpu_id))
     }
 
-    unsafe fn write_initial_packet_buffer(buffer: NonNull<PacketBuffer>, pool_id: u32, index: u32) {
+    unsafe fn write_initial_packet_buffer(
+        buffer: NonNull<PacketBuffer>,
+        pool: &'static Mempool,
+        index: u32,
+        storage: Arc<backing::PacketStorage>,
+    ) {
         let buffer_ptr = buffer.as_ptr();
-        let virt_addr = buffer_ptr as u64;
-        let offset = crate::mm::virt::mapping::physical_memory_offset();
-        let phys = if virt_addr >= offset {
-            virt_addr - offset
-        } else {
-            virt_addr
-        };
+        let physical = storage.physical();
+        // SAFETY: the caller owns a whole aligned initialized packet page.
         unsafe {
             core::ptr::addr_of_mut!((*buffer_ptr).data)
                 .cast::<u8>()
                 .write_bytes(0, DEFAULT_BUFFER_SIZE);
-            core::ptr::addr_of_mut!((*buffer_ptr).meta).write(PacketBufferMeta {
-                phys_addr: PhysAddr::new(phys),
-                device_addr: 0,
-                pool_id,
-                index,
-                ref_count: AtomicU64::new(0),
-                _padding: [0; 8],
-            });
+            core::ptr::addr_of_mut!((*buffer_ptr).meta).write(PacketBufferMeta { pool, index });
+            let data =
+                NonNull::new_unchecked(core::ptr::addr_of_mut!((*buffer_ptr).data).cast::<u8>());
+            let capacity = kernel_api::dma::DmaByteCount::new(DEFAULT_BUFFER_SIZE)
+                .expect("fixed packet capacity fits a DMA byte count");
+            // The allocation is CPU-owned. Device admission must establish an
+            // owned mapping before this buffer may be posted to a hardware queue.
+            core::ptr::addr_of_mut!((*buffer_ptr).memory).write(PacketBufferMemory::new(
+                data,
+                capacity,
+                kernel_api::resource::memory::PhysicalAddress::new(physical.as_u64()),
+                storage,
+                buffer.cast(),
+                recycle_packet,
+            ));
         }
     }
 
@@ -306,13 +287,19 @@ impl Mempool {
 
     unsafe fn init_buffer_for_alloc(
         buffer: NonNull<PacketBuffer>,
-        pool: &'static Mempool,
-    ) -> PacketRef {
+    ) -> Result<PacketRef, MempoolError> {
         // SAFETY: the free-list hands out this buffer exclusively. PacketRef
         // growth initializes only bytes that become software-visible, while RX
         // completion publishes only the device-written prefix.
-        unsafe { buffer.as_ref().meta.ref_count.store(1, Ordering::Release) };
-        new_pooled_packet_ref(buffer, pool)
+        // SAFETY: this free-list entry grants unique acquisition. The pool's
+        // buffer registry retains its allocation through the recycle callback.
+        unsafe {
+            PacketRef::acquire(
+                NonNull::from(&buffer.as_ref().memory),
+                DEFAULT_PACKET_HEADROOM.min(DEFAULT_BUFFER_SIZE),
+            )
+        }
+        .map_err(MempoolError::BackingUnavailable)
     }
 
     pub fn alloc(&'static self) -> Result<PacketRef, MempoolError> {
@@ -358,9 +345,10 @@ impl Mempool {
                     if let Ok(mut remote_cache) = remote_lock.try_lock() {
                         if remote_cache.len() > 1 {
                             let steal_count = (remote_cache.len() / 2).min(BATCH_SIZE);
-                            let split_idx = remote_cache.len() - steal_count;
-                            let stolen = remote_cache.split_off(split_idx);
-                            cache.extend(stolen);
+                            // LOOP_PROOF: mode=bounded; reason=At most one preallocated CPU cache batch moves between locked free indexes;
+                            for _ in 0..steal_count {
+                                cache.push(remote_cache.pop().expect("bounded cache batch"));
+                            }
                             refilled = true;
                             break;
                         }
@@ -395,7 +383,7 @@ impl Mempool {
             .pop()
             .ok_or_else(|| self.record_alloc_failure(MempoolError::OutOfBuffers))?;
         self.alloc_count.fetch_add(1, Ordering::Relaxed);
-        Ok(unsafe { Self::init_buffer_for_alloc(buffer, self) })
+        unsafe { Self::init_buffer_for_alloc(buffer) }
     }
 
     fn return_buffer(&self, buffer: NonNull<PacketBuffer>) {
@@ -406,10 +394,12 @@ impl Mempool {
             if let Ok(mut cache) = cache_lock.lock() {
                 cache.push(buffer);
                 if cache.len() >= CPU_CACHE_CAPACITY {
-                    let mid = cache.len() / 2;
-                    let to_flush = cache.split_off(mid);
+                    let count = cache.len() / 2;
                     let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
-                    global_free.extend(to_flush);
+                    // LOOP_PROOF: mode=bounded; reason=Half of one fixed-capacity CPU cache returns to the already reserved pool free index;
+                    for _ in 0..count {
+                        global_free.push(cache.pop().expect("bounded cache return"));
+                    }
                 }
                 self.free_count.fetch_add(1, Ordering::Relaxed);
                 return;
