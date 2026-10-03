@@ -42,6 +42,7 @@ pub mod direct_block;
 pub mod dma;
 pub mod fs;
 pub mod ipc;
+pub(crate) mod mmio;
 pub mod net;
 pub mod nvme;
 pub mod storage;
@@ -84,108 +85,38 @@ fn map_storage_transport(raw: u32) -> StorageTransport {
     }
 }
 
-#[derive(Clone, Copy)]
-struct BlockDeviceAdapter {
-    registration: AbiBlockDeviceRegistration,
+/// Function pointers and their owner heap outlive every retained device index.
+struct CallbackOwner {
+    domain: DomainId,
+    code: Option<crate::domain::DomainCodeLease>,
 }
 
-impl DeviceOps for BlockDeviceAdapter {
-    fn submit(&self, req: &IoRequest, _cpu_id: crate::cpu::CpuId) -> Result<(), IoError> {
-        let Some(command) = req.command.as_ref() else {
-            return Err(IoError::NotSupported);
+impl CallbackOwner {
+    fn acquire(domain: DomainId) -> kernel_api::error::KapiResult<Self> {
+        let code = if domain == DomainId::KERNEL {
+            None
+        } else {
+            Some(
+                crate::domain::registry::acquire_resource_code_lease(domain)
+                    .ok_or(kernel_api::error::KapiError::Busy)?,
+            )
         };
+        Ok(Self { domain, code })
+    }
 
-        let (kind, lba, blocks, bytes, iova) = match command {
-            IoCommand::BlockRead {
-                lba,
-                blocks,
-                bytes,
-                buf,
-            } => (
-                AbiBlockCommandKind::Read as u32,
-                *lba,
-                *blocks as u32,
-                *bytes,
-                buf.iova,
-            ),
-            IoCommand::BlockWrite {
-                lba,
-                blocks,
-                bytes,
-                buf,
-            } => (
-                AbiBlockCommandKind::Write as u32,
-                *lba,
-                *blocks as u32,
-                *bytes,
-                buf.iova,
-            ),
-            IoCommand::Flush => (AbiBlockCommandKind::Flush as u32, 0, 0, 0, 0),
-            IoCommand::Discard { lba, blocks } => (
-                AbiBlockCommandKind::Discard as u32,
-                *lba,
-                *blocks as u32,
-                0,
-                0,
-            ),
-            IoCommand::Ioctl { .. } => return Err(IoError::NotSupported),
-        };
-
-        let status = (self.registration.submit)(
-            self.registration.opaque,
-            req.id.0,
-            kind,
-            lba,
-            blocks,
-            bytes,
-            iova,
-        );
-        match AbiErrorCode::from_raw(status) {
-            AbiErrorCode::Success => Ok(()),
-            AbiErrorCode::Timeout => Err(IoError::Timeout),
-            AbiErrorCode::DeviceBusy => Err(IoError::Busy),
-            AbiErrorCode::InvalidParam => Err(IoError::InvalidParameter),
-            AbiErrorCode::NotSupported => Err(IoError::NotSupported),
-            _ => Err(IoError::DeviceError),
+    fn enter(
+        &self,
+        invocation: crate::domain::registry::ResourceInvocation,
+    ) -> kernel_api::error::KapiResult<Option<crate::cpu::ExecutionContextGuard>> {
+        match &self.code {
+            Some(code) => crate::task::enter_resource_callback(self.domain, code, invocation)
+                .map(Some)
+                .map_err(|_| kernel_api::error::KapiError::Busy),
+            None if crate::task::current_subject().domain == DomainId::KERNEL => Ok(None),
+            None => crate::task::enter_domain(DomainId::KERNEL)
+                .map(Some)
+                .map_err(|_| kernel_api::error::KapiError::Busy),
         }
-    }
-
-    fn is_ready(&self) -> bool {
-        (self.registration.is_ready)(self.registration.opaque)
-    }
-}
-
-impl PollHandler for BlockDeviceAdapter {
-    fn poll_completions(&self) -> Vec<(IoRequestId, IoResult)> {
-        let mut completions = [AbiIoCompletion::default(); 32];
-        let mut written = 0usize;
-        let status = (self.registration.poll)(
-            self.registration.opaque,
-            completions.as_mut_ptr(),
-            completions.len(),
-            &mut written,
-        );
-        if !AbiErrorCode::from_raw(status).is_success() {
-            return Vec::new();
-        }
-
-        completions[..written.min(completions.len())]
-            .iter()
-            .map(|entry| {
-                let result = match AbiErrorCode::from_raw(entry.status) {
-                    AbiErrorCode::Success => IoResult::Success(entry.bytes),
-                    other => match map_io_status(other as i32) {
-                        IoResult::Success(_) => IoResult::Success(entry.bytes),
-                        error => error,
-                    },
-                };
-                (IoRequestId(entry.request_id), result)
-            })
-            .collect()
-    }
-
-    fn is_ready(&self) -> bool {
-        (self.registration.is_ready)(self.registration.opaque)
     }
 }
 
@@ -226,14 +157,15 @@ impl BlockBridgeRegistry {
             }
         }
 
-        let adapter = BlockDeviceAdapter {
+        let adapter = Arc::new(BlockDeviceAdapter {
             registration: *registration,
-        };
+            callbacks: CallbackOwner::acquire(owner).map_err(|_| AbiErrorCode::DeviceBusy)?,
+        });
         io_scheduler().register_device(scheduler_device, Default::default());
-        io_scheduler().register_device_ops(scheduler_device, Arc::new(adapter));
+        io_scheduler().register_device_ops(scheduler_device, adapter.clone());
         hybrid_coordinator()
             .polling_executor()
-            .register_handler(scheduler_device, Box::new(adapter));
+            .register_handler(scheduler_device, adapter);
 
         self.entries
             .write()
@@ -722,7 +654,10 @@ extern "C" fn runtime_submit_rx_buffer(
         return AbiErrorCode::InvalidParam as i32;
     };
     let rx_meta = NetRxMeta::new(meta.queue_index(), rx_layout, meta.flags());
-    let received = match buffer.complete(rx_meta) {
+    // SAFETY: the driver transfers this exact generation after observing its
+    // hardware completion. Claiming the lease excludes duplicate publication;
+    // the driver ABI requires DMA writes to have ceased before this callback.
+    let received = match unsafe { buffer.complete(rx_meta) } {
         Ok(received) => received,
         Err(_) => return AbiErrorCode::InvalidParam as i32,
     };
@@ -806,6 +741,7 @@ extern "C" fn runtime_log(runtime_cookie: u64, level: u32, msg_ptr: *const u8, m
 }
 
 struct NetdevPortAdapter {
+    callbacks: CallbackOwner,
     registration: AbiNetPortRegistration,
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
@@ -819,6 +755,7 @@ unsafe impl Sync for NetdevPortAdapter {}
 
 impl NetdevPortAdapter {
     fn new(
+        owner: DomainId,
         registration: &AbiNetPortRegistration,
         driver_name: &'static str,
         dma_device: IommuDeviceId,
@@ -831,6 +768,7 @@ impl NetdevPortAdapter {
             .try_reserve_exact(usize::from(max_tx_segments.get()))
             .map_err(|_| AbiErrorCode::OutOfMemory)?;
         Ok(Self {
+            callbacks: CallbackOwner::acquire(owner).map_err(|_| AbiErrorCode::DeviceBusy)?,
             registration: *registration,
             driver_name,
             runtime_state: PoisonLock::new(None),
@@ -857,6 +795,10 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn start(&self, runtime: NetPortRuntimeHandle) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let mut state = Box::new(NetRuntimeState {
             runtime,
             table: AbiNetPortRuntime::new(
@@ -874,15 +816,25 @@ impl NetDevicePort for NetdevPortAdapter {
         });
         state.table.runtime_cookie = NetRuntimeStateCookie::from_state(&mut state).as_raw();
         let table_ptr = &state.table as *const AbiNetPortRuntime;
+        // Publish the callback owner before the first foreign call. Failure
+        // keeps the exact box until stop proves every callback/DMA user ended.
+        let mut owned = self.runtime_state.lock().unwrap_or_else(|e| e.into_inner());
+        if owned.is_some() {
+            return Err("standalone netdev runtime already owned");
+        }
+        *owned = Some(state);
         let status = (self.registration.start)(self.registration.opaque, table_ptr);
         if !AbiErrorCode::from_raw(status).is_success() {
             return Err("standalone netdev start failed");
         }
-        *self.runtime_state.lock().unwrap_or_else(|e| e.into_inner()) = Some(state);
         Ok(())
     }
 
     fn bind(&self, if_id: u16) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let status = (self.registration.bind)(self.registration.opaque, if_id);
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
@@ -896,6 +848,10 @@ impl NetDevicePort for NetdevPortAdapter {
         submission: TxSubmission<'_>,
         meta: NetTxMeta,
     ) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let mut abi_segments = self
             .tx_abi_scratch
             .lock()
@@ -937,6 +893,10 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn set_interrupts_enabled(&self, enabled: bool) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let status = (self.registration.set_interrupts_enabled)(self.registration.opaque, enabled);
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
@@ -946,6 +906,10 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn poll(&self, if_id: u16) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let status = (self.registration.poll)(self.registration.opaque, if_id);
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
@@ -955,6 +919,10 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn handle_event(&self, if_id: u16, event: NetDriverEvent) -> Result<(), &'static str> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+            .map_err(|_| "network callback owner is not runnable")?;
         let abi_event = match event {
             NetDriverEvent::Interrupt => AbiNetDriverEvent {
                 kind: AbiNetDriverEventKind::Interrupt as u32,
@@ -981,6 +949,12 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 
     fn stats(&self) -> NetPortStats {
+        let Ok(_execution) = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Operation)
+        else {
+            return NetPortStats::default();
+        };
         let mut stats = AbiNetPortStats::default();
         let status = (self.registration.stats)(self.registration.opaque, &mut stats);
         if !AbiErrorCode::from_raw(status).is_success() {
@@ -995,12 +969,19 @@ impl NetDevicePort for NetdevPortAdapter {
         }
     }
 
-    fn stop(&self) -> Result<(), &'static str> {
+    fn stop(&self) -> kernel_api::error::KapiResult<()> {
+        let _execution = self
+            .callbacks
+            .enter(crate::domain::registry::ResourceInvocation::Finalize)?;
         let status = (self.registration.stop)(self.registration.opaque);
-        if !AbiErrorCode::from_raw(status).is_success() {
-            return Err("standalone netdev could not prove DMA quiescence");
+        match AbiErrorCode::from_raw(status) {
+            AbiErrorCode::Success => {}
+            AbiErrorCode::DeviceBusy => return Err(kernel_api::error::KapiError::Busy),
+            _ => return Err(kernel_api::error::KapiError::IoError),
         }
-        self.dma_mappings.revoke_all()?;
+        self.dma_mappings
+            .revoke_all()
+            .map_err(|_| kernel_api::error::KapiError::IoError)?;
         let _ = self
             .runtime_state
             .lock()
@@ -1010,9 +991,21 @@ impl NetDevicePort for NetdevPortAdapter {
     }
 }
 
+pub(crate) struct NetOwnerCleanupError {
+    completed: usize,
+    retained: usize,
+    cause: kernel_api::error::KapiError,
+}
+
+enum NetdevPortPhase {
+    Registered,
+    Finalizing,
+}
+
 struct NetdevPortEntry {
     owner: DomainId,
     if_id: NetIfId,
+    phase: NetdevPortPhase,
 }
 
 struct NetdevBridgeRegistry {
@@ -1033,50 +1026,92 @@ impl NetdevBridgeRegistry {
         owner: DomainId,
         dma_device: IommuDeviceId,
         registration: &AbiNetPortRegistration,
-    ) -> Result<u64, AbiErrorCode> {
+    ) -> kernel_api::error::KapiResult<u64> {
         let name = leak_driver_name(&registration.info);
-        let adapter: Box<dyn NetDevicePort> =
-            Box::new(NetdevPortAdapter::new(registration, name, dma_device)?);
+        let adapter: Box<dyn NetDevicePort> = Box::new(
+            NetdevPortAdapter::new(owner, registration, name, dma_device).map_err(|cause| {
+                match cause {
+                    AbiErrorCode::OutOfMemory => kernel_api::error::KapiError::OutOfMemory,
+                    _ => kernel_api::error::KapiError::IoError,
+                }
+            })?,
+        );
         let info = adapter.info();
         let runtime = crate::net::runtime::default_runtime();
-        let if_id = net_device_runtime::register_port_in(
+        let outcome = net_device_runtime::register_port_in(
             runtime,
             NetPortRegistration::new(info, adapter, PrimaryPortPolicy::Auto),
-        )
-        .map_err(|_| AbiErrorCode::IoError)?;
+        );
+        let (if_id, failed) = match outcome {
+            Ok(if_id) => (if_id, false),
+            Err(
+                net_device_runtime::NetPortRegistrationError::NotPublished(_)
+                | net_device_runtime::NetPortRegistrationError::Released(_),
+            ) => {
+                return Err(kernel_api::error::KapiError::IoError);
+            }
+            Err(net_device_runtime::NetPortRegistrationError::Retained { if_id, .. }) => {
+                (if_id, true)
+            }
+        };
         let handle = self.next_handle.fetch_add(1, Ordering::Relaxed);
         self.entries
             .write()
             .unwrap_or_else(|e| e.into_inner())
-            .insert(handle, NetdevPortEntry { owner, if_id });
+            .insert(
+                handle,
+                NetdevPortEntry {
+                    owner,
+                    if_id,
+                    phase: NetdevPortPhase::Registered,
+                },
+            );
+        if failed {
+            return Err(kernel_api::error::KapiError::NetRegistrationRetained { handle });
+        }
         Ok(handle)
     }
 
     fn unregister(&self, owner: DomainId, handle: u64) -> Result<(), AbiErrorCode> {
-        let entry = {
+        let if_id = {
             let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
-            let Some(entry) = entries.get(&handle) else {
-                return Err(AbiErrorCode::DeviceNotFound);
-            };
+            let entry = entries
+                .get_mut(&handle)
+                .ok_or(AbiErrorCode::DeviceNotFound)?;
             if entry.owner != owner {
                 return Err(AbiErrorCode::PermissionDenied);
             }
-            entries.remove(&handle)
+            if matches!(entry.phase, NetdevPortPhase::Finalizing) {
+                return Err(AbiErrorCode::DeviceBusy);
+            }
+            entry.phase = NetdevPortPhase::Finalizing;
+            entry.if_id
         };
-        if let Some(entry) = entry {
-            match net_device_runtime::unregister_port_in(
-                crate::net::runtime::default_runtime(),
-                entry.if_id,
-            ) {
-                Ok(true) => {}
-                Ok(false) => return Err(AbiErrorCode::DeviceNotFound),
-                Err(_) => return Err(AbiErrorCode::IoError),
+        let result =
+            net_device_runtime::unregister_port_in(crate::net::runtime::default_runtime(), if_id);
+        let mut entries = self.entries.write().unwrap_or_else(|e| e.into_inner());
+        match result {
+            Ok(true) => {
+                entries.remove(&handle);
+                Ok(())
+            }
+            outcome => {
+                // Restore only retry admission. The runtime retains its stopped
+                // device, DMA and callback state throughout a failed finalizer.
+                if let Some(entry) = entries.get_mut(&handle) {
+                    entry.phase = NetdevPortPhase::Registered;
+                }
+                Err(match outcome {
+                    Err(kernel_api::error::KapiError::Busy) => AbiErrorCode::DeviceBusy,
+                    Err(_) => AbiErrorCode::IoError,
+                    Ok(false) => AbiErrorCode::DeviceNotFound,
+                    Ok(true) => unreachable!(),
+                })
             }
         }
-        Ok(())
     }
 
-    fn cleanup_owner(&self, owner: DomainId) -> usize {
+    fn cleanup_owner(&self, owner: DomainId) -> Result<usize, NetOwnerCleanupError> {
         let handles: Vec<u64> = self
             .entries
             .read()
@@ -1084,10 +1119,44 @@ impl NetdevBridgeRegistry {
             .iter()
             .filter_map(|(handle, entry)| (entry.owner == owner).then_some(*handle))
             .collect();
-        for &handle in &handles {
-            let _ = self.unregister(owner, handle);
+        let mut completed = 0;
+        let mut failure = None;
+        for handle in handles {
+            match self.unregister(owner, handle) {
+                Ok(()) => completed += 1,
+                Err(cause) => {
+                    let cause = match cause {
+                        AbiErrorCode::DeviceBusy => kernel_api::error::KapiError::Busy,
+                        AbiErrorCode::DeviceNotFound => kernel_api::error::KapiError::NotFound,
+                        AbiErrorCode::PermissionDenied => {
+                            kernel_api::error::KapiError::PermissionDenied
+                        }
+                        _ => kernel_api::error::KapiError::IoError,
+                    };
+                    failure.get_or_insert(cause);
+                }
+            }
         }
-        handles.len()
+        let retained = self
+            .entries
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+            .filter(|entry| entry.owner == owner)
+            .count();
+        match failure {
+            Some(cause) => Err(NetOwnerCleanupError {
+                completed,
+                retained,
+                cause,
+            }),
+            None if retained != 0 => Err(NetOwnerCleanupError {
+                completed,
+                retained,
+                cause: kernel_api::error::KapiError::Busy,
+            }),
+            None => Ok(completed),
+        }
     }
 }
 
@@ -1095,25 +1164,57 @@ static BLOCK_DEVICES: BlockBridgeRegistry = BlockBridgeRegistry::new();
 static NVME_NAMESPACES: NvmeNamespaceRegistry = NvmeNamespaceRegistry::new();
 static NETDEV_PORTS: NetdevBridgeRegistry = NetdevBridgeRegistry::new();
 
-pub(crate) fn cleanup_owner_domain(owner: DomainId) -> Result<OwnerCleanupStats, kernel_api::error::KapiError> {
-    OwnerCleanupStats {
+/// Finalize foreign callbacks before revoking their DMA or owner heap.
+/// Failure retains the remaining indices and reports committed partial progress.
+pub(crate) fn cleanup_owner_domain(
+    owner: DomainId,
+) -> Result<OwnerCleanupStats, crate::domain::DomainLifecycleError> {
+    let net_ports = net::cleanup_owner(owner).map_err(|failure| {
+        crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
+            completed_net_ports: failure.completed,
+            retained_net_ports: failure.retained,
+            completed_dma_leases: 0,
+            retained_dma_leases: dma::owner_lease_count(owner),
+            cause: failure.cause,
+        }
+    })?;
+    let dma = dma::cleanup_owner(owner);
+    let retained_dma_leases = dma::owner_lease_count(owner);
+    if retained_dma_leases != 0 {
+        return Err(
+            crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
+                completed_net_ports: net_ports,
+                retained_net_ports: 0,
+                completed_dma_leases: dma.released_handles,
+                retained_dma_leases,
+                cause: kernel_api::error::KapiError::Busy,
+            },
+        );
+    }
+    Ok(OwnerCleanupStats {
         files: fs::cleanup_owner(owner.as_u64()),
         channels: ipc::cleanup_owner(owner.as_u64()),
-        dma: dma::cleanup_owner(owner),
+        dma,
         direct_blocks: direct_block::cleanup_owner(owner.as_u64()),
         block_devices: storage::cleanup_owner(owner),
         nvme_namespaces: nvme::cleanup_owner(owner),
-        net_ports: net::cleanup_owner(owner),
-    }
+        net_ports,
+    })
 }
 
-pub fn cleanup_for_driver_handle(handle: DriverHandle) {
+pub(crate) fn cleanup_for_driver_handle(
+    handle: DriverHandle,
+) -> Result<(), crate::domain::DomainLifecycleError> {
     let Some(cell_id) = driver_domain_manager().find_by_driver_handle(handle) else {
-        return;
+        return Ok(());
     };
-    if let Ok(Some(domain_id)) = driver_domain_manager().with_cell(cell_id, |cell| cell.domain_id) {
-        let _ = cleanup_owner_domain(domain_id);
+    let domain = driver_domain_manager()
+        .with_cell(cell_id, |cell| cell.domain_id)
+        .map_err(|_| crate::domain::DomainLifecycleError::NotFound)?;
+    if let Some(domain) = domain {
+        cleanup_owner_domain(domain)?;
     }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1330,6 +1431,7 @@ mod tests {
 
         let registration = test_net_registration(2);
         let adapter = NetdevPortAdapter::new(
+            DomainId::KERNEL,
             &registration,
             "test-net",
             IommuDeviceId {
