@@ -16,24 +16,6 @@ use core::ptr;
 
 use crate::resource::memory::PhysicalAddress;
 
-/// Task handle - opaque reference to a spawned task
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct TaskHandle {
-    id: u64,
-}
-
-impl TaskHandle {
-    /// Create a new task handle (kernel-only)
-    pub const fn new(id: u64) -> Self {
-        Self { id }
-    }
-
-    /// Get the task ID
-    pub fn id(&self) -> u64 {
-        self.id
-    }
-}
-
 /// Interface selection used by network-related KAPI calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InterfaceScope {
@@ -1327,91 +1309,4 @@ impl NetSocketAddr {
     pub const fn is_ipv6(self) -> bool {
         matches!(self, Self::V6 { .. })
     }
-}
-
-// ============================================================================
-// NVMe I/O Request Types (io_scheduler abstraction)
-// ============================================================================
-
-/// NVMe I/O operation type
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum NvmeIoType {
-    /// Read operation
-    Read,
-    /// Write operation
-    Write,
-    /// Flush operation
-    Flush,
-    /// Discard/TRIM operation
-    Discard,
-}
-
-/// NVMe I/O priority
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum NvmeIoPriority {
-    /// Background (lowest)
-    Background,
-    /// Idle
-    Idle,
-    /// Normal (default)
-    #[default]
-    Normal,
-    /// High priority
-    High,
-    /// Realtime (highest)
-    Realtime,
-}
-
-/// NVMe Read/Write request parameters
-#[derive(Debug)]
-pub struct NvmeRwRequest {
-    /// NVMe device ID
-    pub device_id: u64,
-    /// NVMe namespace ID
-    pub namespace_id: u32,
-    /// Starting LBA
-    pub lba: u64,
-    /// Number of blocks
-    pub blocks: u16,
-    /// PRP1 (first page IOVA)
-    pub prp1: u64,
-    /// PRP2 (second page or PRP list IOVA)
-    pub prp2: u64,
-    /// Transfer size in bytes
-    pub bytes: usize,
-    /// I/O priority
-    pub priority: NvmeIoPriority,
-}
-
-/// NVMe I/O request handle
-#[derive(Debug, Clone, Copy)]
-pub struct NvmeIoHandle {
-    request_id: u64,
-}
-
-impl NvmeIoHandle {
-    /// Create a new handle (kernel-only)
-    pub const fn new(request_id: u64) -> Self {
-        Self { request_id }
-    }
-
-    /// Get the request ID
-    pub fn request_id(&self) -> u64 {
-        self.request_id
-    }
-}
-
-/// NVMe I/O result
-#[derive(Debug)]
-pub enum NvmeIoResult {
-    /// Success with transferred byte count
-    Success(usize),
-    /// Device error
-    DeviceError,
-    /// Timeout
-    Timeout,
-    /// Cancelled
-    Cancelled,
-    /// Invalid parameter
-    InvalidParameter,
 }
