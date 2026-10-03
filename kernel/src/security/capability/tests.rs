@@ -4,6 +4,31 @@ fn fresh_manager() -> CapabilityManager {
     CapabilityManager::new()
 }
 
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn retained_grant_is_scoped_and_released_on_cancellation() {
+    let manager = fresh_manager();
+    manager.set_capabilities(100, CapabilitySet::with_permitted(CAP_FOWNER));
+    let token = manager
+        .grant_capability_with_opts(100, 101, CAP_FOWNER, None, false)
+        .unwrap();
+    assert!(matches!(
+        manager.retain_token(102, token, CAP_FOWNER),
+        Err(CapabilityError::NotPermitted)
+    ));
+    assert_eq!(manager.in_flight_count(token), 0);
+    let owner = manager.retain_token(101, token, CAP_FOWNER).unwrap();
+    manager.revoke_grant(100, token, false).unwrap();
+    assert_eq!(
+        manager.reclaim_token(token),
+        Err(CapabilityError::ReclamationBusy)
+    );
+    assert!(manager.retain_token(101, token, CAP_FOWNER).is_err());
+    drop(owner);
+    assert_eq!(manager.in_flight_count(token), 0);
+    assert_eq!(manager.reclaim_token(token), Ok(()));
+}
+
 fn with_global_manager_test<T>(f: impl FnOnce() -> T) -> T {
     let _guard = crate::host_test_support::guard();
     reset_for_tests();
