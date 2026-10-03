@@ -282,16 +282,6 @@ impl AsyncFile {
         }
     }
 
-    /// 非同期読み取り
-    pub fn read<'a>(&'a self, buf: &'a mut [u8]) -> AsyncReadFuture<'a> {
-        AsyncReadFuture::new(self, buf)
-    }
-
-    /// 非同期書き込み
-    pub fn write<'a>(&'a self, buf: &'a [u8]) -> AsyncWriteFuture<'a> {
-        AsyncWriteFuture::new(self, buf)
-    }
-
     /// シーク
     pub fn seek(&self, pos: SeekFrom) -> FsResult<u64> {
         let current = self.position.load(Ordering::Relaxed);
@@ -332,30 +322,4 @@ impl AsyncFile {
         self.attr.lock().size
     }
 
-    /// フラッシュ
-    pub async fn flush(&self) -> FsResult<()> {
-        AsyncFlushFuture::new(self).await
-    }
-
-    /// 同期（fsync）
-    pub async fn sync(&self) -> FsResult<()> {
-        AsyncSyncFuture::new(self).await
-    }
-}
-
-// ============================================================================
-// Future 実装
-// ============================================================================
-
-/// 非同期読み取りFuture
-pub struct AsyncReadFuture<'a> {
-    file: &'a AsyncFile,
-    buf: &'a mut [u8],
-    started: bool,
-    io_future: Option<crate::io::io_scheduler::IoFuture>,
-    dma_user_len: usize,
-    cancel_guard: Option<NvmeCancelGuard>,
-    dma_result: Option<Arc<PoisonLock<Option<(DmaRegion, usize)>>>>,
-    dma_offset_in_block: Option<usize>,
-    dma_dma_len: Option<usize>,
 }
