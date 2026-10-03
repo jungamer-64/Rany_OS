@@ -19,6 +19,8 @@ const FRAME_BATCH: usize = 32;
 const ZERO_CACHE_CAPACITY: usize = 16;
 const ZERO_BATCH: usize = 8;
 const HUGE_CACHE_CAPACITY: usize = 4;
+const HUGE_BYTES: usize = 2 * 1024 * 1024;
+const HUGE_PAGES: usize = HUGE_BYTES / PAGE_SIZE_4K;
 
 impl From<AddressPoolError> for FrameAllocError {
     fn from(error: AddressPoolError) -> Self {
@@ -100,14 +102,75 @@ impl PhysicalAllocation {
     }
 }
 
+/// A cache hit must satisfy the same geometry as a fresh 2MiB allocation.
+/// Private slots can only receive a complete aligned owner; capacity rejection
+/// returns that owner without changing either cache or page occupancy.
+struct HugeFrameCache {
+    slots: [Option<PhysicalAllocation>; HUGE_CACHE_CAPACITY],
+}
+
+impl HugeFrameCache {
+    const fn new() -> Self {
+        Self {
+            slots: [const { None }; HUGE_CACHE_CAPACITY],
+        }
+    }
+
+    fn insert(&mut self, frame: PhysicalAllocation) -> Result<(), PhysicalAllocation> {
+        if frame.page_count() != HUGE_PAGES || frame.as_u64() % HUGE_BYTES as u64 != 0 {
+            return Err(frame);
+        }
+        let Some(slot) = self.slots.iter_mut().find(|slot| slot.is_none()) else {
+            return Err(frame);
+        };
+        *slot = Some(frame);
+        Ok(())
+    }
+
+    fn take(&mut self) -> Option<PhysicalAllocation> {
+        self.slots.iter_mut().find_map(Option::take)
+    }
+
+    fn take_all(&mut self) -> [Option<PhysicalAllocation>; HUGE_CACHE_CAPACITY] {
+        core::mem::replace(&mut self.slots, [const { None }; HUGE_CACHE_CAPACITY])
+    }
+}
+
 struct NodePool {
     node: NumaNodeId,
     bitmap: FastBitmapAllocator,
     usable: Vec<(u64, u64)>,
-    huge: IrqPoisonLock<[Option<PhysicalAllocation>; HUGE_CACHE_CAPACITY]>,
+    huge: IrqPoisonLock<HugeFrameCache>,
 }
 
 impl NodePool {
+    /// Cache access is optional: never wait for a holder or recover poisoned
+    /// metadata. Miss/busy/poison uses the originating node's occupancy allocator
+    /// after the guard is gone; cached owners remain allocated and retained.
+    fn allocate_huge(&'static self) -> Result<PhysicalAllocation, FrameAllocError> {
+        let cached = match self.huge.try_lock() {
+            Ok(mut cache) => cache.take(),
+            Err(_) => None,
+        };
+        match cached {
+            Some(frame) => Ok(frame),
+            None => self.allocate(HUGE_PAGES, HUGE_BYTES),
+        }
+    }
+
+    /// Rejection leaves the unique return right with the caller. Pool scope,
+    /// geometry, capacity, contention and poison all reject before acceptance;
+    /// callers can synchronously return ordinary retired RAM to its PMM owner.
+    fn retain_huge(&self, frame: PhysicalAllocation) -> Result<(), PhysicalAllocation> {
+        if !core::ptr::eq(frame.owner, self) {
+            return Err(frame);
+        }
+        match self.huge.try_lock() {
+            Ok(mut cache) => cache.insert(frame),
+            Err(_) => Err(frame),
+        }
+    }
+
     fn reclaim_huge_cache(&self) -> crate::mm::reclaim::PoolReclaim {
         use crate::mm::reclaim::PoolReclaim;
         let mut progress = PoolReclaim::default();
@@ -123,7 +186,7 @@ impl NodePool {
                     return progress;
                 }
             };
-            core::mem::replace(&mut *cache, core::array::from_fn(|_| None))
+            cache.take_all()
         };
         for frame in cached.into_iter().flatten() {
             let bytes = frame.size_bytes() as usize;
@@ -249,7 +312,7 @@ fn build(regions: &[(PhysAddr, u64, NumaNodeId)]) -> Result<Pmm, FrameAllocError
             node,
             bitmap,
             usable,
-            huge: IrqPoisonLock::new(core::array::from_fn(|_| None)),
+            huge: IrqPoisonLock::new(HugeFrameCache::new()),
         });
     }
     // A local node is always first. Firmware distances replace this ordering
@@ -443,6 +506,14 @@ pub fn alloc_frame_2m() -> Result<PhysicalAllocation, FrameAllocError> {
     }
     Err(FrameAllocError::Exhausted)
 }
+pub fn alloc_frame_2m_on_numa_node(
+    node: NumaNodeId,
+) -> Result<PhysicalAllocation, FrameAllocError> {
+    PMM.get()
+        .ok_or(FrameAllocError::Uninitialized)?
+        .pool(node)?
+        .allocate_huge()
+}
 pub fn alloc_frame_1g() -> Result<PhysicalAllocation, FrameAllocError> {
     alloc_contiguous_frames_aligned(262144, 1024 * 1024 * 1024)
 }
@@ -533,6 +604,11 @@ pub fn dealloc_frame(frame: PhysicalAllocation) {
 }
 pub fn dealloc_contiguous_frames(allocation: PhysicalAllocation) {
     allocation.release();
+}
+pub fn dealloc_frame_2m(allocation: PhysicalAllocation) {
+    if let Err(frame) = allocation.owner.retain_huge(allocation) {
+        frame.release();
+    }
 }
 pub fn dealloc_frame_1g(allocation: PhysicalAllocation) {
     allocation.release();
@@ -806,6 +882,109 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn huge_cache_rejects_unaligned_full_extents_and_partial_owners() {
+        // The sole 512-page range is exactly 2MiB long, but starts 4KiB past
+        // a huge boundary. No legal 2MiB frame exists in this node.
+        let pmm = Box::leak(Box::new(
+            build(&[(PhysAddr::new(0x201000), 0x200000, NumaNodeId::NODE_0)]).unwrap(),
+        ));
+        let pool = pmm.nodes[0].as_ref().unwrap();
+        let unaligned = pool.allocate(512, 4096).unwrap();
+        assert_eq!(unaligned.as_u64(), 0x201000);
+        dealloc_frame_2m(unaligned);
+        assert_eq!(pool.bitmap.free_count(), 512);
+        assert!(matches!(
+            pool.allocate_huge(),
+            Err(FrameAllocError::Exhausted)
+        ));
+        let partial = pool.allocate(1, 4096).unwrap();
+        let address = partial.as_u64();
+        let returned = pool.retain_huge(partial).unwrap_err();
+        assert_eq!(returned.as_u64(), address);
+        returned.release();
+        assert_eq!(pool.reclaim_huge_cache(), Default::default());
+        assert_eq!(pool.bitmap.free_count(), 512);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn huge_cache_full_and_busy_returns_preserve_exact_owners_without_waiting() {
+        let pmm = Box::leak(Box::new(
+            build(&[(PhysAddr::new(0x200000), 6 * 0x200000, NumaNodeId::NODE_0)]).unwrap(),
+        ));
+        let pool = pmm.nodes[0].as_ref().unwrap();
+        let frames = core::array::from_fn::<_, 4, _>(|_| pool.allocate_huge().unwrap());
+        let cached_addresses = frames.each_ref().map(PhysicalAllocation::as_u64);
+        for frame in frames {
+            assert!(pool.retain_huge(frame).is_ok());
+        }
+        let extra = pool.allocate(512, 0x200000).unwrap();
+        let extra_address = extra.as_u64();
+        let returned = pool.retain_huge(extra).unwrap_err();
+        assert_eq!(returned.as_u64(), extra_address);
+        assert_eq!(pool.bitmap.free_count(), 512);
+        returned.release();
+        assert_eq!(pool.bitmap.free_count(), 2 * 512);
+
+        let held = pool
+            .huge
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture huge cache poisoned"));
+        // Calling both operations while retaining the pool guard proves they
+        // do not depend on the holder releasing it. Fresh RAM stays node-local.
+        let fresh = pool.allocate_huge().unwrap();
+        assert_eq!(fresh.as_u64() % 0x200000, 0);
+        assert!(!cached_addresses.contains(&fresh.as_u64()));
+        assert_eq!(pool.bitmap.free_count(), 512);
+        dealloc_frame_2m(fresh);
+        assert_eq!(pool.bitmap.free_count(), 2 * 512);
+        assert_eq!(
+            held.slots
+                .each_ref()
+                .map(|slot| slot.as_ref().unwrap().as_u64()),
+            cached_addresses
+        );
+        drop(held);
+        let hit = pool.allocate_huge().unwrap();
+        assert!(cached_addresses.contains(&hit.as_u64()));
+        assert_eq!(pool.bitmap.free_count(), 2 * 512);
+        hit.release();
+        assert_eq!(pool.reclaim_huge_cache().reclaimed_bytes, 3 * 0x200000);
+        assert_eq!(pool.bitmap.free_count(), 6 * 512);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn huge_cache_never_accepts_another_nodes_return_authority() {
+        let pmm = Box::leak(Box::new(
+            build(&[
+                (PhysAddr::new(0x200000), 0x200000, NumaNodeId::NODE_0),
+                (PhysAddr::new(0x800000), 0x200000, NumaNodeId::new(1)),
+            ])
+            .unwrap(),
+        ));
+        let source = pmm.nodes[1].as_ref().unwrap();
+        let frame = source.allocate_huge().unwrap();
+        let returned = pmm.nodes[0]
+            .as_ref()
+            .unwrap()
+            .retain_huge(frame)
+            .unwrap_err();
+        assert_eq!(
+            (returned.as_u64(), returned.node()),
+            (0x800000, NumaNodeId::new(1))
+        );
+        assert_eq!(source.bitmap.free_count(), 0);
+        returned.release();
+        assert_eq!(source.bitmap.free_count(), 512);
+        assert_eq!(
+            pmm.nodes[0].as_ref().unwrap().reclaim_huge_cache(),
+            Default::default()
+        );
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn busy_huge_cache_preserves_owners_and_retry_returns_only_cached_ram() {
         const HUGE: usize = 2 * 1024 * 1024;
         let pmm = Box::leak(Box::new(
@@ -819,11 +998,20 @@ mod tests {
         let pool = pmm.nodes[0].as_ref().unwrap();
         let live = pool.allocate(512, HUGE).unwrap();
         let live_address = live.as_u64();
-        let mut held = pool.huge.lock().unwrap();
-        for slot in held.iter_mut() {
-            *slot = Some(pool.allocate(512, HUGE).unwrap());
+        let mut held = pool
+            .huge
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture huge cache poisoned"));
+        for _ in 0..HUGE_CACHE_CAPACITY {
+            assert!(
+                held.insert(pool.allocate(HUGE_PAGES, HUGE).unwrap())
+                    .is_ok()
+            );
         }
-        let addresses = held.each_ref().map(|slot| slot.as_ref().unwrap().as_u64());
+        let addresses = held
+            .slots
+            .each_ref()
+            .map(|slot| slot.as_ref().unwrap().as_u64());
         assert_eq!(pool.bitmap.free_count(), 0);
         assert_eq!(
             pool.reclaim_huge_cache(),
@@ -833,7 +1021,9 @@ mod tests {
             }
         );
         assert_eq!(
-            held.each_ref().map(|slot| slot.as_ref().unwrap().as_u64()),
+            held.slots
+                .each_ref()
+                .map(|slot| slot.as_ref().unwrap().as_u64()),
             addresses
         );
         assert_eq!(pool.bitmap.free_count(), 0);
@@ -847,7 +1037,14 @@ mod tests {
         );
         assert_eq!(pool.bitmap.free_count(), 512 * HUGE_CACHE_CAPACITY);
         assert_eq!(live.as_u64(), live_address);
-        assert!(pool.huge.lock().unwrap().iter().all(Option::is_none));
+        assert!(
+            pool.huge
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture huge cache poisoned"))
+                .slots
+                .iter()
+                .all(Option::is_none)
+        );
         let reused = pool.allocate(512, HUGE).unwrap();
         assert!(addresses.contains(&reused.as_u64()));
         assert_ne!(reused.as_u64(), live_address);
