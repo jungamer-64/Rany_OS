@@ -1,4 +1,14 @@
 use super::*;
+use alloc::vec::Vec;
+
+/// A parent entry installed by a mapping transaction. The child frame stays
+/// owned until the entry is removed and the paging caches are invalidated.
+struct TableLink {
+    parent: PhysAddr,
+    index: usize,
+    child: PhysAddr,
+    previous: PageTableEntry,
+}
 
 // ============================================================================
 // Higher Half Kernel Manager
@@ -292,20 +302,20 @@ impl PageTableManager {
         indices: [usize; 4],
         flags: PageFlags,
     ) -> Result<PhysAddr, MapError> {
-        let pml4 = self.get_table_mut(self.pml4_phys);
-        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+        self.walk_to_page_table_recording(indices, flags, &mut |_| {})
+    }
 
-        let pdpt = self.get_table_mut(pdpt_phys);
-        if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
-            return Err(MapError::ParentEntryHugePage);
+    fn walk_to_page_table_recording(
+        &self,
+        indices: [usize; 4],
+        flags: PageFlags,
+        created: &mut impl FnMut(TableLink),
+    ) -> Result<PhysAddr, MapError> {
+        let mut table = self.pml4_phys;
+        for index in &indices[..3] {
+            table = self.ensure_table_entry_recording(table, *index, flags, created)?;
         }
-        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
-
-        let pd = self.get_table_mut(pd_phys);
-        if pd.entry(indices[2]).is_present() && pd.entry(indices[2]).is_huge() {
-            return Err(MapError::ParentEntryHugePage);
-        }
-        self.ensure_table_entry(pd, indices[2], flags)
+        Ok(table)
     }
 
     /// 4KiBページをマップ
@@ -320,22 +330,26 @@ impl PageTableManager {
         phys: PhysAddr,
         flags: PageFlags,
     ) -> Result<(), MapError> {
+        self.map_page_recording(virt, phys, flags, &mut |_| {})
+    }
+
+    fn map_page_recording(
+        &mut self,
+        virt: VirtAddr,
+        phys: PhysAddr,
+        flags: PageFlags,
+        created: &mut impl FnMut(TableLink),
+    ) -> Result<(), MapError> {
         if !virt.is_page_aligned() || !phys.is_page_aligned() {
             return Err(MapError::AlignmentError);
         }
-
         let indices = virt.page_table_indices();
-        let pt_phys = self.walk_to_page_table(indices, flags)?;
-
-        let pt = self.get_table_mut(pt_phys);
-        let pte = pt.entry_mut(indices[3]);
-
+        let pt_phys = self.walk_to_page_table_recording(indices, flags, created)?;
+        let pte = self.get_table_mut(pt_phys).entry_mut(indices[3]);
         if pte.is_present() {
             return Err(MapError::AlreadyMapped);
         }
-
         *pte = PageTableEntry::new(phys, flags.set(PageFlags::PRESENT));
-
         Ok(())
     }
 
@@ -371,14 +385,13 @@ impl PageTableManager {
         let indices = virt.page_table_indices();
 
         // PML4 -> PDPT -> PD をウォーク
-        let pml4 = self.get_table_mut(self.pml4_phys);
-        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+        let pdpt_phys = self.ensure_table_entry(self.pml4_phys, indices[0], flags)?;
 
         let pdpt = self.get_table_mut(pdpt_phys);
         if pdpt.entry(indices[1]).is_present() && pdpt.entry(indices[1]).is_huge() {
             return Err(MapError::ParentEntryHugePage);
         }
-        let pd_phys = self.ensure_table_entry(pdpt, indices[1], flags)?;
+        let pd_phys = self.ensure_table_entry(pdpt_phys, indices[1], flags)?;
 
         let pd = self.get_table_mut(pd_phys);
         let pde = pd.entry_mut(indices[2]);
@@ -423,8 +436,7 @@ impl PageTableManager {
         let indices = virt.page_table_indices();
 
         // PML4 -> PDPT をウォーク
-        let pml4 = self.get_table_mut(self.pml4_phys);
-        let pdpt_phys = self.ensure_table_entry(pml4, indices[0], flags)?;
+        let pdpt_phys = self.ensure_table_entry(self.pml4_phys, indices[0], flags)?;
 
         let pdpt = self.get_table_mut(pdpt_phys);
         let pdpte = pdpt.entry_mut(indices[1]);
@@ -774,36 +786,42 @@ impl PageTableManager {
     /// テーブルエントリが存在しない場合は新しいテーブルを割り当て
     pub(super) fn ensure_table_entry(
         &self,
-        table: &mut PageTable,
+        table: PhysAddr,
         index: usize,
         flags: PageFlags,
     ) -> Result<PhysAddr, MapError> {
-        let entry = table.entry_mut(index);
+        self.ensure_table_entry_recording(table, index, flags, &mut |_| {})
+    }
 
+    fn ensure_table_entry_recording(
+        &self,
+        parent: PhysAddr,
+        index: usize,
+        flags: PageFlags,
+        created: &mut impl FnMut(TableLink),
+    ) -> Result<PhysAddr, MapError> {
+        let entry = self.get_table_mut(parent).entry_mut(index);
         if entry.is_present() {
             if entry.is_huge() {
                 return Err(MapError::ParentEntryHugePage);
             }
             return Ok(entry.phys_addr());
         }
-
-        // 新しいページテーブルを割り当て
-        let new_table_phys = self.alloc_page_table()?;
-
-        // テーブルをゼロクリア
-        let new_table = self.get_table_mut(new_table_phys);
-        new_table.clear();
-
-        // エントリを設定（常にWritableを設定して下位テーブルへのアクセスを許可）
-        // 脆弱性修正: USERビットは、要求されたフラグにUSERが含まれている場合のみ設定する。
-        // これにより、カーネル専用領域の中間エントリにUSERビットが立つのを防止し、アイソレーションを強化。
+        let previous = *entry;
+        let child = self.alloc_page_table()?;
+        self.get_table_mut(child).clear();
         let mut entry_flags = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE);
         if flags.contains(PageFlags::USER) {
             entry_flags = entry_flags.set(PageFlags::USER);
         }
-        *entry = PageTableEntry::new(new_table_phys, entry_flags);
-
-        Ok(new_table_phys)
+        *entry = PageTableEntry::new(child, entry_flags);
+        created(TableLink {
+            parent,
+            index,
+            child,
+            previous,
+        });
+        Ok(child)
     }
 
     /// 新しいページテーブル用のフレームを割り当て
@@ -924,6 +942,62 @@ pub fn global_translate(virt: VirtAddr) -> Option<PhysAddr> {
     }
 }
 
+/// Checks an existing permanent MMIO aperture against its physical pages and
+/// effective cache type. It neither grants ownership nor changes page tables.
+pub(crate) fn validate_device_aperture(
+    physical: u64,
+    length: usize,
+) -> Result<usize, kernel_api::mmio::MmioAcquireError> {
+    use kernel_api::mmio::MmioAcquireError;
+    if length == 0 {
+        return Err(MmioAcquireError::MappingFailed);
+    }
+    let offset = physical_memory_offset();
+    let end = physical
+        .checked_add(length as u64 - 1)
+        .ok_or(MmioAcquireError::MappingFailed)?;
+    let virtual_start = physical
+        .checked_add(offset)
+        .ok_or(MmioAcquireError::MappingFailed)?;
+    if VirtAddr::new(virtual_start).as_u64() != virtual_start {
+        return Err(MmioAcquireError::MappingFailed);
+    }
+    let base = usize::try_from(virtual_start).map_err(|_| MmioAcquireError::MappingFailed)?;
+    let guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MmioAcquireError::MappingFailed)?;
+    let manager = guard.as_ref().ok_or(MmioAcquireError::Unavailable)?;
+    let walker = PageTableWalker::new(manager.pml4_phys, &manager.mapper);
+    let first = physical & !4095;
+    let last = end & !4095;
+    for index in 0..(last - first) / 4096 + 1 {
+        let page = first + index * 4096;
+        for alias in [page.checked_add(offset), Some(page)] {
+            let virtual_page = alias.ok_or(MmioAcquireError::MappingFailed)?;
+            if VirtAddr::new(virtual_page).as_u64() != virtual_page {
+                return Err(MmioAcquireError::MappingFailed);
+            }
+            let (translated, flags, size) = walker
+                .translate_with_attributes(VirtAddr::new(virtual_page))
+                .ok_or(MmioAcquireError::MappingFailed)?;
+            if translated.as_u64() != page || !flags.contains(PageFlags::WRITABLE) {
+                return Err(MmioAcquireError::MappingFailed);
+            }
+            let pat_bit = match size {
+                PageSize::Size4KiB => PageFlags::PAT,
+                _ => PageFlags::PAT_LARGE,
+            };
+            let pat_index = u8::from(flags.contains(PageFlags::WRITE_THROUGH))
+                | (u8::from(flags.contains(PageFlags::NO_CACHE)) << 1)
+                | (u8::from(flags.contains(pat_bit)) << 2);
+            if !crate::cpu::cache_policy::is_uncached(page, 4096, pat_index) {
+                return Err(MmioAcquireError::CachePolicy);
+            }
+        }
+    }
+    Ok(base)
+}
+
 /// 仮想アドレスのPTEを取得（現在のCR3を使用）
 pub fn get_current_pte(virt: VirtAddr) -> Option<PageTableEntry> {
     match PAGE_TABLE_MANAGER.lock() {
@@ -1010,6 +1084,123 @@ pub unsafe fn global_update_flags_range(
     let result = unsafe { manager.update_flags_range(virt, size, flags) };
     drop(guard);
     finish_range_update(virt, size, result)
+}
+
+/// Maps pre-owned 4 KiB frames into a contiguous virtual run. A failed map
+/// removes every page published by this call before returning. The caller
+/// retains each physical frame until unmap and the TLB shootdown complete.
+pub(crate) unsafe fn global_map_guarded_scatter(
+    guard_page: VirtAddr,
+    frames: &[PhysAddr],
+    flags: PageFlags,
+) -> Result<(), MapError> {
+    let bytes = u64::try_from(frames.len())
+        .ok()
+        .and_then(|count| count.checked_mul(4096))
+        .ok_or(MapError::InvalidAddress)?;
+    base.as_u64()
+        .checked_add(bytes)
+        .ok_or(MapError::InvalidAddress)?;
+    if !base.is_page_aligned() {
+        return Err(MapError::AlignmentError);
+    }
+    // At most three parent tables can be created per leaf. Reserve the journal
+    // before taking the page-table lock; recording links cannot allocate.
+    let capacity = frames
+        .len()
+        .checked_mul(3)
+        .ok_or(MapError::InvalidAddress)?;
+    let mut created = Vec::new();
+    created
+        .try_reserve_exact(capacity)
+        .map_err(|_| MapError::FrameAllocationFailed)?;
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MapError::HardwareError)?;
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    manager.set_pml4_phys(get_cr3());
+    for (mapped, &frame) in frames.iter().enumerate() {
+        let virt = base.offset(mapped as u64 * 4096);
+        let result = manager.map_page_recording(virt, frame, flags, &mut |link| created.push(link));
+        if let Err(error) = result {
+            for rollback in 0..mapped {
+                let address = base.offset(rollback as u64 * 4096);
+                unsafe { manager.unmap_page(address) }
+                    .unwrap_or_else(|_| panic!("scatter map rollback lost a mapped page"));
+            }
+            // Reverse installation order removes children before their parents.
+            for link in created.iter().rev() {
+                let entry = manager.get_table_mut(link.parent).entry_mut(link.index);
+                assert_eq!(
+                    entry.phys_addr(),
+                    link.child,
+                    "scatter parent changed during rollback"
+                );
+                *entry = link.previous;
+            }
+            drop(guard);
+            // Invalidate paging-structure caches even if no leaf was installed.
+            if mapped != 0 || !created.is_empty() {
+                flush_range_tlb(base, bytes);
+            }
+            for link in created {
+                crate::security::dma::unregister_protected_page(link.child.as_u64());
+                let frame = x86_64::structures::paging::PhysFrame::<
+                    x86_64::structures::paging::Size4KiB,
+                >::from_start_address(x86_64::PhysAddr::new(
+                    link.child.as_u64(),
+                ))
+                .expect("page-table frame is aligned");
+                crate::mm::phys::frame_allocator::dealloc_frame(frame);
+            }
+            return Err(error);
+        }
+    }
+    drop(guard);
+    if bytes != 0 {
+        flush_range_tlb(base, bytes);
+    }
+    Ok(())
+}
+
+/// Removes a complete virtual run before its frame owner can release it.
+/// Prevalidation keeps a stale or foreign frame from being partially removed.
+pub unsafe fn global_unmap_scatter(base: VirtAddr, frames: &[PhysAddr]) -> Result<(), MapError> {
+    let bytes = u64::try_from(frames.len())
+        .ok()
+        .and_then(|count| count.checked_mul(4096))
+        .ok_or(MapError::InvalidAddress)?;
+    base.as_u64()
+        .checked_add(bytes)
+        .ok_or(MapError::InvalidAddress)?;
+    if !base.is_page_aligned() {
+        return Err(MapError::AlignmentError);
+    }
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MapError::HardwareError)?;
+    let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
+    manager.set_pml4_phys(get_cr3());
+    {
+        let walker = PageTableWalker::new(get_cr3(), &manager.mapper);
+        for (index, &frame) in frames.iter().enumerate() {
+            let virt = base.offset(index as u64 * 4096);
+            if walker.translate(virt) != Some(frame) {
+                return Err(MapError::NotMapped);
+            }
+        }
+    }
+    for (index, &frame) in frames.iter().enumerate() {
+        let virt = base.offset(index as u64 * 4096);
+        let removed = unsafe { manager.unmap_page(virt) }
+            .unwrap_or_else(|_| panic!("validated scatter page disappeared during unmap"));
+        assert_eq!(removed, frame, "scatter page changed during unmap");
+    }
+    drop(guard);
+    if bytes != 0 {
+        flush_range_tlb(base, bytes);
+    }
+    Ok(())
 }
 
 /// Replacement invalidates the entire unmapped range even if remapping fails.
