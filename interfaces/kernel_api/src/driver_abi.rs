@@ -27,9 +27,9 @@
 //! To maintain the validity of the text-based ABI hash verification in `build.rs`,
 //! all ABI-critical structs (e.g., `DriverContext`, `DriverVTable`) MUST adhere to these rules:
 //!
-//! 1.  **Primitives Only**: Use only primitive types (`u64`, `u32`, `*mut T`, etc.) or types defined within this file.
-//! 2.  **No External Types**: Do not produce fields using `type` aliases or structs defined in other modules.
-//! 3.  **Self-Contained**: Ensure all types used in function signatures `extern "C"` are defined in this file.
+//! ABI declarations use explicit C layouts and opaque pointers. Declarations
+//! moved into a submodule must remain inputs of the canonical hash generator;
+//! both their layout attributes and fields are included in the hash.
 //!
 //! Violated this rule may cause the ABI hash to remain unchanged even when the memory layout changes,
 //! leading to undefined behavior during driver loading.
@@ -42,6 +42,19 @@
 use crate::resource::net::PacketByteCount;
 use core::num::NonZeroU64;
 
+#[path = "driver_abi/async_driver.rs"]
+mod async_driver;
+pub use async_driver::AsyncDriverHost;
+
+#[path = "driver_abi/task.rs"]
+mod task;
+pub use task::{AbiTaskFuture, AbiTaskOptions, AbiTaskSpawnResult, AbiTaskWaker};
+
+#[path = "driver_abi/time.rs"]
+mod time;
+pub use time::{
+    AbiTimeSnapshot, AbiTimerAdmission, AbiTimerRegistration, AbiTimerSchedule, AbiTimerStatistics,
+};
 
 // ============================================================================
 // ABI Version
@@ -55,6 +68,7 @@ pub const DRIVER_ABI_VERSION: u64 = 6;
 
 // Include the generated type hash
 include!(concat!(env!("OUT_DIR"), "/abi_hash.rs"));
+include!(concat!(env!("OUT_DIR"), "/task_waker_abi.rs"));
 
 /// The symbol name that all dynamically loadable drivers must export.
 pub const DRIVER_ENTRY_SYMBOL: &str = "_exorust_driver_entry";
@@ -63,7 +77,7 @@ pub const DRIVER_EXPORTS_SYMBOL: &str = "DRIVER_EXPORTS";
 /// The symbol name for the kernel API function table.
 pub const KERNEL_API_SYMBOL: &str = "__exorust_kernel_api_v4";
 /// ABI version for the KernelApiV4 table.
-pub const KERNEL_API_ABI_VERSION: u32 = 12;
+pub const KERNEL_API_ABI_VERSION: u32 = 13;
 /// ABI version for the DriverExportsV1 header.
 pub const DRIVER_EXPORTS_ABI_VERSION: u32 = 3;
 
@@ -76,6 +90,8 @@ pub type AbiRRefDropFn =
     unsafe extern "C" fn(ptr: *mut u8, owner: u64, meta: usize, size: usize, align: usize);
 pub type DriverExportStateFn =
     extern "C" fn(ctx: *mut DriverContext, out: *mut AbiExportedState) -> i32;
+/// Borrows the header and its bytes for one callback. Import must neither retain
+/// nor free this storage; a Busy result leaves the source snapshot with its owner.
 pub type DriverImportStateFn =
     extern "C" fn(ctx: *mut DriverContext, state: *mut AbiExportedState) -> i32;
 
@@ -157,6 +173,9 @@ impl AbiError {
     /// Interpret a completed ABI call using the same failure classes as native
     /// services. Admission exhaustion, RAM exhaustion and invalid memory inputs
     /// remain distinct so callers can choose retry, reclaim or request repair.
+    /// # Errors
+    /// Preserves the ABI status classification as a KAPI error; zero alone
+    /// denotes success, and unknown status values are ABI contract failures.
     pub fn into_result(self) -> crate::KapiResult<()> {
         use crate::KapiError;
         Err(match self {
@@ -168,7 +187,8 @@ impl AbiError {
             Self::Timeout => KapiError::Timeout,
             Self::DeviceNotFound => KapiError::NotFound,
             Self::NotInitialized => KapiError::NotInitialized,
-            Self::DeviceBusy | Self::ResourceExhausted => KapiError::ResourceExhausted,
+            Self::DeviceBusy => KapiError::Busy,
+            Self::ResourceExhausted => KapiError::ResourceExhausted,
             Self::AlreadyInitialized => KapiError::AlreadyExists,
             Self::InvalidSize => KapiError::InvalidSize,
             Self::InvalidAlignment => KapiError::InvalidAlignment,
@@ -183,6 +203,28 @@ impl From<crate::KapiError> for AbiError {
     fn from(error: crate::KapiError) -> Self {
         use crate::KapiError;
         match error {
+            KapiError::Busy | KapiError::NetRegistrationRetained { .. } => Self::DeviceBusy,
+            KapiError::Mmio(cause) => match cause {
+                crate::mmio::MmioAcquireError::Request(_) => Self::InvalidParam,
+                crate::mmio::MmioAcquireError::PermissionDenied => Self::PermissionDenied,
+                crate::mmio::MmioAcquireError::ResourceBusy => Self::DeviceBusy,
+                crate::mmio::MmioAcquireError::ResourceExhausted => Self::ResourceExhausted,
+                crate::mmio::MmioAcquireError::PhysicalMemoryConflict => Self::InvalidAddress,
+                crate::mmio::MmioAcquireError::CachePolicy => Self::NotSupported,
+                crate::mmio::MmioAcquireError::MappingFailed => Self::MappingFailed,
+                crate::mmio::MmioAcquireError::OutOfMemory => Self::OutOfMemory,
+                crate::mmio::MmioAcquireError::Unavailable => Self::NotInitialized,
+            },
+            KapiError::Timer(cause) => match cause {
+                crate::service::time::TimerError::MemoryExhausted => Self::OutOfMemory,
+                crate::service::time::TimerError::OrderExhausted
+                | crate::service::time::TimerError::ClockExhausted => Self::ResourceExhausted,
+                crate::service::time::TimerError::ServiceUnavailable => Self::NotInitialized,
+                crate::service::time::TimerError::InvalidOptions
+                | crate::service::time::TimerError::ZeroPeriodicInterval => Self::InvalidParam,
+                crate::service::time::TimerError::InvalidAbiResponse
+                | crate::service::time::TimerError::RuntimeAbiMismatch => Self::Error,
+            },
             KapiError::OutOfMemory => Self::OutOfMemory,
             KapiError::PermissionDenied => Self::PermissionDenied,
             KapiError::NotSupported => Self::NotSupported,
@@ -726,18 +768,11 @@ pub enum AbiBlockCommandKind {
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
-pub struct AbiIoCompletion {
-    pub request_id: u64,
-    pub status: i32,
-    pub bytes: usize,
-}
-
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default)]
 pub struct AbiBlockDeviceInfo {
     pub device_id: u64,
     pub namespace_id: u32,
     pub block_size: u32,
+    pub block_count: u64,
     pub max_transfer_blocks: u32,
     pub transport: u32,
     pub flags: u32,
@@ -745,51 +780,12 @@ pub struct AbiBlockDeviceInfo {
     pub port_id: u32,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy)]
-pub struct AbiBlockDeviceRegistration {
-    pub abi_size: u64,
-    pub info: AbiBlockDeviceInfo,
-    pub opaque: u64,
-    pub submit: extern "C" fn(
-        opaque: u64,
-        request_id: u64,
-        command: u32,
-        lba: u64,
-        blocks: u32,
-        bytes: usize,
-        iova: u64,
-    ) -> i32,
-    pub poll: extern "C" fn(
-        opaque: u64,
-        out: *mut AbiIoCompletion,
-        capacity: usize,
-        written: *mut usize,
-    ) -> i32,
-    pub is_ready: extern "C" fn(opaque: u64) -> bool,
-    pub reserved: [u64; 6],
-}
-
-impl AbiBlockDeviceRegistration {
-    pub const fn new(
-        info: AbiBlockDeviceInfo,
-        opaque: u64,
-        submit: extern "C" fn(u64, u64, u32, u64, u32, usize, u64) -> i32,
-        poll: extern "C" fn(u64, *mut AbiIoCompletion, usize, *mut usize) -> i32,
-        is_ready: extern "C" fn(u64) -> bool,
-    ) -> Self {
-        Self {
-            // ABI header size recorded as u64 to avoid truncation on large targets.
-            abi_size: core::mem::size_of::<Self>() as u64,
-            info,
-            opaque,
-            submit,
-            poll,
-            is_ready,
-            reserved: [0; 6],
-        }
-    }
-}
+#[path = "driver_abi/block.rs"]
+mod block;
+pub use block::{
+    AbiBlockCompletion, AbiBlockDeviceRegistration, AbiBlockDisposition, AbiBlockQueueInfo,
+    AbiBlockSubmission, AbiBlockSubmitOutcome,
+};
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
@@ -1256,23 +1252,12 @@ pub struct AbiRxWritableRegion {
 }
 
 #[repr(C)]
+#[derive(Default)]
 pub struct AbiRxLease {
     lease_id: u64,
     region: AbiRxWritableRegion,
     pub reserved: [u64; 2],
 }
-
-impl Default for AbiRxLease {
-    fn default() -> Self {
-        Self {
-            lease_id: 0,
-            region: AbiRxWritableRegion::default(),
-            reserved: [0; 2],
-        }
-    }
-}
-
-unsafe impl Send for AbiRxLease {}
 
 impl AbiRxLease {
     pub fn new(lease_id: NonZeroU64, region: AbiRxWritableRegion) -> Option<Self> {
@@ -1362,6 +1347,10 @@ pub struct AbiNetPortRuntime {
 }
 
 impl AbiNetPortRuntime {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "this ABI callback table binds one runtime cookie and all mandatory ownership and notification operations"
+    )]
     pub const fn new(
         runtime_cookie: u64,
         lease_rx_buffer: extern "C" fn(u64, *mut AbiRxLease) -> i32,
@@ -1554,18 +1543,67 @@ pub struct AbiExportedState {
     pub reserved: [u64; 4],
 }
 
+/// Metadata delivered once by a successful MMIO acquisition. Copying these
+/// numbers does not create another grant; only the private runtime importer
+/// constructs a HAL capability and releases this identity once on retirement.
+#[repr(C)]
+#[derive(Debug, Default)]
+pub struct AbiMmioGrant {
+    pub identity: u64,
+    pub base: usize,
+    pub length: usize,
+}
+
 /// Kernel API function table for drivers.
 ///
-/// Drivers must validate `abi_version` and `abi_size` before using optional
-/// entries in this table. Older drivers may use only the prefix fields and
-/// ignore optional tail entries introduced in later revisions.
+/// Drivers validate the exact `abi_version` and complete `abi_size` before
+/// accessing this table. Required mapping and resource-lifetime entries are
+/// part of that contract; a prefix is insufficient to establish authority.
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct KernelApiV4 {
     pub abi_version: u32,
     pub abi_size: u64,
+    /// Rust notification operations require this identity to match the
+    /// importing build; C mapping/DMA/IRQ operations do not interpret it.
+    pub task_waker_abi: u64,
 
     pub log: extern "C" fn(level: u32, msg_ptr: *const u8, msg_len: usize),
+
+    /// Inputs must be aligned and live; `future` is exclusively borrowed and
+    /// consumed once on both acceptance and rejection. Rejection publishes no
+    /// task. The scheduler retains originating code until the Future retires.
+    pub spawn: unsafe extern "C" fn(
+        future: *mut AbiTaskFuture,
+        options: *const AbiTaskOptions,
+    ) -> AbiTaskSpawnResult,
+
+    /// Timer inputs are initialized and aligned for the call. On acceptance,
+    /// the returned receipt owns cancellation and provider storage.
+    pub timer_register:
+        unsafe extern "C" fn(schedule: *const AbiTimerSchedule) -> AbiTimerAdmission,
+    pub time_snapshot: extern "C" fn() -> AbiTimeSnapshot,
+    pub timer_statistics: extern "C" fn() -> AbiTimerStatistics,
+    /// Reads the scheduler's monotonic clock without provider or timer locks.
+    pub current_tick: extern "C" fn() -> u64,
+    /// Execution identity is observed, never reconstructed from a global slot.
+    /// Zero indicates execution outside an admitted task.
+    pub current_task_id: extern "C" fn() -> u64,
+
+    /// `aperture` is 0 for a complete BAR, 1 for the checked byte window.
+    /// A successful call transfers one retained grant into aligned writable
+    /// `out`; failure publishes no grant. Drivers validate the complete ABI.
+    pub mmio_acquire: unsafe extern "C" fn(
+        device_id: u64,
+        bar: u8,
+        aperture: u8,
+        offset: usize,
+        length: usize,
+        out: *mut AbiMmioGrant,
+    ) -> i32,
+    /// Retires the unique grant after all derived register accesses have ended.
+    /// This is not a DMA completion or device-stop proof.
+    pub mmio_release: unsafe extern "C" fn(identity: u64),
 
     /// Allocation returns metadata only. `out` must be writable and aligned.
     pub dma_allocate: unsafe extern "C" fn(
@@ -1627,6 +1665,8 @@ pub struct KernelApiV4 {
     ) -> i32,
     pub unregister_nvme_namespace: extern "C" fn(handle: u64) -> i32,
 
+    /// `out_handle` is zero on rejection. DeviceBusy with a nonzero handle
+    /// reports startup effects retained for explicit unregister/retry.
     pub register_netdev_port:
         extern "C" fn(registration: *const AbiNetPortRegistration, out_handle: *mut u64) -> i32,
     pub unregister_netdev_port: extern "C" fn(handle: u64) -> i32,
@@ -1655,6 +1695,9 @@ pub struct DriverExportsV1 {
 
     pub entry: DriverEntryFn,
     pub init: Option<extern "C" fn(api: *const KernelApiV4) -> i32>,
+    /// Module teardown follows removal of every instance and release of ordinary
+    /// code leases. Busy retains the mapped module and this same operation for
+    /// retry; it must acknowledge deferred work and destructors before success.
     pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Option<ProviderDescriptorsFn>,
     pub export_state: Option<DriverExportStateFn>,

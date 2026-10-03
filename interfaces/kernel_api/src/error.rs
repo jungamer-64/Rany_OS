@@ -14,6 +14,16 @@ pub type KapiResult<T> = Result<T, KapiError>;
 /// KAPIエラー - すべてのコンポーネントで使用される共通エラー型
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KapiError {
+    /// An operation is incomplete because a live resource or execution blocks it.
+    Busy,
+    /// Network startup failed after publication and shutdown is incomplete.
+    /// The handle remains owned and must be passed to unregister for retry.
+    NetRegistrationRetained {
+        handle: u64,
+    },
+    /// PCI register acquisition keeps its machine-readable failure cause.
+    Mmio(crate::mmio::MmioAcquireError),
+    Timer(crate::service::time::TimerError),
     /// 権限不足
     PermissionDenied,
     /// リソース枯渇
@@ -51,10 +61,17 @@ pub enum KapiError {
 impl fmt::Display for KapiError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::Busy => write!(f, "Resource still in use"),
+            Self::NetRegistrationRetained { handle } => write!(
+                f,
+                "Network registration {handle} retained after failed startup"
+            ),
+            Self::Mmio(cause) => write!(f, "MMIO acquisition failed: {cause:?}"),
             Self::PermissionDenied => write!(f, "Permission denied"),
             Self::ResourceExhausted => write!(f, "Resource exhausted"),
             Self::InvalidHandle => write!(f, "Invalid handle"),
             Self::Timeout => write!(f, "Operation timed out"),
+            Self::Timer(cause) => write!(f, "Timer admission failed: {cause}"),
             Self::NotFound => write!(f, "Resource not found"),
             Self::NotInitialized => write!(f, "Service not initialized"),
             Self::AlreadyExists => write!(f, "Resource already exists"),

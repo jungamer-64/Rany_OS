@@ -7,6 +7,41 @@ extern crate alloc;
 use crate::service::kernel;
 use alloc::vec::Vec;
 
+/// Terminal transfer outcome, including who can still access the allocation.
+/// A returned lease is usable even after rejection or a device error. Retained
+/// outcomes grant no retry authority: the device reconciliation owner keeps it.
+#[derive(Debug)]
+pub enum BlockTransferOutcome {
+    Returned {
+        result: Result<usize, BlockTransferError>,
+        buffer: crate::dma::CpuDmaLease,
+    },
+    Retained {
+        cause: BlockTransferError,
+        reason: BlockTransferRetention,
+    },
+}
+
+/// Why the device owner cannot yet return a CPU transfer lease.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockTransferRetention {
+    CompletionUncertain,
+    AuthorityQuarantined,
+}
+
+/// Admission and transfer failures that require different caller decisions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BlockTransferError {
+    Admission(crate::error::KapiError),
+    InvalidRange,
+    DeviceFailure,
+    Timeout,
+    Cancelled,
+    NoResources,
+    Busy,
+    NotSupported,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StorageTransport {
     Nvme,

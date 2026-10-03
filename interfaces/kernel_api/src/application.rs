@@ -10,7 +10,7 @@
 extern crate alloc;
 
 use crate::capability::{
-    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    DmaCapability, DomainCapabilities, FsCapability, IoPortRange, IpcCapability, MemoryCapability,
     NetCapability, TaskCapability,
 };
 use alloc::boxed::Box;
@@ -91,7 +91,7 @@ impl AppContext {
 
     /// Get I/O capability
     #[inline]
-    pub fn io(&self) -> Option<&IoCapability> {
+    pub fn io(&self) -> Option<&IoPortRange> {
         self.capabilities.io.as_ref()
     }
 

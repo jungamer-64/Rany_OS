@@ -170,10 +170,11 @@ pub trait Driver: Send {
     }
 
     /// Import previously exported state into a freshly loaded driver.
+    /// The caller retains its snapshot for rollback and incomplete import retries.
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn import_live_state(&mut self, _state: DriverStateBlob) -> KapiResult<()> {
+    fn import_live_state(&mut self, _state: &DriverStateBlob) -> KapiResult<()> {
         Ok(())
     }
 }
@@ -190,6 +191,12 @@ pub trait Driver: Send {
 /// # Async-First Design
 /// RanyOSは非同期中心主義を採用しているため、長時間かかる初期化処理（ハードウェア待ちなど）は
 /// 必ず非同期で行う必要がある。
+///
+/// A service host owns the instance and an operation's copied context while
+/// awaiting its future. The context's `driver_data` belongs to that host and
+/// must not be repurposed by the driver. Stop/remove success acknowledges that
+/// all device access and deferred callbacks have ended; an incomplete operation
+/// returns `Busy` and retains its resources for an explicit retry.
 pub trait AsyncDriver: Send + 'static {
     /// ドライバ名
     fn name(&self) -> &str;
@@ -361,6 +368,8 @@ pub enum DriverState {
     Probing,
     /// プローブ成功
     Probed,
+    /// State import is incomplete; startup cannot pass this boundary.
+    Importing,
     /// Startup is incomplete; resources and the driver remain owned.
     Starting,
     /// 動作中

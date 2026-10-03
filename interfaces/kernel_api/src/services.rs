@@ -22,15 +22,20 @@ use crate::dma::{
     DmaReconcileWitness, DmaResetWitness,
 };
 use crate::ipc::{ChannelHandle, DomainId};
+use crate::mmio::{MmioAcquireError, PciMmioRequest};
 use crate::msix::MsixVectorInfo;
+#[cfg(feature = "cell_runtime")]
+#[path = "services/cell_mmio.rs"]
+mod cell_mmio;
+#[cfg(feature = "cell_runtime")]
+#[path = "services/cell_time.rs"]
+mod cell_time;
 use crate::resource::fs::{FileHandle, OpenMode};
 use crate::resource::net::{
     InterfaceScope, NetSocketAddr, PacketPayload, RawEndpoint, TcpAcceptor, TcpConnection,
 };
-use crate::resource::storage::{
-    DirectBlockHandle, NvmeIoHandle, NvmeIoResult, NvmeIoType, NvmeRwRequest,
-};
-use crate::resource::task::TaskHandle;
+use crate::resource::storage::DirectBlockHandle;
+use crate::resource::task::{SpawnError, TaskId, TaskOptions};
 use crate::service::{
     input::InputServices,
     netdev::NetDeviceServices,
@@ -49,20 +54,34 @@ use core::ptr::NonNull;
 /// The kernel implements this trait and registers itself at boot time.
 /// All KAPI functions delegate to this implementation.
 pub trait KernelServices: Send + Sync {
+    /// Acquires the caller's PCI register aperture. Request validity alone does
+    /// not grant access: the implementation authorizes the function, excludes
+    /// RAM/conflicting grants, pins PCI configuration, and retains cache-correct
+    /// mappings until the final derived register retires.
+    ///
+    /// # Errors
+    /// Returns the validation, authorization, admission, cache, or mapping cause.
+    fn acquire_pci_mmio(
+        &self,
+        request: PciMmioRequest,
+    ) -> Result<hal::MappedMmio, MmioAcquireError>;
     // ========================================================================
     // Task Management
     // ========================================================================
 
-    /// Spawn a new async task
-    ///
-    /// Returns the TaskHandle on success.
+    /// Publish a task only after its guarded stack, context, and registration
+    /// resources are owned. A failed admission drops the supplied Future.
     ///
     /// # Errors
-    /// - `KapiError::OutOfMemory` if the kernel cannot allocate resources for the task
-    fn spawn_task(
+    /// Distinguishes scheduler/placement availability, identity or slot limits,
+    /// physical memory, mapping and domain admission failures. A foreign
+    /// runtime may additionally reject malformed input, receipts or an
+    /// incompatible notification representation before transferring ownership.
+    fn spawn(
         &self,
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
-    ) -> KapiResult<TaskHandle>;
+        options: TaskOptions,
+    ) -> Result<TaskId, SpawnError>;
 
     /// Get current tick count (milliseconds since boot)
     fn current_tick(&self) -> u64;
@@ -294,21 +313,23 @@ pub trait KernelServices: Send + Sync {
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
     fn nvme_close_direct(&self, handle: DirectBlockHandle) -> KapiResult<()>;
 
-    /// Read blocks into a DMA buffer (buffer returned on completion)
+    /// Transfer a DMA lease into a read. Rejection returns the usable lease;
+    /// uncertain completion retains it with the device reconciliation owner.
     fn nvme_read_blocks_dma(
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
         buffer: CpuDmaLease,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = crate::service::storage::BlockTransferOutcome> + Send>>;
 
-    /// Write blocks from a DMA buffer (buffer returned on completion)
+    /// Transfer a DMA lease into a write, preserving returned versus retained
+    /// ownership even when the operation fails.
     fn nvme_write_blocks_dma(
         &self,
         handle: DirectBlockHandle,
         block_offset: u64,
         buffer: CpuDmaLease,
-    ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>>;
+    ) -> Pin<Box<dyn Future<Output = crate::service::storage::BlockTransferOutcome> + Send>>;
 
     /// Flush pending writes for a direct handle
     fn nvme_flush_direct(
@@ -336,34 +357,6 @@ pub trait KernelServices: Send + Sync {
     /// I/O command for the specified device. Used for optimizing scatter-gather
     /// operations. Returns `None` if the device doesn't support SGLs or is not available.
     fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize>;
-
-    /// Submit an NVMe read/write I/O request
-    ///
-    /// This abstracts the io_scheduler submit and completion handling.
-    /// Returns a handle that can be used to wait for completion.
-    /// # Errors
-    ///
-    /// Returns an error if the request is invalid or the receiver cannot accept the operation.
-    fn nvme_submit_rw(
-        &self,
-        request: NvmeRwRequest,
-        io_type: NvmeIoType,
-    ) -> KapiResult<NvmeIoHandle>;
-
-    /// Wait for an NVMe I/O request to complete
-    ///
-    /// Blocks until the I/O completes and returns the result.
-    fn nvme_wait_io(
-        &self,
-        handle: NvmeIoHandle,
-    ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>>;
-
-    /// Register a completion callback for an NVMe I/O request
-    fn nvme_register_completion_hook(
-        &self,
-        handle: NvmeIoHandle,
-        hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
-    );
 
     // ========================================================================
     // IPC (Inter-Process Communication)
@@ -470,10 +463,10 @@ pub trait KernelServices: Send + Sync {
 // Global Kernel Registration
 // ============================================================================
 
-use spin::Once;
+use exorust_sync::InitOnce;
 
 /// Global kernel services instance
-static KERNEL: Once<&'static dyn KernelServices> = Once::new();
+static KERNEL: InitOnce<&'static dyn KernelServices> = InitOnce::new();
 
 /// Register the kernel implementation
 ///
@@ -990,12 +983,36 @@ mod standalone {
     struct StandaloneKernelServices;
 
     impl KernelServices for StandaloneKernelServices {
+        fn spawn(
+            &self,
+            future: Pin<Box<dyn Future<Output = ()> + Send>>,
+            options: TaskOptions,
+        ) -> Result<TaskId, SpawnError> {
+            use crate::abi::driver::{AbiTaskFuture, AbiTaskOptions};
+            if super::abi().task_waker_abi != crate::abi::driver::TASK_WAKER_ABI {
+                return Err(SpawnError::RuntimeAbiMismatch);
+            }
+            let mut future = AbiTaskFuture::new(future)?;
+            let options = AbiTaskOptions::from_options(options);
+            // SAFETY: these stack inputs are initialized, aligned and uniquely
+            // borrowed. The current invocation retains originating code while
+            // the provider consumes or rejects its single Future owner.
+            unsafe { (super::abi().spawn)(&mut future, &options) }.into_result()
+        }
+
+        fn acquire_pci_mmio(
+            &self,
+            request: PciMmioRequest,
+        ) -> Result<hal::MappedMmio, MmioAcquireError> {
+            super::cell_mmio::acquire(request)
+        }
+
         fn current_tick(&self) -> u64 {
-            0
+            (super::abi().current_tick)()
         }
 
         fn current_task_id(&self) -> u64 {
-            0
+            (super::abi().current_task_id)()
         }
 
         fn alloc_dma_for_device(
@@ -1024,14 +1041,6 @@ mod standalone {
             _headroom: usize,
         ) -> KapiResult<crate::resource::net::PacketRef> {
             Err(KapiError::NotSupported)
-        }
-
-        fn port_read_u8(&self, port: u16) -> u8 {
-            (super::abi().port_read_u8)(port)
-        }
-
-        fn port_write_u8(&self, port: u16, value: u8) {
-            (super::abi().port_write_u8)(port, value);
         }
 
         fn log(&self, message: &str) {
@@ -1073,8 +1082,13 @@ mod standalone {
         fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_netdev_port)(registration, &mut handle);
-            AbiError::from_raw(status).into_result()?;
-            Ok(handle)
+            if AbiError::from_raw(status).is_success() {
+                Ok(handle)
+            } else if handle != 0 {
+                Err(KapiError::NetRegistrationRetained { handle })
+            } else {
+                AbiError::from_raw(status).into_result().map(|()| handle)
+            }
         }
 
         fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()> {
@@ -1212,9 +1226,15 @@ mod standalone {
             handle: DirectBlockHandle,
             block_offset: u64,
             buffer: CpuDmaLease,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
-            let _ = (handle, block_offset, buffer);
-            unsupported_future()
+        ) -> Pin<Box<dyn Future<Output = crate::service::storage::BlockTransferOutcome> + Send>>
+        {
+            let _ = (handle, block_offset);
+            Box::pin(async move {
+                crate::service::storage::BlockTransferOutcome::Returned {
+                    result: Err(crate::service::storage::BlockTransferError::NotSupported),
+                    buffer,
+                }
+            })
         }
 
         fn nvme_write_blocks_dma(
@@ -1222,9 +1242,15 @@ mod standalone {
             handle: DirectBlockHandle,
             block_offset: u64,
             buffer: CpuDmaLease,
-        ) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
-            let _ = (handle, block_offset, buffer);
-            unsupported_future()
+        ) -> Pin<Box<dyn Future<Output = crate::service::storage::BlockTransferOutcome> + Send>>
+        {
+            let _ = (handle, block_offset);
+            Box::pin(async move {
+                crate::service::storage::BlockTransferOutcome::Returned {
+                    result: Err(crate::service::storage::BlockTransferError::NotSupported),
+                    buffer,
+                }
+            })
         }
 
         fn nvme_flush_direct(
@@ -1253,31 +1279,6 @@ mod standalone {
         fn nvme_sgl_max_entries(&self, device_id: u64) -> Option<usize> {
             let _ = device_id;
             None
-        }
-
-        fn nvme_submit_rw(
-            &self,
-            request: NvmeRwRequest,
-            io_type: NvmeIoType,
-        ) -> KapiResult<NvmeIoHandle> {
-            let _ = (request, io_type);
-            Err(KapiError::NotSupported)
-        }
-
-        fn nvme_wait_io(
-            &self,
-            handle: NvmeIoHandle,
-        ) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
-            let _ = handle;
-            Box::pin(async { NvmeIoResult::Cancelled })
-        }
-
-        fn nvme_register_completion_hook(
-            &self,
-            handle: NvmeIoHandle,
-            hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
-        ) {
-            let _ = (handle, hook);
         }
 
         fn ipc_create_channel(&self) -> KapiResult<(ChannelHandle, ChannelHandle)> {
@@ -1328,7 +1329,8 @@ mod standalone {
         }
 
         fn time_service(&self) -> Option<&dyn TimeService> {
-            None
+            ((super::abi().time_snapshot)().available == 1)
+                .then_some(&super::cell_time::TIME as &dyn TimeService)
         }
     }
 }

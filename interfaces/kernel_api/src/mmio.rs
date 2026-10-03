@@ -17,6 +17,7 @@ use crate::service::platform::{Bar, PciDeviceInfo};
 
 /// Failure to describe or resolve a PCI register aperture; no mapping was made.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u32)]
 pub enum MmioRequestError {
     /// The locator is null or has bits outside the supported segment/BDF domain.
     InvalidDevice,
@@ -44,6 +45,65 @@ pub enum MmioRequestError {
     PhysicalOverflow,
     /// The requested bytes are not all contained in the assigned resource.
     OutOfBounds,
+}
+
+/// Acquisition failures distinguish intent validation, authorization, resource
+/// admission, and installation. Failure grants no access to the aperture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MmioAcquireError {
+    Request(MmioRequestError),
+    PermissionDenied,
+    ResourceBusy,
+    ResourceExhausted,
+    PhysicalMemoryConflict,
+    CachePolicy,
+    MappingFailed,
+    OutOfMemory,
+    Unavailable,
+}
+
+impl MmioAcquireError {
+    /// Stable status encoding used by the device-resource ABI.
+    pub const fn into_abi(self) -> i32 {
+        match self {
+            Self::Request(error) => -256 - error as i32,
+            Self::PermissionDenied => -1,
+            Self::ResourceBusy => -2,
+            Self::ResourceExhausted => -3,
+            Self::PhysicalMemoryConflict => -4,
+            Self::CachePolicy => -5,
+            Self::MappingFailed => -6,
+            Self::OutOfMemory => -7,
+            Self::Unavailable => -8,
+        }
+    }
+
+    /// Decodes a failing ABI status. An unknown status grants no authority.
+    pub const fn from_abi(status: i32) -> Self {
+        match status {
+            -1 => Self::PermissionDenied,
+            -2 => Self::ResourceBusy,
+            -3 => Self::ResourceExhausted,
+            -4 => Self::PhysicalMemoryConflict,
+            -5 => Self::CachePolicy,
+            -7 => Self::OutOfMemory,
+            -8 => Self::Unavailable,
+            -256 => Self::Request(MmioRequestError::InvalidDevice),
+            -257 => Self::Request(MmioRequestError::InvalidBar),
+            -258 => Self::Request(MmioRequestError::Empty),
+            -259 => Self::Request(MmioRequestError::LengthTooLarge),
+            -260 => Self::Request(MmioRequestError::OffsetOverflow),
+            -261 => Self::Request(MmioRequestError::DeviceMismatch),
+            -262 => Self::Request(MmioRequestError::UnsupportedHeader),
+            -263 => Self::Request(MmioRequestError::UnassignedBar),
+            -264 => Self::Request(MmioRequestError::IoBar),
+            -265 => Self::Request(MmioRequestError::UpperBarWord),
+            -266 => Self::Request(MmioRequestError::IncompleteBarPair),
+            -267 => Self::Request(MmioRequestError::PhysicalOverflow),
+            -268 => Self::Request(MmioRequestError::OutOfBounds),
+            _ => Self::MappingFailed,
+        }
+    }
 }
 
 /// Non-empty, checked BAR-relative byte range. Offsets are not physical addresses.
@@ -93,7 +153,15 @@ impl MmioByteRange {
 pub struct PciMmioRequest {
     device: PackedPciLocation,
     bar_index: u8,
-    range: MmioByteRange,
+    aperture: MmioAperture,
+}
+
+/// Whole BAR acquisition is for a device register-layout owner; a byte window
+/// attenuates authority when one queue or protocol needs only part of the BAR.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MmioAperture {
+    WholeBar,
+    Bytes(MmioByteRange),
 }
 
 impl PciMmioRequest {
@@ -108,6 +176,23 @@ impl PciMmioRequest {
         bar_index: u8,
         range: MmioByteRange,
     ) -> Result<Self, MmioRequestError> {
+        Self::with_aperture(device, bar_index, MmioAperture::Bytes(range))
+    }
+
+    /// Requests the function's complete BAR without supplying an address or
+    /// guessing its size. The owner resolves and pins the resource at acquisition.
+    ///
+    /// # Errors
+    /// Rejects a null/noncanonical function identity or a BAR slot beyond BAR5.
+    pub fn whole_bar(device: PackedPciLocation, bar_index: u8) -> Result<Self, MmioRequestError> {
+        Self::with_aperture(device, bar_index, MmioAperture::WholeBar)
+    }
+
+    fn with_aperture(
+        device: PackedPciLocation,
+        bar_index: u8,
+        aperture: MmioAperture,
+    ) -> Result<Self, MmioRequestError> {
         const LOCATOR_MASK: u64 = (0xffff << 32) | (0xff << 16) | (0x1f << 8) | 7;
         if device.is_null() || device.raw() & !LOCATOR_MASK != 0 {
             return Err(MmioRequestError::InvalidDevice);
@@ -118,7 +203,7 @@ impl PciMmioRequest {
         Ok(Self {
             device,
             bar_index,
-            range,
+            aperture,
         })
     }
 
@@ -136,8 +221,8 @@ impl PciMmioRequest {
 
     /// Checked BAR-relative range.
     #[must_use]
-    pub const fn range(self) -> MmioByteRange {
-        self.range
+    pub const fn aperture(self) -> MmioAperture {
+        self.aperture
     }
 
     /// Resolves geometry against an immutable enumeration snapshot.
@@ -206,12 +291,18 @@ impl PciMmioRequest {
         if address_limit.is_some_and(|limit| resource_end > limit) {
             return Err(MmioRequestError::PhysicalOverflow);
         }
-        let end = u64::try_from(self.range.end()).map_err(|_| MmioRequestError::OffsetOverflow)?;
+        let range = match self.aperture {
+            MmioAperture::WholeBar => MmioByteRange::new(
+                0,
+                usize::try_from(size).map_err(|_| MmioRequestError::LengthTooLarge)?,
+            )?,
+            MmioAperture::Bytes(range) => range,
+        };
+        let end = u64::try_from(range.end()).map_err(|_| MmioRequestError::OffsetOverflow)?;
         if end > size {
             return Err(MmioRequestError::OutOfBounds);
         }
-        let offset =
-            u64::try_from(self.range.offset()).map_err(|_| MmioRequestError::OffsetOverflow)?;
+        let offset = u64::try_from(range.offset()).map_err(|_| MmioRequestError::OffsetOverflow)?;
         let physical_start = PhysicalAddress::new(base)
             .checked_offset_bytes(offset)
             .ok_or(MmioRequestError::PhysicalOverflow)?;
@@ -219,6 +310,7 @@ impl PciMmioRequest {
             request: self,
             snapshot: PhantomData,
             physical_start,
+            range,
         })
     }
 }
@@ -231,6 +323,7 @@ pub struct PciMmioGeometry<'snapshot> {
     // ambient configuration-service methods through this narrow geometry value.
     snapshot: PhantomData<&'snapshot PciDeviceInfo>,
     physical_start: PhysicalAddress,
+    range: MmioByteRange,
 }
 
 impl PciMmioGeometry<'_> {
@@ -244,6 +337,11 @@ impl PciMmioGeometry<'_> {
     #[must_use]
     pub const fn physical_start(&self) -> PhysicalAddress {
         self.physical_start
+    }
+
+    /// Resolved BAR-relative byte range, including a resolved whole-BAR request.
+    pub const fn range(&self) -> MmioByteRange {
+        self.range
     }
 }
 
@@ -339,8 +437,8 @@ mod tests {
         let req = request(&info, 0, 3, 4093)?;
         let geometry = req.resolve(&info)?;
         assert_eq!(geometry.physical_start(), PhysicalAddress::new(0x8000_0003));
-        assert_eq!(geometry.request().range().byte_count(), 4093);
-        assert_eq!(geometry.request().range().end(), 4096);
+        assert_eq!(geometry.range().byte_count(), 4093);
+        assert_eq!(geometry.range().end(), 4096);
         assert_eq!(
             request(&info, 0, 4095, 2)?.resolve(&info).err(),
             Some(MmioRequestError::OutOfBounds)

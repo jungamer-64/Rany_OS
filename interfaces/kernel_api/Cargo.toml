@@ -18,9 +18,14 @@ name = "kernel_api"
 path = "src/lib.rs"
 
 [dependencies]
-# Spinlock for global Once registration
-spin = "0.12"
+hal = { path = "../../hal" }
+# Shared initialization excludes local preemption until publication.
+exorust_sync = { path = "../../libs/sync" }
 log = "0.4"
+
+[dev-dependencies]
+# DMA authority tests use the raw host lock independently of kernel execution.
+spin = "0.12"
 
 [features]
 # When set, generated driver macros will emit exported driver entry symbols

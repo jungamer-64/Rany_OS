@@ -2,13 +2,18 @@
 // interfaces/kernel_api/src/resource/net.rs - Network resource ABI
 // ============================================================================
 
+mod packet;
+pub use packet::{
+    PacketAcquireError, PacketBufferMemory, PacketFront, PacketPayloadFront, PacketRef,
+};
+
 use crate::service::kernel;
 use crate::{KapiError, KapiResult};
 
 pub use crate::types_impl::{
-    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketFront,
-    PacketMeta, PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadFront,
-    PacketPayloadOwnershipError, PacketRef, PacketSegments, PacketType, PacketWindowError,
+    DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketMeta,
+    PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadOwnershipError,
+    PacketSegments, PacketType, PacketWindowError,
 };
 
 /// # Errors
@@ -65,6 +70,10 @@ pub async fn tcp_connection_recv_payload(
 /// # Errors
 ///
 /// Returns an error if the request is invalid or the receiver cannot accept the operation.
+#[expect(
+    clippy::result_large_err,
+    reason = "send rejection returns the original inline payload owner without allocating or losing retry ownership"
+)]
 pub async fn tcp_connection_send_payload(
     connection: &TcpConnection,
     payload: PacketPayload,
@@ -99,6 +108,10 @@ pub async fn raw_endpoint_recv_payload(endpoint: &RawEndpoint) -> KapiResult<Pac
 /// # Errors
 ///
 /// Returns an error if the request is invalid or the receiver cannot accept the operation.
+#[expect(
+    clippy::result_large_err,
+    reason = "send rejection returns the original inline payload owner without allocating or losing retry ownership"
+)]
 pub async fn raw_endpoint_send_payload(
     endpoint: &RawEndpoint,
     payload: PacketPayload,

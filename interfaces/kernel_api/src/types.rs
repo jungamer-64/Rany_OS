@@ -8,13 +8,9 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-use core::fmt;
-use core::marker::PhantomData;
-use core::mem::{ManuallyDrop, MaybeUninit, align_of, size_of};
 use core::num::NonZeroUsize;
-use core::ptr;
 
-use crate::resource::memory::PhysicalAddress;
+use crate::resource::net::{PacketFront, PacketPayloadFront, PacketRef};
 
 /// Interface selection used by network-related KAPI calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -107,8 +103,6 @@ impl PacketMeta {
     }
 }
 
-pub const PACKET_REF_STORAGE_WORDS: usize = 5;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PacketByteCount(NonZeroUsize);
 
@@ -129,7 +123,7 @@ impl PacketByteCount {
 pub enum PacketWindowError {
     Empty,
     OutOfBounds,
-    BackendSplitUnsupported,
+    ReferenceLimit,
 }
 
 #[derive(Debug)]
@@ -163,7 +157,7 @@ pub enum PacketPayloadError {
     LengthOverflow,
     AllocationFailed,
     OutOfBounds,
-    BackendSplitUnsupported,
+    ReferenceLimit,
 }
 
 #[derive(Debug)]
@@ -236,6 +230,8 @@ impl Iterator for PacketSegments {
 impl ExactSizeIterator for PacketSegments {}
 
 impl PacketPayload {
+    /// # Errors
+    /// Returns the unchanged packet if its visible region is empty.
     pub fn try_single(packet: PacketRef) -> Result<Self, PacketPayloadOwnershipError<PacketRef>> {
         let Some(total_len) = PacketByteCount::new(packet.len()) else {
             return Err(PacketPayloadOwnershipError::new(
@@ -249,6 +245,12 @@ impl PacketPayload {
         })
     }
 
+    /// # Errors
+    /// Returns both unchanged packets if either is empty or their total length overflows.
+    #[expect(
+        clippy::result_large_err,
+        reason = "rejection returns the original inline packet owners without allocating an error or copying payload bytes"
+    )]
     pub fn try_pair(
         first: PacketRef,
         second: PacketRef,
@@ -277,6 +279,8 @@ impl PacketPayload {
         })
     }
 
+    /// # Errors
+    /// Returns all unchanged segments for an empty list, empty segment, or aggregate length overflow.
     pub fn try_from_segments(
         segments: Vec<PacketRef>,
     ) -> Result<Self, PacketPayloadOwnershipError<Vec<PacketRef>>> {
@@ -389,6 +393,12 @@ impl PacketPayload {
         PacketSegments { inner }
     }
 
+    /// # Errors
+    /// Returns the unchanged packet and payload if the packet is empty, the total length overflows, or segment storage cannot be reserved.
+    #[expect(
+        clippy::result_large_err,
+        reason = "rejection returns the original inline packet owners without allocating an error or copying payload bytes"
+    )]
     pub fn try_prepend(
         self,
         packet: PacketRef,
@@ -454,6 +464,12 @@ impl PacketPayload {
         Ok(Self { storage, total_len })
     }
 
+    /// # Errors
+    /// Returns both unchanged payloads if the total length overflows or segment storage cannot be reserved.
+    #[expect(
+        clippy::result_large_err,
+        reason = "rejection returns the original inline packet owners without allocating an error or copying payload bytes"
+    )]
     pub fn try_append(
         self,
         other: Self,
@@ -595,6 +611,10 @@ impl PacketPayload {
     /// # Errors
     /// Returns the unchanged payload if `len` is out of bounds, backing split
     /// is unsupported, or storage for a multi-segment prefix cannot be reserved.
+    #[expect(
+        clippy::result_large_err,
+        reason = "rejection returns the original inline packet owners without allocating an error or copying payload bytes"
+    )]
     pub fn try_take_front(
         self,
         len: PacketByteCount,
@@ -657,10 +677,14 @@ fn map_window_error(error: PacketWindowError) -> PacketPayloadError {
     match error {
         PacketWindowError::Empty => PacketPayloadError::EmptyPayload,
         PacketWindowError::OutOfBounds => PacketPayloadError::OutOfBounds,
-        PacketWindowError::BackendSplitUnsupported => PacketPayloadError::BackendSplitUnsupported,
+        PacketWindowError::ReferenceLimit => PacketPayloadError::ReferenceLimit,
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "split rejection returns the original inline owners without allocating an error or copying bytes"
+)]
 fn split_pair(
     first: PacketRef,
     second: PacketRef,
@@ -748,6 +772,10 @@ fn split_pair(
     }
 }
 
+#[expect(
+    clippy::result_large_err,
+    reason = "split rejection returns the original inline owners without allocating an error or copying bytes"
+)]
 fn split_many(
     mut segments: Vec<PacketRef>,
     len: PacketByteCount,
@@ -808,7 +836,7 @@ fn split_many(
             Err(error) => {
                 segments.insert(split_index, error.into_owner());
                 return Err(PacketPayloadOwnershipError::new(
-                    PacketPayloadError::BackendSplitUnsupported,
+                    PacketPayloadError::ReferenceLimit,
                     PacketPayload {
                         storage: PacketSegmentStorage::Many(segments),
                         total_len,

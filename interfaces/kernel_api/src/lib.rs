@@ -3,6 +3,7 @@
 // ============================================================================
 
 #![no_std]
+#![feature(allocator_ext)]
 #![allow(clippy::doc_markdown)]
 #![allow(clippy::missing_const_for_fn)]
 #![allow(clippy::use_self)]
@@ -258,7 +259,7 @@ pub mod __type_id {
     );
     pub const KERNEL_API_INTERFACE: DependencySpec = dependency(
         "KernelApiInterface",
-        fnv1a_hash(b"KernelApiInterface:v8:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet"),
+        fnv1a_hash(b"KernelApiInterface:v9:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet+mmio_grant"),
         1,
         0,
         0,
@@ -340,6 +341,31 @@ mod tests {
         assert_eq!(AbiError::from_raw(-7), AbiError::Timeout);
         assert_eq!(AbiError::from_raw(-8), AbiError::IoError);
         assert!(AbiError::from_raw(0).is_success());
+    }
+
+    #[test]
+    fn native_failures_preserve_busy_exhaustion_and_mapping_status_namespaces() {
+        use crate::KapiError;
+        use crate::mmio::MmioAcquireError;
+        use crate::service::time::TimerError;
+        // Status values are independent ABI vectors, including the MMIO
+        // namespace where -2 denotes resource contention rather than absence.
+        for (native, expected) in [
+            (KapiError::Busy, -3),
+            (KapiError::ResourceExhausted, -12),
+            (KapiError::OutOfMemory, -5),
+            (KapiError::Mmio(MmioAcquireError::ResourceBusy), -3),
+            (KapiError::Mmio(MmioAcquireError::MappingFailed), -16),
+            (KapiError::Mmio(MmioAcquireError::PermissionDenied), -9),
+            (KapiError::Timer(TimerError::OrderExhausted), -12),
+        ] {
+            assert_eq!(AbiError::from(native) as i32, expected);
+        }
+        assert_eq!(AbiError::from_raw(-3).into_result(), Err(KapiError::Busy));
+        assert_eq!(
+            AbiError::from_raw(-12).into_result(),
+            Err(KapiError::ResourceExhausted)
+        );
     }
 
     #[test]

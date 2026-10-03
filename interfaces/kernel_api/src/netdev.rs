@@ -157,21 +157,11 @@ impl TxCompletionTicket {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct NetTxMeta {
     pub queue_index: Option<u16>,
     pub flags: u32,
     pub vlan_tag: Option<u16>,
-}
-
-impl Default for NetTxMeta {
-    fn default() -> Self {
-        Self {
-            queue_index: None,
-            flags: 0,
-            vlan_tag: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -380,6 +370,9 @@ pub struct RxBuffer {
 }
 
 impl RxBuffer {
+    /// # Errors
+    /// Returns the unchanged packet if it already exposes data, has no writable
+    /// capacity, or lacks a mapped device address. No device access is granted.
     pub fn try_from_empty_packet(mut packet: PacketRef) -> Result<Self, RxBufferBuildError> {
         if !packet.is_empty() {
             return Err(RxBufferBuildError {
@@ -400,7 +393,8 @@ impl RxBuffer {
                 packet,
             });
         };
-        let Some(device_addr) = NonZeroU64::new(device_addr) else {
+        let Some(device_addr) = device_addr.and_then(|address| NonZeroU64::new(address.get()))
+        else {
             return Err(RxBufferBuildError {
                 cause: RxBufferErrorCause::MissingDeviceAddress,
                 packet,
@@ -428,6 +422,51 @@ impl RxBuffer {
 
     pub fn physical_addr(&self) -> u64 {
         self.packet.phys_addr().as_u64()
+    }
+
+    /// Complete a device write without initializing or exposing the unused tail.
+    ///
+    /// # Safety
+    /// The driver has validated this buffer's hardware completion and the
+    /// device no longer writes it. Every byte in the completed frame is
+    /// initialized; the reported layout belongs to this same buffer lease.
+    ///
+    /// # Errors
+    /// A frame beyond the writable region returns the same completed buffer.
+    /// Its CPU owner may retry publication with a corrected validated layout.
+    pub unsafe fn complete(mut self, meta: NetRxMeta) -> Result<ReceivedPacket, RxCompletionError> {
+        // SAFETY: the caller proved DMA completion and initialization for this
+        // buffer. Publication only changes the private visible window.
+        if let Err(cause) = unsafe {
+            self.packet
+                .publish_device_written(meta.layout().frame_len())
+        } {
+            return Err(RxCompletionError {
+                cause,
+                buffer: self,
+            });
+        }
+        Ok(ReceivedPacket {
+            packet: self.packet,
+            meta,
+        })
+    }
+}
+
+/// Completed DMA with an invalid reported frame bound. Hardware access has
+/// ended, but publication did not consume or change the buffer owner.
+#[derive(Debug)]
+pub struct RxCompletionError {
+    cause: crate::resource::net::PacketWindowError,
+    buffer: RxBuffer,
+}
+
+impl RxCompletionError {
+    pub const fn cause(&self) -> crate::resource::net::PacketWindowError {
+        self.cause
+    }
+    pub fn into_buffer(self) -> RxBuffer {
+        self.buffer
     }
 }
 
@@ -681,7 +720,7 @@ mod tests {
 
     impl NetDeviceServices for FakeServices {
         fn devices(&self) -> Vec<NetDeviceInfo> {
-            self.devices.iter().copied().collect()
+            self.devices.to_vec()
         }
     }
 
@@ -715,7 +754,7 @@ mod tests {
             self.stats
         }
 
-        fn stop(&self) -> Result<(), &'static str> {
+        fn stop(&self) -> crate::error::KapiResult<()> {
             Ok(())
         }
     }

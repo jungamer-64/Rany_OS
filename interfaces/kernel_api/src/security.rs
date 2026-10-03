@@ -29,14 +29,7 @@ pub struct NetCapability {
 unsafe impl Send for NetCapability {}
 unsafe impl Sync for NetCapability {}
 
-/// I/O port access capability
-#[derive(Debug)]
-pub struct IoCapability {
-    _private: (),
-}
-
-unsafe impl Send for IoCapability {}
-unsafe impl Sync for IoCapability {}
+pub use hal::IoPortRange;
 
 /// Interrupt registration capability
 #[derive(Debug)]
@@ -93,7 +86,7 @@ unsafe impl Sync for TaskCapability {}
 pub struct DomainCapabilities {
     pub memory: Option<MemoryCapability>,
     pub net: Option<NetCapability>,
-    pub io: Option<IoCapability>,
+    pub io: Option<IoPortRange>,
     pub interrupt: Option<InterruptCapability>,
     pub dma: Option<DmaCapability>,
     pub fs: Option<FsCapability>,

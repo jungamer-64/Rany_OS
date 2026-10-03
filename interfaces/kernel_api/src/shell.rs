@@ -31,15 +31,7 @@ pub struct MemoryStats {
 // Domain Information
 // ============================================================================
 
-/// Domain state
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomainState {
-    Initializing,
-    Running,
-    Suspended,
-    Stopped,
-    Terminated,
-}
+pub use crate::resource::domain::{DomainLifecycleError, DomainState, DomainStopOutcome};
 
 /// Domain information
 #[derive(Debug, Clone)]
@@ -226,19 +218,19 @@ pub trait ShellServices: Send + Sync {
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn terminate_domain(&self, id: u64) -> Result<(), &'static str>;
+    fn terminate_domain(&self, id: u64) -> Result<(), DomainLifecycleError>;
 
     /// Stop a domain (requires appropriate capability)
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn stop_domain(&self, id: u64) -> Result<(), &'static str>;
+    fn stop_domain(&self, id: u64) -> Result<DomainStopOutcome, DomainLifecycleError>;
 
     /// Resume a domain (requires appropriate capability)
     /// # Errors
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn resume_domain(&self, id: u64) -> Result<(), &'static str>;
+    fn resume_domain(&self, id: u64) -> Result<(), DomainLifecycleError>;
 
     /// Get current domain ID
     fn current_domain(&self) -> u64;

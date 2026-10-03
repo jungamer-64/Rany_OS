@@ -15,22 +15,7 @@ use crate::{KapiError, KapiResult};
 
 pub use crate::types_impl::ChannelHandle;
 
-/// Stable identifier for a protection domain.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-#[repr(transparent)]
-pub struct DomainId(u64);
-
-impl DomainId {
-    pub const KERNEL: Self = Self(0);
-
-    pub const fn new(id: u64) -> Self {
-        Self(id)
-    }
-
-    pub const fn as_u64(self) -> u64 {
-        self.0
-    }
-}
+pub use crate::resource::domain::DomainId;
 
 /// Hash value for ABI/type compatibility checks.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
