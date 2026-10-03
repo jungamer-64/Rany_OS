@@ -232,7 +232,7 @@ struct Pmm {
 }
 
 impl Pmm {
-    fn pool(&'static self, node: NumaNodeId) -> Result<&NodePool, FrameAllocError> {
+    fn pool(&'static self, node: NumaNodeId) -> Result<&'static NodePool, FrameAllocError> {
         if !self
             .known_nodes
             .get(node.as_usize())
@@ -541,8 +541,12 @@ fn cached_frame(node: Option<NumaNodeId>) -> Result<PhysicalAllocation, FrameAll
 
 fn cached_on_node(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocError> {
     if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-        if let Some(Some(frame)) = cpu.with_frame_cache(|cache| cache.pages.pop(Some(node))) {
-            return Ok(frame);
+        match cpu.with_frame_cache(|cache| cache.pages.pop(Some(node))) {
+            Some(Some(frame)) => return Ok(frame),
+            Some(None) => {}
+            // A nested borrow or CPU migration cannot publish a refill here.
+            // Supply only the demand owner rather than reserve 31 extra pages.
+            None => return allocate_on_node(node, 1, PAGE_SIZE_4K),
         }
         // Refill outside the short CPU borrow, from one node only. Fragmented
         // RAM can supply the batch without any physically contiguous request.
@@ -558,15 +562,16 @@ fn cached_on_node(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocErro
             }
         }
         let result = batch.iter_mut().find_map(Option::take).ok_or(failure)?;
-        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-            cpu.with_frame_cache(|cache| {
-                for slot in &mut batch {
-                    if let Some(frame) = slot.take() {
-                        *slot = cache.pages.push(frame).err();
-                    }
+        // Use the original CPU token: its short borrow revalidates owner
+        // identity. Migration rejects publication instead of populating a
+        // different CPU's cache with this node's speculative refill.
+        cpu.with_frame_cache(|cache| {
+            for slot in &mut batch {
+                if let Some(frame) = slot.take() {
+                    *slot = cache.pages.push(frame).err();
                 }
-            });
-        }
+            }
+        });
         for frame in batch.into_iter().flatten() {
             frame.release();
         }
@@ -693,6 +698,86 @@ impl LocalFrameCache {
     }
 }
 
+/// Unpublished zeroed RAM belongs to the refill until consumed by the demand
+/// allocation or accepted by the original CPU's cache. A rejected/partial
+/// publication returns every remaining owner outside the short CPU borrow.
+struct UnpublishedZeroedFrames {
+    frames: [Option<PhysicalAllocation>; ZERO_BATCH],
+}
+
+/// Successful preparation reserves at least one demand frame. Consuming this
+/// state separates that return right from optional CPU-cache publication; the
+/// remaining batch cannot consume or reconstruct the demand right again.
+struct PreparedZeroedRefill {
+    unpublished: UnpublishedZeroedFrames,
+}
+
+impl PreparedZeroedRefill {
+    fn prepare(pool: &'static NodePool, count: usize) -> Result<Self, FrameAllocError> {
+        if count == 0 || count > ZERO_BATCH {
+            return Err(FrameAllocError::InvalidRange);
+        }
+        let mut refill = UnpublishedZeroedFrames {
+            frames: [const { None }; ZERO_BATCH],
+        };
+        for slot in refill.frames.iter_mut().take(count) {
+            match pool.allocate(1, PAGE_SIZE_4K) {
+                Ok(frame) => {
+                    *slot = Some(frame);
+                    let frame = slot.as_ref().expect("refill retains its RAM owner");
+                    // SAFETY: this exact one-page PMM owner has not been
+                    // published or borrowed. Its permanent HHDM covers 4KiB
+                    // of exclusively writable RAM until publication/release.
+                    unsafe {
+                        crate::mm::cache::zero_page::clear_page_memset(
+                            crate::mm::virt::mapping::phys_to_virt(frame.start_address())
+                                .as_mut_ptr::<u8>(),
+                        );
+                    }
+                }
+                Err(error) => {
+                    if refill.frames[0].is_none() {
+                        return Err(error);
+                    }
+                    // At least the demand owner was prepared. Speculative
+                    // refill exhaustion cannot invalidate that allocation.
+                    break;
+                }
+            }
+        }
+        Ok(Self {
+            unpublished: refill,
+        })
+    }
+
+    fn into_parts(mut self) -> (PhysicalAllocation, UnpublishedZeroedFrames) {
+        let demand = self.unpublished.frames[0]
+            .take()
+            .expect("successful preparation retains a demand page");
+        (demand, self.unpublished)
+    }
+}
+
+impl UnpublishedZeroedFrames {
+    fn populate(&mut self, cache: &mut LocalFrameCache) {
+        for slot in &mut self.frames {
+            if let Some(frame) = slot.take() {
+                *slot = cache.zeroed.push(frame).err();
+            }
+        }
+    }
+}
+
+impl Drop for UnpublishedZeroedFrames {
+    fn drop(&mut self) {
+        for slot in &mut self.frames {
+            if let Some(frame) = slot.take() {
+                frame.release();
+            }
+        }
+    }
+}
+
 pub fn alloc_zeroed_frame(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocError> {
     let cpu = crate::cpu::CurrentCpu::acquire();
     if let Some(frame) = cpu
@@ -702,22 +787,23 @@ pub fn alloc_zeroed_frame(node: NumaNodeId) -> Result<PhysicalAllocation, FrameA
     {
         return Ok(frame);
     }
-    refill_zeroed_cache(node);
-    let cpu = crate::cpu::CurrentCpu::acquire();
-    if let Some(frame) = cpu
+    let count = cpu
         .as_ref()
-        .and_then(|cpu| cpu.with_frame_cache(|cache| cache.zeroed.pop(Some(node))))
-        .flatten()
-    {
-        return Ok(frame);
+        .and_then(|cpu| cpu.with_frame_cache(|cache| ZERO_CACHE_CAPACITY - cache.zeroed.len))
+        .map_or(1, |space| (space + 1).min(ZERO_BATCH));
+    let pool = PMM
+        .get()
+        .ok_or(FrameAllocError::Uninitialized)?
+        .pool(node)?;
+    let prepared = PreparedZeroedRefill::prepare(pool, count)?;
+    // The caller's page is consumed before publishing any cache entry. CPU
+    // migration, a nested cache borrow or full storage cannot lose this owner
+    // or force another allocation after the node's RAM has been exhausted.
+    let (result, mut refill) = prepared.into_parts();
+    if let Some(cpu) = cpu {
+        cpu.with_frame_cache(|cache| refill.populate(cache));
     }
-    let frame = allocate_on_node(node, 1, PAGE_SIZE_4K)?;
-    unsafe {
-        crate::mm::cache::zero_page::clear_page_memset(
-            crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_u64() as *mut u8,
-        )
-    };
-    Ok(frame)
+    Ok(result)
 }
 
 pub(crate) fn reclaim_node_caches() -> crate::mm::reclaim::PoolReclaim {
@@ -840,6 +926,136 @@ pub(crate) fn node_distance(from: NumaNodeId, to: NumaNodeId) -> Option<u8> {
 mod tests {
     use super::*;
     use alloc::boxed::Box;
+
+    // Hosted identity/direct-map fixtures retain process-lifetime writable RAM,
+    // matching the native pool's static backing lifetime without a public hook.
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    fn writable_pool<const BYTES: usize>() -> &'static NodePool {
+        #[repr(align(4096))]
+        struct Pages<const N: usize>([u8; N]);
+        assert!(BYTES != 0 && BYTES % 4096 == 0);
+        let memory = Box::leak(Box::new(Pages([0xa5; BYTES])));
+        let start =
+            crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::from_ptr(memory.0.as_ptr()));
+        let pmm = Box::leak(Box::new(
+            build(&[(start, BYTES as u64, NumaNodeId::NODE_0)]).unwrap(),
+        ));
+        pmm.nodes[0].as_ref().unwrap()
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn zeroed_partial_refill_keeps_demand_and_returns_unpublished_ram() {
+        let pool = writable_pool::<{ 3 * 4096 }>();
+        let prepared = PreparedZeroedRefill::prepare(pool, 8).unwrap();
+        assert_eq!(pool.bitmap.free_count(), 0);
+        let (demand, refill) = prepared.into_parts();
+        let address = demand.as_u64();
+        // SAFETY: the fixture's exclusive demand owner retains this mapped page.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                crate::mm::virt::mapping::phys_to_virt(demand.start_address()).as_ptr::<u8>(),
+                4096,
+            )
+        };
+        assert!(bytes.iter().all(|&byte| byte == 0));
+        // No CPU publication: migration or a nested cache borrow can reject it.
+        // Cleanup must return the other two pages while retaining this demand.
+        drop(refill);
+        assert_eq!(pool.bitmap.free_count(), 2);
+        assert_eq!(demand.as_u64(), address);
+        // SAFETY: this live demand retains its exclusively writable payload.
+        unsafe {
+            crate::mm::virt::mapping::phys_to_virt(demand.start_address())
+                .as_mut_ptr::<u8>()
+                .write_bytes(0x37, 4096);
+        }
+        demand.release();
+        assert_eq!(pool.bitmap.free_count(), 3);
+        let (demand, retry) = PreparedZeroedRefill::prepare(pool, 3).unwrap().into_parts();
+        assert_eq!(pool.bitmap.free_count(), 0);
+        for frame in core::iter::once(&demand).chain(retry.frames.iter().flatten()) {
+            // SAFETY: the refill exclusively owns every newly zeroed page.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_ptr::<u8>(),
+                    4096,
+                )
+            };
+            assert!(bytes.iter().all(|&byte| byte == 0));
+        }
+        drop(retry);
+        demand.release();
+        assert_eq!(pool.bitmap.free_count(), 3);
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn zeroed_refill_failure_has_no_progress_and_does_not_consume_other_owners() {
+        let pool = writable_pool::<4096>();
+        let live = pool.allocate(1, 4096).unwrap();
+        let address = live.as_u64();
+        assert!(matches!(
+            PreparedZeroedRefill::prepare(pool, 0),
+            Err(FrameAllocError::InvalidRange)
+        ));
+        assert!(matches!(
+            PreparedZeroedRefill::prepare(pool, 9),
+            Err(FrameAllocError::InvalidRange)
+        ));
+        assert!(matches!(
+            PreparedZeroedRefill::prepare(pool, 8),
+            Err(FrameAllocError::Exhausted)
+        ));
+        assert_eq!(pool.bitmap.free_count(), 0);
+        assert_eq!(live.as_u64(), address);
+        // SAFETY: failed preparation could not acquire/write this live RAM.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                crate::mm::virt::mapping::phys_to_virt(live.start_address()).as_ptr::<u8>(),
+                4096,
+            )
+        };
+        assert!(bytes.iter().all(|&byte| byte == 0xa5));
+        live.release();
+        assert_eq!(pool.bitmap.free_count(), 1);
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn zeroed_full_cache_rejects_speculation_without_losing_demand_or_exceeding_limit() {
+        let pool = writable_pool::<{ 25 * 4096 }>();
+        let mut cache = LocalFrameCache::new();
+        for _ in 0..2 {
+            let (demand, mut spare) = PreparedZeroedRefill::prepare(pool, 8).unwrap().into_parts();
+            assert!(cache.zeroed.push(demand).is_ok());
+            spare.populate(&mut cache);
+        }
+        assert_eq!(cache.zeroed.len, 16);
+        assert_eq!(pool.bitmap.free_count(), 9);
+        let (demand, mut refill) = PreparedZeroedRefill::prepare(pool, 8).unwrap().into_parts();
+        refill.populate(&mut cache);
+        assert_eq!(cache.zeroed.len, 16);
+        assert_eq!(pool.bitmap.free_count(), 1);
+        drop(refill);
+        assert_eq!(pool.bitmap.free_count(), 8);
+        for frame in cache.take_batch().into_iter().flatten() {
+            assert_ne!(frame.as_u64(), demand.as_u64());
+            // SAFETY: each removed cache entry exclusively owns a mapped page.
+            let bytes = unsafe {
+                core::slice::from_raw_parts(
+                    crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_ptr::<u8>(),
+                    4096,
+                )
+            };
+            assert!(bytes.iter().all(|&byte| byte == 0));
+            frame.release();
+        }
+        assert!(cache.is_empty());
+        assert_eq!(pool.bitmap.free_count(), 24);
+        demand.release();
+        assert_eq!(pool.bitmap.free_count(), 25);
+    }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
