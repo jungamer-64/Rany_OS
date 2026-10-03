@@ -8,6 +8,7 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use core::task::{Context, Poll};
 
+use crate::sync::InitOnce;
 use acpi_driver::aml::{
     AmlBudget, AmlPath, AmlValue, OperationRegionHandler, OperationRegionSpace, VmEnvironment,
     VmProgress, VmWait,
@@ -18,7 +19,6 @@ use acpi_driver::{
     GenericAddressSpace, GpeController, GpeEvent, GpeNumber, GpeQueue, GpeRegisterBlock,
     InterruptPolarity, InterruptTriggerMode, NamespaceBinding, RegisterAccessSize,
 };
-use spin::Once;
 
 use crate::cpu::{
     ApicId, CpuEjectCapability, CpuId, CpuSlotState, CpuTopologyIssue, CpuTransitionError,
@@ -53,7 +53,7 @@ impl EjectOstStatus {
     }
 }
 
-static HOTPLUG_SERVICE: Once<AcpiHotplugService> = Once::new();
+static HOTPLUG_SERVICE: InitOnce<AcpiHotplugService> = InitOnce::new();
 
 /// Installs the SCI route and its BSP-pinned firmware worker.
 ///
@@ -118,7 +118,7 @@ fn try_initialize() -> Result<(), FirmwareError> {
     }
     match crate::task::spawn(
         firmware_worker(),
-        crate::task::TaskPlacement::Pinned(CpuId::BOOTSTRAP),
+        crate::task::TaskOptions::pinned(CpuId::BOOTSTRAP),
     ) {
         Ok(task) => {
             service.worker_task.store(task.as_u64(), Ordering::Release);
@@ -306,11 +306,25 @@ async fn execute_method(
                 }
                 let now = crate::drivers::time::current_tick();
                 if until_tick > now {
-                    crate::drivers::time::sleep_ms(until_tick - now).await;
+                    crate::drivers::time::sleep_ms(until_tick - now)
+                        .await
+                        .map_err(|cause| {
+                            firmware_error(
+                                FirmwareErrorKind::Timer(cause),
+                                Some(Arc::from(method.as_str())),
+                                "AML wait could not arm its timer",
+                            )
+                        })?;
                 }
             }
             VmProgress::Waiting(VmWait::Mutex { .. }) => {
-                crate::drivers::time::sleep_ms(1).await;
+                crate::drivers::time::sleep_ms(1).await.map_err(|cause| {
+                    firmware_error(
+                        FirmwareErrorKind::Timer(cause),
+                        Some(Arc::from(method.as_str())),
+                        "AML wait could not arm its timer",
+                    )
+                })?;
             }
         }
     }
@@ -790,249 +804,6 @@ impl SciRoute {
     }
 }
 
-#[derive(Clone, Copy)]
-enum GpeRegisterAccess {
-    SystemIo { base: u16 },
-    SystemMemory { base: usize },
-}
-
-impl GpeRegisterAccess {
-    fn new(address: GenericAddress, total_bytes: u8) -> Result<Self, FirmwareError> {
-        if !matches!(
-            address.access_size,
-            RegisterAccessSize::Undefined | RegisterAccessSize::Byte
-        ) {
-            return Err(firmware_error(
-                FirmwareErrorKind::OperationRegion,
-                None,
-                "fixed GPE registers require byte access",
-            ));
-        }
-        match address.address_space {
-            GenericAddressSpace::SystemIo => {
-                let base = u16::try_from(address.address).map_err(|_| {
-                    firmware_error(
-                        FirmwareErrorKind::OperationRegion,
-                        None,
-                        "fixed GPE System I/O address exceeds the x86 port range",
-                    )
-                })?;
-                let last_offset = total_bytes
-                    .checked_sub(1)
-                    .expect("FADT GPE register block cannot be empty");
-                base.checked_add(u16::from(last_offset)).ok_or_else(|| {
-                    firmware_error(
-                        FirmwareErrorKind::OperationRegion,
-                        None,
-                        "fixed GPE System I/O range exceeds the x86 port range",
-                    )
-                })?;
-                Ok(Self::SystemIo { base })
-            }
-            GenericAddressSpace::SystemMemory => {
-                let virtual_address = address
-                    .address
-                    .checked_add(crate::mm::virt::mapping::physical_memory_offset())
-                    .and_then(|address| usize::try_from(address).ok())
-                    .ok_or_else(|| {
-                        firmware_error(
-                            FirmwareErrorKind::OperationRegion,
-                            None,
-                            "fixed GPE System Memory address cannot be represented",
-                        )
-                    })?;
-                virtual_address
-                    .checked_add(usize::from(
-                        total_bytes
-                            .checked_sub(1)
-                            .expect("FADT GPE register block cannot be empty"),
-                    ))
-                    .ok_or_else(|| {
-                        firmware_error(
-                            FirmwareErrorKind::OperationRegion,
-                            None,
-                            "fixed GPE System Memory range cannot be represented",
-                        )
-                    })?;
-                Ok(Self::SystemMemory {
-                    base: virtual_address,
-                })
-            }
-            GenericAddressSpace::Other(space) => Err(firmware_error(
-                FirmwareErrorKind::OperationRegion,
-                None,
-                alloc::format!("unsupported fixed GPE address space {space:#04x}"),
-            )),
-        }
-    }
-
-    fn read(self, offset: usize) -> u8 {
-        match self {
-            Self::SystemIo { base } => {
-                let port = base
-                    .checked_add(
-                        u16::try_from(offset).expect("fixed GPE register byte offset exceeds u16"),
-                    )
-                    .expect("validated fixed GPE System I/O range overflowed");
-                hal::port_io::inb(port)
-            }
-            Self::SystemMemory { base } => {
-                // SAFETY: construction checked HHDM translation and the FADT
-                // owns the fixed register range for the lifetime of the kernel.
-                unsafe { core::ptr::read_volatile((base + offset) as *const u8) }
-            }
-        }
-    }
-
-    fn write(self, offset: usize, value: u8) {
-        match self {
-            Self::SystemIo { base } => {
-                let port = base
-                    .checked_add(
-                        u16::try_from(offset).expect("fixed GPE register byte offset exceeds u16"),
-                    )
-                    .expect("validated fixed GPE System I/O range overflowed");
-                hal::port_io::outb(port, value);
-            }
-            Self::SystemMemory { base } => {
-                // SAFETY: same fixed-register ownership as `read`; volatile
-                // byte access also avoids alignment requirements.
-                unsafe { core::ptr::write_volatile((base + offset) as *mut u8, value) };
-            }
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-struct FixedGpeBlock {
-    access: GpeRegisterAccess,
-    register_bytes: u8,
-    base_number: u16,
-}
-
-impl FixedGpeBlock {
-    fn from_description(block: GpeRegisterBlock) -> Result<Self, FirmwareError> {
-        Ok(Self {
-            access: GpeRegisterAccess::new(
-                block.address,
-                block.register_bytes.checked_mul(2).ok_or_else(|| {
-                    firmware_error(
-                        FirmwareErrorKind::OperationRegion,
-                        None,
-                        "fixed GPE register block length overflowed",
-                    )
-                })?,
-            )?,
-            register_bytes: block.register_bytes,
-            base_number: block.base_number,
-        })
-    }
-
-    fn location(self, number: GpeNumber) -> Option<(usize, u8)> {
-        let relative = number.get().checked_sub(self.base_number)?;
-        if relative >= u16::from(self.register_bytes) * 8 {
-            return None;
-        }
-        Some((usize::from(relative / 8), 1 << (relative % 8)))
-    }
-
-    fn status(self, byte: usize) -> u8 {
-        self.access.read(byte)
-    }
-
-    fn enabled(self, byte: usize) -> u8 {
-        self.access.read(usize::from(self.register_bytes) + byte)
-    }
-
-    fn write_enable(self, byte: usize, value: u8) {
-        self.access
-            .write(usize::from(self.register_bytes) + byte, value);
-    }
-}
-
-struct FixedGpeController {
-    blocks: Vec<FixedGpeBlock>,
-}
-
-impl FixedGpeController {
-    fn new(fixed: &FixedEventDescription) -> Result<Self, FirmwareError> {
-        let blocks = fixed
-            .gpe_blocks
-            .iter()
-            .copied()
-            .map(FixedGpeBlock::from_description)
-            .collect::<Result<Vec<_>, _>>()?;
-        if blocks.is_empty() {
-            return Err(firmware_error(
-                FirmwareErrorKind::EventDelivery,
-                None,
-                "FADT does not describe a fixed GPE register block",
-            ));
-        }
-        Ok(Self { blocks })
-    }
-
-    fn capture_asserted(&self, events: &GpeEventMap, mut capture: impl FnMut(GpeEvent)) {
-        for block in &self.blocks {
-            for byte in 0..usize::from(block.register_bytes) {
-                let pending = block.status(byte) & block.enabled(byte);
-                for bit in 0..8u8 {
-                    if pending & (1 << bit) == 0 {
-                        continue;
-                    }
-                    let number = block.base_number
-                        + u16::try_from(byte).expect("fixed GPE register byte index exceeds u16")
-                            * 8
-                        + u16::from(bit);
-                    if let Some(event) = events.get(number) {
-                        capture(event);
-                    }
-                }
-            }
-        }
-    }
-
-    fn mask_all(&self) {
-        for block in &self.blocks {
-            for byte in 0..usize::from(block.register_bytes) {
-                block.write_enable(byte, 0);
-            }
-        }
-    }
-}
-
-impl GpeController for FixedGpeController {
-    fn mask(&self, number: GpeNumber) {
-        if let Some((block, byte, mask)) = self.blocks.iter().find_map(|block| {
-            block
-                .location(number)
-                .map(|(byte, mask)| (*block, byte, mask))
-        }) {
-            block.write_enable(byte, block.enabled(byte) & !mask);
-        }
-    }
-
-    fn acknowledge(&self, event: GpeEvent) {
-        if let Some((block, byte, mask)) = self.blocks.iter().find_map(|block| {
-            block
-                .location(event.number)
-                .map(|(byte, mask)| (*block, byte, mask))
-        }) {
-            block.access.write(byte, mask);
-        }
-    }
-
-    fn unmask(&self, number: GpeNumber) {
-        if let Some((block, byte, mask)) = self.blocks.iter().find_map(|block| {
-            block
-                .location(number)
-                .map(|(byte, mask)| (*block, byte, mask))
-        }) {
-            block.write_enable(byte, block.enabled(byte) | mask);
-        }
-    }
-}
-
 struct GpeEventMap {
     events: [Option<GpeEvent>; 256],
     count: usize,
@@ -1065,172 +836,6 @@ impl GpeEventMap {
     fn iter(&self) -> impl Iterator<Item = GpeEvent> + '_ {
         self.events.iter().flatten().copied()
     }
-}
-
-struct AmlOperationRegions;
-
-impl OperationRegionHandler for AmlOperationRegions {
-    fn read(
-        &self,
-        space: OperationRegionSpace,
-        base: u64,
-        region_length: u64,
-        offset: u64,
-        width: u8,
-    ) -> Result<u64, AmlError> {
-        let (address, bytes) = checked_region_access(base, region_length, offset, width)?;
-        match space {
-            OperationRegionSpace::SystemIo => read_system_io(address, bytes),
-            OperationRegionSpace::SystemMemory => read_system_memory(address, bytes),
-            _ => Err(AmlError::operation_region(
-                "AML OperationRegion address space is unsupported",
-            )),
-        }
-    }
-
-    fn write(
-        &self,
-        space: OperationRegionSpace,
-        base: u64,
-        region_length: u64,
-        offset: u64,
-        width: u8,
-        value: u64,
-    ) -> Result<(), AmlError> {
-        let (address, bytes) = checked_region_access(base, region_length, offset, width)?;
-        if bytes < core::mem::size_of::<u64>() && value >= (1u64 << (bytes * 8)) {
-            return Err(AmlError::operation_region(
-                "AML OperationRegion value exceeds the requested access width",
-            ));
-        }
-        match space {
-            OperationRegionSpace::SystemIo => write_system_io(address, bytes, value),
-            OperationRegionSpace::SystemMemory => write_system_memory(address, bytes, value),
-            _ => Err(AmlError::operation_region(
-                "AML OperationRegion address space is unsupported",
-            )),
-        }
-    }
-}
-
-fn checked_region_access(
-    base: u64,
-    region_length: u64,
-    offset: u64,
-    width: u8,
-) -> Result<(u64, usize), AmlError> {
-    if !matches!(width, 8 | 16 | 32 | 64) {
-        return Err(AmlError::operation_region(
-            "AML OperationRegion access width is unsupported",
-        ));
-    }
-    let bytes = usize::from(width / 8);
-    let bytes_u64 = u64::try_from(bytes)
-        .map_err(|_| AmlError::operation_region("AML access width cannot be represented"))?;
-    if offset
-        .checked_add(bytes_u64)
-        .is_none_or(|end| end > region_length)
-    {
-        return Err(AmlError::operation_region(
-            "AML OperationRegion access exceeds its declared range",
-        ));
-    }
-    let address = base
-        .checked_add(offset)
-        .ok_or_else(|| AmlError::operation_region("AML OperationRegion address overflowed"))?;
-    Ok((address, bytes))
-}
-
-fn read_system_io(address: u64, bytes: usize) -> Result<u64, AmlError> {
-    let port = u16::try_from(address).map_err(|_| {
-        AmlError::operation_region("AML System I/O address exceeds the x86 port range")
-    })?;
-    match bytes {
-        1 => Ok(u64::from(hal::port_io::inb(port))),
-        2 => Ok(u64::from(hal::port_io::inw(port))),
-        4 => Ok(u64::from(hal::port_io::inl(port))),
-        _ => Err(AmlError::operation_region(
-            "64-bit AML System I/O access is unsupported",
-        )),
-    }
-}
-
-fn write_system_io(address: u64, bytes: usize, value: u64) -> Result<(), AmlError> {
-    let port = u16::try_from(address).map_err(|_| {
-        AmlError::operation_region("AML System I/O address exceeds the x86 port range")
-    })?;
-    match bytes {
-        1 => hal::port_io::outb(
-            port,
-            u8::try_from(value).expect("validated AML byte access value exceeds u8"),
-        ),
-        2 => hal::port_io::outw(
-            port,
-            u16::try_from(value).expect("validated AML word access value exceeds u16"),
-        ),
-        4 => hal::port_io::outl(
-            port,
-            u32::try_from(value).expect("validated AML dword access value exceeds u32"),
-        ),
-        _ => {
-            return Err(AmlError::operation_region(
-                "64-bit AML System I/O access is unsupported",
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn read_system_memory(address: u64, bytes: usize) -> Result<u64, AmlError> {
-    let base = region_virtual_address(address, bytes)?;
-    let mut value = 0u64;
-    for index in 0..bytes {
-        // SAFETY: HHDM translation and range arithmetic were checked above;
-        // byte-wise volatile access has no alignment requirement.
-        let byte = unsafe { core::ptr::read_volatile((base + index) as *const u8) };
-        value |= u64::from(byte) << (index * 8);
-    }
-    Ok(value)
-}
-
-fn write_system_memory(address: u64, bytes: usize, value: u64) -> Result<(), AmlError> {
-    let base = region_virtual_address(address, bytes)?;
-    for index in 0..bytes {
-        // SAFETY: same validated HHDM range as `read_system_memory`.
-        unsafe {
-            core::ptr::write_volatile(
-                (base + index) as *mut u8,
-                u8::try_from((value >> (index * 8)) & u64::from(u8::MAX))
-                    .expect("masked AML byte cannot exceed u8"),
-            )
-        };
-    }
-    Ok(())
-}
-
-fn region_virtual_address(address: u64, bytes: usize) -> Result<usize, AmlError> {
-    let bytes_u64 = u64::try_from(bytes)
-        .map_err(|_| AmlError::operation_region("AML access width cannot be represented"))?;
-    let end = address
-        .checked_add(bytes_u64)
-        .ok_or_else(|| AmlError::operation_region("AML System Memory range overflowed"))?;
-    let offset = crate::mm::virt::mapping::physical_memory_offset();
-    let base = address.checked_add(offset).ok_or_else(|| {
-        AmlError::operation_region("AML System Memory HHDM translation overflowed")
-    })?;
-    let virtual_end = end
-        .checked_add(offset)
-        .ok_or_else(|| AmlError::operation_region("AML System Memory HHDM range overflowed"))?;
-    let base = usize::try_from(base)
-        .map_err(|_| AmlError::operation_region("AML System Memory address exceeds usize"))?;
-    let virtual_end = usize::try_from(virtual_end)
-        .map_err(|_| AmlError::operation_region("AML System Memory range exceeds usize"))?;
-    if base.checked_add(bytes) != Some(virtual_end) {
-        return Err(AmlError::operation_region(
-            "AML System Memory range is not contiguous after translation",
-        ));
-    }
-    Ok(base)
 }
 
 fn map_acpi_error(error: AcpiError) -> FirmwareError {
