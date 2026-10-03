@@ -273,6 +273,10 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     info!(target: "init", "Memory management initialized");
     graphics::vga::init();
 
+    // CPU bootstrap admits a transition worker. Its domain/security/account
+    // owners must exist before that admission and before AP execution starts.
+    domain::init();
+
     if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
         panic!("bootstrap CPU initialization failed: {:?}", error);
     }
@@ -280,10 +284,6 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     if let Err(error) = crate::resource_registry::mmio::prepare_boot_scanout(context.boot_info()) {
         warn!(target: "init", "Boot framebuffer preparation failed: {:?}", error);
     }
-
-    // Task admission retains a domain code lease even for the first boot
-    // Futures. Install the kernel domain before APs or boot tasks can run.
-    domain::init();
 
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
     // ページテーブル操作と TLB invalidation に必要な BSP CPU-local state は
