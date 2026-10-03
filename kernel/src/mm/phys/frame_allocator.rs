@@ -720,45 +720,6 @@ pub fn alloc_zeroed_frame(node: NumaNodeId) -> Result<PhysicalAllocation, FrameA
     Ok(frame)
 }
 
-fn refill_zeroed_cache(node: NumaNodeId) -> usize {
-    let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
-        return 0;
-    };
-    let space = cpu
-        .with_frame_cache(|cache| ZERO_CACHE_CAPACITY - cache.zeroed.len)
-        .unwrap_or(0)
-        .min(ZERO_BATCH);
-    let mut batch = [const { None }; ZERO_BATCH];
-    for slot in batch.iter_mut().take(space) {
-        let Ok(frame) = allocate_on_node(node, 1, PAGE_SIZE_4K) else {
-            break;
-        };
-        unsafe {
-            crate::mm::cache::zero_page::clear_page_memset(
-                crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_u64() as *mut u8,
-            )
-        };
-        *slot = Some(frame);
-    }
-    let mut added = 0;
-    if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-        cpu.with_frame_cache(|cache| {
-            for slot in &mut batch {
-                if let Some(frame) = slot.take() {
-                    *slot = cache.zeroed.push(frame).err();
-                    if slot.is_none() {
-                        added += 1;
-                    }
-                }
-            }
-        });
-    }
-    for frame in batch.into_iter().flatten() {
-        frame.release();
-    }
-    added
-}
-
 pub(crate) fn reclaim_node_caches() -> crate::mm::reclaim::PoolReclaim {
     let Some(pmm) = PMM.get() else {
         return Default::default();
