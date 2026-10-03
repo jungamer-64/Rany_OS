@@ -6,9 +6,9 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
 
-pub struct LockedBuddyHeap;
+pub struct KernelHeap;
 
-impl LockedBuddyHeap {
+impl KernelHeap {
     pub const fn new() -> Self {
         Self
     }
@@ -18,7 +18,7 @@ impl LockedBuddyHeap {
     }
 }
 
-unsafe impl GlobalAlloc for LockedBuddyHeap {
+unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         #[cfg(any(feature = "std", all(test, target_os = "linux")))]
         {
@@ -45,7 +45,7 @@ unsafe impl GlobalAlloc for LockedBuddyHeap {
     }
 }
 
-pub static ALLOCATOR: LockedBuddyHeap = LockedBuddyHeap::new();
+pub static ALLOCATOR: KernelHeap = KernelHeap::new();
 
 pub mod oom {
     #[derive(Debug, Clone, Default)]
@@ -98,3 +98,33 @@ pub(crate) fn physical_memory_offset() -> u64 {
 pub(crate) fn set_physical_memory_offset(offset: u64) {
     PHYSICAL_MEMORY_OFFSET.store(offset, Ordering::Relaxed);
 }
+
+// Pure heap mechanisms share production ownership and algorithms. Host RAM and
+// identity mapping are provided by host_support::mm, rather than a fake free path.
+#[path = "../heap/buddy.rs"]
+mod buddy;
+#[path = "../heap/memory.rs"]
+mod memory;
+#[path = "../heap/raw.rs"]
+mod raw;
+pub(crate) use memory::HeapMemory;
+pub(crate) use raw::HeapCache;
+
+#[path = "../heap/reclaim.rs"]
+mod reclaim;
+pub(crate) use reclaim::{
+    CacheDrainProgress, LocalCacheDrainError, drain_local_caches, reclaim_local_caches,
+};
+pub(crate) fn reclaim_shared_pools() -> crate::mm::reclaim::PoolReclaim {
+    raw::reclaim_shared_pools()
+}
+pub(crate) fn request_remote_reclaim() {}
+
+#[path = "../heap/exchange_blocks.rs"]
+mod exchange_blocks;
+#[path = "../heap/exchange_cache.rs"]
+mod exchange_cache;
+pub(crate) use exchange_blocks::ExchangeBlocks;
+pub use exchange_blocks::ExtendedHeapStats;
+pub(crate) use exchange_cache::{CacheClass, CachedAllocation, ExchangeCache, ExchangeMagazine};
+pub(crate) use exchange_cache::{ExchangeDrainError, drain_current_cache as drain_exchange_cache};

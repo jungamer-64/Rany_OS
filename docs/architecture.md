@@ -70,7 +70,9 @@ ExoRust は、次の三原則を採用します。
 
 この三層をベースに、NUMA ローカル割り当てと per-core 高速化を両立する。 RAM の所有元は一意にし、サブプールは借用領域の所有値を保持する。ブートで移譲されたヒープ領域は PMM と重複して登録しない。
 
-ヒープの slab はノード別の pool が所有し、サイズクラスは quota header を含む layout から選ぶ。CPU magazine はその pool で予約されたブロックを保持し、返却先 CPU は各予約に属する。同じ slab を複数 CPU が使っても、ページを最初に作った CPU が他の予約の返却先を決めない。slab の占有情報は magazine の予約も含む。全予約の返却を確認してからページを PMM へ返す。ゼロ済みフレームも PMM の CPU-local cache に属し、通常フレームと同じ offline・回収手順で返却する。
+ヒープの slab はノード別の pool が所有し、サイズクラスは quota header を含む layout から選ぶ。CPU magazine はその pool で予約されたブロックを保持し、返却先 CPU は各予約に属する。slab の占有情報は magazine の予約も含む。全予約の返却を確認してからページを PMM へ返す。ゼロ済みフレームも PMM の CPU-local cache に属し、通常フレームと同じ offline・回収手順で返却する。
+
+node pool への返却処理は他 CPU の共有 lock を待ち続けない。Buddy の未処理の返却は、その予約を消費した記録として node pool が保持し、処理が終わるまで backing の所有権を維持する。空 slab の退役を延期した場合もページ所有値を pool に保持する。既存 OOM 経路は両方を処理し、ヒープ容量の回復と物理 RAM の返却を別々の進捗として扱う。
 
 CPU キャッシュは固定された CPU-local storage に属し、通常のローカル割り当てで共有レジストリのロックや backing の参照カウント更新を必要としない。保持量は明示した有限容量で制限する。遠隔回収は所有 CPU が処理し、offline の完了はキャッシュ drain の完了を必要とする。Exchange の返却中は再入処理による補充・backing の置換を拒否する。失敗時は所有値を同じ CPU storage へ戻し、圧迫回収では返却済み量だけを計上する。offline は失敗理由を保持して Draining に留まり、所有 CPU は TLB IPI を処理しながら次の offline 要求による明示 retry を待つ。park 承認前に CPU の再利用・eject を許可しない。
 

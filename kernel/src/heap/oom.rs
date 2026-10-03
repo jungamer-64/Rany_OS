@@ -9,24 +9,13 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
     feature = "full_mm_tests",
     feature = "qemu-test-export"
 ))]
-use crate::domain::quota::quota_manager;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-use alloc::format;
-
-// DomainPriority は domain::quota の正規定義を使用する。
-// 以前はローカルに3段階版(Low/Normal/Critical)を定義していたが、
-// domain::quota の4段階版(Low/Normal/High/Critical)に統一し、
-// 情報損失(High→Normal)を解消した。
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 pub use crate::domain::quota::DomainPriority;
+#[cfg(any(
+    not(any(test, feature = "bench")),
+    feature = "full_mm_tests",
+    feature = "qemu-test-export"
+))]
+use crate::domain::quota::quota_manager;
 
 // テストビルド用フォールバック: domain モジュールが存在しない構成向け
 #[cfg(all(
@@ -63,18 +52,38 @@ static OOM_KILLER: OomKiller = OomKiller {
     freed_memory: AtomicU64::new(0),
 };
 
-impl OomKiller {
-    // Removed: register_domain(), unregister_domain(), update_memory_usage()
-    // These were deprecated stubs; quota manager is the authoritative source.
+struct OomPass<'a>(&'a AtomicBool);
 
+impl Drop for OomPass<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
+    }
+}
+
+impl OomKiller {
     fn try_free_memory(&self) -> Option<u64> {
-        if self.in_progress.swap(true, Ordering::SeqCst) {
+        if self
+            .in_progress
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
             log::info!("[OOM] Already in progress, skipping\n");
             return None;
         }
+        // This flag owns admission of one recovery pass. Unwinding ends that
+        // admission too; it publishes no payload or cache state of its own.
+        let _pass = OomPass(&self.in_progress);
 
+        // OOM bookkeeping must remain possible when the triggering domain's
+        // quota is exhausted or is retired by this recovery. Recovery may run
+        // destructors, so funding must not grant a kernel security identity. The
+        // guard retains the prior admission and restores it before returning.
+        let execution = crate::cpu::CurrentCpu::acquire().map(|current| {
+            let context = crate::task::ExecutionContext::housekeeping(current.execution());
+            current.enter_execution(context)
+        });
         let result = self.select_and_kill_victim();
-        self.in_progress.store(false, Ordering::SeqCst);
+        drop(execution);
         result
     }
 
@@ -87,19 +96,32 @@ impl OomKiller {
         let victim = quota_manager().select_oom_victim()?;
         let stats = quota_manager().get_stats(victim.domain_id)?;
 
-        let domain_name = crate::domain::get_domain_snapshot(victim.domain_id)
-            .map(|s| s.name)
-            .unwrap_or_else(|| format!("domain-{}", victim.domain_id.as_u64()));
-
         log::info!(
-            "[OOM] Killing domain '{}' (id={}, priority={:?}, memory={}KB)\n",
-            domain_name,
+            "[OOM] Killing domain {} (priority={:?}, memory={}KB)\n",
             victim.domain_id.as_u64(),
             victim.priority,
             stats.memory_used / 1024
         );
 
-        let freed = self.kill_domain(victim.domain_id.as_u64(), &domain_name, stats.memory_used);
+        if let Err(error) = crate::domain::terminate_domain(victim.domain_id) {
+            log::warn!(
+                "[OOM] Domain {} termination failed: {}",
+                victim.domain_id,
+                error
+            );
+            return None;
+        }
+        // Termination is not evidence that retained allocations were freed.
+        // The retired account remains observable until actual credits return.
+        let remaining = quota_manager()
+            .get_stats(victim.domain_id)
+            .map_or(0, |stats| stats.memory_used);
+        let freed = stats.memory_used.saturating_sub(remaining);
+        log::info!(
+            "[OOM] Domain {} terminated, returned {} charged bytes",
+            victim.domain_id,
+            freed
+        );
         self.kill_count.fetch_add(1, Ordering::Relaxed);
         self.freed_memory.fetch_add(freed, Ordering::Relaxed);
         Some(freed)
@@ -112,24 +134,6 @@ impl OomKiller {
     )))]
     fn select_and_kill_victim(&self) -> Option<u64> {
         None
-    }
-
-    fn kill_domain(&self, domain_id: u64, domain_name: &str, freed: u64) -> u64 {
-        if let Err(e) = crate::domain::terminate_domain(crate::domain::DomainId::new(domain_id)) {
-            log::warn!(
-                "[OOM] Domain {} termination hook failed: {}\n",
-                domain_id,
-                e
-            );
-        }
-
-        log::info!(
-            "[OOM] Domain '{}' killed, freed {}KB\n",
-            domain_name,
-            freed / 1024
-        );
-
-        freed
     }
 
     fn stats(&self) -> OomStats {
@@ -160,12 +164,21 @@ impl OomKiller {
 // Public API
 // ============================================================================
 
-// Removed: register_domain(), unregister_domain(), update_memory_usage(), register_simple()
-// These were deprecated no-op stubs. The quota manager is the authoritative
-// source for domain memory tracking. Use `crate::domain::quota::quota_manager()`.
-
 pub fn try_free_memory() -> bool {
-    OOM_KILLER.try_free_memory().is_some()
+    let local = crate::heap::reclaim_local_caches();
+    let shared = crate::heap::reclaim_shared_pools();
+    let physical_reclaimed = local.physical_reclaimed_bytes + shared.reclaimed_bytes;
+    log::debug!(
+        "cache recovery returned {} heap reservation bytes, published {} Buddy bytes and returned {} physical bytes",
+        local.heap_returned_bytes,
+        shared.heap_recovered_bytes,
+        physical_reclaimed
+    );
+    if shared.busy_pools != 0 || shared.poisoned_pools != 0 {
+        log::warn!("shared pool reclaim deferred: {shared:?}");
+    }
+    crate::heap::request_remote_reclaim();
+    local.made_progress() || shared.made_progress() || OOM_KILLER.try_free_memory().is_some()
 }
 
 pub fn stats() -> OomStats {
@@ -196,11 +209,15 @@ mod tests {
         set_domain_resource_limits(normal, 100, 2 * 1024 * 1024 * 1024, 0)
             .expect("set normal limits failed");
 
-        quota_manager()
-            .try_allocate_memory(low, 1_000_000_000_000)
+        let low_binding = quota_manager().bind_memory(low).expect("low quota binding");
+        let normal_binding = quota_manager()
+            .bind_memory(normal)
+            .expect("normal quota binding");
+        let _low_credit = low_binding
+            .reserve(1_000_000_000_000)
             .expect("charge low memory failed");
-        quota_manager()
-            .try_allocate_memory(normal, 8 * 1024 * 1024)
+        let _normal_credit = normal_binding
+            .reserve(8 * 1024 * 1024)
             .expect("charge normal memory failed");
 
         let expected = quota_manager()
@@ -211,14 +228,28 @@ mod tests {
             "quota manager should pick low domain"
         );
 
-        let before = stats().kill_count;
-        assert!(try_free_memory(), "oom killer should free memory");
-        assert!(
-            get_domain_snapshot(low).is_none(),
-            "low domain should be terminated"
+        let before = stats();
+        assert_eq!(
+            OOM_KILLER.try_free_memory(),
+            Some(0),
+            "retained credits are not freed by termination"
         );
+        assert_eq!(
+            get_domain_snapshot(low)
+                .expect("domain lifecycle record")
+                .state,
+            crate::domain::DomainState::Terminated
+        );
+        assert_eq!(
+            quota_manager()
+                .get_stats(low)
+                .expect("retained quota account")
+                .memory_used,
+            1_000_000_000_000
+        );
+        assert_eq!(stats().freed_memory, before.freed_memory);
         assert!(
-            stats().kill_count >= before + 1,
+            stats().kill_count >= before.kill_count + 1,
             "kill count should increase after victim termination"
         );
 

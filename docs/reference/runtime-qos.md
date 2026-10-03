@@ -57,9 +57,11 @@
 - ドメイン終了後に未返却の課金が残っていても、解放量として計上しない。終了前後の課金差分は返却済み payload byte 数を表し、物理 RAM の返却量とは区別する。cache / pool が返した物理領域は別の回収量として扱う。
 - CPU cache の drain は、ヒープへ返した予約ブロック量と PMM へ実際に返した物理量を別々に保持する。Exchange Heap の返却は前者であり、boot 所有領域を PMM へ返した証拠ではない。slab の最後の予約が返りページを退役した場合は、予約ブロック量とページ全体の物理量の両方を記録する。途中失敗でも完了済みの返却量を保持し、quota 返却量とは合算しない。
 - Buddy の未公開貸与領域は、最初の割り当てと pool link の公開が一度に成立するまで準備所有値が保持する。競合・poison・サイズ不一致では同じ未公開所有値を返す。破棄時は共有 pool guard の外で metadata と payload の両方を PMM へ返し、公開済み領域は最後の live block が返るまで保持する。
+- Buddy の返却は予約の所有権を消費し、返却済みブロック内の記録へ移す。記録の公開はブロックと領域への最後のアクセスであり、新規 metadata 確保や pool lock の待機を必要としない。記録は領域の live 数に含まれ、node の guard が取り込んで free list へ返すまで backing を保持する。圧迫回収は記録の有限な snapshot を処理し、回復したヒープ容量と PMM へ返した物理量を区別する。領域内に live block が残っていても、利用可能な容量の回復は OOM の進捗となる。
+- slab の補充と最後の予約の返却は共有 lock の取得を一度だけ試す。占有情報の返却後に lock を取得できなくても、そのページの所有値は node pool に残る。既存の OOM 経路は未処理の空ページも回収し、live な予約を持つページは退役しない。poison の自動解除や、延期した返却を完了済みの物理量として計上することはしない。
 - 4KiB / zeroed 補充は要求へ返すフレームを先に確保し、残りだけを元の CPU の短い借用で公開する。CPU 移動・再入借用・満杯で公開できない所有値は PMM へ返す。zeroed 補充の途中で RAM が枯渇しても確保済みの要求フレームを返し、追加確保を要求しない。公開していない zeroed batch の破棄は所有値を同期返却する。
 - 2MiB cache は完全な 2MiB サイズ・実アドレス alignment・返却先 node を受け入れ時に検証し、各 node の保持は最大 4 枚とする。割り当て・返却は一度の lock 試行だけを行い、競合・poison では保持済み所有値を変更しない。割り当ては同じ node の PMM occupancy へ進み、返却の未受理所有値は lock guard の外で同期返却する。キャッシュは RAM の返却権限を新たに生成しない。
-- 共有 Buddy / Huge Page pool の圧迫回収は各 pool のロックを一度だけ試行する。競合時は所有値を保持して次の回収 pass に委ね、poison 時は通常の mutation authority を与えない。結果は返却済み物理 byte 数と、競合・poison による延期数を分けて保持する。pool を外してから PMM へ返し、GlobalAlloc の回収処理で他 CPU のロック取得を待ち続けない。
+- 共有 slab / Buddy / Huge Page pool の圧迫回収は各 pool のロックを一度だけ試行する。競合時は所有値を保持して次の回収 pass に委ね、poison 時は通常の mutation authority を与えない。結果は返却済み物理 byte 数、回復したヒープ容量、競合・poison による延期数を分けて保持する。pool を外してから PMM へ返し、GlobalAlloc の回収処理で他 CPU のロック取得を待ち続けない。
 - 再起動は未返却の課金・実行 binding が残る identity を再 admission しない。policy / 状態変更に失敗した時は理由を保持して caller へ返し、成功扱いで状態を進めない。driver load の policy 失敗には、既に作成した cell / domain の識別子も含め、cleanup の責任を失わない。
 
 ### 4. 観測面
@@ -74,16 +76,6 @@
 - Capability と priority を結び付けて権限昇格を決めること
 - multi-tenant SLA scheduler を現行 canonical として固定すること
 - ad hoc な subsystem ごとの独自 OOM killer を増やすこと
-
-## 旧設計案からの読み替え
-
-| 旧設計案の項目 | 現行の扱い |
-| --- | --- |
-| CPU 時間クォータ | Canonical requirement |
-| メモリ上限 | Canonical requirement |
-| OOM victim selection | Canonical requirement |
-| I/O 帯域制限（token bucket） | Canonical requirement |
-| 高可用性 / レプリケーション | [resilience-recovery.md](resilience-recovery.md) の Canonical target |
 
 ## 関連文書
 
