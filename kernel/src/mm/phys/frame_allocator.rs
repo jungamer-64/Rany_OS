@@ -9,14 +9,16 @@ use core::num::NonZeroUsize;
 use x86_64::PhysAddr;
 use x86_64::structures::paging::{PageSize, PhysFrame};
 
+#[path = "frame_allocator/error.rs"]
+mod error;
+pub use error::FrameAllocError;
+
 pub(crate) const MANAGED_PHYS_START: u64 = PAGE_SIZE_4K as u64;
 const FRAME_CACHE_CAPACITY: usize = 64;
 const FRAME_BATCH: usize = 32;
 const ZERO_CACHE_CAPACITY: usize = 16;
 const ZERO_BATCH: usize = 8;
 const HUGE_CACHE_CAPACITY: usize = 4;
-
-
 
 impl From<AddressPoolError> for FrameAllocError {
     fn from(error: AddressPoolError) -> Self {
@@ -441,22 +443,6 @@ pub fn alloc_frame_2m() -> Result<PhysicalAllocation, FrameAllocError> {
     }
     Err(FrameAllocError::Exhausted)
 }
-pub fn alloc_frame_2m_on_numa_node(
-    node: NumaNodeId,
-) -> Result<PhysicalAllocation, FrameAllocError> {
-    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
-    let pool = pmm.pool(node)?;
-    let cached = pool
-        .huge
-        .lock()
-        .expect("huge cache poisoned")
-        .iter_mut()
-        .find_map(Option::take);
-    match cached {
-        Some(frame) => Ok(frame),
-        None => pool.allocate(512, 2 * 1024 * 1024),
-    }
-}
 pub fn alloc_frame_1g() -> Result<PhysicalAllocation, FrameAllocError> {
     alloc_contiguous_frames_aligned(262144, 1024 * 1024 * 1024)
 }
@@ -547,23 +533,6 @@ pub fn dealloc_frame(frame: PhysicalAllocation) {
 }
 pub fn dealloc_contiguous_frames(allocation: PhysicalAllocation) {
     allocation.release();
-}
-pub fn dealloc_frame_2m(allocation: PhysicalAllocation) {
-    if allocation.page_count() != 512 {
-        allocation.release();
-        return;
-    }
-    let owner = allocation.owner;
-    let mut pending = Some(allocation);
-    {
-        let mut cache = owner.huge.lock().expect("huge cache poisoned");
-        if let Some(slot) = cache.iter_mut().find(|slot| slot.is_none()) {
-            *slot = pending.take();
-        }
-    }
-    if let Some(frame) = pending {
-        frame.release();
-    }
 }
 pub fn dealloc_frame_1g(allocation: PhysicalAllocation) {
     allocation.release();
@@ -675,7 +644,7 @@ pub fn alloc_zeroed_frame(node: NumaNodeId) -> Result<PhysicalAllocation, FrameA
     Ok(frame)
 }
 
-pub(crate) fn refill_zeroed_cache(node: NumaNodeId) -> usize {
+fn refill_zeroed_cache(node: NumaNodeId) -> usize {
     let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
         return 0;
     };
