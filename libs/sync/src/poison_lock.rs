@@ -15,6 +15,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::Backoff;
+use hal::preemption::PreemptionGuard;
 
 // ============================================================================
 // PoisonError - ロックが毒入れされた場合のエラー
@@ -73,8 +74,12 @@ impl<T> PoisonRwLock<T> {
     /// Returns a poison error containing the acquired guard if a writer
     /// previously panicked while holding the lock.
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         let guard = self.inner.read();
-        let p_guard = PoisonRwLockReadGuard { guard };
+        let p_guard = PoisonRwLockReadGuard {
+            guard,
+            _preemption: preemption,
+        };
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
         } else {
@@ -87,8 +92,13 @@ impl<T> PoisonRwLock<T> {
     /// Returns a poison error containing the acquired guard if a writer
     /// previously panicked while holding the lock.
     pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         let guard = self.inner.write();
-        let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
+        let p_guard = PoisonRwLockWriteGuard {
+            lock: self,
+            guard,
+            _preemption: preemption,
+        };
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
         } else {
@@ -97,8 +107,12 @@ impl<T> PoisonRwLock<T> {
     }
 
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         self.inner.try_read().map(|guard| {
-            let p_guard = PoisonRwLockReadGuard { guard };
+            let p_guard = PoisonRwLockReadGuard {
+                guard,
+                _preemption: preemption,
+            };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -108,8 +122,13 @@ impl<T> PoisonRwLock<T> {
     }
 
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         self.inner.try_write().map(|guard| {
-            let p_guard = PoisonRwLockWriteGuard { lock: self, guard };
+            let p_guard = PoisonRwLockWriteGuard {
+                lock: self,
+                guard,
+                _preemption: preemption,
+            };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -128,30 +147,32 @@ impl<T> PoisonRwLock<T> {
 
 pub struct PoisonRwLockReadGuard<'a, T> {
     guard: spin::RwLockReadGuard<'a, T>,
+    _preemption: PreemptionGuard,
 }
 
 impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 }
 
 pub struct PoisonRwLockWriteGuard<'a, T> {
     lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockWriteGuard<'a, T>,
+    _preemption: PreemptionGuard,
 }
 
 impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 }
 
 impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut *self.guard
+        &mut self.guard
     }
 }
 
@@ -189,6 +210,7 @@ impl<T> PoisonLock<T> {
     ///
     /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         let mut backoff = Backoff::new();
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while self
@@ -201,6 +223,7 @@ impl<T> PoisonLock<T> {
         let guard = PoisonLockGuard {
             lock: self,
             _nosend: core::marker::PhantomData,
+            _preemption: preemption,
         };
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(guard))
@@ -210,6 +233,7 @@ impl<T> PoisonLock<T> {
     }
 
     pub fn try_lock(&self) -> Option<LockResult<PoisonLockGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         if self
             .locked
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
@@ -218,6 +242,7 @@ impl<T> PoisonLock<T> {
             let guard = PoisonLockGuard {
                 lock: self,
                 _nosend: core::marker::PhantomData,
+                _preemption: preemption,
             };
             if self.poisoned.load(Ordering::Acquire) {
                 Some(Err(PoisonError::new(guard)))
@@ -243,6 +268,7 @@ impl<T> PoisonLock<T> {
 pub struct PoisonLockGuard<'a, T: ?Sized> {
     lock: &'a PoisonLock<T>,
     _nosend: core::marker::PhantomData<*const ()>,
+    _preemption: PreemptionGuard,
 }
 
 impl<T: ?Sized> Deref for PoisonLockGuard<'_, T> {
@@ -296,11 +322,11 @@ impl<T> IrqPoisonLock<T> {
         match self.inner.lock() {
             Ok(guard) => Ok(IrqPoisonLockGuard {
                 guard,
-                rflags: flags,
+                _restore: InterruptRestoreGuard { rflags: flags },
             }),
             Err(e) => Err(PoisonError::new(IrqPoisonLockGuard {
                 guard: e.into_inner(),
-                rflags: flags,
+                _restore: InterruptRestoreGuard { rflags: flags },
             })),
         }
     }
@@ -314,11 +340,11 @@ impl<T> IrqPoisonLock<T> {
         match self.inner.try_lock() {
             Some(Ok(guard)) => Some(Ok(IrqPoisonLockGuard {
                 guard,
-                rflags: flags,
+                _restore: InterruptRestoreGuard { rflags: flags },
             })),
             Some(Err(e)) => Some(Err(PoisonError::new(IrqPoisonLockGuard {
                 guard: e.into_inner(),
-                rflags: flags,
+                _restore: InterruptRestoreGuard { rflags: flags },
             }))),
             None => {
                 if (flags & (1 << 9)) != 0 {
@@ -335,6 +361,11 @@ impl<T> IrqPoisonLock<T> {
 #[cfg(target_arch = "x86_64")]
 pub struct IrqPoisonLockGuard<'a, T: ?Sized> {
     guard: PoisonLockGuard<'a, T>,
+    _restore: InterruptRestoreGuard,
+}
+
+#[cfg(target_arch = "x86_64")]
+struct InterruptRestoreGuard {
     rflags: usize,
 }
 
@@ -342,19 +373,19 @@ pub struct IrqPoisonLockGuard<'a, T: ?Sized> {
 impl<T: ?Sized> Deref for IrqPoisonLockGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 impl<T: ?Sized> DerefMut for IrqPoisonLockGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut *self.guard
+        &mut self.guard
     }
 }
 
 #[cfg(target_arch = "x86_64")]
-impl<T: ?Sized> Drop for IrqPoisonLockGuard<'_, T> {
+impl Drop for InterruptRestoreGuard {
     fn drop(&mut self) {
         let restore_irq = (self.rflags & (1 << 9)) != 0;
         if restore_irq {

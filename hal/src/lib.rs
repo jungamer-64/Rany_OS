@@ -8,6 +8,7 @@ extern crate alloc;
 // re-export modules
 pub mod mmio;
 pub mod port_io;
+pub mod preemption;
 pub mod scanout;
 
 pub use mmio::{

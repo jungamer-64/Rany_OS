@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 spin = "0.12"
+hal = { path = "../../hal" }
 
 [features]
 default = []
