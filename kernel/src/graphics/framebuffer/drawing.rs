@@ -8,8 +8,6 @@
 //! `framebuffer.rs` から抽出された描画ロジック。
 
 use super::*;
-use core::ptr;
-use hal::mmio;
 
 impl Framebuffer {
     /// 水平線を描画
@@ -28,16 +26,17 @@ impl Framebuffer {
         // Mark dirty
         self.mark_dirty(Rect::new(start_x, y, (end_x - start_x + 1) as u32, 1));
         self.draw_hline_raw(start_x, end_x, y, color);
+        self.counted_sfence();
     }
 
     /// Dirty Rectangle更新を行わない水平線描画（クリッピング済み前提）
     pub(super) fn draw_hline_raw(&mut self, start_x: i32, end_x: i32, y: i32, color: Color) {
         let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
-            (4, (self.info.width * 4) as usize)
+            (4, (self.info.width() * 4) as usize)
         } else {
             (
-                self.info.format.bytes_per_pixel(),
-                self.info.stride as usize,
+                self.info.format().bytes_per_pixel(),
+                self.info.stride() as usize,
             )
         };
         let x_start = start_x as usize;
@@ -46,7 +45,10 @@ impl Framebuffer {
 
         match bytes_per_pixel {
             4 => {
-                let color_u32 = color.to_u32();
+                let color_u32 = self
+                    .drawing_format()
+                    .encode_u32(color)
+                    .expect("32 bit drawing format");
                 // Delegate to write_u32_run which already handles backbuffer/MMIO paths efficiently
                 self.write_u32_run(offset, run_len, color_u32);
             }
@@ -59,8 +61,7 @@ impl Framebuffer {
                 if let Some(_) = self.back_buffer {
                     debug_assert!(false, "16bpp hline called on u32 backbuffer");
                 } else {
-                    let addr = self.draw_buffer() as usize + offset;
-                    self.write_u16_run_streaming(addr, run_len, pixel);
+                    self.write_u16_run_streaming_nofence(offset, run_len, pixel);
                 }
             }
             _ => {
@@ -90,126 +91,12 @@ impl Framebuffer {
         self.draw_vline_raw(x, start_y, end_y, color);
     }
 
-    /// 4bpp垂直線描画ヘルパー
-    fn draw_vline_4bpp(
-        &mut self,
-        x_off: usize,
-        start_y: usize,
-        run_len: usize,
-        stride: usize,
-        color: Color,
-    ) {
-        let color_u32 = color.to_u32();
-        let mut off = start_y * stride + x_off * 4;
-        if self.back_buffer.is_some() {
-            let base = self.draw_buffer();
-            for i in 0..run_len {
-                unsafe {
-                    ptr::write(base.add(off) as *mut u32, color_u32);
-                }
-                if i + 1 < run_len {
-                    off += stride;
-                }
-            }
-        } else {
-            let base_addr = self.draw_buffer() as usize;
-            for i in 0..run_len {
-                mmio::mmio_write_u32(base_addr + off, color_u32);
-                if i + 1 < run_len {
-                    off += stride;
-                }
-            }
-            if run_len > 0 {
-                mmio::sfence();
-            }
+    fn draw_vline_raw(&mut self, x: i32, start: i32, end: i32, color: Color) {
+        // LOOP_PROOF: mode=bounded; reason=The clipped column has a finite row count.;
+        for y in start..=end {
+            self.set_pixel_raw(x, y, color);
         }
-    }
-
-    /// 3bpp垂直線描画ヘルパー
-    fn draw_vline_3bpp(
-        &mut self,
-        x_off: usize,
-        start_y: usize,
-        run_len: usize,
-        stride: usize,
-        color: Color,
-    ) {
-        let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
-        let (c0, c1, c2) = if is_bgr {
-            (color.blue, color.green, color.red)
-        } else {
-            (color.red, color.green, color.blue)
-        };
-
-        if let Some(ref mut _back) = self.back_buffer {
-            debug_assert!(false, "24bpp vline called on u32 backbuffer");
-        } else {
-            let base_addr = self.draw_buffer() as usize;
-            let mut off = base_addr + start_y * stride + x_off * 3;
-            for i in 0..run_len {
-                mmio::volatile_write(off, c0);
-                mmio::volatile_write(off + 1, c1);
-                mmio::volatile_write(off + 2, c2);
-                if i + 1 < run_len {
-                    off += stride;
-                }
-            }
-            if run_len > 0 {
-                mmio::sfence();
-            }
-        }
-    }
-
-    /// 2bpp垂直線描画ヘルパー
-    fn draw_vline_2bpp(
-        &mut self,
-        x_off: usize,
-        start_y: usize,
-        run_len: usize,
-        stride: usize,
-        color: Color,
-    ) {
-        let pixel = Self::color_to_rgb565(color);
-        if let Some(ref mut _back) = self.back_buffer {
-            debug_assert!(false, "16bpp vline called on u32 backbuffer");
-        } else {
-            let base_addr = self.draw_buffer() as usize;
-            let mut off = base_addr + start_y * stride + x_off * 2;
-            for i in 0..run_len {
-                mmio::mmio_write_u16(off, pixel);
-                if i + 1 < run_len {
-                    off += stride;
-                }
-            }
-            if run_len > 0 {
-                mmio::sfence();
-            }
-        }
-    }
-
-    /// Dirty Rectangle更新を行わない垂直線描画（クリッピング済み前提）
-    fn draw_vline_raw(&mut self, x: i32, start_y: i32, end_y: i32, color: Color) {
-        let (bytes_per_pixel, stride) = if self.back_buffer.is_some() {
-            (4, (self.info.width * 4) as usize)
-        } else {
-            (
-                self.info.format.bytes_per_pixel(),
-                self.info.stride as usize,
-            )
-        };
-        let x_off = x as usize;
-        let run_len = (end_y - start_y + 1) as usize;
-
-        match bytes_per_pixel {
-            4 => self.draw_vline_4bpp(x_off, start_y as usize, run_len, stride, color),
-            3 => self.draw_vline_3bpp(x_off, start_y as usize, run_len, stride, color),
-            2 => self.draw_vline_2bpp(x_off, start_y as usize, run_len, stride, color),
-            _ => {
-                for y in start_y..=end_y {
-                    self.set_pixel_raw(x, y, color);
-                }
-            }
-        }
+        self.counted_sfence();
     }
 
     /// 線を描画（Bresenhamアルゴリズム） - Optimized
@@ -378,46 +265,6 @@ impl Framebuffer {
         }
     }
 
-    /// Naive per-pixel Bresenham implementation useful for benchmarking and
-    /// correctness comparisons. Enabled when `bench` feature is active.
-    #[cfg(feature = "bench")]
-    pub fn draw_line_naive(&mut self, x1: i32, y1: i32, x2: i32, y2: i32, color: Color) {
-        if y1 == y2 {
-            self.draw_hline(x1, x2, y1, color);
-            return;
-        }
-        if x1 == x2 {
-            self.draw_vline(x1, y1, y2, color);
-            return;
-        }
-
-        let dx = (x2 - x1).abs();
-        let dy = -(y2 - y1).abs();
-        let sx = if x1 < x2 { 1 } else { -1 };
-        let sy = if y1 < y2 { 1 } else { -1 };
-        let mut err = dx + dy;
-
-        let mut x = x1;
-        let mut y = y1;
-
-        // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-        loop {
-            self.set_pixel(x, y, color);
-            if x == x2 && y == y2 {
-                break;
-            }
-            let e2 = 2 * err;
-            if e2 >= dy {
-                err += dy;
-                x += sx;
-            }
-            if e2 <= dx {
-                err += dx;
-                y += sy;
-            }
-        }
-    }
-
     /// 矩形を描画（枠のみ）
     pub fn draw_rect(&mut self, rect: Rect, color: Color) {
         if rect.width == 0 || rect.height == 0 {
@@ -468,54 +315,34 @@ impl Framebuffer {
 
     /// 矩形領域をコピー（スクロール等に使用）
     pub fn copy_rect(&mut self, src: Rect, dst_x: i32, dst_y: i32) {
-        // クリップ処理
-        let mut s = src;
-        // srcのクリップ
-        s.x = s.x.max(self.clip.x);
-        s.y = s.y.max(self.clip.y);
-        let s_right = s.right().min(self.clip.right());
-        let s_bottom = s.bottom().min(self.clip.bottom());
-        s.width = (s_right - s.x).max(0) as u32;
-        s.height = (s_bottom - s.y).max(0) as u32;
-
-        // dstのクリップ（srcと連動）
-        let mut d_x = dst_x + (s.x - src.x);
-        let mut d_y = dst_y + (s.y - src.y);
-
-        // dstが画面外にはみ出す場合の調整
-        let clip_left = self.clip.x;
-        let clip_top = self.clip.y;
-        let clip_right = self.clip.right();
-        let clip_bottom = self.clip.bottom();
-
-        if d_x < clip_left {
-            let diff = clip_left - d_x;
-            s.x += diff;
-            s.width = s.width.saturating_sub(diff as u32);
-            d_x = clip_left;
-        }
-        if d_y < clip_top {
-            let diff = clip_top - d_y;
-            s.y += diff;
-            s.height = s.height.saturating_sub(diff as u32);
-            d_y = clip_top;
-        }
-
-        // 右/下のはみ出し
-        let d_right = d_x + s.width as i32;
-        if d_right > clip_right {
-            let diff = d_right - clip_right;
-            s.width = s.width.saturating_sub(diff as u32);
-        }
-        let d_bottom = d_y + s.height as i32;
-        if d_bottom > clip_bottom {
-            let diff = d_bottom - clip_bottom;
-            s.height = s.height.saturating_sub(diff as u32);
-        }
-
-        if s.width == 0 || s.height == 0 {
+        // Clip source and destination in the same displacement coordinates.
+        // i64 edges keep arbitrary public i32 origins/u32 extents from wrapping.
+        let axis = |source: i32, destination: i32, length: u32, low: i32, high: i32| {
+            let start = 0i64
+                .max(low as i64 - source as i64)
+                .max(low as i64 - destination as i64);
+            let end = (length as i64)
+                .min(high as i64 - source as i64)
+                .min(high as i64 - destination as i64);
+            (start < end).then_some((
+                source as i64 + start,
+                destination as i64 + start,
+                end - start,
+            ))
+        };
+        let Some((sx, dx, width)) = axis(src.x, dst_x, src.width, self.clip.x, self.clip.right())
+        else {
             return;
-        }
+        };
+        let Some((sy, dy, height)) =
+            axis(src.y, dst_y, src.height, self.clip.y, self.clip.bottom())
+        else {
+            return;
+        };
+        // Every coordinate lies in the validated canvas after displacement clipping.
+        let s = Rect::new(sx as i32, sy as i32, width as u32, height as u32);
+        let d_x = dx as i32;
+        let d_y = dy as i32;
 
         // Mark destination dirty
         self.mark_dirty(Rect::new(d_x, d_y, s.width, s.height));
@@ -523,7 +350,7 @@ impl Framebuffer {
         // Fast path: backbuffer is tightly packed u32 pixels.
         // Use slice-level copy_within (memmove semantics) per row.
         if let Some(ref mut back) = self.back_buffer {
-            let row_pixels = self.info.width as usize;
+            let row_pixels = self.info.width() as usize;
             let copy_pixels = s.width as usize;
             if d_y > s.y {
                 for i in (0..s.height as usize).rev() {
@@ -545,79 +372,32 @@ impl Framebuffer {
             return;
         }
 
-        let buffer = self.draw_buffer();
-        let (stride, bpp) = (
-            self.info.stride as usize,
-            self.info.format.bytes_per_pixel(),
-        );
-        let copy_bytes = s.width as usize * bpp;
-        // When source and destination rows are different, row slices do not overlap
-        // in the normal framebuffer layout (stride >= row bytes). In that case we
-        // can use copy_nonoverlapping for a slightly faster path.
-        let use_nonoverlap_rows = d_y != s.y && copy_bytes <= stride;
-
-        unsafe {
-            if d_y > s.y {
-                // 下方向へのコピー（後ろから）
-                for i in (0..s.height).rev() {
-                    let src_row_y = s.y + i as i32;
-                    let dst_row_y = d_y + i as i32;
-
-                    let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
-                    let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
-
-                    let src_ptr = buffer.add(src_offset);
-                    let dst_ptr = buffer.add(dst_offset);
-                    if use_nonoverlap_rows {
-                        ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_bytes);
-                    } else {
-                        ptr::copy(src_ptr, dst_ptr, copy_bytes);
-                    }
-                }
+        let bpp = self.info.format().bytes_per_pixel();
+        let stride = self.info.stride() as usize;
+        let count = s.width as usize * bpp;
+        // LOOP_PROOF: mode=bounded; reason=Each clipped row is copied once in the direction preserving source pixels.;
+        for step in 0..s.height as usize {
+            let row = if d_y > s.y {
+                s.height as usize - step - 1
             } else {
-                // 上方向へのコピー（前から）
-                for i in 0..s.height {
-                    let src_row_y = s.y + i as i32;
-                    let dst_row_y = d_y + i as i32;
-
-                    let src_offset = (src_row_y as usize * stride) + (s.x as usize * bpp);
-                    let dst_offset = (dst_row_y as usize * stride) + (d_x as usize * bpp);
-
-                    let src_ptr = buffer.add(src_offset);
-                    let dst_ptr = buffer.add(dst_offset);
-                    if use_nonoverlap_rows {
-                        ptr::copy_nonoverlapping(src_ptr, dst_ptr, copy_bytes);
-                    } else {
-                        ptr::copy(src_ptr, dst_ptr, copy_bytes);
-                    }
-                }
-            }
-            // Ensure writes to WC-mapped VRAM are globally visible
-            mmio::sfence();
+                step
+            };
+            let source = (s.y as usize + row) * stride + s.x as usize * bpp;
+            let destination = (d_y as usize + row) * stride + d_x as usize * bpp;
+            self.pixels.copy_within(source..source + count, destination);
         }
+        self.counted_sfence();
     }
 
-    /// Returns `None` if the rectangle is fully clipped away.
     fn clip_intersection(&self, rect: Rect) -> Option<Rect> {
-        let mut r = rect;
-        r.x = r.x.max(self.clip.x);
-        r.y = r.y.max(self.clip.y);
-        let right = r.right().min(self.clip.right());
-        let bottom = r.bottom().min(self.clip.bottom());
-        r.width = (right - r.x).max(0) as u32;
-        r.height = (bottom - r.y).max(0) as u32;
-        if r.width == 0 || r.height == 0 {
-            None
-        } else {
-            Some(r)
-        }
+        bounded_intersection(rect, self.clip)
     }
 
     /// Fill a clipped rectangle into the u32 backbuffer.
     fn fill_rect_backbuffer(&mut self, r: Rect, color: Color) {
         if let Some(ref mut back) = self.back_buffer {
             let val = color.to_u32();
-            let fb_width = self.info.width as usize;
+            let fb_width = self.info.width() as usize;
 
             // Fast path: full-width span is contiguous in backbuffer.
             if r.x == 0 && r.width as usize == fb_width {
@@ -635,106 +415,29 @@ impl Framebuffer {
         }
     }
 
-    /// 32bpp MMIO streaming fill (Bgra8888 / Rgba8888).
-    fn fill_rect_32bpp_mmio(&mut self, r: Rect, color_u32: u32) {
-        let stride = self.info.stride as usize;
-        for y in r.y..r.bottom() {
-            let offset = (y as usize * stride) + (r.x as usize * 4);
-            let addr = self.buffer as usize + offset;
-            self.write_u32_run_streaming_nofence(addr, r.width as usize, color_u32);
-        }
-        mmio::sfence();
-    }
-
-    /// 24bpp MMIO streaming fill (Bgr888 / Rgb888).
-    fn fill_rect_24bpp_mmio(&mut self, r: Rect, color: Color) {
-        let width = r.width as usize;
-        let row_bytes = width * 3;
-        if row_bytes == 0 {
-            return;
-        }
-
-        let is_bgr = matches!(self.info.format, PixelFormat::Bgr888);
-        let (c0, c1, c2) = if is_bgr {
-            (color.blue, color.green, color.red)
-        } else {
-            (color.red, color.green, color.blue)
-        };
-
-        self.ensure_scratch_u8(row_bytes);
-        if width > 0 {
-            Self::fill_scratch_bgr_exponential(&mut self.scratch_u8, width, c0, c1, c2);
-        }
-
-        let stride = self.info.stride as usize;
-        for y in r.y..r.bottom() {
-            let offset = y as usize * stride + r.x as usize * 3;
-            let addr = self.buffer as usize + offset;
-            self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..row_bytes]);
-        }
-        mmio::sfence();
-    }
-
-    /// 16bpp MMIO streaming fill (Rgb565).
-    fn fill_rect_16bpp_mmio(&mut self, r: Rect, color: Color) {
-        let stride = self.info.stride as usize;
-        let pixel = Self::color_to_rgb565(color);
-        let width = r.width as usize;
-
-        for y in r.y..r.bottom() {
-            let offset = y as usize * stride + r.x as usize * 2;
-            let addr = self.buffer as usize + offset;
-            self.write_u16_run_streaming_nofence(addr, width, pixel);
-        }
-        mmio::sfence();
-    }
-
     pub fn fill_rect(&mut self, rect: Rect, color: Color) {
-        let r = match self.clip_intersection(rect) {
-            Some(r) => r,
-            None => return,
-        };
-
-        if self.back_buffer.is_none() && self.buffer.is_null() {
+        let Some(r) = self.clip_intersection(rect) else {
             return;
-        }
-
+        };
         self.stats.rectangles_drawn += 1;
-        self.stats.pixels_drawn += (r.width * r.height) as usize;
-
-        // Mark dirty
+        self.stats.pixels_drawn += r.width as usize * r.height as usize;
         self.mark_dirty(r);
-
-        let _buffer = self.draw_buffer();
-
-        #[cfg(feature = "std")]
-        if std::env::var("RANY_DEBUG_DRAW").ok().as_deref() == Some("1") {
-            eprintln!(
-                "fill_rect start: back_present={} buffer_ptr=0x{:x} info_size={} stride={} rect={:?}",
-                self.back_buffer.is_some(),
-                self.buffer as usize,
-                self.info.size(),
-                self.info.stride,
-                r
-            );
-        }
-
         if self.back_buffer.is_some() {
             self.fill_rect_backbuffer(r, color);
             return;
         }
-
-        match self.info.format {
-            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => {
-                self.fill_rect_32bpp_mmio(r, color.to_u32());
-            }
-            PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
-                self.fill_rect_24bpp_mmio(r, color);
-            }
-            PixelFormat::Rgb565 => {
-                self.fill_rect_16bpp_mmio(r, color);
-            }
+        let bpp = self.info.format().bytes_per_pixel();
+        let mut pixel = [0; 4];
+        self.info.format().encode_color_bytes(color, &mut pixel);
+        // LOOP_PROOF: mode=bounded; reason=Each clipped scanline is filled once without touching row padding.;
+        for y in r.y..r.bottom() {
+            self.pixels.fill(
+                y as usize * self.info.stride() as usize + r.x as usize * bpp,
+                r.width as usize,
+                &pixel[..bpp],
+            );
         }
+        self.counted_sfence();
     }
 
     /// 円を描画（Midpointアルゴリズム）

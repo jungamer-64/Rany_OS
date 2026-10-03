@@ -1,4 +1,6 @@
+use alloc::vec;
 mod net_peripheral_tests;
+use crate::graphics::framebuffer::{FramebufferLayout, PixelBuffer};
 pub use net_peripheral_tests::*;
 pub fn net_tls_wave8_tls13_full_key_schedule_smoke() -> bool {
     crate::net::security::tls::qemu_tests::wave8_tls_tls13_full_key_schedule_smoke()
@@ -255,10 +257,16 @@ pub fn kernel_bench_framebuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let size = info.size();
     let back = alloc::vec![0u32; (size / 4) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img_opaque = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
     let img_alpha = Image::filled(width, height, Color::with_alpha(64, 128, 192, 128));

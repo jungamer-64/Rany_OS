@@ -500,3 +500,108 @@ mod tests {
         assert!((1..=8).contains(&size));
     }
 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FramebufferLayoutError {
+    InvalidDimensions,
+    InvalidStride,
+}
+
+/// Address-free pixel geometry. Stride is measured in bytes; bpp is derived from
+/// the format. Coordinates and the entire byte span fit the renderer's types.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FramebufferLayout {
+    width: u32,
+    height: u32,
+    stride: u32,
+    format: PixelFormat,
+}
+impl FramebufferLayout {
+    /// # Errors
+    /// Rejects empty or unrepresentable coordinates, a stride shorter than one
+    /// visible row, and a complete plane that exceeds the addressable byte span.
+    pub fn new(
+        width: u32,
+        height: u32,
+        stride: u32,
+        format: PixelFormat,
+    ) -> Result<Self, FramebufferLayoutError> {
+        if width == 0 || height == 0 || width > i32::MAX as u32 || height > i32::MAX as u32 {
+            return Err(FramebufferLayoutError::InvalidDimensions);
+        }
+        let row = width
+            .checked_mul(format.bytes_per_pixel() as u32)
+            .ok_or(FramebufferLayoutError::InvalidStride)?;
+        if stride < row
+            || (stride as usize)
+                .checked_mul(height as usize)
+                .is_none_or(|n| n > isize::MAX as usize)
+        {
+            return Err(FramebufferLayoutError::InvalidStride);
+        }
+        Ok(Self {
+            width,
+            height,
+            stride,
+            format,
+        })
+    }
+    pub const fn width(&self) -> u32 {
+        self.width
+    }
+    pub const fn height(&self) -> u32 {
+        self.height
+    }
+    pub const fn stride(&self) -> u32 {
+        self.stride
+    }
+    pub const fn format(&self) -> PixelFormat {
+        self.format
+    }
+    pub const fn size(&self) -> usize {
+        self.stride as usize * self.height as usize
+    }
+}
+
+#[cfg(test)]
+mod layout_tests {
+    use super::*;
+
+    #[test]
+    fn padded_geometry_uses_format_width_without_requiring_pixel_aligned_stride() {
+        for (format, stride) in [
+            (PixelFormat::Rgb565, 11),
+            (PixelFormat::Rgb888, 16),
+            (PixelFormat::Bgr888, 16),
+            (PixelFormat::Bgra8888, 21),
+            (PixelFormat::Rgba8888, 21),
+        ] {
+            let layout = FramebufferLayout::new(5, 3, stride, format).expect("small padded layout");
+            assert_eq!(layout.size(), stride as usize * 3);
+            assert_eq!(layout.format(), format);
+            assert_eq!(layout.width(), 5);
+        }
+    }
+
+    #[test]
+    fn geometry_failure_classes_preserve_coordinate_and_byte_span_boundaries() {
+        assert_eq!(
+            FramebufferLayout::new(0, 1, 4, PixelFormat::Bgra8888),
+            Err(FramebufferLayoutError::InvalidDimensions)
+        );
+        assert_eq!(
+            FramebufferLayout::new(1, u32::MAX, 4, PixelFormat::Bgra8888),
+            Err(FramebufferLayoutError::InvalidDimensions)
+        );
+        assert_eq!(
+            FramebufferLayout::new(5, 3, 19, PixelFormat::Bgra8888),
+            Err(FramebufferLayoutError::InvalidStride)
+        );
+        assert_eq!(
+            FramebufferLayout::new(i32::MAX as u32, 1, u32::MAX, PixelFormat::Bgra8888),
+            Err(FramebufferLayoutError::InvalidStride)
+        );
+        #[cfg(target_pointer_width = "64")]
+        assert!(FramebufferLayout::new(i32::MAX as u32, 1, u32::MAX, PixelFormat::Rgb565).is_ok());
+    }
+}

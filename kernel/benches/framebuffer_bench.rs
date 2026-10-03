@@ -5,8 +5,9 @@
 //! - SIMD packer performance (scalar/SSSE3/AVX2/NEON)
 
 use criterion::{Criterion, criterion_group, criterion_main};
-use graphic_types::{Color, FramebufferInfo, PixelFormat};
+use graphic_types::{Color, PixelFormat};
 use rany_os::graphics::framebuffer::Framebuffer;
+use rany_os::graphics::framebuffer::{FramebufferLayout, PixelBuffer};
 use rany_os::graphics::image::Image;
 use std::hint::black_box;
 use std::time::Duration;
@@ -14,17 +15,6 @@ use std::time::Duration;
 // =============================================================================
 // Configuration
 // =============================================================================
-
-/// Initialize SIMD level based on host CPU features
-fn init_host_simd() {
-    unsafe {
-        if std::is_x86_feature_detected!("avx2") {
-            rany_os::hal::mmio::set_simd_level(rany_os::hal::mmio::simd_level::AVX2);
-        } else if std::is_x86_feature_detected!("avx") {
-            rany_os::hal::mmio::set_simd_level(rany_os::hal::mmio::simd_level::AVX);
-        }
-    }
-}
 
 /// Returns a custom Criterion configuration with longer measurement time
 /// to reduce noise in CI environments.
@@ -47,9 +37,6 @@ fn criterion_config() -> Criterion {
         "Criterion config: measurement={}s sample_size={} warmup={}s",
         measurement_secs, sample_size, warm_up_secs
     );
-
-    // Ensure SIMD is enabled for MMIO benchmarks
-    init_host_simd();
 
     Criterion::default()
         .measurement_time(Duration::from_secs(measurement_secs))
@@ -87,33 +74,21 @@ fn setup_framebuffer(
     width: u32,
     height: u32,
     format: PixelFormat,
-    bpp: u8,
     double_buffer: bool,
-) -> (Vec<u8>, Framebuffer) {
-    let bytes_per_pixel = bpp as u32 / 8;
-    let stride = width * bytes_per_pixel;
-    let info = FramebufferInfo {
-        address: 0,
+) -> Framebuffer {
+    let layout = FramebufferLayout::new(
         width,
         height,
-        stride,
+        width * format.bytes_per_pixel() as u32,
         format,
-        bpp,
-    };
-
-    let mut mem = vec![0u8; info.size()];
-    let addr = mem.as_mut_ptr() as u64;
-    let mut info2 = info.clone();
-    info2.address = addr;
-
-    let mut fb = unsafe { Framebuffer::new(info2) };
-
+    )
+    .expect("benchmark geometry");
+    let mut fb = Framebuffer::new(layout, PixelBuffer::Memory(vec![0; layout.size()]))
+        .expect("benchmark framebuffer workspace");
     if double_buffer {
-        let back = vec![0u8; info.size()];
-        fb.enable_double_buffering_from_vec(back);
+        fb.enable_double_buffering().expect("benchmark back plane");
     }
-
-    (mem, fb)
+    fb
 }
 
 /// Generate pseudo-random test data for packer benchmarks
@@ -130,8 +105,7 @@ fn generate_test_data(size: usize, seed: usize) -> Vec<u8> {
 // =============================================================================
 
 fn bench_draw_image_bgra(c: &mut Criterion) {
-    let (_mem, mut fb) =
-        setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgra8888, 32, true);
+    let mut fb = setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgra8888, true);
     let img = Image::filled(
         BENCH_WIDTH,
         BENCH_HEIGHT,
@@ -151,8 +125,7 @@ fn bench_draw_image_bgra(c: &mut Criterion) {
 }
 
 fn bench_draw_image_rgba(c: &mut Criterion) {
-    let (_mem, mut fb) =
-        setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Rgba8888, 32, true);
+    let mut fb = setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Rgba8888, true);
     let img = Image::filled(
         BENCH_WIDTH,
         BENCH_HEIGHT,
@@ -172,8 +145,7 @@ fn bench_draw_image_rgba(c: &mut Criterion) {
 }
 
 fn bench_draw_image_bgr24(c: &mut Criterion) {
-    let (_mem, mut fb) =
-        setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgr888, 24, true);
+    let mut fb = setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgr888, true);
     let img = Image::filled(
         BENCH_WIDTH,
         BENCH_HEIGHT,
@@ -193,8 +165,7 @@ fn bench_draw_image_bgr24(c: &mut Criterion) {
 }
 
 fn bench_draw_image_rgb565(c: &mut Criterion) {
-    let (_mem, mut fb) =
-        setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Rgb565, 16, true);
+    let mut fb = setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Rgb565, true);
     let img = Image::filled(
         BENCH_WIDTH,
         BENCH_HEIGHT,
@@ -213,10 +184,9 @@ fn bench_draw_image_rgb565(c: &mut Criterion) {
     });
 }
 
-fn bench_draw_image_mmio(c: &mut Criterion) {
+fn bench_draw_image_ram_front(c: &mut Criterion) {
     // MMIO path (no double buffering)
-    let (_mem, mut fb) =
-        setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgra8888, 32, false);
+    let mut fb = setup_framebuffer(BENCH_WIDTH, BENCH_HEIGHT, PixelFormat::Bgra8888, false);
     let img = Image::filled(
         BENCH_WIDTH,
         BENCH_HEIGHT,
@@ -226,7 +196,7 @@ fn bench_draw_image_mmio(c: &mut Criterion) {
     let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
     let repeats = bench_repeat_for_pixels(pixels);
 
-    c.bench_function("draw_image_mmio", |b| {
+    c.bench_function("draw_image_ram_front", |b| {
         b.iter(|| {
             for _ in 0..repeats {
                 fb.draw_image(black_box(&img), 0, 0)
@@ -236,314 +206,39 @@ fn bench_draw_image_mmio(c: &mut Criterion) {
 }
 
 // =============================================================================
-// SIMD Packer Benchmarks
-// =============================================================================
-
-fn bench_pack_rgba_to_bgr24_dispatch(c: &mut Criterion) {
-    let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
-    let src = generate_test_data(pixels * 4, 97);
-    let mut dst = vec![0u8; pixels * 3];
-    let repeats = bench_repeat_for_pixels(pixels);
-
-    c.bench_function("pack_rgba_bgr24_dispatch", |b| {
-        b.iter(|| {
-            for _ in 0..repeats {
-                Framebuffer::bench_pack_rgba_to_bgr24_dispatch(
-                    black_box(&src),
-                    black_box(&mut dst),
+// SIMD packer throughput uses the same dispatcher and scalar routine as rendering.
+// The instruction set is admitted by the production CPU detector.
+fn bench_packers(c: &mut Criterion) {
+    for pixels in [8, 64, 1024, BENCH_WIDTH as usize * BENCH_HEIGHT as usize] {
+        let source = generate_test_data(pixels * 4, 97);
+        let mut destination = vec![0; pixels * 3];
+        c.bench_function(&format!("pack_rgba_bgr24_dispatch_{pixels}"), |b| {
+            b.iter(|| {
+                rany_os::graphics::packer::pack_rgba_to_bgr24(
+                    black_box(&source),
+                    black_box(&mut destination),
                     true,
                 )
-            }
-        })
-    });
-}
-
-fn bench_pack_rgba_to_bgr24_scalar(c: &mut Criterion) {
-    let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
-    let src = generate_test_data(pixels * 4, 61);
-    let mut dst = vec![0u8; pixels * 3];
-    let repeats = bench_repeat_for_pixels(pixels);
-
-    c.bench_function("pack_rgba_bgr24_scalar", |b| {
-        b.iter(|| {
-            for _ in 0..repeats {
-                Framebuffer::bench_pack_rgba_to_bgr24_scalar(black_box(&src), black_box(&mut dst))
-            }
-        })
-    });
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_avx2(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
-    let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
-    let src = generate_test_data(pixels * 4, 101);
-    let mut dst = vec![0u8; pixels * 3];
-    let repeats = bench_repeat_for_pixels(pixels);
-
-    c.bench_function("pack_rgba_bgr24_avx2", |b| {
-        b.iter(|| {
-            for _ in 0..repeats {
-                unsafe {
-                    Framebuffer::bench_pack_rgba_to_bgr24_avx2(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        pixels,
-                        true,
-                    )
-                }
-            }
-        })
-    });
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_avx2(_c: &mut Criterion) {
-    // AVX2 not available on this architecture
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_avx2_8pix_micro(_c: &mut Criterion) {}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_ssse3(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
-    let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
-    let src = generate_test_data(pixels * 4, 53);
-    let mut dst = vec![0u8; pixels * 3];
-    let repeats = bench_repeat_for_pixels(pixels);
-
-    c.bench_function("pack_rgba_bgr24_ssse3", |b| {
-        b.iter(|| {
-            for _ in 0..repeats {
-                unsafe {
-                    Framebuffer::bench_pack_rgba_to_bgr24_ssse3(
-                        black_box(&src),
-                        black_box(&mut dst),
-                        pixels,
-                        true,
-                    )
-                }
-            }
-        })
-    });
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_ssse3(_c: &mut Criterion) {
-    // SSSE3 not available on this architecture
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_ssse3_8pix_micro(_c: &mut Criterion) {}
-
-fn bench_pack_rgba_to_bgr24_neon(_c: &mut Criterion) {
-    #[cfg(target_arch = "aarch64")]
-    {
-        if !std::arch::is_aarch64_feature_detected!("neon") {
-            return;
-        }
-        let pixels = BENCH_WIDTH as usize * BENCH_HEIGHT as usize;
-        let src = generate_test_data(pixels * 4, 79);
-        let mut dst = vec![0u8; pixels * 3];
-
-        let repeats = bench_repeat_for_pixels(pixels);
-        _c.bench_function("pack_rgba_bgr24_neon", |b| {
+            });
+        });
+        c.bench_function(&format!("pack_rgba_bgr24_scalar_{pixels}"), |b| {
             b.iter(|| {
-                for _ in 0..repeats {
-                    unsafe {
-                        Framebuffer::bench_pack_rgba_to_bgr24_neon(
-                            black_box(&src),
-                            black_box(&mut dst),
-                            pixels,
-                            true,
-                        )
-                    }
-                }
-            })
+                rany_os::graphics::packer::pack_rgba_to_bgr24_scalar(
+                    black_box(&source),
+                    black_box(&mut destination),
+                    true,
+                )
+            });
         });
     }
 }
-
-#[cfg(not(target_arch = "aarch64"))]
-fn bench_pack_rgba_to_bgr24_neon_8pix_micro(_c: &mut Criterion) {}
-
-// Micro-bench: measure raw helper throughput (8-pixel helper) to isolate
-// per-call overhead from streaming bandwidth. Controlled by
-// RANY_PACKER_INNER_REPEATS (default 1_000_000).
-fn inner_repeats() -> usize {
-    std::env::var("RANY_PACKER_INNER_REPEATS")
-        .ok()
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(1_000_000)
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_avx2_8pix_micro(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
-    let src = generate_test_data(32, 199);
-    let mut dst = vec![0u8; 24];
-    let reps = inner_repeats();
-    eprintln!("avx2_8pix_micro reps={}", reps);
-    c.bench_function("pack_rgba_bgr24_avx2_8pix_micro", |b| {
-        b.iter(|| {
-            for _ in 0..reps {
-                unsafe {
-                    Framebuffer::bench_pack_rgba_to_bgr24_avx2_8pixels(
-                        src.as_ptr(),
-                        dst.as_mut_ptr(),
-                        true,
-                    )
-                }
-            }
-        })
-    });
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_ssse3_8pix_micro(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
-    let src = generate_test_data(32, 211);
-    let mut dst = vec![0u8; 24];
-    let reps = inner_repeats();
-    eprintln!("ssse3_8pix_micro reps={}", reps);
-    c.bench_function("pack_rgba_bgr24_ssse3_8pix_micro", |b| {
-        b.iter(|| {
-            for _ in 0..reps {
-                unsafe {
-                    Framebuffer::bench_pack_rgba_to_bgr24_ssse3_8pixels(
-                        src.as_ptr(),
-                        dst.as_mut_ptr(),
-                        true,
-                    )
-                }
-            }
-        })
-    });
-}
-
-#[cfg(target_arch = "aarch64")]
-fn bench_pack_rgba_to_bgr24_neon_8pix_micro(c: &mut Criterion) {
-    if !std::arch::is_aarch64_feature_detected!("neon") {
-        return;
-    }
-    let src = generate_test_data(32, 223);
-    let mut dst = vec![0u8; 24];
-    let reps = inner_repeats();
-    eprintln!("neon_8pix_micro reps={}", reps);
-    c.bench_function("pack_rgba_bgr24_neon_8pix_micro", |b| {
-        b.iter(|| {
-            for _ in 0..reps {
-                unsafe {
-                    Framebuffer::pack_rgba_to_bgr24_neon_8pixels(
-                        src.as_ptr(),
-                        dst.as_mut_ptr(),
-                        true,
-                    )
-                }
-            }
-        })
-    });
-}
-
-// Additional micro-benchmarks across multiple sizes to observe scaling
-fn bench_pack_rgba_to_bgr24_scalar_sizes(c: &mut Criterion) {
-    for &pixels in &[1024usize, 16384usize, 131072usize] {
-        let mut src = generate_test_data(pixels * 4, 61);
-        let mut dst = vec![0u8; pixels * 3];
-        let id = format!("pack_rgba_bgr24_scalar_{}px", pixels);
-        let repeats = bench_repeat_for_pixels(pixels);
-        c.bench_function(&id, |b| {
-            b.iter(|| {
-                for _ in 0..repeats {
-                    Framebuffer::bench_pack_rgba_to_bgr24_scalar(
-                        black_box(&src),
-                        black_box(&mut dst),
-                    )
-                }
-            })
-        });
-    }
-}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_avx2_sizes(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
-    for &pixels in &[1024usize, 16384usize, 131072usize] {
-        let mut src = generate_test_data(pixels * 4, 101);
-        let mut dst = vec![0u8; pixels * 3];
-        let id = format!("pack_rgba_bgr24_avx2_{}px", pixels);
-        let repeats = bench_repeat_for_pixels(pixels);
-        c.bench_function(&id, |b| {
-            b.iter(|| {
-                for _ in 0..repeats {
-                    unsafe {
-                        Framebuffer::bench_pack_rgba_to_bgr24_avx2(
-                            black_box(&src),
-                            black_box(&mut dst),
-                            pixels,
-                            true,
-                        )
-                    }
-                }
-            })
-        });
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_avx2_sizes(_c: &mut Criterion) {}
-
-#[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-fn bench_pack_rgba_to_bgr24_ssse3_sizes(c: &mut Criterion) {
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
-    for &pixels in &[1024usize, 16384usize, 131072usize] {
-        let mut src = generate_test_data(pixels * 4, 53);
-        let mut dst = vec![0u8; pixels * 3];
-        let id = format!("pack_rgba_bgr24_ssse3_{}px", pixels);
-        let repeats = bench_repeat_for_pixels(pixels);
-        c.bench_function(&id, |b| {
-            b.iter(|| {
-                for _ in 0..repeats {
-                    unsafe {
-                        Framebuffer::bench_pack_rgba_to_bgr24_ssse3(
-                            black_box(&src),
-                            black_box(&mut dst),
-                            pixels,
-                            true,
-                        )
-                    }
-                }
-            })
-        });
-    }
-}
-
-#[cfg(not(any(target_arch = "x86", target_arch = "x86_64")))]
-fn bench_pack_rgba_to_bgr24_ssse3_sizes(_c: &mut Criterion) {}
-
-// =============================================================================
-// Large Buffer Benchmark (Cache Pressure)
-// =============================================================================
 
 fn bench_large_buffer(c: &mut Criterion) {
     // 4K resolution: 3840x2160 (~33MB)
     const WIDTH_4K: u32 = 3840;
     const HEIGHT_4K: u32 = 2160;
 
-    let (_mem, mut fb) = setup_framebuffer(WIDTH_4K, HEIGHT_4K, PixelFormat::Bgra8888, 32, true);
+    let mut fb = setup_framebuffer(WIDTH_4K, HEIGHT_4K, PixelFormat::Bgra8888, true);
     let img = Image::filled(WIDTH_4K, HEIGHT_4K, Color::with_alpha(64, 128, 192, 255));
 
     c.bench_function("draw_image_4k", |b| {
@@ -563,26 +258,14 @@ criterion_group! {
         bench_draw_image_rgba,
         bench_draw_image_bgr24,
         bench_draw_image_rgb565,
-        bench_draw_image_mmio,
+        bench_draw_image_ram_front,
         bench_large_buffer
 }
 
 criterion_group! {
     name = packer_benches;
     config = criterion_config();
-    targets =
-        bench_pack_rgba_to_bgr24_dispatch,
-        bench_pack_rgba_to_bgr24_scalar,
-        bench_pack_rgba_to_bgr24_avx2,
-        bench_pack_rgba_to_bgr24_ssse3,
-        bench_pack_rgba_to_bgr24_neon,
-        // 8-pixel micro-bench helpers
-        bench_pack_rgba_to_bgr24_avx2_8pix_micro,
-        bench_pack_rgba_to_bgr24_ssse3_8pix_micro,
-        bench_pack_rgba_to_bgr24_neon_8pix_micro,
-        bench_pack_rgba_to_bgr24_scalar_sizes,
-        bench_pack_rgba_to_bgr24_avx2_sizes,
-        bench_pack_rgba_to_bgr24_ssse3_sizes
+    targets = bench_packers
 }
 
 criterion_main!(image_benches, packer_benches);

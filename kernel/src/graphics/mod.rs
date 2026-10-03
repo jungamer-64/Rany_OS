@@ -2,27 +2,10 @@
 // src/graphics/mod.rs - Graphics and Framebuffer Driver
 // ============================================================================
 //!
-//! # グラフィックスサブシステム
-//!
-//! フレームバッファベースのグラフィックス出力を提供。
-//! VESAモード、GOP（UEFI）、VBEをサポート。
-//!
-//! ## 機能
-//! - フレームバッファ直接描画
-//! - 基本図形（線、矩形、円）
-//! - ビットマップフォントによるテキスト描画
-//! - ダブルバッファリング
-//! - 画像描画（BMP）
-//! - Limineブートローダー統合
-//! - ウィンドウコンポジタ
-//!
-//! ## モジュール構造
-//! - `types` - 基本型定義（Color, Point, Rect, PixelFormat）
-//! - `framebuffer` - フレームバッファ描画
-//! - `font` - ビットマップフォント
-//! - `console` - テキストコンソール
-//! - `global` - グローバル状態管理
-//! - `boot_splash` - ブートスプラッシュ画面
+//! Drawing owns either an ordinary RAM plane or a retained scanout mapping.
+//! The boot handoff is admitted by the resource registry before AP startup;
+//! geometry alone never authorizes memory access. Synchronous GUI batches borrow
+//! that same mapping while the framebuffer lock excludes concurrent rendering.
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod console;
 pub mod font;
@@ -56,9 +39,14 @@ pub use font::FontExt;
 pub use font::{BitmapFont, FONT_HEIGHT, FONT_WIDTH, Font};
 pub use framebuffer::Framebuffer;
 
+#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
+pub(crate) use global::init_from_boot_info;
+
 // グローバル関数の再エクスポート
 #[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub use global::{
-    console_print, force_unlock_framebuffer, framebuffer, init, init_console, init_from_boot_info,
-    with_framebuffer,
+    console_print, force_unlock_framebuffer, framebuffer, init_console, with_framebuffer,
 };
+
+#[cfg(all(test, feature = "std"))]
+mod scanout_tests;

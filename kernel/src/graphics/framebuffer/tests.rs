@@ -1,5 +1,7 @@
 use super::*;
+use crate::graphics::FramebufferInfo;
 use crate::graphics::image::Image;
+use alloc::vec;
 
 // ---- Shared helpers to reduce duplication across FB test files ----
 
@@ -20,22 +22,29 @@ fn fb_info(w: u32, h: u32, fmt: PixelFormat) -> FramebufferInfo {
     }
 }
 
-/// Create an MMIO-backed Framebuffer and its backing memory.
-/// Returns `(framebuffer, backing_vec)`. The Vec must outlive the Framebuffer.
-fn make_mmio_fb(info: &FramebufferInfo) -> (Framebuffer, Vec<u8>) {
-    let mut mem = vec![0u8; info.size()];
-    let addr = mem.as_mut_ptr() as u64;
-    let mut info2 = info.clone();
-    info2.address = addr;
-    let fb = unsafe { Framebuffer::new(info2) };
-    (fb, mem)
+fn make_memory_fb(info: &FramebufferInfo) -> Framebuffer {
+    let layout = FramebufferLayout::new(info.width, info.height, info.stride, info.format).unwrap();
+    Framebuffer::new(layout, PixelBuffer::Memory(vec![0; info.size()])).unwrap()
+}
+
+fn memory_bytes(framebuffer: &Framebuffer) -> &[u8] {
+    match &framebuffer.pixels {
+        PixelBuffer::Memory(bytes) => bytes,
+        PixelBuffer::Scanout(_) => panic!("RAM fixture"),
+    }
 }
 
 /// Create a double-buffered Framebuffer (no MMIO memory).
 fn make_backbuf_fb(info: &FramebufferInfo) -> Framebuffer {
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
     fb
 }
 
@@ -66,70 +75,15 @@ fn draw_line_naive(fb: &mut Framebuffer, x1: i32, y1: i32, x2: i32, y2: i32, col
     }
 }
 
-/// Compare SIMD pack function against scalar reference for multiple sizes.
-/// `simd_fn` receives (src_ptr, dst_ptr, byte_len).
-/// `scalar_fn` receives (&[u8], &mut [u8]).
-fn assert_simd_matches_scalar(
-    sizes: &[usize],
-    seed_mul: usize,
-    simd_fn: unsafe fn(*const u8, *mut u8, usize),
-    scalar_fn: fn(&[u8], &mut [u8]),
-) {
-    for &len in sizes {
-        let mut src = vec![0u8; len * 4];
-        for (i, b) in src.iter_mut().enumerate() {
-            *b = (i * seed_mul % 251) as u8;
-        }
-        let mut dst_simd = vec![0u8; src.len()];
-        let mut dst_scalar = vec![0u8; src.len()];
-        unsafe {
-            simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), src.len());
-        }
-        scalar_fn(&src, &mut dst_scalar);
-        assert_eq!(dst_simd, dst_scalar, "mismatch at size {len}");
-    }
-}
-
 /// Create a framebuffer with MMIO backing AND a backbuffer (for flush tests).
-fn make_flush_fb(info: &FramebufferInfo) -> (Framebuffer, Vec<u8>) {
-    let (mut fb, vram) = make_mmio_fb(info);
-    fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
-    (fb, vram)
-}
-
-/// Compare SIMD BGR24 8-pixel pack against scalar reference.
-fn assert_bgr24_8px_matches_scalar(
-    seed_mul: usize,
-    is_bgr: bool,
-    simd_fn: unsafe fn(*const u8, *mut u8, bool),
-) {
-    let len = 8usize;
-    let mut src = vec![0u8; len * 4];
-    for (i, b) in src.iter_mut().enumerate() {
-        *b = (i * seed_mul % 251) as u8;
-    }
-    let mut dst_simd = vec![0u8; len * 3];
-    unsafe {
-        simd_fn(src.as_ptr(), dst_simd.as_mut_ptr(), is_bgr);
-    }
-    let mut dst_scalar = vec![0u8; len * 3];
-    for p in 0..len {
-        let s = p * 4;
-        if is_bgr {
-            dst_scalar[p * 3] = src[s + 2];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s];
-        } else {
-            dst_scalar[p * 3] = src[s];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s + 2];
-        }
-    }
-    assert_eq!(dst_simd, dst_scalar);
+fn make_flush_fb(info: &FramebufferInfo) -> Framebuffer {
+    let mut fb = make_memory_fb(info);
+    fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize])
+        .expect("valid back plane");
+    fb
 }
 
 mod draw_and_pack;
-pub use draw_and_pack::*;
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_draw_image_32bit_bgra_backbuffer() {
@@ -144,9 +98,15 @@ fn test_draw_image_32bit_bgra_backbuffer() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
@@ -176,9 +136,15 @@ fn test_draw_image_24bit_bgr_backbuffer() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
@@ -211,9 +177,15 @@ fn bench_draw_image_bulk() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
 
@@ -244,9 +216,15 @@ fn bench_draw_image_24bit_bulk() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
 
@@ -277,9 +255,15 @@ fn bench_draw_image_rgba_bulk() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let img = Image::filled(width, height, Color::with_alpha(64, 128, 192, 255));
 
@@ -310,9 +294,15 @@ fn bench_draw_hline_bulk() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let start = Instant::now();
     for y in 0..height {
@@ -333,9 +323,9 @@ fn test_write_bgr_run_small_mmio() {
     let width = 10u32;
     let height = 1u32;
     let stride = width * 3;
-    let mut vram = vec![0u8; (stride * height) as usize];
+    let vram = vec![0u8; (stride * height) as usize];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width,
         height,
         stride,
@@ -343,16 +333,21 @@ fn test_write_bgr_run_small_mmio() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     // small run (<= SMALL_BGR_DIRECT_MMIO)
     fb.draw_hline(2, 5, 0, Color::with_alpha(10, 20, 30, 255));
 
     for px in 2..=5 {
         let off = px as usize * 3;
-        assert_eq!(vram[off], 30);
-        assert_eq!(vram[off + 1], 20);
-        assert_eq!(vram[off + 2], 10);
+        assert_eq!(memory_bytes(&fb)[off], 30);
+        assert_eq!(memory_bytes(&fb)[off + 1], 20);
+        assert_eq!(memory_bytes(&fb)[off + 2], 10);
     }
 }
 
@@ -362,9 +357,9 @@ fn test_write_bgr_run_large_mmio() {
     let width = 80u32;
     let height = 1u32;
     let stride = width * 3;
-    let mut vram = vec![0u8; (stride * height) as usize];
+    let vram = vec![0u8; (stride * height) as usize];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width,
         height,
         stride,
@@ -372,19 +367,24 @@ fn test_write_bgr_run_large_mmio() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     fb.draw_hline(0, width as i32 - 1, 0, Color::with_alpha(1, 2, 3, 255));
 
     // check first and last pixel
-    assert_eq!(vram[0], 3);
-    assert_eq!(vram[1], 2);
-    assert_eq!(vram[2], 1);
+    assert_eq!(memory_bytes(&fb)[0], 3);
+    assert_eq!(memory_bytes(&fb)[1], 2);
+    assert_eq!(memory_bytes(&fb)[2], 1);
 
     let last_off = (width as usize - 1) * 3;
-    assert_eq!(vram[last_off], 3);
-    assert_eq!(vram[last_off + 1], 2);
-    assert_eq!(vram[last_off + 2], 1);
+    assert_eq!(memory_bytes(&fb)[last_off], 3);
+    assert_eq!(memory_bytes(&fb)[last_off + 1], 2);
+    assert_eq!(memory_bytes(&fb)[last_off + 2], 1);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -395,9 +395,9 @@ fn test_write_bgr_run_large_mmio_full() {
     let width = 200usize;
     let height = 1usize;
     let stride = width * 3;
-    let mut vram = vec![0u8; stride * height];
+    let vram = vec![0u8; stride * height];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width: width as u32,
         height: height as u32,
         stride: stride as u32,
@@ -405,15 +405,20 @@ fn test_write_bgr_run_large_mmio_full() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     fb.draw_hline(0, width as i32 - 1, 0, Color::with_alpha(1, 2, 3, 255));
 
     for px in 0..width {
         let off = px * 3;
-        assert_eq!(vram[off], 3);
-        assert_eq!(vram[off + 1], 2);
-        assert_eq!(vram[off + 2], 1);
+        assert_eq!(memory_bytes(&fb)[off], 3);
+        assert_eq!(memory_bytes(&fb)[off + 1], 2);
+        assert_eq!(memory_bytes(&fb)[off + 2], 1);
     }
 }
 
@@ -424,11 +429,8 @@ fn test_write_bgr_run_large_mmio_full_unaligned() {
     // canonical repeating BGR pattern across the buffer.
     let width = 200usize;
     let height = 1usize;
-    // Add extra bytes at the start to allow an unaligned offset
-    let mut vram = vec![0u8; width * 3 + 8];
-    let base = 1usize; // unaligned start
     let info = FramebufferInfo {
-        address: (vram.as_mut_ptr() as usize + base) as u64,
+        address: 0,
         width: width as u32,
         height: height as u32,
         stride: (width * 3) as u32,
@@ -436,16 +438,21 @@ fn test_write_bgr_run_large_mmio_full_unaligned() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
 
     // Draw full-width run starting at the unaligned base
     fb.write_bgr_run(0, width, Color::with_alpha(1, 2, 3, 255));
 
     for px in 0..width {
-        let off = base + px * 3;
-        assert_eq!(vram[off], 3);
-        assert_eq!(vram[off + 1], 2);
-        assert_eq!(vram[off + 2], 1);
+        let off = px * 3;
+        assert_eq!(memory_bytes(&fb)[off], 3);
+        assert_eq!(memory_bytes(&fb)[off + 1], 2);
+        assert_eq!(memory_bytes(&fb)[off + 2], 1);
     }
 }
 
@@ -453,9 +460,9 @@ fn test_write_bgr_run_large_mmio_full_unaligned() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_write_bgr_run_small_mmio_pairs_aligned() {
     // Test pair-based fast-path when address is 4-byte aligned
-    let mut vram = vec![0u8; 32];
+    let vram = vec![0u8; 32];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width: 10,
         height: 1,
         stride: 10 * 3,
@@ -463,7 +470,12 @@ fn test_write_bgr_run_small_mmio_pairs_aligned() {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     // Choose dst_offset_bytes = 4 (which is 4-byte aligned)
     fb.write_bgr_run(4, 3, Color::with_alpha(11, 22, 33, 255));
@@ -471,78 +483,10 @@ fn test_write_bgr_run_small_mmio_pairs_aligned() {
     // Expect three pixels of (b=33,g=22,r=11)
     for i in 0..3 {
         let off = 4 + i * 3;
-        assert_eq!(vram[off], 33);
-        assert_eq!(vram[off + 1], 22);
-        assert_eq!(vram[off + 2], 11);
+        assert_eq!(memory_bytes(&fb)[off], 33);
+        assert_eq!(memory_bytes(&fb)[off + 1], 22);
+        assert_eq!(memory_bytes(&fb)[off + 2], 11);
     }
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_write_bgr_run_small_mmio_generic_unaligned() {
-    // Non-4-byte aligned address should fall back to per-byte writes
-    let mut vram = vec![0u8; 32];
-    let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
-        width: 10,
-        height: 1,
-        stride: 10 * 3,
-        format: PixelFormat::Bgr888,
-        bpp: 24,
-    };
-
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
-
-    // Choose offset 1 (unaligned)
-    fb.write_bgr_run(1, 2, Color::with_alpha(2, 3, 4, 255));
-
-    for i in 0..2 {
-        let off = 1 + i * 3;
-        assert_eq!(vram[off], 4);
-        assert_eq!(vram[off + 1], 3);
-        assert_eq!(vram[off + 2], 2);
-    }
-}
-
-#[cfg(test)]
-pub fn _test_get_packer_mode() -> u8 {
-    use crate::graphics::packer::PACKER_MODE;
-    use core::sync::atomic::Ordering;
-    PACKER_MODE.load(Ordering::Relaxed)
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-#[cfg(feature = "std")]
-fn test_packer_env_override() {
-    // Reset cached mode so get_packer_mode() re-detects with env override
-    use crate::graphics::packer::PACKER_MODE;
-    use core::sync::atomic::Ordering;
-    PACKER_MODE.store(0, Ordering::Relaxed);
-    // Ensure RANY_PACKER override sets the PACKER_MODE
-    unsafe {
-        std::env::set_var("RANY_PACKER", "scalar");
-    }
-    let src = vec![0u8; 1024];
-    let mut dst = vec![0u8; 1024];
-    Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
-    assert_eq!(_test_get_packer_mode(), 1);
-    unsafe {
-        std::env::remove_var("RANY_PACKER");
-    }
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-#[cfg(not(feature = "std"))]
-fn test_packer_env_override_no_std() {
-    // When std is not available we at least ensure packer runs without
-    // attempting to read environment variables.
-    let src = vec![0u8; 1024];
-    let mut dst = vec![0u8; 1024];
-    Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
-    // PACKER_MODE may be 0/1 depending on platform; just ensure function completed.
-    assert!(dst.len() == 1024);
 }
 
 #[cfg(any(feature = "std", target_os = "linux"))]
@@ -564,9 +508,15 @@ fn bench_draw_text_bulk() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let start = Instant::now();
     for _ in 0..50 {
@@ -597,11 +547,25 @@ fn test_draw_hline_32bit_backbuffer() {
     };
     // Simple correctness check: draw a few representative lines with both
     // the optimized and naive implementations and compare backbuffers.
-    let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
-    let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb_opt = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
+    let mut fb_naive = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb_opt.enable_double_buffering_from_vec(back.clone());
-    fb_naive.enable_double_buffering_from_vec(back);
+    fb_opt
+        .enable_double_buffering_from_vec(back.clone())
+        .expect("valid back plane");
+    fb_naive
+        .enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let color = Color::with_alpha(10, 20, 30, 255);
     let test_lines = [
@@ -717,9 +681,15 @@ fn test_draw_text_space_32bit_backbuffer() {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let fg = Color::with_alpha(1, 2, 3, 255);
     let bg = Color::with_alpha(100, 110, 120, 255);
@@ -738,4 +708,113 @@ fn test_draw_text_space_32bit_backbuffer() {
             assert_eq!(c.alpha, 255);
         }
     }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn owned_planes_preserve_padding_and_format_bytes() {
+    let color = Color::with_alpha(0x12, 0x34, 0x56, 0x78);
+    for (format, expected) in [
+        (PixelFormat::Bgra8888, &[0x56, 0x34, 0x12, 0x78][..]),
+        (PixelFormat::Rgba8888, &[0x12, 0x34, 0x56, 0x78][..]),
+        (PixelFormat::Bgr888, &[0x56, 0x34, 0x12][..]),
+        (PixelFormat::Rgb888, &[0x12, 0x34, 0x56][..]),
+        (PixelFormat::Rgb565, &[0xAA, 0x11][..]),
+    ] {
+        for buffered in [false, true] {
+            let stride = 5 * expected.len() + 3;
+            let layout = FramebufferLayout::new(5, 3, stride as u32, format).unwrap();
+            let mut fb =
+                Framebuffer::new(layout, PixelBuffer::Memory(vec![0xCC; layout.size()])).unwrap();
+            if buffered {
+                fb.enable_double_buffering().unwrap();
+            }
+            fb.fill_rect(Rect::new(-2, -1, 20, 20), color);
+            fb.flush_dirty_area();
+            let PixelBuffer::Memory(bytes) = fb.into_pixels() else {
+                panic!("owned RAM destination");
+            };
+            for row in bytes.chunks_exact(stride) {
+                for pixel in row[..5 * expected.len()].chunks_exact(expected.len()) {
+                    assert_eq!(pixel, expected);
+                }
+                assert_eq!(&row[5 * expected.len()..], &[0xCC; 3]);
+            }
+        }
+    }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn displacement_clipping_and_overlap_match_a_source_snapshot() {
+    for buffered in [false, true] {
+        for (source, dx, dy) in [
+            (Rect::new(-2, -1, 7, 5), 0, 1),
+            (Rect::new(1, 1, 5, 4), -2, -1),
+            (Rect::new(0, 0, 6, 5), 1, 1),
+            (Rect::new(i32::MIN, i32::MIN, u32::MAX, u32::MAX), 0, 0),
+            (Rect::new(0, 0, u32::MAX, u32::MAX), i32::MAX, i32::MAX),
+        ] {
+            let info = fb_info(7, 6, PixelFormat::Bgra8888);
+            let mut fb = make_memory_fb(&info);
+            if buffered {
+                fb.enable_double_buffering().unwrap();
+            }
+            for y in 0..6 {
+                for x in 0..7 {
+                    fb.set_pixel(
+                        x,
+                        y,
+                        Color::with_alpha(x as u8, y as u8, (x + y * 7) as u8, 255),
+                    );
+                }
+            }
+            let mut snapshot = Vec::new();
+            for y in 0..6 {
+                for x in 0..7 {
+                    snapshot.push(fb.get_pixel(x, y));
+                }
+            }
+            fb.copy_rect(source, dx, dy);
+            // Independent destination-to-source translation avoids production clipping helpers.
+            for y in 0..6 {
+                for x in 0..7 {
+                    let ox = x as i64 - dx as i64;
+                    let oy = y as i64 - dy as i64;
+                    let sx = source.x as i64 + ox;
+                    let sy = source.y as i64 + oy;
+                    let expected = if ox >= 0
+                        && oy >= 0
+                        && ox < source.width as i64
+                        && oy < source.height as i64
+                        && (0..7).contains(&sx)
+                        && (0..6).contains(&sy)
+                    {
+                        snapshot[sy as usize * 7 + sx as usize]
+                    } else {
+                        snapshot[y as usize * 7 + x as usize]
+                    };
+                    assert_eq!(fb.get_pixel(x, y), expected);
+                }
+            }
+        }
+    }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn invalid_plane_admission_keeps_the_existing_back_plane() {
+    let info = fb_info(4, 3, PixelFormat::Bgra8888);
+    let layout = FramebufferLayout::new(4, 3, 16, info.format).unwrap();
+    assert!(matches!(
+        Framebuffer::new(layout, PixelBuffer::Memory(vec![0; 47])),
+        Err(FramebufferError::BufferTooSmall)
+    ));
+    let mut fb = make_backbuf_fb(&info);
+    fb.set_pixel(1, 1, Color::BLUE);
+    assert_eq!(
+        fb.enable_double_buffering_from_vec(vec![0; 11]),
+        Err(FramebufferError::BufferTooSmall)
+    );
+    assert_eq!(fb.get_pixel(1, 1), Color::BLUE);
 }

@@ -31,7 +31,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 ## Phase 2: Entry / Early CPU
 
 - 実装関数: `phase_entry_and_early_cpu()`
-- early serial、boot protocol version 検証、SSE/AVX 有効化、VGA、logger、`physical_memory_offset` 設定、ロゴ表示を行う。
+- early serial、boot protocol version 検証、SSE/AVX 有効化、logger、`physical_memory_offset` 設定、ロゴ表示を行う。
 - ここで以後のログ経路と CPU 機能前提を確立する。
 - 依存:
   - `ExoBootInfo.version` が一致していること
@@ -43,6 +43,8 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
 - `heap::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
 - `heap::init()` は loader から渡された排他的なヒープ RAM owner を消費する。この領域は PMM への登録対象から除外する。残りの usable RAM は firmware の NUMA topology と合わせて PMM に一度だけ登録し、slab・ノード別 Buddy・mobility pool は PMM owner を消費して借用領域を管理する。
+- scanout mapping は immutable な GOP handoff と物理 resource claim を保持する。AP 起動前に identity/HHDM の両 alias を退避し、TLB と cache を無効化して同じ WC 属性で再構築する。失敗時は claim を保持し、部分的な mapping を他の利用者へ再公開しない。BSP/AP は同じ PAT/MTRR policy で実行する。
+- VGA text mode の mapping claim と描画状態は heap 初期化後に取得する。映像出力の metadata や観測アドレスだけからアクセス権限を作らない。
 - allocator 初期化は bootstrap RAM owner を消費し、完了した状態だけを公開する。途中失敗は未使用 RAM の ownership を保持した terminal outcome とし、既存 allocation のある heap を再初期化しない。usable RAM が存在しない場合も推測した領域へ fallback しない。
 - `heap::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
 - CPU の NUMA 所属は PMM と共通の正規化済み配置から登録前に検証し、固定された CPU-local storage へ保持する。AP の起動と executor の公開はその後に行う。namespace で追加された CPU も同じ登録経路を通り、所属の変更は drain と eject が完了した物理世代間でのみ許可する。

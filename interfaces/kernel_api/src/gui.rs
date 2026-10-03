@@ -7,7 +7,7 @@
 //! Defines the contract between the kernel and the graphical shell (or other GUI cells).
 //!
 //! ## Design Principles
-//! - **Zero-Copy**: Framebuffer access via direct memory mapping (vaddr).
+//! - **Zero-Copy**: Scoped drawing borrows the retained scanout mapping directly.
 //! - **Capability-based**: Access requires proof of entitlement (DomainCapabilities).
 //! - **Async-Ready**: Input streams are provided via handles for async polling.
 
@@ -29,7 +29,7 @@ pub enum PixelFormat {
     Unknown = 99,
 }
 
-/// Framebuffer information for direct access
+/// Display geometry; observation does not grant drawing authority.
 #[derive(Debug, Clone, Copy)]
 #[repr(C)]
 pub struct FramebufferInfo {
@@ -41,8 +41,6 @@ pub struct FramebufferInfo {
     pub stride: usize,
     /// Pixel format
     pub format: PixelFormat,
-    /// Virtual address of the framebuffer (SAS: valid in all contexts)
-    pub vaddr: usize,
     /// Total size in bytes
     pub size: usize,
 }
@@ -127,17 +125,18 @@ pub enum InputEvent {
 
 /// Interface provided by the kernel to GUI cells
 pub trait GuiServices: Send + Sync {
-    /// Request direct access to the framebuffer
+    /// Borrows the retained scanout mapping for one synchronous drawing batch.
+    /// The kernel excludes concurrent renderers and holds its preemption guard
+    /// until the callback returns. The borrow cannot survive the callback.
     ///
-    /// Requires verification of capabilities (e.g., IO/DMA capabilities).
-    ///
-    /// # Arguments
-    /// * `access_token` - Proof of capability to access hardware/DMA
     /// # Errors
-    ///
-    /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
-    fn request_framebuffer(&self, access_token: &DomainCapabilities)
-    -> KapiResult<FramebufferInfo>;
+    /// Returns `PermissionDenied` for missing I/O/DMA authority, or
+    /// `NotSupported` when a scanout destination is unavailable.
+    fn with_framebuffer(
+        &self,
+        access_token: &DomainCapabilities,
+        draw: &mut dyn FnMut(FramebufferInfo, hal::scanout::ScanoutRegion<'_>),
+    ) -> KapiResult<()>;
 
     /// Get a handle to the input event stream
     ///

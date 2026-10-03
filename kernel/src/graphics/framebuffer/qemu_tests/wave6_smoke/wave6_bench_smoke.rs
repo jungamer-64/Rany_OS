@@ -1,5 +1,6 @@
-use crate::graphics::framebuffer::{Color, Framebuffer, FramebufferInfo, PixelFormat};
+use crate::graphics::framebuffer::{FramebufferLayout, PixelBuffer};
 use crate::graphics::image::Image;
+use crate::graphics::{Color, Framebuffer, FramebufferInfo, PixelFormat};
 use alloc::vec;
 
 fn back_buffer_ref(fb: &Framebuffer) -> Option<&[u32]> {
@@ -53,7 +54,12 @@ pub fn wave6_bench_draw_image_bulk_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let expected = Color::with_alpha(64, 128, 192, 255);
@@ -91,7 +97,12 @@ pub fn wave6_bench_draw_image_24bit_bulk_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let expected = Color::with_alpha(64, 128, 192, 255);
@@ -129,7 +140,12 @@ pub fn wave6_bench_draw_image_rgba_bulk_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let expected = Color::with_alpha(64, 128, 192, 255);
@@ -167,7 +183,12 @@ pub fn wave6_bench_draw_hline_bulk_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let expected = Color::with_alpha(10, 20, 30, 255);
@@ -237,7 +258,12 @@ pub fn wave6_bench_draw_text_bulk_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let fg = Color::with_alpha(1, 2, 3, 255);

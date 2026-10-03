@@ -1,4 +1,13 @@
 use super::*;
+use crate::graphics::FramebufferInfo;
+
+fn memory_bytes(framebuffer: &Framebuffer) -> &[u8] {
+    match &framebuffer.pixels {
+        PixelBuffer::Memory(bytes) => bytes,
+        PixelBuffer::Scanout(_) => panic!("RAM fixture"),
+    }
+}
+
 use crate::graphics::image::Image;
 use alloc::vec;
 use alloc::vec::Vec;
@@ -27,7 +36,12 @@ pub fn wave6_draw_image_32bit_bgra_backbuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
@@ -58,7 +72,12 @@ pub fn wave6_draw_image_24bit_bgr_backbuffer_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
@@ -81,9 +100,9 @@ pub fn wave6_write_bgr_run_small_mmio_smoke() -> bool {
     let width = 10u32;
     let height = 1u32;
     let stride = width * 3;
-    let mut vram = vec![0u8; (stride * height) as usize];
+    let vram = vec![0u8; (stride * height) as usize];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width,
         height,
         stride,
@@ -91,12 +110,20 @@ pub fn wave6_write_bgr_run_small_mmio_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_hline(2, 5, 0, Color::with_alpha(10, 20, 30, 255));
 
     for px in 2..=5 {
         let off = px as usize * 3;
-        if vram[off] != 30 || vram[off + 1] != 20 || vram[off + 2] != 10 {
+        if memory_bytes(&fb)[off] != 30
+            || memory_bytes(&fb)[off + 1] != 20
+            || memory_bytes(&fb)[off + 2] != 10
+        {
             return false;
         }
     }
@@ -107,9 +134,9 @@ pub fn wave6_write_bgr_run_large_mmio_full_smoke() -> bool {
     let width = 200usize;
     let height = 1usize;
     let stride = width * 3;
-    let mut vram = vec![0u8; stride * height];
+    let vram = vec![0u8; stride * height];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width: width as u32,
         height: height as u32,
         stride: stride as u32,
@@ -117,12 +144,20 @@ pub fn wave6_write_bgr_run_large_mmio_full_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_hline(0, width as i32 - 1, 0, Color::with_alpha(1, 2, 3, 255));
 
     for px in 0..width {
         let off = px * 3;
-        if vram[off] != 3 || vram[off + 1] != 2 || vram[off + 2] != 1 {
+        if memory_bytes(&fb)[off] != 3
+            || memory_bytes(&fb)[off + 1] != 2
+            || memory_bytes(&fb)[off + 2] != 1
+        {
             return false;
         }
     }
@@ -131,10 +166,8 @@ pub fn wave6_write_bgr_run_large_mmio_full_smoke() -> bool {
 
 pub fn wave6_write_bgr_run_large_mmio_full_unaligned_smoke() -> bool {
     let width = 200usize;
-    let mut vram = vec![0u8; width * 3 + 8];
-    let base = 1usize;
     let info = FramebufferInfo {
-        address: (vram.as_mut_ptr() as usize + base) as u64,
+        address: 0,
         width: width as u32,
         height: 1,
         stride: (width * 3) as u32,
@@ -142,12 +175,20 @@ pub fn wave6_write_bgr_run_large_mmio_full_unaligned_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.write_bgr_run(0, width, Color::with_alpha(1, 2, 3, 255));
 
     for px in 0..width {
-        let off = base + px * 3;
-        if vram[off] != 3 || vram[off + 1] != 2 || vram[off + 2] != 1 {
+        let off = px * 3;
+        if memory_bytes(&fb)[off] != 3
+            || memory_bytes(&fb)[off + 1] != 2
+            || memory_bytes(&fb)[off + 2] != 1
+        {
             return false;
         }
     }
@@ -155,9 +196,9 @@ pub fn wave6_write_bgr_run_large_mmio_full_unaligned_smoke() -> bool {
 }
 
 pub fn wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
-    let mut vram = vec![0u8; 32];
+    let vram = vec![0u8; 32];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width: 10,
         height: 1,
         stride: 10 * 3,
@@ -165,12 +206,20 @@ pub fn wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.write_bgr_run(4, 3, Color::with_alpha(11, 22, 33, 255));
 
     for i in 0..3 {
         let off = 4 + i * 3;
-        if vram[off] != 33 || vram[off + 1] != 22 || vram[off + 2] != 11 {
+        if memory_bytes(&fb)[off] != 33
+            || memory_bytes(&fb)[off + 1] != 22
+            || memory_bytes(&fb)[off + 2] != 11
+        {
             return false;
         }
     }
@@ -178,9 +227,9 @@ pub fn wave6_write_bgr_run_small_mmio_pairs_aligned_smoke() -> bool {
 }
 
 pub fn wave6_write_bgr_run_small_mmio_generic_unaligned_smoke() -> bool {
-    let mut vram = vec![0u8; 32];
+    let vram = vec![0u8; 32];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width: 10,
         height: 1,
         stride: 10 * 3,
@@ -188,12 +237,20 @@ pub fn wave6_write_bgr_run_small_mmio_generic_unaligned_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.write_bgr_run(1, 2, Color::with_alpha(2, 3, 4, 255));
 
     for i in 0..2 {
         let off = 1 + i * 3;
-        if vram[off] != 4 || vram[off + 1] != 3 || vram[off + 2] != 2 {
+        if memory_bytes(&fb)[off] != 4
+            || memory_bytes(&fb)[off + 1] != 3
+            || memory_bytes(&fb)[off + 2] != 2
+        {
             return false;
         }
     }
@@ -212,11 +269,25 @@ pub fn wave6_draw_hline_32bit_backbuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
-    let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb_opt = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
+    let mut fb_naive = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb_opt.enable_double_buffering_from_vec(back.clone());
-    fb_naive.enable_double_buffering_from_vec(back);
+    fb_opt
+        .enable_double_buffering_from_vec(back.clone())
+        .expect("valid back plane");
+    fb_naive
+        .enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let color = Color::with_alpha(10, 20, 30, 255);
     let test_lines = [
@@ -308,7 +379,12 @@ pub fn wave6_draw_text_space_32bit_backbuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -343,11 +419,25 @@ pub fn wave6_draw_line_matches_naive_32bit_backbuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
-    let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb_opt = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
+    let mut fb_naive = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb_opt.enable_double_buffering_from_vec(back.clone());
-    fb_naive.enable_double_buffering_from_vec(back);
+    fb_opt
+        .enable_double_buffering_from_vec(back.clone())
+        .expect("valid back plane");
+    fb_naive
+        .enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let color = Color::with_alpha(10, 20, 30, 255);
     let cases = [
@@ -428,11 +518,25 @@ pub fn wave6_draw_line_matches_naive_24bit_backbuffer_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
-    let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb_opt = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
+    let mut fb_naive = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     let back = vec![0u32; (info.width * info.height) as usize];
-    fb_opt.enable_double_buffering_from_vec(back.clone());
-    fb_naive.enable_double_buffering_from_vec(back);
+    fb_opt
+        .enable_double_buffering_from_vec(back.clone())
+        .expect("valid back plane");
+    fb_naive
+        .enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let color = Color::with_alpha(11, 22, 33, 255);
     let cases = [(0, 0, 15, 3), (0, 0, 3, 15), (15, 0, 0, 15), (2, 14, 13, 4)];
@@ -506,7 +610,12 @@ pub fn wave6_draw_text_space_24bit_backbuffer_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let fg = Color::with_alpha(1, 2, 3, 255);
@@ -541,16 +650,25 @@ pub fn wave6_draw_image_32bit_mmio_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(4) {
-        if mem[i] != 30 || mem[i + 1] != 20 || mem[i + 2] != 10 || mem[i + 3] != 255 {
+    for i in (0..memory_bytes(&fb).len()).step_by(4) {
+        if memory_bytes(&fb)[i] != 30
+            || memory_bytes(&fb)[i + 1] != 20
+            || memory_bytes(&fb)[i + 2] != 10
+            || memory_bytes(&fb)[i + 3] != 255
+        {
             return false;
         }
     }

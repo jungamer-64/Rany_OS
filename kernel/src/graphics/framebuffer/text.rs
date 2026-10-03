@@ -7,7 +7,6 @@
 //! clipping/run helpers extracted from the main framebuffer implementation.
 
 use super::*;
-use core::ptr;
 use hal::mmio;
 
 impl Framebuffer {
@@ -117,8 +116,7 @@ impl Framebuffer {
             debug_assert!(false, "16bpp draw called on u32 backbuffer");
             false
         } else {
-            let addr = self.buffer as usize + start_offset;
-            self.write_u16_run_streaming_nofence(addr, clipped_len, pixel);
+            self.write_u16_run_streaming_nofence(start_offset, clipped_len, pixel);
             true
         }
     }
@@ -310,8 +308,8 @@ impl Framebuffer {
         let char_h = font.height() as i32;
         self.mark_dirty(Rect::new(cx, y, char_w as u32, char_h as u32));
 
-        let fg_bytes = self.bgr_color_order(color);
-        let bg_bytes = self.bgr_color_order(bg_color);
+        let fg_bytes = self.color_bytes_24(color);
+        let bg_bytes = self.color_bytes_24(bg_color);
 
         let data = font.glyph(c).unwrap_or(&[0u8; 16]);
         let mut wrote = false;
@@ -372,32 +370,12 @@ impl Framebuffer {
                 true
             }
             2 => {
-                let pixel = Self::color_to_rgb565(color);
-
-                if self.back_buffer.is_some() {
-                    let base = unsafe { self.draw_buffer().add(start_offset) };
-                    let pair = (pixel as u32) | ((pixel as u32) << 16);
-                    let mut i = 0usize;
-
-                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                    while i + 1 < clipped_len {
-                        unsafe {
-                            ptr::write_unaligned(base.add(i * 2) as *mut u32, pair);
-                        }
-                        i += 2;
-                    }
-
-                    if i < clipped_len {
-                        unsafe {
-                            ptr::write_unaligned(base.add(i * 2) as *mut u16, pixel);
-                        }
-                    }
-                    false
-                } else {
-                    let addr = self.draw_buffer() as usize + start_offset;
-                    self.write_u16_run_streaming_nofence(addr, clipped_len, pixel);
-                    true
-                }
+                self.write_u16_run_streaming_nofence(
+                    start_offset,
+                    clipped_len,
+                    Self::color_to_rgb565(color),
+                );
+                true
             }
             _ => {
                 for i in 0..clipped_len {
@@ -411,14 +389,14 @@ impl Framebuffer {
     /// Compute stride, format and bpp for text drawing.
     fn draw_text_setup(&self) -> (usize, PixelFormat, usize) {
         let stride = if self.back_buffer.is_some() {
-            (self.info.width * 4) as usize
+            (self.info.width() * 4) as usize
         } else {
-            self.info.stride as usize
+            self.info.stride() as usize
         };
         let format = if self.back_buffer.is_some() {
             PixelFormat::Bgra8888
         } else {
-            self.info.format
+            self.info.format()
         };
         let bpp = format.bytes_per_pixel() as usize;
         (stride, format, bpp)
@@ -548,11 +526,11 @@ impl Framebuffer {
         bg: Option<Color>,
     ) {
         let (stride, bpp) = if self.back_buffer.is_some() {
-            ((self.info.width * 4) as usize, 4)
+            ((self.info.width() * 4) as usize, 4)
         } else {
             (
-                self.info.stride as usize,
-                self.info.format.bytes_per_pixel(),
+                self.info.stride() as usize,
+                self.info.format().bytes_per_pixel(),
             )
         };
 
@@ -613,8 +591,11 @@ impl Framebuffer {
                 (color.to_u32(), bg.map(|c| c.to_u32()).unwrap_or(0))
             } else {
                 (
-                    self.info.format.encode_u32(color).unwrap_or(color.to_u32()),
-                    bg.map(|c| self.info.format.encode_u32(c).unwrap_or(c.to_u32()))
+                    self.info
+                        .format()
+                        .encode_u32(color)
+                        .unwrap_or(color.to_u32()),
+                    bg.map(|c| self.info.format().encode_u32(c).unwrap_or(c.to_u32()))
                         .unwrap_or(0),
                 )
             }
@@ -625,10 +606,14 @@ impl Framebuffer {
 
     /// Pre-encode foreground/background colors for the 32bpp MMIO path.
     fn preencode_colors_32(&self, color: Color, bg_color: Color) -> (u32, u32) {
-        let fg = self.info.format.encode_u32(color).unwrap_or(color.to_u32());
+        let fg = self
+            .info
+            .format()
+            .encode_u32(color)
+            .unwrap_or(color.to_u32());
         let bg_v = self
             .info
-            .format
+            .format()
             .encode_u32(bg_color)
             .unwrap_or(bg_color.to_u32());
         (fg, bg_v)
@@ -638,94 +623,44 @@ impl Framebuffer {
     /// Writes all 8 pixels in one pass using streaming u64 writes (16 bytes total).
     /// Returns `true` if MMIO writes occurred.
     fn write_glyph_row_16bit_nofence(
-        &self,
+        &mut self,
         bits: u8,
-        dst_offset_bytes: usize,
-        fg_u16: u16,
-        bg_u16: u16,
+        offset: usize,
+        foreground: u16,
+        background: u16,
     ) -> bool {
-        if self.buffer.is_null() {
-            return false;
+        let mut row = [0; 16];
+        // LOOP_PROOF: mode=bounded; reason=Each glyph row has exactly eight two byte pixels.;
+        for (column, bytes) in row.chunks_exact_mut(2).enumerate() {
+            let pixel = if bits & (0x80 >> column) != 0 {
+                foreground
+            } else {
+                background
+            };
+            bytes.copy_from_slice(&pixel.to_le_bytes());
         }
-        let addr = self.buffer as usize + dst_offset_bytes;
-
-        // Branchless pixel selection: for each bit, mask selects fg or bg
-        #[inline(always)]
-        fn sel16(mask: u16, fg: u16, bg: u16) -> u16 {
-            bg ^ ((bg ^ fg) & mask)
-        }
-
-        let b = bits as i32;
-        let m0 = ((b << 24) >> 31) as u16;
-        let m1 = ((b << 25) >> 31) as u16;
-        let m2 = ((b << 26) >> 31) as u16;
-        let m3 = ((b << 27) >> 31) as u16;
-        let m4 = ((b << 28) >> 31) as u16;
-        let m5 = ((b << 29) >> 31) as u16;
-        let m6 = ((b << 30) >> 31) as u16;
-        let m7 = ((b << 31) >> 31) as u16;
-
-        // Pack 4 pixels into one u64 (LE: pixel0 at low bits)
-        let p0 = sel16(m0, fg_u16, bg_u16) as u64;
-        let p1 = sel16(m1, fg_u16, bg_u16) as u64;
-        let p2 = sel16(m2, fg_u16, bg_u16) as u64;
-        let p3 = sel16(m3, fg_u16, bg_u16) as u64;
-        let v0 = p0 | (p1 << 16) | (p2 << 32) | (p3 << 48);
-
-        let p4 = sel16(m4, fg_u16, bg_u16) as u64;
-        let p5 = sel16(m5, fg_u16, bg_u16) as u64;
-        let p6 = sel16(m6, fg_u16, bg_u16) as u64;
-        let p7 = sel16(m7, fg_u16, bg_u16) as u64;
-        let v1 = p4 | (p5 << 16) | (p6 << 32) | (p7 << 48);
-
-        mmio::stream_write_u64(addr, v0);
-        mmio::stream_write_u64(addr + 8, v1);
+        self.pixels.write(offset, &row);
         true
     }
 
-    /// Write one glyph row at 24bpp (BGR888/RGB888) with branchless fg/bg selection.
-    /// Writes all 8 pixels (24 bytes) via streaming store.
-    /// Returns `true` if MMIO writes occurred.
     fn write_glyph_row_24bit_nofence(
         &mut self,
         bits: u8,
-        dst_offset_bytes: usize,
-        fg_bytes: (u8, u8, u8),
-        bg_bytes: (u8, u8, u8),
+        offset: usize,
+        foreground: (u8, u8, u8),
+        background: (u8, u8, u8),
     ) -> bool {
-        if self.buffer.is_null() {
-            return false;
+        let mut row = [0; 24];
+        // LOOP_PROOF: mode=bounded; reason=Each glyph row has exactly eight three byte pixels.;
+        for (column, bytes) in row.chunks_exact_mut(3).enumerate() {
+            let pixel = if bits & (0x80 >> column) != 0 {
+                foreground
+            } else {
+                background
+            };
+            bytes.copy_from_slice(&[pixel.0, pixel.1, pixel.2]);
         }
-        let addr = self.buffer as usize + dst_offset_bytes;
-
-        // Build 24 bytes in a stack buffer, then streaming write
-        let mut buf = [0u8; 24];
-        let b = bits as i32;
-        for bit in 0..8u32 {
-            let mask = ((b << (24 + bit)) >> 31) as u8;
-            // mask is 0xFF for fg, 0x00 for bg
-            let c0 = bg_bytes.0 ^ ((bg_bytes.0 ^ fg_bytes.0) & mask);
-            let c1 = bg_bytes.1 ^ ((bg_bytes.1 ^ fg_bytes.1) & mask);
-            let c2 = bg_bytes.2 ^ ((bg_bytes.2 ^ fg_bytes.2) & mask);
-            let off = bit as usize * 3;
-            buf[off] = c0;
-            buf[off + 1] = c1;
-            buf[off + 2] = c2;
-        }
-
-        // Stream 24 bytes: 3 u64 writes (covers 24 bytes exactly)
-        let v0 = u64::from_le_bytes([
-            buf[0], buf[1], buf[2], buf[3], buf[4], buf[5], buf[6], buf[7],
-        ]);
-        let v1 = u64::from_le_bytes([
-            buf[8], buf[9], buf[10], buf[11], buf[12], buf[13], buf[14], buf[15],
-        ]);
-        let v2 = u64::from_le_bytes([
-            buf[16], buf[17], buf[18], buf[19], buf[20], buf[21], buf[22], buf[23],
-        ]);
-        mmio::stream_write_u64(addr, v0);
-        mmio::stream_write_u64(addr + 8, v1);
-        mmio::stream_write_u64(addr + 16, v2);
+        self.pixels.write(offset, &row);
         true
     }
 
@@ -820,8 +755,8 @@ impl Framebuffer {
         color: Color,
         bg_color: Color,
     ) -> bool {
-        let fg_bytes = self.bgr_color_order(color);
-        let bg_bytes = self.bgr_color_order(bg_color);
+        let fg_bytes = self.color_bytes_24(color);
+        let bg_bytes = self.color_bytes_24(bg_color);
         let mut wrote = false;
         for (row, &byte) in glyph.iter().enumerate() {
             let dst_y = y + row as i32;
@@ -840,8 +775,8 @@ impl Framebuffer {
             Some(g) => g,
             None => return,
         };
-        let stride = self.info.stride as usize;
-        let bpp = self.info.format.bytes_per_pixel();
+        let stride = self.info.stride() as usize;
+        let bpp = self.info.format().bytes_per_pixel();
 
         let char_w_i32 = font.width() as i32;
         let char_w = font.width() as u32;

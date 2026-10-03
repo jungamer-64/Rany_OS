@@ -16,16 +16,24 @@ pub fn wave6_draw_image_24bit_mmio_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
 
     let img = Image::filled(width, height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(3) {
-        if mem[i] != 0 || mem[i + 1] != 0 || mem[i + 2] != 255 {
+    for i in (0..memory_bytes(&fb).len()).step_by(3) {
+        if memory_bytes(&fb)[i] != 0
+            || memory_bytes(&fb)[i + 1] != 0
+            || memory_bytes(&fb)[i + 2] != 255
+        {
             return false;
         }
     }
@@ -44,16 +52,25 @@ pub fn wave6_draw_image_32bit_mmio_rgba_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
 
     let img = Image::filled(width, height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(4) {
-        if mem[i] != 10 || mem[i + 1] != 20 || mem[i + 2] != 30 || mem[i + 3] != 255 {
+    for i in (0..memory_bytes(&fb).len()).step_by(4) {
+        if memory_bytes(&fb)[i] != 10
+            || memory_bytes(&fb)[i + 1] != 20
+            || memory_bytes(&fb)[i + 2] != 30
+            || memory_bytes(&fb)[i + 3] != 255
+        {
             return false;
         }
     }
@@ -72,35 +89,16 @@ pub fn wave6_write_bytes_mmio_alignment_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut mem = vec![0u8; info.size() + 16];
-    let base = mem.as_mut_ptr() as usize;
-    let mut offset = None;
-    for off in 0..8usize {
-        if ((base + off) & 7) == 0 {
-            offset = Some(off);
-            break;
-        }
-    }
-    let offset = match offset {
-        Some(off) => off,
-        None => return false,
-    };
-
-    let mut info2 = info.clone();
-    info2.address = (base + offset) as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("fixture geometry"),
+        PixelBuffer::Memory(vec![0; info.size()]),
+    )
+    .expect("fixture workspace");
     fb.write_bgr_run(0, 3, Color::with_alpha(1, 2, 3, 255));
 
-    let start = offset;
-    mem[start] == 3
-        && mem[start + 1] == 2
-        && mem[start + 2] == 1
-        && mem[start + 3] == 3
-        && mem[start + 4] == 2
-        && mem[start + 5] == 1
-        && mem[start + 6] == 3
-        && mem[start + 7] == 2
-        && mem[start + 8] == 1
+    memory_bytes(&fb)[..9] == [3, 2, 1, 3, 2, 1, 3, 2, 1]
+        && memory_bytes(&fb)[9..].iter().all(|&byte| byte == 0)
 }
 
 pub fn wave6_write_opaque_run_24bit_even_odd_mmio_smoke() -> bool {
@@ -127,21 +125,34 @@ pub fn wave6_write_opaque_run_24bit_even_odd_mmio_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
     fb.draw_image(&img, 0, 0);
 
     for x in 0..(width as usize) {
         let off = x * 3;
         let c = cols[x];
-        if mem[off] != c.blue || mem[off + 1] != c.green || mem[off + 2] != c.red {
+        if memory_bytes(&fb)[off] != c.blue
+            || memory_bytes(&fb)[off + 1] != c.green
+            || memory_bytes(&fb)[off + 2] != c.red
+        {
             return false;
         }
     }
 
-    let mut fb2 = unsafe { Framebuffer::new(info) };
+    let mut fb2 = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb2.enable_double_buffering_from_vec(vec![0u32; (width * height) as usize]);
     fb2.draw_image(&img, 0, 0);
     let back_ref = match fb2.back_buffer.as_ref() {
@@ -168,7 +179,7 @@ pub fn wave6_pack_rgba_to_bgra_basic_smoke() -> bool {
     }
 
     let mut dst = vec![0u8; src.len()];
-    Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
+    crate::graphics::packer::pack_rgba_to_bgra(&src, &mut dst);
     for i in 0..(src.len() / 4) {
         let s = i * 4;
         if dst[s] != src[s + 2]
@@ -197,7 +208,7 @@ pub fn wave6_pack_rgba_to_bgra_scalar_random_smoke() -> bool {
             dst1[s + 2] = src[s];
             dst1[s + 3] = src[s + 3];
         }
-        Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
+        crate::graphics::packer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
         if dst1 != dst2 {
             return false;
         }
@@ -228,18 +239,28 @@ pub fn wave6_draw_image_bgra_stream_matches_backbuffer_smoke() -> bool {
     };
 
     let mut mem_back = vec![0u8; info.size()];
-    info.address = mem_back.as_mut_ptr() as u64;
-    let mut fb_back = unsafe { Framebuffer::new(info.clone()) };
+
+    let mut fb_back = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem_back),
+    )
+    .expect("framebuffer workspace");
     fb_back.enable_double_buffering();
     fb_back.draw_image(&img, 0, 0);
     fb_back.swap_buffers();
 
     let mut mem_mmio = vec![0u8; info.size()];
-    info.address = mem_mmio.as_mut_ptr() as u64;
-    let mut fb_mmio = unsafe { Framebuffer::new(info) };
+
+    let mut fb_mmio = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem_mmio),
+    )
+    .expect("framebuffer workspace");
     fb_mmio.draw_image(&img, 0, 0);
 
-    mem_back == mem_mmio
+    memory_bytes(&fb_back) == memory_bytes(&fb_mmio)
 }
 
 pub fn wave6_fill_rect_32bit_mmio_smoke() -> bool {
@@ -254,16 +275,25 @@ pub fn wave6_fill_rect_32bit_mmio_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
     fb.fill_rect(Rect::new(1, 1, 6, 6), Color::with_alpha(1, 2, 3, 255));
 
     for y in 1..7 {
         for x in 1..7 {
             let off = (y as usize * info.stride as usize) + (x as usize * 4);
-            if mem[off] != 3 || mem[off + 1] != 2 || mem[off + 2] != 1 || mem[off + 3] != 255 {
+            if memory_bytes(&fb)[off] != 3
+                || memory_bytes(&fb)[off + 1] != 2
+                || memory_bytes(&fb)[off + 2] != 1
+                || memory_bytes(&fb)[off + 3] != 255
+            {
                 return false;
             }
         }
@@ -283,7 +313,12 @@ pub fn wave6_dirty_rect_tracking_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     if fb.dirty_rect().is_some() {
         return false;
     }
@@ -314,37 +349,36 @@ pub fn wave6_dirty_rect_flush_only_marked_area_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
 
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     let mut back = vec![0u32; (info.width * info.height) as usize];
     let white = Color::with_alpha(255, 255, 255, 255).to_u32();
     for slot in &mut back {
         *slot = white;
     }
-    fb.enable_double_buffering_from_vec(back);
-
-    for b in &mut vram {
-        *b = 0;
-    }
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     let idx = 5 * info.width as usize + 5;
-    let dst = match fb.back_buffer.as_mut() {
-        Some(back) => unsafe { (back.as_mut_ptr() as *mut u8).add(idx * 4) },
-        None => return false,
+    let Some(back) = fb.back_buffer.as_mut() else {
+        return false;
     };
-    unsafe {
-        *dst = 0xAA;
-        *dst.add(1) = 0xBB;
-    }
+    back[idx] = u32::from_le_bytes([0xAA, 0xBB, 0xFF, 0xFF]);
 
     fb.mark_dirty(Rect::new(5, 5, 1, 1));
     fb.flush_dirty_area();
 
     let offset = (5 * 10 + 5) * 4;
-    vram[offset] == 0xAA && vram[offset + 1] == 0xBB && vram[0] == 0
+    memory_bytes(&fb)[offset] == 0xAA
+        && memory_bytes(&fb)[offset + 1] == 0xBB
+        && memory_bytes(&fb)[0] == 0
 }
 
 pub fn wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke() -> bool {
@@ -359,7 +393,12 @@ pub fn wave6_draw_text_partial_left_clip_32bit_backbuffer_smoke() -> bool {
         bpp: 32,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
 
     let fg = Color::with_alpha(10, 20, 30, 255);
@@ -387,9 +426,9 @@ pub fn wave6_write_bgr_run_large_mmio_smoke() -> bool {
     let width = 80u32;
     let height = 1u32;
     let stride = width * 3;
-    let mut vram = vec![0u8; (stride * height) as usize];
+    let vram = vec![0u8; (stride * height) as usize];
     let info = FramebufferInfo {
-        address: vram.as_mut_ptr() as u64,
+        address: 0,
         width,
         height,
         stride,
@@ -397,14 +436,21 @@ pub fn wave6_write_bgr_run_large_mmio_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_hline(0, width as i32 - 1, 0, Color::with_alpha(1, 2, 3, 255));
 
-    if vram[0] != 3 || vram[1] != 2 || vram[2] != 1 {
+    if memory_bytes(&fb)[0] != 3 || memory_bytes(&fb)[1] != 2 || memory_bytes(&fb)[2] != 1 {
         return false;
     }
     let last_off = (width as usize - 1) * 3;
-    vram[last_off] == 3 && vram[last_off + 1] == 2 && vram[last_off + 2] == 1
+    memory_bytes(&fb)[last_off] == 3
+        && memory_bytes(&fb)[last_off + 1] == 2
+        && memory_bytes(&fb)[last_off + 2] == 1
 }
 
 pub fn wave6_write_bgr_run_large_smoke() -> bool {
@@ -419,16 +465,24 @@ pub fn wave6_write_bgr_run_large_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut mem = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = mem.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let mem = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem),
+    )
+    .expect("framebuffer workspace");
 
     fb.write_bgr_run(0, width as usize, Color::with_alpha(5, 6, 7, 255));
 
     for x in 0..(width as usize) {
         let off = x * 3;
-        if mem[off] != 7 || mem[off + 1] != 6 || mem[off + 2] != 5 {
+        if memory_bytes(&fb)[off] != 7
+            || memory_bytes(&fb)[off + 1] != 6
+            || memory_bytes(&fb)[off + 2] != 5
+        {
             return false;
         }
     }
@@ -453,7 +507,12 @@ pub fn wave6_draw_image_24bit_rgb888_backbuffer_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (info.width * info.height) as usize]);
     fb.draw_image(&img, 0, 0);
 
@@ -488,57 +547,26 @@ pub fn wave6_draw_hline_24bit_rgb888_mmio_smoke() -> bool {
         bpp: 24,
     };
 
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info;
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info;
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     fb.draw_hline(0, 4, 0, Color::BLUE);
 
     for i in 0..5usize {
         let off = i * 3;
-        if vram[off] != 0 || vram[off + 1] != 0 || vram[off + 2] != 255 {
+        if memory_bytes(&fb)[off] != 0
+            || memory_bytes(&fb)[off + 1] != 0
+            || memory_bytes(&fb)[off + 2] != 255
+        {
             return false;
         }
     }
     true
-}
-
-pub fn wave6_pack_rgba_to_bgra_ssse3_matches_scalar_smoke() -> bool {
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "ssse3"
-    ))]
-    {
-        if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
-            return true;
-        }
-        for &len in &[4usize, 12, 16, 20, 48, 64, 100] {
-            let mut src = vec![0u8; len * 4];
-            for (i, slot) in src.iter_mut().enumerate() {
-                *slot = (i * 37 % 251) as u8;
-            }
-            let mut dst_simd = vec![0u8; src.len()];
-            let mut dst_scalar = vec![0u8; src.len()];
-            unsafe {
-                Framebuffer::pack_rgba_to_bgra_ssse3(
-                    src.as_ptr(),
-                    dst_simd.as_mut_ptr(),
-                    src.len(),
-                );
-            }
-            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
-            if dst_simd != dst_scalar {
-                return false;
-            }
-        }
-        return true;
-    }
-    #[cfg(not(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "ssse3"
-    )))]
-    {
-        true
-    }
 }

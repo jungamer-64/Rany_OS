@@ -5,7 +5,7 @@ mod simd_pack_32bit;
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     let info = fb_info(3, 1, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_flush_fb(&info);
+    let mut fb = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -16,12 +16,12 @@ pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush_odd_width() {
     // RED   = 0xF800 -> [0x00, 0xF8]
     // GREEN = 0x07E0 -> [0xE0, 0x07]
     // BLUE  = 0x001F -> [0x1F, 0x00]
-    assert_eq!(vram[0], 0x00);
-    assert_eq!(vram[1], 0xF8);
-    assert_eq!(vram[2], 0xE0);
-    assert_eq!(vram[3], 0x07);
-    assert_eq!(vram[4], 0x1F);
-    assert_eq!(vram[5], 0x00);
+    assert_eq!(memory_bytes(&fb)[0], 0x00);
+    assert_eq!(memory_bytes(&fb)[1], 0xF8);
+    assert_eq!(memory_bytes(&fb)[2], 0xE0);
+    assert_eq!(memory_bytes(&fb)[3], 0x07);
+    assert_eq!(memory_bytes(&fb)[4], 0x1F);
+    assert_eq!(memory_bytes(&fb)[5], 0x00);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -80,7 +80,7 @@ pub(crate) fn test_copy_rect_backbuffer_vertical_copy() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     let info = fb_info(8, 1, PixelFormat::Bgra8888);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     for x in 0..info.width as i32 {
         fb.set_pixel(x, 0, Color::with_alpha(x as u8, 0, 0, 255));
@@ -93,7 +93,7 @@ pub(crate) fn test_copy_rect_mmio_same_row_overlap() {
     for (x, &exp) in expected_red.iter().enumerate() {
         let off = x * 4;
         // BGRA layout in memory: [B,G,R,A]
-        assert_eq!(vram[off + 2], exp, "x={}", x);
+        assert_eq!(memory_bytes(&fb)[off + 2], exp, "x={}", x);
     }
 }
 
@@ -127,7 +127,7 @@ pub(crate) fn test_fill_rect_backbuffer_full_width_span() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 0, 255); // black
 
@@ -141,17 +141,17 @@ pub(crate) fn test_draw_text_rgb565_mmio_run_write() {
     // RGB565 little-endian bytes
     // red   = 0xF800 -> [0x00, 0xF8]
     // black = 0x0000 -> [0x00, 0x00]
-    assert_eq!(&vram[off(2)..off(2) + 2], &[0x00, 0x00]);
-    assert_eq!(&vram[off(3)..off(3) + 2], &[0x00, 0xF8]);
-    assert_eq!(&vram[off(4)..off(4) + 2], &[0x00, 0xF8]);
-    assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
+    assert_eq!(&memory_bytes(&fb)[off(2)..off(2) + 2], &[0x00, 0x00]);
+    assert_eq!(&memory_bytes(&fb)[off(3)..off(3) + 2], &[0x00, 0xF8]);
+    assert_eq!(&memory_bytes(&fb)[off(4)..off(4) + 2], &[0x00, 0xF8]);
+    assert_eq!(&memory_bytes(&fb)[off(5)..off(5) + 2], &[0x00, 0x00]);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_clear_rgb565_mmio() {
     let info = fb_info(6, 3, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     fb.clear(Color::BLUE);
 
@@ -159,8 +159,8 @@ pub(crate) fn test_clear_rgb565_mmio() {
     for y in 0..info.height as usize {
         for x in 0..info.width as usize {
             let off = y * info.stride as usize + x * 2;
-            assert_eq!(vram[off], 0x1F, "x={}, y={}", x, y);
-            assert_eq!(vram[off + 1], 0x00, "x={}, y={}", x, y);
+            assert_eq!(memory_bytes(&fb)[off], 0x1F, "x={}, y={}", x, y);
+            assert_eq!(memory_bytes(&fb)[off + 1], 0x00, "x={}, y={}", x, y);
         }
     }
 }
@@ -169,7 +169,7 @@ pub(crate) fn test_clear_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
     let info = fb_info(8, 16, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let fg = Color::RED;
     let bg = Color::BLACK;
@@ -181,10 +181,10 @@ pub(crate) fn test_draw_char_8x16_rgb565_mmio() {
 
     // red   = 0xF800 -> [0x00, 0xF8]
     // black = 0x0000 -> [0x00, 0x00]
-    assert_eq!(&vram[off(2)..off(2) + 2], &[0x00, 0x00]);
-    assert_eq!(&vram[off(3)..off(3) + 2], &[0x00, 0xF8]);
-    assert_eq!(&vram[off(4)..off(4) + 2], &[0x00, 0xF8]);
-    assert_eq!(&vram[off(5)..off(5) + 2], &[0x00, 0x00]);
+    assert_eq!(&memory_bytes(&fb)[off(2)..off(2) + 2], &[0x00, 0x00]);
+    assert_eq!(&memory_bytes(&fb)[off(3)..off(3) + 2], &[0x00, 0xF8]);
+    assert_eq!(&memory_bytes(&fb)[off(4)..off(4) + 2], &[0x00, 0xF8]);
+    assert_eq!(&memory_bytes(&fb)[off(5)..off(5) + 2], &[0x00, 0x00]);
 }
 
 // ── Session-3 regression tests ──────────────────────────────────────
@@ -292,8 +292,8 @@ pub(crate) fn test_draw_rect_outline_32bit_backbuffer() {
 pub(crate) fn test_draw_line_steep_rgb565_mmio() {
     let info = fb_info(20, 20, PixelFormat::Rgb565);
 
-    let (mut fb_opt, mut vram_opt) = make_mmio_fb(&info);
-    let (mut fb_naive, mut vram_naive) = make_mmio_fb(&info);
+    let mut fb_opt = make_memory_fb(&info);
+    let mut fb_naive = make_memory_fb(&info);
 
     let color = Color::with_alpha(0, 255, 0, 255);
 
@@ -334,13 +334,14 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
         }
 
         assert_eq!(
-            vram_opt, vram_naive,
+            memory_bytes(&fb_opt),
+            memory_bytes(&fb_naive),
             "steep line ({x1},{y1})->({x2},{y2}) mismatch"
         );
 
         // reset
-        vram_opt.fill(0);
-        vram_naive.fill(0);
+        fb_opt.clear(Color::with_alpha(0, 0, 0, 0));
+        fb_naive.clear(Color::with_alpha(0, 0, 0, 0));
     }
 }
 
@@ -349,7 +350,7 @@ pub(crate) fn test_draw_line_steep_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
     let info = fb_info(16, 16, PixelFormat::Bgra8888);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
     let width = info.width;
 
     // Paint a 4x4 block at (0,0) with known pattern
@@ -368,10 +369,10 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
         for x in 0..4u32 {
             let expected = Color::with_alpha((x * 60) as u8, (y * 60) as u8, 128, 255);
             let off = (y as usize * width as usize + (x as usize + 2)) * 4;
-            let b = vram[off];
-            let g = vram[off + 1];
-            let r = vram[off + 2];
-            let a = vram[off + 3];
+            let b = memory_bytes(&fb)[off];
+            let g = memory_bytes(&fb)[off + 1];
+            let r = memory_bytes(&fb)[off + 2];
+            let a = memory_bytes(&fb)[off + 3];
             let actual = Color::with_alpha(r, g, b, a);
             assert_eq!(
                 (actual.red, actual.green, actual.blue),
@@ -388,7 +389,7 @@ pub(crate) fn test_copy_rect_mmio_overlap_integrity() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let fg = Color::with_alpha(255, 0, 0, 255); // red
     let bg = Color::with_alpha(0, 0, 255, 255); // blue
@@ -400,10 +401,26 @@ pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
     let off = |x: usize| row * info.stride as usize + x * 3;
 
     // Bgr888: fg red = [0x00, 0x00, 0xFF], bg blue = [0xFF, 0x00, 0x00]
-    assert_eq!(&vram[off(2)..off(2) + 3], &[0xFF, 0x00, 0x00], "bg at x=2");
-    assert_eq!(&vram[off(3)..off(3) + 3], &[0x00, 0x00, 0xFF], "fg at x=3");
-    assert_eq!(&vram[off(4)..off(4) + 3], &[0x00, 0x00, 0xFF], "fg at x=4");
-    assert_eq!(&vram[off(5)..off(5) + 3], &[0xFF, 0x00, 0x00], "bg at x=5");
+    assert_eq!(
+        &memory_bytes(&fb)[off(2)..off(2) + 3],
+        &[0xFF, 0x00, 0x00],
+        "bg at x=2"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(3)..off(3) + 3],
+        &[0x00, 0x00, 0xFF],
+        "fg at x=3"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(4)..off(4) + 3],
+        &[0x00, 0x00, 0xFF],
+        "fg at x=4"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(5)..off(5) + 3],
+        &[0xFF, 0x00, 0x00],
+        "bg at x=5"
+    );
 }
 
 /// draw_char_8x16 24bpp MMIO single-pass: verify fg/bg pattern
@@ -411,7 +428,7 @@ pub(crate) fn test_draw_text_24bit_mmio_single_pass() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_char_8x16_24bit_mmio() {
     let info = fb_info(8, 16, PixelFormat::Bgr888);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let fg = Color::GREEN;
     let bg = Color::BLACK;
@@ -422,10 +439,26 @@ pub(crate) fn test_draw_char_8x16_24bit_mmio() {
     let off = |x: usize| row * info.stride as usize + x * 3;
 
     // Bgr888: green = [0x00, 0xFF, 0x00], black = [0x00, 0x00, 0x00]
-    assert_eq!(&vram[off(2)..off(2) + 3], &[0x00, 0x00, 0x00], "bg");
-    assert_eq!(&vram[off(3)..off(3) + 3], &[0x00, 0xFF, 0x00], "fg");
-    assert_eq!(&vram[off(4)..off(4) + 3], &[0x00, 0xFF, 0x00], "fg");
-    assert_eq!(&vram[off(5)..off(5) + 3], &[0x00, 0x00, 0x00], "bg");
+    assert_eq!(
+        &memory_bytes(&fb)[off(2)..off(2) + 3],
+        &[0x00, 0x00, 0x00],
+        "bg"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(3)..off(3) + 3],
+        &[0x00, 0xFF, 0x00],
+        "fg"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(4)..off(4) + 3],
+        &[0x00, 0xFF, 0x00],
+        "fg"
+    );
+    assert_eq!(
+        &memory_bytes(&fb)[off(5)..off(5) + 3],
+        &[0x00, 0x00, 0x00],
+        "bg"
+    );
 }
 
 /// draw_image 16bpp MMIO: blit_mmio_row RGB565 path
@@ -433,7 +466,7 @@ pub(crate) fn test_draw_char_8x16_24bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_rgb565_mmio() {
     let info = fb_info(4, 2, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
@@ -442,7 +475,11 @@ pub(crate) fn test_draw_image_rgb565_mmio() {
     for y in 0..info.height as usize {
         for x in 0..info.width as usize {
             let off = y * info.stride as usize + x * 2;
-            assert_eq!(&vram[off..off + 2], &[0x00, 0xF8], "pixel ({x},{y})");
+            assert_eq!(
+                &memory_bytes(&fb)[off..off + 2],
+                &[0x00, 0xF8],
+                "pixel ({x},{y})"
+            );
         }
     }
 }

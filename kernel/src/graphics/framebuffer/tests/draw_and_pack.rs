@@ -90,16 +90,16 @@ pub(crate) fn test_draw_text_space_24bit_backbuffer() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio() {
     let info = fb_info(4, 4, PixelFormat::Bgra8888);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(4) {
-        assert_eq!(mem[i], 30);
-        assert_eq!(mem[i + 1], 20);
-        assert_eq!(mem[i + 2], 10);
-        assert_eq!(mem[i + 3], 255);
+    for i in (0..memory_bytes(&fb).len()).step_by(4) {
+        assert_eq!(memory_bytes(&fb)[i], 30);
+        assert_eq!(memory_bytes(&fb)[i + 1], 20);
+        assert_eq!(memory_bytes(&fb)[i + 2], 10);
+        assert_eq!(memory_bytes(&fb)[i + 3], 255);
     }
 }
 
@@ -107,15 +107,15 @@ pub(crate) fn test_draw_image_32bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_24bit_mmio() {
     let info = fb_info(3, 2, PixelFormat::Bgr888);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(3) {
-        assert_eq!(mem[i], 0);
-        assert_eq!(mem[i + 1], 0);
-        assert_eq!(mem[i + 2], 255);
+    for i in (0..memory_bytes(&fb).len()).step_by(3) {
+        assert_eq!(memory_bytes(&fb)[i], 0);
+        assert_eq!(memory_bytes(&fb)[i + 1], 0);
+        assert_eq!(memory_bytes(&fb)[i + 2], 255);
     }
 }
 
@@ -123,58 +123,30 @@ pub(crate) fn test_draw_image_24bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_image_32bit_mmio_rgba() {
     let info = fb_info(4, 4, PixelFormat::Rgba8888);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     let img = Image::filled(info.width, info.height, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
 
-    for i in (0..mem.len()).step_by(4) {
-        assert_eq!(mem[i], 10);
-        assert_eq!(mem[i + 1], 20);
-        assert_eq!(mem[i + 2], 30);
-        assert_eq!(mem[i + 3], 255);
+    for i in (0..memory_bytes(&fb).len()).step_by(4) {
+        assert_eq!(memory_bytes(&fb)[i], 10);
+        assert_eq!(memory_bytes(&fb)[i + 1], 20);
+        assert_eq!(memory_bytes(&fb)[i + 2], 30);
+        assert_eq!(memory_bytes(&fb)[i + 3], 255);
     }
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_write_bytes_mmio_alignment() {
-    // Ensure write_bytes_mmio uses u64 writes when destination is 8-byte aligned
     let info = fb_info(8, 1, PixelFormat::Bgr888);
 
-    // Add padding to be able to adjust base pointer alignment
-    let mut mem = vec![0u8; info.size() + 16];
-    let base = mem.as_mut_ptr() as usize;
-
-    // Find an offset that yields 8-byte alignment
-    let mut offset = None;
-    for off in 0..8usize {
-        if ((base + off) & 7) == 0 {
-            offset = Some(off);
-            break;
-        }
-    }
-    let offset = offset.expect("couldn't find alignment offset");
-
-    let addr = (base + offset) as u64;
-    let mut info2 = info.clone();
-    info2.address = addr;
-    let mut fb = unsafe { Framebuffer::new(info2) };
-
-    // Write three pixels (9 bytes) so we exercise u64 + tail byte
+    let mut fb = make_memory_fb(&info);
     fb.write_bgr_run(0, 3, Color::with_alpha(1, 2, 3, 255));
 
     // Verify bytes
-    let start = offset;
-    assert_eq!(mem[start], 3); // b
-    assert_eq!(mem[start + 1], 2);
-    assert_eq!(mem[start + 2], 1);
-    assert_eq!(mem[start + 3], 3);
-    assert_eq!(mem[start + 4], 2);
-    assert_eq!(mem[start + 5], 1);
-    assert_eq!(mem[start + 6], 3);
-    assert_eq!(mem[start + 7], 2);
-    assert_eq!(mem[start + 8], 1);
+    assert_eq!(&memory_bytes(&fb)[..9], &[3, 2, 1, 3, 2, 1, 3, 2, 1]);
+    assert!(memory_bytes(&fb)[9..].iter().all(|&byte| byte == 0));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -182,15 +154,15 @@ pub(crate) fn test_write_bytes_mmio_alignment() {
 pub(crate) fn test_write_bgr_run_large() {
     // Ensure large runs of a single color are written correctly
     let info = fb_info(1024, 1, PixelFormat::Bgr888);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     fb.write_bgr_run(0, info.width as usize, Color::with_alpha(5, 6, 7, 255));
 
     for x in 0..(info.width as usize) {
         let off = x * 3;
-        assert_eq!(mem[off], 7); // b
-        assert_eq!(mem[off + 1], 6); // g
-        assert_eq!(mem[off + 2], 5); // r
+        assert_eq!(memory_bytes(&fb)[off], 7); // b
+        assert_eq!(memory_bytes(&fb)[off + 1], 6); // g
+        assert_eq!(memory_bytes(&fb)[off + 2], 5); // r
     }
 }
 
@@ -215,15 +187,15 @@ pub(crate) fn test_write_opaque_run_24bit_even_odd_mmio() {
     }
 
     // MMIO path
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
     fb.draw_image(&img, 0, 0);
 
     for x in 0..(info.width as usize) {
         let off = x * 3;
         let c = cols[x];
-        assert_eq!(mem[off], c.blue);
-        assert_eq!(mem[off + 1], c.green);
-        assert_eq!(mem[off + 2], c.red);
+        assert_eq!(memory_bytes(&fb)[off], c.blue);
+        assert_eq!(memory_bytes(&fb)[off + 1], c.green);
+        assert_eq!(memory_bytes(&fb)[off + 2], c.red);
     }
 
     // Backbuffer path
@@ -253,7 +225,7 @@ pub(crate) fn test_pack_rgba_to_bgra_basic() {
     }
 
     let mut dst = vec![0u8; src.len()];
-    Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
+    crate::graphics::packer::pack_rgba_to_bgra(&src, &mut dst);
 
     for i in 0..(src.len() / 4) {
         let s = i * 4;
@@ -262,94 +234,4 @@ pub(crate) fn test_pack_rgba_to_bgra_basic() {
         assert_eq!(dst[s + 2], src[s + 0]);
         assert_eq!(dst[s + 3], src[s + 3]);
     }
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgra_ssse3_matches_scalar() {
-    #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
-    #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
-        return;
-    }
-
-    assert_simd_matches_scalar(
-        &[4, 12, 16, 20, 48, 64, 100],
-        37,
-        Framebuffer::pack_rgba_to_bgra_ssse3,
-        Framebuffer::pack_rgba_to_bgra,
-    );
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgra_avx2_matches_scalar() {
-    #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
-    #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
-        return;
-    }
-
-    assert_simd_matches_scalar(
-        &[4, 12, 16, 20, 48, 64, 100],
-        97,
-        Framebuffer::pack_rgba_to_bgra_avx2,
-        Framebuffer::pack_rgba_to_bgra_scalar,
-    );
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgr24_avx2_matches_scalar() {
-    #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("avx2") {
-        return;
-    }
-    #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
-        return;
-    }
-
-    assert_bgr24_8px_matches_scalar(97, true, Framebuffer::pack_rgba_to_bgr24_avx2_8pixels);
-}
-
-#[cfg(all(target_arch = "x86_64", target_feature = "ssse3"))]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgr24_ssse3_matches_scalar() {
-    #[cfg(feature = "std")]
-    if !std::is_x86_feature_detected!("ssse3") {
-        return;
-    }
-    #[cfg(not(feature = "std"))]
-    if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
-        return;
-    }
-
-    assert_bgr24_8px_matches_scalar(61, true, Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgra_neon_matches_scalar() {
-    if !std::is_aarch64_feature_detected!("neon") {
-        return;
-    }
-
-    assert_simd_matches_scalar(
-        &[4, 12, 16, 20, 48, 64, 100],
-        61,
-        Framebuffer::pack_rgba_to_bgra_neon,
-        Framebuffer::pack_rgba_to_bgra_scalar,
-    );
 }

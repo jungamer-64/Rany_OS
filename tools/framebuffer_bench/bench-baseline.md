@@ -22,12 +22,6 @@ Results (99% CI ranges from Criterion):
 - draw_image_rgba: time: [723.42 µs 729.59 µs 737.17 µs]
 - draw_line_many: time: [862.75 µs 868.24 µs 874.10 µs]
 
-Notes:
-
-- BGRA and RGBA paths use u32/u64-aligned bulk writes when possible.
-- 24-bit path uses an unrolled pack into a byte scratch buffer and bulk writes.
-- write_bytes_mmio and write_u32_slice_mmio include loop unrolling for improved throughput on large writes.
-
 ## 関連文書
 
 - [README.md](README.md)

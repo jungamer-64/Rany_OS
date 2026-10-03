@@ -1,26 +1,6 @@
 use super::*;
 
 mod shapes_and_copy;
-#[cfg(target_arch = "aarch64")]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar() {
-    if !std::is_aarch64_feature_detected!("neon") {
-        return;
-    }
-    assert_bgr24_8px_matches_scalar(97, true, Framebuffer::pack_rgba_to_bgr24_neon_8pixels);
-}
-
-#[cfg(target_arch = "aarch64")]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub(crate) fn test_pack_rgba_to_bgr24_neon_matches_scalar_rgb() {
-    if !std::is_aarch64_feature_detected!("neon") {
-        return;
-    }
-    assert_bgr24_8px_matches_scalar(113, false, Framebuffer::pack_rgba_to_bgr24_neon_8pixels);
-}
-
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_pack_rgba_to_bgra_scalar_random() {
@@ -42,7 +22,7 @@ pub(crate) fn test_pack_rgba_to_bgra_scalar_random() {
             dst1[s + 3] = src[s + 3];
         }
 
-        Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
+        crate::graphics::packer::pack_rgba_to_bgra_scalar(&src, &mut dst2);
         assert_eq!(dst1, dst2);
     }
 }
@@ -66,37 +46,49 @@ pub(crate) fn test_draw_image_bgra_stream_matches_backbuffer() {
     }
 
     // Back-buffered framebuffer
-    let mut mem_back = vec![0u8; info.size()];
-    let mut info_back = info.clone();
-    info_back.address = mem_back.as_mut_ptr() as u64;
-    let mut fb_back = unsafe { Framebuffer::new(info_back) };
-    fb_back.enable_double_buffering();
+    let mem_back = vec![0u8; info.size()];
+    let info_back = info;
+
+    let mut fb_back = Framebuffer::new(
+        FramebufferLayout::new(
+            info_back.width,
+            info_back.height,
+            info_back.stride,
+            info_back.format,
+        )
+        .expect("valid fixture geometry"),
+        PixelBuffer::Memory(mem_back),
+    )
+    .expect("framebuffer workspace");
+    fb_back
+        .enable_double_buffering()
+        .expect("fixture back plane");
     fb_back.draw_image(&img, 0, 0);
     fb_back.swap_buffers();
 
     // MMIO-path framebuffer (no back buffer)
-    let (mut fb_mmio, mem_mmio) = make_mmio_fb(&info);
+    let mut fb_mmio = make_memory_fb(&info);
     fb_mmio.draw_image(&img, 0, 0);
 
     // Compare byte-by-byte
-    assert_eq!(mem_back, mem_mmio);
+    assert_eq!(memory_bytes(&fb_back), memory_bytes(&fb_mmio));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_32bit_mmio() {
     let info = fb_info(8, 8, PixelFormat::Bgra8888);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     fb.fill_rect(Rect::new(1, 1, 6, 6), Color::with_alpha(1, 2, 3, 255));
 
     for y in 1..7 {
         for x in 1..7 {
             let off = (y as usize * info.stride as usize) + (x as usize * 4);
-            assert_eq!(mem[off], 3);
-            assert_eq!(mem[off + 1], 2);
-            assert_eq!(mem[off + 2], 1);
-            assert_eq!(mem[off + 3], 255);
+            assert_eq!(memory_bytes(&fb)[off], 3);
+            assert_eq!(memory_bytes(&fb)[off + 1], 2);
+            assert_eq!(memory_bytes(&fb)[off + 2], 1);
+            assert_eq!(memory_bytes(&fb)[off + 3], 255);
         }
     }
 }
@@ -105,7 +97,7 @@ pub(crate) fn test_fill_rect_32bit_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_fill_rect_rgb565_mmio() {
     let info = fb_info(8, 4, PixelFormat::Rgb565);
-    let (mut fb, mem) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
     fb.fill_rect(Rect::new(1, 1, 6, 2), Color::RED);
 
     // RED in RGB565 little-endian: 0xF800 -> [0x00, 0xF8]
@@ -113,11 +105,11 @@ pub(crate) fn test_fill_rect_rgb565_mmio() {
         for x in 0..info.width as usize {
             let off = y * info.stride as usize + x * 2;
             if (1..=2).contains(&y) && (1..=6).contains(&x) {
-                assert_eq!(mem[off], 0x00, "x={}, y={}", x, y);
-                assert_eq!(mem[off + 1], 0xF8, "x={}, y={}", x, y);
+                assert_eq!(memory_bytes(&fb)[off], 0x00, "x={}, y={}", x, y);
+                assert_eq!(memory_bytes(&fb)[off + 1], 0xF8, "x={}, y={}", x, y);
             } else {
-                assert_eq!(mem[off], 0x00, "x={}, y={}", x, y);
-                assert_eq!(mem[off + 1], 0x00, "x={}, y={}", x, y);
+                assert_eq!(memory_bytes(&fb)[off], 0x00, "x={}, y={}", x, y);
+                assert_eq!(memory_bytes(&fb)[off + 1], 0x00, "x={}, y={}", x, y);
             }
         }
     }
@@ -127,7 +119,12 @@ pub(crate) fn test_fill_rect_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_dirty_rect_tracking() {
     let info = fb_info(100, 100, PixelFormat::Bgra8888);
-    let mut fb = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
 
     // Initial state: dirty_rect is None
     assert!(fb.dirty_rect().is_none());
@@ -154,29 +151,23 @@ pub(crate) fn test_dirty_rect_tracking() {
 pub(crate) fn test_dirty_rect_flush_only_marked_area() {
     // Verify that flush_dirty_area only copies the marked region
     let info = fb_info(10, 10, PixelFormat::Bgra8888);
-    let (mut fb, mut vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
     let mut back = vec![0u32; (info.width * info.height) as usize];
     // Fill back buffer with white (opaque white in BGRA)
     let white = Color::with_alpha(255, 255, 255, 255).to_u32();
     for i in 0..back.len() {
         back[i] = white;
     }
-    fb.enable_double_buffering_from_vec(back);
+    fb.enable_double_buffering_from_vec(back)
+        .expect("valid back plane");
 
     // Clear vram to black (simulating initial state)
-    for i in 0..vram.len() {
-        vram[i] = 0;
-    }
 
     // Mark a small area as dirty manually (to simulate drawing)
     // Let's modify back buffer at (5,5)
     let offset = (5 * 10 + 5) * 4; // byte offset used for VM checks below
     let idx = 5 * info.width as usize + 5; // pixel index in back buffer
-    let dst = unsafe { (fb.back_buffer.as_mut().unwrap().as_mut_ptr() as *mut u8).add(idx * 4) };
-    unsafe {
-        *dst = 0xAA;
-        *dst.add(1) = 0xBB;
-    }
+    fb.back_buffer.as_mut().unwrap()[idx] = u32::from_le_bytes([0xAA, 0xBB, 0xFF, 0xFF]);
 
     // Mark ONLY 1 pixel dirty
     fb.mark_dirty(Rect::new(5, 5, 1, 1));
@@ -185,12 +176,12 @@ pub(crate) fn test_dirty_rect_flush_only_marked_area() {
     fb.flush_dirty_area();
 
     // Check that VRAM at (5,5) is updated
-    assert_eq!(vram[offset], 0xAA);
-    assert_eq!(vram[offset + 1], 0xBB);
+    assert_eq!(memory_bytes(&fb)[offset], 0xAA);
+    assert_eq!(memory_bytes(&fb)[offset + 1], 0xBB);
 
     // Check that other VRAM areas are STILL 0 (not overwritten by the 255s in backbuffer)
     // e.g. (0,0)
-    assert_eq!(vram[0], 0);
+    assert_eq!(memory_bytes(&fb)[0], 0);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -280,7 +271,7 @@ pub(crate) fn test_draw_image_24bit_rgb888_backbuffer() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
     let info = fb_info(10, 2, PixelFormat::Rgb888);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     // Draw Blue line: Color(0, 0, 255)
     // Rgb888 memory should be [0, 0, 255] repeatedly
@@ -288,9 +279,9 @@ pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
 
     for i in 0..5 {
         let off = i * 3;
-        assert_eq!(vram[off], 0, "Pixel {} R", i);
-        assert_eq!(vram[off + 1], 0, "Pixel {} G", i);
-        assert_eq!(vram[off + 2], 255, "Pixel {} B", i);
+        assert_eq!(memory_bytes(&fb)[off], 0, "Pixel {} R", i);
+        assert_eq!(memory_bytes(&fb)[off + 1], 0, "Pixel {} G", i);
+        assert_eq!(memory_bytes(&fb)[off + 2], 255, "Pixel {} B", i);
     }
 }
 
@@ -298,7 +289,7 @@ pub(crate) fn test_draw_hline_24bit_rgb888_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_draw_hline_rgb565_mmio() {
     let info = fb_info(8, 1, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_mmio_fb(&info);
+    let mut fb = make_memory_fb(&info);
 
     fb.draw_hline(1, 6, 0, Color::GREEN);
 
@@ -306,11 +297,11 @@ pub(crate) fn test_draw_hline_rgb565_mmio() {
     for x in 0..info.width as usize {
         let off = x * 2;
         if (1..=6).contains(&x) {
-            assert_eq!(vram[off], 0xE0, "x={}", x);
-            assert_eq!(vram[off + 1], 0x07, "x={}", x);
+            assert_eq!(memory_bytes(&fb)[off], 0xE0, "x={}", x);
+            assert_eq!(memory_bytes(&fb)[off + 1], 0x07, "x={}", x);
         } else {
-            assert_eq!(vram[off], 0x00, "x={}", x);
-            assert_eq!(vram[off + 1], 0x00, "x={}", x);
+            assert_eq!(memory_bytes(&fb)[off], 0x00, "x={}", x);
+            assert_eq!(memory_bytes(&fb)[off + 1], 0x00, "x={}", x);
         }
     }
 }
@@ -319,7 +310,7 @@ pub(crate) fn test_draw_hline_rgb565_mmio() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
     let info = fb_info(4, 1, PixelFormat::Rgb888);
-    let (mut fb, vram) = make_flush_fb(&info);
+    let mut fb = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -327,24 +318,24 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush() {
     fb.flush_dirty_area();
 
     // RGB888 memory layout: [R, G, B]
-    assert_eq!(vram[0], 255);
-    assert_eq!(vram[1], 0);
-    assert_eq!(vram[2], 0);
+    assert_eq!(memory_bytes(&fb)[0], 255);
+    assert_eq!(memory_bytes(&fb)[1], 0);
+    assert_eq!(memory_bytes(&fb)[2], 0);
 
-    assert_eq!(vram[3], 0);
-    assert_eq!(vram[4], 255);
-    assert_eq!(vram[5], 0);
+    assert_eq!(memory_bytes(&fb)[3], 0);
+    assert_eq!(memory_bytes(&fb)[4], 255);
+    assert_eq!(memory_bytes(&fb)[5], 0);
 
-    assert_eq!(vram[6], 0);
-    assert_eq!(vram[7], 0);
-    assert_eq!(vram[8], 255);
+    assert_eq!(memory_bytes(&fb)[6], 0);
+    assert_eq!(memory_bytes(&fb)[7], 0);
+    assert_eq!(memory_bytes(&fb)[8], 255);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
     let info = fb_info(5, 1, PixelFormat::Rgb888);
-    let (mut fb, vram) = make_flush_fb(&info);
+    let mut fb = make_flush_fb(&info);
 
     let colors = [
         Color::RED,
@@ -360,18 +351,18 @@ pub(crate) fn test_blit_rect_24bit_rgb888_backbuffer_flush_odd_width() {
     fb.flush_dirty_area();
 
     // RGB888 memory layout: [R, G, B]
-    assert_eq!(&vram[0..3], &[255, 0, 0]);
-    assert_eq!(&vram[3..6], &[0, 255, 0]);
-    assert_eq!(&vram[6..9], &[0, 0, 255]);
-    assert_eq!(&vram[9..12], &[255, 255, 255]);
-    assert_eq!(&vram[12..15], &[0, 0, 0]);
+    assert_eq!(&memory_bytes(&fb)[0..3], &[255, 0, 0]);
+    assert_eq!(&memory_bytes(&fb)[3..6], &[0, 255, 0]);
+    assert_eq!(&memory_bytes(&fb)[6..9], &[0, 0, 255]);
+    assert_eq!(&memory_bytes(&fb)[9..12], &[255, 255, 255]);
+    assert_eq!(&memory_bytes(&fb)[12..15], &[0, 0, 0]);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
     let info = fb_info(3, 1, PixelFormat::Bgr888);
-    let (mut fb, vram) = make_flush_fb(&info);
+    let mut fb = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -379,24 +370,24 @@ pub(crate) fn test_blit_rect_24bit_bgr888_backbuffer_flush() {
     fb.flush_dirty_area();
 
     // BGR888 memory layout: [B, G, R]
-    assert_eq!(vram[0], 0);
-    assert_eq!(vram[1], 0);
-    assert_eq!(vram[2], 255);
+    assert_eq!(memory_bytes(&fb)[0], 0);
+    assert_eq!(memory_bytes(&fb)[1], 0);
+    assert_eq!(memory_bytes(&fb)[2], 255);
 
-    assert_eq!(vram[3], 0);
-    assert_eq!(vram[4], 255);
-    assert_eq!(vram[5], 0);
+    assert_eq!(memory_bytes(&fb)[3], 0);
+    assert_eq!(memory_bytes(&fb)[4], 255);
+    assert_eq!(memory_bytes(&fb)[5], 0);
 
-    assert_eq!(vram[6], 255);
-    assert_eq!(vram[7], 0);
-    assert_eq!(vram[8], 0);
+    assert_eq!(memory_bytes(&fb)[6], 255);
+    assert_eq!(memory_bytes(&fb)[7], 0);
+    assert_eq!(memory_bytes(&fb)[8], 0);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
     let info = fb_info(2, 1, PixelFormat::Rgb565);
-    let (mut fb, vram) = make_flush_fb(&info);
+    let mut fb = make_flush_fb(&info);
 
     fb.set_pixel(0, 0, Color::RED);
     fb.set_pixel(1, 0, Color::GREEN);
@@ -405,8 +396,8 @@ pub(crate) fn test_blit_rect_16bit_rgb565_backbuffer_flush() {
     // RGB565 little-endian bytes
     // RED   = 0xF800 -> [0x00, 0xF8]
     // GREEN = 0x07E0 -> [0xE0, 0x07]
-    assert_eq!(vram[0], 0x00);
-    assert_eq!(vram[1], 0xF8);
-    assert_eq!(vram[2], 0xE0);
-    assert_eq!(vram[3], 0x07);
+    assert_eq!(memory_bytes(&fb)[0], 0x00);
+    assert_eq!(memory_bytes(&fb)[1], 0xF8);
+    assert_eq!(memory_bytes(&fb)[2], 0xE0);
+    assert_eq!(memory_bytes(&fb)[3], 0x07);
 }

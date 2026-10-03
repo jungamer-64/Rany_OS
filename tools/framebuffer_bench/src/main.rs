@@ -1,26 +1,26 @@
 // framebuffer_bench/src/main.rs
+use rany_os::graphics::framebuffer::FramebufferLayout;
+mod fixtures;
 use criterion::Criterion;
 use std::env;
 use std::hint::black_box;
 
 use rany_os::graphics::framebuffer::Framebuffer;
-use rany_os::graphics::framebuffer::{current_packer_mode, force_packer_mode};
+
 use rany_os::graphics::image::Image;
 use rany_os::graphics::{Color, FramebufferInfo, PixelFormat};
 
-fn setup_fb(info: &FramebufferInfo) -> (Vec<u8>, Framebuffer, Image) {
-    let mut mem = vec![0u8; info.size()];
-    let addr = mem.as_mut_ptr() as u64;
-    let mut info2 = info.clone();
-    info2.address = addr;
-
-    let fb = unsafe { Framebuffer::new(info2) };
-    let img = Image::filled(
-        info.width,
-        info.height,
-        Color::with_alpha(64, 128, 192, 255),
-    );
-    (mem, fb, img)
+fn setup_fb(info: &FramebufferInfo) -> (Framebuffer, Image) {
+    let layout = FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+        .expect("benchmark geometry");
+    (
+        fixtures::ram_framebuffer(layout),
+        Image::filled(
+            info.width,
+            info.height,
+            Color::with_alpha(64, 128, 192, 255),
+        ),
+    )
 }
 
 fn bench_draw_image_with_criterion(c: &mut Criterion) {
@@ -54,23 +54,23 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
         bpp: 32,
     };
 
-    let (_mem_bgra, mut fb_bgra, img_bgra) = setup_fb(&info_bgra);
+    let (mut fb_bgra, img_bgra) = setup_fb(&info_bgra);
     c.bench_function("draw_image_bgra", |b| {
         b.iter(|| fb_bgra.draw_image(black_box(&img_bgra), 0, 0))
     });
 
-    let (_mem_bgr24, mut fb_bgr24, img_bgr24) = setup_fb(&info_bgr24);
+    let (mut fb_bgr24, img_bgr24) = setup_fb(&info_bgr24);
     c.bench_function("draw_image_bgr24", |b| {
         b.iter(|| fb_bgr24.draw_image(black_box(&img_bgr24), 0, 0))
     });
 
-    let (_mem_rgba, mut fb_rgba, img_rgba) = setup_fb(&info_rgba);
+    let (mut fb_rgba, img_rgba) = setup_fb(&info_rgba);
     c.bench_function("draw_image_rgba", |b| {
         b.iter(|| fb_rgba.draw_image(black_box(&img_rgba), 0, 0))
     });
 
     // Draw-line micro-benchmark: many short/long lines across the framebuffer
-    let (_mem_lines, mut fb_lines, _img) = setup_fb(&info_bgra);
+    let (mut fb_lines, _img) = setup_fb(&info_bgra);
     // Precompute deterministic list of lines
     let mut lines = Vec::new();
     for i in 0..1000u32 {
@@ -88,15 +88,6 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
         })
     });
 
-    // Also run the naive version when available (bench feature exposes it) to compare
-    c.bench_function("draw_line_many_naive", |b| {
-        b.iter(|| {
-            for &(x1, y1, x2, y2) in &lines {
-                fb_lines.draw_line_naive(x1, y1, x2, y2, Color::with_alpha(10, 20, 30, 255));
-            }
-        })
-    });
-
     // Packer micro-bench: measure pure packer throughput
     let pack_width = 1280u32;
     let pack_height = 720u32;
@@ -110,13 +101,13 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
 
     c.bench_function("pack_rgba_scalar", |b| {
         b.iter(|| {
-            Framebuffer::pack_rgba_to_bgra_scalar(&src_pack, &mut dst_pack);
+            rany_os::graphics::packer::pack_rgba_to_bgra_scalar(&src_pack, &mut dst_pack);
         })
     });
 
     c.bench_function("pack_rgba_dispatch", |b| {
         b.iter(|| {
-            Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_pack2);
+            rany_os::graphics::packer::pack_rgba_to_bgra(&src_pack, &mut dst_pack2);
         })
     });
 
@@ -127,7 +118,7 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
         let mut dst_dispatch = vec![0u8; buf_len];
         c.bench_function("pack_rgba_dispatch_avx2", |b| {
             b.iter(|| {
-                Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_dispatch);
+                rany_os::graphics::packer::pack_rgba_to_bgra(&src_pack, &mut dst_dispatch);
             })
         });
     }
@@ -166,7 +157,7 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
     let width_8k = 7680u32;
     let height_8k = 4320u32;
     let info_8k = FramebufferInfo {
-        address: 0, // setup_fb will patch this
+        address: 0,
         width: width_8k,
         height: height_8k,
         stride: width_8k * 4,
@@ -174,7 +165,7 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
         bpp: 32,
     };
     // Note: Allocates ~132MB
-    let (_mem_8k, mut fb_8k, _img) = setup_fb(&info_8k);
+    let (mut fb_8k, _img) = setup_fb(&info_8k);
     let rect_8k = rany_os::graphics::Rect::new(0, 0, width_8k, height_8k);
 
     c.bench_function("large_buffer_fill_8k", |b| {
@@ -194,81 +185,42 @@ fn bench_draw_image_with_criterion(c: &mut Criterion) {
         format: PixelFormat::Rgb565,
         bpp: 16,
     };
-    let (_mem_565, mut fb_565, img_565) = setup_fb(&info_565);
+    let (mut fb_565, img_565) = setup_fb(&info_565);
     c.bench_function("draw_image_rgb565", |b| {
         b.iter(|| {
             fb_565.draw_image(black_box(&img_565), 0, 0);
         })
     });
 
-    // 6. BGR write path micro-bench (small and large runs)
-    let (_mem_bgr24_mmio, mut fb_bgr24_mmio, _img_bgr24) = setup_fb(&info_bgr24);
-    // small runs (exercise direct MMIO fast-path)
-    for &sz in &[1usize, 2, 4, 8] {
-        let name = format!("write_bgr_small_{}", sz);
-        c.bench_function(&name, |b| {
+    // Scanout stores use a retained host allocation. These names describe the
+    // algorithm and byte count without asserting a GPU memory mapping.
+    let mut storage = fixtures::scanout_storage(16384);
+    for length in [16, 16384] {
+        let data = vec![0u8; length];
+        c.bench_function(&format!("scanout_host_write_{length}"), |b| {
             b.iter(|| {
-                fb_bgr24_mmio.bench_write_bgr_run_pixels(0, 0, sz, Color::with_alpha(5, 6, 7, 255));
-            })
-        });
-    }
-    // large runs
-    for &sz in &[128usize, 1024usize, 8192usize] {
-        let name = format!("write_bgr_large_{}", sz);
-        c.bench_function(&name, |b| {
-            b.iter(|| {
-                fb_bgr24_mmio.bench_write_bgr_run_pixels(0, 0, sz, Color::with_alpha(5, 6, 7, 255));
-            })
-        });
-    }
-
-    // Also measure the back-buffer path (memory copy)
-    let mut fb_bgr24_back = unsafe { Framebuffer::new(info_bgr24.clone()) };
-    fb_bgr24_back.enable_double_buffering();
-    for &sz in &[1usize, 8usize, 1024usize] {
-        let name = format!("write_bgr_backbuf_{}", sz);
-        c.bench_function(&name, |b| {
-            b.iter(|| {
-                fb_bgr24_back.bench_write_bgr_run_pixels(0, 0, sz, Color::with_alpha(5, 6, 7, 255));
-            })
-        });
-    }
-
-    // 7. write_bytes_mmio micro-bench: small/large byte runs
-    let data_small = vec![0u8; 16];
-    let data_large = vec![0u8; 16384];
-    c.bench_function("write_bytes_small_16", |b| {
-        b.iter(|| {
-            fb_bgr24_mmio.bench_write_bytes_mmio(0, 0, &data_small);
-        })
-    });
-    c.bench_function("write_bytes_large_16k", |b| {
-        b.iter(|| {
-            fb_bgr24_mmio.bench_write_bytes_mmio(0, 0, &data_large);
-        })
-    });
-
-    // 8. Forced packer benchmarks (deterministic selection via bench helper)
-    // Ensure we can force packer modes for comparison
-    #[cfg(any(target_arch = "x86", target_arch = "x86_64"))]
-    {
-        // Scalar (baseline)
-        force_packer_mode(1);
-        c.bench_function("pack_rgba_forced_scalar", |b| {
-            b.iter(|| {
-                Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_pack2);
-            })
-        });
-
-        // If AVX2 available, force it and measure
-        if std::is_x86_feature_detected!("avx2") {
-            force_packer_mode(3);
-            c.bench_function("pack_rgba_forced_avx2", |b| {
-                b.iter(|| {
-                    Framebuffer::pack_rgba_to_bgra(&src_pack, &mut dst_pack2);
-                })
+                storage
+                    .region_mut(0, length)
+                    .expect("benchmark span")
+                    .write_bytes(black_box(&data))
+                    .expect("whole span");
+                rany_os::hal::mmio::sfence();
             });
-        }
+        });
+    }
+    let layout =
+        FramebufferLayout::new(8192, 1, 8192 * 3, PixelFormat::Bgr888).expect("benchmark geometry");
+    let mut direct = fixtures::scanout_framebuffer(layout);
+    let mut back = fixtures::ram_framebuffer(layout);
+    back.enable_double_buffering()
+        .expect("benchmark back plane");
+    for length in [1, 8, 128, 1024, 8192] {
+        c.bench_function(&format!("draw_bgr_host_scanout_{length}"), |b| {
+            b.iter(|| direct.draw_hline(0, length - 1, 0, Color::BLUE));
+        });
+        c.bench_function(&format!("draw_bgr_backbuffer_{length}"), |b| {
+            b.iter(|| back.draw_hline(0, length - 1, 0, Color::BLUE));
+        });
     }
 }
 

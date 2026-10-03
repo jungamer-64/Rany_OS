@@ -1,207 +1,10 @@
 use super::*;
 
-pub fn wave6_pack_rgba_to_bgra_avx2_matches_scalar_smoke() -> bool {
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "avx2"
-    ))]
-    {
-        if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
-            return true;
-        }
-        for &len in &[4usize, 12, 16, 20, 48, 64, 100] {
-            let mut src = vec![0u8; len * 4];
-            for (i, slot) in src.iter_mut().enumerate() {
-                *slot = (i * 97 % 251) as u8;
-            }
-            let mut dst_simd = vec![0u8; src.len()];
-            let mut dst_scalar = vec![0u8; src.len()];
-            unsafe {
-                Framebuffer::pack_rgba_to_bgra_avx2(src.as_ptr(), dst_simd.as_mut_ptr(), src.len());
-            }
-            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
-            if dst_simd != dst_scalar {
-                return false;
-            }
-        }
-        return true;
-    }
-    #[cfg(not(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "avx2"
-    )))]
-    {
-        true
-    }
-}
-
-pub fn wave6_pack_rgba_to_bgr24_avx2_matches_scalar_smoke() -> bool {
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "avx2"
-    ))]
-    {
-        if hal::mmio::get_simd_level() < hal::mmio::simd_level::AVX2 {
-            return true;
-        }
-        let len = 8usize;
-        let mut src = vec![0u8; len * 4];
-        for (i, slot) in src.iter_mut().enumerate() {
-            *slot = (i * 97 % 251) as u8;
-        }
-        let mut dst_simd = vec![0u8; len * 3];
-        unsafe {
-            Framebuffer::pack_rgba_to_bgr24_avx2_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true);
-        }
-        let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len {
-            let s = p * 4;
-            dst_scalar[p * 3] = src[s + 2];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s];
-        }
-        return dst_simd == dst_scalar;
-    }
-    #[cfg(not(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "avx2"
-    )))]
-    {
-        true
-    }
-}
-
-pub fn wave6_pack_rgba_to_bgr24_ssse3_matches_scalar_smoke() -> bool {
-    #[cfg(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "ssse3"
-    ))]
-    {
-        if hal::mmio::get_simd_level() < hal::mmio::simd_level::SSSE3 {
-            return true;
-        }
-        let len = 8usize;
-        let mut src = vec![0u8; len * 4];
-        for (i, slot) in src.iter_mut().enumerate() {
-            *slot = (i * 61 % 251) as u8;
-        }
-        let mut dst_simd = vec![0u8; len * 3];
-        unsafe {
-            Framebuffer::pack_rgba_to_bgr24_ssse3_8pixels(
-                src.as_ptr(),
-                dst_simd.as_mut_ptr(),
-                true,
-            );
-        }
-        let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len {
-            let s = p * 4;
-            dst_scalar[p * 3] = src[s + 2];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s];
-        }
-        return dst_simd == dst_scalar;
-    }
-    #[cfg(not(all(
-        any(target_arch = "x86", target_arch = "x86_64"),
-        target_feature = "ssse3"
-    )))]
-    {
-        true
-    }
-}
-
-pub fn wave6_pack_rgba_to_bgra_neon_matches_scalar_smoke() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        for &len in &[4usize, 12, 16, 20, 48, 64, 100] {
-            let mut src = vec![0u8; len * 4];
-            for (i, slot) in src.iter_mut().enumerate() {
-                *slot = (i * 61 % 251) as u8;
-            }
-            let mut dst_neon = vec![0u8; src.len()];
-            let mut dst_scalar = vec![0u8; src.len()];
-            unsafe {
-                Framebuffer::pack_rgba_to_bgra_neon(src.as_ptr(), dst_neon.as_mut_ptr(), src.len());
-            }
-            Framebuffer::pack_rgba_to_bgra_scalar(&src, &mut dst_scalar);
-            if dst_neon != dst_scalar {
-                return false;
-            }
-        }
-        return true;
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        true
-    }
-}
-
-pub fn wave6_pack_rgba_to_bgr24_neon_matches_scalar_smoke() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let len = 8usize;
-        let mut src = vec![0u8; len * 4];
-        for (i, slot) in src.iter_mut().enumerate() {
-            *slot = (i * 97 % 251) as u8;
-        }
-        let mut dst_simd = vec![0u8; len * 3];
-        unsafe {
-            Framebuffer::pack_rgba_to_bgr24_neon_8pixels(src.as_ptr(), dst_simd.as_mut_ptr(), true);
-        }
-        let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len {
-            let s = p * 4;
-            dst_scalar[p * 3] = src[s + 2];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s];
-        }
-        return dst_simd == dst_scalar;
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        true
-    }
-}
-
-pub fn wave6_pack_rgba_to_bgr24_neon_matches_scalar_rgb_smoke() -> bool {
-    #[cfg(target_arch = "aarch64")]
-    {
-        let len = 8usize;
-        let mut src = vec![0u8; len * 4];
-        for (i, slot) in src.iter_mut().enumerate() {
-            *slot = (i * 113 % 251) as u8;
-        }
-        let mut dst_simd = vec![0u8; len * 3];
-        unsafe {
-            Framebuffer::pack_rgba_to_bgr24_neon_8pixels(
-                src.as_ptr(),
-                dst_simd.as_mut_ptr(),
-                false,
-            );
-        }
-        let mut dst_scalar = vec![0u8; len * 3];
-        for p in 0..len {
-            let s = p * 4;
-            dst_scalar[p * 3] = src[s];
-            dst_scalar[p * 3 + 1] = src[s + 1];
-            dst_scalar[p * 3 + 2] = src[s + 2];
-        }
-        return dst_simd == dst_scalar;
-    }
-    #[cfg(not(target_arch = "aarch64"))]
-    {
-        true
-    }
-}
+pub use crate::graphics::packer::qemu_tests::*;
 
 pub fn wave6_packer_env_override_no_std_smoke() -> bool {
-    let previous_simd = hal::mmio::get_simd_level();
     let previous_override = crate::graphics::packer::qemu_test_get_packer_mode_override();
 
-    unsafe {
-        hal::mmio::set_simd_level(hal::mmio::simd_level::AVX2);
-    }
     crate::graphics::packer::qemu_test_set_packer_mode_override(1);
 
     let mode_forced_scalar = crate::graphics::packer::get_packer_mode() == 1;
@@ -209,16 +12,13 @@ pub fn wave6_packer_env_override_no_std_smoke() -> bool {
     if mode_forced_scalar {
         let src = vec![0u8, 1, 2, 3, 10, 20, 30, 40, 90, 80, 70, 60];
         let mut dst = vec![0u8; src.len()];
-        Framebuffer::pack_rgba_to_bgra(&src, &mut dst);
+        crate::graphics::packer::pack_rgba_to_bgra(&src, &mut dst);
         packer_runs = dst == vec![2, 1, 0, 3, 30, 20, 10, 40, 70, 80, 90, 60];
     }
 
     crate::graphics::packer::qemu_test_clear_packer_mode_override();
     if previous_override != 0 {
         crate::graphics::packer::qemu_test_set_packer_mode_override(previous_override);
-    }
-    unsafe {
-        hal::mmio::set_simd_level(previous_simd);
     }
 
     mode_forced_scalar && packer_runs
@@ -237,7 +37,12 @@ pub fn wave9_draw_circle_symmetric_smoke() -> bool {
         format: PixelFormat::Bgra8888,
         bpp: 32,
     };
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
     fb.draw_circle(16, 16, 8, Color::with_alpha(0, 255, 0, 255));
     let buf = fb.back_buffer.as_ref().unwrap();
@@ -279,7 +84,12 @@ pub fn wave9_fill_circle_no_gaps_smoke() -> bool {
         format: PixelFormat::Bgra8888,
         bpp: 32,
     };
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
     let (cx, cy, r) = (16i32, 16i32, 7i32);
     fb.fill_circle(cx, cy, r, Color::with_alpha(0, 0, 255, 255));
@@ -308,7 +118,12 @@ pub fn wave9_draw_rect_outline_smoke() -> bool {
         format: PixelFormat::Bgra8888,
         bpp: 32,
     };
-    let mut fb = unsafe { Framebuffer::new(info) };
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
     fb.draw_rect(Rect::new(2, 3, 10, 8), Color::with_alpha(255, 0, 0, 255));
     let buf = fb.back_buffer.as_ref().unwrap();
@@ -347,8 +162,18 @@ pub fn wave9_draw_line_steep_smoke() -> bool {
         format: PixelFormat::Bgra8888,
         bpp: 32,
     };
-    let mut fb_opt = unsafe { Framebuffer::new(info.clone()) };
-    let mut fb_naive = unsafe { Framebuffer::new(info.clone()) };
+    let mut fb_opt = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
+    let mut fb_naive = Framebuffer::new(
+        FramebufferLayout::new(info.width, info.height, info.stride, info.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vec![0u8; info.size()]),
+    )
+    .expect("framebuffer workspace");
     fb_opt.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
     fb_naive.enable_double_buffering_from_vec(vec![0u32; (w * h) as usize]);
 
@@ -409,10 +234,15 @@ pub fn wave9_draw_text_24bit_single_pass_smoke() -> bool {
         format: PixelFormat::Bgr888,
         bpp: 24,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_text(
         0,
         0,
@@ -423,18 +253,18 @@ pub fn wave9_draw_text_24bit_single_pass_smoke() -> bool {
     // Row 2, '!' glyph = 0x18 -> bits 3,4 ON
     let off = |x: usize| 2 * stride as usize + x * 3;
     // Bgr888: red=[0x00,0x00,0xFF], blue=[0xFF,0x00,0x00]
-    vram[off(2)] == 0xFF
-        && vram[off(2) + 1] == 0x00
-        && vram[off(2) + 2] == 0x00
-        && vram[off(3)] == 0x00
-        && vram[off(3) + 1] == 0x00
-        && vram[off(3) + 2] == 0xFF
-        && vram[off(4)] == 0x00
-        && vram[off(4) + 1] == 0x00
-        && vram[off(4) + 2] == 0xFF
-        && vram[off(5)] == 0xFF
-        && vram[off(5) + 1] == 0x00
-        && vram[off(5) + 2] == 0x00
+    memory_bytes(&fb)[off(2)] == 0xFF
+        && memory_bytes(&fb)[off(2) + 1] == 0x00
+        && memory_bytes(&fb)[off(2) + 2] == 0x00
+        && memory_bytes(&fb)[off(3)] == 0x00
+        && memory_bytes(&fb)[off(3) + 1] == 0x00
+        && memory_bytes(&fb)[off(3) + 2] == 0xFF
+        && memory_bytes(&fb)[off(4)] == 0x00
+        && memory_bytes(&fb)[off(4) + 1] == 0x00
+        && memory_bytes(&fb)[off(4) + 2] == 0xFF
+        && memory_bytes(&fb)[off(5)] == 0xFF
+        && memory_bytes(&fb)[off(5) + 1] == 0x00
+        && memory_bytes(&fb)[off(5) + 2] == 0x00
 }
 
 /// draw_char_8x16 24bpp MMIO single-pass
@@ -449,25 +279,30 @@ pub fn wave9_draw_char_8x16_24bit_smoke() -> bool {
         format: PixelFormat::Bgr888,
         bpp: 24,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_char_8x16(0, 0, '!', Color::GREEN, Some(Color::BLACK));
     // Row 2 0x18 -> bits 3,4 ON. Bgr888: green=[0x00,0xFF,0x00], black=[0,0,0]
     let off = |x: usize| 2 * stride as usize + x * 3;
-    vram[off(2)] == 0
-        && vram[off(2) + 1] == 0
-        && vram[off(2) + 2] == 0
-        && vram[off(3)] == 0x00
-        && vram[off(3) + 1] == 0xFF
-        && vram[off(3) + 2] == 0x00
-        && vram[off(4)] == 0x00
-        && vram[off(4) + 1] == 0xFF
-        && vram[off(4) + 2] == 0x00
-        && vram[off(5)] == 0
-        && vram[off(5) + 1] == 0
-        && vram[off(5) + 2] == 0
+    memory_bytes(&fb)[off(2)] == 0
+        && memory_bytes(&fb)[off(2) + 1] == 0
+        && memory_bytes(&fb)[off(2) + 2] == 0
+        && memory_bytes(&fb)[off(3)] == 0x00
+        && memory_bytes(&fb)[off(3) + 1] == 0xFF
+        && memory_bytes(&fb)[off(3) + 2] == 0x00
+        && memory_bytes(&fb)[off(4)] == 0x00
+        && memory_bytes(&fb)[off(4) + 1] == 0xFF
+        && memory_bytes(&fb)[off(4) + 2] == 0x00
+        && memory_bytes(&fb)[off(5)] == 0
+        && memory_bytes(&fb)[off(5) + 1] == 0
+        && memory_bytes(&fb)[off(5) + 2] == 0
 }
 
 /// draw_image RGB565 MMIO path
@@ -481,17 +316,22 @@ pub fn wave9_draw_image_rgb565_mmio_smoke() -> bool {
         format: PixelFormat::Rgb565,
         bpp: 16,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     let img = Image::filled(w, h, Color::with_alpha(255, 0, 0, 255));
     fb.draw_image(&img, 0, 0);
     // Red in RGB565 = 0xF800, LE = [0x00, 0xF8]
     for y in 0..h as usize {
         for x in 0..w as usize {
             let o = y * info.stride as usize + x * 2;
-            if vram[o] != 0x00 || vram[o + 1] != 0xF8 {
+            if memory_bytes(&fb)[o] != 0x00 || memory_bytes(&fb)[o + 1] != 0xF8 {
                 return false;
             }
         }
@@ -510,16 +350,25 @@ pub fn wave9_write_opaque_run_32bit_simd_smoke() -> bool {
         format: PixelFormat::Bgra8888,
         bpp: 32,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     let img = Image::filled(w, 1, Color::with_alpha(10, 20, 30, 255));
     fb.draw_image(&img, 0, 0);
     // BGRA in VRAM: B=30, G=20, R=10, A=255
     for x in 0..w as usize {
         let o = x * 4;
-        if vram[o] != 30 || vram[o + 1] != 20 || vram[o + 2] != 10 || vram[o + 3] != 255 {
+        if memory_bytes(&fb)[o] != 30
+            || memory_bytes(&fb)[o + 1] != 20
+            || memory_bytes(&fb)[o + 2] != 10
+            || memory_bytes(&fb)[o + 3] != 255
+        {
             return false;
         }
     }
@@ -537,21 +386,26 @@ pub fn wave9_draw_text_rgb565_mmio_smoke() -> bool {
         format: PixelFormat::Rgb565,
         bpp: 16,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_text(0, 0, "!", Color::with_alpha(255, 0, 0, 255), Color::BLACK);
     let off = |x: usize| 2 * info.stride as usize + x * 2;
     // red=0xF800=[0x00,0xF8], black=0x0000=[0x00,0x00]
-    vram[off(2)] == 0x00
-        && vram[off(2) + 1] == 0x00
-        && vram[off(3)] == 0x00
-        && vram[off(3) + 1] == 0xF8
-        && vram[off(4)] == 0x00
-        && vram[off(4) + 1] == 0xF8
-        && vram[off(5)] == 0x00
-        && vram[off(5) + 1] == 0x00
+    memory_bytes(&fb)[off(2)] == 0x00
+        && memory_bytes(&fb)[off(2) + 1] == 0x00
+        && memory_bytes(&fb)[off(3)] == 0x00
+        && memory_bytes(&fb)[off(3) + 1] == 0xF8
+        && memory_bytes(&fb)[off(4)] == 0x00
+        && memory_bytes(&fb)[off(4) + 1] == 0xF8
+        && memory_bytes(&fb)[off(5)] == 0x00
+        && memory_bytes(&fb)[off(5) + 1] == 0x00
 }
 
 /// draw_char_8x16 RGB565 MMIO single-pass
@@ -565,18 +419,23 @@ pub fn wave9_draw_char_8x16_rgb565_smoke() -> bool {
         format: PixelFormat::Rgb565,
         bpp: 16,
     };
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
     fb.draw_char_8x16(0, 0, '!', Color::RED, Some(Color::BLACK));
     let off = |x: usize| 2 * info.stride as usize + x * 2;
-    vram[off(2)] == 0x00
-        && vram[off(2) + 1] == 0x00
-        && vram[off(3)] == 0x00
-        && vram[off(3) + 1] == 0xF8
-        && vram[off(4)] == 0x00
-        && vram[off(4) + 1] == 0xF8
-        && vram[off(5)] == 0x00
-        && vram[off(5) + 1] == 0x00
+    memory_bytes(&fb)[off(2)] == 0x00
+        && memory_bytes(&fb)[off(2) + 1] == 0x00
+        && memory_bytes(&fb)[off(3)] == 0x00
+        && memory_bytes(&fb)[off(3) + 1] == 0xF8
+        && memory_bytes(&fb)[off(4)] == 0x00
+        && memory_bytes(&fb)[off(4) + 1] == 0xF8
+        && memory_bytes(&fb)[off(5)] == 0x00
+        && memory_bytes(&fb)[off(5) + 1] == 0x00
 }

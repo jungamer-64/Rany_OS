@@ -618,5 +618,50 @@ pub fn get_avx2_available() -> bool {
     }
 }
 
+/// Converts the ordinary RAM back plane into the destination's byte format.
+/// The borrowed u32 pixels are BGRA values; device memory never enters this view.
+pub(super) fn pack_backbuffer(
+    pixels: &[u32],
+    destination: &mut [u8],
+    format: graphic_types::PixelFormat,
+) {
+    use graphic_types::{Color, PixelFormat};
+    let count = pixels
+        .len()
+        .min(destination.len() / format.bytes_per_pixel());
+    let pixels = &pixels[..count];
+    let destination = &mut destination[..count * format.bytes_per_pixel()];
+    #[cfg(target_endian = "little")]
+    if format != PixelFormat::Rgb565 {
+        // SAFETY: u32 pixels are initialized ordinary RAM, borrowed immutably.
+        // Their representation covers exactly size_of_val bytes; destination is
+        // a disjoint exclusive workspace. The view cannot outlive the source.
+        let bytes = unsafe {
+            core::slice::from_raw_parts(
+                pixels.as_ptr().cast::<u8>(),
+                core::mem::size_of_val(pixels),
+            )
+        };
+        match format {
+            PixelFormat::Bgra8888 => destination.copy_from_slice(bytes),
+            PixelFormat::Rgba8888 => pack_rgba_to_bgra(bytes, destination),
+            PixelFormat::Bgr888 => pack_rgba_to_bgr24(bytes, destination, false),
+            PixelFormat::Rgb888 => pack_rgba_to_bgr24(bytes, destination, true),
+            PixelFormat::Rgb565 => unreachable!("handled by ordinary color conversion"),
+        }
+        return;
+    }
+    // LOOP_PROOF: mode=bounded; reason=Each admitted source pixel encodes exactly one destination pixel.;
+    for (&pixel, bytes) in pixels
+        .iter()
+        .zip(destination.chunks_exact_mut(format.bytes_per_pixel()))
+    {
+        format.encode_color_bytes(Color::from_u32(pixel), bytes);
+    }
+}
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(feature = "qemu-test-export")]
+pub(crate) mod qemu_tests;

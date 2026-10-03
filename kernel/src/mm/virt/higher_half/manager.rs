@@ -1328,3 +1328,80 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+/// Prepares the boot-owned pixel aperture before any AP is started. Both loader
+/// aliases are retired before either WC alias is created. Failure keeps the
+/// caller's aperture claim retained and may leave mappings absent.
+pub(crate) fn prepare_boot_scanout(
+    physical: u64,
+    length: u64,
+) -> Result<usize, kernel_api::mmio::MmioAcquireError> {
+    use kernel_api::mmio::MmioAcquireError;
+    if length == 0 || !physical.is_multiple_of(4096) || !length.is_multiple_of(4096) {
+        return Err(MmioAcquireError::MappingFailed);
+    }
+    let bytes = usize::try_from(length).map_err(|_| MmioAcquireError::MappingFailed)?;
+    if !crate::cpu::cache_policy::is_write_combining(physical, bytes, 5) {
+        return Err(MmioAcquireError::CachePolicy);
+    }
+    let offset = physical_memory_offset();
+    let virtual_start = physical
+        .checked_add(offset)
+        .ok_or(MmioAcquireError::MappingFailed)?;
+    if VirtAddr::new(virtual_start).as_u64() != virtual_start
+        || VirtAddr::new(physical).as_u64() != physical
+    {
+        return Err(MmioAcquireError::MappingFailed);
+    }
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MmioAcquireError::MappingFailed)?;
+    let manager = guard.as_mut().ok_or(MmioAcquireError::Unavailable)?;
+    manager.set_pml4_phys(get_cr3());
+    // SAFETY: the boot resource caller has excluded RAM and owns the whole page
+    // aperture. Boot has admitted only the BSP; these aliases have no renderer.
+    // The manager serializes both retirements and publications under one lock.
+    let result = unsafe {
+        manager
+            .unmap_range(VirtAddr::new(physical), length)
+            .and_then(|()| manager.unmap_range(VirtAddr::new(virtual_start), length))
+    };
+    drop(guard);
+    flush_range_tlb(VirtAddr::new(physical), length);
+    flush_range_tlb(VirtAddr::new(virtual_start), length);
+    if result.is_err() {
+        return Err(MmioAcquireError::MappingFailed);
+    }
+    // SAFETY: the only running CPU has retired both aliases. Flush every possible
+    // stale cache line before allowing any new WC alias to the owned pages.
+    unsafe {
+        core::arch::asm!("wbinvd", options(nostack, preserves_flags));
+    }
+    let mut guard = PAGE_TABLE_MANAGER
+        .lock()
+        .map_err(|_| MmioAcquireError::MappingFailed)?;
+    let manager = guard.as_mut().ok_or(MmioAcquireError::Unavailable)?;
+    // SAFETY: the same retained boot claim covers both identical WC aliases.
+    let result = unsafe {
+        manager
+            .map_range(
+                VirtAddr::new(physical),
+                PhysAddr::new(physical),
+                length,
+                PageFlags::write_combining(),
+            )
+            .and_then(|()| {
+                manager.map_range(
+                    VirtAddr::new(virtual_start),
+                    PhysAddr::new(physical),
+                    length,
+                    PageFlags::write_combining(),
+                )
+            })
+    };
+    drop(guard);
+    flush_range_tlb(VirtAddr::new(physical), length);
+    flush_range_tlb(VirtAddr::new(virtual_start), length);
+    result.map_err(|_| MmioAcquireError::MappingFailed)?;
+    usize::try_from(virtual_start).map_err(|_| MmioAcquireError::MappingFailed)
+}

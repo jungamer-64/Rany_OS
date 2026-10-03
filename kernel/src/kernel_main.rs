@@ -216,11 +216,6 @@ fn phase_entry_and_early_cpu(context: &KernelBootContext) {
     io::log::early_print("[BOOT] Getting HHDM offset...\n");
     io::log::early_print("[BOOT] HHDM offset obtained\n");
 
-    // VGAバッファの初期化（ログ出力用）
-    io::log::early_print("[BOOT] Initializing VGA...\n");
-    graphics::vga::init();
-    io::log::early_print("[BOOT] VGA initialized\n");
-
     // ロギングシステムの初期化（最優先、ヒープ不要）
     io::log::early_print("[BOOT] Initializing logger...\n");
     if io::log::init().is_err() {
@@ -278,9 +273,14 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
         panic!("bootstrap heap initialization failed: {error}");
     }
     info!(target: "init", "Memory management initialized");
+    graphics::vga::init();
 
     if let Err(error) = crate::cpu::prepare_bootstrap(context.boot_info()) {
         panic!("bootstrap CPU initialization failed: {:?}", error);
+    }
+
+    if let Err(error) = crate::resource_registry::mmio::prepare_boot_scanout(context.boot_info()) {
+        warn!(target: "init", "Boot framebuffer preparation failed: {:?}", error);
     }
 
     // 0.5. BSPブートスタック下端にガードページ（Present=0）を設置
@@ -510,24 +510,26 @@ fn init_graphics_console(context: &KernelBootContext) -> bool {
 
     #[cfg(not(any(test, feature = "bench")))]
     {
-        if graphics::init_from_boot_info(&context.boot_info().framebuffer, context.phys_mem_offset)
-        {
-            info!(target: "init", "Graphics framebuffer initialized");
+        match graphics::init_from_boot_info() {
+            Ok(()) => {
+                info!(target: "init", "Graphics framebuffer initialized");
 
-            if context.should_skip_text_console_init() {
-                info!(
-                    target: "init",
-                    "Skipping text console init for qemu-test-export driver_domain profile"
-                );
-                false
-            } else {
-                graphics::init_console();
-                info!(target: "init", "Text Console driver initialized");
-                true
+                if context.should_skip_text_console_init() {
+                    info!(
+                        target: "init",
+                        "Skipping text console init for qemu-test-export driver_domain profile"
+                    );
+                    false
+                } else {
+                    graphics::init_console();
+                    info!(target: "init", "Text Console driver initialized");
+                    true
+                }
             }
-        } else {
-            warn!(target: "init", "Graphics framebuffer init failed");
-            false
+            Err(error) => {
+                warn!(target: "init", "Graphics framebuffer init failed: {:?}", error);
+                false
+            }
         }
     }
     #[cfg(any(test, feature = "bench"))]

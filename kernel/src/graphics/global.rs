@@ -9,158 +9,26 @@ use crate::sync::PoisonLock;
 
 use super::console::TextConsole;
 use super::framebuffer::Framebuffer;
-use super::{Color, FramebufferInfo, PixelFormat};
-use crate::mm::virt::higher_half::{PageFlags, VirtAddr};
-use core::fmt::{self, Write};
+use super::{Color, framebuffer::PixelBuffer};
 
-// Simple buffer for formatting - safe enough for single threaded boot
-struct EarlyBuf;
-impl Write for EarlyBuf {
-    fn write_str(&mut self, s: &str) -> fmt::Result {
-        crate::io::log::early_print(s);
-        Ok(())
-    }
-}
-
-// ============================================================================
-// Global State
-// ============================================================================
-
-/// グローバルフレームバッファ
 static FRAMEBUFFER: PoisonLock<Option<Framebuffer>> = PoisonLock::new(None);
 
-/// フレームバッファを初期化
-pub fn init(info: FramebufferInfo) {
-    let mut fb = unsafe { Framebuffer::new(info) };
-    fb.clear(Color::BLACK);
-
-    *FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner()) = Some(fb);
-
-    let (w, h) = {
-        let guard = FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner());
-        let fb = guard.as_ref().expect("framebuffer must be initialized");
-        (fb.width(), fb.height())
-    };
-    log::info!("[GRAPHICS] Framebuffer initialized: {}x{}\n", w, h);
+#[derive(Debug)]
+pub(crate) enum FramebufferInitError {
+    Resource(crate::resource_registry::mmio::BootScanoutError),
+    Framebuffer(super::framebuffer::FramebufferError),
 }
 
-/// ExoLoader (UEFI) からのフレームバッファ情報を使用してグラフィックスを初期化
-pub fn init_from_boot_info(info: &FramebufferInfo, phys_mem_offset: u64) -> bool {
-    crate::io::log::early_print("[GFX] init_from_boot_info entry\n");
-
-    let mut final_info = *info;
-
-    if final_info.bpp == 0 {
-        let bpp = match final_info.format {
-            PixelFormat::Bgra8888 | PixelFormat::Rgba8888 => 32,
-            PixelFormat::Rgb888 | PixelFormat::Bgr888 => 24,
-            PixelFormat::Rgb565 => 16,
-        };
-        final_info.bpp = bpp;
-    }
-
-    if final_info.stride == final_info.width {
-        final_info.stride = final_info.width * (final_info.bpp as u32 / 8);
-    }
-
-    let limine_virt_addr = final_info.address;
-
-    let phys_addr = if limine_virt_addr >= phys_mem_offset {
-        limine_virt_addr - phys_mem_offset
-    } else {
-        limine_virt_addr
-    };
-
-    crate::io::log::early_print("[GFX] Calculated phys addr\n");
-
-    let hhdm_virt_addr = phys_mem_offset + phys_addr;
-
-    let _ = write!(
-        EarlyBuf,
-        "[GFX] FB: {}x{} bpp={} pitch={} phys={:#x} hhdm={:#x}\n",
-        final_info.width,
-        final_info.height,
-        final_info.bpp,
-        final_info.stride,
-        phys_addr,
-        hhdm_virt_addr
-    );
-
-    let fb_size = (final_info.stride as u64) * (final_info.height as u64);
-
-    crate::io::log::early_print("[GFX] About to call map_framebuffer_vram\n");
-
-    let mapped_virt_addr = {
-        let result = map_framebuffer_vram(phys_addr, fb_size, phys_mem_offset);
-        if result == 0 {
-            crate::io::log::early_print("[GFX] map_range failed, falling back to HHDM address\n");
-            log::warn!(
-                "[GRAPHICS] Could not remap framebuffer (WC), utilizing HHDM mapping at {:#x}\n",
-                hhdm_virt_addr
-            );
-            hhdm_virt_addr
-        } else {
-            crate::io::log::early_print("[GFX] map_framebuffer_vram succeeded\n");
-            result
-        }
-    };
-
-    final_info.address = mapped_virt_addr;
-
-    log::info!(
-        "[GRAPHICS] Framebuffer: {}x{}@{}bpp pitch={} format={:?} mapped_virt={:#x}\n",
-        final_info.width,
-        final_info.height,
-        final_info.bpp,
-        final_info.stride,
-        final_info.format,
-        final_info.address
-    );
-
-    crate::io::log::early_print("[GFX] Calling init(info)\n");
-    init(final_info);
-    crate::io::log::early_print("[GFX] init_from_boot_info complete\n");
-    true
-}
-
-fn map_framebuffer_vram(phys_addr: u64, size: u64, offset: u64) -> u64 {
-    use crate::mm::virt::higher_half::PhysAddr;
-
-    crate::io::log::early_print("[GFX] map_framebuffer_vram entry\n");
-
-    let virt_addr = offset + phys_addr;
-    let virt_start = VirtAddr::new(virt_addr);
-    let phys_start = PhysAddr::new(phys_addr);
-
-    let _ = write!(
-        EarlyBuf,
-        "[GFX] Mapping framebuffer: Virt={:#x} Phys={:#x} Size={:#x}\n",
-        virt_start.as_u64(),
-        phys_start.as_u64(),
-        size
-    );
-
-    crate::io::log::early_print("[GFX] About to replace framebuffer mapping with one TLB sync\n");
-
-    unsafe {
-        match crate::mm::virt::higher_half::global_replace_range(
-            virt_start,
-            phys_start,
-            size,
-            PageFlags::write_combining(),
-        ) {
-            Ok(_) => {
-                crate::io::log::early_print("[GFX] replace_range OK\n");
-                log::info!("[GRAPHICS] Framebuffer mapped successfully with WC attributes\n");
-                virt_addr
-            }
-            Err(e) => {
-                crate::io::log::early_print("[GFX] replace_range FAILED\n");
-                log::error!("[GRAPHICS] Failed to map framebuffer: {:?}\n", e);
-                0
-            }
-        }
-    }
+/// The boot phase has already prepared the only scanout owner before AP startup.
+/// This consumes it once; a failed preparation never publishes another address.
+pub(crate) fn init_from_boot_info() -> Result<(), FramebufferInitError> {
+    let (layout, mapping) = crate::resource_registry::mmio::take_boot_scanout()
+        .map_err(FramebufferInitError::Resource)?;
+    let mut framebuffer = Framebuffer::new(layout, PixelBuffer::Scanout(mapping))
+        .map_err(FramebufferInitError::Framebuffer)?;
+    framebuffer.clear(Color::BLACK);
+    *FRAMEBUFFER.lock().unwrap_or_else(|e| e.into_inner()) = Some(framebuffer);
+    Ok(())
 }
 
 /// グラフィカルコンソールを初期化

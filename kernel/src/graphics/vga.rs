@@ -48,15 +48,10 @@ struct ScreenChar {
     color_code: ColorCode,
 }
 
-#[repr(transparent)]
-struct Buffer {
-    chars: [[ScreenChar; BUFFER_WIDTH]; BUFFER_HEIGHT],
-}
-
 pub struct Writer {
     column_position: usize,
     color_code: ColorCode,
-    buffer: *mut Buffer,
+    buffer: hal::MappedMmio,
 }
 
 impl Writer {
@@ -73,7 +68,7 @@ impl Writer {
 
                 let color_code = self.color_code;
                 Self::write_char_volatile(
-                    self.buffer,
+                    &self.buffer,
                     row,
                     col,
                     ScreenChar {
@@ -98,8 +93,8 @@ impl Writer {
     fn new_line(&mut self) {
         for row in 1..BUFFER_HEIGHT {
             for col in 0..BUFFER_WIDTH {
-                let character = Self::read_char_volatile(self.buffer, row, col);
-                Self::write_char_volatile(self.buffer, row - 1, col, character);
+                let character = Self::read_char_volatile(&self.buffer, row, col);
+                Self::write_char_volatile(&self.buffer, row - 1, col, character);
             }
         }
         self.clear_row(BUFFER_HEIGHT - 1);
@@ -112,26 +107,36 @@ impl Writer {
             color_code: self.color_code,
         };
         for col in 0..BUFFER_WIDTH {
-            Self::write_char_volatile(self.buffer, row, col, blank);
+            Self::write_char_volatile(&self.buffer, row, col, blank);
         }
     }
 
-    #[inline]
-    fn write_char_volatile(buffer: *mut Buffer, row: usize, col: usize, ch: ScreenChar) {
-        // Compute the address and use the centralized mmio volatile write wrapper
-        let base = buffer as usize;
-        let index = row * BUFFER_WIDTH + col;
-        let addr = base + index * core::mem::size_of::<ScreenChar>();
-        crate::io::mmio::volatile_write::<ScreenChar>(addr, ch);
+    fn write_char_volatile(
+        buffer: &hal::MappedMmio,
+        row: usize,
+        column: usize,
+        character: ScreenChar,
+    ) {
+        let offset = (row * BUFFER_WIDTH + column) * 2;
+        let value = u16::from_le_bytes([character.ascii_character, character.color_code.0]);
+        buffer
+            .region()
+            .write_only::<u16>(offset)
+            .expect("text cell in retained VGA aperture")
+            .write(value);
     }
-
-    #[inline]
-    fn read_char_volatile(buffer: *mut Buffer, row: usize, col: usize) -> ScreenChar {
-        // Compute the character index and address without dereferencing the pointer
-        let base = buffer as usize;
-        let index = row * BUFFER_WIDTH + col;
-        let addr = base + index * core::mem::size_of::<ScreenChar>();
-        crate::io::mmio::volatile_read::<ScreenChar>(addr)
+    fn read_char_volatile(buffer: &hal::MappedMmio, row: usize, column: usize) -> ScreenChar {
+        let offset = (row * BUFFER_WIDTH + column) * 2;
+        let bytes = buffer
+            .region()
+            .read_only::<u16>(offset)
+            .expect("text cell in retained VGA aperture")
+            .read()
+            .to_le_bytes();
+        ScreenChar {
+            ascii_character: bytes[0],
+            color_code: ColorCode(bytes[1]),
+        }
     }
 }
 
@@ -142,38 +147,26 @@ impl fmt::Write for Writer {
     }
 }
 
-// SAFETY: VGA バッファは固定アドレスにあり、Writerは単一スレッドでのみ使用される
-unsafe impl Send for Writer {}
-
-static WRITER: PoisonLock<Writer> = PoisonLock::new(Writer {
-    column_position: 0,
-    color_code: ColorCode::new(Color::Yellow, Color::Black),
-    buffer: 0xb8000 as *mut Buffer,
-});
+static WRITER: PoisonLock<Option<Writer>> = PoisonLock::new(None);
 
 static VGA_AVAILABLE: core::sync::atomic::AtomicBool = core::sync::atomic::AtomicBool::new(false);
 
 pub fn init() {
-    // UEFI環境ではVGAテキストモードバッファは使用不可
-    // Limineのフレームバッファを使用する場合は別途初期化が必要
-    // 今のところはVGAを無効にしておく
-
-    // 簡易チェック: 0xb8000がマップされているかテスト
-    // UEFI環境ではこのアドレスは通常マップされていない
-    #[cfg(not(feature = "force_vga"))]
-    {
-        // VGAバッファをクリアしない（UEFIでは無効なアドレス）
-        // 代わりにシリアル出力のみを使用
-        VGA_AVAILABLE.store(false, core::sync::atomic::Ordering::Release);
-    }
-
     #[cfg(feature = "force_vga")]
     {
-        VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
-        WRITER
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .clear_row(BUFFER_HEIGHT - 1);
+        match crate::resource_registry::mmio::acquire_vga_text() {
+            Ok(buffer) => {
+                let mut writer = Writer {
+                    column_position: 0,
+                    color_code: ColorCode::new(Color::Yellow, Color::Black),
+                    buffer,
+                };
+                writer.clear_row(BUFFER_HEIGHT - 1);
+                *WRITER.lock().unwrap_or_else(|error| error.into_inner()) = Some(writer);
+                VGA_AVAILABLE.store(true, core::sync::atomic::Ordering::Release);
+            }
+            Err(error) => log::warn!("VGA text aperture unavailable: {:?}", error),
+        }
     }
 }
 
@@ -183,10 +176,16 @@ pub fn _print(args: fmt::Arguments) {
 
     // VGAが利用可能な場合のみ書き込み
     if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
-        let _ = WRITER
+        if let Some(writer) = WRITER
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .write_fmt(args);
+            .unwrap_or_else(|error| error.into_inner())
+            .as_mut()
+        {
+            // fmt writes into this retained device and cannot fail after admission.
+            if writer.write_fmt(args).is_err() {
+                return;
+            }
+        }
     }
     // それ以外の場合はシリアル出力を使用（io::logが処理）
 }

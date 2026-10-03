@@ -135,98 +135,57 @@ impl Framebuffer {
         let src_stride = image.width() * 4;
         let src_data = image.data();
         let dst_stride = if self.back_buffer.is_some() {
-            self.info.width * 4
+            self.info.width() * 4
         } else {
-            self.info.stride
+            self.info.stride()
         } as usize;
         let dst_bpp = if self.back_buffer.is_some() {
             4
         } else {
-            self.info.format.bytes_per_pixel()
+            self.info.format().bytes_per_pixel()
         } as usize;
 
-        let buf_ptr = self.draw_buffer();
-
-        let needs_swizzle = match (self.back_buffer.is_some(), self.info.format) {
-            (true, _) => true,
-            (false, PixelFormat::Bgra8888 | PixelFormat::Bgr888) => true,
-            _ => false,
-        };
-
-        for i in 0..r_h {
-            let src_row_offset = ((r_y as u32 + i as u32) * src_stride + (r_x as u32 * 4)) as usize;
-            let dst_row_offset =
-                (d_y as usize + i as usize) * dst_stride + (d_x as usize * dst_bpp as usize);
-
-            let src_row = &src_data[src_row_offset..src_row_offset + (r_w as usize * 4)];
-
-            unsafe {
-                let dst_ptr = buf_ptr.add(dst_row_offset);
-
-                if self.back_buffer.is_some() {
-                    let dst_slice = core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4);
-                    crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
-                } else {
-                    self.blit_mmio_row(dst_ptr, src_row, r_w, dst_bpp, needs_swizzle, i == r_h - 1);
-                }
-            }
-        }
-    }
-
-    unsafe fn blit_mmio_row(
-        &mut self,
-        dst_ptr: *mut u8,
-        src_row: &[u8],
-        r_w: u32,
-        dst_bpp: usize,
-        needs_swizzle: bool,
-        is_last_row: bool,
-    ) {
-        match dst_bpp {
-            4 => {
-                if needs_swizzle {
-                    let dst_slice =
-                        unsafe { core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 4) };
-                    crate::graphics::packer::pack_rgba_to_bgra(src_row, dst_slice);
-                } else {
-                    self.write_bytes_mmio_streaming(dst_ptr as usize, src_row);
-                }
-            }
-            3 => {
-                let dst_slice =
-                    unsafe { core::slice::from_raw_parts_mut(dst_ptr, r_w as usize * 3) };
-                crate::graphics::packer::pack_rgba_to_bgr24(src_row, dst_slice, needs_swizzle);
-            }
-            2 => {
-                // RGB565 direct path: convert RGBA pixels to RGB565 and stream-write
-                let pixel_count = r_w as usize;
-                self.ensure_scratch_u8(pixel_count * 2);
-                let src_pixels = unsafe {
-                    core::slice::from_raw_parts(src_row.as_ptr() as *const u32, pixel_count)
-                };
-                // Convert RGBA u32 -> RGB565 u16 into scratch buffer
+        let width = r_w as usize;
+        let needs_swizzle = matches!(
+            self.info.format(),
+            PixelFormat::Bgra8888 | PixelFormat::Bgr888
+        );
+        // LOOP_PROOF: mode=bounded; reason=The clipped image rectangle has a finite row count.;
+        for row in 0..r_h as usize {
+            let source_offset = (r_y as usize + row) * src_stride as usize + r_x as usize * 4;
+            let source = &src_data[source_offset..source_offset + width * 4];
+            let destination = (d_y as usize + row) * dst_stride + d_x as usize * dst_bpp;
+            if let Some(back) = self.back_buffer.as_mut() {
+                let first = destination / 4;
+                // LOOP_PROOF: mode=bounded; reason=Each source row has exactly width initialized RGBA pixels.;
+                for (rgba, pixel) in source
+                    .chunks_exact(4)
+                    .zip(back[first..first + width].iter_mut())
                 {
-                    let dst_u16 = unsafe {
-                        core::slice::from_raw_parts_mut(
-                            self.scratch_u8.as_mut_ptr() as *mut u16,
-                            pixel_count,
-                        )
-                    };
-                    for (i, &rgba) in src_pixels.iter().enumerate() {
-                        let r = (rgba & 0xFF) as u16;
-                        let g = ((rgba >> 8) & 0xFF) as u16;
-                        let b = ((rgba >> 16) & 0xFF) as u16;
-                        dst_u16[i] = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3);
+                    *pixel = Color::with_alpha(rgba[0], rgba[1], rgba[2], rgba[3]).to_u32();
+                }
+                continue;
+            }
+            let output = &mut self.scratch_u8[..width * dst_bpp];
+            match self.info.format() {
+                PixelFormat::Bgra8888 => crate::graphics::packer::pack_rgba_to_bgra(source, output),
+                PixelFormat::Rgba8888 => output.copy_from_slice(source),
+                PixelFormat::Bgr888 | PixelFormat::Rgb888 => {
+                    crate::graphics::packer::pack_rgba_to_bgr24(source, output, needs_swizzle)
+                }
+                PixelFormat::Rgb565 => {
+                    // LOOP_PROOF: mode=bounded; reason=Each complete RGBA pixel produces one complete two byte output pixel.;
+                    for (rgba, bytes) in source.chunks_exact(4).zip(output.chunks_exact_mut(2)) {
+                        bytes.copy_from_slice(
+                            &Self::color_to_rgb565(Color::new(rgba[0], rgba[1], rgba[2]))
+                                .to_le_bytes(),
+                        );
                     }
                 }
-                let addr = dst_ptr as usize;
-                self.write_bytes_mmio_streaming(addr, &self.scratch_u8[..pixel_count * 2]);
             }
-            _ => {}
+            self.pixels.write(destination, output);
         }
-        if is_last_row {
-            mmio::sfence();
-        }
+        mmio::sfence();
     }
 
     /// ピクセルをブレンドして描画

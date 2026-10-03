@@ -28,3 +28,5 @@ pub use state::{
 pub(crate) use state::{CpuStateTransition, CpuStateTransitionError, LocatedCpu};
 pub(crate) use transition::{commit_eject, fail_eject, prepare_eject};
 pub use transition::{offline, online};
+
+pub(crate) mod cache_policy;

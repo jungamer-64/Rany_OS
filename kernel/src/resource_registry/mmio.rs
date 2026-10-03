@@ -26,6 +26,11 @@ struct MappingOwner {
 }
 
 enum MappingResource {
+    #[cfg(feature = "force_vga")]
+    LegacyTextVideo,
+    BootFramebuffer {
+        _handoff: &'static boot_proto::ExoBootInfo,
+    },
     Pci {
         _function: Arc<crate::drivers::pci::resource::FunctionResources>,
     },
@@ -346,4 +351,222 @@ pub(crate) fn release(domain: DomainId, identity: u64) {
         "invalid or repeated MMIO grant retirement"
     );
     drop(removed);
+}
+
+/// Boot preparation completes on the BSP before AP admission. Failed partial
+/// mapping changes stay quarantined with their resource claim; no fallback
+/// address is published and no later claimant can reuse the aperture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum BootScanoutError {
+    Geometry,
+    Admission(MmioAcquireError),
+    Consumed,
+}
+enum BootScanout {
+    Ready(
+        graphic_types::FramebufferLayout,
+        hal::scanout::ScanoutBuffer,
+    ),
+    Failed {
+        error: BootScanoutError,
+        _owner: Option<Arc<MappingOwner>>,
+    },
+    Consumed,
+}
+static BOOT_SCANOUT: InitOnce<Mutex<BootScanout>> = InitOnce::new();
+
+pub(crate) fn prepare_boot_scanout(
+    handoff: &'static boot_proto::ExoBootInfo,
+) -> Result<(), BootScanoutError> {
+    let state = BOOT_SCANOUT.call_once(|| Mutex::new(prepare_scanout_mapping(handoff)));
+    match &*state.lock() {
+        BootScanout::Ready(..) => Ok(()),
+        BootScanout::Failed { error, .. } => Err(*error),
+        BootScanout::Consumed => Err(BootScanoutError::Consumed),
+    }
+}
+
+pub(crate) fn take_boot_scanout() -> Result<
+    (
+        graphic_types::FramebufferLayout,
+        hal::scanout::ScanoutBuffer,
+    ),
+    BootScanoutError,
+> {
+    let storage = BOOT_SCANOUT
+        .get()
+        .ok_or(BootScanoutError::Admission(MmioAcquireError::Unavailable))?;
+    let mut guard = storage.lock();
+    match &*guard {
+        BootScanout::Failed { error, .. } => return Err(*error),
+        BootScanout::Consumed => return Err(BootScanoutError::Consumed),
+        BootScanout::Ready(..) => {}
+    }
+    match core::mem::replace(&mut *guard, BootScanout::Consumed) {
+        BootScanout::Ready(layout, mapping) => Ok((layout, mapping)),
+        _ => unreachable!("state checked while holding the sole scanout storage lock"),
+    }
+}
+
+fn prepare_scanout_mapping(handoff: &'static boot_proto::ExoBootInfo) -> BootScanout {
+    let fail = |error, owner| BootScanout::Failed {
+        error,
+        _owner: owner,
+    };
+    let info = &handoff.framebuffer;
+    let layout = match graphic_types::FramebufferLayout::new(
+        info.width,
+        info.height,
+        info.stride,
+        info.format,
+    ) {
+        Ok(layout) if info.bpp as usize == info.format.bytes_per_pixel() * 8 => layout,
+        _ => return fail(BootScanoutError::Geometry, None),
+    };
+    // ExoLoader's immutable GOP handoff declares a physical byte address. It is
+    // not inferred from numeric relationships to HHDM or replaced with a guess.
+    let start = info.address;
+    let Some(end) = start.checked_add(layout.size() as u64) else {
+        return fail(BootScanoutError::Geometry, None);
+    };
+    let first_page = start & !4095;
+    let Some(page_end) = end.checked_add(4095).map(|end| end & !4095) else {
+        return fail(BootScanoutError::Geometry, None);
+    };
+    if start == 0 {
+        return fail(BootScanoutError::Geometry, None);
+    }
+    let Some(map) = MEMORY_MAP.get() else {
+        return fail(
+            BootScanoutError::Admission(MmioAcquireError::Unavailable),
+            None,
+        );
+    };
+    // LOOP_PROOF: mode=bounded; reason=Each immutable firmware memory descriptor is checked once.;
+    for descriptor in *map {
+        let Some(limit) = descriptor
+            .page_count
+            .checked_mul(4096)
+            .and_then(|bytes| descriptor.phys_start.checked_add(bytes))
+        else {
+            return fail(
+                BootScanoutError::Admission(MmioAcquireError::PhysicalMemoryConflict),
+                None,
+            );
+        };
+        if first_page < limit
+            && descriptor.phys_start < page_end
+            && !matches!(descriptor.r#type, 0 | 11)
+        {
+            return fail(
+                BootScanoutError::Admission(MmioAcquireError::PhysicalMemoryConflict),
+                None,
+            );
+        }
+    }
+    let mut claims = CLAIMS.lock();
+    if claims
+        .iter()
+        .flatten()
+        .filter_map(Weak::upgrade)
+        .any(|claim| first_page < claim.end && claim.start < page_end)
+    {
+        return fail(
+            BootScanoutError::Admission(MmioAcquireError::ResourceBusy),
+            None,
+        );
+    }
+    let Some(slot) = claims
+        .iter_mut()
+        .find(|entry| entry.as_ref().is_none_or(|weak| weak.strong_count() == 0))
+    else {
+        return fail(
+            BootScanoutError::Admission(MmioAcquireError::ResourceExhausted),
+            None,
+        );
+    };
+    let identity =
+        match NEXT_ID.try_update(Ordering::Relaxed, Ordering::Relaxed, |id| id.checked_add(1)) {
+            Ok(id) => id,
+            Err(_) => {
+                return fail(
+                    BootScanoutError::Admission(MmioAcquireError::ResourceExhausted),
+                    None,
+                );
+            }
+        };
+    let owner = match Arc::try_new(MappingOwner {
+        identity,
+        domain: DomainId::KERNEL,
+        start: first_page,
+        end: page_end,
+        _resource: MappingResource::BootFramebuffer { _handoff: handoff },
+    }) {
+        Ok(owner) => owner,
+        Err(_) => {
+            return fail(
+                BootScanoutError::Admission(MmioAcquireError::OutOfMemory),
+                None,
+            );
+        }
+    };
+    *slot = Some(Arc::downgrade(&owner));
+    let base =
+        match crate::mm::virt::higher_half::prepare_boot_scanout(first_page, page_end - first_page)
+        {
+            Ok(base) => base + (start - first_page) as usize,
+            Err(error) => return fail(BootScanoutError::Admission(error), Some(owner)),
+        };
+    // SAFETY: the immutable GOP handoff owns these pixel pages. The claim lock
+    // excludes overlapping admissions; boot preparation retired both aliases
+    // and caches on the only running CPU before publishing identical WC mappings.
+    // Permanent page tables and the retained claim prohibit remap or repurposing.
+    match unsafe { hal::scanout::ScanoutBuffer::from_raw_parts(owner.clone(), base, layout.size()) }
+    {
+        Ok(mapping) => BootScanout::Ready(layout, mapping),
+        Err(_) => fail(BootScanoutError::Geometry, Some(owner)),
+    }
+}
+
+/// The force_vga platform profile requires PC VGA text mode. Its fixed ISA
+/// aperture is reserved firmware memory rather than an allocatable RAM region.
+#[cfg(feature = "force_vga")]
+pub(crate) fn acquire_vga_text() -> Result<hal::MappedMmio, MmioAcquireError> {
+    const START: u64 = 0xb8000;
+    const LENGTH: usize = 80 * 25 * 2;
+    let memory_map = MEMORY_MAP.get().ok_or(MmioAcquireError::Unavailable)?;
+    let end = START + LENGTH as u64;
+    // LOOP_PROOF: mode=bounded; reason=Every immutable firmware memory descriptor is checked once.;
+    for entry in *memory_map {
+        let limit = entry
+            .page_count
+            .checked_mul(4096)
+            .and_then(|bytes| entry.phys_start.checked_add(bytes))
+            .ok_or(MmioAcquireError::PhysicalMemoryConflict)?;
+        if START < limit && entry.phys_start < end && !matches!(entry.r#type, 0 | 11) {
+            return Err(MmioAcquireError::PhysicalMemoryConflict);
+        }
+    }
+    let mut claims = CLAIMS.lock();
+    if claims
+        .iter()
+        .flatten()
+        .filter_map(Weak::upgrade)
+        .any(|claim| START < claim.end && claim.start < end)
+    {
+        return Err(MmioAcquireError::ResourceBusy);
+    }
+    let base = crate::mm::virt::higher_half::validate_device_aperture(START, LENGTH)?;
+    publish_aperture(
+        DomainId::KERNEL,
+        ValidatedAperture {
+            start: START,
+            end,
+            base,
+            length: LENGTH,
+        },
+        MappingResource::LegacyTextVideo,
+        &mut claims,
+    )
+    .map(|acquired| acquired.mapping)
 }

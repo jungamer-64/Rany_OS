@@ -15,10 +15,15 @@ pub(crate) fn test_write_opaque_run_32bit_simd_pack() {
         bpp: 32,
     };
 
-    let mut vram = vec![0u8; info.size()];
-    let mut info2 = info.clone();
-    info2.address = vram.as_mut_ptr() as u64;
-    let mut fb = unsafe { Framebuffer::new(info2) };
+    let vram = vec![0u8; info.size()];
+    let info2 = info.clone();
+
+    let mut fb = Framebuffer::new(
+        FramebufferLayout::new(info2.width, info2.height, info2.stride, info2.format)
+            .expect("valid fixture geometry"),
+        PixelBuffer::Memory(vram),
+    )
+    .expect("framebuffer workspace");
 
     // Build a 64-wide RGBA image row
     let img = Image::filled(width, 1, Color::with_alpha(10, 20, 30, 255));
@@ -27,9 +32,9 @@ pub(crate) fn test_write_opaque_run_32bit_simd_pack() {
     // Verify BGRA in VRAM: B=30, G=20, R=10, A=255
     for x in 0..width as usize {
         let off = x * 4;
-        assert_eq!(vram[off], 30, "B at x={x}");
-        assert_eq!(vram[off + 1], 20, "G at x={x}");
-        assert_eq!(vram[off + 2], 10, "R at x={x}");
-        assert_eq!(vram[off + 3], 255, "A at x={x}");
+        assert_eq!(memory_bytes(&fb)[off], 30, "B at x={x}");
+        assert_eq!(memory_bytes(&fb)[off + 1], 20, "G at x={x}");
+        assert_eq!(memory_bytes(&fb)[off + 2], 10, "R at x={x}");
+        assert_eq!(memory_bytes(&fb)[off + 3], 255, "A at x={x}");
     }
 }

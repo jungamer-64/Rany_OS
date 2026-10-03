@@ -78,11 +78,10 @@ fn current_framebuffer_info() -> Option<KapiFramebufferInfo> {
         crate::graphics::with_framebuffer(|fb| {
             let info = fb.info();
             KapiFramebufferInfo {
-                width: info.width as usize,
-                height: info.height as usize,
-                stride: info.stride as usize,
-                format: map_pixel_format(info.format),
-                vaddr: info.address as usize,
+                width: info.width() as usize,
+                height: info.height() as usize,
+                stride: info.stride() as usize,
+                format: map_pixel_format(info.format()),
                 size: info.size(),
             }
         })
@@ -159,23 +158,37 @@ fn has_sys_admin_capability() -> bool {
 }
 
 impl GuiServices for KernelServiceHost {
-    fn request_framebuffer(
+    fn with_framebuffer(
         &self,
         access_token: &DomainCapabilities,
-    ) -> Result<KapiFramebufferInfo, KapiError> {
-        // Security check: require DMA or I/O capability for direct framebuffer access
+        draw: &mut dyn FnMut(KapiFramebufferInfo, hal::scanout::ScanoutRegion<'_>),
+    ) -> Result<(), KapiError> {
         if !access_token.has_dma() && !access_token.has_io() {
             return Err(KapiError::PermissionDenied);
         }
-
-        // Get framebuffer info from global
         #[cfg(not(any(test, feature = "bench")))]
         {
-            current_framebuffer_info().ok_or(KapiError::ResourceExhausted)
+            crate::graphics::with_framebuffer(|framebuffer| {
+                let layout = framebuffer.info();
+                let info = KapiFramebufferInfo {
+                    width: layout.width() as usize,
+                    height: layout.height() as usize,
+                    stride: layout.stride() as usize,
+                    format: map_pixel_format(layout.format()),
+                    size: layout.size(),
+                };
+                let region = framebuffer
+                    .scanout_region()
+                    .ok_or(KapiError::NotSupported)?;
+                draw(info, region);
+                hal::mmio::sfence();
+                Ok(())
+            })
+            .ok_or(KapiError::NotSupported)?
         }
         #[cfg(any(test, feature = "bench"))]
         {
-            // Graphics unavailable in test builds
+            let _ = draw;
             Err(KapiError::NotSupported)
         }
     }
