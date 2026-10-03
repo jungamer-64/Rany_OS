@@ -31,6 +31,7 @@ use hashbrown::HashMap;
 use self::init::CapabilityManager;
 use self::iova::IovaManager;
 use self::ir::InterruptRemapTable;
+use self::utils::IommuUtils;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
@@ -98,8 +99,8 @@ unsafe impl Send for HardwareContext {}
 
 /// IOMMU Controller
 pub struct IommuController {
-    /// MMIO base address
-    pub(crate) mmio_base: u64,
+    /// Retains the firmware register aperture through IRQs and deferred work.
+    registers: hal::MappedMmio,
     /// Capabilities
     pub(crate) cap: u64,
     /// Extended capabilities
@@ -149,13 +150,13 @@ pub struct IommuController {
     /// Pending wakers for async invalidation completion
     pub(crate) pending_waiters: WakerQueue,
     /// Command Queue
-    pub(crate) command_queue: spin::Once<CommandQueue>,
+    pub(crate) command_queue: crate::sync::InitOnce<CommandQueue>,
     /// Runtime services activated for this controller
     runtime_services_started: AtomicBool,
     /// Phase 6: Page Table Recycling Pool
     pub page_table_pool: Arc<PageTablePool>,
     /// Phase 7: Security event notifier
-    security_notifier: spin::Once<Arc<dyn SecurityNotifier>>,
+    security_notifier: crate::sync::InitOnce<Arc<dyn SecurityNotifier>>,
 }
 
 unsafe impl Send for IommuController {}
@@ -163,9 +164,9 @@ unsafe impl Sync for IommuController {}
 
 impl IommuController {
     /// Create a new IOMMU controller
-    pub fn new(mmio_base: u64, segment: u16) -> Self {
+    pub fn new(registers: hal::MappedMmio, segment: u16) -> Self {
         Self {
-            mmio_base,
+            registers,
             segment,
             cap: 0,
             ecap: 0,
@@ -190,50 +191,10 @@ impl IommuController {
             device_scopes: Vec::new(),
             include_all: false,
             pending_waiters: WakerQueue::new(),
-            command_queue: spin::Once::new(),
+            command_queue: crate::sync::InitOnce::new(),
             runtime_services_started: AtomicBool::new(false),
             page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
-            security_notifier: spin::Once::new(),
-        }
-    }
-
-    /// Create a new IOMMU controller with device scopes
-    pub fn new_with_scopes(
-        mmio_base: u64,
-        segment: u16,
-        scopes: Vec<IommuDeviceScope>,
-        include_all: bool,
-    ) -> Self {
-        Self {
-            mmio_base,
-            segment,
-            cap: 0,
-            ecap: 0,
-            selected_agaw_code: 2,
-            selected_addr_bits: 48,
-            selected_levels: 4,
-            hardware: PoisonLock::new(HardwareContext::default()),
-            domains: PoisonLock::new(HashMap::new()),
-            device_domains: PoisonLock::new(HashMap::new()),
-            device_pasid_tables: PoisonLock::new(HashMap::new()),
-            next_domain_id: AtomicU64::new(1),
-            enabled: AtomicBool::new(false),
-            interrupt_remap_table: PoisonLock::new(None),
-            ir_enabled: AtomicBool::new(false),
-            ir_extended_mode: AtomicBool::new(false),
-            invalidation_queue: PoisonLock::new(None),
-            qi_enabled: AtomicBool::new(false),
-            scalable_mode_enabled: AtomicBool::new(false),
-            iova_allocator: PoisonLock::new(None),
-            ats_devices: PoisonLock::new(BTreeMap::new()),
-            fault_log: IrqMutex::new(None),
-            device_scopes: scopes,
-            include_all,
-            pending_waiters: WakerQueue::new(),
-            command_queue: spin::Once::new(),
-            runtime_services_started: AtomicBool::new(false),
-            page_table_pool: PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32),
-            security_notifier: spin::Once::new(),
+            security_notifier: crate::sync::InitOnce::new(),
         }
     }
 
