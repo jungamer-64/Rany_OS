@@ -65,6 +65,7 @@ impl Default for AmdDeviceTableEntry {
 
 #[derive(Debug)]
 pub(crate) struct AmdDeviceTable {
+    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     phys_base: u64,
     virt_base: NonNull<AmdDeviceTableEntry>,
     size_bytes: u64,
@@ -96,7 +97,8 @@ impl AmdDeviceTable {
         size_bytes = size_bytes.next_power_of_two();
 
         let frame_count = (size_bytes / (PAGE_SIZE_4K as u64)) as usize;
-        let phys_base = alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+        let phys_base =
+            alloc_contiguous_frames(frame_count).map_err(|_| IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
         let entry_ptr = NonNull::new(virt_base.as_u64() as *mut AmdDeviceTableEntry)
             .ok_or(IommuError::HardwareError)?;
@@ -115,6 +117,7 @@ impl AmdDeviceTable {
 
         Ok(Self {
             phys_base: phys_base.as_u64(),
+            backing: phys_base,
             virt_base: entry_ptr,
             size_bytes,
             entry_count: (size_bytes / entry_bytes) as usize,

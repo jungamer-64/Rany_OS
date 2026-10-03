@@ -213,7 +213,7 @@ impl AmdIommuDriver {
         cmd_states: Vec<Option<PoisonLock<AmdCommandState>>>,
         event_logs: Vec<Option<AmdEventLog>>,
         device_tables: HashMap<u16, AmdDeviceTable>,
-    ) -> Self {
+    ) -> Result<Self, IommuError> {
         let page_table_pool = PageTablePool::new(crate::mm::numa::topology::num_nodes().max(1), 32);
         let max_addr_bits = units
             .iter()
@@ -226,7 +226,10 @@ impl AmdIommuDriver {
         let iova_base: u64 = PAGE_SIZE_4K as u64;
         let iova_limit = 1u64 << iova_bits;
         let iova_size = iova_limit.saturating_sub(iova_base);
-        let iova_allocator = Arc::new(IovaAllocator::new(iova_base, iova_size));
+        let iova_allocator = Arc::new(
+            IovaAllocator::new(iova_base, iova_size)
+                .expect("AMD controller cannot operate without its IOVA pool"),
+        );
         let alloc_base = iova_allocator.base();
         let alloc_end = alloc_base.saturating_add(iova_allocator.size());
 
@@ -298,7 +301,7 @@ impl AmdIommuDriver {
             }
         }
 
-        Self {
+        Ok(Self {
             units,
             ivmd_ranges,
             cmd_states,
@@ -308,13 +311,13 @@ impl AmdIommuDriver {
             device_domains: PoisonLock::new(HashMap::new()),
             next_domain_id: AtomicU64::new(1),
             page_table_pool,
-            command_queue: Some(CommandQueue::new_with_numa(None)),
+            command_queue: Some(CommandQueue::new(None)?),
             iova_allocator,
             enabled: AtomicBool::new(false),
             security_notifier: spin::Once::new(),
             max_addr_bits,
             interrupt_remap_tables,
-        }
+        })
     }
 
     pub(crate) fn register_driver(
@@ -331,9 +334,10 @@ impl AmdIommuDriver {
         if crate::task::scheduler_snapshot().is_none() {
             return Err(IommuError::RuntimeUnavailable);
         }
-        let driver = AmdIommuDriver::new(units, ivmd_ranges, cmd_states, event_logs, device_tables);
+        let driver =
+            AmdIommuDriver::new(units, ivmd_ranges, cmd_states, event_logs, device_tables)?;
         driver.populate_default_entries()?;
-        init_driver(Arc::new(IommuBackend::Amd(driver)));
+        init_driver(Arc::new(IommuBackend::Amd(Arc::new(driver))));
         #[cfg(not(test))]
         fault::spawn_fault_handler_task().map_err(|_| IommuError::RuntimeUnavailable)?;
         Ok(())

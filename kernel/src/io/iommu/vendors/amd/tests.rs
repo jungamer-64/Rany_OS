@@ -50,10 +50,10 @@ fn make_driver(entries: Vec<IvhdDeviceEntry>) -> AmdIommuDriver {
         next_domain_id: AtomicU64::new(1),
         page_table_pool: PageTablePool::new(1, 1),
         command_queue: None,
-        iova_allocator: Arc::new(IovaAllocator::new(
-            PAGE_SIZE_4K as u64,
-            (1u64 << AMD_DEFAULT_MAX_ADDR_BITS).saturating_sub(PAGE_SIZE_4K as u64),
-        )),
+        iova_allocator: Arc::new(
+            IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64)
+                .expect("valid host IOVA pool"),
+        ),
         enabled: AtomicBool::new(false),
         security_notifier: spin::Once::new(),
         max_addr_bits: AMD_DEFAULT_MAX_ADDR_BITS,
@@ -262,8 +262,16 @@ fn test_map_for_device_rejects_exclusion_range() {
         device_domains.insert(device, domain_id);
     }
 
+    let driver = alloc::sync::Arc::new(driver);
     let result = unsafe { driver.map_for_device(&device, PhysAddr::new(0x2000), 0x1000) };
-    assert_eq!(result, Err(IommuError::InvalidAddress));
+    assert!(matches!(
+        result,
+        Err(
+            crate::io::iommu::common::dma::mapping_outcome::DeviceMapFailure::Unpublished(
+                IommuError::InvalidAddress
+            )
+        )
+    ));
 }
 
 // ---------------------------------------------------------------------------
@@ -290,10 +298,10 @@ fn make_test_driver_small() -> AmdIommuDriver {
     };
 
     let page_table_pool = PageTablePool::new(1, 1);
-    let iova_allocator = Arc::new(IovaAllocator::new(
-        PAGE_SIZE_4K as u64,
-        (1u64 << 20) - PAGE_SIZE_4K as u64,
-    ));
+    let iova_allocator = Arc::new(
+        IovaAllocator::new(PAGE_SIZE_4K as u64, (1u64 << 20) - PAGE_SIZE_4K as u64)
+            .expect("valid host IOVA pool"),
+    );
 
     let default_domain = DomainState::new(
         0,
@@ -337,81 +345,6 @@ fn make_test_driver_small() -> AmdIommuDriver {
 // ---------------------------------------------------------------------------
 // Wave1 #[test_case] tests
 // ---------------------------------------------------------------------------
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_cmdqueue_map_unmap_with_domain() {
-    let driver = make_test_driver_small();
-
-    let domain_id = driver
-        .create_domain(None, IommuDomainType::Translated)
-        .unwrap();
-    let device = DeviceId::new(0, 1, 0, 0);
-    {
-        let mut dd = match driver.device_domains.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(),
-        };
-        dd.insert(device, domain_id);
-    }
-
-    let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
-
-    let iova = 0x1000u64;
-    let phys = 0x10000u64;
-    let size = 0x1000u64;
-
-    let comp = cq
-        .submit(IommuCommandKind::MapRegionDevice {
-            device,
-            iova,
-            phys,
-            size,
-            read: true,
-            write: true,
-        })
-        .expect("submit map");
-
-    let processed = cq.process_once(|kind| match kind {
-        IommuCommandKind::MapRegionDevice {
-            device: d,
-            iova: i,
-            phys: p,
-            size: s,
-            read: r,
-            write: w,
-        } => {
-            let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
-            let domain = driver.domain_for_id(did).map_err(|_| ())?;
-            domain.map(*i, *p, *s, *r, *w).map_err(|_| ())?;
-            Ok(0)
-        }
-        _ => Err(()),
-    });
-    assert_eq!(processed, 1);
-    assert_eq!(comp.wait_blocking(), 0);
-
-    let domain = driver.domain_for_id(domain_id).unwrap();
-    assert!(domain.mapping(iova).is_some());
-
-    let comp2 = cq
-        .submit(IommuCommandKind::UnmapRegionDevice { device, iova, size })
-        .expect("submit unmap");
-
-    let processed2 = cq.process_once(|kind| match kind {
-        IommuCommandKind::UnmapRegionDevice {
-            device: d, iova: i, ..
-        } => {
-            let did = driver.domain_id_for_device(*d).map_err(|_| ())?;
-            let domain = driver.domain_for_id(did).map_err(|_| ())?;
-            domain.unmap(*i).map(|_| 0).map_err(|_| ())
-        }
-        _ => Err(()),
-    });
-    assert_eq!(processed2, 1);
-    assert_eq!(comp2.wait_blocking(), 0);
-    assert!(domain.mapping(iova).is_none());
-}
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -473,20 +406,14 @@ fn test_security_notifier_dispatch() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_cmdqueue_pressure() {
-    let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(CommandQueue::new()));
+    let cq = alloc::boxed::Box::leak(alloc::boxed::Box::new(
+        CommandQueue::new(None).expect("queue admission"),
+    ));
     let count = 32usize;
-    let device = DeviceId::new(0, 1, 0, 0);
     let mut completions = Vec::new();
 
     for i in 0..count {
-        let cmd = IommuCommandKind::MapRegionDevice {
-            device,
-            iova: (i as u64 + 1) * 0x1000,
-            phys: (i as u64 + 1) * 0x1000,
-            size: 0x1000,
-            read: true,
-            write: true,
-        };
+        let cmd = IommuCommandKind::InvalidateIotlbDomain { domain: i as u16 };
         completions.push(cq.submit(cmd).expect("submit"));
     }
 

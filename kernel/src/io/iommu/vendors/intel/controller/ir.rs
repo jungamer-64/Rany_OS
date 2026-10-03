@@ -12,8 +12,9 @@ use core::sync::atomic::Ordering;
 use super::IommuController;
 use super::qi_ops::InvalidationOps;
 use crate::cpu::ApicId;
-use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::types::IommuError;
+use crate::mm::value::Zeroable;
 
 const INTERRUPT_REMAP_ENTRY_COUNT: usize = 256;
 const INTERRUPT_REMAP_TABLE_SIZE_ENCODING: u64 = 7;

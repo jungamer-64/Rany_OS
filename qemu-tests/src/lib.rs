@@ -77,13 +77,14 @@ fn run_required_profile(profile: &str) {
 fn fullboot_pr_required() {
     let only_profile = std::env::var("QEMU_TEST_PROFILE_ONLY").ok();
     let mut ran_any = false;
-    // Keep PR-required set deterministic in current qemu_no_if fullboot runs.
+    // Each profile owns its interrupt and topology requirements.
     for profile in [
         "boot-smoke",
         "storage",
         "driver_domain",
         "iommu",
         "network",
+        "mm",
         "cpu-hotplug",
     ] {
         if let Some(only) = only_profile.as_deref() {

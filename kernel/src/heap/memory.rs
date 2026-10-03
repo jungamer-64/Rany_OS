@@ -1,5 +1,6 @@
-//! Once-only admission of loader-owned RAM. Geometry is copyable observation;
-//! HeapMemory is not. No Drop/release path can return it to another allocator.
+//! Exclusive heap RAM admission. Loader RAM has no PMM return authority; a
+//! retained PMM loan may be returned only after every heap block is retired.
+//! Geometry remains observation and cannot manufacture either ownership.
 #![deny(unsafe_code)]
 #![forbid(unsafe_op_in_unsafe_fn)]
 #![deny(clippy::undocumented_unsafe_blocks, clippy::missing_safety_doc)]
@@ -12,6 +13,7 @@ use core::ptr::NonNull;
 pub(crate) struct HeapMemory {
     base: NonNull<u8>,
     layout: Layout,
+    physical: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
 }
 
 #[expect(
@@ -46,6 +48,41 @@ impl HeapMemory {
         Self {
             base,
             layout: range.layout(),
+            physical: None,
+        }
+    }
+
+    /// # Safety
+    /// The exclusive RAM allocation has a retained writable HHDM mapping and
+    /// no device or translation owner can access it. Transfer occurs once.
+    #[expect(
+        unsafe_code,
+        reason = "HHDM RAM admission transfers physical ownership into the heap"
+    )]
+    pub(super) unsafe fn from_physical(
+        backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
+    ) -> Self {
+        let virtual_base =
+            crate::mm::virt::mapping::phys_to_virt(backing.start_address()).as_u64() as usize;
+        let layout = Layout::from_size_align(backing.size_bytes() as usize, 4096)
+            .expect("PMM supplies a valid page extent");
+        let base = NonNull::new(core::ptr::with_exposed_provenance_mut(virtual_base))
+            .expect("admitted HHDM RAM is nonzero");
+        Self {
+            base,
+            layout,
+            physical: Some(backing),
+        }
+    }
+
+    /// Consumes a PMM loan after all heap blocks have been returned. Loader RAM
+    /// retains its external ownership contract and cannot be returned to PMM.
+    pub(super) fn into_physical(
+        mut self,
+    ) -> Result<crate::mm::phys::frame_allocator::PhysicalAllocation, Self> {
+        match self.physical.take() {
+            Some(backing) => Ok(backing),
+            None => Err(self),
         }
     }
 

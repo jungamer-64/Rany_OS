@@ -48,6 +48,10 @@ enum ApStartupSignal {
     ApicIdentityMismatch = 14,
     TimerFailed = 15,
     LocalApicInvalidMmioBase = 16,
+    Draining = 17,
+    CacheOwnerBorrowed = 18,
+    CacheBackingBusy = 19,
+    CacheBackingPoisoned = 20,
 }
 
 impl ApStartupSignal {
@@ -70,6 +74,10 @@ impl ApStartupSignal {
             14 => Some(Self::ApicIdentityMismatch),
             15 => Some(Self::TimerFailed),
             16 => Some(Self::LocalApicInvalidMmioBase),
+            17 => Some(Self::Draining),
+            18 => Some(Self::CacheOwnerBorrowed),
+            19 => Some(Self::CacheBackingBusy),
+            20 => Some(Self::CacheBackingPoisoned),
             _ => None,
         }
     }
@@ -82,7 +90,8 @@ impl ApStartupSignal {
             | Self::InterruptTablesLoaded
             | Self::LocalApicReady
             | Self::ReadyParked
-            | Self::ReadyOnline => None,
+            | Self::ReadyOnline
+            | Self::Draining => None,
             Self::MissingApic => Some(CpuFailureReason::MissingRequiredFeature { feature: "APIC" }),
             Self::MissingSse2 => Some(CpuFailureReason::MissingRequiredFeature { feature: "SSE2" }),
             Self::MissingX2Apic => {
@@ -107,6 +116,15 @@ impl ApStartupSignal {
                 CpuStartupFailure::ApicIdentityMismatch,
             )),
             Self::TimerFailed => Some(CpuFailureReason::Startup(CpuStartupFailure::Timer)),
+            Self::CacheOwnerBorrowed => Some(CpuFailureReason::Drain(
+                super::CpuDrainFailure::MemoryCache(super::CpuMemoryCacheFailure::OwnerBorrowed),
+            )),
+            Self::CacheBackingBusy => Some(CpuFailureReason::Drain(
+                super::CpuDrainFailure::MemoryCache(super::CpuMemoryCacheFailure::BackingBusy),
+            )),
+            Self::CacheBackingPoisoned => Some(CpuFailureReason::Drain(
+                super::CpuDrainFailure::MemoryCache(super::CpuMemoryCacheFailure::BackingPoisoned),
+            )),
         }
     }
 
@@ -131,7 +149,7 @@ pub(crate) enum CpuStartupResourceError {
 }
 
 pub(crate) struct CpuStartupResources {
-    physical_base: x86_64::PhysAddr,
+    physical: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     window_base: crate::mm::virt::higher_half::VirtAddr,
     stack_top: NonZeroU64,
     signal: AtomicU8,
@@ -143,7 +161,7 @@ impl CpuStartupResources {
             AP_STACK_USABLE_PAGES,
             PAGE_SIZE as usize,
         )
-        .ok_or(CpuStartupResourceError::PhysicalAllocation)?;
+        .map_err(|_| CpuStartupResourceError::PhysicalAllocation)?;
         let window_base = crate::mm::virt::higher_half::allocate_kernel_virt(AP_STACK_WINDOW_PAGES);
         let mapped_base = window_base + PAGE_SIZE;
         let mapped_size = AP_STACK_USABLE_PAGES as u64 * PAGE_SIZE;
@@ -155,18 +173,26 @@ impl CpuStartupResources {
                 crate::mm::virt::higher_half::PageFlags::kernel_data(),
             )
         };
-        if map_result.is_err() {
-            crate::mm::phys::frame_allocator::dealloc_contiguous_frames(
-                physical_base,
-                AP_STACK_USABLE_PAGES,
-            );
+        if let Err(error) = map_result {
+            // The range outcome is the authority for partial progress. The
+            // untouched suffix has no mapping and must not be unmap's input.
+            if error.modified_size != 0 {
+                unsafe {
+                    crate::mm::virt::higher_half::global_unmap_range(
+                        error.modified_start,
+                        error.modified_size,
+                    )
+                }
+                .unwrap_or_else(|_| panic!("failed AP stack retirement cannot release its frames"));
+            }
+            physical_base.release();
             return Err(CpuStartupResourceError::VirtualMapping);
         }
         let stack_top =
             NonZeroU64::new(window_base.as_u64() + AP_STACK_WINDOW_PAGES as u64 * PAGE_SIZE)
                 .ok_or(CpuStartupResourceError::VirtualMapping)?;
         Ok(Box::pin(Self {
-            physical_base,
+            physical: Some(physical_base),
             window_base,
             stack_top,
             signal: AtomicU8::new(ApStartupSignal::Preparing as u8),
@@ -192,18 +218,37 @@ impl CpuStartupResources {
             CpuStartupFailure::InvalidSignal { value },
         ))
     }
+
+    pub(super) fn prepare_drain(&self) {
+        self.publish(ApStartupSignal::Draining);
+    }
+
+    pub(super) fn memory_drain_failure(&self) -> Option<CpuFailureReason> {
+        match self.signal().ok()?.failure()? {
+            failure @ CpuFailureReason::Drain(super::CpuDrainFailure::MemoryCache(_)) => {
+                Some(failure)
+            }
+            _ => None,
+        }
+    }
+
+    /// ReadyParked is published only after the owner acknowledgement. This
+    /// observes a late completion without issuing another drain request.
+    pub(super) fn park_completion_published(&self) -> bool {
+        self.signal() == Ok(ApStartupSignal::ReadyParked)
+    }
 }
 
 impl Drop for CpuStartupResources {
     fn drop(&mut self) {
         let mapped_base = self.window_base + PAGE_SIZE;
         let mapped_size = AP_STACK_USABLE_PAGES as u64 * PAGE_SIZE;
-        let _ =
-            unsafe { crate::mm::virt::higher_half::global_unmap_range(mapped_base, mapped_size) };
-        crate::mm::phys::frame_allocator::dealloc_contiguous_frames(
-            self.physical_base,
-            AP_STACK_USABLE_PAGES,
-        );
+        unsafe { crate::mm::virt::higher_half::global_unmap_range(mapped_base, mapped_size) }
+            .unwrap_or_else(|_| panic!("AP stack retirement must finish before RAM reuse"));
+        self.physical
+            .take()
+            .expect("AP stack owns its backing")
+            .release();
     }
 }
 
@@ -386,6 +431,8 @@ pub(crate) struct CpuBootSummary {
 pub(crate) enum CpuInitializationError {
     LocalApic(LocalApicError),
     Firmware(FirmwareError),
+    NumaPlacement(crate::platform::firmware::FirmwarePlacementError),
+    CpuPlacement(crate::mm::numa::placement::CpuPlacementError),
     Trampoline(&'static str),
     Topology(CpuTopologyIssue),
     BootstrapBinding,
@@ -408,7 +455,19 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
         })
         .map_err(CpuInitializationError::LocalApic)?;
     let bsp_apic = ApicId::new(local_apic.id());
-    super::install_bootstrap(bsp_apic, Some(boot_info.tls_template))
+    let placement = crate::platform::firmware::numa_placement()
+        .map_err(CpuInitializationError::NumaPlacement)?;
+    let located = super::LocatedCpu::resolve(
+        FirmwareCpuIdentity {
+            uid: None,
+            apic_id: bsp_apic,
+            proximity_domain: None,
+            eject: CpuEjectCapability::Fixed,
+        },
+        placement,
+    )
+    .map_err(CpuInitializationError::CpuPlacement)?;
+    super::install_bootstrap(located, Some(boot_info.tls_template))
         .map_err(CpuInitializationError::Topology)?;
     super::CurrentCpu::bind(CpuId::BOOTSTRAP)
         .map_err(|_| CpuInitializationError::BootstrapBinding)?;
@@ -439,7 +498,6 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
             return Ok(());
         }
     };
-    let affinities = tables.numa_cpu_affinity().unwrap_or_default();
     let runtime = super::runtime();
 
     for firmware_cpu in firmware_cpus {
@@ -447,26 +505,24 @@ pub(crate) fn prepare_bootstrap(boot_info: &ExoBootInfo) -> Result<(), CpuInitia
             continue;
         }
         let apic_id = ApicId::new(firmware_cpu.apic_id);
-        let proximity_domain = affinities
-            .iter()
-            .find(|affinity| affinity.apic_id == firmware_cpu.apic_id && affinity.enabled)
-            .map(|affinity| affinity.proximity_domain);
         let firmware = FirmwareCpuIdentity {
             uid: Some(FirmwareCpuUid::Integer(u64::from(
                 firmware_cpu.firmware_uid,
             ))),
             apic_id,
-            proximity_domain,
+            proximity_domain: None,
             eject: CpuEjectCapability::Fixed,
         };
+        let located = super::LocatedCpu::resolve(firmware, placement)
+            .map_err(CpuInitializationError::CpuPlacement)?;
         if apic_id == bsp_apic {
             runtime
-                .identify_bootstrap(firmware)
+                .identify_bootstrap(located)
                 .map_err(CpuInitializationError::Topology)?;
             continue;
         }
         let id = runtime
-            .discover_present(firmware)
+            .discover_present(located)
             .map_err(CpuInitializationError::Topology)?;
         discovered += 1;
         if !firmware_cpu.enabled {
@@ -486,10 +542,10 @@ fn bootstrap_apic_policy() -> Result<ApicModePolicy, CpuInitializationError> {
     let Some(tables) = crate::platform::firmware::tables() else {
         return Ok(ApicModePolicy::PreferX2Apic);
     };
-    let Some(table) = tables.first(acpi_driver::TableSignature::DMAR) else {
+    let Some(table) = tables.first(crate::drivers::acpi::TableSignature::DMAR) else {
         return Ok(ApicModePolicy::PreferX2Apic);
     };
-    let dmar = acpi_driver::dmar::parse(table.bytes())
+    let dmar = crate::drivers::acpi::dmar::parse(table.bytes())
         .map_err(firmware_error)
         .map_err(CpuInitializationError::Firmware)?;
     Ok(if dmar.x2apic_opt_out() {
@@ -652,9 +708,14 @@ fn wait_for_online_acknowledgement(
 }
 
 fn online_commit_observed(current: &super::CurrentCpu, id: CpuId) -> bool {
+    // LOOP_PROOF: mode=event; reason=The BSP publishes Online or startup rejection, and an accepted Park request aborts this wait.;
     loop {
+        // LOOP_PROOF: mode=condition; reason=Each take consumes an accepted owner control message and exits when the queue is empty.;
         while let Some(message) = current.take_control() {
             match message {
+                super::CpuControlMessage::ReclaimMemory => {
+                    crate::heap::reclaim_local_caches();
+                }
                 super::CpuControlMessage::Park => return false,
                 super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Start => {}
             }
@@ -670,19 +731,17 @@ fn online_commit_observed(current: &super::CurrentCpu, id: CpuId) -> bool {
     }
 }
 
-fn wait_for_park_commit(current: &super::CurrentCpu, id: CpuId) {
+fn wait_for_park_commit(id: CpuId) {
+    // LOOP_PROOF: mode=event; reason=The BSP commits Parked after the acknowledgement or has already begun a subsequent Starting transition.;
     loop {
-        while let Some(message) = current.take_control() {
-            match message {
-                super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
-                super::CpuControlMessage::Start => fail_stop_ap(),
-            }
-        }
         let Some(slot) = super::snapshot().slot(id).cloned() else {
             fail_stop_ap();
         };
         match slot.state {
-            CpuSlotState::Parked => return,
+            // Starting can follow an already committed Parked state before
+            // this owner observes it. Leave the queued Start for its normal
+            // lifecycle handler; consuming it here would lose its authority.
+            CpuSlotState::Parked | CpuSlotState::Starting => return,
             CpuSlotState::Draining => core::hint::spin_loop(),
             _ => fail_stop_ap(),
         }
@@ -703,15 +762,67 @@ fn run_online_lifecycle(
     }
     let _ = crate::interrupts::retire_current_cpu_timer_event();
     crate::task::quiesce_current_cpu_deferred_work();
-    let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
     crate::mm::sync::rcu::quiesce_current_cpu_for_offline();
     crate::mm::sync::tlb::enter_lazy_mode();
     local_apic.set_task_priority(0xe0);
-    resource.publish(ApStartupSignal::ReadyParked);
+    drain_memory_before_park(current, resource);
     current.acknowledge_parked();
+    resource.publish(ApStartupSignal::ReadyParked);
     fence(Ordering::SeqCst);
     crate::interrupts::enable_interrupts();
-    wait_for_park_commit(current, id);
+    wait_for_park_commit(id);
+}
+
+/// A failed memory drain keeps this CPU in Draining with its cache owners.
+/// It services TLB IPIs in lazy mode, but grants neither park acknowledgement
+/// nor new execution. A subsequent offline request explicitly retries the drain.
+fn drain_memory_before_park(current: &super::CurrentCpu, resource: &CpuStartupResources) {
+    // LOOP_PROOF: mode=event; reason=Each failed return retains owner storage and waits for an explicitly accepted Park retry, and successful return ends this protocol.;
+    loop {
+        match crate::heap::drain_local_caches() {
+            Ok(_) => return,
+            Err(failure) => {
+                use crate::heap::{ExchangeDrainError, LocalCacheDrainError};
+                let signal = match failure.cause {
+                    LocalCacheDrainError::Exchange(ExchangeDrainError::BackingBusy) => {
+                        ApStartupSignal::CacheBackingBusy
+                    }
+                    LocalCacheDrainError::Exchange(ExchangeDrainError::BackingPoisoned) => {
+                        ApStartupSignal::CacheBackingPoisoned
+                    }
+                    LocalCacheDrainError::Exchange(
+                        ExchangeDrainError::CacheBorrowed | ExchangeDrainError::AlreadyDraining,
+                    )
+                    | LocalCacheDrainError::OwnerStorageBorrowed => {
+                        ApStartupSignal::CacheOwnerBorrowed
+                    }
+                };
+                resource.publish(signal);
+            }
+        }
+        crate::interrupts::enable_interrupts();
+        // LOOP_PROOF: mode=event; reason=The stopped owner retains failed cache entries and resumes only for an explicitly accepted Park retry, while interrupts continue to retire global TLB work.;
+        loop {
+            let mut retry = false;
+            // LOOP_PROOF: mode=condition; reason=Each take consumes a message from the finite owner control queue.;
+            while let Some(message) = current.take_control() {
+                match message {
+                    super::CpuControlMessage::Park => retry = true,
+                    super::CpuControlMessage::ReclaimMemory => {
+                        crate::heap::reclaim_local_caches();
+                    }
+                    super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Start => {}
+                }
+            }
+            if retry {
+                crate::interrupts::disable_interrupts();
+                break;
+            }
+            // SAFETY: this CPU retains its stack, descriptor/TLB state and
+            // owner storage; it has no schedulable task or park acknowledgement.
+            unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)) };
+        }
+    }
 }
 
 fn map_ipi_start_error(error: super::CpuIpiError) -> CpuFailureReason {
@@ -732,7 +843,7 @@ fn runtime_failure(error: super::CpuRuntimeError) -> CpuFailureReason {
     }
 }
 
-fn firmware_error(error: acpi_driver::AcpiError) -> FirmwareError {
+fn firmware_error(error: crate::drivers::acpi::AcpiError) -> FirmwareError {
     let object = error.table.map(|signature| {
         alloc::sync::Arc::<str>::from(core::str::from_utf8(&signature).unwrap_or("????"))
     });
@@ -805,21 +916,21 @@ fn ap_entry(id: CpuId) -> ! {
     resource.publish(ApStartupSignal::LocalApicReady);
 
     crate::mm::sync::tlb::enter_lazy_mode();
-    crate::mm::numa::topology::apply_current_cpu_locality();
     let current = super::CurrentCpu::acquire().unwrap_or_else(|| fail_stop_ap());
     local_apic.set_task_priority(0xe0);
     crate::interrupts::enable_interrupts();
-    resource.publish(ApStartupSignal::ReadyParked);
     current.acknowledge_parked();
+    resource.publish(ApStartupSignal::ReadyParked);
     fence(Ordering::SeqCst);
 
+    // LOOP_PROOF: mode=halt; reason=This AP owns its permanent stack and alternates accepted lifecycle messages with an interruptible HLT until terminal failure.;
     loop {
+        // LOOP_PROOF: mode=condition; reason=Each take consumes one accepted message and exits when the finite owner control queue is empty.;
         while let Some(message) = current.take_control() {
             match message {
                 super::CpuControlMessage::Start => {
                     crate::interrupts::disable_interrupts();
                     local_apic.set_task_priority(0);
-                    crate::mm::numa::topology::apply_current_cpu_locality();
                     if crate::interrupts::prepare_current_cpu_runtime_timer().is_err() {
                         resource.publish(ApStartupSignal::TimerFailed);
                         crate::mm::sync::tlb::enter_lazy_mode();
@@ -841,15 +952,18 @@ fn ap_entry(id: CpuId) -> ! {
                         }
                         let _ = crate::interrupts::retire_current_cpu_timer_event();
                         crate::task::quiesce_current_cpu_deferred_work();
-                        let _ = crate::mm::phys::frame_allocator::quiesce_current_cpu_for_offline();
                         crate::mm::sync::rcu::quiesce_current_cpu_for_offline();
                         crate::mm::sync::tlb::enter_lazy_mode();
                         local_apic.set_task_priority(0xe0);
-                        resource.publish(ApStartupSignal::ReadyParked);
+                        drain_memory_before_park(&current, resource);
                         current.acknowledge_parked();
+                        resource.publish(ApStartupSignal::ReadyParked);
                         fence(Ordering::SeqCst);
                         crate::interrupts::enable_interrupts();
                     }
+                }
+                super::CpuControlMessage::ReclaimMemory => {
+                    crate::heap::reclaim_local_caches();
                 }
                 super::CpuControlMessage::WakeExecutor | super::CpuControlMessage::Park => {}
             }
@@ -860,6 +974,12 @@ fn ap_entry(id: CpuId) -> ! {
 
 fn fail_stop_ap() -> ! {
     crate::interrupts::disable_interrupts();
+    if super::CurrentCpu::acquire().is_some() {
+        // Starting CPUs can already retain heap, Exchange and frame caches.
+        // The owner drains before this terminal path abandons its execution.
+        crate::heap::reclaim_local_caches();
+    }
+    // LOOP_PROOF: mode=halt; reason=Failed AP admission is terminal and interrupts are disabled before this permanent HLT state.;
     loop {
         x86_64::instructions::hlt();
     }
@@ -906,7 +1026,35 @@ mod tests {
 
     #[test]
     fn startup_signal_decoder_rejects_unknown_values() {
-        assert!(ApStartupSignal::from_raw(17).is_none());
+        assert!(ApStartupSignal::from_raw(21).is_none());
         assert!(ApStartupSignal::from_raw(u8::MAX).is_none());
+    }
+
+    #[test]
+    fn memory_drain_signals_preserve_failure_kind_without_park_progress() {
+        use super::super::{CpuDrainFailure, CpuFailureReason, CpuMemoryCacheFailure};
+        for (signal, cause) in [
+            (
+                ApStartupSignal::CacheOwnerBorrowed,
+                CpuMemoryCacheFailure::OwnerBorrowed,
+            ),
+            (
+                ApStartupSignal::CacheBackingBusy,
+                CpuMemoryCacheFailure::BackingBusy,
+            ),
+            (
+                ApStartupSignal::CacheBackingPoisoned,
+                CpuMemoryCacheFailure::BackingPoisoned,
+            ),
+        ] {
+            assert_eq!(ApStartupSignal::from_raw(signal as u8), Some(signal));
+            assert_eq!(
+                signal.failure(),
+                Some(CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(cause)))
+            );
+            assert!(signal.stage().is_none());
+        }
+        assert!(ApStartupSignal::Draining.failure().is_none());
+        assert!(ApStartupSignal::Draining.stage().is_none());
     }
 }

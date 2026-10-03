@@ -47,14 +47,23 @@ impl KernelServices for KernelServiceHost {
         let caller = current_subject().domain;
         let dev_id = authorize_dma_device_for_current_subject(device_id)?;
         crate::resource_registry::dma::allocate(caller, device_id, dev_id, request).map_err(
-            |error| match error {
-                crate::resource_registry::dma::DmaAllocationError::RegistryExhausted
-                | crate::resource_registry::dma::DmaAllocationError::AllocationFailed => {
-                    KapiError::OutOfMemory
+            |error| {
+                match error {
+                    crate::resource_registry::dma::DmaAllocationError::MappingRejected(cause) => {
+                        log::warn!("DMA admission rejected for {:?}: {:?}", device_id, cause);
+                    }
+                    crate::resource_registry::dma::DmaAllocationError::TranslationPending(
+                        cause,
+                    ) => {
+                        log::error!(
+                            "DMA publication retained for retirement on {:?}: {:?}",
+                            device_id,
+                            cause
+                        );
+                    }
+                    _ => {}
                 }
-                crate::resource_registry::dma::DmaAllocationError::MappingFailed => {
-                    KapiError::IoError
-                }
+                super::dma_failure::allocation_error(error)
             },
         )
     }
@@ -571,14 +580,21 @@ mod dma_tests {
     fn set_current_subject(domain_id: DomainId) -> crate::cpu::ExecutionContextGuard {
         let current = crate::cpu::CurrentCpu::acquire().expect("test CPU-local state");
         let caps = crate::security::capability::manager().get_capabilities(domain_id.as_u64());
-        current.enter_execution(ExecutionContext {
-            subject: Subject {
+        crate::domain::quota_manager()
+            .register(crate::domain::DomainQuota::new(
+                domain_id,
+                crate::domain::DomainPriority::Normal,
+            ))
+            .expect("subject quota registration");
+        current.enter_execution(
+            ExecutionContext::from_subject(Subject {
                 domain: domain_id,
                 task: TaskId::new(),
                 cred: DomainCredentials::ROOT,
                 caps,
-            },
-        })
+            })
+            .expect("subject quota binding"),
+        )
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

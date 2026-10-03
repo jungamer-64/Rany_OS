@@ -50,6 +50,7 @@ impl AmdEventEntry {
 
 #[derive(Debug)]
 pub(crate) struct AmdEventLog {
+    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     phys_base: u64,
     virt_base: NonNull<u32>,
     size_bytes: u64,
@@ -64,7 +65,8 @@ impl AmdEventLog {
     pub(super) fn new() -> Result<Self, IommuError> {
         let size_bytes = EVT_BUFFER_BYTES as u64;
         let frame_count = (size_bytes / (PAGE_SIZE_4K as u64)) as usize;
-        let phys_base = alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+        let phys_base =
+            alloc_contiguous_frames(frame_count).map_err(|_| IommuError::OutOfMemory)?;
         let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
         let entry_ptr =
             NonNull::new(virt_base.as_u64() as *mut u32).ok_or(IommuError::HardwareError)?;
@@ -84,6 +86,7 @@ impl AmdEventLog {
 
         Ok(Self {
             phys_base: phys_base.as_u64(),
+            backing: phys_base,
             virt_base: entry_ptr,
             size_bytes,
             processing: AtomicBool::new(false),

@@ -511,9 +511,22 @@ mod tests {
     use crate::net::runtime::manager;
 
     fn cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
-        crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
-            .expect("bootstrap CPU topology")
-            .snapshot()
+        crate::cpu::CpuRuntime::bootstrap(
+            crate::cpu::LocatedCpu::resolve(
+                crate::cpu::FirmwareCpuIdentity {
+                    uid: None,
+                    apic_id: crate::cpu::ApicId::new(0),
+                    proximity_domain: None,
+                    eject: crate::cpu::CpuEjectCapability::Fixed,
+                },
+                &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10))
+                    .unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .expect("bootstrap CPU topology")
+        .snapshot()
     }
 
     fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
@@ -527,8 +540,21 @@ mod tests {
 
     #[test]
     fn runtime_provisions_closed_resources_for_new_possible_cpu() {
-        let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
-            .expect("bootstrap CPU topology");
+        let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(
+            crate::cpu::LocatedCpu::resolve(
+                crate::cpu::FirmwareCpuIdentity {
+                    uid: None,
+                    apic_id: crate::cpu::ApicId::new(0),
+                    proximity_domain: None,
+                    eject: crate::cpu::CpuEjectCapability::Fixed,
+                },
+                &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10))
+                    .unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .expect("bootstrap CPU topology");
         let context = NetRuntimeContext::new(
             NetRuntimeId(7),
             NetRuntimeGeneration::from_raw(1),

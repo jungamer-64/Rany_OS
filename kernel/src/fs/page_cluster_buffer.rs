@@ -4,18 +4,16 @@
 use core::ptr::NonNull;
 use core::slice;
 
-use kernel_api::block_io::{DmaInfo, ZeroCopyBuffer, ZeroCopyBufferMut};
-use x86_64::PhysAddr;
-
-use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
+use crate::mm::phys::frame_allocator::{PhysicalAllocation, alloc_contiguous_frames};
 use crate::mm::types::PAGE_SIZE_4K;
+use kernel_api::block_io::{DmaInfo, ZeroCopyBuffer, ZeroCopyBufferMut};
 
 /// Page-backed cluster buffer
 pub struct PageClusterBuffer {
     phys_start: u64,
     len: usize,
     virt_ptr: NonNull<u8>,
-    frames: usize,
+    backing: Option<PhysicalAllocation>,
 }
 
 // SAFETY: PageClusterBuffer holds a pointer into kernel-virtual memory (HHDM) and
@@ -26,19 +24,23 @@ unsafe impl Send for PageClusterBuffer {}
 unsafe impl Sync for PageClusterBuffer {}
 
 impl PageClusterBuffer {
-    /// Create a new PageClusterBuffer from a physical start address and length.
-    pub fn new_from_phys(phys_start: u64, len: usize) -> Option<Self> {
-        if len == 0 {
+    /// Consume exclusive physical ownership and retain its exact return target.
+    pub fn from_allocation(backing: PhysicalAllocation, len: usize) -> Option<Self> {
+        if len == 0 || len as u64 > backing.size_bytes() {
+            backing.release();
             return None;
         }
+        let phys_start = backing.as_u64();
         let virt = (crate::mm::virt::mapping::physical_memory_offset() + phys_start) as *mut u8;
-        let ptr = NonNull::new(virt)?;
-        let frames = (len + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
+        let Some(ptr) = NonNull::new(virt) else {
+            backing.release();
+            return None;
+        };
         Some(Self {
             phys_start,
             len,
             virt_ptr: ptr,
-            frames,
+            backing: Some(backing),
         })
     }
 
@@ -48,16 +50,10 @@ impl PageClusterBuffer {
             return None;
         }
 
-        let frames_needed = (size + (PAGE_SIZE_4K as usize - 1)) / (PAGE_SIZE_4K as usize);
-        let start_phys = alloc_contiguous_frames(frames_needed)?;
+        let frames_needed = size.checked_add(PAGE_SIZE_4K - 1)? / PAGE_SIZE_4K;
+        let start_phys = alloc_contiguous_frames(frames_needed).ok()?;
         let real_size = frames_needed * (PAGE_SIZE_4K as usize);
-        match Self::new_from_phys(start_phys.as_u64(), real_size) {
-            Some(buf) => Some(buf),
-            None => {
-                dealloc_contiguous_frames(start_phys, frames_needed);
-                None
-            }
-        }
+        Self::from_allocation(start_phys, real_size)
     }
 
     pub fn as_slice(&self) -> &[u8] {
@@ -90,9 +86,10 @@ impl ZeroCopyBufferMut for PageClusterBuffer {
 
 impl Drop for PageClusterBuffer {
     fn drop(&mut self) {
-        // Best-effort deallocation
-        let start = PhysAddr::new(self.phys_start);
-        dealloc_contiguous_frames(start, self.frames);
+        self.backing
+            .take()
+            .expect("buffer owns its physical allocation")
+            .release();
     }
 }
 
@@ -122,22 +119,21 @@ pub mod tests {
 
     #[cfg_attr(test, test_case)]
     pub fn test_page_cluster_buffer_dma_info() {
-        let phys = 0x1000_0000u64;
         let size = PAGE_SIZE_4K as usize;
-        if let Some(buf) = PageClusterBuffer::new_from_phys(phys, size) {
-            let info = buf.dma_info().expect("dma_info missing");
-            assert_eq!(info.phys_addr, phys);
-            assert_eq!(info.len, size);
-        } else {
-            panic!("new_from_phys returned None for valid inputs");
-        }
+        let backing = alloc_contiguous_frames(1).expect("physical buffer allocation");
+        let phys = backing.as_u64();
+        let buf =
+            PageClusterBuffer::from_allocation(backing, size).expect("owned buffer construction");
+        let info = buf.dma_info().expect("dma_info missing");
+        assert_eq!(info.phys_addr, phys);
+        assert_eq!(info.len, size);
     }
 
     #[cfg_attr(test, test_case)]
     pub fn test_page_cluster_buffer_physical_alloc_and_write() {
         // Try to allocate contiguous frames for an end-to-end memory-backed buffer
         let frames_needed = 1usize;
-        if let Some(start_phys) = alloc_contiguous_frames(frames_needed) {
+        if let Ok(start_phys) = alloc_contiguous_frames(frames_needed) {
             let size = frames_needed * (PAGE_SIZE_4K as usize);
             let virt = phys_to_virt(PhysAddr::new(start_phys.as_u64()));
             unsafe {
@@ -147,8 +143,8 @@ pub mod tests {
                 }
             }
 
-            let buf = PageClusterBuffer::new_from_phys(start_phys.as_u64(), size)
-                .expect("new_from_phys failed");
+            let buf = PageClusterBuffer::from_allocation(start_phys, size)
+                .expect("owned buffer construction");
             // Now we can safely read via as_slice because the memory is valid
             let s = buf.as_slice();
             assert_eq!(s[0], 0u8);

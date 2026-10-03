@@ -11,9 +11,10 @@ use x86_64::PhysAddr;
 
 use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
 use crate::io::iommu::runtime::registry::{get_iommu_driver, validate_dma_mask_pre_allocation};
-use crate::io::iommu::runtime::stats::{inc_map_count, inc_unmap_count};
+use crate::io::iommu::runtime::stats::inc_map_count;
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
+use crate::mm::value::DmaElement;
 
 /// Map an `RRef<T>` for DMA access scoped to a specific device.
 ///
@@ -21,7 +22,7 @@ use crate::ipc::RRef;
 ///
 /// # Alignment
 /// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
-pub fn map_rref_for_device<T>(
+pub fn map_rref_for_device<T: DmaElement>(
     rref: RRef<T>,
     device: &DeviceId,
     direction: DmaDirection,
@@ -33,7 +34,7 @@ pub fn map_rref_for_device<T>(
 ///
 /// # Alignment
 /// When IOMMU is enabled, the buffer must be 4K-aligned in address and size.
-pub fn map_rref_slice_for_device<T>(
+pub fn map_rref_slice_for_device<T: DmaElement>(
     rref: RRef<[T]>,
     device: &DeviceId,
     direction: DmaDirection,
@@ -124,4 +125,3 @@ pub(crate) async unsafe fn map_for_device_async(
     inc_map_count();
     Ok(iova)
 }
-

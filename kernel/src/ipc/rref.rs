@@ -5,13 +5,15 @@
 // 設計書 8.4: PoisonLockによるパニック時の毒入れ対応
 // ============================================================================
 use core::alloc::Layout;
-use core::mem::{self, MaybeUninit};
 use core::ops::{Deref, DerefMut};
 use core::ptr::{self, NonNull};
 pub use kernel_api::ipc::{TypeHash, TypeIdHash, compute_simple_type_hash};
 
 // DomainId は canonical domain module から使用
 pub use crate::domain::DomainId;
+#[path = "rref/raw_parts.rs"]
+mod raw_parts;
+pub use raw_parts::{RRefRawParts, RawPartsError, RawPartsFailure};
 
 // ============================================================================
 // Heap Registry - Uses Global SAS Registry
@@ -33,21 +35,6 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         );
     }
 }
-
-// Support for legacy function if needed, but sas::reclaim_domain_resources is what we want.
-// Wait, sas::mod.rs defines `reclaim_domain_resources` ON `SingleAddressSpaceManager` struct
-// AND `impl SingleAddressSpaceManager` has it.
-// DOES `sas/mod.rs` expose a public `reclaim_domain_resources` FUNCTION?
-// Checking sas/mod.rs again...
-// NO, it exposes `transfer_ownership`, `register`, `unregister`, `check_access`, `get_owner`.
-// It does NOT expose `reclaim_domain_resources` as a standalone function.
-// It has `init()`, `with_sas_manager`.
-//
-// I should add `pub fn reclaim_domain_resources(domain_id: DomainId) -> usize` to `sas/mod.rs`?
-// YES, it makes sense.
-
-// For now, I'll access it via `with_sas_manager_mut` in `rref.rs` OR rely on the fact I modified sas/mod.rs
-// I'll add `reclaim_domain_resources` to `sas/mod.rs` publicly.
 
 // ============================================================================
 // RRef - Remote Reference with Exchange Heap
@@ -87,7 +74,7 @@ impl<T> RRef<T> {
             crate::sas::DomainId::new(owner.as_u64()),
         );
 
-        RRef { ptr, owner }
+        RRef { ptr, owner, layout }
     }
 
     /// 新しいRRefを作成（失敗時はNone）
@@ -102,7 +89,7 @@ impl<T> RRef<T> {
             crate::sas::DomainId::new(owner.as_u64()),
         );
 
-        Some(RRef { ptr, owner })
+        Some(RRef { ptr, owner, layout })
     }
 
     /// 所有権の移動 (Move)
@@ -173,10 +160,10 @@ impl<T> RRef<T> {
     /// RRefを消費して内部の値を取り出す
     pub fn into_inner(self) -> T {
         let ptr = self.ptr;
-        let layout = Layout::new::<T>();
+        let layout = self.layout;
 
         // Heap Registryから登録解除（統合されたSAS APIを使用）
-        crate::sas::unregister_object(ptr.as_ptr() as usize);
+        crate::sas::unregister_any(ptr.as_ptr() as usize);
 
         // 値を読み出し
         let value = unsafe { ptr.as_ptr().read() };
@@ -203,29 +190,41 @@ impl<T: ?Sized> RRef<T> {
     /// RRef を raw parts に分解する（型消去 / 非同期解放キュー用）
     pub fn into_raw_parts(self) -> RRefRawParts
     where
-        T: 'static,
+        T: Send + 'static,
     {
         RRefRawParts::from_rref(self)
     }
 }
 
+/// Before registry publication, this owner tracks exactly the constructed
+/// prefix and the allocation's original alignment. Interruption drops that
+/// prefix and returns the block; successful publication consumes this owner.
+struct InitializingSlice<T> {
+    pointer: NonNull<T>,
+    layout: Layout,
+    initialized: usize,
+}
+impl<T> Drop for InitializingSlice<T> {
+    fn drop(&mut self) {
+        // SAFETY: only this prefix holds initialized T values. No registry,
+        // device or other borrower can access this unpublished allocation.
+        unsafe {
+            ptr::drop_in_place(ptr::slice_from_raw_parts_mut(
+                self.pointer.as_ptr(),
+                self.initialized,
+            ));
+            crate::mm::cache::exchange_heap::deallocate_raw(self.pointer.cast(), self.layout);
+        }
+    }
+}
+
 impl<T> RRef<[T]> {
-    /// Create a new slice-backed RRef using an initializer.
+    /// Construct initialized values with the element's natural alignment.
     pub fn new_slice_with<F>(owner: DomainId, len: usize, init: F) -> Option<Self>
     where
         F: FnMut(usize) -> T,
     {
-        let (ptr, layout) = crate::mm::cache::exchange_heap::allocate_slice_with(len, init)?;
-        crate::sas::register_object(
-            ptr.as_ptr() as usize,
-            layout.size(),
-            crate::sas::DomainId::new(owner.as_u64()),
-        );
-        let slice_ptr = NonNull::slice_from_raw_parts(ptr, len);
-        Some(Self {
-            ptr: slice_ptr,
-            owner,
-        })
+        Self::new_slice_with_aligned(owner, len, core::mem::align_of::<T>(), init)
     }
 
     /// アラインメント付きレイアウトを計算し、メモリを割り当てる
@@ -254,24 +253,28 @@ impl<T> RRef<[T]> {
         F: FnMut(usize) -> T,
     {
         let (ptr, layout) = Self::allocate_aligned_layout(len, align)?;
-        let typed_ptr = ptr.as_ptr() as *mut T;
-
-        unsafe {
-            for i in 0..len {
-                typed_ptr.add(i).write(init(i));
-            }
+        let mut prefix = InitializingSlice::<T> {
+            pointer: ptr.cast(),
+            layout,
+            initialized: 0,
+        };
+        for index in 0..len {
+            let value = init(index);
+            // SAFETY: checked array layout covers this previously uninitialized
+            // element; the prefix owner records every completed construction.
+            unsafe { prefix.pointer.as_ptr().add(index).write(value) };
+            prefix.initialized += 1;
         }
-
-        let typed_ptr = NonNull::new(typed_ptr)?;
         crate::sas::register_object(
-            typed_ptr.as_ptr() as usize,
+            prefix.pointer.as_ptr() as usize,
             layout.size(),
             crate::sas::DomainId::new(owner.as_u64()),
         );
-        let slice_ptr = NonNull::slice_from_raw_parts(typed_ptr, len);
+        let prefix = core::mem::ManuallyDrop::new(prefix);
         Some(Self {
-            ptr: slice_ptr,
+            ptr: NonNull::slice_from_raw_parts(prefix.pointer, len),
             owner,
+            layout,
         })
     }
 }
@@ -289,6 +292,7 @@ impl<T: Default> RRef<[T]> {
         Some(Self {
             ptr: slice_ptr,
             owner,
+            layout,
         })
     }
 
@@ -315,19 +319,22 @@ impl<T: ?Sized> DerefMut for RRef<T> {
 impl<T: ?Sized> Drop for RRef<T> {
     fn drop(&mut self) {
         // Heap Registryから登録解除（統合されたSAS APIを使用）
-        crate::sas::unregister_object(self.ptr.as_ptr() as *const () as usize);
+        crate::sas::unregister_any(self.ptr.as_ptr() as *const () as usize);
 
         // Exchange Heapから解放
         unsafe {
-            let layout = Layout::for_value(self.ptr.as_ref());
+            let layout = self.layout;
             core::ptr::drop_in_place(self.ptr.as_ptr());
             crate::mm::cache::exchange_heap::deallocate_raw(self.ptr.cast(), layout);
         }
     }
 }
 
-// Send/Sync の実装（SAS環境では安全）
+// SAFETY: moving the unique owner transfers its exact stable allocation and
+// destructor obligation; payload movement is allowed by T: Send.
 unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
+// SAFETY: shared access creates only shared payload references. Mutation and
+// destruction require exclusive ownership, and T: Sync admits those observers.
 unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -344,27 +351,5 @@ impl core::fmt::Display for AccessError {
             AccessError::NotOwner => write!(f, "Access denied: not the owner of this RRef"),
             AccessError::Poisoned => write!(f, "Access denied: RRef is poisoned (owner panicked)"),
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_rref_ownership() {
-        let domain1 = DomainId::new(1);
-        let domain2 = DomainId::new(2);
-
-        // Note: New RRef uses global registry.
-        // For unit tests this might fail if kernel environment (lazy_static) isn't initialized?
-        // lazy_static works in tests too.
-        // We might need to ensure sas::heap_registry is actually usable in tests.
-        // It uses simple arrays and spin locks, so it should be fine.
-
-        // However, exchange_heap::allocate_on_exchange expects a heap.
-        // In unit tests, we might need to mock or ensure initialization.
-        // But for check-only, this is fine.
     }
 }

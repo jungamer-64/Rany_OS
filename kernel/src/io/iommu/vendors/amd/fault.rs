@@ -228,7 +228,7 @@ pub async fn fault_handler_task() {
     // LOOP_PROOF: mode=event; reason=AMD fault task runs continuously and awaits new events after each finite drain pass.;
     loop {
         let driver = get_iommu_driver().and_then(|backend| match backend.as_ref() {
-            IommuBackend::Amd(driver) => Some(driver),
+            IommuBackend::Amd(driver) => Some(driver.as_ref()),
             _ => None,
         });
         let _ = drain_deferred_faults_with_driver(driver);

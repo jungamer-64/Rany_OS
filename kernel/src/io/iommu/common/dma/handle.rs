@@ -11,6 +11,7 @@
 
 use crate::io::iommu::types::{DeviceId, IommuError};
 use crate::ipc::RRef;
+use crate::mm::value::DmaElement;
 
 #[path = "handle/bytes.rs"]
 mod bytes;
@@ -209,14 +210,106 @@ impl<T: Send + ?Sized + 'static> DmaHandle<T> {
 impl<T: Send + ?Sized + 'static> Drop for DmaHandle<T> {
     fn drop(&mut self) {
         if let Some(rref) = self.rref.take() {
-            let payload = crate::io::iommu::runtime::zombie::DroppedDma::new(
-                self.range.take().expect("DMA backing retains translation"),
-                rref,
-            );
+            // SAFETY: construction mapped this exact exclusive Exchange backing
+            // with DmaElement validity. The handle exposes no CPU borrow and
+            // uniquely retains both owners through each retirement phase.
+            let payload = unsafe {
+                crate::io::iommu::runtime::zombie::DroppedDma::new(
+                    self.range.take().expect("DMA backing retains translation"),
+                    rref,
+                )
+            };
             self.retirement
                 .take()
                 .expect("DMA backing retains reclamation admission")
                 .publish(payload);
+        }
+    }
+}
+impl<T: DmaElement> DmaHandle<[T]> {
+    pub(super) fn dma_direction_to_perms(direction: DmaDirection) -> (bool, bool) {
+        match direction {
+            DmaDirection::ToDevice => (true, false),
+            DmaDirection::FromDevice => (false, true),
+            DmaDirection::Bidirectional => (true, true),
+        }
+    }
+    pub fn map_rref_slice_for_device(
+        rref: RRef<[T]>,
+        device: &DeviceId,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<[T]>> {
+        let size = match rref.len().checked_mul(core::mem::size_of::<T>()) {
+            Some(size) if size > 0 && size & 4095 == 0 => size as u64,
+            _ => return Err(MapError::unmapped(rref, MapErrorKind::InvalidAlignment)),
+        };
+        let virt = x86_64::VirtAddr::new(rref.as_ptr() as u64);
+        let phys = crate::mm::virt::mapping::virt_to_phys(virt);
+        if phys.as_u64() & 4095 != 0 {
+            return Err(MapError::unmapped(rref, MapErrorKind::InvalidAlignment));
+        }
+        let (read, write) = Self::dma_direction_to_perms(direction);
+        let Some(retirement) = crate::io::iommu::runtime::zombie::reserve_retirement() else {
+            return Err(MapError::unmapped(rref, MapErrorKind::RetirementCapacity));
+        };
+        // SAFETY: the exclusive page-exact Exchange allocation remains retained
+        // by this handle. DmaElement permits arbitrary device-written bytes and
+        // fully initialized reads; CPU access is suspended until retirement.
+        let result = unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(device, phys, size, read, write)
+        };
+        match result {
+            Ok(mapping) => Ok(Self::from_mapping(rref, mapping, direction, retirement)),
+            Err(super::mapping_outcome::DeviceMapFailure::Unpublished(cause)) => {
+                Err(MapError::unmapped(rref, MapErrorKind::IommuError(cause)))
+            }
+            Err(super::mapping_outcome::DeviceMapFailure::TranslationPending {
+                cause,
+                mapping,
+            }) => Err(MapError::TranslationPending {
+                handle: Self::from_mapping(rref, mapping, direction, retirement),
+                kind: MapErrorKind::IommuError(cause),
+            }),
+        }
+    }
+}
+impl<T: DmaElement> DmaHandle<T> {
+    pub fn map_rref_for_device(
+        rref: RRef<T>,
+        device: &DeviceId,
+        direction: DmaDirection,
+    ) -> Result<Self, MapError<T>> {
+        let size = core::mem::size_of::<T>() as u64;
+        if size == 0 || size & 4095 != 0 {
+            return Err(MapError::unmapped(rref, MapErrorKind::InvalidAlignment));
+        }
+        let virt = x86_64::VirtAddr::new((&*rref as *const T) as u64);
+        let phys = crate::mm::virt::mapping::virt_to_phys(virt);
+        if phys.as_u64() & 4095 != 0 {
+            return Err(MapError::unmapped(rref, MapErrorKind::InvalidAlignment));
+        }
+        let (read, write) = DmaHandle::<[T]>::dma_direction_to_perms(direction);
+        let Some(retirement) = crate::io::iommu::runtime::zombie::reserve_retirement() else {
+            return Err(MapError::unmapped(rref, MapErrorKind::RetirementCapacity));
+        };
+        // SAFETY: the exclusive page-exact Exchange allocation remains retained
+        // by this handle. DmaElement permits arbitrary device-written bytes and
+        // fully initialized reads; CPU access is suspended until retirement.
+        let result = unsafe {
+            crate::io::iommu::api::map_for_device_with_perms(device, phys, size, read, write)
+        };
+        match result {
+            Ok(mapping) => Ok(Self::from_mapping(rref, mapping, direction, retirement)),
+            Err(super::mapping_outcome::DeviceMapFailure::Unpublished(cause)) => {
+                Err(MapError::unmapped(rref, MapErrorKind::IommuError(cause)))
+            }
+            Err(super::mapping_outcome::DeviceMapFailure::TranslationPending {
+                cause,
+                mapping,
+            }) => Err(MapError::TranslationPending {
+                handle: Self::from_mapping(rref, mapping, direction, retirement),
+                kind: MapErrorKind::IommuError(cause),
+            }),
         }
     }
 }

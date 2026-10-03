@@ -146,7 +146,10 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
     use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 
     let ctrl = Arc::new(crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0));
-    let cq = CommandQueue::new();
+    let cq = match CommandQueue::new(None) {
+        Ok(queue) => queue,
+        Err(_) => return false,
+    };
 
     // Create domain
     let domain_id =

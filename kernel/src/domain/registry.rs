@@ -1,8 +1,8 @@
 //! Domain registry and lifecycle internals.
 use super::{
     CPU_QUOTA_SUSPEND_STREAK, CPU_QUOTA_SUSPEND_WINDOW_NS, CpuQuotaAction, DomainId,
-    DomainPolicyError, DomainSecurity, DomainSnapshot, DomainState, DomainTerminationError,
-    RequestedCap,
+    DomainPolicyError, DomainSecurity, DomainSecurityLookupError, DomainSnapshot, DomainState,
+    DomainTerminationError, RequestedCap,
     api::reclaim_domain_resources,
     kernel_security_handle,
     quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager},
@@ -441,7 +441,24 @@ pub fn spawn_domain_with_caps(
     Ok((domain_id, created_tokens))
 }
 
-/// ドメインのセキュリティハンドルを取得
+/// Observe immutable security metadata for a live domain. This snapshot grants
+/// no quota or resource-publication admission; those owners check separately.
+pub fn domain_security_handle(
+    id: DomainId,
+) -> Result<Arc<DomainSecurity>, DomainSecurityLookupError> {
+    let registry = REGISTRY
+        .lock()
+        .map_err(|_| DomainSecurityLookupError::RegistryUnavailable)?;
+    let domain = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id)
+        .ok_or(DomainSecurityLookupError::UnknownDomain(id))?;
+    if !domain.state.is_active() {
+        return Err(DomainSecurityLookupError::Terminated(id));
+    }
+    Ok(Arc::clone(&domain.security))
+}
 
 /// ドメインの状態を取得
 pub fn get_domain_state(id: DomainId) -> Option<DomainState> {
@@ -993,15 +1010,20 @@ mod security_tests {
     #[test]
     fn capability_publication_keeps_existing_security_snapshots_immutable() {
         let id = create_domain(String::from("security_publication")).expect("domain admission");
-        let original = domain_security_handle(id);
+        let original = domain_security_handle(id).expect("live security snapshot");
         assert_eq!(original.caps, CapabilitySet::empty());
         set_domain_capabilities(id, CapabilitySet::full()).expect("security publication");
-        let granted = domain_security_handle(id);
+        let granted = domain_security_handle(id).expect("live security snapshot");
         assert_eq!(granted.caps, CapabilitySet::full());
         assert_eq!(granted.credentials, original.credentials);
         assert_eq!(original.caps, CapabilitySet::empty());
         set_domain_capabilities(id, CapabilitySet::empty()).expect("security replacement");
-        assert_eq!(domain_security_handle(id).caps, CapabilitySet::empty());
+        assert_eq!(
+            domain_security_handle(id)
+                .expect("live security snapshot")
+                .caps,
+            CapabilitySet::empty()
+        );
         assert_eq!(granted.caps, CapabilitySet::full());
         terminate_domain(id).expect("domain cleanup");
     }

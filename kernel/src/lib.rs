@@ -25,8 +25,9 @@
     feature(alloc_error_handler)
 )]
 #![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(abi_x86_interrupt))]
-#![cfg_attr(any(not(test), feature = "full_mm_tests"), feature(ptr_metadata))]
+#![feature(ptr_metadata)]
 #![feature(format_args_nl)]
+#![feature(allocator_api)]
 extern crate alloc;
 
 // Interrupt helper macro moved to a shared module so it's visible in both the
@@ -64,7 +65,7 @@ unsafe impl core::alloc::GlobalAlloc for DummyGlobalAlloc {
 
 // Bump allocator for unit tests. Provides a working 64MB heap so tests that
 // use `alloc::vec::Vec`, `alloc::boxed::Box`, etc. succeed in the no_std QEMU
-// test environment (the previous `LockedBuddyHeap::empty()` returned null for
+// test environment (the previous `KernelHeap::empty()` returned null for
 // every allocation).
 #[cfg(all(test, not(feature = "full_mm_tests"), not(feature = "std")))]
 mod test_bump_alloc {

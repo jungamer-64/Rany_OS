@@ -19,8 +19,6 @@ use crate::cpu::CpuId;
 use crate::mm::types::NumaNodeId;
 use alloc::vec::Vec;
 
-
-
 /// Remote observation belongs to cold placement/reclaim paths. Allocation
 /// reads the bound CPU-local node directly and never acquires the runtime lock.
 pub fn node_for_cpu(cpu_id: CpuId) -> Option<NumaNodeId> {

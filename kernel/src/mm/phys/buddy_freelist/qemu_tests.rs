@@ -36,17 +36,37 @@ pub fn page_flags_smoke() -> bool {
 }
 
 pub fn frames_to_order_smoke() -> bool {
-    FreeListBuddyAllocator::frames_to_order(0) == 0
-        && FreeListBuddyAllocator::frames_to_order(1) == 0
-        && FreeListBuddyAllocator::frames_to_order(2) == 1
-        && FreeListBuddyAllocator::frames_to_order(3) == 2
-        && FreeListBuddyAllocator::frames_to_order(4) == 2
-        && FreeListBuddyAllocator::frames_to_order(5) == 3
-        && FreeListBuddyAllocator::frames_to_order(512) == 9
+    FreeListBuddyAllocator::frames_to_order(0).is_none()
+        && FreeListBuddyAllocator::frames_to_order(1) == Some(0)
+        && FreeListBuddyAllocator::frames_to_order(3) == Some(2)
+        && FreeListBuddyAllocator::frames_to_order(512) == Some(9)
 }
 
 pub fn allocate_from_empty_smoke() -> bool {
-    let mut allocator = FreeListBuddyAllocator::new();
-    let result = allocator.allocate(0, MigrateType::Movable);
-    result.is_none()
+    let Ok(loan) = crate::mm::phys::frame_allocator::alloc_contiguous_frames(1) else {
+        return false;
+    };
+    let mut pool = match FreeListBuddyAllocator::from_allocation(loan) {
+        Ok(pool) => pool,
+        Err(error) => {
+            error.allocation.release();
+            return false;
+        }
+    };
+    let Ok(child) = pool.allocate(0, MigrateType::Movable) else {
+        return false;
+    };
+    let exhausted = matches!(
+        pool.allocate(0, MigrateType::Movable),
+        Err(FrameAllocError::Exhausted)
+    );
+    let returned = pool.deallocate(child).is_ok();
+    let reclaimed = match pool.into_allocation() {
+        Ok(loan) => {
+            loan.release();
+            true
+        }
+        Err(_) => false,
+    };
+    exhausted && returned && reclaimed
 }

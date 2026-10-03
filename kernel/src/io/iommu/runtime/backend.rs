@@ -18,6 +18,7 @@ use crate::io::iommu::vendors::intel::IntelIommuDriver;
 /// IOMMU backend implementation selected at init time.
 pub enum IommuBackend {
     Intel(IntelIommuDriver),
+    Amd(Arc<AmdIommuDriver>),
 }
 
 impl IommuBackend {
@@ -141,10 +142,6 @@ impl IommuBackend {
             }
         }
     }
-
-
-
-
 
     pub fn domain_id_for_device(&self, device: &DeviceId) -> Result<u16, IommuError> {
         match self {

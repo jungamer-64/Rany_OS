@@ -64,7 +64,13 @@ fn map_io_status(status: i32) -> IoResult {
         AbiErrorCode::Success => IoResult::Success(0),
         AbiErrorCode::Timeout => IoResult::Error(IoError::Timeout),
         AbiErrorCode::DeviceBusy => IoResult::Error(IoError::Busy),
-        AbiErrorCode::InvalidParam => IoResult::Error(IoError::InvalidParameter),
+        AbiErrorCode::InvalidParam
+        | AbiErrorCode::InvalidSize
+        | AbiErrorCode::InvalidAlignment
+        | AbiErrorCode::InvalidAddress => IoResult::Error(IoError::InvalidParameter),
+        AbiErrorCode::ResourceExhausted | AbiErrorCode::OutOfMemory => {
+            IoResult::Error(IoError::NoResources)
+        }
         AbiErrorCode::NotSupported => IoResult::Error(IoError::NotSupported),
         _ => IoResult::Error(IoError::DeviceError),
     }

@@ -14,7 +14,9 @@ mod error;
 mod events;
 pub mod ivrs;
 mod runtime;
+mod slit;
 mod tables;
+pub use slit::NumaDistances;
 
 pub use error::{AcpiError, AcpiErrorKind, AmlError, AmlErrorKind};
 pub use events::{

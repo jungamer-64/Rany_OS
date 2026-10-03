@@ -20,6 +20,7 @@ impl TableSignature {
     pub const MCFG: Self = Self(*b"MCFG");
     pub const NFIT: Self = Self(*b"NFIT");
     pub const SRAT: Self = Self(*b"SRAT");
+    pub const SLIT: Self = Self(*b"SLIT");
     pub const SSDT: Self = Self(*b"SSDT");
     pub const IVRS: Self = Self(*b"IVRS");
 
@@ -340,6 +341,16 @@ impl TableCatalog {
             return Ok(Vec::new());
         };
         parse_srat(srat.bytes()).map(|parsed| parsed.1)
+    }
+
+    /// Borrows the validated locality matrix without allocating a second copy.
+    ///
+    /// # Errors
+    /// A present SLIT with malformed dimensions or reserved distances is rejected.
+    pub fn numa_distances(&self) -> Result<Option<crate::NumaDistances<'_>>, AcpiError> {
+        self.first(TableSignature::SLIT)
+            .map(|table| crate::NumaDistances::parse(table.body()))
+            .transpose()
     }
 
     /// Parses PCIe configuration-space allocations from MCFG.

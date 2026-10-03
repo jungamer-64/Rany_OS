@@ -311,29 +311,26 @@ impl Driver for AbiDriver {
         }
 
         let res = (self.vtable().probe)(&mut self.ctx as *mut _);
-        match Self::map_abi_error(res) {
-            Ok(()) => Ok(()),
-            Err(e) => Err(e),
-        }
+        AbiErrorCode::from_raw(res).into_result()
     }
 
     fn start(&mut self) -> KapiResult<()> {
         let res = (self.vtable().start)(&mut self.ctx as *mut _);
-        Self::map_abi_error(res)
+        AbiErrorCode::from_raw(res).into_result()
     }
 
     fn stop(&mut self) -> KapiResult<()> {
         let res = (self.vtable().stop)(&mut self.ctx as *mut _);
-        Self::map_abi_error(res)
+        AbiErrorCode::from_raw(res).into_result()
     }
 
     fn remove(&mut self) -> KapiResult<()> {
         let res = (self.vtable().remove)(&mut self.ctx as *mut _);
-        let mut out = Self::map_abi_error(res);
+        let mut out = AbiErrorCode::from_raw(res).into_result();
         if let Some(fini) = self.exports_fini {
             let fini_res = fini();
             if out.is_ok() {
-                out = Self::map_abi_error(fini_res);
+                out = AbiErrorCode::from_raw(fini_res).into_result();
             }
         }
         out
@@ -371,7 +368,7 @@ impl Driver for AbiDriver {
         let mut ctx = self.ctx;
         let mut abi_state = kernel_api::abi::driver::AbiExportedState::default();
         let status = export_state(&mut ctx as *mut _, &mut abi_state);
-        Self::map_abi_error(status)?;
+        AbiErrorCode::from_raw(status).into_result()?;
         Self::state_blob_from_abi(abi_state).map(Some)
     }
 
@@ -389,7 +386,7 @@ impl Driver for AbiDriver {
         let (mut abi_state, data_ptr, data_len, data_cap) = Self::state_blob_into_abi(state);
         let result = import_state(&mut self.ctx as *mut _, &mut abi_state);
         let _ = unsafe { Vec::from_raw_parts(data_ptr, data_len, data_cap) };
-        Self::map_abi_error(result)
+        AbiErrorCode::from_raw(result).into_result()
     }
 }
 

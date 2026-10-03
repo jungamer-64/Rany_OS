@@ -28,8 +28,12 @@ pub enum IommuError {
     InvalidAddress,
     /// Invalid alignment
     InvalidAlignment,
+    /// A mapping requires at least one hardware data access permission.
+    InvalidPermissions,
     /// Region already mapped
     AlreadyMapped,
+    /// Teardown cannot acquire unique ownership while a CPU operation retains a domain.
+    InUse,
     /// Region not mapped
     NotMapped,
     /// Domain not found
@@ -40,6 +44,10 @@ pub enum IommuError {
     HardwareError,
     /// Out of memory
     OutOfMemory,
+    /// Physical admission retains exhaustion, topology, alignment and metadata causes.
+    PhysicalAllocation(crate::mm::phys::frame_allocator::FrameAllocError),
+    /// Queue/pool metadata could not be admitted before publication.
+    MetadataAllocation,
     /// Out of IOVA space
     OutOfIova,
     /// Retirement generations are exhausted; this allocator cannot safely reuse epochs.

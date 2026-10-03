@@ -172,13 +172,11 @@ impl IntelIommuDriver {
         if let Some(ref controller) = self.controller {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return unsafe {
                         apply_mapping_sync(
                             controller,
                             &domain_arc,
                             device,
-                            iova,
                             phys_addr.as_u64(),
                             size,
                             read,
@@ -198,13 +196,11 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return unsafe {
                         apply_mapping_sync(
                             controller,
                             &domain_arc,
                             device,
-                            iova,
                             phys_addr.as_u64(),
                             size,
                             read,
@@ -226,6 +222,20 @@ impl IntelIommuDriver {
     ) -> Result<DeviceMappedRange, DeviceMapFailure> {
         validate_dma_params(phys_addr, size)?;
 
+        if let Some(controller) = &self.controller {
+            let domain_id = controller
+                .get_domain_for_device(*device)?
+                .ok_or(IommuError::DomainNotFound)?;
+            let domain = controller
+                .domain(domain_id)
+                .ok_or(IommuError::DomainNotFound)?;
+            // SAFETY: this unsafe boundary inherits the caller's exclusive RAM
+            // lifetime obligation until the returned mapping is retired.
+            return unsafe {
+                apply_mapping_async(controller, &domain, device, phys_addr.as_u64(), size).await
+            };
+        }
+
         let registry = self.registry()?;
         if registry.controllers.is_empty() {
             return Err(IommuError::NotPresent.into());
@@ -234,9 +244,14 @@ impl IntelIommuDriver {
         for controller in &registry.controllers {
             if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
                 if let Some(domain_arc) = controller.domain(domain_id) {
-                    let iova = allocate_iova_for_device(controller, device, size)?;
                     return unsafe {
-                        apply_mapping_async(controller, &domain_arc, iova, phys_addr.as_u64(), size)
+                        apply_mapping_async(
+                            controller,
+                            &domain_arc,
+                            device,
+                            phys_addr.as_u64(),
+                            size,
+                        )
                     }
                     .await;
                 }

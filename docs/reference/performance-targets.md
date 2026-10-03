@@ -40,6 +40,7 @@ Accepted ADR を優先してください。
 - `cargo run -p qemu_runner -- network network.zero_copy_benchmark` は、fake port の RX buffer completion から UDP endpoint までと、pool-backed TCP segment の構築から TX lease completion 通知までを boot 後の独立 runtime 上で測定する。各 core の protocol command は計測 task が同期的に drain するため、command worker の scheduling / affinity は測定対象外である。RX の区間には device write を模した frame 注入を、TX の区間には実際の TX queue worker の scheduling と fake driver による wire 長・checksum・payload 検査を含み、TCP connection の admission / ACK / 再送は測定対象外である。
 - TCG 上の cycle throughput は変更間の比較値であり、実 NIC throughput の代用ではない。
 - QEMU VirtIO の RX/TX/recycle case は ownership と integration の gate であり、その測定値だけから実 NIC の `>= 10Gbps` 達成を主張しない。
+- MM の比較は同一 release 構成で warm/cold alloc/free、連続領域、range 更新、CPU 間解放を分ける。各ケースは warmup 10,000 回、測定 100,000 回を5反復し、p50/p99、throughput、保持量、IPI 数を build hash と対応付ける。QEMU の値は比較・整合性の証拠であり、ローカル allocator の `< 50ns` 達成を主張するには実機の測定を必要とする。
 
 ### 3. Graphics / device-specific benches
 

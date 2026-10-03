@@ -1,6 +1,5 @@
 use alloc::boxed::Box;
 use alloc::string::String;
-use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::num::NonZeroU16;
 
@@ -18,8 +17,10 @@ use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest, DmaCloseError, DmaDirec
 use kernel_api::service::platform::{self, Bar, PciDeviceInfo, PciServices};
 
 use crate::integration::{IntegrationError, SystemIntegration};
-use crate::io::io_scheduler::{hybrid_coordinator, io_scheduler};
-use crate::io::nvme::{NvmeDeviceOps, NvmeQueuePoller, NvmeRuntime, RuntimeCreateError};
+use crate::io::nvme::{
+    NvmeRuntime, NvmeRuntimeRundown, PreparedNvmeRuntime, PublishedNvmeRuntime, RuntimeCreateError,
+    RuntimePublishError, RuntimeRundownPoll,
+};
 
 const INITIAL_CONTROLLER_GENERATION: u64 = 1;
 const NAMESPACE_ONE: u32 = 1;
@@ -38,10 +39,37 @@ pub(in crate::integration) struct NvmeControllerOwner {
 }
 
 enum NvmeControllerState {
+    Published {
+        runtime: PublishedNvmeRuntime,
+        identify_close_failure: Option<DmaCloseError>,
+    },
+    Rundown {
+        runtime: NvmeRuntimeRundown,
+        identify_close_failure: Option<DmaCloseError>,
+    },
+    RundownOwned {
+        runtime: NvmeRuntime,
+        identify_close_failure: Option<DmaCloseError>,
+    },
     Failed(NvmeStartupFailure),
 }
 
 impl NvmeControllerOwner {
+    fn published(
+        locator: PackedPciLocation,
+        runtime: PublishedNvmeRuntime,
+        identify_close_failure: Option<DmaCloseError>,
+    ) -> Self {
+        Self {
+            locator,
+            generation: INITIAL_CONTROLLER_GENERATION,
+            state: NvmeControllerState::Published {
+                runtime,
+                identify_close_failure,
+            },
+        }
+    }
+
     fn failed(locator: PackedPciLocation, failure: NvmeStartupFailure) -> Self {
         Self {
             locator,
@@ -52,13 +80,88 @@ impl NvmeControllerOwner {
 
     fn running_device(&self) -> Option<crate::io::io_scheduler::DeviceId> {
         match &self.state {
+            NvmeControllerState::Published { runtime, .. } => Some(runtime.device()),
+            NvmeControllerState::Rundown { .. } | NvmeControllerState::RundownOwned { .. } => None,
             NvmeControllerState::Failed(_) => None,
+        }
+    }
+
+    fn identify_close_failed(&self) -> bool {
+        match &self.state {
+            NvmeControllerState::Published {
+                identify_close_failure,
+                ..
+            }
+            | NvmeControllerState::Rundown {
+                identify_close_failure,
+                ..
+            }
+            | NvmeControllerState::RundownOwned {
+                identify_close_failure,
+                ..
+            } => identify_close_failure.is_some(),
+            NvmeControllerState::Failed(_) => false,
         }
     }
 
     fn retained_failure(&self) -> Option<&NvmeStartupFailure> {
         match &self.state {
+            NvmeControllerState::Published { .. }
+            | NvmeControllerState::Rundown { .. }
+            | NvmeControllerState::RundownOwned { .. } => None,
             NvmeControllerState::Failed(failure) => Some(failure),
+        }
+    }
+
+    fn begin_rundown(self) -> Self {
+        let Self {
+            locator,
+            generation,
+            state,
+        } = self;
+        let state = match state {
+            NvmeControllerState::Published {
+                runtime,
+                identify_close_failure,
+            } => NvmeControllerState::Rundown {
+                runtime: runtime.begin_rundown(),
+                identify_close_failure,
+            },
+            state => state,
+        };
+        Self {
+            locator,
+            generation,
+            state,
+        }
+    }
+
+    fn poll_rundown(self) -> Self {
+        let Self {
+            locator,
+            generation,
+            state,
+        } = self;
+        let state = match state {
+            NvmeControllerState::Rundown {
+                runtime,
+                identify_close_failure,
+            } => match runtime.poll() {
+                RuntimeRundownPoll::Waiting(runtime) => NvmeControllerState::Rundown {
+                    runtime,
+                    identify_close_failure,
+                },
+                RuntimeRundownPoll::Owned(runtime) => NvmeControllerState::RundownOwned {
+                    runtime,
+                    identify_close_failure,
+                },
+            },
+            state => state,
+        };
+        Self {
+            locator,
+            generation,
+            state,
         }
     }
 }
@@ -213,13 +316,7 @@ enum NvmeStartupFailure {
     IoQueueTimeout(IoQueueCreation),
     NoIoQueue(Box<IoQueueProvisioner>),
     Runtime(RuntimeCreateError),
-    PollerMetadata {
-        runtime: Arc<NvmeRuntime>,
-    },
-    InvalidPoller {
-        runtime: Arc<NvmeRuntime>,
-        queue_id: u16,
-    },
+    Publication(RuntimePublishError),
 }
 
 impl core::fmt::Debug for NvmeStartupFailure {
@@ -300,16 +397,7 @@ impl core::fmt::Debug for NvmeStartupFailure {
                 .field("created_queues", &provisioner.queue_count())
                 .finish(),
             Self::Runtime(cause) => formatter.debug_tuple("Runtime").field(cause).finish(),
-            Self::PollerMetadata { runtime } => formatter
-                .debug_struct("PollerMetadata")
-                .field("device", &runtime.device())
-                .field("queue_count", &runtime.queue_count())
-                .finish(),
-            Self::InvalidPoller { runtime, queue_id } => formatter
-                .debug_struct("InvalidPoller")
-                .field("device", &runtime.device())
-                .field("queue_id", queue_id)
-                .finish(),
+            Self::Publication(cause) => formatter.debug_tuple("Publication").field(cause).finish(),
         }
     }
 }
@@ -344,12 +432,8 @@ impl SystemIntegration {
             let owner = match controller_id {
                 Ok(controller_id) => match bootstrap_controller(&device, controller_id) {
                     Ok(success) => {
-                        publish_runtime(success.runtime.clone(), success.pollers);
-                        NvmeControllerOwner::running(
-                            locator,
-                            success.runtime,
-                            success.close_failure,
-                        )
+                        let runtime = success.runtime.publish();
+                        NvmeControllerOwner::published(locator, runtime, success.close_failure)
                     }
                     Err(failure) => NvmeControllerOwner::failed(locator, failure),
                 },
@@ -389,8 +473,7 @@ impl SystemIntegration {
 }
 
 struct BootstrapSuccess {
-    runtime: Arc<NvmeRuntime>,
-    pollers: Vec<Arc<NvmeQueuePoller>>,
+    runtime: PreparedNvmeRuntime,
     close_failure: Option<DmaCloseError>,
 }
 
@@ -503,33 +586,11 @@ fn bootstrap_controller(
     let controller = provisioner
         .finish()
         .map_err(NvmeStartupFailure::NoIoQueue)?;
-    let runtime = Arc::new(
-        NvmeRuntime::new(controller, controller_id, namespace)
-            .map_err(NvmeStartupFailure::Runtime)?,
-    );
-    let mut pollers = Vec::new();
-    if pollers.try_reserve_exact(runtime.queue_count()).is_err() {
-        return Err(NvmeStartupFailure::PollerMetadata { runtime });
-    }
-    for index in 0..runtime.queue_count() {
-        let queue_id = u16::try_from(index)
-            .ok()
-            .and_then(|index| index.checked_add(1))
-            .ok_or_else(|| NvmeStartupFailure::InvalidPoller {
-                runtime: runtime.clone(),
-                queue_id: u16::MAX,
-            })?;
-        let poller = NvmeQueuePoller::new(runtime.clone(), queue_id).ok_or_else(|| {
-            NvmeStartupFailure::InvalidPoller {
-                runtime: runtime.clone(),
-                queue_id,
-            }
-        })?;
-        pollers.push(Arc::new(poller));
-    }
+    let runtime = NvmeRuntime::new(controller, controller_id, namespace)
+        .map_err(NvmeStartupFailure::Runtime)?;
+    let runtime = PreparedNvmeRuntime::prepare(runtime).map_err(NvmeStartupFailure::Publication)?;
     Ok(BootstrapSuccess {
         runtime,
-        pollers,
         close_failure,
     })
 }

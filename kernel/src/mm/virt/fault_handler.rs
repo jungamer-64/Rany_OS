@@ -87,7 +87,7 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
 
         let new_flags = flags.clear(PageFlags::NUMA_HINT).set(PageFlags::PRESENT);
         pte.set_flags(new_flags);
-        super::higher_half::invalidate_page(fault_addr);
+        // with_current_pte_mut synchronizes after releasing the page-table lock.
 
         let frame = FrameIndex::from_phys_addr(pte.phys_addr().as_u64());
         let stats = get_page_numa_stats(frame);
@@ -100,12 +100,17 @@ fn handle_numa_hint_fault(fault_addr: VirtAddr) -> Option<FaultResult> {
             to_node,
         } = action
         {
-            MIGRATION_ENGINE.queue_migration(MigrationRequest {
+            let request = MigrationRequest {
+                address: fault_addr.align_down(),
                 src_frame: frame,
                 dest_node: to_node,
                 priority: 5,
                 timestamp: crate::time::current_time_ns(),
-            });
+            };
+            if let Err((_reason, _request)) = MIGRATION_ENGINE.queue_migration(request) {
+                // This is an advisory hint, not a RAM owner. The next NUMA hint
+                // fault may retry admission after bounded queue pressure clears.
+            }
         }
 
         Some(FaultResult::Resolved)

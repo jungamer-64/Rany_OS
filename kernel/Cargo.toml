@@ -107,18 +107,9 @@ bench = ["std", "dep:criterion"]
 qemu-test-export = []
 
 # FreeList Buddy Allocator with page mobility + cache coloring.
-# When enabled, UnifiedFrameAllocator routes user-page allocations through
-# buddy_freelist for O(1) allocation and THP-friendly pageblock segregation.
+# Pools accept exclusive PMM loans and retain ownership until every child
+# allocation returns; pageblock mobility and coloring remain pool-local.
 buddy_freelist = []
-
-# IOMMU Features
-# ==============
-
-# Enable lazy (deferred) IOTLB invalidation as the default unmap behavior.
-# This improves throughput for high-frequency DMA operations by batching
-# invalidations via the quarantine system. Use `unmap_sync()` when you need
-# immediate completion guarantees.
-async_unmap_default = []
 
 apic = []
 task = []

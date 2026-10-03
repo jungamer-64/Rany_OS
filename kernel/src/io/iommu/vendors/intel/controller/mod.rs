@@ -18,6 +18,7 @@ pub mod qi_init;
 pub mod qi_ops;
 pub mod utils;
 
+use self::utils::IommuUtils;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -240,9 +241,8 @@ impl IommuController {
         self.command_queue.get()
     }
 
-    pub(crate) fn ensure_command_queue(&self) -> &CommandQueue {
-        self.command_queue
-            .call_once(|| CommandQueue::new_with_numa(None))
+    pub(crate) fn ensure_command_queue(&self) -> Result<&CommandQueue, IommuError> {
+        self.command_queue.try_call_once(|| CommandQueue::new(None))
     }
 
     pub(crate) fn runtime_services_started(&self) -> bool {

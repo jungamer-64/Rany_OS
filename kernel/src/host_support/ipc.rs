@@ -1,3 +1,5 @@
+pub use crate::domain::DomainId;
+
 #[path = "ipc/rref.rs"]
 pub mod rref;
 

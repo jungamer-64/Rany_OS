@@ -279,6 +279,13 @@ impl AmdIommuDriver {
     }
 
     pub(crate) fn destroy_domain(&self, domain_id: u16) -> Result<(), IommuError> {
+        let mut domains = self.domains.lock().map_err(|_| IommuError::Poisoned)?;
+        let info = domains.get(&domain_id).ok_or(IommuError::DomainNotFound)?;
+        // Attach retains its domain through DTE/device-registry publication.
+        // Holding the registry lock excludes all subsequent CPU admissions.
+        if Arc::strong_count(&info.domain) != 1 || info.domain.active_dma_count() != 0 {
+            return Err(IommuError::InUse);
+        }
         // SECURITY: Check if any devices are still attached to this domain
         {
             let device_domains = self
@@ -290,23 +297,25 @@ impl AmdIommuDriver {
             }
         }
 
-        let info = match self.domains.lock() {
-            Ok(mut domains) => domains
-                .remove(&domain_id)
-                .ok_or(IommuError::DomainNotFound)?,
-            Err(_) => return Err(IommuError::Poisoned),
-        };
-
-        // SECURITY: Force-unmap all remaining DMA mappings
-        if let Ok(leaked_entries) = info.domain.force_unmap_all_dma() {
-            for entry in leaked_entries {
-                let _ = self.iova_allocator.free(entry.iova, entry.size);
+        info.domain.flush(self, self)?;
+        crate::io::iommu::common::domain::IommuInvalidator::invalidate(
+            self,
+            crate::io::iommu::common::domain::InvalidateRequest::domain(domain_id).with_ats(),
+        )?;
+        let info = domains
+            .remove(&domain_id)
+            .ok_or(IommuError::DomainNotFound)?;
+        let domain = match Arc::try_unwrap(info.domain) {
+            Ok(domain) => domain,
+            Err(owner) => {
+                domains.insert(domain_id, AmdDomainInfo { domain: owner });
+                return Err(IommuError::InUse);
             }
-        }
-
-        // Invalidate IOTLB for the domain
-        let _ = self.invalidate_domain_pages(domain_id, 0, u64::MAX);
-
+        };
+        drop(domains);
+        // SAFETY: no DTE/ATS or CPU borrower remains, lookup admission was
+        // excluded, and domain paging-structure invalidation completed.
+        unsafe { domain.retire_after_invalidation() };
         Ok(())
     }
 

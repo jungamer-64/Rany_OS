@@ -23,14 +23,12 @@ use alloc::boxed::Box;
 #[cfg(test)]
 use alloc::vec::Vec;
 
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::types::IommuError;
 
 /// Command kinds (initial subset)
 #[derive(Debug, Clone)]
 pub enum IommuCommandKind {
-    InvalidateIotlbDomain {
-        domain: u16,
-    },
+    InvalidateIotlbDomain { domain: u16 },
     InvalidateIotlbGlobal,
     // TODO: PRQ/QR ops etc.
 }
@@ -1147,86 +1145,6 @@ mod tests {
             .map(|comp| comp.wait_blocking())
             .map(|rc| rc == RESULT_OK);
         assert_eq!(res, Ok(true));
-
-        worker.join().expect("worker join failed");
-    }
-
-    #[cfg(feature = "std")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_cmd_queue_map_unmap() {
-        // Leak the queue to get a 'static reference for thread spawn in tests
-        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
-
-        // Worker thread: process incoming commands and validate content
-        let worker_q: &'static CommandQueue = &*q;
-        let worker = std::thread::spawn(move || {
-            let mut map_seen = false;
-            let mut unmap_seen = false;
-            let mut attempts = 0;
-            while !(map_seen && unmap_seen) {
-                let _ = worker_q.process_once(|k| match k {
-                    IommuCommandKind::MapRegion {
-                        domain,
-                        iova,
-                        phys,
-                        size,
-                        read,
-                        write,
-                    } => {
-                        assert_eq!(*domain, 1);
-                        assert_eq!(*iova, 0x1000);
-                        assert_eq!(*phys, 0x2000);
-                        assert_eq!(*size, 0x1000);
-                        assert!(*read && *write);
-                        map_seen = true;
-                        Ok(0)
-                    }
-                    IommuCommandKind::UnmapRegion { domain, iova, size } => {
-                        assert_eq!(*domain, 1);
-                        assert_eq!(*iova, 0x1000);
-                        assert_eq!(*size, 0x1000);
-                        unmap_seen = true;
-                        Ok(0)
-                    }
-                    _ => Err(()),
-                });
-
-                attempts += 1;
-                if attempts > 2000 {
-                    panic!("CQ worker timed out");
-                }
-                std::thread::yield_now();
-            }
-        });
-
-        // Submit MapRegion command (blocking until processed)
-        let map_cmd = IommuCommandKind::MapRegion {
-            domain: 1,
-            iova: 0x1000,
-            phys: 0x2000,
-            size: 0x1000,
-            read: true,
-            write: true,
-        };
-
-        let map_res = q
-            .submit(map_cmd)
-            .map(|comp| comp.wait_blocking())
-            .map(|rc| rc == RESULT_OK);
-        assert_eq!(map_res, Ok(true));
-
-        // Submit UnmapRegion command
-        let unmap_cmd = IommuCommandKind::UnmapRegion {
-            domain: 1,
-            iova: 0x1000,
-            size: 0x1000,
-        };
-        let unmap_res = q
-            .submit(unmap_cmd)
-            .map(|comp| comp.wait_blocking())
-            .map(|rc| rc == RESULT_OK);
-        assert_eq!(unmap_res, Ok(true));
 
         worker.join().expect("worker join failed");
     }

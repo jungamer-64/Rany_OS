@@ -461,6 +461,12 @@ impl SysNamespace {
             crate::cpu::CpuTransitionError::UnsupportedTopology(issue) => {
                 format!("CPU {} topology is unsupported: {:?}", id, issue)
             }
+            crate::cpu::CpuTransitionError::MemoryCache(failure) => {
+                format!(
+                    "CPU {} retains memory caches after drain failure: {:?}",
+                    id, failure
+                )
+            }
             crate::cpu::CpuTransitionError::TimedOut { phase } => format!(
                 "CPU {} transition timed out during {}",
                 id,
@@ -530,8 +536,14 @@ impl SysNamespace {
                 ExoValue::String(Cow::Owned(msg.clone())),
             );
         }
-        if let Some(err) = &snap.last_error {
-            map.insert(s("last_error"), ExoValue::String(Cow::Owned(err.clone())));
+        if let Some(id) = snap.terminated_dependency {
+            map.insert(
+                s("last_error"),
+                ExoValue::String(Cow::Owned(alloc::format!(
+                    "Dependency {} terminated",
+                    id.as_u64()
+                ))),
+            );
         }
         let task_ids: Vec<ExoValue> = snap
             .task_ids

@@ -312,8 +312,6 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     let _ = task::interrupt_waker::interrupt_waker_registry().stats();
 
     let report = crate::cpu::start_boot_cpus();
-    crate::mm::phys::frame_allocator::pmm_provision_possible_cpus()
-        .unwrap_or_else(|error| panic!("failed to provision PMM CPU-local caches: {error:?}"));
     info!(
         target: "init",
         "CPU bootstrap report: discovered={} online={} failed={}",
@@ -549,14 +547,6 @@ fn phase_platform_and_security_base(context: &KernelBootContext) {
     info!(target: "init", "Initializing ACPI...");
 
     init_acpi_and_iommu(context.boot_info_view());
-
-    if let Err(error) = crate::mm::numa::topology::configure_from_firmware(
-        crate::platform::firmware::tables(),
-        &crate::cpu::snapshot(),
-    ) {
-        warn!(target: "init", "NUMA CPU affinity rejected: {:?}", error);
-    }
-    crate::mm::numa::topology::apply_current_cpu_locality();
 
     // ヒープが使用可能になったことを通知
     io::log::notify_heap_available();

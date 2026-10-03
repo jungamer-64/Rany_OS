@@ -181,13 +181,22 @@ fn map_bar(base_phys: u64, bar_size: u64) -> Option<u64> {
         return Some(base_virt);
     }
 
-    let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-    let mut manager =
-        unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
     let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
 
-    match unsafe { manager.map_range(virt_start, phys_start, map_size, flags) } {
-        Ok(()) | Err(crate::mm::virt::higher_half::MapError::AlreadyMapped) => Some(base_virt),
+    match unsafe {
+        crate::mm::virt::higher_half::global_map_range(virt_start, phys_start, map_size, flags)
+    } {
+        Ok(()) => Some(base_virt),
+        Err(error) if error.cause == crate::mm::virt::higher_half::MapError::AlreadyMapped => (0
+            ..map_size)
+            .step_by(page_size as usize)
+            .all(|offset| {
+                crate::mm::virt::higher_half::global_translate(
+                    crate::mm::virt::higher_half::VirtAddr::new(base_virt + offset),
+                )
+                .is_some_and(|mapped| mapped.as_u64() == base_phys + offset)
+            })
+            .then_some(base_virt),
         Err(err) => {
             log::error!(
                 target: "msix",

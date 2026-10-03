@@ -117,7 +117,7 @@ pub(crate) fn run_zombie_dma_gc() {
     use crate::io::iommu::runtime::zombie;
 
     let pending = zombie::has_pending_zombies();
-    let memory_pressure = crate::mm::phys::unified_alloc::memory_pressure_level();
+    let memory_pressure = crate::mm::phys::frame_allocator::memory_pressure_level();
 
     let max_process = if memory_pressure >= 80 {
         256
@@ -136,11 +136,11 @@ pub(crate) fn run_zombie_dma_gc() {
     if processed > 0 {
         let stats = zombie::zombie_stats();
         log::debug!(
-            "[IOMMU][GC] Processed {} zombies (total: enqueued={}, processed={}, dropped={})",
+            "[IOMMU][GC] Processed {} zombies (total: enqueued={}, processed={}, admission_refused={})",
             processed,
             stats.total_enqueued,
             stats.total_processed,
-            stats.total_dropped
+            stats.admission_refused
         );
     }
 

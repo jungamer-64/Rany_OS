@@ -25,9 +25,12 @@ pub use self::panic_dma::*;
 pub use self::pci::*;
 pub use self::security::*;
 
-// Re-exports from other internal modules (for API compatibility)
+// Mapping ownership and completion contracts.
 pub use crate::io::iommu::common::dma::handle::{
     DmaDirection, DmaHandle, MapError, MapErrorKind, UnmapError, UnmapErrorKind,
+};
+pub use crate::io::iommu::common::dma::mapping_outcome::{
+    DeviceMapFailure, DeviceMappedRange, DeviceUnmapFailure, DmaRetirementStage,
 };
 pub use crate::io::iommu::runtime::irq::{get_remap_msi_message, map_interrupt};
 pub use crate::io::iommu::runtime::registry::{
@@ -57,10 +60,3 @@ pub fn dump_iommu_diagnostics() {
     }
     log::info!("=========================");
 }
-
-// ========================================================================
-// Internal Raw DMA Mapping Helpers (crate-local)
-// ========================================================================
-
-// Raw global DMA mapping helpers were removed in favor of device-scoped
-// `DmaHandle` / `DeviceDmaContext` APIs and explicit domain-managed mappings.

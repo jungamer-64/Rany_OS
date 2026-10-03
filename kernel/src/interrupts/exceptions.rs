@@ -360,9 +360,9 @@ define_interrupt!(
 
         if let Some(context) = current_cpu.and_then(|current| current.execution()) {
             early_print("  Task context: task=");
-            early_print_dec(context.subject.task.as_u64());
+            early_print_dec(context.task.as_u64());
             early_print(" domain=");
-            early_print_dec(context.subject.domain.as_u64());
+            early_print_dec(context.domain.as_u64());
             early_print("\n");
             panic!(
                 "Invalid opcode rip={:#x} symbol={} cpu={:?} state={} task={} domain={}",
@@ -370,8 +370,8 @@ define_interrupt!(
                 symbol,
                 cpu_id,
                 cpu_state,
-                context.subject.task.as_u64(),
-                context.subject.domain.as_u64()
+                context.task.as_u64(),
+                context.domain.as_u64()
             );
         }
 

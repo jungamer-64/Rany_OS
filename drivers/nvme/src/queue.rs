@@ -1,9 +1,10 @@
 use alloc::vec::Vec;
 use hal::mmio::sfence;
 use kernel_api::dma::{
-    CompletedDmaLease, CpuDmaLease, DmaCompletionWitness, DmaDescriptor, DmaDeviceAddress,
-    DmaDirection, DmaLeaseError, DmaQueueIdentity, InFlightDmaLease, PreparedDmaLease,
-    PreparedSharedDmaLease, SharedDmaLease,
+    CompletedDmaLease, CpuDmaLease, DmaCloseError, DmaCompletionWitness, DmaDescriptor,
+    DmaDeviceAddress, DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaReconcileWitness,
+    DmaResetWitness, InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease,
+    RevokedAfterResetDmaLease, SharedDmaLease, UnmapFailedDmaLease,
 };
 use spin::Mutex;
 
@@ -726,6 +727,439 @@ impl NvmeQueue {
         doorbell.write(u32::from(state.completion_head));
         Ok(Some(completed))
     }
+
+    pub(crate) fn into_reset(self) -> ResetNvmeQueue {
+        let state = self.state.into_inner();
+        ResetNvmeQueue {
+            identity: self.identity,
+            submission: ResetLease::Shared(self.submission.into_inner()),
+            completion: ResetLease::Shared(self.completion.into_inner()),
+            pending: state
+                .pending
+                .into_iter()
+                .map(|pending| {
+                    pending.map(|pending| match pending {
+                        PendingCommand::Transfer(lease) => ResetCommand::InFlight(lease),
+                        PendingCommand::Control => ResetCommand::Control,
+                    })
+                })
+                .collect(),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ResetDmaPhase {
+    Submission,
+    Completion,
+    Transfer { command_id: u16 },
+}
+
+pub(crate) struct QueueResetError {
+    pub(crate) cause: DmaLeaseError,
+    pub(crate) phase: ResetDmaPhase,
+}
+
+enum ResetLease {
+    Shared(SharedDmaLease),
+    Revoked(RevokedAfterResetDmaLease),
+    Cpu(CpuDmaLease),
+    UnmapFailed {
+        cause: DmaLeaseError,
+        lease: UnmapFailedDmaLease,
+    },
+    Closed,
+    Transitioning,
+}
+
+enum ResetCommand {
+    Control,
+    InFlight(InFlightDmaLease),
+    Revoked(RevokedAfterResetDmaLease),
+    Cpu(CpuDmaLease),
+    Transitioning,
+}
+
+pub(crate) struct ResetNvmeQueue {
+    identity: DmaQueueIdentity,
+    submission: ResetLease,
+    completion: ResetLease,
+    pending: Vec<Option<ResetCommand>>,
+}
+
+impl ResetNvmeQueue {
+    pub(crate) const fn identity(&self) -> DmaQueueIdentity {
+        self.identity
+    }
+
+    pub(crate) fn revoke_all(
+        &mut self,
+        device: kernel_api::abi::driver::PackedPciLocation,
+        generation: u64,
+    ) -> Result<(), QueueResetError> {
+        revoke_shared(
+            &mut self.submission,
+            device,
+            generation,
+            ResetDmaPhase::Submission,
+        )?;
+        revoke_shared(
+            &mut self.completion,
+            device,
+            generation,
+            ResetDmaPhase::Completion,
+        )?;
+        for (command_id, pending) in self.pending.iter_mut().enumerate() {
+            let Some(pending) = pending else {
+                continue;
+            };
+            let Ok(command_id) = u16::try_from(command_id) else {
+                return Err(QueueResetError {
+                    cause: DmaLeaseError::QueueMismatch,
+                    phase: ResetDmaPhase::Transfer {
+                        command_id: u16::MAX,
+                    },
+                });
+            };
+            revoke_command(pending, device, generation, command_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn reconcile_all(
+        &mut self,
+        device: kernel_api::abi::driver::PackedPciLocation,
+        generation: u64,
+    ) -> Result<(), QueueResetError> {
+        reconcile_shared(
+            &mut self.submission,
+            device,
+            generation,
+            ResetDmaPhase::Submission,
+        )?;
+        reconcile_shared(
+            &mut self.completion,
+            device,
+            generation,
+            ResetDmaPhase::Completion,
+        )?;
+        for (command_id, pending) in self.pending.iter_mut().enumerate() {
+            let Some(pending) = pending else {
+                continue;
+            };
+            let Ok(command_id) = u16::try_from(command_id) else {
+                return Err(QueueResetError {
+                    cause: DmaLeaseError::QueueMismatch,
+                    phase: ResetDmaPhase::Transfer {
+                        command_id: u16::MAX,
+                    },
+                });
+            };
+            reconcile_command(pending, device, generation, command_id)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn is_reconciled(&self) -> bool {
+        matches!(self.submission, ResetLease::Cpu(_))
+            && matches!(self.completion, ResetLease::Cpu(_))
+            && self.pending.iter().all(|pending| {
+                matches!(
+                    pending,
+                    None | Some(ResetCommand::Control | ResetCommand::Cpu(_))
+                )
+            })
+    }
+
+    pub(crate) fn take_reconciled_command(
+        &mut self,
+        command_id: u16,
+    ) -> Option<ReconciledResetCommand> {
+        if !self.is_reconciled() {
+            return None;
+        }
+        let pending = self.pending.get_mut(usize::from(command_id))?.take()?;
+        match pending {
+            ResetCommand::Control => Some(ReconciledResetCommand::Control),
+            ResetCommand::Cpu(lease) => Some(ReconciledResetCommand::Transfer(lease)),
+            ResetCommand::InFlight(_) | ResetCommand::Revoked(_) | ResetCommand::Transitioning => {
+                None
+            }
+        }
+    }
+
+    pub(crate) fn take_next_reconciled_command(&mut self) -> Option<(u16, ReconciledResetCommand)> {
+        let command_id = self
+            .pending
+            .iter()
+            .position(Option::is_some)
+            .and_then(|command_id| u16::try_from(command_id).ok())?;
+        self.take_reconciled_command(command_id)
+            .map(|command| (command_id, command))
+    }
+
+    pub(crate) fn close_metadata(
+        &mut self,
+        device: kernel_api::abi::driver::PackedPciLocation,
+        generation: u64,
+    ) -> Result<(), QueueResetError> {
+        if let Some((command_id, _)) = self
+            .pending
+            .iter()
+            .enumerate()
+            .find(|(_, pending)| pending.is_some())
+        {
+            return Err(QueueResetError {
+                cause: DmaLeaseError::InvalidState,
+                phase: ResetDmaPhase::Transfer {
+                    command_id: u16::try_from(command_id).unwrap_or(u16::MAX),
+                },
+            });
+        }
+        close_shared(
+            &mut self.submission,
+            device,
+            generation,
+            ResetDmaPhase::Submission,
+        )?;
+        close_shared(
+            &mut self.completion,
+            device,
+            generation,
+            ResetDmaPhase::Completion,
+        )
+    }
+
+    pub(crate) fn is_closed(&self) -> bool {
+        matches!(self.submission, ResetLease::Closed)
+            && matches!(self.completion, ResetLease::Closed)
+    }
+}
+
+fn revoke_shared(
+    owner: &mut ResetLease,
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+    phase: ResetDmaPhase,
+) -> Result<(), QueueResetError> {
+    let shared = match core::mem::replace(owner, ResetLease::Transitioning) {
+        ResetLease::Shared(shared) => shared,
+        state => {
+            *owner = state;
+            return Ok(());
+        }
+    };
+    let Some(witness) = reset_witness(device, generation) else {
+        *owner = ResetLease::Shared(shared);
+        return Err(QueueResetError {
+            cause: DmaLeaseError::QueueMismatch,
+            phase,
+        });
+    };
+    match shared.revoke_after_reset(witness) {
+        Ok(revoked) => {
+            *owner = ResetLease::Revoked(revoked);
+            Ok(())
+        }
+        Err(error) => {
+            let (cause, shared) = error.into_parts();
+            *owner = ResetLease::Shared(shared);
+            Err(QueueResetError { cause, phase })
+        }
+    }
+}
+
+fn revoke_command(
+    owner: &mut ResetCommand,
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+    command_id: u16,
+) -> Result<(), QueueResetError> {
+    let inflight = match core::mem::replace(owner, ResetCommand::Transitioning) {
+        ResetCommand::InFlight(inflight) => inflight,
+        state => {
+            *owner = state;
+            return Ok(());
+        }
+    };
+    let phase = ResetDmaPhase::Transfer { command_id };
+    let Some(witness) = reset_witness(device, generation) else {
+        *owner = ResetCommand::InFlight(inflight);
+        return Err(QueueResetError {
+            cause: DmaLeaseError::QueueMismatch,
+            phase,
+        });
+    };
+    match inflight.revoke_after_reset(witness) {
+        Ok(revoked) => {
+            *owner = ResetCommand::Revoked(revoked);
+            Ok(())
+        }
+        Err(error) => {
+            let (cause, inflight) = error.into_parts();
+            *owner = ResetCommand::InFlight(inflight);
+            Err(QueueResetError { cause, phase })
+        }
+    }
+}
+
+fn reconcile_shared(
+    owner: &mut ResetLease,
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+    phase: ResetDmaPhase,
+) -> Result<(), QueueResetError> {
+    let revoked = match core::mem::replace(owner, ResetLease::Transitioning) {
+        ResetLease::Revoked(revoked) => revoked,
+        state => {
+            *owner = state;
+            return Ok(());
+        }
+    };
+    let Some(witness) = reconcile_witness(device, generation) else {
+        *owner = ResetLease::Revoked(revoked);
+        return Err(QueueResetError {
+            cause: DmaLeaseError::QueueMismatch,
+            phase,
+        });
+    };
+    match revoked.reconcile(witness) {
+        Ok(cpu) => {
+            *owner = ResetLease::Cpu(cpu);
+            Ok(())
+        }
+        Err(error) => {
+            let (cause, revoked) = error.into_parts();
+            *owner = ResetLease::Revoked(revoked);
+            Err(QueueResetError { cause, phase })
+        }
+    }
+}
+
+fn reconcile_command(
+    owner: &mut ResetCommand,
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+    command_id: u16,
+) -> Result<(), QueueResetError> {
+    let revoked = match core::mem::replace(owner, ResetCommand::Transitioning) {
+        ResetCommand::Revoked(revoked) => revoked,
+        state => {
+            *owner = state;
+            return Ok(());
+        }
+    };
+    let phase = ResetDmaPhase::Transfer { command_id };
+    let Some(witness) = reconcile_witness(device, generation) else {
+        *owner = ResetCommand::Revoked(revoked);
+        return Err(QueueResetError {
+            cause: DmaLeaseError::QueueMismatch,
+            phase,
+        });
+    };
+    match revoked.reconcile(witness) {
+        Ok(cpu) => {
+            *owner = ResetCommand::Cpu(cpu);
+            Ok(())
+        }
+        Err(error) => {
+            let (cause, revoked) = error.into_parts();
+            *owner = ResetCommand::Revoked(revoked);
+            Err(QueueResetError { cause, phase })
+        }
+    }
+}
+
+fn close_shared(
+    owner: &mut ResetLease,
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+    phase: ResetDmaPhase,
+) -> Result<(), QueueResetError> {
+    let state = core::mem::replace(owner, ResetLease::Transitioning);
+    match state {
+        ResetLease::Cpu(cpu) => match cpu.close() {
+            Ok(()) => {
+                *owner = ResetLease::Closed;
+                Ok(())
+            }
+            Err(error) => retain_close_error(owner, error, phase),
+        },
+        ResetLease::UnmapFailed { cause, lease } => {
+            let Some(witness) = reconcile_witness(device, generation) else {
+                *owner = ResetLease::UnmapFailed { cause, lease };
+                return Err(QueueResetError {
+                    cause: DmaLeaseError::QueueMismatch,
+                    phase,
+                });
+            };
+            match lease.retry_close(witness) {
+                Ok(()) => {
+                    *owner = ResetLease::Closed;
+                    Ok(())
+                }
+                Err(error) => retain_close_error(owner, error, phase),
+            }
+        }
+        ResetLease::Closed => {
+            *owner = ResetLease::Closed;
+            Ok(())
+        }
+        state => {
+            *owner = state;
+            Err(QueueResetError {
+                cause: DmaLeaseError::InvalidState,
+                phase,
+            })
+        }
+    }
+}
+
+fn retain_close_error(
+    owner: &mut ResetLease,
+    error: DmaCloseError,
+    phase: ResetDmaPhase,
+) -> Result<(), QueueResetError> {
+    let (cause, lease) = error.into_parts();
+    *owner = ResetLease::UnmapFailed { cause, lease };
+    Err(QueueResetError { cause, phase })
+}
+
+#[expect(
+    unsafe_code,
+    reason = "the controller-reset typestate proves that old queue generations are unreachable"
+)]
+fn reset_witness(
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+) -> Option<DmaResetWitness> {
+    // SAFETY: this helper is called only while consuming a controller owner
+    // that observed CSTS.RDY clear after CC.EN was cleared. That reset revokes
+    // every queue identity retained by the same controller owner.
+    unsafe { DmaResetWitness::after_device_reset(device, generation) }
+}
+
+#[expect(
+    unsafe_code,
+    reason = "the reconciliation typestate is created only after synchronous IOTLB invalidation"
+)]
+fn reconcile_witness(
+    device: kernel_api::abi::driver::PackedPciLocation,
+    generation: u64,
+) -> Option<DmaReconcileWitness> {
+    // SAFETY: only `ControllerDmaRevoked::after_iotlb_invalidation` can place
+    // the controller into reconciliation, and its caller proves invalidation
+    // completion for every allocation owned by this device generation.
+    unsafe { DmaReconcileWitness::after_iotlb_invalidation(device, generation) }
+}
+
+/// One reset-aborted command after IOTLB reconciliation restored CPU access.
+pub enum ReconciledResetCommand {
+    /// A command without transfer memory.
+    Control,
+    /// A transfer whose buffer is safe for CPU access but whose device outcome
+    /// remains unknown.
+    Transfer(CpuDmaLease),
 }
 
 fn direction_matches(transfer: TransferDirection, mapping: DmaDirection) -> bool {

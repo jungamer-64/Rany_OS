@@ -43,9 +43,10 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 実装関数: `phase_early_kernel_substrate()`
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
 - `heap::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
-- `heap::init()` は `usable_memory` handoff を優先して allocator を起動し、handoff が無効な場合のみ raw `memory_map` を使う。
+- `heap::init()` は loader から渡された排他的なヒープ RAM owner を消費する。この領域は PMM への登録対象から除外する。残りの usable RAM は firmware の NUMA topology と合わせて PMM に一度だけ登録し、slab・ノード別 Buddy・mobility pool は PMM owner を消費して借用領域を管理する。
 - allocator 初期化は bootstrap RAM owner を消費し、完了した状態だけを公開する。途中失敗は未使用 RAM の ownership を保持した terminal outcome とし、既存 allocation のある heap を再初期化しない。usable RAM が存在しない場合も推測した領域へ fallback しない。
 - `heap::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
+- CPU の NUMA 所属は PMM と共通の正規化済み配置から登録前に検証し、固定された CPU-local storage へ保持する。AP の起動と executor の公開はその後に行う。namespace で追加された CPU も同じ登録経路を通り、所属の変更は drain と eject が完了した物理世代間でのみ許可する。
 - 依存:
   - Phase 2 で `physical_memory_offset` が設定済みであること
   - ISR 側の lazy init を避けるため、waker registry は割り込み有効化前に確保すること
@@ -65,7 +66,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - 実装単位: `AsyncBootCoordinator` と stage task 群
 - Phase 4 で動き始めた executor 上に、残りの boot を高優先度 task 群として展開する。
 - stage 構成:
-  - `platform_task`: ACPI/IOMMU、NUMA apply、heap available 通知、`services` 経由の kernel services/provider 登録、async logging 切替
+  - `platform_task`: ACPI/IOMMU、heap available 通知、`services` 経由の kernel services/provider 登録、async logging 切替
   - `graphics_task`: framebuffer/text console 初期化
   - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
   - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration

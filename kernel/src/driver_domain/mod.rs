@@ -647,6 +647,13 @@ pub enum DriverDomainError {
     LoadFailed(String),
     /// ドメインの作成に失敗
     DomainCreationFailed(String),
+    /// Cell/domain creation already committed. Their live identities are
+    /// retained for cleanup even if framework policy publication fails.
+    PolicyAdmissionFailed {
+        cause: crate::domain::DomainPolicyError,
+        cell: CellId,
+        domain: DomainId,
+    },
     /// ドライバの初期化に失敗
     DriverInitFailed(String),
     /// ドライバの停止に失敗
@@ -674,6 +681,17 @@ impl core::fmt::Display for DriverDomainError {
             Self::RegistryPoisoned => write!(f, "DriverDomain registry poisoned"),
             Self::LoadFailed(msg) => write!(f, "Cell load failed: {}", msg),
             Self::DomainCreationFailed(msg) => write!(f, "Domain creation failed: {}", msg),
+            Self::PolicyAdmissionFailed {
+                cause,
+                cell,
+                domain,
+            } => write!(
+                f,
+                "Policy admission failed after creating cell {} / domain {}: {}",
+                cell.as_u64(),
+                domain,
+                cause
+            ),
             Self::DriverInitFailed(msg) => write!(f, "Driver init failed: {}", msg),
             Self::DriverStopFailed(msg) => write!(f, "Driver stop failed: {}", msg),
             Self::RestartLimitExceeded {

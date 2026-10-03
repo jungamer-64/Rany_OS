@@ -459,13 +459,15 @@ pub fn suggest_migration(
     let dest_node = if hottest_node as u8 == task_preferred_node {
         task_preferred_node
     } else {
-        let dist_to_task =
-            NUMA_DISTANCE_CACHE.get_distance(current_node as usize, task_preferred_node as usize);
-        let dist_to_hot = NUMA_DISTANCE_CACHE.get_distance(current_node as usize, hottest_node);
-        if dist_to_task <= dist_to_hot {
-            task_preferred_node
-        } else {
-            hottest_node as u8
+        let from = NumaNodeId::new(current_node);
+        match (
+            pmm::node_distance(from, NumaNodeId::new(task_preferred_node)),
+            pmm::node_distance(from, NumaNodeId::new(hottest_node as u8)),
+        ) {
+            (Some(task), Some(hot)) if task <= hot => task_preferred_node,
+            (Some(_), None) => task_preferred_node,
+            (_, Some(_)) => hottest_node as u8,
+            (None, None) => return None,
         }
     };
     Some(MigrationRequest {

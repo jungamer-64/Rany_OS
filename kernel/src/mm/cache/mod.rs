@@ -1,10 +1,8 @@
 //! キャッシュ・最適化レイヤー
 //!
-//! Per-CPU/Per-Core キャッシュ、マガジン、Exchange Heap等。
+//! Exchange Heap と DMA 用マガジン、ページのゼロクリアを所有する。
+//! 物理フレーム cache は PMM、ヒープ magazine と slab backing は heap が管理する。
 
 pub mod exchange_heap; // ゼロコピーIPC用ヒープ
 pub mod magazine; // ジェネリックマガジンキャッシュ
-pub mod slab_cache; // Per-Core Slabキャッシュ
-pub mod slab_registry; // Slab Merging Registry
 pub mod zero_page;
-pub mod zeroed_pool; // PMM Idle Zeroing // Non-Temporal ゼロクリア + スクラビング

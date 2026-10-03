@@ -15,22 +15,24 @@ pub(super) fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u6
     let virt_start = crate::mm::virt::higher_half::VirtAddr::new(base_virt);
     let phys_expected = crate::mm::virt::higher_half::PhysAddr::new(base_phys);
 
-    // Helper to map the BAR region using a local PageTableManager
+    // Complete translation synchronization before reporting BAR visibility.
     fn try_map_bar(base_phys: u64, base_virt: u64, bar_size: u64) -> bool {
         if bar_size == 0 {
             crate::io::log::early_print("[AHCI] BAR size 0 - skipping\n");
             return false;
         }
         let page_size: u64 = 0x1000;
-        let map_size = ((bar_size + page_size - 1) / page_size) * page_size;
+        let Some(map_size) = bar_size
+            .checked_add(page_size - 1)
+            .map(|size| size & !(page_size - 1))
+        else {
+            return false;
+        };
 
-        let pm_offset = crate::mm::virt::higher_half::physical_memory_offset();
-        let mut manager =
-            unsafe { crate::mm::virt::higher_half::PageTableManager::from_current_cr3(pm_offset) };
         let flags = crate::mm::virt::higher_half::PageFlags::write_combining();
 
         match unsafe {
-            manager.map_range(
+            crate::mm::virt::higher_half::global_map_range(
                 crate::mm::virt::higher_half::VirtAddr::new(base_virt),
                 crate::mm::virt::higher_half::PhysAddr::new(base_phys),
                 map_size,
@@ -51,10 +53,8 @@ pub(super) fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u6
                 crate::io::log::early_print("[BAR] Failed to map BAR region ");
                 crate::io::log::early_print_hex(base_phys);
                 crate::io::log::early_print(" err=");
-                let err_str = match e {
-                    crate::mm::virt::higher_half::MapError::FrameAllocationFailed => {
-                        "FrameAllocationFailed"
-                    }
+                let err_str = match e.cause {
+                    crate::mm::virt::higher_half::MapError::FrameAllocation(_) => "FrameAllocation",
                     crate::mm::virt::higher_half::MapError::AlreadyMapped => "AlreadyMapped",
                     crate::mm::virt::higher_half::MapError::NotMapped => "NotMapped",
                     crate::mm::virt::higher_half::MapError::InvalidAddress => "InvalidAddress",
@@ -63,10 +63,24 @@ pub(super) fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u6
                         "ParentEntryHugePage"
                     }
                     crate::mm::virt::higher_half::MapError::HardwareError => "HardwareError",
+                    crate::mm::virt::higher_half::MapError::MetadataAllocation => {
+                        "MetadataAllocation"
+                    }
+                    crate::mm::virt::higher_half::MapError::UnsupportedPageSize => {
+                        "UnsupportedPageSize"
+                    }
                 };
                 crate::io::log::early_print(err_str);
                 crate::io::log::early_print("\n");
-                matches!(e, crate::mm::virt::higher_half::MapError::AlreadyMapped)
+                if e.cause != crate::mm::virt::higher_half::MapError::AlreadyMapped {
+                    return false;
+                }
+                (0..map_size).step_by(page_size as usize).all(|offset| {
+                    crate::mm::virt::higher_half::global_translate(
+                        crate::mm::virt::higher_half::VirtAddr::new(base_virt + offset),
+                    )
+                    .is_some_and(|mapped| mapped.as_u64() == base_phys + offset)
+                })
             }
         }
     }

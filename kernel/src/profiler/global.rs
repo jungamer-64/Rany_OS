@@ -11,11 +11,22 @@ pub(crate) static PROFILER: spin::Once<Profiler> = spin::Once::new();
 static KERNEL_HEAP_ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 
 pub(crate) fn record_kernel_heap_allocation() {
-    KERNEL_HEAP_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    if !crate::cpu::CurrentCpu::acquire().is_some_and(|cpu| cpu.record_heap_allocation()) {
+        // Early boot has no CPU-local binding yet.
+        KERNEL_HEAP_ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 pub(super) fn kernel_heap_allocations() -> u64 {
-    KERNEL_HEAP_ALLOCATIONS.load(Ordering::Relaxed)
+    let mut total = KERNEL_HEAP_ALLOCATIONS.load(Ordering::Relaxed);
+    if let Some(runtime) = crate::cpu::try_runtime() {
+        for slot in runtime.snapshot().slots() {
+            if let Some(local) = runtime.cpu_local(slot.id) {
+                total = total.wrapping_add(local.remote().heap_allocations());
+            }
+        }
+    }
+    total
 }
 
 pub fn profiler() -> &'static Profiler {

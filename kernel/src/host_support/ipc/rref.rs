@@ -2,6 +2,9 @@ use core::ops::{Deref, DerefMut};
 use core::ptr::NonNull;
 
 use super::DomainId;
+#[path = "../../ipc/rref/raw_parts.rs"]
+mod raw_parts;
+pub use raw_parts::{RRefRawParts, RawPartsError, RawPartsFailure};
 
 #[derive(Debug)]
 pub struct RRef<T: ?Sized> {
@@ -86,15 +89,14 @@ impl<T> Drop for InitializingSlice<T> {
 impl<T> RRef<T> {
     pub fn new(owner: DomainId, value: T) -> Self {
         let allocation = RawAllocation::allocate(core::alloc::Layout::new::<T>())
-            .unwrap_or_else(|| {
-                alloc::alloc::handle_alloc_error(core::alloc::Layout::new::<T>())
-            });
+            .unwrap_or_else(|| alloc::alloc::handle_alloc_error(core::alloc::Layout::new::<T>()));
         // SAFETY: this unique aligned allocation has room for one T; no
         // fallible operation follows initialization before commit.
         unsafe { allocation.data.as_ptr().cast::<T>().write(value) };
         Self {
             ptr: allocation.commit().cast(),
             owner,
+            layout: core::alloc::Layout::new::<T>(),
         }
     }
 }
@@ -110,11 +112,9 @@ impl<T> RRef<[T]> {
             return None;
         }
         let elements = core::alloc::Layout::array::<T>(len).ok()?;
-        let payload = core::alloc::Layout::from_size_align(
-            elements.size(),
-            alignment.max(elements.align()),
-        )
-        .ok()?;
+        let payload =
+            core::alloc::Layout::from_size_align(elements.size(), alignment.max(elements.align()))
+                .ok()?;
         let mut prefix = InitializingSlice::<T> {
             allocation: RawAllocation::allocate(payload)?,
             initialized: 0,
@@ -146,14 +146,11 @@ impl<T> RRef<[T]> {
             // aligned and owns exactly len initialized elements.
             ptr: unsafe { NonNull::new_unchecked(pointer) },
             owner,
+            layout: payload,
         })
     }
 
-    pub fn new_slice_default_aligned(
-        owner: DomainId,
-        len: usize,
-        alignment: usize,
-    ) -> Option<Self>
+    pub fn new_slice_default_aligned(owner: DomainId, len: usize, alignment: usize) -> Option<Self>
     where
         T: Default,
     {
@@ -186,7 +183,7 @@ impl<T: ?Sized> Drop for RRef<T> {
 impl<T: ?Sized> RRef<T> {
     pub fn into_raw_parts(self) -> RRefRawParts
     where
-        T: 'static,
+        T: Send + 'static,
     {
         RRefRawParts::from_rref(self)
     }
@@ -194,14 +191,6 @@ impl<T: ?Sized> RRef<T> {
     pub(crate) fn allocation_ptr(&self) -> NonNull<T> {
         self.ptr
     }
-
-    /// # Safety
-    /// `ptr` must transfer one live RRef allocation from these constructors,
-    /// retaining its origin header and exact pointee metadata. No other
-    /// owner, CPU borrow or hardware access may survive the transfer.
-
-
-
 }
 
 impl<T: ?Sized> Deref for RRef<T> {
@@ -220,4 +209,3 @@ impl<T: ?Sized> DerefMut for RRef<T> {
 
 unsafe impl<T: ?Sized + Send> Send for RRef<T> {}
 unsafe impl<T: ?Sized + Sync> Sync for RRef<T> {}
-

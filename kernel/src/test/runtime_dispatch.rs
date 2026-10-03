@@ -49,6 +49,7 @@ pub enum RuntimeGroup {
     DriverDomain,
     Iommu,
     Network,
+    Memory,
     CpuHotplug,
     Step9Heavy,
 }
@@ -96,6 +97,7 @@ fn is_known_profile(profile: &str) -> bool {
         || str_eq(profile, "driver_domain")
         || str_eq(profile, "iommu")
         || str_eq(profile, "network")
+        || str_eq(profile, "mm")
         || str_eq(profile, "cpu-hotplug")
         || str_eq(profile, "cpu-hotplug-sparse")
 }
@@ -248,6 +250,24 @@ fn case_accepts_nested_filter(profile: &str, case_id: &str) -> bool {
 
 static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
+        id: "mm.owned_frames",
+        body: RuntimeTestBody::Sync(super::mm_runtime::owned_frames),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.heap_layouts",
+        body: RuntimeTestBody::Sync(super::mm_runtime::heap_layouts),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.mapping_ranges",
+        body: RuntimeTestBody::Sync(super::mm_runtime::mapping_ranges),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
         id: "boot.smoke_cmdline_dispatch",
         body: RuntimeTestBody::Sync(boot_smoke_cmdline_dispatch),
         tier: RuntimeTier::PrRequired,
@@ -329,6 +349,8 @@ fn profile_selects_case(profile: &str, case: &RuntimeTestCase) -> bool {
         matches!(case.group, RuntimeGroup::DriverDomain)
     } else if str_eq(profile, "iommu") {
         matches!(case.group, RuntimeGroup::Iommu)
+    } else if str_eq(profile, "mm") {
+        matches!(case.group, RuntimeGroup::Memory)
     } else if str_eq(profile, "network") {
         matches!(case.group, RuntimeGroup::Network)
     } else if str_eq(profile, "cpu-hotplug") {

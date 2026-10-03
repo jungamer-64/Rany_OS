@@ -24,9 +24,11 @@ pub enum CpuControlMessage {
     WakeExecutor,
     Start,
     Park,
+    ReclaimMemory,
 }
 
 pub struct CpuRemoteAccess {
+    heap_allocations: AtomicU64,
     control: MpscRingBuffer<CpuControlMessage, CONTROL_QUEUE_SLOTS>,
     wake_pending: AtomicBool,
     online_acknowledgements: AtomicU64,
@@ -59,6 +61,7 @@ pub struct InterruptContext {
 impl CpuRemoteAccess {
     const fn new() -> Self {
         Self {
+            heap_allocations: AtomicU64::new(0),
             control: MpscRingBuffer::new(),
             wake_pending: AtomicBool::new(false),
             online_acknowledgements: AtomicU64::new(0),
@@ -117,14 +120,17 @@ impl CpuRemoteAccess {
             .unwrap_or_else(|_| panic!("CPU park acknowledgement generation exhausted"));
     }
 
+    pub(crate) fn heap_allocations(&self) -> u64 {
+        self.heap_allocations.load(Ordering::Relaxed)
+    }
+
     pub fn numa_node(&self) -> Option<u8> {
         let node = self.numa_node.load(Ordering::Acquire);
         (node != u8::MAX).then_some(node)
     }
 
-    pub(crate) fn set_numa_node(&self, node: Option<u8>) {
-        self.numa_node
-            .store(node.unwrap_or(u8::MAX), Ordering::Release);
+    pub(super) fn set_numa_node(&self, node: crate::mm::types::NumaNodeId) {
+        self.numa_node.store(node.as_u8(), Ordering::Release);
     }
 
     pub fn in_interrupt(&self) -> bool {
@@ -145,6 +151,7 @@ impl CpuRemoteAccess {
     }
 
     pub fn last_interrupt_context(&self) -> Option<InterruptContext> {
+        // LOOP_PROOF: mode=event; reason=Return only when the owner interrupt writer has published the same even revision before and after the snapshot.;
         loop {
             let before = self.interrupt_record_revision.load(Ordering::Acquire);
             if before & 1 != 0 {
@@ -385,6 +392,10 @@ pub struct CpuLocal {
     self_address: usize,
     id: CpuId,
     owned: UnsafeCell<CpuOwnedState>,
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    frame_cache: core::cell::RefCell<crate::mm::phys::frame_allocator::LocalFrameCache>,
+    heap_cache: core::cell::RefCell<crate::heap::HeapCache>,
+    exchange_cache: core::cell::RefCell<crate::heap::ExchangeMagazine>,
     remote: CpuRemoteAccess,
     descriptor_tables: Pin<Box<crate::interrupts::gdt::CpuDescriptorTables>>,
     tls: Option<CpuTls>,
@@ -414,6 +425,12 @@ impl CpuLocal {
                 page_fault_active: false,
                 task_fuel: 0,
             }),
+            #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+            frame_cache: core::cell::RefCell::new(
+                crate::mm::phys::frame_allocator::LocalFrameCache::new(),
+            ),
+            heap_cache: core::cell::RefCell::new(crate::heap::HeapCache::new()),
+            exchange_cache: core::cell::RefCell::new(crate::heap::ExchangeMagazine::new()),
             remote: CpuRemoteAccess::new(),
             descriptor_tables,
             tls,
@@ -439,6 +456,19 @@ impl CpuLocal {
     /// The previous physical CPU must be absent and unable to execute with
     /// this `CpuLocal`; no new CPU may be launched until this call returns.
     pub(crate) unsafe fn rearm_physical_generation(&self) -> Result<(), CpuGenerationResource> {
+        assert!(
+            self.exchange_cache.borrow().is_empty(),
+            "offline CPU must drain its exchange cache"
+        );
+        assert!(
+            self.heap_cache.borrow().is_empty(),
+            "offline CPU must drain its heap cache"
+        );
+        #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+        assert!(
+            self.frame_cache.borrow().is_empty(),
+            "CPU cache must be drained before re-add"
+        );
         if let Some(resource) = self.remote.physical_generation_residue() {
             return Err(resource);
         }
@@ -476,11 +506,16 @@ impl CpuLocal {
         }
     }
 
-    fn execution(&self) -> Option<crate::task::ExecutionContext> {
+    fn execution(&self) -> Option<crate::task::Subject> {
         with_owner_access(|| {
             // SAFETY: the caller holds the current-CPU token and interrupts are
             // excluded while the owner-only value is copied.
-            unsafe { (*self.owned.get()).execution }
+            unsafe {
+                (*self.owned.get())
+                    .execution
+                    .as_ref()
+                    .map(|context| context.subject())
+            }
         })
     }
 
@@ -587,23 +622,131 @@ pub struct CurrentCpu {
 }
 
 impl CurrentCpu {
-    pub fn acquire() -> Option<Self> {
-        let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
-        if address == 0 || address % core::mem::align_of::<CpuLocal>() != 0 {
-            return None;
-        }
-        // SAFETY: each kernel entry path clears IA32_GS_BASE before using
-        // allocation or locking services. A non-zero value is installed only
-        // from a pinned CpuLocal owned by CpuRuntime and is never repointed
-        // during that CPU's lifetime.
-        let local = unsafe { &*(address as *const CpuLocal) };
-        if !local.is_self_address(address) {
-            return None;
-        }
-        Some(Self {
-            local,
-            _not_send_or_sync: PhantomData,
+    pub(crate) fn record_heap_allocation(&self) -> bool {
+        with_owner_access(|| {
+            let Some(current) = Self::acquire() else {
+                return false;
+            };
+            if !core::ptr::eq(current.local, self.local) {
+                return false;
+            }
+            // This counter has one writer. Remote observers only load it; no
+            // global cache line or atomic RMW is touched on the allocation path.
+            let counter = &self.local.remote.heap_allocations;
+            counter.store(
+                counter.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Relaxed,
+            );
+            true
         })
+    }
+
+    pub(crate) fn with_exchange_cache<R>(
+        &self,
+        operation: impl FnOnce(&mut crate::heap::ExchangeMagazine) -> R,
+    ) -> Option<R> {
+        with_owner_access(|| {
+            let current = Self::acquire()?;
+            if !core::ptr::eq(current.local, self.local) {
+                return None;
+            }
+            self.local
+                .exchange_cache
+                .try_borrow_mut()
+                .ok()
+                .map(|mut cache| operation(&mut cache))
+        })
+    }
+
+    pub(crate) fn with_heap_cache<R>(
+        &self,
+        operation: impl FnOnce(&mut crate::heap::HeapCache) -> R,
+    ) -> Option<R> {
+        with_owner_access(|| {
+            let current = Self::acquire()?;
+            if !core::ptr::eq(current.local, self.local) {
+                return None;
+            }
+            self.local
+                .heap_cache
+                .try_borrow_mut()
+                .ok()
+                .map(|mut cache| operation(&mut cache))
+        })
+    }
+
+    /// Offline completion requires all owner cache borrows to have ended and
+    /// all retained entries to have returned. A loan in flight is not empty.
+    pub(crate) fn memory_caches_empty(&self) -> bool {
+        let empty = self.with_exchange_cache(|cache| cache.is_empty()) == Some(true)
+            && self.with_heap_cache(|cache| cache.is_empty()) == Some(true);
+        #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+        {
+            empty && self.with_frame_cache(|cache| cache.is_empty()) == Some(true)
+        }
+        #[cfg(all(
+            test,
+            not(feature = "full_mm_tests"),
+            not(feature = "qemu-test-export")
+        ))]
+        {
+            empty
+        }
+    }
+
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    pub(crate) fn with_frame_cache<R>(
+        &self,
+        operation: impl FnOnce(&mut crate::mm::phys::frame_allocator::LocalFrameCache) -> R,
+    ) -> Option<R> {
+        // Interrupt exclusion also excludes interrupt-driven preemption. The
+        // closure is synchronous and cannot retain the mutable owner borrow.
+        // RefCell rejects recursive allocator entry instead of aliasing state.
+        with_owner_access(|| {
+            let current = Self::acquire()?;
+            if !core::ptr::eq(current.local, self.local) {
+                return None;
+            }
+            self.local
+                .frame_cache
+                .try_borrow_mut()
+                .ok()
+                .map(|mut cache| operation(&mut cache))
+        })
+    }
+
+    pub(crate) fn memory_node(&self) -> Option<crate::mm::types::NumaNodeId> {
+        self.local
+            .remote
+            .numa_node()
+            .map(crate::mm::types::NumaNodeId::new)
+    }
+    pub fn acquire() -> Option<Self> {
+        // Hosted executions have no kernel-installed GS/MSR binding. They use
+        // the platform allocator path rather than reading a privileged register.
+        #[cfg(any(feature = "std", target_os = "linux", target_os = "windows"))]
+        {
+            None
+        }
+        #[cfg(not(any(feature = "std", target_os = "linux", target_os = "windows")))]
+        {
+            let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
+            if address == 0 || address % core::mem::align_of::<CpuLocal>() != 0 {
+                return None;
+            }
+            // SAFETY: each kernel entry path clears IA32_GS_BASE before using
+            // allocation or locking services. A non-zero value is installed only
+            // from a pinned CpuLocal owned by CpuRuntime and is never repointed
+            // during that CPU's lifetime.
+            let local = unsafe { &*(address as *const CpuLocal) };
+            if !local.is_self_address(address) {
+                return None;
+            }
+            Some(Self {
+                local,
+                _not_send_or_sync: PhantomData,
+            })
+        }
     }
 
     pub(crate) fn clear_boot_binding() {
@@ -623,8 +766,25 @@ impl CurrentCpu {
         self.local.id()
     }
 
-    pub fn execution(&self) -> Option<crate::task::ExecutionContext> {
+    pub fn execution(&self) -> Option<crate::task::Subject> {
         self.local.execution()
+    }
+
+    /// Charge through the installed account while borrowing CPU-local state.
+    /// The borrow excludes interrupts/preemption and cannot escape this call.
+    pub(crate) fn reserve_memory(
+        &self,
+        bytes: u64,
+    ) -> Result<Option<crate::domain::quota::MemoryCredit>, crate::domain::quota::QuotaError> {
+        with_owner_access(|| {
+            // SAFETY: CurrentCpu restricts access to its owning CPU; the short
+            // borrow never allocates or calls back into execution switching.
+            let owned = unsafe { &*self.local.owned.get() };
+            match owned.execution.as_ref() {
+                Some(context) => context.reserve_memory(bytes),
+                None => Ok(None), // bootstrap/kernel execution is uncharged
+            }
+        })
     }
 
     pub(crate) fn enter_execution(
@@ -806,7 +966,8 @@ pub(crate) struct ExecutionContextGuard {
 
 impl Drop for ExecutionContextGuard {
     fn drop(&mut self) {
-        self.current.local.replace_execution(self.previous);
+        let previous = self.previous.take();
+        drop(self.current.local.replace_execution(previous));
     }
 }
 

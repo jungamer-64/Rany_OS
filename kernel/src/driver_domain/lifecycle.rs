@@ -225,9 +225,35 @@ pub fn load(
             )
         })?;
 
-    let _ = crate::domain::set_domain_capabilities(domain_id, caps);
-    let _ = crate::domain::set_domain_priority(domain_id, priority);
-    let _ = crate::domain::set_domain_resource_limits(domain_id, cpu_limit, mem_limit, io_limit);
+    // Publish the resource owners before fallible policy admission. Failure
+    // leaves a tracked faulted cell instead of an apparently loaded domain.
+    manager
+        .with_cell_mut(id, |cell| {
+            cell.set_cell_id(cell_id);
+            cell.set_domain_id(domain_id);
+        })
+        .map_err(|_| DriverDomainError::PolicyAdmissionFailed {
+            cause: crate::domain::DomainPolicyError::RegistryUnavailable,
+            cell: cell_id,
+            domain: domain_id,
+        })?;
+    let policy = crate::domain::set_domain_capabilities(domain_id, caps)
+        .and_then(|()| crate::domain::set_domain_priority(domain_id, priority))
+        .and_then(|()| {
+            crate::domain::set_domain_resource_limits(domain_id, cpu_limit, mem_limit, io_limit)
+        });
+    if let Err(cause) = policy {
+        if let Err(error) = manager.with_cell_mut(id, |cell| {
+            cell.transition_to(DriverDomainState::Faulted);
+        }) {
+            log::error!("Driver cell {} fault publication failed: {}", id, error);
+        }
+        return Err(DriverDomainError::PolicyAdmissionFailed {
+            cause,
+            cell: cell_id,
+            domain: domain_id,
+        });
+    }
 
     // 4. NUMAアフィニティを設定
     if let Some(node) = numa_node {

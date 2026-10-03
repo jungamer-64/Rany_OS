@@ -7,9 +7,21 @@ use crate::sync::set_panicking;
 use core::sync::atomic::Ordering;
 
 fn test_cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
-    crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
-        .expect("bootstrap CPU topology")
-        .snapshot()
+    crate::cpu::CpuRuntime::bootstrap(
+        crate::cpu::LocatedCpu::resolve(
+            crate::cpu::FirmwareCpuIdentity {
+                uid: None,
+                apic_id: crate::cpu::ApicId::new(0),
+                proximity_domain: None,
+                eject: crate::cpu::CpuEjectCapability::Fixed,
+            },
+            &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap(),
+        )
+        .unwrap(),
+        None,
+    )
+    .expect("bootstrap CPU topology")
+    .snapshot()
 }
 
 fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
@@ -58,8 +70,20 @@ fn test_mempool_stats() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn mempool_provisions_cache_for_new_possible_cpu() {
-    let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None)
-        .expect("bootstrap CPU topology");
+    let cpu_runtime = crate::cpu::CpuRuntime::bootstrap(
+        crate::cpu::LocatedCpu::resolve(
+            crate::cpu::FirmwareCpuIdentity {
+                uid: None,
+                apic_id: crate::cpu::ApicId::new(0),
+                proximity_domain: None,
+                eject: crate::cpu::CpuEjectCapability::Fixed,
+            },
+            &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap(),
+        )
+        .unwrap(),
+        None,
+    )
+    .expect("bootstrap CPU topology");
     let pool = Box::leak(Box::new(
         Mempool::new(1, &cpu_runtime.snapshot()).expect("initial mempool CPU resources"),
     ));

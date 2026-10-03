@@ -37,6 +37,7 @@ pub struct PanicDmaRecordInfo {
 }
 
 struct PanicDmaPool {
+    backing: crate::mm::phys::frame_allocator::PhysicalAllocation,
     base_phys: u64,
     size: u64,
     virt_base: usize,
@@ -90,7 +91,7 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     early_print_dec(frames as u64);
     early_print("\n");
     let phys = crate::mm::phys::frame_allocator::alloc_contiguous_frames(frames)
-        .ok_or(IommuError::OutOfMemory)?;
+        .map_err(|_| IommuError::OutOfMemory)?;
     let phys_addr = PhysAddr::new(phys.as_u64());
     early_print("[PANIC_DMA] phys=");
     early_print_hex(phys_addr.as_u64());
@@ -103,6 +104,7 @@ pub fn init_panic_dma_pool(bytes: usize) -> Result<(), IommuError> {
     }
 
     let pool = PanicDmaPool {
+        backing: phys,
         base_phys: phys_addr.as_u64(),
         size,
         virt_base,

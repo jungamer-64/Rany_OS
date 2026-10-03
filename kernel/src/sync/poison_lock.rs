@@ -703,6 +703,33 @@ impl<T: ?Sized> IrqPoisonLock<T> {
         }
     }
 
+    /// Attempt one acquisition without waiting. Contention retains the owner
+    /// and restores the caller's IRQ state. Poisoning is never cleared here;
+    /// its guard is returned only as explicit recovery authority.
+    pub fn try_lock(
+        &self,
+    ) -> Result<IrqPoisonLockGuard<'_, T>, TryLockError<IrqPoisonLockGuard<'_, T>>> {
+        let irq_was_enabled = super::irq_mutex::save_and_disable_interrupts();
+        if self
+            .locked
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .is_err()
+        {
+            super::irq_mutex::restore_interrupts(irq_was_enabled);
+            return Err(TryLockError::WouldBlock);
+        }
+        let guard = IrqPoisonLockGuard {
+            lock: self,
+            irq_was_enabled,
+            panicking_at_acquire: is_panicking(),
+        };
+        if self.poisoned.load(Ordering::Acquire) {
+            Err(TryLockError::Poisoned(PoisonError::new(guard)))
+        } else {
+            Ok(guard)
+        }
+    }
+
     /// 毒入れ状態を確認
     pub fn is_poisoned(&self) -> bool {
         self.poisoned.load(Ordering::Relaxed)

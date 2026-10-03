@@ -612,7 +612,18 @@ impl QuarantineQueue {
         };
 
         let raw = raw.ok_or(QuarantineError::TypeMismatch)?;
-        let rref = unsafe { raw.into_rref::<T>()? };
+        // SAFETY: completion was observed before the slot owner was consumed;
+        // no DMA access or independent CPU borrower survives this transition.
+        let rref = match unsafe { raw.into_rref::<T>() } {
+            Ok(rref) => rref,
+            Err(failure) => {
+                let kind = failure.kind;
+                // SAFETY: completion permits disposal of the exact original
+                // type even when the ticket requested a different type.
+                unsafe { failure.parts.drop_erased() };
+                return Poll::Ready(Err(kind.into()));
+            }
+        };
         Poll::Ready(Ok(rref))
     }
 

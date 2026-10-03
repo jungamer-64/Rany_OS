@@ -234,53 +234,6 @@ impl DomainManager for IommuController {
     ) -> Result<i32, ()> {
         use crate::io::iommu::runtime::command::queue::IommuCommandKind;
         match kind {
-            IommuCommandKind::MapRegion {
-                domain,
-                iova,
-                phys,
-                size,
-                read,
-                write,
-            } => {
-                if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() {
-                    return Err(());
-                }
-                let domain_arc = self.domain(*domain).ok_or(())?;
-                domain_arc
-                    .map(*iova, *phys, *size, *read, *write)
-                    .map_err(|_| ())?;
-                crate::io::iommu::common::domain::IommuInvalidator::invalidate(
-                    self,
-                    InvalidateRequest::domain(*domain).with_ats(),
-                )
-                .map_err(|_| ())?;
-                Ok(0)
-            }
-            IommuCommandKind::MapRegionDevice {
-                device,
-                iova,
-                phys,
-                size,
-                read,
-                write,
-            } => {
-                if crate::io::iommu::runtime::security::validate_dma_region(*phys, *size).is_err() {
-                    return Err(());
-                }
-                let (domain_id, domain_arc) = self.resolve_device_domain(device).map_err(|_| ())?;
-                domain_arc
-                    .map(*iova, *phys, *size, *read, *write)
-                    .map_err(|_| ())?;
-                self.invalidate_iotlb(domain_id, false).map_err(|_| ())?;
-                if self.should_invalidate_device_tlb(device).map_err(|_| ())? {
-                    self.qi_invalidate_device_tlb_all(device.requester_id())
-                        .map_err(|_| ())?;
-                    self.qi_wait_sync().map_err(|_| ())?;
-                }
-                Ok(0)
-            }
-
-
             IommuCommandKind::InvalidateIotlbDomain { domain } => self
                 .invalidate_iotlb(*domain, true)
                 .map(|_| 0)

@@ -94,6 +94,8 @@ impl AmdCommandWaitToken {
 
 #[derive(Debug)]
 pub(crate) struct AmdCommandState {
+    pub(super) backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
+    pub(super) sync_backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     pub(super) buffer: cmd::AmdCommandBuffer,
     pub(super) sync_ptr: NonNull<u64>,
     pub(super) sync_phys: u64,
@@ -107,30 +109,10 @@ pub(crate) struct AmdCommandState {
 unsafe impl Send for AmdCommandState {}
 unsafe impl Sync for AmdCommandState {}
 
-impl Drop for AmdCommandState {
-    fn drop(&mut self) {
-        // Security: Unregister from DMA protection
-        crate::security::dma::unregister_protected_range(
-            self.buffer.phys_base,
-            (self.frame_count * 4096) as u64,
-        );
-        crate::security::dma::unregister_protected_range(self.sync_phys, 4096);
-
-        // Deallocate frames
-        use x86_64::structures::paging::{PhysFrame, Size4KiB};
-
-        // Command buffer frames
-        for i in 0..self.frame_count {
-            let addr = self.buffer.phys_base + (i as u64 * 4096);
-            let frame = PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(addr));
-            crate::mm::phys::frame_allocator::dealloc_frame(frame);
-        }
-        // Sync page frame
-        let frame =
-            PhysFrame::<Size4KiB>::containing_address(x86_64::PhysAddr::new(self.sync_phys));
-        crate::mm::phys::frame_allocator::dealloc_frame(frame);
-    }
-}
+// The controller retains command RAM and its DMA-protection registration for
+// its enabled lifetime. Losing software references is not hardware retirement:
+// PhysicalAllocation deliberately does not release on Drop, and protection
+// stays registered until a controller shutdown confirms the processor stopped.
 
 impl AmdCommandState {
     pub(super) fn submit(&mut self, cmd: cmd::AmdCommand) -> Result<(), IommuError> {
@@ -497,7 +479,7 @@ impl AmdIommuDriver {
     }
 
     /// Invalidate all pages in a domain.
-    fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
+    pub(super) fn invalidate_domain_all(&self, domain_id: u16) -> Result<(), IommuError> {
         let mut last_err = None;
         let mut tokens = Vec::new();
 

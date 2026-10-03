@@ -21,6 +21,7 @@ use core::sync::atomic::{AtomicU64, Ordering};
 // ============================================================================
 
 /// 仮想アドレス（型安全）
+#[path = "higher_half/manager.rs"]
 mod manager;
 pub use manager::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -730,8 +731,12 @@ impl<'a> PageTableWalker<'a> {
     }
 
     /// ページテーブルエントリーを取得
-    /// Note: 最終レベルのエントリーが存在する場合、Presentでなくても返す
     pub fn walk(&self, virt: VirtAddr) -> Option<PageTableEntry> {
+        self.walk_mapping(virt).map(|(entry, _)| entry)
+    }
+
+    /// Returns a present leaf with its actual page size.
+    pub fn walk_mapping(&self, virt: VirtAddr) -> Option<(PageTableEntry, PageSize)> {
         let indices = virt.page_table_indices();
 
         // PML4
@@ -748,7 +753,7 @@ impl<'a> PageTableWalker<'a> {
             return None;
         }
         if pdpte.is_huge() {
-            return Some(*pdpte);
+            return Some((*pdpte, PageSize::Size1GiB));
         }
 
         // PD
@@ -758,28 +763,33 @@ impl<'a> PageTableWalker<'a> {
             return None;
         }
         if pde.is_huge() {
-            return Some(*pde);
+            return Some((*pde, PageSize::Size2MiB));
         }
 
         // PT
         let pt: &PageTable = unsafe { &*self.mapper.phys_as_ptr(pde.phys_addr()) };
-        return Some(*pt.entry(indices[3]));
+        let entry = *pt.entry(indices[3]);
+        entry.is_present().then_some((entry, PageSize::Size4KiB))
     }
 
-    /// ページテーブルエントリーを可変参照で取得
-    /// Note: 呼び出し元はデータ競合に注意すること
+    /// Borrow the mapped leaf entry at its actual page size.
+    ///
+    /// # Safety
+    /// The caller holds exclusive mutation authority over this hierarchy for
+    /// the entire returned borrow. All traversed tables remain allocated and
+    /// mapped, and no concurrent walker or hardware update aliases this entry.
     pub unsafe fn walk_mut(&self, virt: VirtAddr) -> Option<&mut PageTableEntry> {
         let indices = virt.page_table_indices();
 
         // PML4
-        let pml4: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(self.pml4_phys);
+        let pml4: &mut PageTable = unsafe { &mut *self.mapper.phys_as_mut_ptr(self.pml4_phys) };
         let pml4e = pml4.entry_mut(indices[0]);
         if !pml4e.is_present() {
             return None;
         }
 
         // PDPT
-        let pdpt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pml4e.phys_addr());
+        let pdpt: &mut PageTable = unsafe { &mut *self.mapper.phys_as_mut_ptr(pml4e.phys_addr()) };
         let pdpte = pdpt.entry_mut(indices[1]);
         if !pdpte.is_present() {
             return None;
@@ -789,7 +799,7 @@ impl<'a> PageTableWalker<'a> {
         }
 
         // PD
-        let pd: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pdpte.phys_addr());
+        let pd: &mut PageTable = unsafe { &mut *self.mapper.phys_as_mut_ptr(pdpte.phys_addr()) };
         let pde = pd.entry_mut(indices[2]);
         if !pde.is_present() {
             return None;
@@ -799,7 +809,7 @@ impl<'a> PageTableWalker<'a> {
         }
 
         // PT
-        let pt: &mut PageTable = &mut *self.mapper.phys_as_mut_ptr(pde.phys_addr());
+        let pt: &mut PageTable = unsafe { &mut *self.mapper.phys_as_mut_ptr(pde.phys_addr()) };
         return Some(pt.entry_mut(indices[3]));
     }
 }

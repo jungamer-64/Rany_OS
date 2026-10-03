@@ -303,7 +303,7 @@ pub unsafe fn deallocate_for_domain<T>(ptr: NonNull<T>) {
 }
 
 /// ドメイン用にゼロ初期化されたスライスを割り当て（オーナーシップ追跡付き）
-pub fn allocate_slice_for_domain<T: Sized>(
+pub fn allocate_slice_for_domain<T: crate::mm::value::Zeroable>(
     domain_id: DomainId,
     len: usize,
 ) -> Option<(NonNull<T>, Layout)> {

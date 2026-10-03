@@ -3,6 +3,74 @@ use spin::Once;
 
 static TABLE_CATALOG: Once<TableCatalog> = Once::new();
 static ACPI_RUNTIME: Once<AcpiRuntime> = Once::new();
+static NUMA_PLACEMENT: Once<crate::mm::numa::placement::NumaPlacement> = Once::new();
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FirmwarePlacementError {
+    Acpi(AcpiError),
+    Placement(crate::mm::numa::placement::PlacementError),
+}
+
+impl From<AcpiError> for FirmwarePlacementError {
+    fn from(error: AcpiError) -> Self {
+        Self::Acpi(error)
+    }
+}
+impl From<crate::mm::numa::placement::PlacementError> for FirmwarePlacementError {
+    fn from(error: crate::mm::numa::placement::PlacementError) -> Self {
+        Self::Placement(error)
+    }
+}
+
+/// Decode the static firmware catalog once into kernel locality coordinates.
+/// CPU publication and PMM admission borrow this same immutable placement.
+/// Failed decoding publishes nothing and remains retryable. An absent catalog
+/// represents the single-node boot environment and must not later be replaced.
+pub fn numa_placement()
+-> Result<&'static crate::mm::numa::placement::NumaPlacement, FirmwarePlacementError> {
+    use crate::mm::numa::placement::{CpuAffinity, MemoryAffinity, NumaPlacement, PlacementError};
+    NUMA_PLACEMENT.try_call_once(|| {
+        let Some(catalog) = tables() else {
+            return NumaPlacement::try_new(&[], &[], |a, b| Some(if a == b { 10 } else { 20 }))
+                .map_err(Into::into);
+        };
+        let firmware_cpus = catalog.numa_cpu_affinity()?;
+        let firmware_memory = catalog.numa_memory_affinity()?;
+        let mut cpus = alloc::vec::Vec::new();
+        cpus.try_reserve_exact(firmware_cpus.len())
+            .map_err(|_| PlacementError::MetadataAllocation)?;
+        cpus.extend(
+            firmware_cpus
+                .iter()
+                .filter(|cpu| cpu.enabled)
+                .map(|cpu| CpuAffinity {
+                    apic_id: crate::cpu::ApicId::new(cpu.apic_id),
+                    proximity_domain: cpu.proximity_domain,
+                }),
+        );
+        let mut memory = alloc::vec::Vec::new();
+        memory
+            .try_reserve_exact(firmware_memory.len())
+            .map_err(|_| PlacementError::MetadataAllocation)?;
+        for region in firmware_memory
+            .iter()
+            .filter(|region| region.enabled && region.length != 0)
+        {
+            memory.push(MemoryAffinity {
+                base: x86_64::PhysAddr::try_new(region.base)
+                    .map_err(|_| PlacementError::InvalidMemoryRange)?,
+                bytes: region.length,
+                proximity_domain: region.proximity_domain,
+            });
+        }
+        let distances = catalog.numa_distances()?;
+        NumaPlacement::try_new(&cpus, &memory, |a, b| match distances {
+            Some(distances) => distances.distance(a, b),
+            None => Some(if a == b { 10 } else { 20 }),
+        })
+        .map_err(Into::into)
+    })
+}
 
 /// Copies the firmware table graph into the kernel-owned catalog.
 ///

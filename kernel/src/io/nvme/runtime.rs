@@ -9,6 +9,7 @@
 
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicBool, Ordering};
 
 use kernel_api::dma::{
     CompletedDmaLease, CpuDmaLease, DmaLeaseError, DmaTransitionError, PreparedDmaLease,
@@ -20,7 +21,8 @@ use nvme_driver::{
 
 use crate::io::io_scheduler::{
     DeviceCompletion, DeviceId, DeviceOps, IoCommand, IoCompletion, IoCompletionRoute, IoError,
-    IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity, PollHandler,
+    IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity, PollHandler, hybrid_coordinator,
+    io_scheduler,
 };
 use crate::sync::PoisonLock;
 
@@ -236,6 +238,7 @@ pub(crate) struct NvmeRuntime {
     device: DeviceId,
     namespace: NamespaceInfo,
     queues: Vec<RuntimeQueue>,
+    accepting: AtomicBool,
 }
 
 impl NvmeRuntime {
@@ -296,6 +299,7 @@ impl NvmeRuntime {
             },
             namespace,
             queues,
+            accepting: AtomicBool::new(true),
         })
     }
 
@@ -308,6 +312,9 @@ impl NvmeRuntime {
     }
 
     fn submit(&self, submission: IoSubmission, cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome {
+        if !self.accepting.load(Ordering::Acquire) {
+            return rejected(IoError::DeviceError, submission);
+        }
         if submission.device() != self.device {
             return rejected(IoError::InvalidParameter, submission);
         }
@@ -476,7 +483,12 @@ impl NvmeRuntime {
     }
 
     fn is_ready(&self) -> bool {
-        self.queues.iter().any(|queue| queue.lock().can_submit())
+        self.accepting.load(Ordering::Acquire)
+            && self.queues.iter().any(|queue| queue.lock().can_submit())
+    }
+
+    fn close_admission(&self) {
+        self.accepting.store(false, Ordering::Release);
     }
 }
 
@@ -605,6 +617,153 @@ const fn map_poll_error(cause: &PollError) -> IoError {
         | PollError::InvalidCompletion(_)
         | PollError::Ownership(_)
         | PollError::QueueFault => IoError::DeviceError,
+    }
+}
+
+/// Failure before any scheduler-visible NVMe operation authority is published.
+pub(crate) enum RuntimePublishError {
+    MetadataAllocation { runtime: NvmeRuntime },
+}
+
+impl core::fmt::Debug for RuntimePublishError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::MetadataAllocation { runtime } => formatter
+                .debug_struct("MetadataAllocation")
+                .field("device", &runtime.device())
+                .field("queue_count", &runtime.queue_count())
+                .finish(),
+        }
+    }
+}
+
+/// Fully constructed publication whose final scheduler operation insert is the
+/// externally visible commit point.
+pub(crate) struct PreparedNvmeRuntime {
+    runtime: Arc<NvmeRuntime>,
+    operations: Arc<NvmeDeviceOps>,
+    pollers: Vec<Arc<NvmeQueuePoller>>,
+}
+
+impl PreparedNvmeRuntime {
+    pub(crate) fn prepare(runtime: NvmeRuntime) -> Result<Self, RuntimePublishError> {
+        let mut pollers = Vec::new();
+        if pollers.try_reserve_exact(runtime.queue_count()).is_err() {
+            return Err(RuntimePublishError::MetadataAllocation { runtime });
+        }
+        let runtime = Arc::new(runtime);
+        for queue in &runtime.queues {
+            pollers.push(Arc::new(NvmeQueuePoller {
+                runtime: Arc::clone(&runtime),
+                queue_id: queue.queue_id,
+            }));
+        }
+        let operations = Arc::new(NvmeDeviceOps(Arc::clone(&runtime)));
+        Ok(Self {
+            runtime,
+            operations,
+            pollers,
+        })
+    }
+
+    pub(crate) fn publish(self) -> PublishedNvmeRuntime {
+        let device = self.runtime.device();
+        let scheduler = io_scheduler();
+        scheduler.register_device(device, Default::default());
+        let executor = hybrid_coordinator().polling_executor();
+        for poller in self.pollers {
+            executor.register_handler(device, poller);
+        }
+        scheduler.register_device_ops(device, self.operations);
+        PublishedNvmeRuntime {
+            runtime: self.runtime,
+        }
+    }
+}
+
+/// Sole publication owner for one scheduler-visible controller generation.
+pub(crate) struct PublishedNvmeRuntime {
+    runtime: Arc<NvmeRuntime>,
+}
+
+impl PublishedNvmeRuntime {
+    pub(crate) fn device(&self) -> DeviceId {
+        self.runtime.device()
+    }
+
+    /// Close admission, remove every scheduler/poller authority, and begin Arc
+    /// rundown. A callback that raced admission remains owned until rundown.
+    pub(crate) fn begin_rundown(self) -> NvmeRuntimeRundown {
+        let device = self.runtime.device();
+        self.runtime.close_admission();
+        io_scheduler().unregister_device(device);
+        hybrid_coordinator()
+            .polling_executor()
+            .unregister_handler(device);
+        NvmeRuntimeRundown {
+            runtime: self.runtime,
+        }
+    }
+}
+
+/// Runtime owner waiting for all callback snapshots to release their Arc.
+pub(crate) struct NvmeRuntimeRundown {
+    runtime: Arc<NvmeRuntime>,
+}
+
+pub(crate) enum RuntimeRundownPoll {
+    Waiting(NvmeRuntimeRundown),
+    Owned(NvmeRuntime),
+}
+
+impl NvmeRuntimeRundown {
+    pub(crate) fn poll(self) -> RuntimeRundownPoll {
+        match Arc::try_unwrap(self.runtime) {
+            Ok(runtime) => RuntimeRundownPoll::Owned(runtime),
+            Err(runtime) => RuntimeRundownPoll::Waiting(Self { runtime }),
+        }
+    }
+}
+
+struct NvmeDeviceOps(Arc<NvmeRuntime>);
+
+impl DeviceOps for NvmeDeviceOps {
+    fn submit(&self, submission: IoSubmission, cpu_id: crate::cpu::CpuId) -> IoSubmitOutcome {
+        self.0.submit(submission, cpu_id)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.0.is_ready()
+    }
+}
+
+struct NvmeQueuePoller {
+    runtime: Arc<NvmeRuntime>,
+    queue_id: u16,
+}
+
+impl PollHandler for NvmeQueuePoller {
+    fn poll_completions(&self) -> Vec<DeviceCompletion> {
+        self.runtime.poll_queue(self.queue_id)
+    }
+
+    fn is_ready(&self) -> bool {
+        self.runtime
+            .queues
+            .get(usize::from(self.queue_id - 1))
+            .is_some_and(|queue| queue.lock().needs_poll())
+    }
+
+    fn affinity(&self) -> PollAffinity {
+        let snapshot = crate::cpu::snapshot();
+        let online = snapshot.online();
+        if online.is_empty() {
+            return PollAffinity::Unavailable;
+        }
+        let queue_index = usize::from(self.queue_id - 1);
+        online
+            .member_at(queue_index % online.len())
+            .map_or(PollAffinity::Unavailable, PollAffinity::Cpu)
     }
 }
 

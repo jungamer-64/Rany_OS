@@ -324,9 +324,12 @@ pub enum DmaLeaseError {
 ///
 /// An implementation must bind every method to one live registry generation.
 /// `with_cpu_bytes` and `with_cpu_bytes_mut` may invoke their visitor exactly
-/// once only while the registry state is `CpuOwned`; the slice must describe
-/// the same initialized allocation for the duration of the call. Mutable visits
-/// must be exclusive. Successful transitions must be linearizable. After a
+/// once only after acquiring CPU ownership; the slice must describe the same
+/// initialized allocation for the duration of the call. A visit must exclude
+/// competing visits, device publication, and release until its final reference
+/// ends. Run the visitor outside shared registry locks; owner shutdown may
+/// request retirement but must retain backing until the visit returns or unwinds.
+/// Mutable visits must be exclusive. Successful transitions must be linearizable. After a
 /// successful `prepare`, `prepared_queue` must return exactly the queue passed
 /// to that transition until it is aborted or armed. A failed `close` or
 /// `retry_close_after_reconcile` must retain the mapping and allocation in an

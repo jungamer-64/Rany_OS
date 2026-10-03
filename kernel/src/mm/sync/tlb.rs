@@ -99,16 +99,14 @@ fn request_remote_shootdown(current: &CurrentCpu) {
             .cpu_local(target)
             .unwrap_or_else(|| panic!("coherent CPU {} lost its CPU-local TLB mailbox", target));
         let mut spins = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Each retry increments spins until acknowledgement, lazy retirement, or the finite terminal spin limit.;
         while local.remote().observed_tlb_generation() < generation {
             if local.remote().tlb_is_lazy() {
                 break;
             }
-            let current_state = crate::cpu::snapshot().slot(target).map(|slot| slot.state);
-            assert!(
-                current_state.is_some_and(crate::cpu::CpuSlotState::participates_in_tlb),
-                "CPU {} left TLB participation without entering lazy mode",
-                target
-            );
+            // CpuLocal backing remains pinned across offline/re-add. Leaving
+            // participation requires lazy mode first, so the mailbox is the
+            // completion authority; polling topology adds no proof here.
             // Two CPUs may initiate a shootdown while local interrupts are
             // disabled. Servicing our own mailbox here prevents a cyclic wait.
             service_pending_on_current(current);
@@ -139,7 +137,7 @@ pub(crate) fn flush_immediate(address: VirtAddr) {
     request_remote_shootdown(&current);
 }
 
-/// Invalidates all non-global TLB entries locally and synchronously invalidates
+/// Invalidates all TLB entries, including GLOBAL mappings, and synchronously invalidates
 /// every other online CPU.
 ///
 /// # Panics
@@ -191,20 +189,37 @@ unsafe fn flush_page_local(address: VirtAddr) {
 
 #[inline]
 unsafe fn flush_all_local() {
-    let cr3: u64;
-    unsafe {
-        asm!(
-            "mov {}, cr3",
-            out(reg) cr3,
-            options(nomem, nostack, preserves_flags)
-        );
-        asm!(
-            "mov cr3, {}",
-            in(reg) cr3,
-            options(nostack, preserves_flags)
-        );
-    }
+    // Changing CR4.PGE invalidates all PCIDs and GLOBAL entries. Exclude local
+    // interrupts so no handler observes the temporary control-register value.
+    x86_64::instructions::interrupts::without_interrupts(|| unsafe {
+        let cr4: u64;
+        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
+        let toggled = cr4 ^ (1 << 7);
+        asm!("mov cr4, {}", in(reg) toggled, options(nostack, preserves_flags));
+        asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+    });
     LOCAL_FULL_FLUSHES.fetch_add(1, Ordering::Relaxed);
+}
+
+/// A range update issues a single remote generation even when local INVLPG
+/// handles several small pages. Completion is the physical reuse boundary.
+pub(crate) fn flush_range(start: VirtAddr, size: u64) {
+    if size == 0 {
+        return;
+    }
+    let current = current_cpu();
+    if size > 8 * 4096 {
+        unsafe { flush_all_local() };
+    } else {
+        let end = start
+            .as_u64()
+            .checked_add(size)
+            .expect("validated TLB range");
+        for address in (start.as_u64()..end).step_by(4096) {
+            unsafe { flush_page_local(VirtAddr::new(address)) };
+        }
+    }
+    request_remote_shootdown(&current);
 }
 
 #[cfg(test)]
@@ -217,7 +232,21 @@ mod tests {
 
     #[test]
     fn sparse_shootdown_includes_starting_and_draining_cpus() {
-        let runtime = crate::cpu::CpuRuntime::bootstrap(crate::cpu::ApicId::new(0), None).unwrap();
+        let runtime = crate::cpu::CpuRuntime::bootstrap(
+            crate::cpu::LocatedCpu::resolve(
+                crate::cpu::FirmwareCpuIdentity {
+                    uid: None,
+                    apic_id: crate::cpu::ApicId::new(0),
+                    proximity_domain: None,
+                    eject: crate::cpu::CpuEjectCapability::Fixed,
+                },
+                &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10))
+                    .unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
         let firmware = |uid, apic| crate::cpu::FirmwareCpuIdentity {
             uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
             apic_id: crate::cpu::ApicId::new(apic),

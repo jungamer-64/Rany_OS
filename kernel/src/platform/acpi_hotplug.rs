@@ -452,6 +452,13 @@ async fn reconcile_namespace(
         .catalog()
         .numa_cpu_affinity()
         .map_err(map_acpi_error)?;
+    let placement = super::firmware::numa_placement().map_err(|error| {
+        firmware_error(
+            FirmwareErrorKind::InvalidTable,
+            None,
+            alloc::format!("NUMA placement is unavailable: {error:?}"),
+        )
+    })?;
     let mut online_after_provision = Vec::new();
 
     for binding in &bindings {
@@ -464,8 +471,16 @@ async fn reconcile_namespace(
             notifications,
         )
         .await?;
+        let located =
+            crate::cpu::LocatedCpu::resolve(cpu.identity, placement).map_err(|error| {
+                firmware_error(
+                    FirmwareErrorKind::Namespace,
+                    Some(Arc::from(cpu.binding.path.as_str())),
+                    alloc::format!("CPU memory placement was rejected: {error:?}"),
+                )
+            })?;
         let id = crate::cpu::runtime()
-            .discover_possible(cpu.identity.clone())
+            .discover_possible(located.clone())
             .map_err(map_topology_error)?;
         let prior = crate::cpu::snapshot()
             .slot(id)
@@ -473,7 +488,7 @@ async fn reconcile_namespace(
             .unwrap_or_else(|| panic!("newly registered CPU {id} was not published"));
         if cpu.present {
             crate::cpu::runtime()
-                .discover_present(cpu.identity)
+                .discover_present(located)
                 .map_err(map_topology_error)?;
             if prior.state == CpuSlotState::FirmwareAbsent {
                 online_after_provision.push(id);
@@ -487,13 +502,6 @@ async fn reconcile_namespace(
         }
     }
 
-    crate::mm::phys::frame_allocator::pmm_provision_possible_cpus().map_err(|error| {
-        firmware_error(
-            FirmwareErrorKind::Resource,
-            None,
-            alloc::format!("CPU-local PMM provisioning failed: {error:?}"),
-        )
-    })?;
     for id in online_after_provision {
         if let Err(error) = crate::cpu::online(id).await {
             log::warn!("firmware-added CPU {id} could not be brought online: {error:?}");
@@ -730,6 +738,7 @@ fn eject_ost_status(error: &CpuTransitionError) -> EjectOstStatus {
         }
         CpuTransitionError::NotPresent
         | CpuTransitionError::TimedOut { .. }
+        | CpuTransitionError::MemoryCache(_)
         | CpuTransitionError::Firmware(_) => EjectOstStatus::Failure,
     }
 }

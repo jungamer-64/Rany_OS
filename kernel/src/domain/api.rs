@@ -114,28 +114,20 @@ pub fn reclaim_domain_resources(domain: DomainId) {
         }
     }
 
-    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-    if count > 0 || cleanup.dma.released_handles > 0 || cleanup.dma.quarantined_handles > 0 {
+    if count > 0
+        || cleanup.dma.released_handles > 0
+        || cleanup.dma.quarantined_handles > 0
+        || cleanup.dma.pending_handles > 0
+    {
         log::info!(
-            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes); quarantined {} DMA handles ({} bytes) from {}\n",
+            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes); quarantined {} ({} bytes); pending return {} ({} bytes) from {}",
             count,
             cleanup.dma.released_handles,
             cleanup.dma.released_bytes,
             cleanup.dma.quarantined_handles,
             cleanup.dma.quarantined_bytes,
-            domain
-        );
-    }
-
-    #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-    if count > 0 || cleanup.dma.released_handles > 0 || cleanup.dma.quarantined_handles > 0 {
-        log::info!(
-            "[DOMAIN] Reclaimed {} SAS resources and {} DMA handles ({} bytes); quarantined {} DMA handles ({} bytes) from {}\n",
-            count,
-            cleanup.dma.released_handles,
-            cleanup.dma.released_bytes,
-            cleanup.dma.quarantined_handles,
-            cleanup.dma.quarantined_bytes,
+            cleanup.dma.pending_handles,
+            cleanup.dma.pending_bytes,
             domain
         );
     }
@@ -197,9 +189,7 @@ pub fn print_domain_list() {
 }
 
 pub fn current_domain() -> DomainId {
-    crate::task::current_execution_context()
-        .map(|context| context.subject.domain)
-        .unwrap_or(DomainId::KERNEL)
+    crate::task::current_subject().domain
 }
 
 pub fn is_kernel_domain() -> bool {

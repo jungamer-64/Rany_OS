@@ -91,7 +91,7 @@ fn activate_runtime_services_for_controller(
         return Ok(false);
     }
 
-    controller.ensure_command_queue();
+    controller.ensure_command_queue()?;
 
     #[cfg(not(test))]
     spawn_command_queue_worker(Arc::clone(controller))?;

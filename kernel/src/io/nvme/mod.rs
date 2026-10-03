@@ -8,4 +8,7 @@
 
 mod runtime;
 
-pub(crate) use runtime::{NvmeRuntime, RuntimeCreateError};
+pub(crate) use runtime::{
+    NvmeRuntime, NvmeRuntimeRundown, PreparedNvmeRuntime, PublishedNvmeRuntime, RuntimeCreateError,
+    RuntimePublishError, RuntimeRundownPoll,
+};

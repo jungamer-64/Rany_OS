@@ -13,16 +13,12 @@
 //         - Per-CPU cache miss時に隣接CPUからスティール
 //         - グローバルロックへのフォールバック頻度削減
 // ============================================================================
-use crate::heap::{CacheClass, CachedAllocation, ExchangeBlocks, ExchangeCache};
-use crate::sync::{IrqMutex, PoisonLock};
+use crate::heap::{CacheClass, CachedAllocation, ExchangeBlocks};
+use crate::sync::PoisonLock;
 use alloc::alloc::{GlobalAlloc, Layout};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 use core::ptr::NonNull;
 
+#[path = "exchange_heap/stats_and_compat.rs"]
 mod stats_and_compat;
 pub use stats_and_compat::*;
-
-/// Immutable snapshots keep existing CPU cache slots stable while hotplug adds
-/// slots. Each registry is owned by exactly one ExchangeHeap, never global.
-type ExchangeCacheSnapshot = Arc<[Arc<IrqMutex<ExchangeCache>>]>;

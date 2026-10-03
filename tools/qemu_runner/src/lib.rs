@@ -53,6 +53,7 @@ impl RunConfig {
         let (smp, max_cpus) = match cpu_hotplug_mode(&profile) {
             Some(CpuHotplugMode::Lifecycle) => (1, 2),
             Some(CpuHotplugMode::Sparse) => (1, 256),
+            None if profile == "mm" => (4, 4),
             None => (2, 2),
         };
         let cpu = if matches!(cpu_hotplug_mode(&profile), Some(CpuHotplugMode::Sparse)) {
@@ -172,6 +173,11 @@ pub enum RunError {
         initial_cpus: u16,
         max_cpus: u16,
     },
+    InvalidNumaTopology {
+        initial_cpus: u16,
+        max_cpus: u16,
+        memory_mb: u64,
+    },
     QemuLaunch(std::io::Error),
     Qmp {
         source: Box<QmpError>,
@@ -200,6 +206,14 @@ impl fmt::Display for RunError {
             } => write!(
                 f,
                 "invalid CPU topology: initial CPUs must be in 1..={max_cpus}, max CPUs must be at most 256 (got initial={initial_cpus}, max={max_cpus})"
+            ),
+            Self::InvalidNumaTopology {
+                initial_cpus,
+                max_cpus,
+                memory_mb,
+            } => write!(
+                f,
+                "MM profile needs two balanced CPU nodes with all slots online and at least 2MiB RAM (got initial={initial_cpus}, max={max_cpus}, RAM={memory_mb}MiB)"
             ),
             Self::QemuLaunch(err) => write!(f, "failed to launch qemu-system-x86_64: {err}"),
             Self::Qmp {
@@ -374,7 +388,7 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if !matches!(config.profile.as_str(), "boot-smoke" | "network")
+    if !matches!(config.profile.as_str(), "boot-smoke" | "network" | "mm")
         && cpu_hotplug_mode(&config.profile).is_none()
     {
         parts.push(String::from("qemu_no_if=1"));
@@ -1097,6 +1111,41 @@ fn validate_cpu_topology(config: &RunConfig) -> Result<(), RunError> {
     Ok(())
 }
 
+/// The MM profile exercises two real firmware NUMA domains, each with its own
+/// RAM backend. Overrides must preserve a balanced, fully online CPU topology.
+fn memory_topology_args(config: &RunConfig) -> Result<Vec<String>, RunError> {
+    if config.profile != "mm" {
+        return Ok(Vec::new());
+    }
+    if config.smp < 2
+        || !config.smp.is_multiple_of(2)
+        || config.max_cpus != config.smp
+        || config.memory_mb < 2
+    {
+        return Err(RunError::InvalidNumaTopology {
+            initial_cpus: config.smp,
+            max_cpus: config.max_cpus,
+            memory_mb: config.memory_mb,
+        });
+    }
+    let half = config.smp / 2;
+    let first = config.memory_mb / 2;
+    let second = config.memory_mb - first;
+    Ok(vec![
+        String::from("-object"),
+        format!("memory-backend-ram,id=mm-node0,size={first}M"),
+        String::from("-object"),
+        format!("memory-backend-ram,id=mm-node1,size={second}M"),
+        String::from("-numa"),
+        format!("node,nodeid=0,memdev=mm-node0,cpus=0-{}", half - 1),
+        String::from("-numa"),
+        format!(
+            "node,nodeid=1,memdev=mm-node1,cpus={half}-{}",
+            config.smp - 1
+        ),
+    ])
+}
+
 fn make_report(
     profile: String,
     artifact_path: PathBuf,
@@ -1223,6 +1272,7 @@ fn poll_qemu(
 /// Returns an error if the request is invalid, required resources are unavailable, or the operation fails.
 pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     validate_cpu_topology(config)?;
+    let memory_args = memory_topology_args(config)?;
     ensure_qemu_available()?;
     let accel = resolve_fullboot_accel()?;
     let image = package_fullboot_image(config).map_err(|err| RunError::Build(Box::new(err)))?;
@@ -1282,7 +1332,16 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg("-m")
         .arg(format!("{}M", config.memory_mb))
         .arg("-smp")
-        .arg(format!("cpus={},maxcpus={}", config.smp, config.max_cpus))
+        .arg(if config.profile == "mm" {
+            format!(
+                "cpus={},maxcpus={},sockets=2,cores={},threads=1",
+                config.smp,
+                config.max_cpus,
+                config.smp / 2
+            )
+        } else {
+            format!("cpus={},maxcpus={}", config.smp, config.max_cpus)
+        })
         .arg("-nic")
         .arg("none")
         .arg("-display")
@@ -1301,6 +1360,8 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg(fat_arg)
         .stdout(Stdio::null())
         .stderr(Stdio::from(qemu_stderr_file));
+
+    qemu_cmd.args(&memory_args);
 
     if let Some(address) = qmp_address {
         qemu_cmd
@@ -1372,6 +1433,43 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mm_profile_has_balanced_firmware_numa_and_live_interrupts() {
+        let config = RunConfig::for_profile("mm");
+        assert_eq!((config.smp, config.max_cpus), (4, 4));
+        assert!(!kernel_cmdline(&config).contains("qemu_no_if"));
+        let args = memory_topology_args(&config).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg == "node,nodeid=0,memdev=mm-node0,cpus=0-1")
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "node,nodeid=1,memdev=mm-node1,cpus=2-3")
+        );
+        for (cpus, maximum, ram) in [(1, 1, 1024), (3, 3, 1024), (4, 8, 1024), (4, 4, 1)] {
+            let mut invalid = config.clone();
+            invalid.smp = cpus;
+            invalid.max_cpus = maximum;
+            invalid.memory_mb = ram;
+            assert!(matches!(
+                memory_topology_args(&invalid),
+                Err(RunError::InvalidNumaTopology { .. })
+            ));
+        }
+        let mut odd_ram = config;
+        odd_ram.memory_mb = 1025;
+        let args = memory_topology_args(&odd_ram).unwrap();
+        assert!(
+            args.iter()
+                .any(|arg| arg == "memory-backend-ram,id=mm-node0,size=512M")
+        );
+        assert!(
+            args.iter()
+                .any(|arg| arg == "memory-backend-ram,id=mm-node1,size=513M")
+        );
+    }
 
     #[test]
     fn boot_smoke_cmdline_keeps_interrupts_enabled() {

@@ -413,34 +413,4 @@ mod tests {
         assert!(flag.load(Ordering::Acquire), "expected immediate wake");
         assert!(!atomic_waker.has_waker());
     }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn deferred_waker_queue_preserves_full_capacity() {
-        let queue = DeferredWakerQueue::new();
-        assert_eq!(queue.pop(), None);
-
-        for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
-            assert!(queue.push_once(i + 1), "failed at {}", i);
-        }
-        assert!(!queue.push_once(usize::MAX));
-
-        for i in 0..DEFERRED_WAKE_QUEUE_SIZE {
-            assert_eq!(queue.pop(), Some(i + 1));
-        }
-        assert_eq!(queue.pop(), None);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn deferred_waker_queues_isolate_single_consumer_state() {
-        let queues = [const { DeferredWakerQueue::new() }; 2];
-
-        assert!(queues[0].push_once(11));
-        assert!(queues[1].push_once(22));
-        assert_eq!(queues[0].pop(), Some(11));
-        assert_eq!(queues[0].pop(), None);
-        assert_eq!(queues[1].pop(), Some(22));
-        assert_eq!(queues[1].pop(), None);
-    }
 }

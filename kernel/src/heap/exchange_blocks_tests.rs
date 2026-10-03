@@ -135,7 +135,7 @@ fn cache_classes_cover_both_requested_size_and_alignment() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn cache_capacity_failure_and_steal_preserve_exclusive_blocks() {
+fn cache_capacity_failure_and_owner_drain_preserve_exclusive_blocks() {
     let mut blocks = ExchangeBlocks::empty();
     blocks.initialize(owned_ram(64 * 1024)).expect("admission");
     let class = CacheClass::for_layout(Layout::from_size_align(65, 64).unwrap()).unwrap();
@@ -158,14 +158,6 @@ fn cache_capacity_failure_and_steal_preserve_exclusive_blocks() {
     assert_eq!(returned, ptr);
     // SAFETY: failed insertion returned exclusive ownership, no cached alias.
     unsafe { blocks.deallocate(returned, layout) };
-    let mut stolen = 0;
-    // LOOP_PROOF: mode=condition; reason=Each steal consumes one of at most 32 cached allocations and stops at the victim reserve.;
-    while let Some(block) = cache.steal(class) {
-        // SAFETY: consumption removes this sole entry before backing release.
-        unsafe { blocks.deallocate(block.into_pointer(), layout) };
-        stolen += 1;
-    }
-    assert_eq!(stolen, 16);
     let mut local = 0;
     // LOOP_PROOF: mode=condition; reason=Each take consumes one of the finite remaining cached entries.;
     while let Some(block) = cache.take(class) {
@@ -173,7 +165,7 @@ fn cache_capacity_failure_and_steal_preserve_exclusive_blocks() {
         unsafe { blocks.deallocate(block.into_pointer(), layout) };
         local += 1;
     }
-    assert_eq!(local, 16);
+    assert_eq!(local, 32);
     assert_eq!(blocks.stats().allocated, 0);
     assert_eq!(blocks.stats().free, 64 * 1024);
 }

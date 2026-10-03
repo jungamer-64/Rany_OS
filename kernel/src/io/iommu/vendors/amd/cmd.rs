@@ -7,7 +7,7 @@ use core::mem::size_of;
 use core::ptr::NonNull;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::types::IommuError;
 use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 
 use super::AmdIommuDriver;
@@ -15,111 +15,16 @@ use super::AmdIommuDriver;
 impl AmdIommuDriver {
     pub(crate) fn handle_command_queue_entry(&self, kind: &IommuCommandKind) -> Result<i32, ()> {
         match kind {
-            IommuCommandKind::MapRegionDevice {
-                device,
-                iova,
-                phys,
-                size,
-                read,
-                write,
-            } => self.handle_map_region_device(*device, *iova, *phys, *size, *read, *write),
             IommuCommandKind::InvalidateIotlbGlobal => {
                 self.invalidate_iotlb_global().map(|_| 0).map_err(|_| ())
             }
-            IommuCommandKind::InvalidateIotlbDomain { .. } => Err(()),
-            IommuCommandKind::MapRegion { .. } => Err(()),
+            IommuCommandKind::InvalidateIotlbDomain { domain } => self
+                .invalidate_domain_all(*domain)
+                .map(|_| 0)
+                .map_err(|_| ()),
         }
     }
-
-    /// Validate alignment and excluded ranges for a map region request.
-    /// On failure, frees the IOVA and returns Err.
-    fn validate_map_region_params(
-        &self,
-        device: DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-    ) -> Result<(), ()> {
-        let align = crate::mm::types::PAGE_SIZE_4K as u64;
-        if (iova & (align - 1) != 0) || (phys & (align - 1) != 0) || (size & (align - 1) != 0) {
-            let _ = self.free_iova_fast(iova, size);
-            return Err(());
-        }
-
-        // Security: Validate that the physical range does not overlap with the kernel image.
-        if crate::io::iommu::runtime::security::validate_dma_region(phys, size).is_err() {
-            let _ = self.free_iova_fast(iova, size);
-            return Err(());
-        }
-
-        if self.reject_excluded_ivmd_range(device, phys, size).is_err() {
-            let _ = self.free_iova_fast(iova, size);
-            return Err(());
-        }
-        Ok(())
-    }
-
-    /// マップと無効化を実行する
-    fn execute_map_and_invalidate(
-        &self,
-        _device: DeviceId,
-        domain_id: u16,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<i32, ()> {
-        let domain = self.domain_for_id(domain_id).map_err(|_| {
-            let _ = self.free_iova_fast(iova, size);
-        })?;
-
-        if let Err(err) = domain.map(iova, phys, size, read, write) {
-            if err != IommuError::AlreadyMapped && err != IommuError::Poisoned {
-                let _ = self.free_iova_fast(iova, size);
-            }
-            return Err(());
-        }
-
-        self.invalidate_domain_pages(domain_id, iova, size)
-            .map_err(|_| ())?;
-        self.invalidate_domain_device_tlbs(domain_id, Some(iova), Some(size))
-            .map_err(|_| ())?;
-
-        Ok(0)
-    }
-
-    /// Handle MapRegionDevice: validate, map, and invalidate.
-    fn handle_map_region_device(
-        &self,
-        device: DeviceId,
-        iova: u64,
-        phys: u64,
-        size: u64,
-        read: bool,
-        write: bool,
-    ) -> Result<i32, ()> {
-        if size == 0 {
-            return Err(());
-        }
-        self.validate_map_region_params(device, iova, phys, size)?;
-
-        let domain_id = self.domain_id_for_device(device).map_err(|_| {
-            let _ = self.free_iova_fast(iova, size);
-        })?;
-
-        self.execute_map_and_invalidate(device, domain_id, iova, phys, size, read, write)
-    }
-
-
 }
-
-const MMIO_CMD_BUF_OFFSET: u64 = 0x0008;
-const MMIO_CONTROL_OFFSET: u64 = 0x0018;
-const MMIO_CMD_HEAD_OFFSET: u64 = 0x2000;
-const MMIO_CMD_TAIL_OFFSET: u64 = 0x2008;
-
-const CONTROL_CMDBUF_EN: u64 = 1 << 12;
 
 pub(crate) const CMD_BUFFER_BYTES: usize = 8192;
 pub(crate) const CMD_BUFFER_ENTRIES: usize = 512;

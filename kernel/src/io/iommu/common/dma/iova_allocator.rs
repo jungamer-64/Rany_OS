@@ -26,7 +26,7 @@
 // │             ▼                              ▼                │
 // │  ┌────────────────────────────────────────────────────────┐ │
 // │  │             mm::FastBitmapAllocator                    │ │
-// │  │          (Generic Bitmap + Magazine)                   │ │
+// │  │          (Shared page occupancy)                   │ │
 // │  └────────────────────────────────────────────────────────┘ │
 // └─────────────────────────────────────────────────────────────┘
 // ```
@@ -44,7 +44,7 @@ mod flush_epoch;
 use flush_epoch::{FlushBoundary, RetirementClock};
 
 pub use crate::mm::phys::fast_allocator::PageGranularity;
-use crate::mm::phys::fast_allocator::{FastBitmapAllocator, LocalCachePolicy};
+use crate::mm::phys::fast_allocator::{AddressPoolError, FastBitmapAllocator};
 use crate::mm::remote_free::{QuarantineEntry, QuarantineRing}; // Using generic QuarantineRing
 
 use crate::io::iommu::types::IommuError;
@@ -121,23 +121,29 @@ impl IovaAllocator {
     /// # Arguments
     /// * `base` - Base IOVA address (must be 4KB aligned)
     /// * `size` - Size of the IOVA space (bytes)
-    pub fn new(base: u64, size: u64) -> Self {
+    pub fn new(base: u64, size: u64) -> Result<Self, IommuError> {
         // Initialize Inner Allocator
-        let inner = FastBitmapAllocator::new(base, size, LocalCachePolicy::SharedBitmap);
+        let inner = FastBitmapAllocator::try_new(base, size).map_err(|error| match error {
+            AddressPoolError::Alignment => IommuError::InvalidAlignment,
+            AddressPoolError::InvalidRange => IommuError::InvalidAddress,
+            AddressPoolError::MetadataAllocation => IommuError::OutOfMemory,
+            AddressPoolError::Exhausted => IommuError::OutOfIova,
+        })?;
 
-        Self {
+        Ok(Self {
             inner,
             quarantines: IrqMutex::new(Arc::from([])),
             fallback_quarantine: IrqMutex::new(QuarantineRing::new()),
             clock: RetirementClock::new(),
             stats: IovaAllocatorStats::default(),
-        }
+        })
     }
 
     fn quarantine_for(&self, cpu_id: crate::cpu::CpuId) -> Option<Arc<IovaQuarantine>> {
         let slot_count = crate::cpu::try_runtime()?.snapshot().slots().len();
         let required_slots = slot_count.max(cpu_id.as_usize().saturating_add(1));
 
+        // LOOP_PROOF: mode=event; reason=Snapshot publication exits on capacity failure or once the monotonically growing CPU projection contains this owner.;
         loop {
             let current = self.quarantines.lock().clone();
             if let Some(quarantine) = current.get(cpu_id.as_usize()) {
@@ -339,54 +345,29 @@ impl IovaAllocator {
         granularity: PageGranularity,
         limit: u64,
     ) -> Option<u64> {
-        if size > granularity.size_bytes() {
-            // Multi-page: use contiguous allocator with limit check
-            let addr = self
-                .inner
-                .allocate_contiguous(size, granularity.size_bytes())?;
-            if addr.checked_add(size)? <= limit {
-                Some(addr)
-            } else {
-                // Over limit — free and fail
-                // Some FastBitmapAllocator shims (test stubs) don't implement
-                // `free_range_immediate`. Fall back to freeing page-by-page
-                // using `free_immediate` (4K granularity) which is available
-                // on both the test shim and the real allocator.
-                {
-                    use crate::mm::phys::fast_allocator::PAGE_SIZE_4K;
-                    let mut p = addr;
-                    let end = addr.saturating_add(size);
-                    // LOOP_PROOF: mode=condition; reason=Fallback release loop advances p by PAGE_SIZE_4K each pass until it reaches end.;
-                    while p < end {
-                        let _ = self.inner.free_immediate(p, PageGranularity::Page4K);
-                        p = p.saturating_add(PAGE_SIZE_4K);
-                    }
-                }
-                None
-            }
-        } else {
-            match granularity {
-                PageGranularity::Page4K => self.inner.allocate_4k_below(limit),
-                PageGranularity::Page2M => self.inner.allocate_2m_below(limit),
-                PageGranularity::Page1G => self.inner.allocate_1g_below(limit),
-            }
-        }
+        // Enforce the limit before claiming occupancy. A partial page at the
+        // limit is unavailable; no speculative allocation needs to be freed.
+        self.inner
+            .allocate_contiguous_below(
+                size.max(granularity.size_bytes()),
+                granularity.size_bytes(),
+                limit,
+            )
+            .ok()
     }
 
     /// Free immediately (Bypass Quarantine)
     ///
     /// Use this only during initialization or teardown when no IOTLB caching is active.
-    pub fn free_immediate(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
-        // LOOP_PROOF: mode=condition; reason=Immediate-free loop subtracts a positive step from size each pass until zero.;
-        while size > 0 {
-            let (granularity, step) = Self::select_free_granularity(addr, size);
-            self.inner
-                .free_immediate(addr, granularity)
-                .map_err(|_| IommuError::NotMapped)?;
-            addr += step;
-            size -= step;
-        }
-        Ok(())
+    pub fn free_immediate(&self, addr: u64, size: u64) -> Result<(), IommuError> {
+        // Validate the entire extent before publishing any page for reuse. A
+        // size-step loop could free a prefix and then fail on its invalid tail.
+        self.inner
+            .free_range_immediate(addr, size)
+            .map_err(|error| match error {
+                AddressPoolError::Alignment => IommuError::InvalidAlignment,
+                _ => IommuError::InvalidAddress,
+            })
     }
 
     // ========================================================================

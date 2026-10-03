@@ -53,7 +53,7 @@ impl Log for KernelLogger {
 
 impl KernelLogger {
     pub(super) fn try_log_async(&self, record: &Record) -> bool {
-        if let Some(mut guard) = LOG_BUFFER.try_lock() {
+        if let Ok(mut guard) = LOG_BUFFER.try_lock() {
             self.write_into_async_buffer::<{ LOG_BUFFER_CAPACITY }>(&mut guard, record);
             return true;
         }

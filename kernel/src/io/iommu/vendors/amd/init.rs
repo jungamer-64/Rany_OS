@@ -83,7 +83,7 @@ pub(super) fn spawn_command_queue_worker() -> Result<(), IommuError> {
 
 pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
     let frame_count = cmd::CMD_BUFFER_BYTES / (PAGE_SIZE_4K as usize);
-    let phys_base = alloc_contiguous_frames(frame_count).ok_or(IommuError::OutOfMemory)?;
+    let phys_base = alloc_contiguous_frames(frame_count).map_err(|_| IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
     let buffer_ptr = NonNull::new(virt_base.as_u64() as *mut cmd::AmdCommand)
         .ok_or(IommuError::HardwareError)?;
@@ -93,7 +93,7 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
         core::ptr::write_bytes(virt_base.as_u64() as *mut u8, 0, cmd::CMD_BUFFER_BYTES);
     }
 
-    let sync_phys = alloc_contiguous_frames(1).ok_or(IommuError::OutOfMemory)?;
+    let sync_phys = alloc_contiguous_frames(1).map_err(|_| IommuError::OutOfMemory)?;
     let sync_virt = phys_to_virt(PhysAddr::new(sync_phys.as_u64()));
     let sync_ptr = NonNull::new(sync_virt.as_u64() as *mut u64).ok_or(IommuError::HardwareError)?;
     unsafe {
@@ -129,10 +129,13 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
         "AMD-Vi Sync Page",
     );
 
+    let sync_address = sync_phys.as_u64();
     let mut state = AmdCommandState {
+        backing: Some(phys_base),
+        sync_backing: Some(sync_phys),
         buffer,
         sync_ptr,
-        sync_phys: sync_phys.as_u64(),
+        sync_phys: sync_address,
         frame_count,
         seq: AtomicU64::new(0),
     };

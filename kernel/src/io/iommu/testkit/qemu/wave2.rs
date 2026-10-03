@@ -509,31 +509,45 @@ pub fn wave2_unmap_mixed_superpages_smoke() -> bool {
 }
 
 pub fn wave2_page_table_scope_commit_preserves_counts_smoke() -> bool {
-    let mut scope = match PageTableScope::new(None) {
+    let pending = crate::sync::PoisonLock::new(
+        crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
+    );
+    let pool = PageTablePool::new(crate::mm::numa::topology::num_nodes(), 4);
+    let mut scope = match PageTableScope::new_with_pool(pool.clone(), None, &pending) {
         Ok(scope) => scope,
         Err(_) => return false,
     };
     let scope_phys = scope.phys();
     let parent_phys = 0xDEADBEEF;
 
-    register_page_table(scope_phys, 0, 0);
+    register_page_table(scope_phys);
     for _ in 0..42 {
         let _ = inc_ref(scope_phys);
     }
-    register_page_table(parent_phys, 0, 0);
+    register_page_table(parent_phys);
 
     let mut parent_entry = SlPte::new();
-    scope.attach_to_parent(
-        &mut parent_entry as *mut SlPte,
-        parent_phys,
-        PteFormat::Intel,
-        1,
-    );
+    // SAFETY: this retained stack parent is exclusively accessed and never installed in hardware.
+    unsafe {
+        scope.attach_to_parent(
+            &mut parent_entry as *mut SlPte,
+            parent_phys,
+            PteFormat::Intel,
+            1,
+        );
+    }
     scope.commit();
 
     let ok = get_ref_count(scope_phys) == 42 && get_ref_count(parent_phys) == 1;
     unregister_page_table(parent_phys);
-    unregister_page_table(scope_phys);
+    parent_entry = SlPte::new();
+    assert!(!parent_entry.is_present());
+    // SAFETY: the only parent is cleared; this fixture never published the table to a device.
+    if let Some(table) =
+        unsafe { crate::io::iommu::common::dma::page_table_pool::take_unlinked_table(scope_phys) }
+    {
+        pool.release(unsafe { table.complete_after_invalidation() });
+    }
     ok
 }
 
@@ -541,114 +555,121 @@ pub fn wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
     let parent_phys = 0xBABA;
     let mut parent_entry = SlPte::new();
     {
-        let mut scope = match PageTableScope::new(None) {
+        let pending = crate::sync::PoisonLock::new(
+            crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
+        );
+        let pool = PageTablePool::new(crate::mm::numa::topology::num_nodes(), 4);
+        let mut scope = match PageTableScope::new_with_pool(pool.clone(), None, &pending) {
             Ok(scope) => scope,
             Err(_) => return false,
         };
-        scope.attach_to_parent(
-            &mut parent_entry as *mut SlPte,
-            parent_phys,
-            PteFormat::Intel,
-            1,
-        );
-        if !unsafe { (*(&parent_entry as *const SlPte)).is_present() } {
-            return false;
-        }
-    }
-    !unsafe { (*(&parent_entry as *const SlPte)).is_present() }
-}
-
-pub fn wave2_security_notifier_registration_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
-    let notifier = Arc::new(MockSecurityNotifier::new());
-    if !ctrl.set_security_notifier(notifier.clone()) {
-        return false;
-    }
-    let notifier2 = Arc::new(MockSecurityNotifier::new());
-    !ctrl.set_security_notifier(notifier2)
-}
-
-pub fn wave2_security_event_types_are_copy_smoke() -> bool {
-    let event1 = SecurityEvent::DmaViolation {
-        source_id: 0x0108,
-        fault_address: 0x1000,
-        reason: 0x01,
-        domain_id: Some(0x10),
-    };
-    let event2 = event1;
-    match event2 {
-        SecurityEvent::DmaViolation {
-            source_id,
-            domain_id,
-            ..
-        } => {
-            if source_id != 0x0108 || domain_id != Some(0x10) {
+        // SAFETY: this retained stack parent is exclusively accessed and never installed in hardware.
+        unsafe {
+            scope.attach_to_parent(
+                &mut parent_entry as *mut SlPte,
+                parent_phys,
+                PteFormat::Intel,
+                1,
+            );
+            if !unsafe { (*(&parent_entry as *const SlPte)).is_present() } {
                 return false;
             }
         }
-        _ => return false,
+        !unsafe { (*(&parent_entry as *const SlPte)).is_present() }
     }
 
-    let event3 = SecurityEvent::DeviceIsolated {
-        source_id: 0x0208,
-        reason: IsolationReason::DmaFault,
-    };
-    let _event4 = event3;
-    let event5 = SecurityEvent::QuarantinePoisoned { domain_id: 42 };
-    let _event6 = event5;
-    let event7 = SecurityEvent::EventsDropped { count: 10 };
-    let _event8 = event7;
-    true
-}
-
-pub fn wave2_fault_summary_from_fault_record_smoke() -> bool {
-    let record = FaultRecord {
-        lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42,
-        hi: 0x2000,
-    };
-
-    let summary = FaultSummary::from(&record);
-    summary.source_id == 0x0108 && summary.fault_address == 0x2000 && summary.reason == 0x42
-}
-
-pub fn wave2_isolation_decision_default_smoke() -> bool {
-    matches!(
-        IsolationDecision::default(),
-        IsolationDecision::Isolate(IsolationReason::DmaFault)
-    )
-}
-
-pub fn wave2_identity_mapping_disabled_by_default_smoke() -> bool {
-    crate::io::iommu::api::is_iommu_required()
-}
-
-pub fn wave2_iova_not_equal_phys_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
-    if ctrl.init_iova(0xF000_0000, 0x10000).is_err() {
-        return false;
+    pub fn wave2_security_notifier_registration_smoke() -> bool {
+        let ctrl = IommuController::new(0x0, 0);
+        let notifier = Arc::new(MockSecurityNotifier::new());
+        if !ctrl.set_security_notifier(notifier.clone()) {
+            return false;
+        }
+        let notifier2 = Arc::new(MockSecurityNotifier::new());
+        !ctrl.set_security_notifier(notifier2)
     }
-    let size = 0x1000;
-    let iova = match ctrl.allocate_iova(size) {
-        Ok(iova) => iova,
-        Err(_) => return false,
-    };
-    let in_expected_range = iova >= 0xF000_0000;
-    let free_ok = ctrl.free_iova(iova, size).is_ok();
-    in_expected_range && free_ok
-}
 
-pub fn wave2_domain_type_not_passthrough_smoke() -> bool {
-    let domain = IommuDomain::new(
-        0,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    );
+    pub fn wave2_security_event_types_are_copy_smoke() -> bool {
+        let event1 = SecurityEvent::DmaViolation {
+            source_id: 0x0108,
+            fault_address: 0x1000,
+            reason: 0x01,
+            domain_id: Some(0x10),
+        };
+        let event2 = event1;
+        match event2 {
+            SecurityEvent::DmaViolation {
+                source_id,
+                domain_id,
+                ..
+            } => {
+                if source_id != 0x0108 || domain_id != Some(0x10) {
+                    return false;
+                }
+            }
+            _ => return false,
+        }
+
+        let event3 = SecurityEvent::DeviceIsolated {
+            source_id: 0x0208,
+            reason: IsolationReason::DmaFault,
+        };
+        let _event4 = event3;
+        let event5 = SecurityEvent::QuarantinePoisoned { domain_id: 42 };
+        let _event6 = event5;
+        let event7 = SecurityEvent::EventsDropped { count: 10 };
+        let _event8 = event7;
+        true
+    }
+
+    pub fn wave2_fault_summary_from_fault_record_smoke() -> bool {
+        let record = FaultRecord {
+            lo: (0x0108u64 << FaultRecord::SID_SHIFT) | 0x42,
+            hi: 0x2000,
+        };
+
+        let summary = FaultSummary::from(&record);
+        summary.source_id == 0x0108 && summary.fault_address == 0x2000 && summary.reason == 0x42
+    }
+
+    pub fn wave2_isolation_decision_default_smoke() -> bool {
+        matches!(
+            IsolationDecision::default(),
+            IsolationDecision::Isolate(IsolationReason::DmaFault)
+        )
+    }
+
+    pub fn wave2_identity_mapping_disabled_by_default_smoke() -> bool {
+        crate::io::iommu::api::is_iommu_required()
+    }
+
+    pub fn wave2_iova_not_equal_phys_smoke() -> bool {
+        let ctrl = IommuController::new(0x0, 0);
+        if ctrl.init_iova(0xF000_0000, 0x10000).is_err() {
+            return false;
+        }
+        let size = 0x1000;
+        let iova = match ctrl.allocate_iova(size) {
+            Ok(iova) => iova,
+            Err(_) => return false,
+        };
+        let in_expected_range = iova >= 0xF000_0000;
+        let free_ok = ctrl.free_iova(iova, size).is_ok();
+        in_expected_range && free_ok
+    }
+
+    pub fn wave2_domain_type_not_passthrough_smoke() -> bool {
+        let domain = IommuDomain::new(
+            0,
+            None,
+            false,
+            false,
+            48,
+            4,
+            IommuDomainType::Translated,
+            PageTablePool::new(1, 32),
+            PteFormat::Intel,
+        );
+    }
     matches!(domain.domain_type(), IommuDomainType::Translated)
 }
 
@@ -1966,7 +1987,10 @@ fn wave5_cmdqueue_map_unmap_with_domain_impl() -> bool {
     use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 
     let ctrl = IommuController::new(0x0, 0);
-    let cq = CommandQueue::new();
+    let cq = match CommandQueue::new(None) {
+        Ok(queue) => queue,
+        Err(_) => return false,
+    };
 
     let domain_id = match ctrl.create_domain(None, IommuDomainType::Translated) {
         Ok(id) => id,

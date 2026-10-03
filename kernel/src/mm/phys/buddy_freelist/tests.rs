@@ -1,306 +1,115 @@
 use super::*;
+use crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned;
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_migrate_type_fallback() {
-    let fallbacks = MigrateType::Movable.fallback_order();
-    assert!(fallbacks.contains(&MigrateType::Reclaimable));
-    assert!(fallbacks.contains(&MigrateType::Unmovable));
+fn pool(pages: usize, alignment: usize) -> FreeListBuddyAllocator {
+    let loan = alloc_contiguous_frames_aligned(pages, alignment).expect("owned fixture RAM");
+    FreeListBuddyAllocator::from_allocation(loan).expect("metadata admission")
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_frame_to_color() {
-    assert_eq!(frame_to_color(0), 0);
-    assert_eq!(frame_to_color(64), 0);
-    assert_eq!(frame_to_color(1), 1);
-    assert_eq!(frame_to_color(63), 63);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_page_flags() {
-    let mut flags = PageFlags::NONE;
-    assert!(!flags.contains(PageFlags::FREE));
-
-    flags.insert(PageFlags::FREE);
-    assert!(flags.contains(PageFlags::FREE));
-
-    flags.insert(PageFlags::ZEROED);
-    assert!(flags.contains(PageFlags::FREE));
-    assert!(flags.contains(PageFlags::ZEROED));
-
-    flags.remove(PageFlags::FREE);
-    assert!(!flags.contains(PageFlags::FREE));
-    assert!(flags.contains(PageFlags::ZEROED));
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_basic_alloc_dealloc() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 4MB at 1MB
-    let regions = [(PhysAddr::new(0x100000), 0x400000u64)];
-    unsafe {
-        allocator.init(&regions);
+fn mixed_orders_match_independent_occupancy() {
+    let mut pool = pool(1027, PAGE_SIZE_4K);
+    let base = pool.base_frame;
+    let mut occupied = alloc::vec![false; pool.total_count()];
+    let mut active = Vec::new();
+    let mut rng = 7919u64;
+    for _ in 0..10000 {
+        rng ^= rng << 13;
+        rng ^= rng >> 7;
+        rng ^= rng << 17;
+        if rng & 3 == 0 && !active.is_empty() {
+            let index = rng as usize % active.len();
+            let allocation: MobilityAllocation = active.swap_remove(index);
+            let first = allocation.frame.as_usize() - base;
+            let count = allocation.page_count();
+            assert!(occupied[first..first + count].iter().all(|&used| used));
+            occupied[first..first + count].fill(false);
+            pool.deallocate(allocation).expect("originating pool");
+        } else {
+            let order = (rng as usize >> 8) % 10;
+            let mt = [
+                MigrateType::Movable,
+                MigrateType::Unmovable,
+                MigrateType::Reclaimable,
+            ][rng as usize % 3];
+            match pool.allocate(order, mt) {
+                Ok(allocation) => {
+                    let absolute = allocation.frame.as_usize();
+                    let first = absolute - base;
+                    let count = allocation.page_count();
+                    assert_eq!(absolute % count, 0, "absolute alignment");
+                    assert!(first + count <= occupied.len());
+                    assert!(occupied[first..first + count].iter().all(|&used| !used));
+                    occupied[first..first + count].fill(true);
+                    active.push(allocation);
+                }
+                Err(FrameAllocError::Exhausted) => {
+                    let count = 1 << order;
+                    let possible = (0..occupied.len()).any(|index| {
+                        (base + index) % count == 0
+                            && index + count <= occupied.len()
+                            && occupied[index..index + count].iter().all(|&used| !used)
+                    });
+                    assert!(!possible, "allocator missed a free aligned block");
+                }
+                Err(error) => panic!("unexpected allocation error: {error:?}"),
+            }
+        }
+        assert_eq!(
+            pool.free_count() as usize,
+            occupied.iter().filter(|&&used| !used).count()
+        );
     }
-
-    let frame = allocator.allocate_4k_frame();
-    assert!(frame.is_some());
-
-    let frame = frame.unwrap();
-    allocator.deallocate_4k_frame(frame);
+    for allocation in active {
+        pool.deallocate(allocation).expect("return");
+    }
+    assert_eq!(pool.free_count() as usize, occupied.len());
+    pool.into_allocation()
+        .expect("all children retired")
+        .release();
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_buddy_coalescing() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 2MB at 2MB boundary
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let initial_free = allocator.free_count();
-
-    // 隣接するorder-0ブロックを2つ割り当て
-    let f1 = allocator.allocate(0, MigrateType::Movable).unwrap();
-    let f2 = allocator.allocate(0, MigrateType::Movable).unwrap();
-
-    // 両方解放 — order-1にコアレスするはず
-    allocator.deallocate(f1, 0);
-    allocator.deallocate(f2, 0);
-
-    assert_eq!(allocator.free_count(), initial_free);
+fn huge_alignment_color_and_reclamation() {
+    let mut pool = pool(1024, PAGE_SIZE_2M);
+    let huge = pool.allocate(9, MigrateType::Movable).expect("huge child");
+    assert_eq!(huge.start_address().as_u64() % PAGE_SIZE_2M as u64, 0);
+    let colored = pool
+        .allocate_with_color(0, MigrateType::Unmovable, 3)
+        .expect("colored child");
+    assert_eq!(frame_to_color(colored.frame.as_usize()), 3);
+    let mut pool = pool
+        .into_allocation()
+        .expect_err("live children reject reclamation");
+    pool.deallocate(huge).expect("huge return");
+    pool.deallocate(colored).expect("colored return");
+    pool.into_allocation().expect("empty loan").release();
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_split_and_merge() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let initial_free = allocator.free_count();
-
-    // order 0 の割り当て（上位オーダーからの分割が発生）
-    let f = allocator.allocate(0, MigrateType::Movable).unwrap();
-    assert_eq!(allocator.free_count(), initial_free - 1);
-
-    let stats = allocator.stats();
-    assert!(stats.split_count > 0);
-
-    allocator.deallocate(f, 0);
-    assert_eq!(allocator.free_count(), initial_free);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_migrate_fallback_alloc() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // 初期メモリは全てMovable。Unmovableの割り当てはフォールバックが発生する。
-    let frame = allocator.allocate(0, MigrateType::Unmovable);
-    assert!(frame.is_some());
-
-    let stats = allocator.stats();
-    assert!(stats.fallback_count > 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_stats() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let stats = allocator.stats();
-    assert!(stats.total_frames > 0);
-    assert!(stats.free_frames > 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_2m_allocation() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 2MB at 2MB boundary
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let frame = allocator.allocate_2m_frame();
-    assert!(frame.is_some());
-    let frame = frame.unwrap();
-    // 2MBアライメントを確認
-    assert_eq!(frame.start_address().as_u64() % (PAGE_SIZE_2M as u64), 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_contiguous_allocation() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 4MB at 1MB
-    let regions = [(PhysAddr::new(0x100000), 0x400000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // 16ページ連続割り当て（order 4に切り上げ）
-    let addr = allocator.allocate_contiguous(16);
-    assert!(addr.is_some());
-
-    let addr = addr.unwrap();
-    // 16ページ = 64KB アライメントを確認
-    assert_eq!(addr.as_u64() % (16 * PAGE_SIZE_4K as u64), 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_frames_to_order() {
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(0), 0);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(1), 0);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(2), 1);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(3), 2);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(4), 2);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(5), 3);
-    assert_eq!(FreeListBuddyAllocator::frames_to_order(512), 9);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_allocate_with_color() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 4MB at 2MB boundary — 十分なフレームでカラー分散を確保
-    let regions = [(PhysAddr::new(0x200000), 0x400000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let preferred_color = 3u8;
-    let frame = allocator.allocate_with_color(0, MigrateType::Movable, preferred_color);
-    assert!(frame.is_some());
-    let frame = frame.unwrap();
-    let actual_color = frame_to_color(frame.as_usize());
-    assert_eq!(actual_color, preferred_color);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_max_order_rejection() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // MAX_ORDER + 1 は拒否される
-    let result = allocator.allocate(MAX_ORDER + 1, MigrateType::Movable);
-    assert!(result.is_none());
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_allocate_from_empty() {
-    // 未初期化アロケータからの割り当ては None を返す
-    let mut allocator = FreeListBuddyAllocator::new();
-    let result = allocator.allocate(0, MigrateType::Movable);
-    assert!(result.is_none());
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_multi_order_coalescing() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 2MB at 2MB boundary
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    let initial_free = allocator.free_count();
-
-    // 4つのorder-0フレームを割り当て
-    let f1 = allocator.allocate(0, MigrateType::Movable).unwrap();
-    let f2 = allocator.allocate(0, MigrateType::Movable).unwrap();
-    let f3 = allocator.allocate(0, MigrateType::Movable).unwrap();
-    let f4 = allocator.allocate(0, MigrateType::Movable).unwrap();
-
-    // 全て解放 — 少なくとも3回のコアレスが発生するはず
-    allocator.deallocate(f1, 0);
-    allocator.deallocate(f2, 0);
-    allocator.deallocate(f3, 0);
-    allocator.deallocate(f4, 0);
-
-    assert_eq!(allocator.free_count(), initial_free);
-    let stats = allocator.stats();
-    assert!(
-        stats.coalesce_count >= 3,
-        "coalesce_count={}",
-        stats.coalesce_count
-    );
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_fragmentation_stress() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 2MB at 2MB boundary
-    let regions = [(PhysAddr::new(0x200000), 0x200000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // 全ページをorder-0で割り当て
-    let mut frames = alloc::vec::Vec::new();
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while let Some(f) = allocator.allocate(0, MigrateType::Movable) {
-        frames.push(f);
-    }
-
-    assert!(frames.len() >= 512); // 2MB / 4KB = 512 pages
-
-    // 交互に解放（最大断片化）
-    for i in (0..frames.len()).step_by(2) {
-        allocator.deallocate(frames[i], 0);
-    }
-
-    // order-1 (8KB) 割り当ては失敗するはず（連続ペアがない）
-    let big = allocator.allocate(1, MigrateType::Movable);
-    assert!(big.is_none(), "Expected None but got {:?}", big);
-
-    // 残りのページを解放
-    for i in (1..frames.len()).step_by(2) {
-        allocator.deallocate(frames[i], 0);
-    }
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_freelist_move_freepages_block() {
-    let mut allocator = FreeListBuddyAllocator::new();
-    // 4MB at 2MB boundary
-    let regions = [(PhysAddr::new(0x200000), 0x400000u64)];
-    unsafe {
-        allocator.init(&regions);
-    }
-
-    // 初期メモリは全てMovable。Unmovableの割り当てはフォールバック+pageblock盗用を引き起こす。
-    let frame = allocator.allocate(0, MigrateType::Unmovable);
-    assert!(frame.is_some());
-    assert!(allocator.fallback_count() > 0);
-
-    // フォールバック時にpageblockのタイプがUnmovableに変更されているか確認
-    let frame_idx = frame.unwrap().as_usize();
-    let block_mt = allocator.get_pageblock_migratetype(frame_idx);
-    assert_eq!(block_mt, MigrateType::Unmovable);
+fn rejection_preserves_unaccepted_owner() {
+    let mut origin = pool(8, PAGE_SIZE_4K);
+    let mut other = pool(8, PAGE_SIZE_4K);
+    let allocation = origin.allocate(0, MigrateType::Reclaimable).expect("child");
+    let address = allocation.start_address();
+    let allocation = other
+        .deallocate(allocation)
+        .expect_err("wrong return destination");
+    assert_eq!(allocation.start_address(), address);
+    assert!(matches!(
+        origin.allocate(MAX_ORDER + 1, MigrateType::Movable),
+        Err(FrameAllocError::InvalidRange)
+    ));
+    assert!(matches!(
+        origin.allocate_with_color(0, MigrateType::Movable, 64),
+        Err(FrameAllocError::InvalidRange)
+    ));
+    origin
+        .deallocate(allocation)
+        .expect("original return authority");
+    origin.into_allocation().expect("empty origin").release();
+    other.into_allocation().expect("empty other").release();
 }

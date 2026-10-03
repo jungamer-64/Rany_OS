@@ -8,7 +8,7 @@
 //! Page Request handling, which are part of the ATS/PRI extensions.
 
 // Convenience wrappers for contiguous frame allocation
-use crate::mm::phys::frame_allocator::{alloc_contiguous_frames, dealloc_contiguous_frames};
+use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 
 // ============================================================================
 // Page Request Interface (PRI) Structures
@@ -78,6 +78,7 @@ impl PageRequestEntry {
 /// Ring buffer queue for page request entries.
 /// Hardware writes requests at the tail, software reads from head.
 pub struct PageRequestQueue {
+    backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     /// Base virtual address of the queue
     base: usize,
     /// Number of entries (power of 2)
@@ -100,13 +101,15 @@ impl PageRequestQueue {
         let num_pages = (total_bytes + 4095) / 4096;
 
         // Allocate contiguous physical frames for hardware requirements
-        let phys = alloc_contiguous_frames(num_pages)?.as_u64();
+        let backing = alloc_contiguous_frames(num_pages).ok()?;
+        let phys = backing.as_u64();
         let base = crate::io::iommu::common::tables::phys_to_virt_usize(phys);
 
         // Security: Mark the range as protected from DMA
         crate::security::dma::register_protected_range(phys, total_bytes as u64);
 
         Some(Self {
+            backing: Some(backing),
             base,
             size,
             head: 0,
@@ -156,13 +159,8 @@ impl PageRequestQueue {
 impl Drop for PageRequestQueue {
     fn drop(&mut self) {
         let total_bytes = self.size * core::mem::size_of::<PageRequestEntry>();
-        let num_pages = (total_bytes + 4095) / 4096;
-        if let Ok(phys) = crate::io::iommu::common::tables::virt_ptr_to_phys(self.base as *const u8)
-        {
-            crate::security::dma::unregister_protected_range(phys, total_bytes as u64);
-
-            // free contiguous region
-            dealloc_contiguous_frames(x86_64::PhysAddr::new(phys), num_pages);
-        }
+        let backing = self.backing.take().expect("PRQ owns its physical backing");
+        crate::security::dma::unregister_protected_range(backing.as_u64(), total_bytes as u64);
+        backing.release();
     }
 }

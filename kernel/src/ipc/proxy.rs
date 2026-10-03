@@ -110,10 +110,12 @@ impl DomainProxy for BasicProxy {
         F: FnOnce() -> T,
     {
         self.check_domain_available()?;
-        let current = crate::task::current_execution_context().ok_or_else(|| {
-            ProxyError::CommunicationError(String::from("execution context unavailable"))
-        })?;
-        if current.subject.domain != self.caller_domain {
+        let current = crate::cpu::CurrentCpu::acquire()
+            .and_then(|cpu| cpu.execution())
+            .ok_or_else(|| {
+                ProxyError::CommunicationError(String::from("execution context unavailable"))
+            })?;
+        if current.domain != self.caller_domain {
             return Err(ProxyError::PermissionDenied);
         }
         let _domain_guard = crate::task::enter_domain(self.target_domain).map_err(|_| {

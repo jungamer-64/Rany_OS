@@ -1,3 +1,11 @@
+#[path = "../task/execution.rs"]
+mod execution;
+pub(crate) use execution::enter_domain;
+pub use execution::{
+    ExecutionAdmissionError, ExecutionContext, ExecutionContextUnavailable, Subject,
+    current_subject, current_task_id,
+};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct TaskId(u64);
 

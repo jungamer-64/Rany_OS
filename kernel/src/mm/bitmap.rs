@@ -1,6 +1,5 @@
 // ============================================================================
 // src/mm/bitmap.rs - Hierarchical Bitmap Allocator
-// IOVA_MM_MIGRATION_PLAN Phase 1.2: HierarchicalBitmap / HugePageBitmap
 //
 // 3-Level hierarchical bitmap for O(1) free-slot search using tzcnt/popcnt.
 // Can be used for both IOVA allocation and physical frame allocation.
@@ -23,7 +22,7 @@ use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 // ============================================================================
 
 /// Bits per word (u64)
-mod huge_page;
+
 const BITS_PER_WORD: usize = 64;
 
 /// Units covered per L1 summary bit (= bits per detail word)
@@ -71,6 +70,45 @@ pub struct HierarchicalBitmap {
 }
 
 impl HierarchicalBitmap {
+    pub fn try_new(total_units: usize) -> Result<Self, BitmapError> {
+        if total_units == 0 {
+            return Err(BitmapError::InvalidRange);
+        }
+        let detail_words = total_units.div_ceil(BITS_PER_WORD);
+        let summary_words = detail_words.div_ceil(BITS_PER_WORD);
+        let summary_l2_words = summary_words.div_ceil(BITS_PER_WORD);
+        fn words(count: usize, units: usize) -> Result<Box<[AtomicU64]>, BitmapError> {
+            let mut result = Vec::new();
+            result
+                .try_reserve_exact(count)
+                .map_err(|_| BitmapError::MetadataAllocation)?;
+            for word in 0..count {
+                let bits = units
+                    .saturating_sub(word * BITS_PER_WORD)
+                    .min(BITS_PER_WORD);
+                result.push(AtomicU64::new(if bits == BITS_PER_WORD {
+                    u64::MAX
+                } else {
+                    (1u64 << bits) - 1
+                }));
+            }
+            Ok(result.into_boxed_slice())
+        }
+        Ok(Self {
+            detail: words(detail_words, total_units)?,
+            summary: words(summary_words, detail_words)?,
+            summary_l2: words(summary_l2_words, summary_words)?,
+            total_units,
+            detail_words,
+            free_count: AtomicUsize::new(total_units),
+            last_word_mask: if total_units % BITS_PER_WORD == 0 {
+                u64::MAX
+            } else {
+                (1u64 << (total_units % BITS_PER_WORD)) - 1
+            },
+            hint: AtomicUsize::new(0),
+        })
+    }
     /// Create a new hierarchical bitmap
     ///
     /// # Arguments
@@ -79,69 +117,8 @@ impl HierarchicalBitmap {
     /// # Panics
     /// Panics if `total_units` is 0
     pub fn new(total_units: usize) -> Self {
-        assert!(
-            total_units > 0,
-            "HierarchicalBitmap: total_units must be > 0"
-        );
-
-        let detail_words = (total_units.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
-        let summary_words = (detail_words.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
-        let summary_l2_words = (summary_words.saturating_add(BITS_PER_WORD - 1)) / BITS_PER_WORD;
-
-        // Calculate last word mask
-        let last_bits = total_units % BITS_PER_WORD;
-        let last_word_mask = if last_bits == 0 {
-            u64::MAX
-        } else {
-            (1u64 << last_bits) - 1
-        };
-
-        // Initialize detail bitmap (all free = all 1s)
-        let mut detail = Vec::with_capacity(detail_words);
-        for i in 0..detail_words {
-            let remaining = total_units.saturating_sub(i * BITS_PER_WORD);
-            let bits = if remaining >= BITS_PER_WORD {
-                u64::MAX
-            } else {
-                (1u64 << remaining) - 1
-            };
-            detail.push(AtomicU64::new(bits));
-        }
-
-        // Initialize summary bitmap (all have free = all 1s)
-        let mut summary = Vec::with_capacity(summary_words);
-        for i in 0..summary_words {
-            let remaining_words = detail_words.saturating_sub(i * BITS_PER_WORD);
-            let bits = if remaining_words >= BITS_PER_WORD {
-                u64::MAX
-            } else {
-                (1u64 << remaining_words) - 1
-            };
-            summary.push(AtomicU64::new(bits));
-        }
-
-        // Initialize summary_l2 bitmap
-        let mut summary_l2 = Vec::with_capacity(summary_l2_words);
-        for i in 0..summary_l2_words {
-            let remaining_words = summary_words.saturating_sub(i * BITS_PER_WORD);
-            let bits = if remaining_words >= BITS_PER_WORD {
-                u64::MAX
-            } else {
-                (1u64 << remaining_words) - 1
-            };
-            summary_l2.push(AtomicU64::new(bits));
-        }
-
-        Self {
-            detail: detail.into_boxed_slice(),
-            summary: summary.into_boxed_slice(),
-            summary_l2: summary_l2.into_boxed_slice(),
-            total_units,
-            detail_words,
-            free_count: AtomicUsize::new(total_units),
-            last_word_mask,
-            hint: AtomicUsize::new(0),
-        }
+        Self::try_new(total_units)
+            .expect("bitmap construction requires nonzero capacity and metadata")
     }
 
     /// Get total number of units
@@ -204,17 +181,17 @@ impl HierarchicalBitmap {
                 }
 
                 // Found non-zero L1 word, search detail within it
-                let l1_bit = l1_word.trailing_zeros() as usize;
-                let detail_idx = l1_idx * BITS_PER_WORD + l1_bit;
-                if detail_idx >= self.detail.len() {
-                    continue;
-                }
-
-                // Try to allocate from this detail word
-                if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
-                    // Update hint for next allocation
-                    self.hint.store(l2_idx, Ordering::Relaxed);
-                    return Some(unit_idx);
+                let mut candidates = l1_word;
+                // LOOP_PROOF: mode=condition; reason=Each iteration removes one candidate bit.;
+                while candidates != 0 {
+                    let detail_idx = l1_idx * BITS_PER_WORD + candidates.trailing_zeros() as usize;
+                    candidates &= candidates - 1;
+                    if detail_idx < self.detail.len() {
+                        if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
+                            self.hint.store(l2_idx, Ordering::Relaxed);
+                            return Some(unit_idx);
+                        }
+                    }
                 }
             }
         }
@@ -295,7 +272,6 @@ impl HierarchicalBitmap {
 
     /// Try to allocate a unit from a specific detail word
     ///
-    /// This is public to allow HugePageBitmap to use it for targeted allocation.
     pub fn try_allocate_from_word(&self, word_idx: usize) -> Option<usize> {
         self.try_allocate_from_word_below(word_idx, BITS_PER_WORD)
     }
@@ -443,7 +419,7 @@ impl HierarchicalBitmap {
             return 0;
         }
 
-        let end = (start + count).min(self.total_units);
+        let end = start.saturating_add(count).min(self.total_units);
         let mut marked = 0;
 
         for index in start..end {
@@ -472,7 +448,10 @@ impl HierarchicalBitmap {
         if count == 0 {
             return true;
         }
-        if start + count > self.total_units {
+        if start
+            .checked_add(count)
+            .is_none_or(|end| end > self.total_units)
+        {
             return false;
         }
 
@@ -546,26 +525,8 @@ impl HierarchicalBitmap {
         }
 
         // Update free count
-        let new_free = valid_bits.count_ones() as usize;
+        let new_free = (valid_bits & !old).count_ones() as usize;
         self.free_count.fetch_add(new_free, Ordering::Relaxed);
-    }
-
-    /// Access raw detail bitmap (for single-writer arena sync)
-    #[inline]
-    pub fn detail(&self) -> &[AtomicU64] {
-        &self.detail
-    }
-
-    /// Access raw summary bitmap
-    #[inline]
-    pub fn summary(&self) -> &[AtomicU64] {
-        &self.summary
-    }
-
-    /// Access raw L2 summary bitmap
-    #[inline]
-    pub fn summary_l2(&self) -> &[AtomicU64] {
-        &self.summary_l2
     }
 
     // ========================================================================
@@ -586,6 +547,14 @@ impl HierarchicalBitmap {
             let l2_bit = l1_idx % BITS_PER_WORD;
             let l2_mask = 1u64 << l2_bit;
             self.summary_l2[l2_idx].fetch_and(!l2_mask, Ordering::AcqRel);
+            // A concurrent return may have set L1 before this L2 clear.
+            if self.summary[l1_idx].load(Ordering::Acquire) != 0 {
+                self.summary_l2[l2_idx].fetch_or(l2_mask, Ordering::Release);
+            }
+        }
+        // Clear is a projection update, never an authority over occupancy.
+        if self.detail[detail_word_idx].load(Ordering::Acquire) != 0 {
+            self.set_summary_bit(detail_word_idx);
         }
     }
 
@@ -595,121 +564,153 @@ impl HierarchicalBitmap {
         let l1_bit = detail_word_idx % BITS_PER_WORD;
         let l1_mask = 1u64 << l1_bit;
 
-        let old_l1 = self.summary[l1_idx].fetch_or(l1_mask, Ordering::AcqRel);
-
-        // If L1 word was empty, set L2 bit
-        if old_l1 == 0 {
-            let l2_idx = l1_idx / BITS_PER_WORD;
-            let l2_bit = l1_idx % BITS_PER_WORD;
-            let l2_mask = 1u64 << l2_bit;
-            self.summary_l2[l2_idx].fetch_or(l2_mask, Ordering::AcqRel);
-        }
+        self.summary[l1_idx].fetch_or(l1_mask, Ordering::AcqRel);
+        let l2_idx = l1_idx / BITS_PER_WORD;
+        let l2_mask = 1u64 << (l1_idx % BITS_PER_WORD);
+        self.summary_l2[l2_idx].fetch_or(l2_mask, Ordering::AcqRel);
     }
 }
 
-// ============================================================================
-// HugePageBitmap - Extended Bitmap with 2MB/1GB Tracking
-// ============================================================================
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BitmapError {
+    InvalidRange,
+    MetadataAllocation,
+    Occupied { index: usize },
+}
 
-use super::atomic_utils::AtomicU8;
-use core::sync::atomic::AtomicU16;
+/// An unpublished reservation. Dropping it restores only the words claimed by
+/// this attempt. All sizes compete through the same detail-word CAS operation.
+pub(crate) struct BitmapClaim<'a> {
+    bitmap: &'a HierarchicalBitmap,
+    start: usize,
+    claimed_end: usize,
+}
 
-/// Pages per 2MB block (2MB / 4KB = 512)
-pub const PAGES_PER_2MB: usize = 512;
+impl BitmapClaim<'_> {
+    pub(crate) fn commit(self) -> usize {
+        let start = self.start;
+        core::mem::forget(self);
+        start
+    }
+}
 
-/// Blocks per 1GB (1GB / 2MB = 512)
-pub const BLOCKS_2MB_PER_1GB: usize = 512;
+impl Drop for BitmapClaim<'_> {
+    fn drop(&mut self) {
+        self.bitmap
+            .release_range(self.start, self.claimed_end - self.start);
+    }
+}
 
-/// Words per 2MB block (512 pages / 64 bits = 8)
-pub const WORDS_PER_2MB: usize = PAGES_PER_2MB / BITS_PER_WORD;
+impl HierarchicalBitmap {
+    fn range_mask(start: usize, end: usize, word: usize) -> u64 {
+        let first = start
+            .saturating_sub(word * BITS_PER_WORD)
+            .min(BITS_PER_WORD);
+        let last = end.saturating_sub(word * BITS_PER_WORD).min(BITS_PER_WORD);
+        let low = if last == BITS_PER_WORD {
+            u64::MAX
+        } else {
+            (1u64 << last) - 1
+        };
+        low & (u64::MAX << first)
+    }
 
-/// HugePage-aware Hierarchical Bitmap
-///
-/// Extends `HierarchicalBitmap` with 2MB and 1GB tracking for efficient
-/// huge page allocation while preserving 4KB granularity.
-///
-/// # Features
-/// - **2MB fully-free tracking**: Bitmap indicating which 2MB blocks are completely free
-/// - **1GB fully-free tracking**: Bitmap indicating which 1GB blocks are completely free
-/// - **Partial 2MB tracking**: Identifies blocks that have some free pages (for 4KB alloc)
-/// - **Demotion tracking**: Marks 2MB blocks that should not be promoted back to hugepage
-/// - **Free word mask**: Per-2MB-block mask for O(1) word selection
-///
-/// # Usage
-/// ```ignore
-/// let bitmap = HugePageBitmap::new(1 << 20); // 4GB (1M pages)
-///
-/// // 2MB allocation
-/// if let Some(block_2m) = bitmap.allocate_2m() {
-///     // Got a fully-free 2MB block
-/// }
-///
-/// // 4KB allocation (prefers partial blocks to preserve hugepages)
-/// if let Some(page) = bitmap.allocate_4k_from_partial() {
-///     // Allocated from partial block
-/// }
-/// ```
-pub struct HugePageBitmap {
-    /// Base 4KB hierarchical bitmap
-    base: HierarchicalBitmap,
+    /// Claims whole word masks, rolling back on a conflicting page of any size.
+    pub(crate) fn claim_range(
+        &self,
+        start: usize,
+        count: usize,
+    ) -> Result<BitmapClaim<'_>, BitmapError> {
+        let end = start
+            .checked_add(count)
+            .filter(|end| *end <= self.total_units)
+            .ok_or(BitmapError::InvalidRange)?;
+        if count == 0 {
+            return Err(BitmapError::InvalidRange);
+        }
+        let mut claim = BitmapClaim {
+            bitmap: self,
+            start,
+            claimed_end: start,
+        };
+        for word in start / BITS_PER_WORD..end.div_ceil(BITS_PER_WORD) {
+            let mask = Self::range_mask(start, end, word);
+            let mut old = self.detail[word].load(Ordering::Acquire);
+            // LOOP_PROOF: mode=event; reason=CAS commits the mask or a competing claim makes it unavailable.;
+            loop {
+                if old & mask != mask {
+                    let index = word * BITS_PER_WORD + (mask & !old).trailing_zeros() as usize;
+                    return Err(BitmapError::Occupied { index });
+                }
+                match self.detail[word].compare_exchange_weak(
+                    old,
+                    old & !mask,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                ) {
+                    Ok(_) => break,
+                    Err(current) => old = current,
+                }
+            }
+            self.free_count
+                .fetch_sub(mask.count_ones() as usize, Ordering::Relaxed);
+            claim.claimed_end = end.min((word + 1) * BITS_PER_WORD);
+            if old & !mask == 0 {
+                self.clear_summary_bit(word);
+            }
+        }
+        Ok(claim)
+    }
 
-    // === 2MB Level ===
-    /// Per-2MB-block used count (0..512)
-    /// When 0, the block is fully free
-    used_count_2m: Box<[AtomicU16]>,
-    /// 2MB fully-free bitmap (1 = all 512 pages free)
-    bitmap_2m: Box<[AtomicU64]>,
-    /// 2MB partial bitmap (1 = 0 < used < 512, has some free pages)
-    bitmap_2m_partial: Box<[AtomicU64]>,
-    /// Demoted 2MB bitmap (1 = block is demoted, won't be promoted)
-    demoted_2m: Box<[AtomicU64]>,
-    /// Per-2MB free word mask (8 bits for 8 words per 2MB)
-    free_word_mask_2m: Box<[AtomicU8]>,
-    /// Total 2MB blocks
-    total_2m_blocks: usize,
-    /// Free 2MB block count (fully free only)
-    free_count_2m: AtomicUsize,
-    /// Partial 2MB block count
-    partial_count_2m: AtomicUsize,
-    /// Demoted 2MB block count
-    demoted_count_2m: AtomicUsize,
-    /// Allocation hint for 2MB
-    hint_2m: AtomicUsize,
-    /// Allocation hint for partial 2MB (for 4KB allocation)
-    hint_2m_partial: AtomicUsize,
+    /// The caller owns every occupied page in this range. No occupancy or
+    /// summary is exposed to consumers for independent mutation.
+    pub(crate) fn release_range(&self, start: usize, count: usize) {
+        let end = start
+            .checked_add(count)
+            .expect("owned bitmap range overflow");
+        assert!(
+            end <= self.total_units,
+            "owned bitmap range is outside its pool"
+        );
+        for word in start / BITS_PER_WORD..end.div_ceil(BITS_PER_WORD) {
+            let mask = Self::range_mask(start, end, word);
+            self.return_word(word, mask);
+        }
+    }
 
-    // === 1GB Level ===
-    /// Per-1GB-block used count (count of non-free 2MB blocks, 0..512)
-    used_count_1g: Box<[AtomicU16]>,
-    /// 1GB fully-free bitmap (1 = all 512 2MB blocks free)
-    bitmap_1g: Box<[AtomicU64]>,
-    /// Total 1GB blocks
-    total_1g_blocks: usize,
-    /// Free 1GB block count
-    free_count_1g: AtomicUsize,
+    /// Boot-time admission excludes holes before the pool is published.
+    pub(crate) fn reserve_range(&self, start: usize, count: usize) -> Result<(), BitmapError> {
+        let end = start
+            .checked_add(count)
+            .filter(|end| *end <= self.total_units)
+            .ok_or(BitmapError::InvalidRange)?;
+        for word in start / BITS_PER_WORD..end.div_ceil(BITS_PER_WORD) {
+            let mask = Self::range_mask(start, end, word);
+            let old = self.detail[word].fetch_and(!mask, Ordering::AcqRel);
+            self.free_count
+                .fetch_sub((old & mask).count_ones() as usize, Ordering::Relaxed);
+            if old & !mask == 0 {
+                self.clear_summary_bit(word);
+            }
+        }
+        Ok(())
+    }
 }
 
 impl core::fmt::Debug for HierarchicalBitmap {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HierarchicalBitmap")
             .field("total_units", &self.total_units)
-            .field("free_count", &self.free_count.load(Ordering::Relaxed))
+            .field("free_count", &self.free_count())
             .finish()
     }
 }
 
-impl core::fmt::Debug for HugePageBitmap {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("HugePageBitmap")
-            .field("base", &self.base)
-            .field("total_2m_blocks", &self.total_2m_blocks)
-            .field("free_count_2m", &self.free_count_2m.load(Ordering::Relaxed))
-            .field(
-                "partial_count_2m",
-                &self.partial_count_2m.load(Ordering::Relaxed),
-            )
-            .field("total_1g_blocks", &self.total_1g_blocks)
-            .field("free_count_1g", &self.free_count_1g.load(Ordering::Relaxed))
-            .finish()
-    }
-}
+#[cfg(feature = "qemu-test-export")]
+#[path = "bitmap/qemu_tests.rs"]
+pub mod qemu_tests;
+#[cfg(test)]
+#[path = "bitmap/tests.rs"]
+mod tests;
+
+// ============================================================================

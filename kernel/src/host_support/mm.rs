@@ -1,6 +1,8 @@
 use x86_64::PhysAddr;
 use x86_64::VirtAddr;
 
+#[path = "../mm/phys/frame_allocator/error.rs"]
+mod physical_admission;
 #[path = "../mm/reclaim/pool.rs"]
 pub(crate) mod reclaim;
 
@@ -134,7 +136,7 @@ pub mod frame_allocator {
     use x86_64::PhysAddr;
     use x86_64::structures::paging::{PageSize, PhysFrame};
 
-    
+    pub use super::physical_admission::FrameAllocError;
 
     #[derive(Debug)]
     struct HostBacking {

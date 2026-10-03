@@ -39,28 +39,25 @@ impl ExchangeHeap {
         Ok(())
     }
 
-    fn bind_current(backing: &Arc<PoisonLock<ExchangeBlocks>>) {
+    fn bind_current(backing: &Arc<PoisonLock<ExchangeBlocks>>) -> bool {
         let Some(cpu) = crate::cpu::CurrentCpu::acquire() else {
-            return;
+            return false;
         };
         if cpu.with_exchange_cache(|cache| cache.matches(backing)) == Some(true) {
-            return;
+            return true;
         }
-        if let Some(old) =
-            cpu.with_exchange_cache(|cache| core::mem::replace(cache, ExchangeMagazine::new()))
-        {
-            old.release();
+        if crate::heap::drain_exchange_cache().is_err() {
+            // The owner restored a failed drain; a new backing cannot replace it.
+            return false;
         }
         // Establish the cold binding lease outside the short CPU borrow.
         // Hot allocation/free only compares the retained identity.
         let mut lease = Some(Arc::clone(backing));
-        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-            cpu.with_exchange_cache(|cache| {
-                if cache.backing.is_none() {
-                    cache.backing = lease.take();
-                }
-            });
-        }
+        let result = crate::cpu::CurrentCpu::acquire().and_then(|cpu| {
+            cpu.with_exchange_cache(|cache| cache.bind(lease.take().expect("prepared lease")))
+        });
+        // Rejected leases are returned by bind and dropped outside the borrow.
+        result.is_some_and(|result| result.is_ok())
     }
 
     pub fn allocate(&self, layout: Layout) -> Option<NonNull<u8>> {
@@ -71,7 +68,7 @@ impl ExchangeHeap {
             if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
                 if let Some((matches, block)) = cpu.with_exchange_cache(|cache| {
                     let matches = cache.matches(backing);
-                    (matches, matches.then(|| cache.cache.take(class)).flatten())
+                    (matches, cache.take(backing, class))
                 }) {
                     if let Some(block) = block {
                         return Some(block.into_pointer());
@@ -80,10 +77,7 @@ impl ExchangeHeap {
                 }
             }
             if !bound {
-                Self::bind_current(backing);
-                bound = crate::cpu::CurrentCpu::acquire()
-                    .and_then(|cpu| cpu.with_exchange_cache(|cache| cache.matches(backing)))
-                    == Some(true);
+                bound = Self::bind_current(backing);
             }
         }
         let layout = class.map_or(layout, CacheClass::layout);
@@ -108,7 +102,7 @@ impl ExchangeHeap {
                 if cache.matches(backing) {
                     for slot in &mut batch {
                         if let Some(block) = slot.take() {
-                            *slot = cache.cache.insert(block).err();
+                            *slot = cache.insert(backing, block).err();
                         }
                     }
                 }
@@ -141,8 +135,7 @@ impl ExchangeHeap {
                         return false;
                     }
                     pending = cache
-                        .cache
-                        .insert(pending.take().expect("pending owner"))
+                        .insert(backing, pending.take().expect("pending owner"))
                         .err();
                     true
                 })
@@ -153,8 +146,7 @@ impl ExchangeHeap {
                     cpu.with_exchange_cache(|cache| {
                         if cache.matches(backing) {
                             pending = cache
-                                .cache
-                                .insert(pending.take().expect("pending owner"))
+                                .insert(backing, pending.take().expect("pending owner"))
                                 .err();
                         }
                     });
@@ -268,8 +260,23 @@ pub fn exchange_heap_stats() -> HeapStats {
 // 未初期化メモリの問題を型レベルで防ぐ
 // ============================================================================
 
+use crate::mm::value::Zeroable;
 use core::marker::PhantomData;
 use core::mem::MaybeUninit;
+
+/// Allocate initialized zero values. The element contract establishes validity;
+/// allocation failure, empty length or an unrepresentable Layout returns None.
+pub fn allocate_zeroed_slice<T: Zeroable>(len: usize) -> Option<(NonNull<T>, Layout)> {
+    if len == 0 {
+        return None;
+    }
+    let layout = Layout::array::<T>(len).ok()?;
+    let pointer = EXCHANGE_HEAP.allocate(layout)?;
+    // SAFETY: this is an exclusive allocation with the checked array layout;
+    // Zeroable establishes validity for every resulting initialized element.
+    unsafe { core::ptr::write_bytes(pointer.as_ptr(), 0, layout.size()) };
+    Some((pointer.cast(), layout))
+}
 
 /// Exchange Heap上に未初期化スライスを割り当て
 ///
@@ -373,6 +380,13 @@ pub struct InitializedSlice<T: Sized> {
     len: usize,
     layout: Layout,
     _marker: PhantomData<T>,
+}
+
+impl<T: Zeroable> InitializedSlice<T> {
+    pub fn zeroed(len: usize) -> Option<Self> {
+        let (pointer, layout) = allocate_zeroed_slice::<T>(len)?;
+        Some(Self::new(pointer, len, layout))
+    }
 }
 
 impl<T: Sized> InitializedSlice<T> {

@@ -296,8 +296,9 @@ pub fn handle_panic(info: &PanicInfo) -> ! {
     crate::sync::set_panicking(true);
 
     let _count = PANIC_COUNT.fetch_add(1, Ordering::Relaxed);
-    let domain_id = crate::task::current_execution_context()
-        .map(|context| context.subject.domain.as_u64())
+    let domain_id = crate::cpu::CurrentCpu::acquire()
+        .and_then(|cpu| cpu.execution())
+        .map(|subject| subject.domain.as_u64())
         .unwrap_or(crate::domain::DomainId::KERNEL.as_u64());
 
     crate::io::log::early_print("\n!!! KERNEL PANIC DETECTED !!!\n");
@@ -472,8 +473,11 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
                     MapError::NotMapped => "page already not mapped",
                     MapError::InvalidAddress => "invalid address",
                     MapError::HardwareError => "page table manager poisoned/uninitialized",
-                    MapError::FrameAllocationFailed => "frame allocation failed",
+                    MapError::FrameAllocation(_) => "frame allocation failed",
+                    MapError::MetadataAllocation => "page-table metadata allocation failed",
+                    MapError::UnsupportedPageSize => "unsupported page size",
                     MapError::AlreadyMapped => "unexpected: already mapped",
+                    MapError::MappingChanged => "mapping source changed",
                     MapError::AlignmentError => "alignment error in page table",
                     MapError::ParentEntryHugePage => "parent entry is huge page",
                 };

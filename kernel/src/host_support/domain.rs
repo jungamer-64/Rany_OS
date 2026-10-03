@@ -154,6 +154,20 @@ where
         .map(f)
 }
 
+/// Host lookup observes the same live-owner contract as native security admission.
+pub fn domain_security_handle(
+    id: DomainId,
+) -> Result<Arc<DomainSecurity>, DomainSecurityLookupError> {
+    let domains = DOMAINS.lock();
+    let domain = domains
+        .iter()
+        .find(|domain| domain.id == id)
+        .ok_or(DomainSecurityLookupError::UnknownDomain(id))?;
+    if !domain.state.is_active() {
+        return Err(DomainSecurityLookupError::Terminated(id));
+    }
+    Ok(Arc::clone(&domain.security))
+}
 
 /// Only prepared, allocation-free resource publication may run in this scope.
 /// Rejection returns the prepared owner unchanged after releasing the registry.

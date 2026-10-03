@@ -191,7 +191,9 @@ pub fn test_domain_lifecycle() -> TestResult {
     }
 
     // Transition to Running
-    set_domain_state(domain_id, DomainState::Running);
+    if let Err(error) = set_domain_state(domain_id, DomainState::Running) {
+        return TestResult::Failed(alloc::format!("State admission failed: {error}"));
+    }
     let state = with_domain(domain_id, |d| d.state);
     if state != Some(DomainState::Running) {
         return TestResult::Failed(String::from("State should be Running"));

@@ -475,16 +475,24 @@ async fn try_perform_offline(
     if slot.role == CpuRole::Bootstrap {
         return Err(CpuTransitionError::BootstrapCpu);
     }
-    match slot.state {
+    let resuming_memory_drain = match slot.state {
         CpuSlotState::PresentOffline | CpuSlotState::Parked => return Ok(None),
         CpuSlotState::FirmwareAbsent => return Err(CpuTransitionError::NotPresent),
-        CpuSlotState::Online => {}
+        CpuSlotState::Online => false,
+        CpuSlotState::Draining
+            if matches!(
+                slot.last_failure.as_ref().map(|failure| &failure.reason),
+                Some(CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(_)))
+            ) =>
+        {
+            true
+        }
         _ => {
             return Err(CpuTransitionError::UnsupportedTopology(
                 CpuTopologyIssue::ConflictingFirmwareIdentity,
             ));
         }
-    }
+    };
 
     let local = super::runtime().cpu_local(id).ok_or_else(|| {
         CpuTransitionError::UnsupportedTopology(CpuTopologyIssue::CpuStartupUnavailable {
@@ -492,51 +500,78 @@ async fn try_perform_offline(
             failure: super::CpuStartupFailure::CpuLocalBinding,
         })
     })?;
-    if let Err(blockers) = crate::task::prepare_cpu_offline(id) {
-        let reason = CpuFailureReason::Drain(CpuDrainFailure::Blocked {
-            blockers: blockers.clone(),
+    if resuming_memory_drain
+        && super::runtime()
+            .startup_resource(id)
+            .is_some_and(|resource| resource.park_completion_published())
+    {
+        super::runtime().drain_complete(id).unwrap_or_else(|error| {
+            panic!("CPU {id} late cache drain completion could not be committed: {error:?}")
         });
-        super::runtime()
-            .drain_rejected(id, reason)
-            .unwrap_or_else(|error| {
-                panic!("CPU {id} drain rejection could not be committed: {error:?}")
+        return Ok(None);
+    }
+    if !resuming_memory_drain {
+        if let Err(blockers) = crate::task::prepare_cpu_offline(id) {
+            let reason = CpuFailureReason::Drain(CpuDrainFailure::Blocked {
+                blockers: blockers.clone(),
             });
-        return Err(CpuTransitionError::Busy { blockers });
-    }
-    if let Err(error) = super::runtime().begin_drain(id) {
-        crate::task::publish_cpu_online(id);
-        return Err(runtime_error(error));
-    }
+            super::runtime()
+                .drain_rejected(id, reason)
+                .unwrap_or_else(|error| {
+                    panic!("CPU {id} drain rejection could not be committed: {error:?}")
+                });
+            return Err(CpuTransitionError::Busy { blockers });
+        }
+        if let Err(error) = super::runtime().begin_drain(id) {
+            crate::task::publish_cpu_online(id);
+            return Err(runtime_error(error));
+        }
 
-    crate::net::runtime::context::begin_cpu_drain(id);
-    let irq_blockers = crate::io::interrupt_manager::cpu_offline_blockers(slot.firmware.apic_id);
-    if !irq_blockers.is_empty() {
-        return Err(abort_blocked_drain(id, irq_blockers));
-    }
-    if let Err(blockers) = wait_for_subsystem_drain(id).await {
-        return Err(abort_blocked_drain(id, blockers));
+        crate::net::runtime::context::begin_cpu_drain(id);
+        let irq_blockers =
+            crate::io::interrupt_manager::cpu_offline_blockers(slot.firmware.apic_id);
+        if !irq_blockers.is_empty() {
+            return Err(abort_blocked_drain(id, irq_blockers));
+        }
+        if let Err(blockers) = wait_for_subsystem_drain(id).await {
+            return Err(abort_blocked_drain(id, blockers));
+        }
     }
 
     let acknowledgement = local.remote().park_acknowledgements();
+    if let Some(resource) = super::runtime().startup_resource(id) {
+        resource.prepare_drain();
+    }
     if local.remote().send(CpuControlMessage::Park).is_err() {
         let reason = CpuFailureReason::Drain(CpuDrainFailure::ControlQueueSaturated);
-        rollback_drain(id, reason.clone());
+        if !resuming_memory_drain {
+            rollback_drain(id, reason.clone());
+        }
         return Err(transition_error(id, reason));
     }
     let ipi_failure = super::send_ipi_to_apic(slot.firmware.apic_id, IpiKind::ExecutorWake)
         .err()
         .map(|error| map_drain_ipi_failure(slot.firmware.apic_id, error));
-    if wait_for_park_acknowledgement(local, acknowledgement)
-        .await
-        .is_err()
-    {
-        let reason = ipi_failure.unwrap_or(CpuFailureReason::DrainTimedOut);
+    if let Err(wait_failure) = wait_for_park_acknowledgement(local, acknowledgement).await {
+        let reason = if wait_failure == CpuFailureReason::DrainTimedOut {
+            ipi_failure.unwrap_or(wait_failure)
+        } else {
+            wait_failure
+        };
         let error = transition_error(id, reason.clone());
         super::runtime()
-            .drain_failed(id, reason)
+            .drain_failed(id, reason.clone())
             .unwrap_or_else(|runtime_error| {
                 panic!("CPU {id} drain failure could not be committed: {runtime_error:?}")
             });
+        if matches!(
+            reason,
+            CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(_))
+        ) {
+            // The owner is stopped with retained cache storage and services
+            // TLB IPIs. A later offline request is its explicit retry boundary.
+            return Err(error);
+        }
         return Ok(Some(PendingDrainReconciliation {
             id,
             local,
@@ -575,10 +610,23 @@ fn abort_blocked_drain(id: CpuId, blockers: Arc<[CpuBlocker]>) -> CpuTransitionE
 }
 
 async fn reconcile_timed_out_drain(pending: PendingDrainReconciliation) {
-    if wait_for_park_acknowledgement(pending.local, pending.acknowledgement)
-        .await
-        .is_err()
+    if let Err(reason) = wait_for_park_acknowledgement(pending.local, pending.acknowledgement).await
     {
+        if matches!(
+            reason,
+            CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(_))
+        ) {
+            super::runtime()
+                .drain_failed(pending.id, reason.clone())
+                .unwrap_or_else(|error| {
+                    panic!(
+                        "CPU {} cache drain failure could not be retained: {error:?}",
+                        pending.id
+                    )
+                });
+            log::warn!("CPU {} retains failed cache drain: {reason:?}", pending.id);
+            return;
+        }
         panic!(
             "CPU {} did not acknowledge a committed drain request; topology is no longer recoverable",
             pending.id
@@ -597,11 +645,15 @@ async fn reconcile_timed_out_drain(pending: PendingDrainReconciliation) {
 async fn wait_for_park_acknowledgement(
     local: &super::CpuLocal,
     acknowledgement: u64,
-) -> Result<(), ()> {
+) -> Result<(), CpuFailureReason> {
     let start = crate::time::best_effort_time_nanos();
+    let resource = super::runtime().startup_resource(local.id());
     for _ in 0..PARK_MAX_POLLS {
         if local.remote().park_acknowledgements() != acknowledgement {
             return Ok(());
+        }
+        if let Some(reason) = resource.and_then(|resource| resource.memory_drain_failure()) {
+            return Err(reason);
         }
         if crate::time::best_effort_time_nanos().saturating_sub(start) >= PARK_TIMEOUT_NS {
             break;
@@ -611,7 +663,7 @@ async fn wait_for_park_acknowledgement(
     if local.remote().park_acknowledgements() != acknowledgement {
         return Ok(());
     }
-    Err(())
+    Err(CpuFailureReason::DrainTimedOut)
 }
 
 fn rollback_drain(id: CpuId, reason: CpuFailureReason) {
@@ -665,6 +717,9 @@ fn transition_error(id: CpuId, reason: CpuFailureReason) -> CpuTransitionError {
         },
         CpuFailureReason::Drain(CpuDrainFailure::Blocked { blockers }) => {
             CpuTransitionError::Busy { blockers }
+        }
+        CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(failure)) => {
+            CpuTransitionError::MemoryCache(failure)
         }
         CpuFailureReason::TscInconsistent => {
             CpuTransitionError::UnsupportedTopology(CpuTopologyIssue::TscInconsistent)

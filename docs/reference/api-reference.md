@@ -77,23 +77,30 @@ ExoRust Kernelは、従来のPOSIX APIパラダイムを**意図的に排除**�
 
 ### モジュール: `exorust::mm`
 
-#### Buddy Allocator（O(log n) 保証）
+#### 物理 RAM の所有権
+
+PMM が管理対象 RAM の唯一の割り当て authority を持つ。返される
+`PhysicalAllocation` は範囲・ページ数・返却先を保持し、複製できない。
+アドレスや `PhysFrame` の観測値から解放権限は再構築できない。
 
 ```rust
-use exorust::mm::buddy_allocator;
+use exorust::mm::phys::frame_allocator as pmm;
 
-// 4KiBフレームを割り当て
-let frame = buddy_allocator::buddy_alloc_frame()?;
+let allocation = pmm::alloc_frame()?;
+let address = allocation.start_address(); // 観測のみ
+// 未公開 RAM、または利用者と TLB/IOTLB を退役済みの RAM を返却する。
+allocation.release(); // 所有値を消費
 
-// 2MiBヒュージフレームを割り当て
-let huge_frame = buddy_allocator::buddy_alloc_frame_2m()?;
-
-// 1GiBギガページを割り当て（PDPT直接マッピング用）
-let giga_frame = buddy_allocator::buddy_alloc_frame_1g()?;
-
-// フレームを解放（Buddyと自動合体）
-buddy_allocator::buddy_dealloc_frame(frame);
+let huge = pmm::alloc_frame_2m()?;
+let giant = pmm::alloc_frame_1g()?;
 ```
+
+枯渇、未初期化、不正範囲、alignment、metadata 確保失敗は
+`FrameAllocError` で区別する。通常の割り当ては同一ノードから距離順に
+フォールバックし、明示ノード指定はそのノードだけを対象とする。
+Buddy と mobility pool は PMM の所有値を借用元として保持し、全子領域を
+返却した後にだけ借用領域を PMM へ返せる。ブートで移譲されたヒープ RAM は
+その独立した所有権契約を維持し、PMM へ重複登録しない。
 
 #### ページサイズ定数
 
@@ -112,7 +119,16 @@ use exorust::mm::numa::alloc_on_numa_node;
 let local = alloc_on_numa_node(node_id, layout)?;
 ```
 
-同一 NUMA ノードでの locality を既定とし、cross-node fallback は最終手段として扱います。
+通常の割り当ては同一 NUMA ノードを優先し、距離順にフォールバックします。明示ノード指定では他ノードへフォールバックしません。
+
+#### 仮想範囲の更新
+
+`global_map_range`、`global_unmap_range`、`global_update_flags_range` は実際の
+leaf サイズで進み、変更範囲を一度だけ TLB 同期する。途中失敗の
+`RangeUpdateError` は原因、変更済み範囲、同期状態を保持する。
+巨大 leaf の一部だけを変更する要求は、明示的な demotion を必要とする。
+NUMA 移動では元 RAM の所有値を保持して PTE の対象を確認し、置換と TLB 同期の
+完了後に旧 RAM を返す。移動ヒント自体は解放権限を持たない。
 
 #### Exchange Heap（ドメイン間ゼロコピー転送）
 
@@ -236,23 +252,38 @@ let packet: Packet = rx.recv().await;
 > 旧設計案でいう `mempool`、batch processing、scatter-gather I/O は、この文書では
 > RAW / datapath packet pool、`PacketBatch`、descriptor chaining を伴う multi-buffer submission として説明します。
 
-#### DMAバッファ（静的ケイパビリティ付き）
+#### DMA allocation と転送所有権
+
+ドライバは認可されたデバイスを指定し、Framework から `CpuDmaLease` を取得する。
+確保元、translated mapping、回収先はレジストリが保持し、CPU のアクセスは lease の
+`read` / `write` による短い訪問へ制限する。論理サイズより後ろのページ padding は公開しない。
 
 ```rust
-use exorust::io::dma::{DmaBuffer, DmaRegion};
-use exorust::security::DmaCapability;
+use kernel_api::dma::{DmaAllocationRequest, DmaDirection};
+use kernel_api::error::KapiError;
 
-// DMAケイパビリティが必要（コンパイル時に検証）
-fn setup_dma(cap: &DmaCapability) -> DmaBuffer {
-    // 物理連続メモリを割り当て
-    let dma = DmaBuffer::new(cap, 4096)?;
-    
-    // デバイス可視アドレスをデバイスに渡す
-    device.set_descriptor(dma.device_address());
-    
-    dma
-}
+let request = DmaAllocationRequest::new(4096, DmaDirection::Bidirectional)
+    .ok_or(KapiError::InvalidSize)?;
+let cpu = kernel_api::service::kernel::instance()
+    .alloc_dma_for_device(request, device)?;
+let prepared = cpu.prepare(queue)?;
 ```
+
+デバイスへの descriptor 公開前に `arm` で CPU 所有権を消費する。完了は driver が
+検証した completion witness から成立させ、CPU へ返す。共有 descriptor RAM は
+`prepare_shared` / `activate` を経て整数の volatile access だけを許可し、デバイスの
+使用中に Rust の参照を作らない。解放失敗は `DmaCloseError` の lease に残し、
+IOTLB 完了前に backing を再利用しない。
+
+native service とセル ABI は、RAM / metadata の確保失敗、有限の admission 枯渇、
+サイズ・alignment・アドレスの不正、未初期化を区別する。`MemoryError` の変換も
+理由を保持し、枯渇の返却だけを根拠に不正な要求を再試行しない。
+
+DMA mapping の失敗は公開前と公開後を区別する。`MapError::Unmapped` は元の `RRef` を返す。`MapError::TranslationPending` は DMA handle を返し、同期が未完了の backing を CPU へ戻さない。回収容量の予約拒否は `MapErrorKind::RetirementCapacity` として判定でき、data leaf の公開前に発生する。
+
+typed な DMA mapping は `DmaElement` を要求する。要素は padding、参照、ポインタ、所有権やアドレス依存の invariant を持たず、任意のビット列が有効でなければならない。CPU / device の排他と translation 完了は mapping の所有者が引き続き保証する。Exchange Heap の typed なゼロ初期化には、より弱い `Zeroable` を要求する。例えば `bool` はゼロ初期化できるが、任意の device 書き込みには使えない。
+
+解放失敗は handle と回収段階を保持する。再試行は葉の削除、table cohort の捕捉、IOTLB / ATS 同期、IOVA 返却のうち未完了の段階だけを実行する。`unmap_async` の取消でも backing を回収先へ移し、同期完了まで保持する。背景回収へ移せるデータには `Send` を要求する。
 
 #### VirtIO（所有権ベースのリングバッファ）
 

@@ -876,7 +876,7 @@ unsafe extern "C" fn kernel_abi_dma_allocate(
         return AbiErrorCode::InvalidParam as i32;
     };
     let Some(request) = DmaAllocationRequest::new(size, direction) else {
-        return AbiErrorCode::InvalidParam as i32;
+        return AbiErrorCode::InvalidSize as i32;
     };
     match kernel_api::service::kernel::instance()
         .alloc_dma_for_device(request, PackedPciLocation::from_raw(device))
@@ -888,7 +888,7 @@ unsafe extern "C" fn kernel_abi_dma_allocate(
             unsafe { out.as_ptr().write(allocation) };
             AbiErrorCode::Success as i32
         }
-        Err(error) => map_kapi_error_to_abi(error),
+        Err(error) => AbiErrorCode::from(error) as i32,
     }
 }
 
@@ -1147,7 +1147,7 @@ extern "C" fn kernel_abi_enable_msix_raw(
             }
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1156,21 +1156,21 @@ extern "C" fn kernel_abi_disable_msix_raw(device_id: u64) -> i32 {
         .disable_msix(PackedPciLocation::from_raw(device_id))
     {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_irq_bind(irq: u32, cookie: u64) -> i32 {
     match bind_irq_for_current_domain(irq, cookie) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_irq_unbind(irq: u32) -> i32 {
     match unbind_irq_for_current_domain(irq) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1187,14 +1187,14 @@ extern "C" fn kernel_abi_register_block_device(
             unsafe { *out_handle = handle };
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_unregister_block_device(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_block_device(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1211,14 +1211,14 @@ extern "C" fn kernel_abi_register_nvme_namespace(
             unsafe { *out_handle = handle };
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_unregister_nvme_namespace(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_nvme_namespace(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1235,14 +1235,14 @@ extern "C" fn kernel_abi_register_netdev_port(
             unsafe { *out_handle = handle };
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_unregister_netdev_port(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().unregister_netdev_port(handle) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1325,7 +1325,7 @@ extern "C" fn kernel_abi_exchange_alloc_raw(
             }
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1345,7 +1345,7 @@ extern "C" fn kernel_abi_exchange_dealloc_raw(
         align,
     ) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1363,7 +1363,7 @@ extern "C" fn kernel_abi_exchange_transfer_raw(
         kernel_api::ipc::DomainId::new(to_owner),
     ) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1382,14 +1382,14 @@ extern "C" fn kernel_abi_ipc_create_channel_raw(
             }
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
 extern "C" fn kernel_abi_ipc_close_raw(handle: u64) -> i32 {
     match kernel_api::service::kernel::instance().ipc_close(ChannelHandle::new(handle)) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1400,7 +1400,7 @@ extern "C" fn kernel_abi_ipc_send_raw(handle: u64, raw: *const AbiRRefRaw) -> i3
     let raw = unsafe { *raw };
     match kernel_api::service::kernel::instance().ipc_send_raw(ChannelHandle::new(handle), raw) {
         Ok(()) => AbiErrorCode::Success as i32,
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 
@@ -1415,7 +1415,7 @@ extern "C" fn kernel_abi_ipc_recv_raw(handle: u64, out_raw: *mut AbiRRefRaw) -> 
             }
             AbiErrorCode::Success as i32
         }
-        Err(err) => map_kapi_error_to_abi(err),
+        Err(err) => AbiErrorCode::from(err) as i32,
     }
 }
 

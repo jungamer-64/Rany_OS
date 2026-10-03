@@ -24,6 +24,8 @@ pub enum KapiError {
     Timeout,
     /// リソースが見つからない
     NotFound,
+    /// The required service or allocator has not been initialized.
+    NotInitialized,
     /// 既に存在する
     AlreadyExists,
     /// I/Oエラー
@@ -32,6 +34,14 @@ pub enum KapiError {
     ConnectionError,
     /// メモリ不足
     OutOfMemory,
+    /// The requested memory range or address cannot be represented or accessed.
+    InvalidAddress,
+    /// The requested alignment is unsupported or invalid for the range.
+    InvalidAlignment,
+    /// The requested byte count is invalid or overflows its address space.
+    InvalidSize,
+    /// No usable translation was established for the requested range.
+    MappingFailed,
     /// サポートされていない操作
     NotSupported,
     /// 内部エラー
@@ -46,10 +56,15 @@ impl fmt::Display for KapiError {
             Self::InvalidHandle => write!(f, "Invalid handle"),
             Self::Timeout => write!(f, "Operation timed out"),
             Self::NotFound => write!(f, "Resource not found"),
+            Self::NotInitialized => write!(f, "Service not initialized"),
             Self::AlreadyExists => write!(f, "Resource already exists"),
             Self::IoError => write!(f, "I/O error"),
             Self::ConnectionError => write!(f, "Connection error"),
             Self::OutOfMemory => write!(f, "Out of memory"),
+            Self::InvalidAddress => write!(f, "Invalid memory address"),
+            Self::InvalidAlignment => write!(f, "Invalid memory alignment"),
+            Self::InvalidSize => write!(f, "Invalid memory size"),
+            Self::MappingFailed => write!(f, "Memory mapping failed"),
             Self::NotSupported => write!(f, "Operation not supported"),
             Self::Internal(code) => write!(f, "Internal error: {code}"),
         }
@@ -79,6 +94,18 @@ impl fmt::Display for MemoryError {
             Self::InvalidAlignment => write!(f, "invalid alignment"),
             Self::InvalidSize => write!(f, "invalid size"),
             Self::MappingFailed => write!(f, "mapping failed"),
+        }
+    }
+}
+
+impl From<MemoryError> for KapiError {
+    fn from(error: MemoryError) -> Self {
+        match error {
+            MemoryError::OutOfMemory => Self::OutOfMemory,
+            MemoryError::InvalidAddress => Self::InvalidAddress,
+            MemoryError::InvalidAlignment => Self::InvalidAlignment,
+            MemoryError::InvalidSize => Self::InvalidSize,
+            MemoryError::MappingFailed => Self::MappingFailed,
         }
     }
 }
@@ -119,5 +146,46 @@ impl fmt::Display for IoErrorKind {
 impl From<IoErrorKind> for KapiError {
     fn from(_: IoErrorKind) -> Self {
         KapiError::IoError
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::abi::driver::AbiError;
+
+    #[test]
+    fn memory_failure_classes_survive_native_and_wire_boundaries() {
+        // Protocol values are independently specified here rather than
+        // generated from the production encoder or decoder.
+        for (memory, service, code) in [
+            (MemoryError::OutOfMemory, KapiError::OutOfMemory, -5),
+            (MemoryError::InvalidSize, KapiError::InvalidSize, -13),
+            (
+                MemoryError::InvalidAlignment,
+                KapiError::InvalidAlignment,
+                -14,
+            ),
+            (MemoryError::InvalidAddress, KapiError::InvalidAddress, -15),
+            (MemoryError::MappingFailed, KapiError::MappingFailed, -16),
+        ] {
+            assert_eq!(KapiError::from(memory), service);
+            assert_eq!(AbiError::from(service) as i32, code);
+            assert_eq!(AbiError::from_raw(code).into_result(), Err(service));
+        }
+    }
+
+    #[test]
+    fn admission_exhaustion_and_service_absence_have_distinct_wire_results() {
+        assert_eq!(AbiError::from_raw(0).into_result(), Ok(()));
+        for (code, error) in [
+            (-2, KapiError::NotFound),
+            (-5, KapiError::OutOfMemory),
+            (-11, KapiError::NotInitialized),
+            (-12, KapiError::ResourceExhausted),
+        ] {
+            assert_eq!(AbiError::from(error) as i32, code);
+            assert_eq!(AbiError::from_raw(code).into_result(), Err(error));
+        }
     }
 }

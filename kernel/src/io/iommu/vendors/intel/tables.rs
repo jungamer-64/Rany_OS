@@ -2,8 +2,9 @@
 // kernel/src/io/iommu/vendors/intel/tables.rs
 // ============================================================================
 
-use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::types::IommuError;
+use crate::mm::value::Zeroable;
 
 // ============================================================================
 // Root Table

@@ -1,189 +1,194 @@
-// ============================================================================
-// kernel/src/io/iommu/runtime/zombie/tests.rs
-// ============================================================================
-
 use super::*;
-use crate::io::iommu::common::dma::handle::MappingKind;
+use alloc::sync::Arc;
+use core::sync::atomic::AtomicUsize;
 
+struct OwnedValue {
+    identity: usize,
+    progress: usize,
+    dropped: Arc<AtomicUsize>,
+}
+impl Drop for OwnedValue {
+    fn drop(&mut self) {
+        self.dropped.fetch_add(1, Ordering::Relaxed);
+    }
+}
+fn value(identity: usize, dropped: &Arc<AtomicUsize>) -> OwnedValue {
+    OwnedValue {
+        identity,
+        progress: 0,
+        dropped: Arc::clone(dropped),
+    }
+}
+// The fixture models the caller retaining its owned value when admission fails.
+fn offer<const N: usize>(
+    slots: &ReclaimSlots<OwnedValue, N>,
+    value: OwnedValue,
+) -> Result<(), OwnedValue> {
+    match slots.reserve() {
+        Some(slot) => {
+            slot.publish(value);
+            Ok(())
+        }
+        None => Err(value),
+    }
+}
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_zombie_queue_basic() {
-    let queue = ZombieQueue::new();
-
-    // Enqueue a zombie (domain_id is u16)
-    assert!(queue.try_enqueue(
-        0x1000,
-        4096,
-        1u16,
-        None,
-        encode_mapping_kind(&MappingKind::Domain),
-        None,
-    ));
-
-    // Check stats
-    let stats = queue.stats();
-    assert_eq!(stats.total_enqueued, 1);
-    assert_eq!(stats.total_processed, 0);
-    assert_eq!(stats.total_drained, 0);
-    assert_eq!(stats.total_dropped, 0);
-
-    // Process the zombie
-    let mut processed_data: Option<ZombieData> = None;
-    let count = queue.process_pending(10, |data| {
-        processed_data = Some(data);
-        true
+fn rejected_queue_value_retains_ownership_and_completed_values_drop_once() {
+    let slots = ReclaimSlots::<OwnedValue, 2>::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    assert!(offer(&slots, value(1, &dropped)).is_ok());
+    assert!(offer(&slots, value(2, &dropped)).is_ok());
+    let rejected = offer(&slots, value(3, &dropped))
+        .err()
+        .expect("full queue returns owner");
+    assert_eq!(rejected.identity, 3);
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    assert_eq!(slots.process(1, |_| Ok(())), 1);
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    assert!(offer(&slots, rejected).is_ok());
+    assert_eq!(slots.process(2, |_| Ok(())), 2);
+    assert_eq!(dropped.load(Ordering::Relaxed), 3);
+    assert!(!slots.has_pending());
+}
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn failed_retirement_retains_progress_and_counts_against_pass_budget() {
+    let slots = ReclaimSlots::<OwnedValue, 2>::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    assert!(offer(&slots, value(10, &dropped)).is_ok());
+    assert!(offer(&slots, value(20, &dropped)).is_ok());
+    let mut attempts = 0;
+    assert_eq!(
+        slots.process(1, |owner| {
+            owner.progress += 1;
+            attempts += 1;
+            Err(IommuError::Timeout)
+        }),
+        0
+    );
+    assert_eq!(attempts, 1);
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    assert!(slots.has_pending());
+    let mut progress = 0;
+    assert_eq!(
+        slots.process(2, |owner| {
+            progress += owner.progress;
+            Ok(())
+        }),
+        2
+    );
+    assert_eq!(progress, 1);
+    assert_eq!(dropped.load(Ordering::Relaxed), 2);
+}
+#[cfg(all(feature = "std", test))]
+#[test]
+fn concurrent_producers_return_every_unaccepted_owner() {
+    let slots = Arc::new(ReclaimSlots::<OwnedValue, 32>::new());
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let mut producers = alloc::vec::Vec::new();
+    for producer in 0..4 {
+        let slots = Arc::clone(&slots);
+        let dropped = Arc::clone(&dropped);
+        producers.push(std::thread::spawn(move || {
+            let mut rejected = alloc::vec::Vec::new();
+            for index in 0..100 {
+                if let Err(owner) = offer(&slots, value(producer * 100 + index, &dropped)) {
+                    rejected.push(owner);
+                }
+            }
+            rejected
+        }));
+    }
+    let mut rejected = alloc::vec::Vec::new();
+    for producer in producers {
+        rejected.extend(producer.join().expect("producer"));
+    }
+    let mut seen = [false; 400];
+    let completed = slots.process(32, |owner| {
+        assert!(!seen[owner.identity]);
+        seen[owner.identity] = true;
+        Ok(())
     });
-
-    assert_eq!(count, 1);
-    let data = processed_data.unwrap();
-    assert_eq!(data.iova, 0x1000);
-    assert_eq!(data.size, 4096);
-    assert_eq!(data.domain_id, 1);
-
-    // Check stats after processing
-    let stats = queue.stats();
-    assert_eq!(stats.total_processed, 1);
-    assert_eq!(stats.total_drained, 1);
-    assert_eq!(queue.pending_estimate(), 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_zombie_queue_failed_cleanup() {
-    let queue = ZombieQueue::new();
-
-    // Enqueue two zombies
-    assert!(queue.try_enqueue(
-        0x1000,
-        4096,
-        1u16,
-        None,
-        encode_mapping_kind(&MappingKind::Domain),
-        None,
-    ));
-    assert!(queue.try_enqueue(
-        0x2000,
-        4096,
-        2u16,
-        None,
-        encode_mapping_kind(&MappingKind::Domain),
-        None,
-    ));
-
-    // Process with callback that returns false (cleanup failed)
-    let count = queue.process_pending(10, |_| false);
-    assert_eq!(count, 0);
-
-    // Failed cleanup retains ownership and remains eligible for reconciliation.
-    let stats = queue.stats();
-    assert_eq!(stats.total_enqueued, 2);
-    assert_eq!(stats.total_processed, 0);
-    assert_eq!(stats.total_drained, 0);
-    assert_eq!(queue.pending_estimate(), 2);
-
-    let count = queue.process_pending(10, |_| true);
-    assert_eq!(count, 2);
-    assert_eq!(queue.pending_estimate(), 0);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_zombie_queue_probe_limit() {
-    let queue = ZombieQueue::new();
-
-    // Fill up more than MAX_PROBE_COUNT entries
-    for i in 0..(MAX_PROBE_COUNT + 10) {
-        let _ = queue.try_enqueue(
-            i as u64 * 0x1000,
-            4096,
-            1u16,
-            None,
-            encode_mapping_kind(&MappingKind::Domain),
-            None,
-        );
+    for owner in &rejected {
+        assert!(!seen[owner.identity]);
+        seen[owner.identity] = true;
     }
-
-    // After MAX_PROBE_COUNT, enqueue should start failing
-    // (though exact behavior depends on hint position)
-    let stats = queue.stats();
-    assert!(stats.total_enqueued > 0);
-    // Some may have been dropped if all probed slots were taken
+    assert_eq!(completed + rejected.len(), 400);
+    assert!(seen.into_iter().all(|present| present));
+    drop(rejected);
+    assert_eq!(dropped.load(Ordering::Relaxed), 400);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_mapping_kind_encoding() {
-    use crate::io::iommu::common::dma::handle::MappingKind;
-    use crate::io::iommu::types::DeviceId;
+fn admitted_slot_survives_a_full_queue_and_cancellation_releases_capacity() {
+    let slots = ReclaimSlots::<OwnedValue, 2>::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let first = slots.reserve().expect("first admission");
+    let second = slots.reserve().expect("second admission");
+    assert!(slots.reserve().is_none());
+    assert_eq!(slots.process(2, |_| Ok(())), 0);
+    drop(second);
+    assert!(offer(&slots, value(2, &dropped)).is_ok());
+    // The earlier reservation publishes without probing despite all slots
+    // being occupied. It cannot fail after DMA publication.
+    first.publish(value(1, &dropped));
+    assert_eq!(slots.process(2, |_| Ok(())), 2);
+    assert_eq!(dropped.load(Ordering::Relaxed), 2);
+    assert!(slots.reserve().is_some());
+}
 
-    // Device (using BDF encoding: bus=0x12, device=0x06, function=0x04 = 0x1234)
-    let device_id = DeviceId::from_bdf(0x1234);
-    let encoded = encode_mapping_kind(&MappingKind::Device(device_id));
-    if let Some(MappingKind::Device(decoded_id)) = decode_mapping_kind(encoded) {
-        assert_eq!(decoded_id.bdf(), 0x1234);
-    } else {
-        panic!("Expected Device mapping kind");
+#[cfg(all(feature = "std", test))]
+#[test]
+fn interrupted_reclaimer_retains_its_progress_and_owner() {
+    let slots = ReclaimSlots::<OwnedValue, 1>::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    assert!(offer(&slots, value(17, &dropped)).is_ok());
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.process(1, |owner| {
+            owner.progress = 7;
+            panic!("injected reclaimer interruption");
+        });
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(dropped.load(Ordering::Relaxed), 0);
+    assert!(slots.has_pending());
+    assert_eq!(
+        slots.process(1, |owner| {
+            assert_eq!(owner.identity, 17);
+            assert_eq!(owner.progress, 7);
+            Ok(())
+        }),
+        1
+    );
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+}
+
+#[cfg(all(feature = "std", test))]
+#[test]
+fn panicking_destructor_cannot_republish_a_consumed_value() {
+    struct PanickingDrop(Arc<AtomicUsize>);
+    impl Drop for PanickingDrop {
+        fn drop(&mut self) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+            panic!("injected destructor interruption");
+        }
     }
-
-    // Domain
-    let encoded = encode_mapping_kind(&MappingKind::Domain);
-    assert!(matches!(
-        decode_mapping_kind(encoded),
-        Some(MappingKind::Domain)
-    ));
-
-    // Unknown/removed mapping kinds must be rejected.
-    assert!(decode_mapping_kind(0).is_none());
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_state_transitions() {
-    let entry = ZombieEntry::new();
-
-    // Initial state is Empty
-    let (state, generation) = entry.load_state_gen_relaxed();
-    assert_eq!(state, ZombieState::Empty);
-    assert_eq!(generation, 0);
-
-    // Claim for writing: Empty -> Writing
-    let new_gen = entry.try_claim_for_writing(0).unwrap();
-    let (state, _) = entry.load_state_gen_relaxed();
-    assert_eq!(state, ZombieState::Writing);
-    assert_eq!(new_gen, 1);
-
-    // Write payload (safe because we own the slot)
-    let payload = ZombiePayload {
-        iova: 0x1000,
-        size: 4096,
-        domain_id: 1,
-        device_bdf: 0xFFFF,
-        mapping_kind: encode_mapping_kind(&MappingKind::Domain),
-        raw_ptr: 0,
-        raw_owner: 0,
-        raw_meta: 0,
-        raw_drop_fn: 0,
-    };
-    unsafe { entry.write_payload(payload) };
-
-    // Publish: Writing -> Pending
-    entry.publish(new_gen);
-    let (state, _) = entry.load_state_gen_relaxed();
-    assert_eq!(state, ZombieState::Pending);
-
-    // Acquire for processing: Pending -> Processing
-    let sg = entry.state_gen.load(Ordering::Relaxed);
-    assert!(entry.try_acquire_for_processing_with(sg));
-    let (state, _) = entry.load_state_gen_relaxed();
-    assert_eq!(state, ZombieState::Processing);
-
-    // Read payload
-    let read_payload = unsafe { entry.read_payload() };
-    assert_eq!(read_payload.iova, 0x1000);
-    assert_eq!(read_payload.size, 4096);
-
-    // Release: Processing -> Empty
-    entry.release();
-    let (state, _) = entry.load_state_gen_relaxed();
-    assert_eq!(state, ZombieState::Empty);
+    let slots = ReclaimSlots::<PanickingDrop, 1>::new();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    slots
+        .reserve()
+        .expect("admission")
+        .publish(PanickingDrop(Arc::clone(&dropped)));
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        slots.process(1, |_| Ok(()));
+    }));
+    assert!(outcome.is_err());
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
+    assert!(!slots.has_pending());
+    let admission = slots.reserve().expect("consumed slot is available");
+    drop(admission);
+    drop(slots);
+    assert_eq!(dropped.load(Ordering::Relaxed), 1);
 }

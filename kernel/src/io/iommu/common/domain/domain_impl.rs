@@ -613,6 +613,17 @@ impl IommuDomain {
         Ok(())
     }
 
+    /// The completion owner supplies a cohort removed from pending storage;
+    /// another flush cannot authorize or consume these tables.
+    /// # Safety
+    /// Completion covers this domain's paging structures and ATS after capture.
+    pub(in crate::io::iommu) unsafe fn release_detached_tables(
+        &self,
+        tables: crate::io::iommu::common::dma::page_table_pool::DetachedTables,
+    ) {
+        unsafe { tables.release(&self.page_table_pool) };
+    }
+
     pub(super) fn within_addr_width(&self, addr: u64, size: u64) -> bool {
         if self.max_addr_bits >= 64 {
             return true;
@@ -766,8 +777,9 @@ impl IommuDomain {
 
     /// Map a DMA region
     ///
-    /// This function is transactional: if any page mapping fails, all successfully
-    /// mapped pages are rolled back before returning the error.
+    /// All fallible table and metadata admission precedes DMA leaf publication.
+    /// Failure leaves data pages unmapped; intermediate table rollback retains
+    /// physical owners in quarantine until the next domain IOTLB/ATS completion.
     pub fn map(
         &self,
         iova: u64,
@@ -840,11 +852,14 @@ impl IommuDomain {
 
         self.check_no_overlap(&guards, iova, size)?;
 
-        if self.domain_type != IommuDomainType::Passthrough {
-            // Rollback capacity is admitted before any leaf is published.
-            self.reserve_range_retirement(iova, size)?;
-            self.map_pages_transactional(iova, phys, size, read, write)?;
+        if !read && !write {
+            return Err(IommuError::InvalidPermissions);
         }
+        let prepared = if self.domain_type != IommuDomainType::Passthrough {
+            Some(self.prepare_range(iova, phys, size)?)
+        } else {
+            None
+        };
 
         let mapping = DmaMapping {
             iova,
@@ -864,17 +879,25 @@ impl IommuDomain {
                 for prev in guards.iter_mut() {
                     prev.mappings.remove(iova);
                 }
-                return Err(if self.domain_type != IommuDomainType::Passthrough {
-                    self.rollback_mapping(iova, size, IommuError::OutOfMemory)
-                } else {
-                    IommuError::OutOfMemory
-                });
+                return Err(IommuError::OutOfMemory);
             }
         }
 
-        // SECURITY: Register the mapping in the resource registry to enable force-unmap
-        // on domain destruction, preventing DMA-after-free leaks.
-        if let Err(e) = self.dma_registry.register(iova, phys, size) {
+        // Keep registry observers excluded through leaf commit. Lock failure
+        // precedes publication, so caller still owns wholly unmapped data RAM.
+        let mut registry = match self.dma_registry.state.lock() {
+            Ok(registry) => registry,
+            Err(_) => {
+                for guard in guards.iter_mut() {
+                    guard.mappings.remove(iova);
+                }
+                return Err(IommuError::Poisoned);
+            }
+        };
+        if let Err(e) = self
+            .dma_registry
+            .register_locked(&mut registry, iova, phys, size)
+        {
             log::error!(
                 "[IOMMU] Failed to register DMA mapping in registry: {:?}",
                 e
@@ -883,13 +906,14 @@ impl IommuDomain {
             for guard in guards.iter_mut() {
                 guard.mappings.remove(iova);
             }
-            return Err(if self.domain_type != IommuDomainType::Passthrough {
-                self.rollback_mapping(iova, size, e)
-            } else {
-                e
-            });
+            return Err(e);
         }
 
+        if let Some(prepared) = prepared {
+            // SAFETY: all metadata admission succeeded and paging/shard locks
+            // retain the exact conflict-checked hierarchy through this commit.
+            unsafe { prepared.commit(self.pte_format, read, write) };
+        }
         self.mapped_size.fetch_add(size, Ordering::Relaxed);
 
         Ok(())

@@ -24,6 +24,7 @@ use crate::task::{current_subject, current_task_id};
 
 mod bootstrap;
 mod device_registration;
+mod dma_failure;
 mod fs;
 mod gui;
 mod host;

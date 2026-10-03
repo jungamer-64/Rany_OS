@@ -52,7 +52,7 @@ pub enum MemoryError {
 }
 
 /// ドメイン関連エラーの種類
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DomainErrorKind {
     /// ドメインが見つからない
     NotFound,
@@ -72,6 +72,8 @@ pub enum DomainErrorKind {
     RegistryFull,
     /// レジストリが毒入れされた / 利用不可
     RegistryPoisoned,
+    /// Policy admission retains its reason through lifecycle composition.
+    Policy(crate::domain::DomainPolicyError),
 }
 
 /// IPC関連エラー
@@ -225,6 +227,7 @@ impl fmt::Display for DomainErrorKind {
             DomainErrorKind::LifecycleError => write!(f, "lifecycle error"),
             DomainErrorKind::RegistryFull => write!(f, "registry full"),
             DomainErrorKind::RegistryPoisoned => write!(f, "domain registry poisoned"),
+            DomainErrorKind::Policy(error) => write!(f, "{error}"),
         }
     }
 }
@@ -358,6 +361,7 @@ impl From<crate::domain::lifecycle::DomainError> for KernelError {
             DE::AlreadyStopped => DomainErrorKind::NotRunning,
             DE::DependencyError(_) => DomainErrorKind::LifecycleError,
             DE::Panicked(_) => DomainErrorKind::LifecycleError,
+            DE::Policy(error) => DomainErrorKind::Policy(error),
         })
     }
 }

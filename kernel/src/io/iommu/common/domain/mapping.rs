@@ -4,7 +4,83 @@
 
 use super::*;
 
+use super::leaf_walk::{PreparedDmaRange, PreparedLeaf};
+
 impl IommuDomain {
+    /// Perform all fallible table and vector admission before publishing a leaf.
+    /// The caller retains paging_lock through either drop or commit of the range.
+    pub(super) fn prepare_range(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+    ) -> Result<PreparedDmaRange<'_>, IommuError> {
+        let bound = super::leaf_walk::retirement_table_bound(iova, size, self.page_table_levels())?;
+        self.reserve_range_retirement(iova, size)?;
+        let mut prepared = PreparedDmaRange {
+            leaves: Vec::new(),
+            scopes: Vec::new(),
+        };
+        prepared
+            .leaves
+            .try_reserve_exact(bound)
+            .map_err(|_| IommuError::MetadataAllocation)?;
+        prepared
+            .scopes
+            .try_reserve_exact(bound)
+            .map_err(|_| IommuError::MetadataAllocation)?;
+        let mut current_iova = iova;
+        let mut current_phys = phys;
+        let mut remaining = size;
+        // LOOP_PROOF: mode=condition; reason=Each prepared leaf run consumes a positive aligned extent and any admission or conflict failure returns before leaf publication.;
+        while remaining > 0 {
+            let level = if self.can_use_1gb_page(current_iova, current_phys, remaining) {
+                3
+            } else if self.can_use_2mb_page(current_iova, current_phys, remaining) {
+                2
+            } else {
+                1
+            };
+            let index = Self::level_index(current_iova, level);
+            let count = if level == 1 {
+                core::cmp::min(remaining / 4096, (PT_ENTRIES - index) as u64) as usize
+            } else {
+                1
+            };
+            // SAFETY: paging_lock retains every parent through prepared drop or commit.
+            let (table, table_phys, mut scopes, scope_count, _) =
+                unsafe { self.ensure_table_path_to_level(current_iova, level)? };
+            // Retain all new scopes before any fallible conflict check so failure
+            // clears their parents while the prepared storage is still alive.
+            for scope in scopes.iter_mut().take(scope_count).filter_map(Option::take) {
+                assert!(
+                    prepared.scopes.len() < prepared.scopes.capacity(),
+                    "table window bound admits every scope"
+                );
+                prepared.scopes.push(scope);
+            }
+            // SAFETY: the retained table has PT_ENTRIES entries; this check publishes nothing.
+            unsafe { Self::check_pt_no_conflicts(table, index, count)? };
+            prepared.leaves.push(PreparedLeaf {
+                table,
+                table_phys,
+                index,
+                count,
+                level,
+                phys: current_phys,
+            });
+            let bytes = if level == 1 {
+                count as u64 * 4096
+            } else {
+                1u64 << Self::level_shift(level)
+            };
+            current_iova += bytes;
+            current_phys += bytes;
+            remaining -= bytes;
+        }
+        Ok(prepared)
+    }
+
     /// Walk all intermediate levels and ensure a Level-1 table (PT) exists.
     unsafe fn ensure_page_tables_4k(
         &self,
@@ -48,7 +124,11 @@ impl IommuDomain {
                 self.pte_format,
             );
 
-            for scope in newly_allocated.iter_mut().take(scope_count).flatten() {
+            for scope in newly_allocated
+                .iter_mut()
+                .take(scope_count)
+                .filter_map(Option::take)
+            {
                 scope.commit();
             }
 
@@ -100,7 +180,11 @@ impl IommuDomain {
         }
         inc_ref(l2_phys);
 
-        for scope in newly_allocated.iter_mut().take(scope_count).flatten() {
+        for scope in newly_allocated
+            .iter_mut()
+            .take(scope_count)
+            .filter_map(Option::take)
+        {
             scope.commit();
         }
 
@@ -147,7 +231,11 @@ impl IommuDomain {
         }
         inc_ref(l3_phys);
 
-        for scope in newly_allocated.iter_mut().take(scope_count).flatten() {
+        for scope in newly_allocated
+            .iter_mut()
+            .take(scope_count)
+            .filter_map(Option::take)
+        {
             scope.commit();
         }
 
@@ -161,7 +249,10 @@ impl IommuDomain {
         end_shard: usize,
         first_guard: crate::sync::PoisonLockGuard<'a, DomainShard>,
     ) -> Result<Vec<crate::sync::PoisonLockGuard<'a, DomainShard>>, IommuError> {
-        let mut guards = Vec::with_capacity(end_shard.saturating_sub(start_shard) + 1);
+        let mut guards = Vec::new();
+        guards
+            .try_reserve_exact(end_shard.saturating_sub(start_shard) + 1)
+            .map_err(|_| IommuError::MetadataAllocation)?;
         guards.push(first_guard);
         for idx in (start_shard + 1)..=end_shard {
             let guard = self.shards[idx].lock().map_err(|_| IommuError::Poisoned)?;
@@ -177,7 +268,38 @@ impl IommuDomain {
         }
 
         let _paging_guard = self.paging_lock.lock();
+        self.unmap_locked(iova)
+    }
 
+    /// Detach this owner's exact range. All fallible admission and leaf
+    /// validation finish before any mutation; the caller records DataDetached
+    /// immediately on success, before attempting fallible cohort capture.
+    pub(in crate::io::iommu) fn detach_owned_range(
+        &self,
+        iova: u64,
+        phys: u64,
+        size: u64,
+    ) -> Result<(), IommuError> {
+        let _paging = self.paging_lock.lock();
+        let mapping = self.mapping(iova).ok_or(IommuError::NotMapped)?;
+        if mapping.phys != phys || mapping.size != size {
+            return Err(IommuError::InvalidAddress);
+        }
+        self.unmap_locked(iova)?;
+        Ok(())
+    }
+    pub(in crate::io::iommu) fn capture_detached_tables(
+        &self,
+    ) -> Result<super::super::dma::page_table_pool::DetachedTables, IommuError> {
+        let _paging = self.paging_lock.lock();
+        Ok(self
+            .pending_pt_release
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?
+            .take_pending())
+    }
+
+    fn unmap_locked(&self, iova: u64) -> Result<DmaMapping, IommuError> {
         let start_shard = self.shard_for_iova(iova);
         let guard = self.shards[start_shard]
             .lock()
@@ -191,97 +313,99 @@ impl IommuDomain {
 
         let mut guards = self.acquire_shard_guards(start_shard, end_shard, guard)?;
 
-        for guard in guards.iter_mut() {
-            guard.mappings.remove(iova);
-        }
-
-        // SECURITY: Unregister from resource registry to maintain consistency.
-        let _ = self.dma_registry.unregister(iova);
-
+        let mut registry = self
+            .dma_registry
+            .state
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?;
         if self.domain_type != IommuDomainType::Passthrough {
             self.unmap_range(iova, mapping.size)?;
         }
+        for guard in guards.iter_mut() {
+            guard.mappings.remove(iova);
+        }
+        self.dma_registry.unregister_locked(&mut registry, iova);
 
         self.mapped_size.fetch_sub(mapping.size, Ordering::Relaxed);
 
         Ok(mapping)
     }
 
-    /// Unmap a range using super-page aware traversal.
-    pub(super) fn unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        let mut current = iova;
-        let mut remaining = size;
-        const SIZE_4KB: u64 = 4096;
+    /// Bound detached table owners by table windows, rather than leaf pages.
+    /// A 1GiB range intersects 512 PT windows, one PD and one PDPT window.
+    /// The root stays owned by the domain and is never queued here.
+    pub(super) fn reserve_range_retirement(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        let count = super::leaf_walk::retirement_table_bound(iova, size, self.page_table_levels())?;
+        self.pending_pt_release
+            .lock()
+            .map_err(|_| IommuError::Poisoned)?
+            .reserve(count)
+    }
 
-        // LOOP_PROOF: mode=condition; reason=Remaining byte count is reduced by each successful unmap step until it reaches zero.;
-        while remaining > 0 {
-            if let Some(unmapped) = self.try_unmap_superpage(current)? {
-                if unmapped > remaining {
-                    return Err(IommuError::InvalidAlignment);
-                }
-                current += unmapped;
-                remaining -= unmapped;
-                continue;
-            }
-
-            let pages_remaining = (remaining / SIZE_4KB) as usize;
-            let pt_idx = Self::level_index(current, 1);
-            let pages_in_pt = core::cmp::min(pages_remaining, PT_ENTRIES - pt_idx);
-            let pages_unmapped = self.unmap_range_4k(current, pages_in_pt)?;
-            let unmapped_bytes = (pages_unmapped as u64) * SIZE_4KB;
-            if unmapped_bytes > remaining {
-                return Err(IommuError::InvalidAlignment);
-            }
-            current += unmapped_bytes;
-            remaining -= unmapped_bytes;
+    /// Validate every leaf before clearing any entry. The paging lock keeps
+    /// this proof fresh through the mutation; partial huge leaves are rejected.
+    fn validate_unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        if size == 0 || (iova | size) & 4095 != 0 {
+            return Err(IommuError::InvalidAlignment);
         }
-
+        let end = iova.checked_add(size).ok_or(IommuError::InvalidAddress)?;
+        if !self.within_addr_width(iova, size) {
+            return Err(IommuError::InvalidAddress);
+        }
+        let mut current = iova;
+        // LOOP_PROOF: mode=condition; reason=Each verified leaf run advances current by a positive extent toward the validated end.;
+        while current < end {
+            current += unsafe {
+                super::leaf_walk::unmap_leaf_run(
+                    self.page_table,
+                    self.page_table_levels(),
+                    self.pte_format,
+                    current,
+                    end - current,
+                )?
+            }
+            .0;
+        }
         Ok(())
     }
 
-    pub(super) fn try_unmap_superpage(&self, iova: u64) -> Result<Option<u64>, IommuError> {
-        const SIZE_1GB: u64 = 1024 * 1024 * 1024;
-        const SIZE_2MB: u64 = 2 * 1024 * 1024;
+    /// Admit metadata and validate all leaves before mutation. Callers retain
+    /// mapping/registry metadata until this succeeds and hold the paging lock.
+    pub(super) fn unmap_range(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        self.validate_unmap_range(iova, size)?;
+        self.reserve_range_retirement(iova, size)?;
+        self.unmap_range_admitted(iova, size)
+    }
 
-        if self.page_table_levels() >= 3 {
-            unsafe {
-                let (l3_table, _table_phys, _parents) =
-                    self.walk_table_path_to_level(iova, 3, false)?;
-                let l3_entry = l3_table.add(Self::level_index(iova, 3));
-                if !(*l3_entry).is_present() {
-                    return Err(IommuError::NotMapped);
+    /// Rollback uses the capacity admitted before mapping; it must not request
+    /// new heap memory after partial publication. The caller holds paging_lock.
+    pub(super) fn unmap_range_admitted(&self, iova: u64, size: u64) -> Result<(), IommuError> {
+        self.validate_unmap_range(iova, size)?;
+        let mut current = iova;
+        let mut remaining = size;
+        // LOOP_PROOF: mode=condition; reason=Each verified unmap consumes a positive leaf run from remaining until the whole range is cleared.;
+        while remaining > 0 {
+            let (bytes, level) = unsafe {
+                super::leaf_walk::unmap_leaf_run(
+                    self.page_table,
+                    self.page_table_levels(),
+                    self.pte_format,
+                    current,
+                    remaining,
+                )?
+            };
+            match level {
+                3 => self.unmap_super_page_1gb(current)?,
+                2 => self.unmap_super_page_2mb(current)?,
+                1 => {
+                    self.unmap_range_4k(current, (bytes / 4096) as usize)?;
                 }
-                if (*l3_entry).is_super_page(self.pte_format) {
-                    self.unmap_super_page_1gb(iova)?;
-                    return Ok(Some(SIZE_1GB));
-                }
-
-                let l2_table = phys_to_virt_usize((*l3_entry).phys_addr()) as *mut SlPte;
-                let l2_entry = l2_table.add(Self::level_index(iova, 2));
-                if !(*l2_entry).is_present() {
-                    return Err(IommuError::NotMapped);
-                }
-                if (*l2_entry).is_super_page(self.pte_format) {
-                    self.unmap_super_page_2mb(iova)?;
-                    return Ok(Some(SIZE_2MB));
-                }
+                _ => unreachable!("verified leaf level is 1, 2 or 3"),
             }
-            return Ok(None);
+            current += bytes;
+            remaining -= bytes;
         }
-
-        unsafe {
-            let l2_table = self.page_table;
-            let l2_entry = l2_table.add(Self::level_index(iova, 2));
-            if !(*l2_entry).is_present() {
-                return Err(IommuError::NotMapped);
-            }
-            if (*l2_entry).is_super_page(self.pte_format) {
-                self.unmap_super_page_2mb(iova)?;
-                return Ok(Some(SIZE_2MB));
-            }
-        }
-
-        Ok(None)
+        Ok(())
     }
 
     pub(super) fn verify_pt_entries_present(

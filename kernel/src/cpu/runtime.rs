@@ -8,7 +8,7 @@ use crate::sync::PoisonLock;
 
 use super::{
     ApicId, CpuFailureReason, CpuId, CpuRole, CpuSet, CpuSlot, CpuSlotState, CpuStateTransition,
-    CpuStateTransitionError, CpuTopologyIssue, FirmwareCpuIdentity, MAX_POSSIBLE_CPUS,
+    CpuStateTransitionError, CpuTopologyIssue, FirmwareCpuIdentity, LocatedCpu, MAX_POSSIBLE_CPUS,
     PhysicalHotplugStatus,
 };
 
@@ -122,11 +122,17 @@ struct CpuRuntimeState {
 
 impl CpuRuntimeState {
     fn bootstrap(
-        apic_id: ApicId,
+        located: LocatedCpu,
         tls_template: Option<boot_proto::TlsInfo>,
     ) -> Result<Self, super::CpuLocalAllocationError> {
-        let slots = alloc::vec![CpuSlot::bootstrap(apic_id)];
-        let locals = alloc::vec![super::CpuLocal::allocate(CpuId::BOOTSTRAP, tls_template)?];
+        let (mut firmware, node) = located.into_parts();
+        firmware.eject = super::CpuEjectCapability::Fixed;
+        let mut bootstrap = CpuSlot::bootstrap(firmware.apic_id);
+        bootstrap.firmware = firmware;
+        let local = super::CpuLocal::allocate(CpuId::BOOTSTRAP, tls_template)?;
+        local.as_ref().get_ref().remote().set_numa_node(node);
+        let slots = alloc::vec![bootstrap];
+        let locals = alloc::vec![local];
         let mut startup_resources = Vec::new();
         startup_resources.push(None);
         let physical_hotplug = PhysicalHotplugStatus::Initializing;
@@ -165,11 +171,11 @@ pub(crate) struct CpuRuntime {
 
 impl CpuRuntime {
     pub(crate) fn bootstrap(
-        apic_id: ApicId,
+        located: LocatedCpu,
         tls_template: Option<boot_proto::TlsInfo>,
     ) -> Result<Self, super::CpuLocalAllocationError> {
         Ok(Self {
-            state: PoisonLock::new(CpuRuntimeState::bootstrap(apic_id, tls_template)?),
+            state: PoisonLock::new(CpuRuntimeState::bootstrap(located, tls_template)?),
         })
     }
 
@@ -266,6 +272,61 @@ impl CpuRuntime {
         Some(unsafe { &*resource })
     }
 
+    pub(crate) fn identify_bootstrap(&self, located: LocatedCpu) -> Result<(), CpuTopologyIssue> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let (mut firmware, node) = located.into_parts();
+        if firmware.apic_id != state.slots[0].firmware.apic_id {
+            return Err(CpuTopologyIssue::ConflictingFirmwareIdentity);
+        }
+        check_memory_placement(&state, CpuId::BOOTSTRAP, node)?;
+        if let Some(uid) = firmware.uid.as_ref()
+            && state
+                .slots
+                .iter()
+                .skip(1)
+                .any(|slot| slot.firmware.uid.as_ref() == Some(uid))
+        {
+            return Err(CpuTopologyIssue::DuplicateUid { uid: uid.clone() });
+        }
+        firmware.eject = super::CpuEjectCapability::Fixed;
+        state.slots[0].firmware = firmware;
+        state.publish()
+    }
+
+    /// Locality is committed to stable backing before presence is published.
+    /// A re-added physical generation may change node only after eject/drain.
+    pub(crate) fn discover_present(&self, located: LocatedCpu) -> Result<CpuId, CpuTopologyIssue> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let (id, changed) = admit_located_slot(&mut state, located)?;
+        let index = id.as_usize();
+        let became_present = if state.slots[index].state == CpuSlotState::FirmwareAbsent {
+            let local = state.locals[index].as_ref().get_ref();
+            // SAFETY: the serialized discovery worker owns the absent slot;
+            // firmware absence requires completed drain, park and eject.
+            unsafe { local.rearm_physical_generation() }
+                .map_err(|resource| CpuTopologyIssue::CpuGenerationNotQuiescent { id, resource })?;
+            state.slots[index]
+                .transition(CpuStateTransition::FirmwarePresent)
+                .map_err(map_state_error)?;
+            true
+        } else {
+            false
+        };
+        if changed || became_present {
+            state.publish()?;
+        }
+        Ok(id)
+    }
+
+    pub(crate) fn discover_possible(&self, located: LocatedCpu) -> Result<CpuId, CpuTopologyIssue> {
+        let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+        let (id, changed) = admit_located_slot(&mut state, located)?;
+        if changed {
+            state.publish()?;
+        }
+        Ok(id)
+    }
+
     pub(crate) fn begin_start(&self, id: CpuId) -> Result<(), CpuRuntimeError> {
         self.transition(id, CpuStateTransition::BeginStart)
     }
@@ -343,6 +404,82 @@ impl CpuRuntime {
     }
 }
 
+fn check_memory_placement(
+    state: &CpuRuntimeState,
+    id: CpuId,
+    requested: crate::mm::types::NumaNodeId,
+) -> Result<(), CpuTopologyIssue> {
+    if let Some(current) = state.locals[id.as_usize()]
+        .as_ref()
+        .get_ref()
+        .remote()
+        .numa_node()
+        .map(crate::mm::types::NumaNodeId::new)
+        && current != requested
+        && state.slots[id.as_usize()].state != CpuSlotState::FirmwareAbsent
+    {
+        return Err(CpuTopologyIssue::MemoryPlacementConflict {
+            id,
+            current,
+            requested,
+        });
+    }
+    Ok(())
+}
+
+fn admit_located_slot(
+    state: &mut CpuRuntimeState,
+    located: LocatedCpu,
+) -> Result<(CpuId, bool), CpuTopologyIssue> {
+    let (firmware, node) = located.into_parts();
+    if let Some(index) = state.slots.iter().position(|slot| {
+        slot.firmware.apic_id == firmware.apic_id && slot.firmware.uid == firmware.uid
+    }) {
+        let id = state.slots[index].id;
+        check_memory_placement(state, id, node)?;
+        let local = state.locals[index].as_ref().get_ref();
+        let changed = state.slots[index].firmware != firmware
+            || local.remote().numa_node() != Some(node.as_u8());
+        // An absent CPU has no cache borrower or running physical generation.
+        // For a present CPU check_memory_placement forbids a locality change.
+        local.remote().set_numa_node(node);
+        state.slots[index].firmware = firmware;
+        return Ok((id, changed));
+    }
+    if let Some(uid) = firmware.uid.as_ref()
+        && state
+            .slots
+            .iter()
+            .any(|slot| slot.firmware.uid.as_ref() == Some(uid))
+    {
+        return Err(CpuTopologyIssue::DuplicateUid { uid: uid.clone() });
+    }
+    if state
+        .slots
+        .iter()
+        .any(|slot| slot.firmware.apic_id == firmware.apic_id)
+    {
+        return Err(CpuTopologyIssue::DuplicateApicId {
+            apic_id: firmware.apic_id,
+        });
+    }
+    if state.slots.len() >= MAX_POSSIBLE_CPUS {
+        return Err(CpuTopologyIssue::TooManyPossibleCpus {
+            limit: MAX_POSSIBLE_CPUS,
+        });
+    }
+    let id = CpuId::from_valid_index(state.slots.len());
+    let local = super::CpuLocal::allocate(id, state.tls_template)
+        .map_err(|_| CpuTopologyIssue::CpuLocalAllocationFailed { id })?;
+    local.as_ref().get_ref().remote().set_numa_node(node);
+    state
+        .slots
+        .push(CpuSlot::absent(id, CpuRole::Application, firmware));
+    state.locals.push(local);
+    state.startup_resources.push(None);
+    Ok((id, true))
+}
+
 fn map_state_error(error: CpuStateTransitionError) -> CpuTopologyIssue {
     match error {
         CpuStateTransitionError::BootstrapCpu => CpuTopologyIssue::ConflictingFirmwareIdentity,
@@ -360,7 +497,7 @@ pub(crate) enum CpuRuntimeError {
 static CPU_RUNTIME: Once<CpuRuntime> = Once::new();
 
 pub(crate) fn install_bootstrap(
-    apic_id: ApicId,
+    located: LocatedCpu,
     tls_template: Option<boot_proto::TlsInfo>,
 ) -> Result<(), CpuTopologyIssue> {
     if let Some(runtime) = CPU_RUNTIME.get() {
@@ -368,12 +505,17 @@ pub(crate) fn install_bootstrap(
         let bootstrap = snapshot
             .slot(CpuId::BOOTSTRAP)
             .ok_or(CpuTopologyIssue::ConflictingFirmwareIdentity)?;
-        if bootstrap.firmware.apic_id != apic_id {
+        if bootstrap.firmware.apic_id != located.firmware().apic_id {
             return Err(CpuTopologyIssue::ConflictingFirmwareIdentity);
         }
+        let state = runtime
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        check_memory_placement(&state, CpuId::BOOTSTRAP, located.memory_node())?;
         return Ok(());
     }
-    let runtime = CpuRuntime::bootstrap(apic_id, tls_template).map_err(|_| {
+    let runtime = CpuRuntime::bootstrap(located, tls_template).map_err(|_| {
         CpuTopologyIssue::CpuLocalAllocationFailed {
             id: CpuId::BOOTSTRAP,
         }
@@ -401,18 +543,94 @@ mod tests {
     use super::*;
     use crate::cpu::{CpuEjectCapability, FirmwareCpuUid};
 
-    fn firmware(uid: u64, apic: u32) -> FirmwareCpuIdentity {
-        FirmwareCpuIdentity {
-            uid: Some(FirmwareCpuUid::Integer(uid)),
-            apic_id: ApicId::new(apic),
-            proximity_domain: Some(0),
-            eject: CpuEjectCapability::FirmwareEject,
-        }
+    fn firmware(uid: u64, apic: u32) -> LocatedCpu {
+        let placement =
+            crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap();
+        LocatedCpu::resolve(
+            FirmwareCpuIdentity {
+                uid: Some(FirmwareCpuUid::Integer(uid)),
+                apic_id: ApicId::new(apic),
+                proximity_domain: Some(0),
+                eject: CpuEjectCapability::FirmwareEject,
+            },
+            &placement,
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn namespace_only_locality_is_bound_before_publish_and_changes_only_after_eject() {
+        use crate::mm::numa::placement::{CpuAffinity, NumaPlacement};
+        use crate::mm::types::NumaNodeId;
+        let placement = NumaPlacement::try_new(
+            &[
+                CpuAffinity {
+                    apic_id: ApicId::new(0),
+                    proximity_domain: 2,
+                },
+                CpuAffinity {
+                    apic_id: ApicId::new(1),
+                    proximity_domain: 9,
+                },
+            ],
+            &[],
+            |a, b| Some(if a == b { 10 } else { 20 }),
+        )
+        .unwrap();
+        let locate = |apic, domain| {
+            LocatedCpu::resolve(
+                FirmwareCpuIdentity {
+                    uid: Some(FirmwareCpuUid::Integer(apic as u64)),
+                    apic_id: ApicId::new(apic),
+                    proximity_domain: Some(domain),
+                    eject: CpuEjectCapability::FirmwareEject,
+                },
+                &placement,
+            )
+            .unwrap()
+        };
+        let runtime = CpuRuntime::bootstrap(locate(0, 2), None).unwrap();
+        let id = runtime.discover_present(locate(77, 9)).unwrap();
+        let local_node = || {
+            runtime
+                .state
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture runtime lock poisoned"))
+                .locals[id.as_usize()]
+            .as_ref()
+            .get_ref()
+            .remote()
+            .numa_node()
+        };
+        assert_eq!(
+            runtime.snapshot().slot(id).unwrap().state,
+            CpuSlotState::PresentOffline
+        );
+        assert_eq!(local_node(), Some(1));
+        let revision = runtime.snapshot().revision();
+        assert_eq!(
+            runtime.discover_possible(locate(77, 2)),
+            Err(CpuTopologyIssue::MemoryPlacementConflict {
+                id,
+                current: NumaNodeId::new(1),
+                requested: NumaNodeId::NODE_0,
+            })
+        );
+        assert_eq!(runtime.snapshot().revision(), revision);
+        assert_eq!(local_node(), Some(1));
+        runtime.begin_start(id).unwrap();
+        runtime.startup_ready(id).unwrap();
+        runtime.begin_drain(id).unwrap();
+        runtime.drain_complete(id).unwrap();
+        runtime.begin_eject(id).unwrap();
+        runtime.eject_complete(id).unwrap();
+        assert_eq!(runtime.discover_present(locate(77, 2)), Ok(id));
+        assert_eq!(local_node(), Some(0));
     }
 
     #[test]
     fn sparse_snapshot_keeps_cpu_ids_instead_of_dense_count() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         let cpu1 = runtime.discover_present(firmware(1, 1)).unwrap();
         let cpu2 = runtime.discover_present(firmware(2, 2)).unwrap();
         runtime.begin_start(cpu2).unwrap();
@@ -428,7 +646,7 @@ mod tests {
 
     #[test]
     fn absent_namespace_slot_reuses_cpu_id_when_it_becomes_present() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         let identity = firmware(9, 9);
         let possible = runtime.discover_possible(identity.clone()).unwrap();
         assert_eq!(
@@ -446,7 +664,7 @@ mod tests {
 
     #[test]
     fn duplicate_uid_and_apic_are_rejected_before_online() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         runtime.discover_present(firmware(7, 10)).unwrap();
         assert!(matches!(
             runtime.discover_present(firmware(7, 11)),
@@ -460,7 +678,7 @@ mod tests {
 
     #[test]
     fn readd_reuses_the_same_firmware_slot() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         let id = runtime.discover_present(firmware(9, 9)).unwrap();
         runtime.begin_start(id).unwrap();
         runtime.startup_ready(id).unwrap();
@@ -479,7 +697,7 @@ mod tests {
 
     #[test]
     fn immutable_snapshot_is_not_rewritten_after_publication() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         let before = runtime.snapshot();
         runtime.discover_present(firmware(1, 1)).unwrap();
         let after = runtime.snapshot();
@@ -490,7 +708,7 @@ mod tests {
 
     #[test]
     fn fixed_cpu_eject_capability_is_preserved() {
-        let runtime = CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = CpuRuntime::bootstrap(firmware(0, 0), None).unwrap();
         assert_eq!(
             runtime
                 .snapshot()

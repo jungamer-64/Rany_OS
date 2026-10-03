@@ -33,7 +33,7 @@ pub use environ::{
 };
 pub(crate) use execution::enter_domain;
 pub use execution::{
-    ExecutionContext, ExecutionContextUnavailable, Subject, current_execution_context,
+    ExecutionAdmissionError, ExecutionContext, ExecutionContextUnavailable, Subject,
     current_subject, current_task_id,
 };
 pub use interrupt_waker::{

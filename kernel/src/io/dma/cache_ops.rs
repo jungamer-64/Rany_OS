@@ -46,4 +46,3 @@ pub fn writeback_cache_range(addr: *const u8, size: usize) {
     }
     mfence();
 }
-

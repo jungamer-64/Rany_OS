@@ -2,6 +2,51 @@
 // テスト
 // ============================================================================
 
+mod irq_acquisition {
+    use super::super::{IrqPoisonLock, TryLockError};
+    use core::sync::atomic::Ordering;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn busy_acquisition_retains_the_locked_payload_and_allows_retry() {
+        let lock = IrqPoisonLock::new(37);
+        let mut held = lock.lock().unwrap();
+        assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+        *held = 41;
+        drop(held);
+        assert_eq!(
+            *lock
+                .try_lock()
+                .unwrap_or_else(|_| panic!("unlocked fixture")),
+            41
+        );
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn poison_requires_explicit_recovery_and_survives_failed_acquisition() {
+        let lock = IrqPoisonLock::new(37);
+        // Model a prior holder's terminal panic locally without changing the
+        // system-wide panic state used by unrelated parallel test cases.
+        lock.poisoned.store(true, Ordering::Release);
+        let Err(TryLockError::Poisoned(error)) = lock.try_lock() else {
+            panic!("poisoned payload cannot be granted as ordinary mutation authority");
+        };
+        assert_eq!(**error.get_ref(), 37);
+        assert!(matches!(lock.try_lock(), Err(TryLockError::WouldBlock)));
+        drop(error);
+        assert!(lock.is_poisoned());
+        assert!(matches!(lock.try_lock(), Err(TryLockError::Poisoned(_))));
+        lock.clear_poison();
+        assert_eq!(
+            *lock
+                .try_lock()
+                .unwrap_or_else(|_| panic!("recovered fixture")),
+            37
+        );
+    }
+}
+
 #[cfg(all(test, feature = "std"))]
 mod tests {
     use super::*;

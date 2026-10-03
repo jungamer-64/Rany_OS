@@ -84,7 +84,12 @@ pub trait KernelServices: Send + Sync {
     /// ```
     ///
     /// # Errors
-    /// - `KapiError::OutOfMemory` if allocation fails
+    /// - `KapiError::OutOfMemory` if RAM or allocation metadata cannot be acquired
+    /// - `KapiError::ResourceExhausted` if registry, IOVA or retirement admission is full
+    /// - `KapiError::InvalidSize` or `InvalidAlignment` if the range cannot be mapped
+    /// - `KapiError::NotInitialized` if the required allocator or IOMMU is not ready
+    /// - `KapiError::IoError` if translation synchronization fails; the kernel
+    ///   retains published backing until retirement completes
     /// - `KapiError::NotSupported` if `device_id` is null or device-scoped DMA is unavailable
     fn alloc_dma_for_device(
         &self,
@@ -850,11 +855,8 @@ mod standalone {
                 &mut raw,
             )
         };
-        if AbiError::from_raw(status).is_success() {
-            super::import_dma_allocation(raw, request.direction())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()?;
+        super::import_dma_allocation(raw, request.direction())
     }
 
     fn enable_msix(
@@ -893,9 +895,7 @@ mod standalone {
             raw.len(),
             &mut written,
         );
-        if !AbiError::from_raw(status).is_success() {
-            return Err(map_abi_error(status));
-        }
+        AbiError::from_raw(status).into_result()?;
         if written != requested_count as usize {
             return Err(KapiError::IoError);
         }
@@ -922,11 +922,7 @@ mod standalone {
         };
 
         let status = disable(device_id.raw());
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()
     }
 
     fn require_full_kernel_api() -> KapiResult<&'static KernelApiV4> {
@@ -950,12 +946,9 @@ mod standalone {
         let mut ptr = core::ptr::null_mut();
         let mut owner = 0u64;
         let status = (api.exchange_alloc_raw)(size, align, &mut ptr, &mut owner);
-        if AbiError::from_raw(status).is_success() {
-            let ptr = NonNull::new(ptr).ok_or(KapiError::IoError)?;
-            Ok((ptr, DomainId::new(owner)))
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()?;
+        let ptr = NonNull::new(ptr).ok_or(KapiError::IoError)?;
+        Ok((ptr, DomainId::new(owner)))
     }
 
     fn exchange_dealloc_raw(
@@ -966,21 +959,13 @@ mod standalone {
     ) -> KapiResult<()> {
         let api = require_full_kernel_api()?;
         let status = (api.exchange_dealloc_raw)(ptr.as_ptr(), owner.as_u64(), size, align);
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()
     }
 
     fn exchange_transfer_raw(ptr: NonNull<u8>, from: DomainId, to: DomainId) -> KapiResult<()> {
         let api = require_full_kernel_api()?;
         let status = (api.exchange_transfer_raw)(ptr.as_ptr(), from.as_u64(), to.as_u64());
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()
     }
 
     fn ipc_create_channel() -> KapiResult<(ChannelHandle, ChannelHandle)> {
@@ -988,42 +973,28 @@ mod standalone {
         let mut sender = 0u64;
         let mut receiver = 0u64;
         let status = (api.ipc_create_channel_raw)(&mut sender, &mut receiver);
-        if AbiError::from_raw(status).is_success() {
-            Ok((ChannelHandle::new(sender), ChannelHandle::new(receiver)))
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()?;
+        Ok((ChannelHandle::new(sender), ChannelHandle::new(receiver)))
     }
 
     fn ipc_close(channel: ChannelHandle) -> KapiResult<()> {
         let api = require_full_kernel_api()?;
         let status = (api.ipc_close_raw)(channel.id());
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()
     }
 
     fn ipc_send_raw(channel: ChannelHandle, raw: AbiRRefRaw) -> KapiResult<()> {
         let api = require_full_kernel_api()?;
         let status = (api.ipc_send_raw)(channel.id(), &raw);
-        if AbiError::from_raw(status).is_success() {
-            Ok(())
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()
     }
 
     fn ipc_recv_raw(channel: ChannelHandle) -> KapiResult<AbiRRefRaw> {
         let api = require_full_kernel_api()?;
         let mut raw = AbiRRefRaw::default();
         let status = (api.ipc_recv_raw)(channel.id(), &mut raw);
-        if AbiError::from_raw(status).is_success() {
-            Ok(raw)
-        } else {
-            Err(map_abi_error(status))
-        }
+        AbiError::from_raw(status).into_result()?;
+        Ok(raw)
     }
 
     struct StandaloneKernelServices;
@@ -1093,20 +1064,13 @@ mod standalone {
         ) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_block_device)(registration, &mut handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(handle)
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()?;
+            Ok(handle)
         }
 
         fn unregister_block_device(&self, handle: u64) -> KapiResult<()> {
             let status = (super::abi().unregister_block_device)(handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(())
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()
         }
 
         fn register_nvme_namespace(
@@ -1115,39 +1079,25 @@ mod standalone {
         ) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_nvme_namespace)(registration, &mut handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(handle)
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()?;
+            Ok(handle)
         }
 
         fn unregister_nvme_namespace(&self, handle: u64) -> KapiResult<()> {
             let status = (super::abi().unregister_nvme_namespace)(handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(())
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()
         }
 
         fn register_netdev_port(&self, registration: &AbiNetPortRegistration) -> KapiResult<u64> {
             let mut handle = 0u64;
             let status = (super::abi().register_netdev_port)(registration, &mut handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(handle)
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()?;
+            Ok(handle)
         }
 
         fn unregister_netdev_port(&self, handle: u64) -> KapiResult<()> {
             let status = (super::abi().unregister_netdev_port)(handle);
-            if AbiError::from_raw(status).is_success() {
-                Ok(())
-            } else {
-                Err(map_abi_error(status))
-            }
+            AbiError::from_raw(status).into_result()
         }
 
         fn net_tcp_connection_dial(

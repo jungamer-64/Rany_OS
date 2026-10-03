@@ -1,5 +1,61 @@
 use super::*;
 
+#[test]
+fn range_claims_match_independent_page_model() {
+    let bitmap = HierarchicalBitmap::new(1031);
+    let mut occupied = alloc::vec![false; 1031];
+    // Include holes at both sides of word boundaries and a partial final word.
+    for (start, count) in [(0, 3), (63, 4), (700, 9), (1029, 2)] {
+        bitmap.reserve_range(start, count).unwrap();
+        occupied[start..start + count].fill(true);
+    }
+    let mut live = Vec::new();
+    let mut seed = 0x238a_914bu64;
+    for step in 0..10_000 {
+        seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+        let start = (seed as usize >> 9) % occupied.len();
+        let count = 1 + ((seed >> 31) as usize % 513);
+        let available = start.checked_add(count).is_some_and(|end| {
+            end <= occupied.len() && occupied[start..end].iter().all(|used| !used)
+        });
+        let claim = bitmap.claim_range(start, count);
+        assert_eq!(claim.is_ok(), available);
+        if let Ok(claim) = claim {
+            if step % 3 == 0 {
+                drop(claim);
+            } else {
+                claim.commit();
+                occupied[start..start + count].fill(true);
+                live.push((start, count));
+            }
+        }
+        if step % 7 == 0 {
+            if let Some((start, count)) = live.pop() {
+                bitmap.release_range(start, count);
+                occupied[start..start + count].fill(false);
+            }
+        }
+        assert_eq!(
+            bitmap.free_count(),
+            occupied.iter().filter(|used| !**used).count()
+        );
+        for (page, used) in occupied.iter().enumerate() {
+            assert_eq!(bitmap.is_free(page), !used);
+        }
+    }
+    assert!(bitmap.claim_range(usize::MAX, 2).is_err());
+}
+
+#[test]
+fn overlapping_claim_rolls_back_prefix_without_releasing_competitor() {
+    let bitmap = HierarchicalBitmap::new(1024);
+    bitmap.claim_range(511, 1).unwrap().commit();
+    assert!(bitmap.claim_range(0, 512).is_err());
+    assert_eq!(bitmap.free_count(), 1023);
+    assert!(!bitmap.is_free(511));
+    assert!(bitmap.is_range_free(0, 511));
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_basic_allocation() {

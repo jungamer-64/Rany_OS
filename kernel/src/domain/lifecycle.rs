@@ -12,7 +12,6 @@
 //!
 //! ## `domain` との関係
 //!
-//! - `terminate_domain()` → `domain::terminate_domain()` に委譲
 //! - `handle_domain_panic()` → `domain::handle_domain_panic()` に委譲
 //! - `restart_domain()` — 本モジュール固有（再起動ロジック）
 //! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
@@ -45,12 +44,6 @@ impl core::fmt::Display for DomainError {
         }
     }
 }
-
-/// ドメインを終了させる
-/// 設計書 8.1: リソース回収
-///
-/// `domain::terminate_domain()` に委譲し、エラー型を変換する。
-
 
 /// ドメインがパニックした場合の処理
 /// カスタムパニックハンドラから呼ばれる
@@ -92,7 +85,7 @@ pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
             with_domain_mut(domain_id, |domain| {
                 // エラー状態をクリア
                 domain.panic_message = None;
-                domain.last_error = None;
+                domain.terminated_dependency = None;
                 // タスクリストをクリア（新しいタスクがスポーンされる）
                 domain.tasks.clear();
                 // 統計情報はリセットしない（累積）
@@ -162,7 +155,7 @@ mod tests {
         assert_eq!(state, Some(DomainState::Running));
 
         // 終了
-        let result = terminate_domain(id);
+        let result = crate::domain::terminate_domain(id);
         assert!(result.is_ok());
     }
 

@@ -269,7 +269,7 @@ impl core::ops::SubAssign<usize> for FrameIndex {
 pub struct NumaNodeId(u8);
 
 impl NumaNodeId {
-    /// 最大NUMAノード数
+    /// Bound shared by normalized placement, PMM pools, and node-local heaps.
     pub const MAX_NODES: usize = 16;
 
     /// ノード0（通常のデフォルトノード）

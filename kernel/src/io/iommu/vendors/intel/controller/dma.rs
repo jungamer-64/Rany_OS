@@ -108,7 +108,7 @@ impl IommuController {
         context_entry.set_present();
 
         // Security: Enable Device-TLB (ATS) support in the context entry if enabled for this device.
-        if self.should_invalidate_device_tlb(&device) {
+        if self.should_invalidate_device_tlb(&device)? {
             context_entry.set_dte();
         }
 
@@ -271,7 +271,7 @@ impl IommuController {
         &self,
         domain_id: u16,
         device: DeviceId,
-    ) -> Result<(IommuDomainType, u64, usize, usize), IommuError> {
+    ) -> Result<(Arc<IommuDomain>, usize, usize), IommuError> {
         let domain_arc = self
             .domains
             .lock()
@@ -282,11 +282,8 @@ impl IommuController {
         map_rmrr_for_device(&domain_arc, device)?;
         let bus = device.bus as usize;
         let devfn = ((device.device as usize) << 3) | (device.function as usize);
-        Ok((
-            domain_arc.domain_type(),
-            domain_arc.page_table_addr(),
-            bus,
-            devfn,
-        ))
+        // Retain the domain through hardware and device-registry publication.
+        // Observed addresses alone would allow teardown to race this attach.
+        Ok((domain_arc, bus, devfn))
     }
 }

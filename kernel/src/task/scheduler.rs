@@ -157,6 +157,7 @@ impl SchedulerState {
 
     fn take_ready(&mut self, cpu: CpuId) -> Option<Arc<TaskRecord>> {
         let queue = self.queues.get_mut(&cpu)?;
+        // LOOP_PROOF: mode=condition; reason=Each iteration consumes one queued task ID and returns at the first live Ready record or an empty queue.;
         while let Some(id) = queue.pop_front() {
             let Some(entry) = self.tasks.get_mut(&id) else {
                 continue;
@@ -331,6 +332,7 @@ impl TaskRuntime {
             return false;
         };
         let cpu = current.id();
+        // LOOP_PROOF: mode=event; reason=Each iteration consumes one deferred task wake and exits when the serialized wake queue is empty.;
         loop {
             let target = {
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
@@ -363,7 +365,21 @@ impl TaskRuntime {
             return false;
         }
 
-        let execution = ExecutionContext::for_task(record.id, record.domain);
+        let execution = match ExecutionContext::for_task(record.id, record.domain) {
+            Ok(execution) => execution,
+            Err(error) => {
+                log::warn!(
+                    "Task {} execution admission failed: {}",
+                    record.id.as_u64(),
+                    error
+                );
+                self.state
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .defer_running(record.id, cpu);
+                return false;
+            }
+        };
         let execution_guard = current.enter_execution(execution);
         let waker = create_waker(record.id);
         let mut context = Context::from_waker(&waker);
@@ -513,12 +529,17 @@ fn run_scheduler_loop(park_policy: ParkPolicy) {
     let current = CurrentCpu::acquire()
         .unwrap_or_else(|| panic!("scheduler loop entered without CPU-local state"));
     let processes_rcu_callbacks = current.id() == CpuId::BOOTSTRAP;
+    // LOOP_PROOF: mode=event; reason=The CPU executor handles admitted task polls and deferred work until an accepted application-CPU Park request returns ownership to its lifecycle.;
     loop {
         let mut park_requested = false;
+        // LOOP_PROOF: mode=condition; reason=Each take consumes one admitted owner control message and stops at an empty queue.;
         while let Some(message) = current.take_control() {
             match message {
                 crate::cpu::CpuControlMessage::WakeExecutor
                 | crate::cpu::CpuControlMessage::Start => {}
+                crate::cpu::CpuControlMessage::ReclaimMemory => {
+                    crate::heap::reclaim_local_caches();
+                }
                 crate::cpu::CpuControlMessage::Park => match park_policy {
                     ParkPolicy::Reject => {
                         panic!("bootstrap scheduler received an illegal park request")
@@ -616,7 +637,21 @@ mod tests {
     use crate::cpu::{ApicId, CpuEjectCapability, FirmwareCpuIdentity, FirmwareCpuUid};
 
     fn sparse_runtime() -> crate::cpu::CpuRuntime {
-        let runtime = crate::cpu::CpuRuntime::bootstrap(ApicId::new(0), None).unwrap();
+        let runtime = crate::cpu::CpuRuntime::bootstrap(
+            crate::cpu::LocatedCpu::resolve(
+                crate::cpu::FirmwareCpuIdentity {
+                    uid: None,
+                    apic_id: crate::cpu::ApicId::new(0),
+                    proximity_domain: None,
+                    eject: crate::cpu::CpuEjectCapability::Fixed,
+                },
+                &crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10))
+                    .unwrap(),
+            )
+            .unwrap(),
+            None,
+        )
+        .unwrap();
         let cpu1 = runtime
             .discover_present(FirmwareCpuIdentity {
                 uid: Some(FirmwareCpuUid::Integer(1)),

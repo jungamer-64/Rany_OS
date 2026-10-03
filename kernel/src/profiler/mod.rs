@@ -346,7 +346,7 @@ impl CpuProfiler {
             self.dropped_samples.fetch_add(1, Ordering::Relaxed);
             return;
         };
-        let task = current.execution().map(|context| context.subject.task);
+        let task = current.execution().map(|subject| subject.task);
         let sample = ProfileSample::new(current.id(), task, ProfileMode::Cpu, 1).with_stack();
 
         let mut samples = self.samples.lock();

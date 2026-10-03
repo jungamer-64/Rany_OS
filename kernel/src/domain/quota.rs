@@ -17,8 +17,14 @@
 //! - **9.3.4 I/O帯域制限**: トークンバケットによる帯域制限
 use crate::domain::DomainId;
 use crate::sync::PoisonLock;
-use alloc::collections::BTreeMap;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+
+#[path = "quota/memory.rs"]
+mod memory;
+use memory::MemoryAccount;
+pub(crate) use memory::{MemoryBinding, MemoryCredit};
 
 /// ドメイン優先度
 ///
@@ -141,53 +147,27 @@ impl CpuQuota {
     }
 }
 
-/// メモリクォータ（バイト単位）
+/// Memory admission policy. Usage belongs to the registered stable account,
+/// so replacing policy cannot reset charges held by live allocations.
 #[derive(Debug)]
 pub struct MemoryQuota {
-    /// 最大メモリ使用量（バイト）
     pub limit_bytes: u64,
-    /// 現在の使用量
-    used_bytes: AtomicU64,
-    /// 警告閾値（リミットの何%で警告）
     pub warning_threshold_percent: u64,
 }
 
 impl MemoryQuota {
-    /// 新しいメモリクォータを作成
-    pub fn new(limit_mb: u64) -> Self {
+    pub const fn from_bytes(limit_bytes: u64) -> Self {
         Self {
-            limit_bytes: limit_mb * 1024 * 1024,
-            used_bytes: AtomicU64::new(0),
+            limit_bytes,
             warning_threshold_percent: 80,
         }
     }
 
-    /// 無制限のメモリクォータ
-    pub fn unlimited() -> Self {
+    pub const fn unlimited() -> Self {
         Self {
             limit_bytes: u64::MAX,
-            used_bytes: AtomicU64::new(0),
             warning_threshold_percent: 100,
         }
-    }
-
-    /// 現在の使用量を取得
-    pub fn used(&self) -> u64 {
-        self.used_bytes.load(Ordering::Relaxed)
-    }
-
-    /// 使用率を取得（0.0-1.0）
-    pub fn usage_ratio(&self) -> f64 {
-        if self.limit_bytes == 0 {
-            return 0.0;
-        }
-        (self.used_bytes.load(Ordering::Relaxed) as f64) / (self.limit_bytes as f64)
-    }
-
-    /// 警告閾値を超えているかチェック
-    pub fn is_warning(&self) -> bool {
-        let threshold = (self.limit_bytes * self.warning_threshold_percent) / 100;
-        self.used_bytes.load(Ordering::Relaxed) > threshold
     }
 }
 
@@ -317,8 +297,8 @@ impl DomainQuota {
         Self {
             domain_id,
             priority,
-            cpu: CpuQuota::new(100, 100),  // デフォルト: 100ms期間で100%
-            memory: MemoryQuota::new(256), // デフォルト: 256MB
+            cpu: CpuQuota::new(100, 100), // デフォルト: 100ms期間で100%
+            memory: MemoryQuota::from_bytes(256 * 1024 * 1024), // デフォルト: 256MB
             network_io: IoQuota::new(100, 10), // デフォルト: 100MB/s, 10MBバースト
             storage_io: IoQuota::new(50, 5), // デフォルト: 50MB/s, 5MBバースト
             violation_count: AtomicU64::new(0),
@@ -354,8 +334,8 @@ impl DomainQuota {
         self
     }
 
-    pub fn with_memory_limit(mut self, limit_mb: u64) -> Self {
-        self.memory = MemoryQuota::new(limit_mb);
+    pub fn with_memory_limit_bytes(mut self, limit_bytes: u64) -> Self {
+        self.memory = MemoryQuota::from_bytes(limit_bytes);
         self
     }
 
@@ -371,7 +351,7 @@ impl DomainQuota {
 }
 
 /// クォータエラー
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum QuotaError {
     /// CPU時間超過
     CpuTimeExceeded { domain_id: DomainId },
@@ -385,6 +365,18 @@ pub enum QuotaError {
     IoBandwidthExceeded { requested: u64, available: u64 },
     /// 割り当て競合（再試行が必要）
     AllocationRace,
+    /// No account exists for this non-kernel domain.
+    Unregistered { domain_id: DomainId },
+    /// The account has stopped admitting execution and allocations.
+    Retired { domain_id: DomainId },
+    /// Fallible allocation of registry storage or an account failed.
+    MetadataAllocationFailed,
+    /// The registry is poisoned and cannot safely publish policy.
+    RegistryUnavailable,
+    /// Byte totals or binding counts cannot be represented.
+    AccountingOverflow,
+    /// A charge must represent at least one byte.
+    InvalidSize,
 }
 
 impl core::fmt::Display for QuotaError {
@@ -414,9 +406,17 @@ impl core::fmt::Display for QuotaError {
                     requested, available
                 )
             }
-            QuotaError::AllocationRace => {
-                write!(f, "Allocation race condition, retry required")
+            QuotaError::AllocationRace => write!(f, "Quota admission raced; retry required"),
+            QuotaError::Unregistered { domain_id } => {
+                write!(f, "Domain {domain_id} has no quota account")
             }
+            QuotaError::Retired { domain_id } => {
+                write!(f, "Domain {domain_id} quota account is retired")
+            }
+            QuotaError::MetadataAllocationFailed => write!(f, "Quota metadata allocation failed"),
+            QuotaError::RegistryUnavailable => write!(f, "Quota registry unavailable"),
+            QuotaError::AccountingOverflow => write!(f, "Quota accounting overflow"),
+            QuotaError::InvalidSize => write!(f, "Quota charge must be nonzero"),
         }
     }
 }
@@ -434,76 +434,198 @@ pub struct OomVictim {
     pub reason: &'static str,
 }
 
-/// 【設計書 9.3.3】OOMキラー戦略に基づいて犠牲ドメインを選択
-///
-/// 選択優先順位:
-/// 1. 優先度が低いドメインを優先
-/// 2. 同一優先度内ではメモリ消費量が多いドメインを優先
-/// 3. Critical優先度のドメインは対象外
-pub fn select_oom_victim(quotas: &BTreeMap<DomainId, DomainQuota>) -> Option<OomVictim> {
-    let mut victim: Option<(DomainId, DomainPriority, u64)> = None;
-
-    for (domain_id, quota) in quotas.iter() {
-        // Critical優先度は対象外
-        if quota.priority == DomainPriority::Critical {
-            continue;
-        }
-
-        let memory_usage = quota.memory.used();
-
-        match &victim {
-            None => {
-                victim = Some((*domain_id, quota.priority, memory_usage));
-            }
-            Some((_, current_priority, current_usage)) => {
-                // 優先度が低いか、同一優先度でメモリ使用量が多い場合に更新
-                if quota.priority < *current_priority
-                    || (quota.priority == *current_priority && memory_usage > *current_usage)
-                {
-                    victim = Some((*domain_id, quota.priority, memory_usage));
-                }
-            }
-        }
-    }
-
-    victim.map(|(domain_id, priority, memory_usage)| OomVictim {
-        domain_id,
-        priority,
-        memory_usage,
-        reason: "Selected by OOM killer based on priority and memory usage",
-    })
+/// Policy registry owns every account until all execution bindings and memory
+/// credits have returned. Registration/observation is cold; allocation and
+/// cross-CPU free use a binding/credit directly and never acquire this lock.
+pub struct QuotaManager {
+    quotas: PoisonLock<Vec<RegisteredQuota>>,
 }
 
-// ============================================================================
-// グローバルクォータマネージャ
-// ============================================================================
-
-/// ドメインクォータマネージャ
-pub struct QuotaManager {
-    /// ドメインID -> クォータのマッピング
-    quotas: PoisonLock<BTreeMap<DomainId, DomainQuota>>,
+struct RegisteredQuota {
+    policy: DomainQuota,
+    memory: Box<MemoryAccount>,
 }
 
 impl QuotaManager {
     pub const fn new() -> Self {
         Self {
-            quotas: PoisonLock::new(BTreeMap::new()),
+            quotas: PoisonLock::new(Vec::new()),
         }
     }
 
-    /// ドメインのクォータを登録
-    pub fn register(&self, quota: DomainQuota) {
-        let mut quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        quotas.insert(quota.domain_id, quota);
+    /// Publish policy without resetting usage. A retired account with outstanding
+    /// bindings or credits cannot be reused, even for the same domain identity.
+    /// Metadata is prepared outside the lock, because its allocation may enter OOM.
+    pub fn register(&self, quota: DomainQuota) -> Result<(), QuotaError> {
+        let needed = {
+            let mut quotas = self
+                .quotas
+                .lock()
+                .map_err(|_| QuotaError::RegistryUnavailable)?;
+            if let Some(entry) = quotas
+                .iter_mut()
+                .find(|q| q.policy.domain_id == quota.domain_id)
+            {
+                if entry.memory.is_open() {
+                    entry.update(quota);
+                    return Ok(());
+                }
+                if !entry.memory.can_reclaim() {
+                    return Err(QuotaError::Retired {
+                        domain_id: quota.domain_id,
+                    });
+                }
+            }
+            quotas
+                .len()
+                .checked_add(1)
+                .ok_or(QuotaError::AccountingOverflow)?
+        };
+        let memory = Box::try_new(MemoryAccount::new(
+            quota.domain_id,
+            quota.memory.limit_bytes,
+        ))
+        .map_err(|_| QuotaError::MetadataAllocationFailed)?;
+        let mut prepared = Vec::new();
+        prepared
+            .try_reserve_exact(needed)
+            .map_err(|_| QuotaError::MetadataAllocationFailed)?;
+        let mut quotas = self
+            .quotas
+            .lock()
+            .map_err(|_| QuotaError::RegistryUnavailable)?;
+        // A concurrent registration may have created or updated the same identity.
+        if let Some(index) = quotas
+            .iter()
+            .position(|q| q.policy.domain_id == quota.domain_id)
+        {
+            let entry = &mut quotas[index];
+            if entry.memory.is_open() {
+                entry.update(quota);
+                return Ok(());
+            }
+            if !entry.memory.can_reclaim() {
+                return Err(QuotaError::Retired {
+                    domain_id: quota.domain_id,
+                });
+            }
+            // Replacement is one locked publication. Appending beside a closed
+            // account would let another registration select that old account
+            // and publish a second live return target for the same identity.
+            let retired = core::mem::replace(
+                entry,
+                RegisteredQuota {
+                    policy: quota,
+                    memory,
+                },
+            );
+            drop(quotas);
+            drop(retired);
+            drop(prepared);
+            self.collect_retired();
+            return Ok(());
+        }
+        let required = quotas
+            .len()
+            .checked_add(1)
+            .ok_or(QuotaError::AccountingOverflow)?;
+        if quotas.capacity() < required && prepared.capacity() < required {
+            return Err(QuotaError::AllocationRace);
+        }
+        if quotas.capacity() < required {
+            prepared.extend(quotas.drain(..));
+            core::mem::swap(&mut *quotas, &mut prepared);
+        }
+        quotas.push(RegisteredQuota {
+            policy: quota,
+            memory,
+        });
+        drop(quotas);
+        drop(prepared);
+        self.collect_retired();
+        Ok(())
     }
 
-    /// ドメインのクォータを削除
+    /// Revocation stops admission without allocating or destroying metadata.
+    /// This may run under the domain registry lock. Cold registration, statistics
+    /// and victim selection collect quiescent accounts outside that lock.
     pub fn unregister(&self, domain_id: DomainId) {
-        let mut quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        quotas.remove(&domain_id);
+        let quotas = self
+            .quotas
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        for entry in quotas.iter().filter(|q| q.policy.domain_id == domain_id) {
+            entry.memory.close();
+        }
     }
 
-    /// CPU時間を消費
+    /// Update an admitted domain without acquiring metadata. Callers that hold a
+    /// domain registry lock may use this path; creating an account requires the
+    /// separate fallible registration operation outside that lock.
+    pub(crate) fn update_policy(&self, policy: DomainQuota) -> Result<(), QuotaError> {
+        let mut quotas = self
+            .quotas
+            .lock()
+            .map_err(|_| QuotaError::RegistryUnavailable)?;
+        let entry = quotas
+            .iter_mut()
+            .find(|q| q.policy.domain_id == policy.domain_id)
+            .ok_or(QuotaError::Unregistered {
+                domain_id: policy.domain_id,
+            })?;
+        if !entry.memory.is_open() {
+            return Err(QuotaError::Retired {
+                domain_id: policy.domain_id,
+            });
+        }
+        entry.update(policy);
+        Ok(())
+    }
+
+    /// Binding is acquired on execution entry, outside the allocator hot path.
+    pub(crate) fn bind_memory(&self, domain_id: DomainId) -> Result<MemoryBinding, QuotaError> {
+        if domain_id == DomainId::KERNEL {
+            return Ok(MemoryBinding::kernel());
+        }
+        let quotas = self
+            .quotas
+            .lock()
+            .map_err(|_| QuotaError::RegistryUnavailable)?;
+        let entry = quotas
+            .iter()
+            .find(|q| q.policy.domain_id == domain_id && q.memory.is_open())
+            .ok_or_else(|| {
+                if quotas.iter().any(|q| q.policy.domain_id == domain_id) {
+                    QuotaError::Retired { domain_id }
+                } else {
+                    QuotaError::Unregistered { domain_id }
+                }
+            })?;
+        entry.memory.bind()
+    }
+
+    /// Destruction happens outside the registry lock: freeing metadata can invoke
+    /// other allocator boundaries. Credits and bindings independently pin accounts.
+    fn collect_retired(&self) {
+        // LOOP_PROOF: mode=event; reason=Each iteration removes one quiescent account and exits when no reclaimable retired entry remains.;
+        loop {
+            let retired = {
+                let mut quotas = self
+                    .quotas
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner());
+                let Some(index) = quotas
+                    .iter()
+                    .position(|q| !q.memory.is_open() && q.memory.can_reclaim())
+                else {
+                    break;
+                };
+                quotas.swap_remove(index)
+            };
+            drop(retired);
+        }
+    }
+
     pub fn consume_cpu_time(
         &self,
         domain_id: DomainId,
@@ -511,10 +633,13 @@ impl QuotaManager {
         current_time_ns: u64,
     ) -> bool {
         let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(quota) = quotas.get(&domain_id) {
-            let exceeded = quota.cpu.consume(elapsed_ns, current_time_ns);
+        if let Some(quota) = quotas
+            .iter()
+            .find(|q| q.policy.domain_id == domain_id && q.memory.is_open())
+        {
+            let exceeded = quota.policy.cpu.consume(elapsed_ns, current_time_ns);
             if exceeded {
-                quota.record_violation();
+                quota.policy.record_violation();
             }
             exceeded
         } else {
@@ -522,19 +647,23 @@ impl QuotaManager {
         }
     }
 
-    /// I/O操作を試行
     pub fn try_network_io(
         &self,
         domain_id: DomainId,
         bytes: u64,
         current_time_ns: u64,
     ) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(quota) = quotas.get(&domain_id) {
-            quota.network_io.try_io(bytes, current_time_ns)
-        } else {
-            Ok(())
-        }
+        let quotas = self
+            .quotas
+            .lock()
+            .map_err(|_| QuotaError::RegistryUnavailable)?;
+        quotas
+            .iter()
+            .find(|q| q.policy.domain_id == domain_id && q.memory.is_open())
+            .ok_or(QuotaError::Unregistered { domain_id })?
+            .policy
+            .network_io
+            .try_io(bytes, current_time_ns)
     }
 
     pub fn try_storage_io(
@@ -543,31 +672,118 @@ impl QuotaManager {
         bytes: u64,
         current_time_ns: u64,
     ) -> Result<(), QuotaError> {
-        let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(quota) = quotas.get(&domain_id) {
-            quota.storage_io.try_io(bytes, current_time_ns)
-        } else {
-            Ok(())
-        }
+        let quotas = self
+            .quotas
+            .lock()
+            .map_err(|_| QuotaError::RegistryUnavailable)?;
+        quotas
+            .iter()
+            .find(|q| q.policy.domain_id == domain_id && q.memory.is_open())
+            .ok_or(QuotaError::Unregistered { domain_id })?
+            .policy
+            .storage_io
+            .try_io(bytes, current_time_ns)
     }
 
-    /// OOMキラーによる犠牲ドメイン選択
     pub fn select_oom_victim(&self) -> Option<OomVictim> {
+        self.collect_retired();
         let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        select_oom_victim(&quotas)
+        quotas
+            .iter()
+            .filter(|q| q.memory.is_open() && q.policy.priority != DomainPriority::Critical)
+            .min_by_key(|q| (q.policy.priority, core::cmp::Reverse(q.memory.used())))
+            .map(|q| OomVictim {
+                domain_id: q.policy.domain_id,
+                priority: q.policy.priority,
+                memory_usage: q.memory.used(),
+                reason: "Selected by priority and charged memory",
+            })
     }
 
-    /// ドメインの統計情報を取得
+    /// Retired accounts remain observable until their last retained owner returns.
     pub fn get_stats(&self, domain_id: DomainId) -> Option<DomainStats> {
+        self.collect_retired();
         let quotas = self.quotas.lock().unwrap_or_else(|e| e.into_inner());
-        quotas.get(&domain_id).map(|q| DomainStats {
-            domain_id,
-            priority: q.priority,
-            cpu_usage_ratio: q.cpu.usage_ratio(),
-            memory_used: q.memory.used(),
-            memory_limit: q.memory.limit_bytes,
-            violation_count: q.violation_count(),
-        })
+        quotas
+            .iter()
+            .find(|q| q.policy.domain_id == domain_id)
+            .map(|q| DomainStats {
+                domain_id,
+                priority: q.policy.priority,
+                cpu_usage_ratio: q.policy.cpu.usage_ratio(),
+                memory_used: q.memory.used(),
+                memory_limit: q.memory.limit(),
+                violation_count: q.policy.violation_count(),
+            })
+    }
+}
+
+impl RegisteredQuota {
+    fn update(&mut self, policy: DomainQuota) {
+        // CPU and I/O accounting also survives a policy-only update.
+        policy.cpu.used_this_period.store(
+            self.policy.cpu.used_this_period.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        policy.cpu.period_start_ns.store(
+            self.policy.cpu.period_start_ns.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        policy.cpu.exceeded.store(
+            self.policy.cpu.exceeded.load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        policy.network_io.tokens.store(
+            self.policy
+                .network_io
+                .available_tokens()
+                .min(policy.network_io.bucket_size),
+            Ordering::Relaxed,
+        );
+        policy.network_io.last_refill_ns.store(
+            self.policy
+                .network_io
+                .last_refill_ns
+                .load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        policy.storage_io.tokens.store(
+            self.policy
+                .storage_io
+                .available_tokens()
+                .min(policy.storage_io.bucket_size),
+            Ordering::Relaxed,
+        );
+        policy.storage_io.last_refill_ns.store(
+            self.policy
+                .storage_io
+                .last_refill_ns
+                .load(Ordering::Relaxed),
+            Ordering::Relaxed,
+        );
+        policy
+            .violation_count
+            .store(self.policy.violation_count(), Ordering::Relaxed);
+        self.memory.set_limit(policy.memory.limit_bytes);
+        self.policy = policy;
+    }
+}
+
+impl Drop for QuotaManager {
+    fn drop(&mut self) {
+        let mut quotas = self
+            .quotas
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        // Production registry is image-lived. A shorter-lived owner must retain
+        // backing with outstanding return rights; forgetting a credit can leak
+        // accounting, but never lets a later cross-CPU return touch freed RAM.
+        for entry in quotas.drain(..) {
+            entry.memory.close();
+            if !entry.memory.can_reclaim() {
+                core::mem::forget(entry.memory);
+            }
+        }
     }
 }
 
@@ -593,7 +809,9 @@ pub fn quota_manager() -> &'static QuotaManager {
 /// クォータシステムの初期化
 pub fn init() {
     // カーネルドメインを登録
-    QUOTA_MANAGER.register(DomainQuota::kernel());
+    QUOTA_MANAGER
+        .register(DomainQuota::kernel())
+        .expect("quota metadata required for kernel startup");
     log::info!("[Quota] Resource quota system initialized\n");
 }
 
@@ -622,38 +840,321 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_memory_quota() {
-        let quota = MemoryQuota::new(1); // 1MB
-
-        // 512KB割り当て成功
-        assert!(quota.try_allocate(512 * 1024).is_ok());
-
-        // さらに768KB割り当て失敗
-        assert!(quota.try_allocate(768 * 1024).is_err());
-
-        // 解放後は割り当て可能
-        quota.deallocate(256 * 1024);
-        assert!(quota.try_allocate(512 * 1024).is_ok());
+        let manager = QuotaManager::new();
+        let id = DomainId::new(1);
+        manager
+            .register(
+                DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(1024 * 1024),
+            )
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let first = binding.reserve(512 * 1024).unwrap();
+        assert!(matches!(
+            binding.reserve(768 * 1024),
+            Err(QuotaError::MemoryExceeded { .. })
+        ));
+        drop(first);
+        let second = binding.reserve(1024 * 1024).unwrap();
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 1024 * 1024);
+        drop(second);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_oom_victim_selection() {
-        let mut quotas = BTreeMap::new();
+        let manager = QuotaManager::new();
+        for (id, priority) in [
+            (1, DomainPriority::Normal),
+            (2, DomainPriority::Low),
+            (3, DomainPriority::Critical),
+        ] {
+            manager
+                .register(DomainQuota::new(DomainId::new(id), priority))
+                .unwrap();
+        }
+        let binding1 = manager.bind_memory(DomainId::new(1)).unwrap();
+        let binding2 = manager.bind_memory(DomainId::new(2)).unwrap();
+        let _first = binding1.reserve(100 * 1024 * 1024).unwrap();
+        let _second = binding2.reserve(50 * 1024 * 1024).unwrap();
+        assert_eq!(
+            manager.select_oom_victim().unwrap().domain_id,
+            DomainId::new(2)
+        );
+    }
 
-        let mut q1 = DomainQuota::new(DomainId::new(1), DomainPriority::Normal);
-        let _ = q1.memory.try_allocate(100 * 1024 * 1024);
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn policy_changes_preserve_live_charges_and_exact_byte_limits() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(11);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(513))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credit = binding.reserve(512).unwrap();
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 512);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::High).with_memory_limit_bytes(511))
+            .unwrap();
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 512);
+        assert!(matches!(
+            binding.reserve(1),
+            Err(QuotaError::MemoryExceeded {
+                available: 0,
+                limit: 511,
+                ..
+            })
+        ));
+        drop(credit);
+        assert!(binding.reserve(511).is_ok());
+        assert!(matches!(
+            binding.reserve(512),
+            Err(QuotaError::MemoryExceeded { .. })
+        ));
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
+    }
 
-        let mut q2 = DomainQuota::new(DomainId::new(2), DomainPriority::Low);
-        let _ = q2.memory.try_allocate(50 * 1024 * 1024);
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn retirement_preserves_return_target_and_waits_for_bindings() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(12);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Low))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credit = binding.reserve(777).unwrap();
+        manager.unregister(id);
+        assert!(matches!(
+            binding.reserve(1),
+            Err(QuotaError::Retired { .. })
+        ));
+        assert!(matches!(
+            manager.bind_memory(id),
+            Err(QuotaError::Retired { .. })
+        ));
+        assert!(matches!(
+            manager.register(DomainQuota::new(id, DomainPriority::Normal)),
+            Err(QuotaError::Retired { .. })
+        ));
+        drop(binding);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 777);
+        drop(credit);
+        assert!(manager.get_stats(id).is_none());
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal))
+            .unwrap();
+        let next = manager.bind_memory(id).unwrap();
+        assert!(next.reserve(1).is_ok());
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
+    }
 
-        let q3 = DomainQuota::new(DomainId::new(3), DomainPriority::Critical);
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn missing_account_zero_size_and_unlimited_overflow_are_distinct() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(13);
+        assert!(matches!(
+            manager.bind_memory(id),
+            Err(QuotaError::Unregistered { .. })
+        ));
+        assert!(
+            manager
+                .bind_memory(DomainId::KERNEL)
+                .unwrap()
+                .reserve(99)
+                .unwrap()
+                .is_none()
+        );
+        manager
+            .register(
+                DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(u64::MAX),
+            )
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        assert!(matches!(binding.reserve(0), Err(QuotaError::InvalidSize)));
+        let entire = binding.reserve(u64::MAX).unwrap();
+        assert!(matches!(
+            binding.reserve(1),
+            Err(QuotaError::AccountingOverflow)
+        ));
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, u64::MAX);
+        drop(entire);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
+    }
 
-        quotas.insert(DomainId::new(1), q1);
-        quotas.insert(DomainId::new(2), q2);
-        quotas.insert(DomainId::new(3), q3);
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn quota_matches_independent_live_allocation_model() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(14);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(1023))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let mut live = Vec::new();
+        let mut expected = 0;
+        let mut sequence = 0x91c4_u32;
+        for _ in 0..2000 {
+            sequence = sequence.wrapping_mul(1664525).wrapping_add(1013904223);
+            if sequence & 3 == 0 && !live.is_empty() {
+                let index = sequence as usize % live.len();
+                let (bytes, owner) = live.swap_remove(index);
+                expected -= bytes;
+                drop(owner);
+            } else {
+                let bytes = u64::from((sequence >> 8) % 300 + 1);
+                let fits = expected + bytes <= 1023;
+                match binding.reserve(bytes) {
+                    Ok(owner) => {
+                        assert!(fits);
+                        expected += bytes;
+                        live.push((bytes, owner));
+                    }
+                    Err(QuotaError::MemoryExceeded { .. }) => assert!(!fits),
+                    result => panic!("unexpected quota model result: {result:?}"),
+                }
+            }
+            assert_eq!(manager.get_stats(id).unwrap().memory_used, expected);
+        }
+        drop(live);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
+    }
 
-        // Low優先度のドメイン2が選択される
-        let victim = select_oom_victim(&quotas).unwrap();
-        assert_eq!(victim.domain_id, DomainId::new(2));
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn concurrent_return_and_retirement_keep_exact_usage() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(15);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(65536))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credits: Vec<_> = (0..1024).map(|_| binding.reserve(64).unwrap()).collect();
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 65536);
+        manager.unregister(id);
+        drop(binding);
+        std::thread::scope(|scope| {
+            for (index, credit) in credits.into_iter().enumerate() {
+                scope.spawn(move || {
+                    if index % 3 == 0 {
+                        std::thread::yield_now();
+                    }
+                    drop(credit);
+                });
+                // Observation may reclaim only after the final credit returned.
+                if let Some(stats) = manager.get_stats(id) {
+                    assert!(stats.memory_used <= 65536);
+                }
+            }
+        });
+        assert!(manager.get_stats(id).is_none());
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn quiescent_retirement_replaces_the_account_in_one_publication() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(19);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(1024))
+            .unwrap();
+        // Retirement releases the registry lock before collecting. Establish
+        // that real transition boundary without relying on thread scheduling.
+        manager
+            .quotas
+            .lock()
+            .unwrap_or_else(|_| panic!("fixture quota lock poisoned"))[0]
+            .memory
+            .close();
+        std::thread::scope(|scope| {
+            for _ in 0..8 {
+                scope.spawn(|| {
+                    manager
+                        .register(
+                            DomainQuota::new(id, DomainPriority::Normal)
+                                .with_memory_limit_bytes(1024),
+                        )
+                        .unwrap();
+                });
+            }
+        });
+        assert_eq!(
+            manager
+                .quotas
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture quota lock poisoned"))
+                .len(),
+            1
+        );
+        let binding = manager.bind_memory(id).unwrap();
+        let credit = binding.reserve(1024).unwrap();
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 1024);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Low).with_memory_limit_bytes(1024))
+            .unwrap();
+        assert!(matches!(
+            binding.reserve(1),
+            Err(QuotaError::MemoryExceeded { .. })
+        ));
+        drop(credit);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn credit_retains_backing_when_registry_owner_is_dropped() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(16);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credit = binding.reserve(23).unwrap();
+        drop(manager);
+        assert!(matches!(
+            binding.reserve(1),
+            Err(QuotaError::Retired { .. })
+        ));
+        std::thread::spawn(move || drop(credit)).join().unwrap();
+        drop(binding);
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn competing_reservations_cannot_over_admit_byte_budget() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(17);
+        manager
+            .register(DomainQuota::new(id, DomainPriority::Normal).with_memory_limit_bytes(1000))
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credits = std::thread::scope(|scope| {
+            let mut workers = Vec::new();
+            for _ in 0..4 {
+                let binding = &binding;
+                workers.push(scope.spawn(move || {
+                    let mut credits = Vec::new();
+                    for _ in 0..4000 {
+                        match binding.reserve(1) {
+                            Ok(credit) => credits.push(credit),
+                            Err(QuotaError::AllocationRace) => continue,
+                            Err(QuotaError::MemoryExceeded { .. }) => break,
+                            result => panic!("unexpected concurrent admission: {result:?}"),
+                        }
+                    }
+                    credits
+                }));
+            }
+            workers
+                .into_iter()
+                .map(|worker| worker.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(credits.iter().map(Vec::len).sum::<usize>(), 1000);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 1000);
+        drop(credits);
+        assert_eq!(manager.get_stats(id).unwrap().memory_used, 0);
     }
 }

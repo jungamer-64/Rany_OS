@@ -116,6 +116,16 @@ pub enum AbiError {
     AlreadyInitialized = -10,
     /// Not initialized
     NotInitialized = -11,
+    /// A finite admission budget is full; backing allocation need not be exhausted.
+    ResourceExhausted = -12,
+    /// Invalid or overflowing byte count.
+    InvalidSize = -13,
+    /// Invalid or unsupported memory alignment.
+    InvalidAlignment = -14,
+    /// Invalid or unrepresentable memory address/range.
+    InvalidAddress = -15,
+    /// No usable memory translation was established.
+    MappingFailed = -16,
 }
 
 impl AbiError {
@@ -133,6 +143,11 @@ impl AbiError {
             -9 => AbiError::PermissionDenied,
             -10 => AbiError::AlreadyInitialized,
             -11 => AbiError::NotInitialized,
+            -12 => AbiError::ResourceExhausted,
+            -13 => AbiError::InvalidSize,
+            -14 => AbiError::InvalidAlignment,
+            -15 => AbiError::InvalidAddress,
+            -16 => AbiError::MappingFailed,
             _ => AbiError::Error,
         }
     }
@@ -140,6 +155,54 @@ impl AbiError {
     /// Check if this represents success
     pub fn is_success(self) -> bool {
         self == AbiError::Success
+    }
+
+    /// Interpret a completed ABI call using the same failure classes as native
+    /// services. Admission exhaustion, RAM exhaustion and invalid memory inputs
+    /// remain distinct so callers can choose retry, reclaim or request repair.
+    pub fn into_result(self) -> crate::KapiResult<()> {
+        use crate::KapiError;
+        Err(match self {
+            Self::Success => return Ok(()),
+            Self::InvalidParam => KapiError::InvalidHandle,
+            Self::OutOfMemory => KapiError::OutOfMemory,
+            Self::PermissionDenied => KapiError::PermissionDenied,
+            Self::NotSupported => KapiError::NotSupported,
+            Self::Timeout => KapiError::Timeout,
+            Self::DeviceNotFound => KapiError::NotFound,
+            Self::NotInitialized => KapiError::NotInitialized,
+            Self::DeviceBusy | Self::ResourceExhausted => KapiError::ResourceExhausted,
+            Self::AlreadyInitialized => KapiError::AlreadyExists,
+            Self::InvalidSize => KapiError::InvalidSize,
+            Self::InvalidAlignment => KapiError::InvalidAlignment,
+            Self::InvalidAddress => KapiError::InvalidAddress,
+            Self::MappingFailed => KapiError::MappingFailed,
+            Self::IoError | Self::Error => KapiError::IoError,
+        })
+    }
+}
+
+impl From<crate::KapiError> for AbiError {
+    fn from(error: crate::KapiError) -> Self {
+        use crate::KapiError;
+        match error {
+            KapiError::OutOfMemory => Self::OutOfMemory,
+            KapiError::PermissionDenied => Self::PermissionDenied,
+            KapiError::NotSupported => Self::NotSupported,
+            KapiError::Timeout => Self::Timeout,
+            KapiError::NotFound => Self::DeviceNotFound,
+            KapiError::NotInitialized => Self::NotInitialized,
+            KapiError::AlreadyExists => Self::AlreadyInitialized,
+            KapiError::ResourceExhausted => Self::ResourceExhausted,
+            KapiError::InvalidHandle => Self::InvalidParam,
+            KapiError::InvalidSize => Self::InvalidSize,
+            KapiError::InvalidAlignment => Self::InvalidAlignment,
+            KapiError::InvalidAddress => Self::InvalidAddress,
+            KapiError::MappingFailed => Self::MappingFailed,
+            KapiError::ConnectionError | KapiError::IoError | KapiError::Internal(_) => {
+                Self::IoError
+            }
+        }
     }
 }
 

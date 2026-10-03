@@ -481,9 +481,9 @@ impl IoQueueCreation {
 
 /// Ready controller with one or more sequential I/O queue pairs.
 pub struct NvmeController {
-    registers: crate::NvmeRegisters,
-    admin_queue: Box<NvmeQueue>,
-    io_queues: Vec<NvmeQueue>,
+    pub(crate) registers: crate::NvmeRegisters,
+    pub(crate) admin_queue: Box<NvmeQueue>,
+    pub(crate) io_queues: Vec<NvmeQueue>,
 }
 
 impl NvmeController {

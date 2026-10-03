@@ -61,7 +61,9 @@ pub fn list_domains() -> Vec<DomainInfo> {
                 tasks: snap.tasks,
                 memory_kb: (snap.memory_bytes / 1024) as usize,
                 rrefs: snap.rrefs,
-                last_error: snap.last_error,
+                last_error: snap
+                    .terminated_dependency
+                    .map(|id| alloc::format!("Dependency {} terminated", id.as_u64())),
             })
             .collect();
     }
@@ -75,7 +77,9 @@ pub fn list_domains() -> Vec<DomainInfo> {
                 tasks: snap.tasks,
                 memory_kb: (snap.memory_bytes / 1024) as usize,
                 rrefs: snap.rrefs,
-                last_error: snap.last_error,
+                last_error: snap
+                    .terminated_dependency
+                    .map(|id| alloc::format!("Dependency {} terminated", id.as_u64())),
             }]
         })
         .unwrap_or_default()
@@ -95,14 +99,21 @@ pub fn get_domain(id: u64) -> Option<DomainInfo> {
         tasks: snap.tasks,
         memory_kb: (snap.memory_bytes / 1024) as usize,
         rrefs: snap.rrefs,
-        last_error: snap.last_error,
+        last_error: snap
+            .terminated_dependency
+            .map(|id| alloc::format!("Dependency {} terminated", id.as_u64())),
     })
 }
 
 pub fn terminate_domain(id: u64) -> Result<(), &'static str> {
     let target = crate::domain::DomainId::new(id);
     ensure_domain_control(target)?;
-    crate::domain::terminate_domain(target)
+    crate::domain::terminate_domain(target).map_err(|error| match error {
+        crate::domain::DomainTerminationError::KernelProtected => "Cannot terminate kernel domain",
+        crate::domain::DomainTerminationError::NotFound => "Domain not found",
+        crate::domain::DomainTerminationError::RegistryUnavailable => "Domain registry unavailable",
+        crate::domain::DomainTerminationError::Quota(_) => "Domain termination admission failed",
+    })
 }
 
 pub fn stop_domain(id: u64) -> Result<(), &'static str> {

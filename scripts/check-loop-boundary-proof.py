@@ -41,7 +41,8 @@ EVENT_GATE_RE = re.compile(
     r"\bbreak\b|\breturn\b|\.await\b|\bsleep\s*\(|yield[_A-Za-z0-9]*\s*\("
 )
 HALT_PROOF_RE = re.compile(r"spin_loop\s*\(|\bhlt\s*\(")
-HALT_ASM_RE = re.compile(r'\basm!\s*\(\s*"hlt"\s*(?:,|\))')
+ASM_TEMPLATES_RE = re.compile(r'\basm!\s*\(\s*((?:"(?:\\.|[^"\\])*"\s*,?\s*)+)')
+ASM_STRING_RE = re.compile(r'"((?:\\.|[^"\\])*)"')
 BOUNDED_COMPARISON_RE = re.compile(r"(<=|>=|<|>|!=)")
 IDENT_RE = re.compile(r"\b[_A-Za-z][_A-Za-z0-9]*\b")
 LOOP_TOKEN_RE = re.compile(r"\b(?:while|loop)\b")
@@ -253,10 +254,17 @@ def contains_halt_operation(body: str) -> bool:
     masked = mask_non_code(body)
     if HALT_PROOF_RE.search(masked) is not None:
         return True
-    return any(
-        masked[match.start():].startswith("asm!")
-        for match in HALT_ASM_RE.finditer(body)
-    )
+    for match in ASM_TEMPLATES_RE.finditer(body):
+        if not masked[match.start():].startswith("asm!"):
+            continue
+        for template in ASM_STRING_RE.finditer(match.group(1)):
+            # Rust templates may contain multiple instructions or the macro
+            # may have several templates. A comment/operand mention is not HLT.
+            instructions = re.split(r";|\\n|\n", template.group(1))
+            if any(instruction.split("#", 1)[0].strip().lower() == "hlt"
+                   for instruction in instructions):
+                return True
+    return False
 
 
 def find_tokens(masked: str) -> list[LoopToken]:
@@ -585,10 +593,18 @@ class LoopProofCheckerTests(unittest.TestCase):
     def test_halt_accepts_direct_cpu_instruction(self) -> None:
         self.assertTrue(contains_halt_operation('unsafe { core::arch::asm!("hlt", options(nomem, nostack)); }'))
 
+    def test_halt_accepts_interruptible_instruction_sequences(self) -> None:
+        self.assertTrue(contains_halt_operation('unsafe { core::arch::asm!("sti", "hlt", "cli", options(nomem, nostack)); }'))
+        self.assertTrue(contains_halt_operation('unsafe { core::arch::asm!("sti; hlt; cli", options(nostack)); }'))
+        self.assertTrue(contains_halt_operation(r'unsafe { core::arch::asm!("sti\nhlt\ncli", options(nostack)); }'))
+
     def test_halt_rejects_assembly_in_comments_and_strings(self) -> None:
         self.assertFalse(contains_halt_operation('// asm!("hlt", options(nostack));'))
         self.assertFalse(contains_halt_operation('let message = r#"asm!("hlt", options(nostack))"#;'))
         self.assertFalse(contains_halt_operation('// hlt(); spin_loop();'))
+        self.assertFalse(contains_halt_operation('// asm!("sti", "hlt", "cli");'))
+        self.assertFalse(contains_halt_operation('unsafe { asm!("# hlt", "nop"); }'))
+        self.assertFalse(contains_halt_operation(r'unsafe { asm!(".ascii \"hlt\""); }'))
 
     def test_halt_rejects_nonhalting_cpu_instruction(self) -> None:
         self.assertFalse(contains_halt_operation('unsafe { core::arch::asm!("nop", options(nomem, nostack)); }'))

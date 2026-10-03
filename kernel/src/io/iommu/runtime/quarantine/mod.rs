@@ -114,9 +114,7 @@ impl From<IommuError> for QuarantineError {
 impl From<RawPartsError> for QuarantineError {
     fn from(e: RawPartsError) -> Self {
         match e {
-            RawPartsError::TypeMismatch | RawPartsError::SizeMismatch => {
-                QuarantineError::TypeMismatch
-            }
+            RawPartsError::TypeMismatch => QuarantineError::TypeMismatch,
         }
     }
 }

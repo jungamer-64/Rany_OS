@@ -1,3 +1,5 @@
-//! ページ回収は quota / OOM の最小構成に限定する。
+//! Physical pool returns and quota victim selection share the OOM recovery path.
 
 pub mod oom_killer;
+mod pool;
+pub(crate) use pool::PoolReclaim;

@@ -120,12 +120,16 @@ impl IommuDomain {
 
     #[inline]
     pub(super) fn quarantine_table_phys(&self, table_phys: u64) {
-        if let Some(pt) =
-            crate::io::iommu::common::dma::page_table_pool::reconstruct_pooled_pt(table_phys)
-        {
-            if let Ok(mut pending) = self.pending_pt_release.lock() {
-                pending.push(pt);
-            }
+        // SAFETY: callers cleared the sole parent under the paging lock. This
+        // transfer retains physical RAM until the later domain invalidation.
+        if let Some(pt) = unsafe {
+            crate::io::iommu::common::dma::page_table_pool::take_unlinked_table(table_phys)
+        } {
+            let mut pending = self
+                .pending_pt_release
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            pending.push(pt);
         }
     }
 
@@ -188,7 +192,8 @@ impl IommuDomain {
             Ok((child, phys, None))
         } else {
             let mut scope = self.allocate_page_table()?;
-            scope.attach_to_parent(entry, parent_phys, self.pte_format, level);
+            // SAFETY: this walk holds the paging lock and retains the parent table.
+            unsafe { scope.attach_to_parent(entry, parent_phys, self.pte_format, level) };
             let child = unsafe { phys_to_virt_usize((*entry).phys_addr()) as *mut SlPte };
             let phys = unsafe { (*entry).phys_addr() };
             Ok((child, phys, Some(scope)))
@@ -241,6 +246,10 @@ impl IommuDomain {
     /// Uses the domain's page table pool for NUMA-aware recycling.
     /// Falls back to direct allocation if pool is not available.
     pub(super) fn allocate_page_table(&self) -> Result<PageTableScope, IommuError> {
-        PageTableScope::new_with_pool(self.page_table_pool.clone(), self.numa_node())
+        PageTableScope::new_with_pool(
+            self.page_table_pool.clone(),
+            self.numa_node(),
+            &self.pending_pt_release,
+        )
     }
 }

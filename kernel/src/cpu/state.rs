@@ -62,6 +62,37 @@ pub struct FirmwareCpuIdentity {
     pub eject: CpuEjectCapability,
 }
 
+/// A firmware identity resolved against the immutable RAM placement. Runtime
+/// publication consumes this representation, so a CPU cannot become runnable
+/// with an unvalidated or mismatched memory node.
+#[derive(Debug, Clone)]
+pub(crate) struct LocatedCpu {
+    firmware: FirmwareCpuIdentity,
+    memory_node: crate::mm::types::NumaNodeId,
+}
+
+impl LocatedCpu {
+    pub(crate) fn resolve(
+        firmware: FirmwareCpuIdentity,
+        placement: &crate::mm::numa::placement::NumaPlacement,
+    ) -> Result<Self, crate::mm::numa::placement::CpuPlacementError> {
+        let memory_node = placement.resolve_cpu(firmware.apic_id, firmware.proximity_domain)?;
+        Ok(Self {
+            firmware,
+            memory_node,
+        })
+    }
+    pub(super) fn memory_node(&self) -> crate::mm::types::NumaNodeId {
+        self.memory_node
+    }
+    pub(super) fn firmware(&self) -> &FirmwareCpuIdentity {
+        &self.firmware
+    }
+    pub(super) fn into_parts(self) -> (FirmwareCpuIdentity, crate::mm::types::NumaNodeId) {
+        (self.firmware, self.memory_node)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CpuFailurePhase {
     Discovery,
@@ -104,7 +135,6 @@ pub enum CpuStartupFailure {
     ApicIdentityMismatch,
     Timer,
     NetworkResources,
-    SlabCache,
     TlbState,
 }
 
@@ -120,6 +150,14 @@ pub enum CpuDrainFailure {
     ControlQueueSaturated,
     IpiDelivery,
     Blocked { blockers: Arc<[CpuBlocker]> },
+    MemoryCache(CpuMemoryCacheFailure),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuMemoryCacheFailure {
+    OwnerBorrowed,
+    BackingBusy,
+    BackingPoisoned,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -381,6 +419,11 @@ pub enum CpuTopologyIssue {
     },
     TscInconsistent,
     NumaInconsistent,
+    MemoryPlacementConflict {
+        id: CpuId,
+        current: crate::mm::types::NumaNodeId,
+        requested: crate::mm::types::NumaNodeId,
+    },
     MissingRequiredFeature {
         feature: &'static str,
     },
@@ -435,6 +478,7 @@ pub enum CpuTransitionError {
     Busy { blockers: Arc<[CpuBlocker]> },
     UnsupportedTopology(CpuTopologyIssue),
     TimedOut { phase: CpuFailurePhase },
+    MemoryCache(CpuMemoryCacheFailure),
     Firmware(FirmwareError),
 }
 
@@ -593,6 +637,36 @@ mod tests {
                 phase: CpuFailurePhase::Drain,
                 reason: CpuFailureReason::DrainTimedOut,
             })
+        );
+    }
+
+    #[test]
+    fn failed_cache_drain_retains_the_cpu_until_its_owner_completes_return() {
+        let mut slot = application_slot();
+        slot.transition(CpuStateTransition::FirmwarePresent)
+            .unwrap();
+        slot.transition(CpuStateTransition::BeginStart).unwrap();
+        slot.transition(CpuStateTransition::StartupReady).unwrap();
+        slot.transition(CpuStateTransition::BeginDrain).unwrap();
+        let reason = CpuFailureReason::Drain(CpuDrainFailure::MemoryCache(
+            CpuMemoryCacheFailure::BackingPoisoned,
+        ));
+        slot.transition(CpuStateTransition::DrainFailed(reason.clone()))
+            .unwrap();
+        assert_eq!(slot.state, CpuSlotState::Draining);
+        assert!(!slot.state.is_schedulable());
+        assert!(slot.state.participates_in_tlb());
+        assert_eq!(
+            slot.last_failure.as_ref().map(|failure| &failure.reason),
+            Some(&reason)
+        );
+        // Only the owner completion observed by the lifecycle worker may
+        // publish this transition; the failure itself did not release the CPU.
+        slot.transition(CpuStateTransition::DrainComplete).unwrap();
+        assert_eq!(slot.state, CpuSlotState::Parked);
+        assert_eq!(
+            slot.last_failure.as_ref().map(|failure| &failure.reason),
+            Some(&reason)
         );
     }
 

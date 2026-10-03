@@ -16,6 +16,7 @@ mod protocol;
 mod provision;
 mod queue;
 mod registers;
+mod shutdown;
 
 pub use controller::{
     AdminQueueInstallError, ControllerAcquire, ControllerAcquireError, ControllerDisableError,
@@ -37,7 +38,13 @@ pub use provision::{
 };
 pub use queue::{
     CompletedCommand, CompletedOwnership, NvmeQueue, PollError, PreparedQueuePair,
-    QueueActivationError, QueueMemory, QueuePrepareError, QueueSubmission, SubmitError,
-    SubmitFailure,
+    QueueActivationError, QueueMemory, QueuePrepareError, QueueSubmission, ReconciledResetCommand,
+    SubmitError, SubmitFailure,
 };
 pub use registers::{ControllerCapabilities, ControllerStatus, NvmeRegisterError, NvmeRegisters};
+pub use shutdown::{
+    ControllerCloseError, ControllerDmaLocation, ControllerDmaPhase, ControllerDmaReconcileError,
+    ControllerDmaReconciliation, ControllerDmaResetError, ControllerDmaRevoked, ControllerReset,
+    ControllerResetPoll, ControllerResetPollError, ControllerResetStartError, ControllerResetting,
+    ReconciledIoCommand, ReconciledNvmeController,
+};

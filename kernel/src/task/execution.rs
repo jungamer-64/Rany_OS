@@ -1,6 +1,6 @@
 use crate::cpu::CurrentCpu;
 use crate::domain::quota::{MemoryBinding, MemoryCredit, QuotaError};
-use crate::domain::{DomainCredentials, DomainId};
+use crate::domain::{DomainCredentials, DomainId, DomainSecurityLookupError};
 use crate::security::CapabilitySet;
 
 use super::TaskId;
@@ -14,9 +14,43 @@ pub struct Subject {
 }
 
 impl Subject {
+    /// Resolve the task's security subject at execution admission. Missing or
+    /// terminated owners never inherit the kernel's credentials/capabilities.
+    pub fn for_task(domain: DomainId, task: TaskId) -> Result<Self, DomainSecurityLookupError> {
+        let security = crate::domain::domain_security_handle(domain)?;
+        Ok(Self {
+            domain,
+            task,
+            cred: security.credentials,
+            caps: security.caps,
+        })
+    }
 
     pub fn kernel() -> Self {
-        Self::for_task(DomainId::KERNEL, TaskId::from_raw(0))
+        let security = crate::domain::DomainSecurity::kernel();
+        Self {
+            domain: DomainId::KERNEL,
+            task: TaskId::from_raw(0),
+            cred: security.credentials,
+            caps: security.caps,
+        }
+    }
+}
+
+/// Security lookup and quota binding are independently fallible admission
+/// steps. No context is installed when either step rejects the task.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExecutionAdmissionError {
+    Security(DomainSecurityLookupError),
+    Quota(QuotaError),
+}
+
+impl core::fmt::Display for ExecutionAdmissionError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Security(error) => write!(formatter, "execution security lookup failed: {error}"),
+            Self::Quota(error) => write!(formatter, "execution quota admission failed: {error}"),
+        }
     }
 }
 
@@ -30,39 +64,28 @@ pub struct ExecutionContext {
 }
 
 impl ExecutionContext {
-    /// Admit a kernel task at the cold security-context boundary.
-    pub(crate) fn kernel(task: TaskId) -> Self {
-        Self {
-            subject: Subject::for_task(DomainId::KERNEL, task),
-            memory: MemoryBinding::kernel(),
-        }
-    }
-
     /// Fund framework recovery without acquiring domain or quota registry locks.
     /// Destructors invoked by recovery retain the initiating subject's authority.
     /// With no installed execution, the caller is still in bootstrap/kernel
     /// context, whose security value is constructed without heap allocation.
     pub(crate) fn housekeeping(subject: Option<Subject>) -> Self {
-        let subject = subject.unwrap_or_else(|| {
-            let security = crate::domain::DomainSecurity::kernel();
-            Subject {
-                domain: DomainId::KERNEL,
-                task: TaskId::from_raw(0),
-                cred: security.credentials,
-                caps: security.caps,
-            }
-        });
+        let subject = subject.unwrap_or_else(Subject::kernel);
         Self {
             subject,
             memory: MemoryBinding::kernel(),
         }
     }
 
-    pub fn for_task(task: TaskId, domain: DomainId) -> Result<Self, QuotaError> {
-        if domain == DomainId::KERNEL {
-            return Ok(Self::kernel(task));
-        }
-        Self::from_subject(Subject::for_task(domain, task))
+    pub fn for_task(task: TaskId, domain: DomainId) -> Result<Self, ExecutionAdmissionError> {
+        let subject = Subject::for_task(domain, task).map_err(ExecutionAdmissionError::Security)?;
+        let memory = if domain == DomainId::KERNEL {
+            MemoryBinding::kernel()
+        } else {
+            crate::domain::quota::quota_manager()
+                .bind_memory(domain)
+                .map_err(ExecutionAdmissionError::Quota)?
+        };
+        Ok(Self { subject, memory })
     }
 
     pub fn from_subject(subject: Subject) -> Result<Self, QuotaError> {
@@ -83,7 +106,7 @@ impl ExecutionContext {
 pub enum ExecutionContextUnavailable {
     UnboundCpu,
     NoExecution,
-    Quota(QuotaError),
+    Admission(ExecutionAdmissionError),
 }
 
 pub fn current_subject() -> Subject {
@@ -107,13 +130,70 @@ pub(crate) fn enter_domain(
         .execution()
         .ok_or(ExecutionContextUnavailable::NoExecution)?;
     let context = ExecutionContext::for_task(subject.task, domain)
-        .map_err(ExecutionContextUnavailable::Quota)?;
+        .map_err(ExecutionContextUnavailable::Admission)?;
     Ok(current.enter_execution(context))
 }
 
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn security_and_quota_rejections_leave_the_installed_execution_unchanged() {
+        crate::domain::init();
+        let current = CurrentCpu::acquire().expect("bound fixture CPU");
+        let initiating = current.enter_execution(
+            ExecutionContext::for_task(TaskId::from_raw(0x4144_4d49), DomainId::KERNEL)
+                .expect("live kernel task admission"),
+        );
+        let before = CurrentCpu::acquire()
+            .expect("bound fixture CPU")
+            .execution();
+        let task = TaskId::from_raw(0x5345_4355);
+        let missing = DomainId::new(u64::MAX);
+        assert!(matches!(
+            ExecutionContext::for_task(task, missing),
+            Err(ExecutionAdmissionError::Security(DomainSecurityLookupError::UnknownDomain(id)))
+                if id == missing
+        ));
+        let domain =
+            crate::domain::create_domain(alloc::string::String::from("execution_admission"))
+                .expect("fixture domain admission");
+        let subject = Subject::for_task(domain, task).expect("live security subject");
+        assert_eq!(subject.domain, domain);
+        assert_eq!(subject.task, task);
+        assert_eq!(subject.caps, CapabilitySet::empty());
+        let retained = crate::domain::quota_manager()
+            .bind_memory(domain)
+            .expect("fixture account binding");
+        crate::domain::quota_manager().unregister(domain);
+        assert!(matches!(
+            ExecutionContext::for_task(task, domain),
+            Err(ExecutionAdmissionError::Quota(QuotaError::Retired { domain_id }))
+                if domain_id == domain
+        ));
+        assert!(Subject::for_task(domain, task).is_ok());
+        drop(retained);
+        crate::domain::quota_manager()
+            .register(crate::domain::DomainQuota::new(
+                domain,
+                crate::domain::DomainPriority::Normal,
+            ))
+            .expect("quiescent account can be explicitly re-admitted");
+        crate::domain::terminate_domain(domain).expect("fixture domain retirement");
+        assert!(matches!(
+            ExecutionContext::for_task(task, domain),
+            Err(ExecutionAdmissionError::Security(DomainSecurityLookupError::Terminated(id)))
+                if id == domain
+        ));
+        assert_eq!(
+            CurrentCpu::acquire()
+                .expect("bound fixture CPU")
+                .execution(),
+            before
+        );
+        drop(initiating);
+    }
 
     #[test]
     fn recovery_funding_preserves_subject_and_restores_retired_admission() {

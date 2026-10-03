@@ -15,8 +15,9 @@ use alloc::vec;
 use alloc::vec::Vec;
 
 use crate::cpu::ApicId;
-use crate::io::iommu::common::tables::{HardwareTable, Zeroable};
+use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::types::IommuError;
+use crate::mm::value::Zeroable;
 
 // ---------------------------------------------------------------------------
 // IRTE bit layout (AMD-Vi spec Section 2.2.6, Table 18)

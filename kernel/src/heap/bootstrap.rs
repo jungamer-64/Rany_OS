@@ -110,8 +110,8 @@ fn get_boot_usable_regions(usable_memory: &[UsableMemoryRegion]) -> Vec<(PhysAdd
     regions
 }
 
-/// ブートメモリマップから使用可能領域を準備してBuddy Allocatorを初期化する
-pub(crate) fn init_buddy_from_boot_info(
+/// Exclude retained boot owners before transferring RAM into the sole PMM.
+pub(crate) fn prepare_pmm_regions(
     info: &ExoBootInfoView<'_>,
     heap_geometry: boot_proto::BootstrapHeapGeometry,
 ) -> Option<alloc::vec::Vec<(x86_64::PhysAddr, u64)>> {
@@ -132,45 +132,21 @@ pub(crate) fn init_buddy_from_boot_info(
         return None;
     }
 
-    unsafe {
-        crate::mm::phys::buddy_allocator::init_buddy_allocator(&usable_regions);
-    }
-
-    #[cfg(feature = "buddy_freelist")]
-    {
-        unsafe {
-            crate::mm::phys::buddy_freelist::init_freelist_buddy(&usable_regions);
-        }
-    }
-
-    verify_buddy_integrity();
-
     Some(usable_regions)
 }
 
 /// NUMA情報を使ってPMM (Physical Memory Manager) を初期化する
-pub(crate) fn init_numa_pmm(
-    firmware: Option<&acpi_driver::TableCatalog>,
-    usable_regions: &[(x86_64::PhysAddr, u64)],
-) {
-    let pmm_initialized = firmware
-        .map(|catalog| {
-            crate::mm::phys::frame_allocator::init_numa_frame_allocator_from_firmware(
-                catalog,
-                usable_regions,
-            )
-        })
-        .transpose()
-        .map(|initialized| initialized.unwrap_or(false))
-        .unwrap_or_else(|error| {
-            log::warn!("[PMM] SRAT topology rejected: {:?}", error);
-            false
-        });
-
-    if !pmm_initialized {
-        unsafe {
-            crate::mm::phys::frame_allocator::init_frame_allocator(usable_regions);
-        }
+pub(crate) fn init_numa_pmm(usable_regions: &[(x86_64::PhysAddr, u64)]) {
+    let placement = crate::platform::firmware::numa_placement()
+        .unwrap_or_else(|error| panic!("PMM firmware topology admission failed: {error:?}"));
+    // SAFETY: the boot ownership boundary excluded retained heaps and live
+    // boot allocations before transferring these exclusive RAM ranges.
+    unsafe {
+        crate::mm::phys::frame_allocator::init_numa_frame_allocator_with_placement(
+            placement,
+            usable_regions,
+        )
+        .unwrap_or_else(|error| panic!("exclusive PMM admission failed: {error:?}"));
     }
 }
 
@@ -298,14 +274,14 @@ pub(crate) fn init(
     // derived from this catalog rather than from a bootloader snapshot.
     initialize_firmware_catalog(Some(boot_info));
 
-    // 2. Buddy Allocator の初期化（ブートローダーのメモリマップを使用）
-    let Some(usable_regions) = init_buddy_from_boot_info(boot_info, geometry) else {
+    // 2. Prepare exclusive PMM RAM from boot ownership.
+    let Some(usable_regions) = prepare_pmm_regions(boot_info, geometry) else {
         MEMORY_STATE.store(MemoryState::Failed as u8, Ordering::Release);
         return Err(HeapInitError::NoUsableRam { exchange });
     };
 
     // 2.5. NUMA情報（ブートローダー/ACPI）からPMMを初期化
-    init_numa_pmm(crate::platform::firmware::tables(), &usable_regions);
+    init_numa_pmm(&usable_regions);
 
     // 3-5. Exchange Heap, Per-CPU, Per-Core Slab Cache
     if let Err(retained) = crate::mm::cache::exchange_heap::EXCHANGE_HEAP.initialize(exchange) {
@@ -374,15 +350,19 @@ pub fn is_initialized() -> bool {
 /// ヒープ統計を取得（Buddy Allocator用）
 /// 戻り値: (使用中バイト数概算, 空きバイト数概算)
 pub fn heap_stats() -> (usize, usize) {
-    // Buddy allocatorでは正確な使用量追跡は複雑なため、
-    // ヒープサイズ全体を返す（詳細はbuddy_allocator_stats()を使用）
+    // Bootstrap accounting is a cold observation of the owned free lists.
     #[cfg(not(all(feature = "full_mm_tests", test, not(feature = "std"))))]
     {
-        ALLOCATOR
+        let (pool_used, pool_free) = super::super::raw::stats();
+        let (boot_used, boot_free) = ALLOCATOR
             .0
             .lock()
-            .map(|guard| (0, guard.heap_size))
-            .unwrap_or((0, 0))
+            .map(|guard| {
+                let free = guard.free_bytes();
+                (guard.heap_size - free, free)
+            })
+            .unwrap_or((0, 0));
+        (boot_used + pool_used, boot_free + pool_free)
     }
     #[cfg(all(feature = "full_mm_tests", test, not(feature = "std")))]
     {
@@ -392,14 +372,14 @@ pub fn heap_stats() -> (usize, usize) {
 
 /// システム総メモリをKB単位で取得
 pub fn total_memory_kb() -> u64 {
-    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-    (stats.total_frames as u64) * 4 // 1フレーム = 4KB
+    let (_, total) = crate::mm::phys::frame_allocator::frame_allocator_stats();
+    total as u64 * 4
 }
 
 /// 空きメモリをKB単位で取得
 pub fn free_memory_kb() -> u64 {
-    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-    (stats.free_frames as u64) * 4 // 1フレーム = 4KB
+    let (free, _) = crate::mm::phys::frame_allocator::frame_allocator_stats();
+    free * 4
 }
 
 /// 使用中メモリをKB単位で取得

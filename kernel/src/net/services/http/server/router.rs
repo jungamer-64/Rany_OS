@@ -286,41 +286,19 @@ fn build_executor_stats_response(
 }
 
 fn build_memory_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    let stats = crate::mm::phys::buddy_allocator::buddy_allocator_stats();
-    let total_kb = (stats.total_frames as u64) * 4;
-    let free_kb = (stats.free_frames as u64) * 4;
+    let (free_frames, total_frames) = crate::mm::phys::frame_allocator::frame_allocator_stats();
+    let total_kb = total_frames as u64 * 4;
+    let free_kb = free_frames * 4;
     let used_kb = total_kb.saturating_sub(free_kb);
-
     let (heap_used, heap_free) = crate::heap::heap_stats();
-
-    let mut json = format!(
+    let json = format!(
         r#"{{
-    "physical_memory": {{
-        "total_kb": {},
-        "free_kb": {},
-        "used_kb": {},
-        "split_count": {},
-        "coalesce_count": {}
-    }},
-    "heap": {{
-        "used_bytes": {},
-        "free_bytes": {}
-    }},
-    "order_stats": ["#,
-        total_kb, free_kb, used_kb, stats.split_count, stats.coalesce_count, heap_used, heap_free
+    "physical_memory": {{ "total_kb": {}, "free_kb": {}, "used_kb": {} }},
+    "heap": {{ "used_bytes": {}, "free_bytes": {} }}
+}}
+"#,
+        total_kb, free_kb, used_kb, heap_used, heap_free
     );
-
-    for (i, (blocks, frames)) in stats.order_stats.iter().enumerate() {
-        if i > 0 {
-            json.push_str(", ");
-        }
-        json.push_str(&format!(
-            r#"{{"order": {}, "blocks": {}, "frames": {}}}"#,
-            i, blocks, frames
-        ));
-    }
-    json.push_str("]}\n");
-
     build_json_response("200 OK", &json, keep_alive)
 }
 

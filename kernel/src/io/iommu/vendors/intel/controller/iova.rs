@@ -40,7 +40,7 @@ impl IovaManager for IommuController {
         if guard.is_some() {
             return Err(IommuError::AlreadyInitialized);
         }
-        *guard = Some(Arc::new(IovaAllocator::new(base, size)));
+        *guard = Some(Arc::new(IovaAllocator::new(base, size)?));
         Ok(())
     }
 

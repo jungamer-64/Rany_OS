@@ -1,12 +1,6 @@
 // ============================================================================
 // kernel/src/io/iommu/common/domain/unmap_ops.rs
 // ============================================================================
-//
-// NOTE: this module formerly also contained `map_buffer`, but mapping logic
-// has been relocated to `map_ops.rs` to preserve the expectation that the
-// filename reflects its contents.  The remaining methods focus on unmapping
-// and related DMA handle teardown.
-
 use super::*;
 
 impl IommuDomain {
@@ -104,41 +98,6 @@ impl IommuDomain {
         self.mapped_size.fetch_sub(mapping.size, Ordering::Relaxed);
         Some(mapping)
     }
-
-    /// Unmap a DMA buffer and return the RRef
-    ///
-    /// This method:
-    /// 1. Removes page table mappings
-    /// 2. Invalidates IOTLB (via IommuInvalidator)
-    /// 3. Frees the IOVA
-    /// 4. Returns the RRef to the caller
-    ///
-    /// # Arguments
-    /// * `handle` - The DmaHandle to unmap (consumed)
-    /// * `context` - The IOMMU context for IOVA deallocation
-    /// * `invalidator` - Invalidator for IOTLB flush
-    ///
-    /// # Errors
-    /// Returns `UnmapError<T>` containing the handle on failure.
-
-
-    /// Unmap a DMA buffer asynchronously and return the RRef
-    ///
-    /// This method:
-    /// 1. Removes page table mappings (sync)
-    /// 2. Initiates async IOTLB invalidation
-    /// 3. Awaits completion
-    /// 4. Frees the IOVA
-    /// 5. Returns the RRef to the caller
-    ///
-    /// # Arguments
-    /// * `handle` - The DmaHandle to unmap (consumed)
-    /// * `context` - The IOMMU context for IOVA deallocation
-    /// * `invalidator` - Invalidator for async IOTLB flush
-    ///
-    /// # Returns
-    /// A future that resolves to `Result<RRef<T>, UnmapError<T>>`
-
 
     /// Find the next child page table entry starting from `start_idx`.
     ///

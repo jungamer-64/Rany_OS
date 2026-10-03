@@ -16,33 +16,24 @@
 //    - L2/L3キャッシュセット競合の回避
 //    - 色ごとのフリーリストで均等分散
 //
-// ## Atomic Ordering 設計ノート
-//
-// PageDescriptor と FreeArea のフィールドに AtomicU64/AtomicUsize を使用している。
-// 現在の LockedFreeListBuddyAllocator は IrqMutex で全操作を保護しており、
-// これらの atomic 操作はロック配下では冗長である。
-//
-// しかし、以下の理由で atomic を保持する:
-// - 将来の Per-CPU Magazine 統合時にロックフリー list_pop_head を可能にする
-// - refcount/mapcount はページテーブルウォーカー等がロック外から読む可能性がある
-// - FreeArea.nr_free は統計クエリでロック外参照される可能性がある
-//
-// ロックフリー化を行わない場合は、next/prev/head/tail を plain u64 に変更し、
-// refcount/mapcount のみ AtomicU64 を維持することを推奨。
+// Each pool exclusively retains a PMM loan. All descriptor and list mutation
+// requires &mut self; shared users choose their own synchronization boundary.
+// Allocation observations cannot authorize a return to this pool or to PMM.
 // ============================================================================
-use crate::sync::IrqPoisonLock;
+use crate::loader::type_id::{SemVer, TypeHash, TypeIdHash, const_hash};
+use crate::mm::phys::frame_allocator::{FrameAllocError, PhysicalAllocation};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use x86_64::PhysAddr;
-use x86_64::structures::paging::{FrameAllocator, PhysFrame, Size1GiB, Size2MiB, Size4KiB};
 
-use crate::mm::types::{FrameIndex, PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
+use crate::mm::types::{FrameIndex, PAGE_SIZE_2M, PAGE_SIZE_4K};
 
 /// 最大オーダー（2^MAX_ORDER * 4KiB = 1GiB）
+#[path = "buddy_freelist/stats_and_flags.rs"]
 mod stats_and_flags;
 pub use stats_and_flags::*;
+#[path = "buddy_freelist/allocator_core.rs"]
 mod allocator_core;
-pub use allocator_core::*;
 pub const MAX_ORDER: usize = 18;
 
 /// ページモビリティタイプ
@@ -92,6 +83,7 @@ impl Default for MigrateType {
 /// Linux kernel の `struct page` に相当。
 /// 空きページの場合、物理メモリ上のページ自体にリンクポインタを埋め込む。
 /// これにより追加のメモリ割り当てなしでフリーリストを構築できる。
+#[derive(Debug)]
 #[repr(C)]
 pub struct PageDescriptor {
     /// フリーリストの次ノード（物理フレームインデックス、u32::MAXで終端）
@@ -181,6 +173,7 @@ impl PageDescriptor {
 ///
 /// 各オーダー・各モビリティタイプごとに双方向連結リストを保持。
 /// head/tailは物理フレームインデックスを格納（LIST_END = 空）。
+#[derive(Debug)]
 #[repr(C)]
 pub struct FreeArea {
     /// リストの先頭フレームインデックス
@@ -251,7 +244,10 @@ pub struct FreeListBuddyAllocator {
 
     /// ページ記述子配列（mem_map相当）
     /// 物理フレームインデックス → PageDescriptor
-    page_descriptors: Option<&'static mut [PageDescriptor]>,
+    page_descriptors: Vec<PageDescriptor>,
+    backing: PhysicalAllocation,
+    base_frame: usize,
+    identity: u64,
 
     /// 総フレーム数
     total_frames: usize,
@@ -277,7 +273,7 @@ pub struct FreeListBuddyAllocator {
     /// 2MBブロックのモビリティタイプ追跡
     /// インデックス = 物理フレーム / 512 (2MB境界)
     /// 値 = そのブロック内で支配的なMigrateType
-    pageblock_flags: Option<Vec<MigrateType>>,
+    pageblock_flags: Vec<MigrateType>,
 }
 
 impl TypeIdHash for PageDescriptor {
@@ -296,7 +292,7 @@ impl TypeIdHash for PageDescriptor {
 
 impl TypeIdHash for FreeListBuddyAllocator {
     fn type_id_hash() -> TypeHash {
-        const_hash(b"FreeListBuddyAllocator:v1:free_areas,total_frames,free_frames")
+        const_hash(b"FreeListBuddyAllocator:v2:exclusive_backing,relative_descriptors,free_areas")
     }
 
     fn type_name() -> &'static str {
@@ -304,6 +300,30 @@ impl TypeIdHash for FreeListBuddyAllocator {
     }
 
     fn type_version() -> SemVer {
-        SemVer::new(1, 0, 0)
+        SemVer::new(2, 0, 0)
     }
+}
+
+/// Return authority for a child of one mobility pool. Its PMM loan stays
+/// retained by that pool until every child has been returned.
+#[derive(Debug)]
+#[must_use = "return this child to its originating mobility pool after translation retirement"]
+pub struct MobilityAllocation {
+    frame: FrameIndex,
+    order: usize,
+    pool: u64,
+}
+impl MobilityAllocation {
+    pub fn start_address(&self) -> PhysAddr {
+        PhysAddr::new(self.frame.to_phys_addr())
+    }
+    pub fn page_count(&self) -> usize {
+        1usize << self.order
+    }
+}
+
+#[derive(Debug)]
+pub struct LoanAdmissionError {
+    pub cause: FrameAllocError,
+    pub allocation: PhysicalAllocation,
 }

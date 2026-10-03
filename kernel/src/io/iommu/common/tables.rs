@@ -3,6 +3,7 @@
 // ============================================================================
 
 use crate::io::iommu::types::{IommuError, PteFormat};
+use crate::mm::value::Zeroable;
 use core::marker::PhantomData;
 use core::ptr::NonNull;
 
