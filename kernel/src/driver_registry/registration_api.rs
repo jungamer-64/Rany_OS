@@ -21,15 +21,24 @@ pub(crate) fn register_exports_driver_owned_with_context(
 ) -> Result<DriverHandle, DriverError> {
     let _owner_guard = super::enter_driver_execution_domain(owner)?;
     let prepared = prepare_driver_exports(exports, true)?;
-    let res = register_abi_driver_with_fini_and_context(
+    register_abi_instance(
         prepared.entry,
-        prepared.fini,
         prepared.providers,
         prepared.state_hooks,
         ctx,
         owner,
-    );
-    res
+    )
+}
+
+pub(crate) fn register_abi_instance(
+    entry: AbiEntryFn,
+    providers: Vec<ProviderDescriptorV1>,
+    state_hooks: AbiDriverStateHooks,
+    context: AbiDriverContext,
+    owner: crate::domain::DomainId,
+) -> Result<DriverHandle, DriverError> {
+    let driver = build_abi_driver(entry, providers, state_hooks, context)?;
+    DRIVER_REGISTRY.register_owned(owner, driver)
 }
 
 /// Register a driver implemented as an ABI vtable
@@ -47,9 +56,8 @@ pub fn register_abi_driver_with_context(
     }
 
     let providers = super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
-    register_abi_driver_with_fini_and_context(
+    register_abi_instance(
         entry,
-        None,
         providers,
         AbiDriverStateHooks::default(),
         ctx,
@@ -69,14 +77,7 @@ pub(crate) fn register_abi_driver_owned_with_context(
     }
 
     let providers = super::collect_provider_descriptors_from_vtable(unsafe { &*vtable_ptr });
-    register_abi_driver_with_fini_and_context(
-        entry,
-        None,
-        providers,
-        AbiDriverStateHooks::default(),
-        ctx,
-        owner,
-    )
+    register_abi_instance(entry, providers, AbiDriverStateHooks::default(), ctx, owner)
 }
 
 /// Unregister a driver by handle
@@ -106,13 +107,7 @@ pub(crate) fn prepare_driver_replacement(
         .try_reserve_exact(prepared.providers.len())
         .map_err(|_| DriverError::OutOfMemory)?;
     providers.extend_from_slice(&prepared.providers);
-    let driver = build_abi_driver(
-        prepared.entry,
-        prepared.fini,
-        providers,
-        prepared.state_hooks,
-        context,
-    )?;
+    let driver = build_abi_driver(prepared.entry, providers, prepared.state_hooks, context)?;
     let candidate = DriverEntry::prepare(owner, driver, prepared.code.clone())?;
     Ok(DriverReplacement {
         handle,

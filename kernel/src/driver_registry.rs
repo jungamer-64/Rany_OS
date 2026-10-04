@@ -587,7 +587,7 @@ impl DriverRegistry {
         owner: crate::domain::DomainId,
         driver: Box<dyn Driver>,
     ) -> Result<DriverHandle, DriverError> {
-        let code = match crate::task::current_execution_context().and_then(|context| context.cell) {
+        let code = match crate::cpu::CurrentCpu::acquire().and_then(|cpu| cpu.execution_cell()) {
             Some(cell) => Some(
                 Arc::try_new(
                     crate::loader::acquire_code_lease(cell)
@@ -1022,7 +1022,9 @@ pub enum DriverError {
     /// Invalid state for operation
     InvalidState,
     /// An admitted operation or reserved callback has not completed.
-    Busy { operation: DriverOperation },
+    Busy {
+        operation: DriverOperation,
+    },
     /// The driver retained its resources and a classified operation failure.
     OperationFailed {
         operation: DriverOperation,
@@ -1036,6 +1038,7 @@ pub enum DriverError {
     Poisoned,
     /// The current CPU has no execution context for entering the driver owner domain.
     ExecutionContextUnavailable,
+    ModuleLifecycle(crate::loader::CellRuntimeError),
 }
 
 impl fmt::Display for DriverError {
@@ -1053,6 +1056,7 @@ impl fmt::Display for DriverError {
             Self::ExecutionContextUnavailable => {
                 write!(f, "driver execution context unavailable")
             }
+            Self::ModuleLifecycle(cause) => cause.fmt(f),
         }
     }
 }
@@ -1994,7 +1998,6 @@ fn build_abi_driver(
 pub(crate) struct PreparedDriverExports {
     pub(crate) code: Option<Arc<crate::loader::code::CodeLease>>,
     pub entry: AbiEntryFn,
-    pub fini: Option<extern "C" fn() -> i32>,
     pub providers: Vec<ProviderDescriptorV1>,
     pub state_hooks: AbiDriverStateHooks,
 }
@@ -2051,55 +2054,10 @@ pub(crate) fn prepare_driver_exports(
     }
 
     if call_init {
-        if let Some(init) = exports_ref.init {
-            crate::io::log::early_print("[DRIVER] prepare_exports: init()\n");
-            crate::io::log::early_print("[DRIVER] kernel_api_v1 ptr=");
-            crate::io::log::early_print_hex(kernel_api_v4() as *const KernelApiV4 as usize as u64);
-            crate::io::log::early_print("\n");
-            let init_addr = init as usize;
-            let init_virt = crate::mm::virt::higher_half::VirtAddr::new(init_addr as u64);
-            #[cfg(any(not(test), feature = "full_mm_tests"))]
-            {
-                if let Some(pte) = crate::mm::virt::higher_half::get_current_pte(init_virt) {
-                    let pte_raw = pte.as_u64();
-                    let pte_flags = pte.flags().as_u64();
-                    crate::io::log::early_print("[DRIVER] init pte raw=");
-                    crate::io::log::early_print_hex(pte_raw);
-                    crate::io::log::early_print(" flags=");
-                    crate::io::log::early_print_hex(pte_flags);
-                    crate::io::log::early_print(" user=");
-                    crate::io::log::early_print(
-                        if (pte_flags & crate::mm::virt::higher_half::PageFlags::USER) != 0 {
-                            "1"
-                        } else {
-                            "0"
-                        },
-                    );
-                    crate::io::log::early_print(" nx=");
-                    crate::io::log::early_print(
-                        if (pte_flags & crate::mm::virt::higher_half::PageFlags::NO_EXECUTE) != 0 {
-                            "1"
-                        } else {
-                            "0"
-                        },
-                    );
-                    crate::io::log::early_print("\n");
-                } else {
-                    crate::io::log::early_print("[DRIVER] init pte lookup failed\n");
-                }
-            }
-            #[cfg(not(any(not(test), feature = "full_mm_tests")))]
-            {
-                let _ = init_virt;
-                crate::io::log::early_print("[DRIVER] init pte lookup skipped in test shim\n");
-            }
-            let res = init(kernel_api_v4() as *const KernelApiV4);
-            crate::io::log::early_print("[DRIVER] prepare_exports: init done\n");
-            if !AbiErrorCode::from_raw(res).is_success() {
-                log::error!("[DRIVER] DriverExports init failed: code={}", res);
-                return Err(DriverError::InvalidState);
-            }
-        }
+        let cell = crate::cpu::CurrentCpu::acquire().and_then(|cpu| cpu.execution_cell());
+        let owner = crate::task::current_subject().domain;
+        crate::loader::cell_runtime::initialize(cell, owner, exports_ref.init, exports_ref.fini)
+            .map_err(DriverError::ModuleLifecycle)?;
     }
 
     let providers = exports_ref
@@ -2110,7 +2068,6 @@ pub(crate) fn prepare_driver_exports(
     Ok(PreparedDriverExports {
         code: None,
         entry: exports_ref.entry,
-        fini: exports_ref.fini,
         providers,
         state_hooks: AbiDriverStateHooks {
             export_state: exports_ref.export_state,

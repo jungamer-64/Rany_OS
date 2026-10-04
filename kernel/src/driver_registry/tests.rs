@@ -12,7 +12,154 @@ static PROBE_CALLED: AtomicBool = AtomicBool::new(false);
 static REMOVE_CALLED: AtomicBool = AtomicBool::new(false);
 static IRQ_HANDLER_CALLED: AtomicBool = AtomicBool::new(false);
 static LAST_IRQ: AtomicU32 = AtomicU32::new(0);
-static LAST_PROBE_CONTEXT: spin::Mutex<Option<DriverContext>> = spin::Mutex::new(None);
+static LAST_PROBE_CONTEXT: crate::sync::Mutex<Option<DriverContext>> =
+    crate::sync::Mutex::new(None);
+
+#[derive(Default)]
+struct LifecycleProgress {
+    stop: AtomicBool,
+    remove: AtomicBool,
+    start: AtomicBool,
+    imports: AtomicU32,
+    probes: AtomicU32,
+    drops: AtomicU32,
+}
+
+struct RetainedDriver {
+    progress: Arc<LifecycleProgress>,
+    registry: alloc::sync::Weak<DriverRegistry>,
+}
+
+impl Driver for RetainedDriver {
+    fn name(&self) -> &str {
+        "retained-device"
+    }
+    fn driver_type(&self) -> DriverType {
+        DriverType::Other
+    }
+    fn probe(&mut self) -> KapiResult<()> {
+        self.progress.probes.fetch_add(1, Ordering::Relaxed);
+        if let Some(registry) = self.registry.upgrade() {
+            // Reentry exercises the real registry lock and exclusive reservation.
+            assert_eq!(registry.state(DriverHandle(0)), Some(DriverState::Probing));
+            assert_eq!(
+                registry.probe(DriverHandle(0)),
+                Err(DriverError::Busy {
+                    operation: DriverOperation::Probe
+                })
+            );
+            assert_eq!(
+                registry.name(DriverHandle(0)).as_deref(),
+                Some("retained-device")
+            );
+        }
+        Ok(())
+    }
+    fn start(&mut self) -> KapiResult<()> {
+        if self.progress.start.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(KapiError::Busy)
+        }
+    }
+    fn stop(&mut self) -> KapiResult<()> {
+        if self.progress.stop.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(KapiError::Busy)
+        }
+    }
+    fn remove(&mut self) -> KapiResult<()> {
+        if self.progress.remove.load(Ordering::Acquire) {
+            Ok(())
+        } else {
+            Err(KapiError::Busy)
+        }
+    }
+    fn import_live_state(&mut self, state: &DriverStateBlob) -> KapiResult<()> {
+        assert_eq!(state.bytes, [1, 9, 7]);
+        self.progress.imports.fetch_add(1, Ordering::Relaxed);
+        Ok(())
+    }
+}
+
+impl Drop for RetainedDriver {
+    fn drop(&mut self) {
+        self.progress.drops.fetch_add(1, Ordering::Relaxed);
+    }
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn replacement_retains_stop_remove_and_start_progress_without_replaying_import() {
+    let _guard = reset_test_state();
+    let registry = Arc::new(DriverRegistry::new());
+    let old = Arc::new(LifecycleProgress::default());
+    old.start.store(true, Ordering::Release);
+    let handle = registry
+        .register(Box::new(RetainedDriver {
+            progress: old.clone(),
+            registry: Arc::downgrade(&registry),
+        }))
+        .unwrap();
+    registry.probe_and_start(handle).unwrap();
+    let new = Arc::new(LifecycleProgress::default());
+    let candidate = DriverEntry::prepare(
+        crate::domain::DomainId::KERNEL,
+        Box::new(RetainedDriver {
+            progress: new.clone(),
+            registry: Arc::downgrade(&registry),
+        }),
+        None,
+    )
+    .unwrap();
+    let snapshot = Arc::new(DriverStateBlob::new(4, alloc::vec![1, 9, 7]));
+    let mut replacement = DriverReplacement {
+        handle,
+        candidate: Some(candidate),
+        state: Some(snapshot.clone()),
+    };
+    assert_eq!(
+        replacement.advance(&registry),
+        Err(DriverError::Busy {
+            operation: DriverOperation::Stop
+        })
+    );
+    assert!(!replacement.published());
+    assert_eq!(old.drops.load(Ordering::Relaxed), 0);
+    assert_eq!(new.probes.load(Ordering::Relaxed), 0);
+    old.stop.store(true, Ordering::Release);
+    assert_eq!(
+        replacement.advance(&registry),
+        Err(DriverError::Busy {
+            operation: DriverOperation::Remove
+        })
+    );
+    assert!(!replacement.published());
+    assert_eq!(old.drops.load(Ordering::Relaxed), 0);
+    old.remove.store(true, Ordering::Release);
+    assert_eq!(
+        replacement.advance(&registry),
+        Err(DriverError::Busy {
+            operation: DriverOperation::Start
+        })
+    );
+    assert!(replacement.published());
+    assert_eq!(old.drops.load(Ordering::Relaxed), 1);
+    assert_eq!(new.imports.load(Ordering::Relaxed), 1);
+    assert_eq!(
+        replacement.advance(&registry),
+        Err(DriverError::Busy {
+            operation: DriverOperation::Start
+        })
+    );
+    assert_eq!(new.imports.load(Ordering::Relaxed), 1);
+    new.start.store(true, Ordering::Release);
+    replacement.advance(&registry).unwrap();
+    assert_eq!(registry.state(handle), Some(DriverState::Running));
+    assert_eq!(new.probes.load(Ordering::Relaxed), 1);
+    assert_eq!(snapshot.bytes, [1, 9, 7]);
+}
 
 extern "C" fn probe(ctx: *mut DriverContext) -> i32 {
     PROBE_CALLED.store(true, Ordering::SeqCst);
@@ -159,6 +306,8 @@ fn test_register_abi_driver_and_block_unload() {
     let cell_id = with_registry_mut(|r| {
         let id = r.allocate_id();
         let entry = crate::loader::CellEntry {
+            code: alloc::sync::Arc::new(crate::loader::code::CodeGeneration::new()),
+            runtime: crate::loader::cell_runtime::CellRuntime::Uninitialized,
             id,
             name: String::from("test-cell"),
             state: crate::loader::CellState::Loaded,
