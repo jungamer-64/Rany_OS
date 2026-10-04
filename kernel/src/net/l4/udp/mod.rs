@@ -57,6 +57,7 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=index advances by two through the finite UDP payload chunk and leaves at most one trailing byte.;
         while index + 1 < chunk.len() {
             sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
             index += 2;
@@ -70,6 +71,7 @@ fn payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
         sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
     }
 
+    // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
     while (sum >> 16) != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }

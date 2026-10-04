@@ -128,6 +128,7 @@ impl<'a> TcpOptionParser<'a> {
     /// Window Scale オプションを探す
     pub fn find_window_scale(&mut self) -> Option<u8> {
         self.pos = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each NOP or validated option advances pos within the finite TCP option slice, while end, malformed input, or the matching option returns.;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
 
@@ -159,6 +160,7 @@ impl<'a> TcpOptionParser<'a> {
     /// MSS オプションを探す
     pub fn find_mss(&mut self) -> Option<u16> {
         self.pos = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each NOP or validated option advances pos within the finite TCP option slice, while end, malformed input, or MSS returns.;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
 
@@ -191,6 +193,7 @@ impl<'a> TcpOptionParser<'a> {
     /// SACK Permitted オプションを探す
     pub fn find_sack_permitted(&mut self) -> bool {
         self.pos = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each NOP or validated option advances pos within the finite TCP option slice, while end, malformed input, or SACK permission returns.;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
 
@@ -222,6 +225,7 @@ impl<'a> TcpOptionParser<'a> {
     /// Returns (ts_val, ts_ecr) if found
     pub fn find_timestamps(&mut self) -> Option<(u32, u32)> {
         self.pos = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each NOP or validated option advances pos within the finite TCP option slice, while end, malformed input, or timestamps return.;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
 
@@ -264,6 +268,7 @@ impl<'a> TcpOptionParser<'a> {
     /// SACK ブロックを探す
     pub fn find_sack_blocks(&mut self) -> Option<alloc::vec::Vec<(u32, u32)>> {
         self.pos = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each NOP or validated option advances pos within the finite TCP option slice, while end, malformed input, or SACK blocks return.;
         while self.pos < self.data.len() {
             let kind = self.data[self.pos];
 
@@ -423,6 +428,7 @@ impl TcpOptionBuilder {
     /// End of Options + パディング
     pub fn finalize(&mut self) -> &[u8] {
         // 4バイト境界にパディング
+        // LOOP_PROOF: mode=bounded; reason=Each padding byte increments len until four-byte alignment or the forty-byte option capacity.;
         while self.len % 4 != 0 && self.len < 40 {
             self.buffer[self.len] = tcp_option_kind::NOP;
             self.len += 1;

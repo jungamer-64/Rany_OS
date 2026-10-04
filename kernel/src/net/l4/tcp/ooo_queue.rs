@@ -28,7 +28,7 @@ impl Drop for OooPermit {
 
 fn try_reserve_ooo_slot(total_count: &'static AtomicUsize) -> Option<OooPermit> {
     let mut observed = total_count.load(Ordering::Acquire);
-    // LOOP_PROOF: mode=condition; reason=compare_exchange either succeeds or refreshes observed.
+    // LOOP_PROOF: mode=event; reason=The atomic admission returns one permit or global capacity exhaustion, refreshing the observed count only after concurrent changes.;
     loop {
         if observed >= GLOBAL_MAX_OOO_SEGMENTS {
             return None;
@@ -134,7 +134,7 @@ impl ConnectionOooQueue {
 
     fn prune_outdated(&mut self, rcv_nxt: u32) {
         let mut index = 0usize;
-        // LOOP_PROOF: mode=condition; reason=index advances or removal reduces segments.len().
+        // LOOP_PROOF: mode=bounded; reason=The index advances or an outdated segment is removed or trimmed to rcv_nxt once, bounding visits by twice the exclusively borrowed segment count.;
         while index < self.segments.len() {
             if !seq_before(self.segments[index].seq, rcv_nxt) {
                 index += 1;
@@ -192,7 +192,7 @@ impl ConnectionOooQueue {
         F: FnMut(u32, PacketPayload) -> (usize, Option<PacketPayload>),
     {
         self.prune_outdated(rcv_nxt);
-        // LOOP_PROOF: mode=event; reason=each iteration removes a segment or exits.
+        // LOOP_PROOF: mode=event; reason=Each full delivery removes one contiguous segment from the bounded queue, while no contiguous segment or partial delivery ends the drain.;
         loop {
             let Some(position) = self
                 .segments

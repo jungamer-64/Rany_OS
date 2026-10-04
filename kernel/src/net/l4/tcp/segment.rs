@@ -304,6 +304,7 @@ impl TcpSegmentBuilder {
         if byte_idx % 2 != 0 {
             sum += u16::from_be_bytes([prev_byte, 0]) as u32;
         }
+        // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
@@ -353,6 +354,7 @@ impl TcpSegmentBuilder {
         if byte_idx % 2 != 0 {
             sum += u16::from_be_bytes([prev_byte, 0]) as u32;
         }
+        // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }

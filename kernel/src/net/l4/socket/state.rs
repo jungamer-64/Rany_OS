@@ -163,6 +163,7 @@ impl TcpSendBuffer {
     }
 
     fn trim_empty(&mut self) {
+        // LOOP_PROOF: mode=condition; reason=Each pop removes one empty front payload from the exclusively borrowed finite send deque.;
         while matches!(self.chunks.front(), Some(payload) if payload.is_empty()) {
             self.chunks.pop_front();
         }
@@ -177,6 +178,7 @@ impl TcpSendBuffer {
         let mut remaining = take;
         let mut segments = alloc::vec::Vec::new();
 
+        // LOOP_PROOF: mode=bounded; reason=A nonempty front window consumes remaining bytes, an empty window is removed or rejected, and no producer can extend the exclusively borrowed deque.;
         while remaining > 0 {
             let front = self.chunks.front_mut()?;
             let front_take = remaining.min(front.remaining_len());
@@ -424,6 +426,7 @@ impl SocketState {
 
     #[inline]
     fn trim_empty_payloads(queue: &mut VecDeque<QueuedPayload>) {
+        // LOOP_PROOF: mode=condition; reason=Each iteration removes an empty front payload from the finite exclusively borrowed receive deque.;
         while matches!(queue.front(), Some(payload) if payload.is_empty()) {
             queue.pop_front();
         }

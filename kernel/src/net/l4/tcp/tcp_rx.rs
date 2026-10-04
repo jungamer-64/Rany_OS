@@ -256,6 +256,7 @@ fn payload_checksum_fold(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=index advances by two through the finite TCP payload chunk and leaves at most one trailing byte.;
         while index + 1 < chunk.len() {
             sum += u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32;
             index += 2;
@@ -269,6 +270,7 @@ fn payload_checksum_fold(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
         sum += u16::from_be_bytes([last, 0]) as u32;
     }
 
+    // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
     while sum >> 16 != 0 {
         sum = (sum & 0xFFFF) + (sum >> 16);
     }

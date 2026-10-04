@@ -780,6 +780,7 @@ impl TcbStorage {
     fn find_index(&self, key: TcpFlowKey) -> Option<usize> {
         let bucket = Self::bucket_for(key);
         let mut cursor = self.buckets[bucket];
+        // LOOP_PROOF: mode=condition; reason=Each flow bucket links to an earlier table entry and lookup visits at most the finite entry count before None.;
         while let Some(index) = cursor {
             let entry = &self.entries[index];
             if entry.key == key {

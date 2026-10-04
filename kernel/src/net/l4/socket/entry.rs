@@ -69,6 +69,7 @@ impl Socket {
             };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(pushed);
             tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
+            // LOOP_PROOF: mode=condition; reason=Each iteration removes one empty front segment from the exclusively borrowed receive deque until a nonempty segment or end.;
             while matches!(tcp.recv_payload_queue.front(), Some(segment) if segment.is_empty()) {
                 tcp.recv_payload_queue.pop_front();
             }

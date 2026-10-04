@@ -110,6 +110,7 @@ impl SocketRecordTable {
 
     fn find_index(&self, socket_id: SocketId) -> Option<usize> {
         let mut index = self.buckets[Self::bucket_for(socket_id)];
+        // LOOP_PROOF: mode=condition; reason=Each bucket link points to an earlier inserted entry, so lookup visits at most the finite socket table before None.;
         while let Some(current) = index {
             let entry = &self.entries[current];
             if entry.key == socket_id {
@@ -194,6 +195,7 @@ impl PortBindingTable {
 
     fn find_index(&self, key: PortBindingKey) -> Option<usize> {
         let mut index = self.buckets[Self::bucket_for(key)];
+        // LOOP_PROOF: mode=condition; reason=Bucket links connect each port binding once to an earlier entry, bounding traversal by the finite binding table.;
         while let Some(current) = index {
             let entry = self.entries[current];
             if entry.key == key {
@@ -287,6 +289,7 @@ impl RawScopeTable {
 
     fn find_index(&self, scope: InterfaceScope) -> Option<usize> {
         let mut index = self.buckets[Self::bucket_for(scope)];
+        // LOOP_PROOF: mode=condition; reason=Each raw scope entry links to an earlier entry and traversal stops at the matching scope or the end of this finite bucket.;
         while let Some(current) = index {
             let entry = self.entries[current];
             if entry.key == scope {
@@ -584,6 +587,7 @@ impl SocketRegistry {
     }
 
     pub fn generate_socket_id(&self) -> Option<SocketId> {
+        // LOOP_PROOF: mode=event; reason=The identifier CAS returns on successful reservation or numeric exhaustion, and retries only after a concurrent reservation changed the counter.;
         loop {
             let current = self.next_socket_id.load(Ordering::Relaxed);
             if current == SocketId::INVALID.raw() {
