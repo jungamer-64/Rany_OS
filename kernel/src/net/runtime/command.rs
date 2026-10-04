@@ -749,17 +749,24 @@ pub(crate) enum CommandAdmissionState {
 }
 
 struct ProducerAdmission<'a> {
-    state: &'a AtomicUsize,
+    queue: &'a RuntimeCommandQueue,
 }
 
 impl Drop for ProducerAdmission<'_> {
     fn drop(&mut self) {
-        let previous = self.state.fetch_sub(1, Ordering::AcqRel);
+        let previous = self.queue.producer_state.fetch_sub(1, Ordering::AcqRel);
         assert_ne!(
             previous & ACTIVE_PRODUCER_MASK,
             0,
             "network command producer admission underflow"
         );
+        if previous == (PRODUCER_ADMISSION_CLOSED | 1) {
+            if crate::cpu::CurrentCpu::acquire().is_some_and(|cpu| cpu.in_interrupt()) {
+                self.queue.consumer_waiters.wake_all_from_isr();
+            } else {
+                self.queue.consumer_waiters.wake_all();
+            }
+        }
     }
 }
 
@@ -798,9 +805,7 @@ impl RuntimeCommandQueue {
                 Ordering::Acquire,
             ) {
                 Ok(_) => {
-                    return Some(ProducerAdmission {
-                        state: &self.producer_state,
-                    });
+                    return Some(ProducerAdmission { queue: self });
                 }
                 Err(observed) => state = observed,
             }
@@ -817,15 +822,14 @@ impl RuntimeCommandQueue {
         self.producer_state
             .compare_exchange(state, state + 1, Ordering::AcqRel, Ordering::Acquire)
             .ok()
-            .map(|_| ProducerAdmission {
-                state: &self.producer_state,
-            })
+            .map(|_| ProducerAdmission { queue: self })
     }
 
     pub(crate) fn begin_drain(&self) {
         self.producer_state
             .fetch_or(PRODUCER_ADMISSION_CLOSED, Ordering::AcqRel);
         self.space_waiters.wake_all();
+        self.consumer_waiters.wake_all();
     }
 
     pub(crate) fn publish_online(&self) {
@@ -906,12 +910,12 @@ pub(crate) struct CommandWaitFuture<'a> {
 }
 
 impl<'a> Future for CommandWaitFuture<'a> {
-    type Output = RuntimeCommand;
+    type Output = Option<RuntimeCommand>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         // まずイベントがあるかチェック
         if let Some(command) = self.queue.recv() {
-            return Poll::Ready(command);
+            return Poll::Ready(Some(command));
         }
 
         // Multi-consumer WakerQueue に Waker を登録
@@ -919,7 +923,9 @@ impl<'a> Future for CommandWaitFuture<'a> {
 
         // 再度チェック（Waker 登録中にイベントが来た可能性）
         if let Some(command) = self.queue.recv() {
-            Poll::Ready(command)
+            Poll::Ready(Some(command))
+        } else if !self.queue.is_accepting() && self.queue.is_quiescent() {
+            Poll::Ready(None)
         } else {
             Poll::Pending
         }
@@ -1021,6 +1027,13 @@ pub(crate) fn mark_command_task_running(resources: &NetCpuResources) {
 
 pub(crate) fn command_task_running(resources: &NetCpuResources) -> bool {
     resources.command_task_running.load(Ordering::Acquire)
+}
+
+pub(crate) fn mark_command_task_stopped(resources: &NetCpuResources) {
+    resources
+        .command_task_running
+        .store(false, Ordering::Release);
+    resources.command_task_ready_waiters.wake_all();
 }
 
 /// タスクコンテキスト向け非同期イベント送信Future
@@ -1213,5 +1226,28 @@ mod tests {
             ControlCommand::ProcessLocalTimeouts
         )));
         assert!(queue.recv().is_some());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn closed_consumer_drains_commands_and_waits_for_admitted_producers() {
+        let queue = RuntimeCommandQueue::new(CommandAdmissionState::Open);
+        let producer = queue.admit_producer().expect("open admission");
+        assert!(queue.send(RuntimeCommand::Control(
+            ControlCommand::ProcessLocalTimeouts
+        )));
+        queue.begin_drain();
+        let mut wait = queue.wait_for_events();
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        assert!(matches!(
+            Pin::new(&mut wait).poll(&mut context),
+            Poll::Ready(Some(_))
+        ));
+        assert!(Pin::new(&mut wait).poll(&mut context).is_pending());
+        drop(producer);
+        assert!(matches!(
+            Pin::new(&mut wait).poll(&mut context),
+            Poll::Ready(None)
+        ));
     }
 }

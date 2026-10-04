@@ -648,9 +648,20 @@ pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
         return Err(reason);
     }
     crate::task::prepare_cpu_online(id);
+    for network in crate::net::runtime::context::list_runtimes() {
+        if let Err(error) = crate::services::start_network_commands(network, id) {
+            log::error!("CPU {id} network consumer admission failed: {error:?}");
+            crate::net::runtime::context::begin_cpu_drain(id);
+            crate::task::abort_cpu_online(id);
+            let reason = CpuFailureReason::Startup(CpuStartupFailure::NetworkResources);
+            record_startup_failure(runtime, id, reason.clone());
+            return Err(reason);
+        }
+    }
     if slot.state == CpuSlotState::PresentOffline
         && let Err(reason) = controller.launch(id, slot.firmware.apic_id)
     {
+        crate::net::runtime::context::begin_cpu_drain(id);
         crate::task::abort_cpu_online(id);
         record_startup_failure(runtime, id, reason.clone());
         return Err(reason);
@@ -671,6 +682,7 @@ pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
         )),
     };
     if let Err(reason) = activation {
+        crate::net::runtime::context::begin_cpu_drain(id);
         crate::task::abort_cpu_online(id);
         record_startup_failure(runtime, id, reason.clone());
         return Err(reason);

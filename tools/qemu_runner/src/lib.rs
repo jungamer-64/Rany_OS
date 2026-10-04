@@ -982,9 +982,11 @@ impl CpuHotplugRun {
                 if serial_contains(log_path, CPU_HOTPLUG_SPARSE_ADD_READY) =>
             {
                 let deadline = qmp_operation_deadline(run_deadline);
-                let cpu =
-                    self.client
-                        .add_available_cpu("rany-cpu-hotplug-sparse-1", 1, deadline)?;
+                let cpu = self
+                    .client
+                    // The sparse profile boots slot 0 with 256 possible
+                    // single-threaded slots; available ordinal 63 is slot 64.
+                    .add_available_cpu("rany-cpu-hotplug-sparse-1", 63, deadline)?;
                 eprintln!("QMP added sparse CPU device '{}'", cpu.device_id);
                 self.added_cpu = Some(cpu);
                 self.phase = CpuHotplugRunPhase::SparseAwaitingBlockedDelete;

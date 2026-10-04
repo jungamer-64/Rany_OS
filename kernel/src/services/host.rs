@@ -6,6 +6,7 @@
 /// unexpected termination of its image-lifetime maintenance tasks; device and
 /// caller resources remain with their subsystem owners.
 pub(super) struct KernelServiceHost {
+    pub(super) network_consumers: crate::sync::Mutex<alloc::vec::Vec<super::network::Consumer>>,
     pub(super) maintenance: crate::sync::Mutex<super::maintenance::State>,
     pub(super) security_monitor: crate::sync::Mutex<super::maintenance::State>,
     pub(super) intel_commands: crate::sync::Mutex<super::maintenance::State>,
@@ -15,6 +16,7 @@ pub(super) struct KernelServiceHost {
 }
 
 pub(super) static KERNEL_SERVICE_HOST: KernelServiceHost = KernelServiceHost {
+    network_consumers: crate::sync::Mutex::new(alloc::vec::Vec::new()),
     maintenance: crate::sync::Mutex::new(super::maintenance::State::Idle),
     security_monitor: crate::sync::Mutex::new(super::maintenance::State::Idle),
     intel_commands: crate::sync::Mutex::new(super::maintenance::State::Idle),

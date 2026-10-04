@@ -30,6 +30,7 @@ mod ipc;
 mod kernel;
 mod maintenance;
 mod net;
+mod network;
 mod providers;
 mod storage;
 mod task;
@@ -40,3 +41,4 @@ use host::KernelServiceHost;
 pub(crate) use maintenance::{
     start_amd_services, start_intel_services, start_runtime_maintenance, start_security_monitor,
 };
+pub(crate) use network::{network_consumer_active, start_network_commands};

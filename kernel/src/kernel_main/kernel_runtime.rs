@@ -964,17 +964,9 @@ pub(crate) fn spawn_core_runtime_tasks() {
 
     let online = crate::cpu::snapshot().online().clone();
     for cpu_id in &online {
-        if let Err(error) = crate::task::spawn(
-            crate::net::runtime::command_loop::runtime_command_task_in(net_runtime, cpu_id),
-            crate::task::TaskOptions::prefer_cpu(cpu_id),
-        ) {
-            warn!(
-                target: "net_boot",
-                "Failed to schedule network command consumer on CPU {}: {:?}",
-                cpu_id,
-                error
-            );
-        }
+        crate::services::start_network_commands(net_runtime, cpu_id).unwrap_or_else(|error| {
+            panic!("network command consumer admission for CPU {cpu_id}: {error:?}")
+        });
     }
 
     // Spawn async timeout processing task (TCP retransmit, keep-alive, ARP expiry, etc.)

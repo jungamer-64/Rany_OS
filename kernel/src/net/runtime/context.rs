@@ -457,11 +457,11 @@ pub(crate) fn cpu_drain_blockers(cpu_id: CpuId) -> Arc<[crate::cpu::CpuBlocker]>
                         error
                     )
                 });
-            (!resources.command_queue.is_quiescent()).then_some(
-                crate::cpu::CpuBlocker::NetworkQueue {
-                    runtime_id: runtime.id().0,
-                },
-            )
+            (!resources.command_queue.is_quiescent()
+                || crate::services::network_consumer_active(runtime.id(), cpu_id))
+            .then_some(crate::cpu::CpuBlocker::NetworkQueue {
+                runtime_id: runtime.id().0,
+            })
         })
         .collect::<Vec<_>>()
         .into()
@@ -481,6 +481,8 @@ pub(crate) fn publish_cpu_online(cpu_id: CpuId) {
                 )
             });
         resources.command_queue.publish_online();
+        crate::services::start_network_commands(runtime, cpu_id)
+            .unwrap_or_else(|error| panic!("CPU {cpu_id} network publication failed: {error:?}"));
     }
 }
 

@@ -24,18 +24,8 @@ use crate::net::runtime::transport::tcp_table_in;
 /// - ISR内でwake()を直接呼ばない（設計書準拠: 2段階Wake方式）
 pub(crate) async fn runtime_command_task_in(
     runtime: NetRuntimeHandle,
-    resource_cpu: crate::cpu::CpuId,
+    resources: alloc::sync::Arc<super::context::NetCpuResources>,
 ) {
-    let resources = match super::command::command_resources_for_cpu_in(runtime, resource_cpu) {
-        Ok(resources) => resources,
-        Err(error) => {
-            log::error!(
-                "[NET] command consumer cannot bind to CPU resources: {:?}",
-                error
-            );
-            return;
-        }
-    };
     log::info!(
         "[NET] runtime_command_task started on CPU {} (fully async)",
         resources.cpu_id
@@ -51,7 +41,10 @@ pub(crate) async fn runtime_command_task_in(
 
     // LOOP_PROOF: mode=event; reason=Each iteration awaits a command and consumes a bounded batch, releasing the stack guard before yielding.;
     loop {
-        let event = resources.command_queue.wait_for_events().await;
+        let Some(event) = resources.command_queue.wait_for_events().await else {
+            super::command::mark_command_task_stopped(&resources);
+            return;
+        };
 
         // The lock result and its preemption guard end before the yield point.
         // Return the unhandled command when the stack is unavailable.

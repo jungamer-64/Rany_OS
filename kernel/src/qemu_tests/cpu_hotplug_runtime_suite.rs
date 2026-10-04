@@ -6,7 +6,7 @@ use crate::cpu::{
     CpuBlocker, CpuDrainFailure, CpuEjectCapability, CpuFailureReason, CpuId, CpuSlotState,
     PhysicalHotplugStatus,
 };
-use crate::task::TaskPlacement;
+use crate::task::TaskOptions;
 use crate::task::TimeoutResult;
 use crate::test::runtime_dispatch::RuntimeTestResult;
 
@@ -15,6 +15,7 @@ const FIRMWARE_EVENT_TIMEOUT_MS: u64 = 30_000;
 async fn wait_for_hotpluggable_absent_slot() -> Option<CpuId> {
     match crate::task::with_timeout(
         async {
+            // LOOP_PROOF: mode=event; reason=Discovery yields between firmware snapshots and returns an ejectable absent slot or an unavailable status before the enclosing timeout cancels the wait.;
             loop {
                 let snapshot = crate::cpu::snapshot();
                 match snapshot.physical_hotplug() {
@@ -44,6 +45,10 @@ async fn wait_for_hotpluggable_absent_slot() -> Option<CpuId> {
     .await
     {
         TimeoutResult::Completed(id) => id,
+        TimeoutResult::TimerFailed(cause) => {
+            log::error!("hotplug test deadline unavailable: {cause}");
+            None
+        }
         TimeoutResult::TimedOut => None,
     }
 }
@@ -51,6 +56,7 @@ async fn wait_for_hotpluggable_absent_slot() -> Option<CpuId> {
 async fn wait_for_hotpluggable_absent_slots(minimum: usize) -> Option<Vec<CpuId>> {
     match crate::task::with_timeout(
         async move {
+            // LOOP_PROOF: mode=event; reason=Discovery yields until enough ejectable absent slots are published, firmware rejects hotplug, or the enclosing timeout cancels the wait.;
             loop {
                 let snapshot = crate::cpu::snapshot();
                 match snapshot.physical_hotplug() {
@@ -86,6 +92,10 @@ async fn wait_for_hotpluggable_absent_slots(minimum: usize) -> Option<Vec<CpuId>
     .await
     {
         TimeoutResult::Completed(slots) => slots,
+        TimeoutResult::TimerFailed(cause) => {
+            log::error!("hotplug test deadline unavailable: {cause}");
+            None
+        }
         TimeoutResult::TimedOut => None,
     }
 }
@@ -94,6 +104,7 @@ async fn wait_for_state(id: CpuId, expected: CpuSlotState) -> bool {
     matches!(
         crate::task::with_timeout(
             async move {
+                // LOOP_PROOF: mode=event; reason=The state wait yields until the slot reaches its expected publication or the enclosing timeout cancels the wait.;
                 loop {
                     if crate::cpu::snapshot().slot(id).map(|slot| slot.state) == Some(expected) {
                         return;
@@ -169,6 +180,7 @@ async fn wait_for_pinned_blocker(id: CpuId, task_id: u64) -> bool {
     matches!(
         crate::task::with_timeout(
             async move {
+                // LOOP_PROOF: mode=event; reason=The blocker wait yields until the online slot publishes this pinned task's failed drain or the enclosing timeout cancels the wait.;
                 loop {
                     let snapshot = crate::cpu::snapshot();
                     let blocked = snapshot.slot(id).is_some_and(|slot| {
@@ -199,6 +211,7 @@ async fn wait_for_task_release(release: &Arc<AtomicBool>) -> bool {
     matches!(
         crate::task::with_timeout(
             async {
+                // LOOP_PROOF: mode=event; reason=The release wait yields until the task drops its retained Arc or the enclosing timeout cancels the wait.;
                 loop {
                     if Arc::strong_count(release) == 1 {
                         return;
@@ -246,7 +259,11 @@ pub(crate) async fn run_cpu_hotplug_sparse_runtime_suite() -> RuntimeTestResult 
         return RuntimeTestResult::fail("firmware did not enumerate all possible CPU slots");
     }
     let gap = absent[0];
-    let target = absent[1];
+    let Some(target) = absent.iter().copied().find(|cpu| cpu.as_usize() >= 64) else {
+        return RuntimeTestResult::blocked(
+            "sparse hotplug requires an absent CPU above the first CpuSet word",
+        );
+    };
     let original_identity = crate::cpu::snapshot()
         .slot(target)
         .expect("sparse hotplug target disappeared")
@@ -269,11 +286,12 @@ pub(crate) async fn run_cpu_hotplug_sparse_runtime_suite() -> RuntimeTestResult 
     let task_release = Arc::clone(&release);
     let task_id = match crate::task::spawn(
         async move {
+            // LOOP_PROOF: mode=condition; reason=The pinned blocker yields each iteration and returns after its owner releases the task with an atomic publication.;
             while !task_release.load(Ordering::Acquire) {
                 crate::task::yield_now().await;
             }
         },
-        TaskPlacement::Pinned(target),
+        TaskOptions::pinned(target),
     ) {
         Ok(id) => id.as_u64(),
         Err(error) => {
