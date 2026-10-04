@@ -5,6 +5,8 @@ pub(crate) fn init_kernel_cell() {
     super::type_id::init_kernel_interfaces();
     with_registry_mut(|r| {
         let entry = CellEntry {
+            code: alloc::sync::Arc::new(crate::loader::code::CodeGeneration::new()),
+            runtime: super::cell_runtime::CellRuntime::Uninitialized,
             id: CellId::KERNEL,
             name: "kernel".into(),
             state: CellState::Running,

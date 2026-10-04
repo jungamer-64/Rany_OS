@@ -68,6 +68,8 @@ pub enum DomainErrorKind {
     InvalidStateTransition,
     /// ライフサイクルエラー
     LifecycleError,
+    /// The lifecycle owner retains its typed incomplete or rejected outcome.
+    Lifecycle(crate::domain::DomainLifecycleError),
     /// レジストリがいっぱい
     RegistryFull,
     /// レジストリが毒入れされた / 利用不可
@@ -112,6 +114,12 @@ pub enum LoaderError {
     LoadFailed,
     /// 再配置失敗
     RelocationFailed,
+    ExecutionUnavailable,
+    CodeBusy {
+        leases: usize,
+    },
+    DriverOperation(crate::driver_registry::DriverError),
+    Finalization(kernel_api::resource::domain::CodeFinalizationError),
 }
 
 /// SAS関連エラー
@@ -225,6 +233,7 @@ impl fmt::Display for DomainErrorKind {
             DomainErrorKind::OwnershipViolation => write!(f, "ownership violation"),
             DomainErrorKind::InvalidStateTransition => write!(f, "invalid state transition"),
             DomainErrorKind::LifecycleError => write!(f, "lifecycle error"),
+            DomainErrorKind::Lifecycle(cause) => write!(f, "lifecycle error: {cause:?}"),
             DomainErrorKind::RegistryFull => write!(f, "registry full"),
             DomainErrorKind::RegistryPoisoned => write!(f, "domain registry poisoned"),
             DomainErrorKind::Policy(error) => write!(f, "{error}"),
@@ -256,6 +265,10 @@ impl fmt::Display for LoaderError {
             LoaderError::InvalidSecurityLevel => write!(f, "invalid security level"),
             LoaderError::LoadFailed => write!(f, "load failed"),
             LoaderError::RelocationFailed => write!(f, "relocation failed"),
+            LoaderError::ExecutionUnavailable => write!(f, "execution unavailable"),
+            LoaderError::CodeBusy { leases } => write!(f, "code retained by {leases} leases"),
+            LoaderError::DriverOperation(cause) => cause.fmt(f),
+            LoaderError::Finalization(cause) => cause.fmt(f),
         }
     }
 }
@@ -362,6 +375,7 @@ impl From<crate::domain::lifecycle::DomainError> for KernelError {
             DE::DependencyError(_) => DomainErrorKind::LifecycleError,
             DE::Panicked(_) => DomainErrorKind::LifecycleError,
             DE::Policy(error) => DomainErrorKind::Policy(error),
+            DE::Lifecycle(cause) => DomainErrorKind::Lifecycle(cause),
         })
     }
 }
@@ -410,6 +424,10 @@ impl From<crate::loader::LoadError> for KernelError {
             LE::RelocationFailed(_) => LoaderError::RelocationFailed,
             LE::InvalidPermissions(_) => LoaderError::InvalidSecurityLevel,
             LE::LoopProofMissing | LE::LoopProofInvalid(_) => LoaderError::LoadFailed,
+            LE::ExecutionUnavailable => LoaderError::ExecutionUnavailable,
+            LE::CodeBusy { leases } => LoaderError::CodeBusy { leases },
+            LE::DriverOperation(cause) => LoaderError::DriverOperation(cause),
+            LE::Finalization(cause) => LoaderError::Finalization(cause),
         })
     }
 }
@@ -494,59 +512,6 @@ impl From<crate::drivers::ahci::AhciError> for IoError {
 // io::ahci::AhciError からの KernelError への変換
 impl From<crate::drivers::ahci::AhciError> for KernelError {
     fn from(e: crate::drivers::ahci::AhciError) -> Self {
-        KernelError::Io(e.into())
-    }
-}
-
-// io::nvme::defs::NvmeError からの変換
-impl From<crate::drivers::nvme::defs::NvmeError> for IoError {
-    fn from(e: crate::drivers::nvme::defs::NvmeError) -> Self {
-        use crate::drivers::nvme::defs::NvmeError as NE;
-        match e {
-            NE::InitializationFailed(_) => IoError::DeviceNotFound,
-            NE::Timeout => IoError::Timeout,
-            NE::QueueFull => IoError::NoResources,
-            NE::InvalidParameter(_) => IoError::InvalidParameter,
-            NE::CommandFailed(_) => IoError::CommandError,
-            NE::OutOfMemory => IoError::NoResources,
-            NE::DeviceNotFound => IoError::DeviceNotFound,
-            NE::ControllerFatalError => IoError::NvmeError,
-            NE::IoError(_) => IoError::NvmeError,
-        }
-    }
-}
-
-// io::nvme::defs::NvmeError から KernelError への変換
-impl From<crate::drivers::nvme::defs::NvmeError> for KernelError {
-    fn from(e: crate::drivers::nvme::defs::NvmeError) -> Self {
-        KernelError::Io(e.into())
-    }
-}
-
-// io::usb::UsbError からの変換
-impl From<crate::drivers::usb::UsbError> for IoError {
-    fn from(e: crate::drivers::usb::UsbError) -> Self {
-        use crate::drivers::usb::UsbError as UE;
-        match e {
-            UE::DeviceNotFound => IoError::DeviceNotFound,
-            UE::EndpointNotFound => IoError::DeviceNotFound,
-            UE::TransferError(_) => IoError::TransferError,
-            UE::Stalled => IoError::TransferError,
-            UE::Timeout => IoError::Timeout,
-            UE::BufferSize => IoError::InvalidParameter,
-            UE::InvalidParameter => IoError::InvalidParameter,
-            UE::NoResources => IoError::NoResources,
-            UE::XhciError(_) => IoError::UsbError,
-            UE::NotConnected => IoError::DeviceNotFound,
-            UE::InvalidDevice => IoError::DeviceNotFound,
-            UE::Other(_) => IoError::UsbError,
-        }
-    }
-}
-
-// io::usb::UsbError から KernelError への変換
-impl From<crate::drivers::usb::UsbError> for KernelError {
-    fn from(e: crate::drivers::usb::UsbError) -> Self {
         KernelError::Io(e.into())
     }
 }

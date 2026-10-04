@@ -172,9 +172,18 @@ pub enum LiveUpdateError {
         remaining_drivers: usize,
         cause: crate::driver_registry::DriverError,
     },
-    PartialPublication {
-        new_cell_id: u64,
-        updated_drivers: usize,
+    HealthFailed,
+    ModuleFinalization {
+        cell_id: u64,
+        cause: kernel_api::resource::domain::CodeFinalizationError,
+    },
+    ModuleLifecycle {
+        cell_id: u64,
+        cause: super::cell_runtime::CellRuntimeError,
+    },
+    DomainLifecycle {
+        owner: crate::domain::DomainId,
+        cause: crate::domain::DomainLifecycleError,
     },
 }
 
@@ -218,13 +227,37 @@ impl core::fmt::Display for LiveUpdateError {
                     "Rollback retains {remaining_drivers} drivers for retry: {cause}"
                 )
             }
-            Self::PartialPublication {
-                new_cell_id,
-                updated_drivers,
-            } => write!(
-                f,
-                "Update to cell {new_cell_id} published {updated_drivers} drivers; rollback remains pending"
-            ),
+            Self::HealthFailed => f.write_str("A reported health failure requires rollback"),
+            Self::ModuleFinalization { cell_id, cause } => {
+                write!(f, "Cell {cell_id} finalization incomplete: {cause}")
+            }
+            Self::ModuleLifecycle { cell_id, cause } => {
+                write!(f, "Cell {cell_id} runtime remains owned: {cause}")
+            }
+            Self::DomainLifecycle { owner, cause } => {
+                write!(f, "Rollback domain {owner} remains incomplete: {cause}")
+            }
+        }
+    }
+}
+
+impl LiveUpdateError {
+    fn is_waiting(&self) -> bool {
+        match self {
+            Self::ReclamationBusy { .. } | Self::UpdateInProgress | Self::SwitchPending { .. } => {
+                true
+            }
+            Self::ModuleLifecycle {
+                cause: super::cell_runtime::CellRuntimeError::Busy { .. },
+                ..
+            } => true,
+            Self::RollbackIncomplete { cause, .. } => driver_operation_waiting(*cause),
+            Self::ModuleFinalization { cause, .. } => cause.is_pending(),
+            Self::DomainLifecycle {
+                cause: crate::domain::DomainLifecycleError::Busy(_),
+                ..
+            } => true,
+            _ => false,
         }
     }
 }
@@ -248,6 +281,8 @@ pub enum UpdatePhase {
     Validating,
     Committing,
     RollingBack,
+    /// The domain has reached a stop boundary and reopened for retained restore.
+    Restoring,
     RollbackPublished,
 }
 
@@ -324,10 +359,180 @@ struct DriverRollbackState {
     context: kernel_api::abi::driver::DriverContext,
 }
 
-struct UpdateOperation<'a>(&'a AtomicBool);
+/// Available owns the transaction. Invoking keeps its observable projection
+/// and a coalesced notification while an exclusive guard owns code and drivers
+/// on its stack. Notifications are folded back before any irreversible decision.
+enum PendingUpdateSlot {
+    Empty,
+    Preparing {
+        old_cell_id: u64,
+        health_failure: Option<String>,
+    },
+    Available(PendingUpdateContext),
+    Invoking {
+        status: PendingUpdateStatus,
+        health_failure: Option<String>,
+    },
+}
+
+impl PendingUpdateContext {
+    fn status(&self) -> PendingUpdateStatus {
+        PendingUpdateStatus {
+            old_cell_id: self.old_cell_id.as_u64(),
+            new_cell_id: self.new_cell_id.as_u64(),
+            started_at_tick: self.started_at_tick,
+            deadline_tick: self.deadline_tick,
+            phase: self.resolution,
+            health_failed: self.health_failed,
+        }
+    }
+
+    fn apply_health_failure(&mut self, reason: Option<String>) {
+        if let Some(reason) = reason {
+            self.health_failed = true;
+            if self.health_failure_reason.is_none() {
+                self.health_failure_reason = Some(reason);
+            }
+        }
+    }
+}
+
+impl PendingUpdateStatus {
+    fn matches_cell(&self, cell_id: u64) -> bool {
+        self.old_cell_id == cell_id || self.new_cell_id == cell_id
+    }
+}
+
+struct UpdateOperation<'a>(&'a LiveUpdateManager);
 impl Drop for UpdateOperation<'_> {
     fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
+        let mut pending = self
+            .0
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if matches!(*pending, PendingUpdateSlot::Preparing { .. }) {
+            *pending = PendingUpdateSlot::Empty;
+        }
+        self.0.updating.store(false, Ordering::Release);
+    }
+}
+
+/// Returning, including an error, puts every admitted owner back in its slot.
+/// Completion alone consumes the guard and removes the notification target.
+struct UpdateInvocation<'a> {
+    manager: &'a LiveUpdateManager,
+    context: Option<PendingUpdateContext>,
+}
+
+impl UpdateInvocation<'_> {
+    fn context_mut(&mut self) -> &mut PendingUpdateContext {
+        self.context
+            .as_mut()
+            .expect("an active invocation owns its context")
+    }
+
+    fn collect_health(context: &mut PendingUpdateContext, slot: &mut PendingUpdateSlot) {
+        let PendingUpdateSlot::Invoking {
+            status,
+            health_failure,
+        } = slot
+        else {
+            unreachable!("the invocation guard exclusively owns this slot");
+        };
+        context.apply_health_failure(health_failure.take());
+        *status = context.status();
+    }
+
+    fn begin_commit(&mut self) -> Result<(), LiveUpdateError> {
+        let mut slot = self
+            .manager
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let context = self
+            .context
+            .as_mut()
+            .expect("an active invocation owns its context");
+        Self::collect_health(context, &mut slot);
+        if !matches!(
+            context.resolution,
+            UpdatePhase::Validating | UpdatePhase::Committing
+        ) {
+            return Err(LiveUpdateError::ResolutionStarted);
+        }
+        if context.health_failed {
+            return Err(LiveUpdateError::HealthFailed);
+        }
+        // Seal rollback before dropping any prepared code lease or closing code.
+        context.resolution = UpdatePhase::Committing;
+        Self::collect_health(context, &mut slot);
+        Ok(())
+    }
+
+    fn begin_rollback(&mut self) -> Result<(), LiveUpdateError> {
+        let mut slot = self
+            .manager
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let context = self
+            .context
+            .as_mut()
+            .expect("an active invocation owns its context");
+        Self::collect_health(context, &mut slot);
+        if context.resolution == UpdatePhase::Committing {
+            return Err(LiveUpdateError::ResolutionStarted);
+        }
+        if !matches!(
+            context.resolution,
+            UpdatePhase::Restoring | UpdatePhase::RollbackPublished
+        ) {
+            context.resolution = UpdatePhase::RollingBack;
+        }
+        Self::collect_health(context, &mut slot);
+        Ok(())
+    }
+
+    fn finish(mut self) -> PendingUpdateContext {
+        let mut slot = self
+            .manager
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let mut context = self
+            .context
+            .take()
+            .expect("completion consumes the invocation once");
+        Self::collect_health(&mut context, &mut slot);
+        *slot = PendingUpdateSlot::Empty;
+        context
+    }
+}
+
+impl Drop for UpdateInvocation<'_> {
+    fn drop(&mut self) {
+        let Some(mut context) = self.context.take() else {
+            return;
+        };
+        let mut slot = self
+            .manager
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        Self::collect_health(&mut context, &mut slot);
+        *self
+            .manager
+            .state
+            .lock()
+            .unwrap_or_else(|error| error.into_inner()) = if context.health_failed {
+            LiveUpdateState::Error
+        } else if context.resolution == UpdatePhase::Switching {
+            LiveUpdateState::Switching
+        } else {
+            LiveUpdateState::WaitingQuiescent
+        };
+        *slot = PendingUpdateSlot::Available(context);
     }
 }
 
@@ -372,13 +577,18 @@ impl LiveUpdateManager {
         _new_elf_data: &[u8],
     ) -> Result<u64, LiveUpdateError> {
         let _operation = self.begin_operation()?;
-        if self
-            .pending
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .is_some()
         {
-            return Err(LiveUpdateError::UpdateInProgress);
+            let mut slot = self
+                .pending
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            if !matches!(*slot, PendingUpdateSlot::Empty) {
+                return Err(LiveUpdateError::UpdateInProgress);
+            }
+            *slot = PendingUpdateSlot::Preparing {
+                old_cell_id: _cell_id,
+                health_failure: None,
+            };
         }
         self.perform_update_inner(_cell_id, _new_elf_data)
     }
@@ -387,7 +597,7 @@ impl LiveUpdateManager {
         self.updating
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .map_err(|_| LiveUpdateError::UpdateInProgress)?;
-        Ok(UpdateOperation(&self.updating))
+        Ok(UpdateOperation(self))
     }
 
     fn perform_update_inner(
@@ -440,7 +650,7 @@ impl LiveUpdateManager {
                 health_failed: true,
                 health_failure_reason: Some("publication preparation exhausted memory".into()),
             };
-            self.retain_pending(context);
+            self.publish_prepared(context);
             return Err(LiveUpdateError::LoadFailed);
         }
         changes.extend(old_drivers.into_iter().map(DriverChange::AwaitingExport));
@@ -457,16 +667,67 @@ impl LiveUpdateManager {
             health_failed: false,
             health_failure_reason: None,
         };
-        self.switch_context(context)
+        self.publish_prepared(context);
+        let mut invocation = self.take_pending(None)?;
+        self.switch_context(invocation.context_mut())
             .map(|transition| transition.new_cell_id)
+    }
+
+    fn publish_prepared(&self, mut context: PendingUpdateContext) {
+        let mut slot = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let PendingUpdateSlot::Preparing {
+            old_cell_id,
+            health_failure,
+        } = &mut *slot
+        else {
+            unreachable!("publication consumes this update's preparation");
+        };
+        assert_eq!(*old_cell_id, context.old_cell_id.as_u64());
+        context.apply_health_failure(health_failure.take());
+        *slot = PendingUpdateSlot::Available(context);
+    }
+
+    fn take_pending(&self, cell_id: Option<u64>) -> Result<UpdateInvocation<'_>, LiveUpdateError> {
+        let mut slot = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match &*slot {
+            PendingUpdateSlot::Available(context)
+                if cell_id.is_none_or(|id| context.status().matches_cell(id)) => {}
+            PendingUpdateSlot::Invoking { .. } | PendingUpdateSlot::Preparing { .. } => {
+                return Err(LiveUpdateError::UpdateInProgress);
+            }
+            _ => return Err(LiveUpdateError::CellNotFound),
+        }
+        let PendingUpdateSlot::Available(context) =
+            core::mem::replace(&mut *slot, PendingUpdateSlot::Empty)
+        else {
+            unreachable!("the locked slot owns an available transaction");
+        };
+        *slot = PendingUpdateSlot::Invoking {
+            status: context.status(),
+            health_failure: None,
+        };
+        Ok(UpdateInvocation {
+            manager: self,
+            context: Some(context),
+        })
     }
 
     fn switch_context(
         &self,
-        mut context: PendingUpdateContext,
+        context: &mut PendingUpdateContext,
     ) -> Result<UpdateTransition, LiveUpdateError> {
+        if context.health_failed {
+            context.resolution = UpdatePhase::RollingBack;
+            return Err(LiveUpdateError::HealthFailed);
+        }
         *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Switching;
-        let result = Self::advance_publications(&mut context);
+        let result = Self::advance_publications(context);
         match result {
             Ok(()) => {
                 crate::loader::with_registry(|registry| {
@@ -486,20 +747,18 @@ impl LiveUpdateManager {
                 };
                 self.rollback_epoch
                     .store(context.retirement_epoch, Ordering::Release);
-                self.retain_pending(context);
                 *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
                     LiveUpdateState::WaitingQuiescent;
                 Ok(result)
             }
             Err(error) => {
-                if !matches!(error, LiveUpdateError::SwitchPending { .. }) {
+                if !error.is_waiting() {
                     context.health_failed = true;
                     context.health_failure_reason = Some(alloc::format!("{error}"));
                     context.resolution = UpdatePhase::RollingBack;
                     *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
                         LiveUpdateState::Error;
                 }
-                self.retain_pending(context);
                 Err(error)
             }
         }
@@ -548,7 +807,8 @@ impl LiveUpdateManager {
                     .new_entry
                     .as_ref()
                     .expect("candidate exports remain owned throughout switching");
-                let mut device = registry.driver_abi_context(handle)
+                let mut device = registry
+                    .driver_abi_context(handle)
                     .ok_or(LiveUpdateError::CellNotFound)?;
                 device.driver_data = 0;
                 let replacement = crate::driver_registry::prepare_driver_replacement(
@@ -559,7 +819,11 @@ impl LiveUpdateManager {
                 )
                 .map_err(|cause| publication_error(context.new_cell_id, handle, cause))?;
                 *change = DriverChange::Installing {
-                    backup: DriverRollbackState { handle, state, context: device },
+                    backup: DriverRollbackState {
+                        handle,
+                        state,
+                        context: device,
+                    },
                     replacement,
                 };
             }
@@ -588,13 +852,8 @@ impl LiveUpdateManager {
 
     fn resume_switch(&self) -> Result<UpdateTransition, LiveUpdateError> {
         let _operation = self.begin_operation()?;
-        let context = self
-            .pending
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .take()
-            .ok_or(LiveUpdateError::CellNotFound)?;
-        self.switch_context(context)
+        let mut invocation = self.take_pending(None)?;
+        self.switch_context(invocation.context_mut())
     }
 
     /// ドライバの所有権を旧セルから新セルへ移行
@@ -627,6 +886,59 @@ impl LiveUpdateManager {
         self.commit_pending_update_for(cell_id)
     }
 
+    pub fn pending_status(&self, cell_id: u64) -> Option<PendingUpdateStatus> {
+        let slot = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let status = match &*slot {
+            PendingUpdateSlot::Available(context) => context.status(),
+            PendingUpdateSlot::Invoking {
+                status,
+                health_failure,
+            } => PendingUpdateStatus {
+                health_failed: status.health_failed || health_failure.is_some(),
+                ..*status
+            },
+            _ => return None,
+        };
+        status.matches_cell(cell_id).then_some(status)
+    }
+
+    pub fn mark_health_failure(&self, cell_id: u64, reason: impl Into<String>) -> bool {
+        let mut slot = self
+            .pending
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        match &mut *slot {
+            PendingUpdateSlot::Preparing {
+                old_cell_id,
+                health_failure,
+            } if *old_cell_id == cell_id => {
+                if health_failure.is_none() {
+                    *health_failure = Some(reason.into());
+                }
+            }
+            PendingUpdateSlot::Available(context)
+                if context.status().matches_cell(cell_id)
+                    && context.resolution != UpdatePhase::Committing =>
+            {
+                context.apply_health_failure(Some(reason.into()))
+            }
+            PendingUpdateSlot::Invoking {
+                status,
+                health_failure,
+            } if status.matches_cell(cell_id) && status.phase != UpdatePhase::Committing => {
+                if health_failure.is_none() {
+                    *health_failure = Some(reason.into());
+                }
+            }
+            _ => return false,
+        }
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Error;
+        true
+    }
+
     pub fn take_recent_outcome_for_cell(&self, cell_id: u64) -> Option<CompletedUpdateOutcome> {
         let mut outcomes = self
             .recent_outcomes
@@ -639,7 +951,7 @@ impl LiveUpdateManager {
     pub fn poll_pending_updates(&self) {
         let (resolution, deadline_expired, health_failed) = {
             let pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let Some(p) = pending.as_ref() else {
+            let PendingUpdateSlot::Available(p) = &*pending else {
                 return;
             };
             (
@@ -653,7 +965,7 @@ impl LiveUpdateManager {
         let result = match resolution {
             UpdatePhase::Switching if health_failed => self.rollback_pending_update(),
             UpdatePhase::Switching => self.resume_switch(),
-            UpdatePhase::RollingBack | UpdatePhase::RollbackPublished => {
+            UpdatePhase::RollingBack | UpdatePhase::Restoring | UpdatePhase::RollbackPublished => {
                 self.rollback_pending_update()
             }
             UpdatePhase::Committing => self.commit_pending_update(),
@@ -663,169 +975,136 @@ impl LiveUpdateManager {
         };
         if let Err(error) = result {
             // Outstanding leases are expected until their Future or stack ends.
-            if !matches!(
-                error,
-                LiveUpdateError::ReclamationBusy { .. }
-                    | LiveUpdateError::UpdateInProgress
-                    | LiveUpdateError::SwitchPending { .. }
-            ) {
+            if !error.is_waiting() {
                 log::warn!("[LIVE_UPDATE] Pending resolution failed: {error}");
             }
         }
     }
 
     fn commit_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
-        let _operation = self.begin_operation()?;
-        let ctx = {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending.take().ok_or(LiveUpdateError::CellNotFound)?
-        };
-        self.commit_context(ctx)
+        self.commit_pending(None)
     }
 
     fn commit_pending_update_for(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
-        let _operation = self.begin_operation()?;
-        let ctx = {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let matches = pending
-                .as_ref()
-                .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
-                .unwrap_or(false);
-            if !matches {
-                return Err(LiveUpdateError::CellNotFound);
-            }
-            pending.take().ok_or(LiveUpdateError::CellNotFound)?
-        };
-        self.commit_context(ctx)
+        self.commit_pending(Some(cell_id))
     }
 
-    fn commit_context(
-        &self,
-        mut ctx: PendingUpdateContext,
-    ) -> Result<UpdateTransition, LiveUpdateError> {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
-        log::info!(
-            "[LIVE_UPDATE] Committing update old={} new={}\n",
-            ctx.old_cell_id.as_u64(),
-            ctx.new_cell_id.as_u64()
-        );
-
-        if matches!(
-            ctx.resolution,
-            UpdatePhase::Switching | UpdatePhase::RollingBack | UpdatePhase::RollbackPublished
-        ) {
-            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            return Err(LiveUpdateError::ResolutionStarted);
-        }
-        ctx.resolution = UpdatePhase::Committing;
-        // Prepared rollback function pointers are code references too.
-        ctx.old_entry = None;
-        ctx.changes.clear();
-        if let Err(error) = crate::loader::unload_cell(ctx.old_cell_id) {
-            let result = reclamation_error(ctx.old_cell_id, error);
-            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            return Err(result);
-        }
-
+    fn commit_pending(&self, cell_id: Option<u64>) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
+        let mut invocation = self.take_pending(cell_id)?;
+        invocation.begin_commit()?;
+        let context = invocation.context_mut();
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
+            LiveUpdateState::WaitingQuiescent;
+        context.old_entry = None;
+        context.changes.clear();
+        crate::loader::unload_cell(context.old_cell_id)
+            .map_err(|error| reclamation_error(context.old_cell_id, error))?;
+        let context = invocation.finish();
         let result = UpdateTransition {
-            old_cell_id: ctx.old_cell_id.as_u64(),
-            new_cell_id: ctx.new_cell_id.as_u64(),
+            old_cell_id: context.old_cell_id.as_u64(),
+            new_cell_id: context.new_cell_id.as_u64(),
         };
         self.push_outcome(CompletedUpdateOutcome::Committed {
             old_cell_id: result.old_cell_id,
             new_cell_id: result.new_cell_id,
             at_tick: crate::task::current_tick(),
         });
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
         Ok(result)
     }
 
     fn rollback_pending_update(&self) -> Result<UpdateTransition, LiveUpdateError> {
-        let _operation = self.begin_operation()?;
-        let ctx = {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            pending.take().ok_or(LiveUpdateError::CellNotFound)?
-        };
-        self.rollback_context(ctx)
+        self.rollback_pending(None)
     }
 
     fn rollback_pending_update_for(
         &self,
         cell_id: u64,
     ) -> Result<UpdateTransition, LiveUpdateError> {
-        let _operation = self.begin_operation()?;
-        let ctx = {
-            let mut pending = self.pending.lock().unwrap_or_else(|e| e.into_inner());
-            let matches = pending
-                .as_ref()
-                .map(|p| p.old_cell_id.as_u64() == cell_id || p.new_cell_id.as_u64() == cell_id)
-                .unwrap_or(false);
-            if !matches {
-                return Err(LiveUpdateError::CellNotFound);
-            }
-            pending.take().ok_or(LiveUpdateError::CellNotFound)?
-        };
-        self.rollback_context(ctx)
+        self.rollback_pending(Some(cell_id))
     }
 
-    fn rollback_context(
-        &self,
-        mut ctx: PendingUpdateContext,
-    ) -> Result<UpdateTransition, LiveUpdateError> {
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Switching;
-        log::info!(
-            "[LIVE_UPDATE] Rolling back update old={} new={}\n",
-            ctx.old_cell_id.as_u64(),
-            ctx.new_cell_id.as_u64()
-        );
-
-        if ctx.resolution == UpdatePhase::Committing {
-            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            return Err(LiveUpdateError::ResolutionStarted);
+    fn rollback_pending(&self, cell_id: Option<u64>) -> Result<UpdateTransition, LiveUpdateError> {
+        let _operation = self.begin_operation()?;
+        let mut invocation = self.take_pending(cell_id)?;
+        invocation.begin_rollback()?;
+        let context = invocation.context_mut();
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Switching;
+        if context.resolution == UpdatePhase::RollingBack {
+            Self::prepare_rollback_execution(context)?;
+            context.resolution = UpdatePhase::Restoring;
         }
-        if ctx.resolution != UpdatePhase::RollbackPublished {
-            ctx.resolution = UpdatePhase::RollingBack;
-            if let Err(cause) = Self::restore_publications(&mut ctx) {
-                let remaining_drivers = ctx.changes.len();
-                self.retain_pending(ctx);
-                return Err(LiveUpdateError::RollbackIncomplete {
-                    remaining_drivers,
+        if context.resolution != UpdatePhase::RollbackPublished {
+            Self::restore_publications(context).map_err(|cause| {
+                LiveUpdateError::RollbackIncomplete {
+                    remaining_drivers: context.changes.len(),
                     cause,
-                });
-            }
+                }
+            })?;
             crate::loader::with_registry(|registry| {
-                if let Some(old) = registry.get(ctx.old_cell_id) {
+                if let Some(old) = registry.get(context.old_cell_id) {
                     old.code.restore();
                 }
-                if let Some(new) = registry.get(ctx.new_cell_id) {
+                if let Some(new) = registry.get(context.new_cell_id) {
                     new.code.retire(advance_epoch());
                 }
             });
-            ctx.old_entry = None;
-            ctx.new_entry = None;
-            ctx.resolution = UpdatePhase::RollbackPublished;
+            context.old_entry = None;
+            context.new_entry = None;
+            context.resolution = UpdatePhase::RollbackPublished;
         }
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::WaitingQuiescent;
-        if let Err(error) = crate::loader::unload_cell(ctx.new_cell_id) {
-            let result = reclamation_error(ctx.new_cell_id, error);
-            *self.pending.lock().unwrap_or_else(|e| e.into_inner()) = Some(ctx);
-            return Err(result);
-        }
-
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) =
+            LiveUpdateState::WaitingQuiescent;
+        crate::loader::unload_cell(context.new_cell_id)
+            .map_err(|error| reclamation_error(context.new_cell_id, error))?;
+        let context = invocation.finish();
         let result = UpdateTransition {
-            old_cell_id: ctx.old_cell_id.as_u64(),
-            new_cell_id: ctx.new_cell_id.as_u64(),
+            old_cell_id: context.old_cell_id.as_u64(),
+            new_cell_id: context.new_cell_id.as_u64(),
         };
         self.push_outcome(CompletedUpdateOutcome::RolledBack {
             old_cell_id: result.old_cell_id,
             new_cell_id: result.new_cell_id,
             at_tick: crate::task::current_tick(),
-            reason: ctx.health_failure_reason,
+            reason: context.health_failure_reason,
         });
-        *self.state.lock().unwrap_or_else(|e| e.into_inner()) = LiveUpdateState::Ready;
+        *self.state.lock().unwrap_or_else(|error| error.into_inner()) = LiveUpdateState::Ready;
         self.rollback_epoch.store(0, Ordering::Release);
         Ok(result)
+    }
+
+    /// A fault closes ordinary domain admission. Restoration may reopen it only
+    /// after every saved poll and nested execution has reached a stop boundary.
+    /// The phase records that acknowledgement so Busy retries can let the same
+    /// registered callbacks and their worker tasks complete.
+    fn prepare_rollback_execution(context: &PendingUpdateContext) -> Result<(), LiveUpdateError> {
+        let handle = match context.changes.first() {
+            Some(DriverChange::AwaitingExport(handle) | DriverChange::Restoring { handle, .. }) => {
+                *handle
+            }
+            Some(DriverChange::Installing { backup, .. } | DriverChange::Active(backup)) => {
+                backup.handle
+            }
+            None => return Ok(()),
+        };
+        let owner = crate::driver_registry::driver_registry()
+            .driver_owner(handle)
+            .ok_or(LiveUpdateError::CellNotFound)?;
+        if owner == crate::domain::DomainId::KERNEL {
+            return Ok(());
+        }
+        let outcome = crate::domain::stop_domain(owner)
+            .map_err(|cause| LiveUpdateError::DomainLifecycle { owner, cause })?;
+        if outcome != crate::domain::DomainStopOutcome::Complete {
+            return Err(LiveUpdateError::DomainLifecycle {
+                owner,
+                cause: crate::domain::DomainLifecycleError::Busy(outcome),
+            });
+        }
+        crate::domain::resume_domain(owner)
+            .map_err(|cause| LiveUpdateError::DomainLifecycle { owner, cause })
     }
 
     fn restore_publications(
@@ -837,7 +1116,9 @@ impl LiveUpdateManager {
         // LOOP_PROOF: mode=condition; reason=Every completed restoration removes one retained change; an incomplete callback returns with the transaction owned for retry.;
         while let Some(change) = context.changes.last_mut() {
             match change {
-                DriverChange::AwaitingExport(_) => {}
+                DriverChange::AwaitingExport(handle) => {
+                    registry.probe_and_start(*handle)?;
+                }
                 DriverChange::Installing {
                     backup,
                     replacement,
@@ -928,15 +1209,128 @@ impl Default for LiveUpdateManager {
     }
 }
 
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+
+    fn context(phase: UpdatePhase) -> PendingUpdateContext {
+        PendingUpdateContext {
+            old_cell_id: super::super::CellId::from_u64(1),
+            new_cell_id: super::super::CellId::from_u64(2),
+            changes: Vec::new(),
+            old_entry: None,
+            new_entry: None,
+            retirement_epoch: 1,
+            resolution: phase,
+            started_at_tick: 0,
+            deadline_tick: None,
+            health_failed: false,
+            health_failure_reason: None,
+        }
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn fault_during_invocation_survives_return_and_prevents_commit() {
+        let manager = LiveUpdateManager::new();
+        *manager
+            .pending
+            .lock()
+            .unwrap_or_else(|_| panic!("notification owner poisoned")) =
+            PendingUpdateSlot::Available(context(UpdatePhase::Validating));
+        let mut invocation = manager.take_pending(Some(1)).unwrap();
+        assert!(manager.mark_health_failure(2, "fault while driver callback runs"));
+        assert!(manager.pending_status(1).unwrap().health_failed);
+        assert!(matches!(
+            invocation.begin_commit(),
+            Err(LiveUpdateError::HealthFailed)
+        ));
+        drop(invocation);
+        let mut invocation = manager.take_pending(Some(2)).unwrap();
+        assert!(matches!(
+            invocation.begin_commit(),
+            Err(LiveUpdateError::HealthFailed)
+        ));
+        assert_eq!(
+            invocation.context_mut().health_failure_reason.as_deref(),
+            Some("fault while driver callback runs")
+        );
+        invocation.begin_rollback().unwrap();
+        assert_eq!(
+            invocation.context_mut().resolution,
+            UpdatePhase::RollingBack
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn commit_seals_direction_before_foreign_finalization_and_retry() {
+        let manager = LiveUpdateManager::new();
+        *manager
+            .pending
+            .lock()
+            .unwrap_or_else(|_| panic!("notification owner poisoned")) =
+            PendingUpdateSlot::Available(context(UpdatePhase::Validating));
+        let mut invocation = manager.take_pending(None).unwrap();
+        invocation.begin_commit().unwrap();
+        assert_eq!(
+            manager.pending_status(1).unwrap().phase,
+            UpdatePhase::Committing
+        );
+        assert!(!manager.mark_health_failure(1, "after the commit decision"));
+        assert!(matches!(
+            invocation.begin_rollback(),
+            Err(LiveUpdateError::ResolutionStarted)
+        ));
+        drop(invocation);
+        let mut invocation = manager.take_pending(None).unwrap();
+        assert!(!manager.mark_health_failure(2, "between commit retries"));
+        invocation.begin_commit().unwrap();
+        drop(invocation.finish());
+        assert!(manager.pending_status(1).is_none());
+        assert!(!manager.mark_health_failure(1, "stale fault report"));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn preparation_coalesces_faults_before_candidate_publication() {
+        let manager = LiveUpdateManager::new();
+        *manager
+            .pending
+            .lock()
+            .unwrap_or_else(|_| panic!("notification owner poisoned")) =
+            PendingUpdateSlot::Preparing {
+                old_cell_id: 1,
+                health_failure: None,
+            };
+        assert!(manager.mark_health_failure(1, "first report"));
+        assert!(manager.mark_health_failure(1, "second report"));
+        assert!(!manager.mark_health_failure(9, "unrelated generation"));
+        manager.publish_prepared(context(UpdatePhase::Switching));
+        let mut invocation = manager.take_pending(None).unwrap();
+        let context = invocation.context_mut();
+        assert_eq!(
+            context.health_failure_reason.as_deref(),
+            Some("first report")
+        );
+        assert!(matches!(
+            manager.switch_context(context),
+            Err(LiveUpdateError::HealthFailed)
+        ));
+        assert_eq!(context.resolution, UpdatePhase::RollingBack);
+    }
+}
+
 /// セルからドライバエントリポイントを解決
 fn resolve_cell_entry(
     cell_id: crate::loader::CellId,
     owner: crate::domain::DomainId,
     call_init: bool,
 ) -> Result<crate::driver_registry::PreparedDriverExports, LiveUpdateError> {
-    let lease = alloc::sync::Arc::new(
+    let lease = Arc::try_new(
         crate::loader::acquire_code_lease(cell_id).ok_or(LiveUpdateError::CellNotFound)?,
-    );
+    )
+    .map_err(|_| LiveUpdateError::LoadFailed)?;
     let _entry_scope =
         crate::task::enter_cell_domain(owner, cell_id).map_err(|_| LiveUpdateError::LoadFailed)?;
     let exports_addr = crate::loader::with_registry(|r| {
@@ -950,7 +1344,15 @@ fn resolve_cell_entry(
     if let Some(addr) = exports_addr {
         let exports_ptr = addr as *const DriverExportsV1;
         let mut prepared = crate::driver_registry::prepare_driver_exports(exports_ptr, call_init)
-            .map_err(|_| LiveUpdateError::LoadFailed)?;
+            .map_err(|cause| match cause {
+            crate::driver_registry::DriverError::ModuleLifecycle(cause) => {
+                LiveUpdateError::ModuleLifecycle {
+                    cell_id: cell_id.as_u64(),
+                    cause,
+                }
+            }
+            _ => LiveUpdateError::LoadFailed,
+        })?;
         prepared.code = Some(lease);
         return Ok(prepared);
     }
@@ -978,7 +1380,6 @@ fn resolve_cell_entry(
     Ok(crate::driver_registry::PreparedDriverExports {
         code: Some(lease),
         entry: entry_fn,
-        fini: None,
         providers,
         state_hooks: crate::driver_registry::AbiDriverStateHooks::default(),
     })
@@ -989,30 +1390,40 @@ fn publication_error(
     handle: crate::driver_registry::DriverHandle,
     cause: crate::driver_registry::DriverError,
 ) -> LiveUpdateError {
-    match cause {
-        crate::driver_registry::DriverError::Busy { .. } => LiveUpdateError::SwitchPending {
+    if driver_operation_waiting(cause) {
+        LiveUpdateError::SwitchPending {
             new_cell_id: candidate.as_u64(),
             handle,
             cause,
-        },
-        crate::driver_registry::DriverError::ResourceCleanup(
-            crate::domain::DomainLifecycleError::Busy(_)
-            | crate::domain::DomainLifecycleError::CodeBusy { .. }
-            | crate::domain::DomainLifecycleError::ReclamationInProgress
-            | crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
+        }
+    } else {
+        LiveUpdateError::DriverOperationFailed {
+            new_cell_id: candidate.as_u64(),
+            handle,
+            cause,
+        }
+    }
+}
+
+fn driver_operation_waiting(cause: crate::driver_registry::DriverError) -> bool {
+    use crate::domain::DomainLifecycleError;
+    use crate::driver_registry::DriverError;
+    match cause {
+        DriverError::Busy { .. }
+        | DriverError::ModuleLifecycle(super::cell_runtime::CellRuntimeError::Busy { .. }) => true,
+        DriverError::ResourceCleanup(DomainLifecycleError::CodeFinalization { cause, .. }) => {
+            cause.is_pending()
+        }
+        DriverError::ResourceCleanup(
+            DomainLifecycleError::Busy(_)
+            | DomainLifecycleError::CodeBusy { .. }
+            | DomainLifecycleError::ReclamationInProgress
+            | DomainLifecycleError::ResourceCleanupIncomplete {
                 cause: kernel_api::error::KapiError::Busy,
                 ..
             },
-        ) => LiveUpdateError::SwitchPending {
-            new_cell_id: candidate.as_u64(),
-            handle,
-            cause,
-        },
-        _ => LiveUpdateError::DriverOperationFailed {
-            new_cell_id: candidate.as_u64(),
-            handle,
-            cause,
-        },
+        ) => true,
+        _ => false,
     }
 }
 
@@ -1024,6 +1435,10 @@ fn reclamation_error(
         crate::loader::LoadError::CodeBusy { leases } => LiveUpdateError::ReclamationBusy {
             cell_id: cell.as_u64(),
             leases,
+        },
+        crate::loader::LoadError::Finalization(cause) => LiveUpdateError::ModuleFinalization {
+            cell_id: cell.as_u64(),
+            cause,
         },
         _ => LiveUpdateError::LoadFailed,
     }

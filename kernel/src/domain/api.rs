@@ -3,24 +3,12 @@ use crate::domain::registry::REGISTRY;
 use core::alloc::Layout;
 
 pub use super::registry::{
-    add_task_to_domain, create_domain, domain_security_handle, get_domain_numa,
-    get_domain_snapshot, get_domain_state, handle_domain_panic, init, is_domain_runnable_now,
-    list_domain_snapshots, quota_suspend_deadline_ns, report_cpu_quota_exceeded,
-    report_cpu_quota_ok, resume_domain, set_domain_capabilities, set_domain_numa,
-    set_domain_priority, set_domain_resource_limits, set_domain_state, spawn_domain_with_caps,
-    start_domain, stop_domain, terminate_domain, with_domain, with_domain_mut,
+    create_domain, domain_security_handle, get_domain_numa, get_domain_snapshot, get_domain_state,
+    handle_domain_panic, init, is_domain_runnable_now, list_domain_snapshots, resume_domain,
+    set_domain_capabilities, set_domain_numa, set_domain_priority, set_domain_resource_limits,
+    spawn_domain_with_caps, start_domain, stop_domain, terminate_domain, with_domain,
+    with_domain_mut,
 };
-
-pub fn remove_task_from_domain(domain_id: DomainId, task_id: u64) {
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == domain_id) {
-                domain.remove_task(task_id);
-            }
-        }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (remove_task_from_domain) - no-op"),
-    }
-}
 
 pub fn register_heap_object(ptr: usize, layout: Layout, owner: DomainId) {
     crate::sas::register_object(
@@ -92,26 +80,23 @@ pub fn transfer_ownership(ptr: usize, new_owner: DomainId) -> bool {
     }
 }
 
-pub fn reclaim_domain_resources(domain: DomainId) {
-    let count = crate::sas::with_sas_manager_mut(|m| {
-        m.reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()))
+pub(super) fn reclaim_domain_resources(
+    domain: DomainId,
+    cleanup: crate::resource_registry::OwnerCleanupStats,
+) {
+    // Callers prove that hardware owners and code leases have finished before
+    // releasing SAS objects, which can contain callback state and DMA backing.
+    let count = crate::sas::with_sas_manager_mut(|manager| {
+        manager.reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()))
     });
-
-    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-    let cleanup = crate::resource_registry::cleanup_owner_domain(domain);
-    #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-    let cleanup = crate::resource_registry::OwnerCleanupStats::default();
-
     match REGISTRY.lock() {
         Ok(mut guard) => {
-            if let Some(d) = guard.domains.iter_mut().find(|d| d.id == domain) {
-                d.rref_count = 0;
-                d.allocated_memory = 0;
+            if let Some(domain) = guard.domains.iter_mut().find(|entry| entry.id == domain) {
+                domain.rref_count = 0;
+                domain.allocated_memory = 0;
             }
         }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (reclaim_domain_resources) - stats not reset")
-        }
+        Err(_) => log::error!("[DOMAIN] Registry poisoned after resource reclamation"),
     }
 
     if count > 0
@@ -148,7 +133,10 @@ pub fn get_domain_stats() -> DomainStats {
             for domain in guard.domains.iter() {
                 match domain.state {
                     DomainState::Running | DomainState::Initializing => stats.running += 1,
-                    DomainState::Stopped | DomainState::Suspended => stats.stopped += 1,
+                    DomainState::Stopped
+                    | DomainState::Suspended
+                    | DomainState::Stopping
+                    | DomainState::Terminating => stats.stopped += 1,
                     DomainState::Terminated => stats.terminated += 1,
                 }
                 stats.memory_used += domain.allocated_memory;
@@ -169,22 +157,19 @@ pub fn get_stats() -> DomainStats {
 }
 
 pub fn print_domain_list() {
-    match REGISTRY.lock() {
-        Ok(guard) => {
-            log::info!("[DOMAIN] === Domain List ===\n");
-            for domain in guard.domains.iter() {
-                log::info!(
-                    "[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
-                    domain.id,
-                    domain.name,
-                    domain.state,
-                    domain.tasks.len(),
-                    domain.rref_count,
-                    domain.allocated_memory / 1024
-                );
-            }
+    {
+        log::info!("[DOMAIN] === Domain List ===\n");
+        for domain in list_domain_snapshots() {
+            log::info!(
+                "[DOMAIN] {} '{}': {:?}, tasks={}, rrefs={}, mem={}KB\n",
+                domain.id,
+                domain.name,
+                domain.state,
+                domain.tasks,
+                domain.rrefs,
+                domain.memory_bytes / 1024
+            );
         }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (print_domain_list) - skipping"),
     }
 }
 

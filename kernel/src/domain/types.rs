@@ -1,40 +1,152 @@
 //! Canonical domain types and snapshots.
 
-#[path = "identity.rs"]
-mod identity;
 use super::quota::DomainPriority;
 use crate::security::CapabilitySet;
+use crate::sync::InitOnce;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-pub use identity::DomainId;
-use spin::Once;
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+pub use kernel_api::resource::domain::{DomainLifecycleError, DomainState, DomainStopOutcome};
 
-pub const CPU_QUOTA_SUSPEND_STREAK: u8 = 3;
-pub const CPU_QUOTA_SUSPEND_WINDOW_NS: u64 = 100_000_000;
+pub use kernel_api::resource::domain::DomainId;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuQuotaAction {
-    None,
-    YieldDemote,
-    Suspend { until_ns: u64 },
+/// Code lifetime survives scheduler return and Future event waiting. Nested
+/// synchronous entries retain a separate execution lease on their task stack.
+/// Registered foreign callbacks retain resource leases until acknowledged stop.
+#[derive(Debug, Default)]
+pub(crate) struct DomainCodeState {
+    future_leases: AtomicUsize,
+    execution_leases: AtomicUsize,
+    resource_leases: AtomicUsize,
+    reclamation: AtomicBool,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomainState {
-    Initializing,
-    Running,
-    Suspended,
-    Stopped,
-    Terminated,
-}
-
-impl DomainState {
-    pub fn is_runnable(&self) -> bool {
-        matches!(self, DomainState::Running | DomainState::Initializing)
+impl DomainCodeState {
+    pub(crate) fn total(&self) -> usize {
+        self.future_leases
+            .load(Ordering::Acquire)
+            .saturating_add(self.execution_leases.load(Ordering::Acquire))
+            .saturating_add(self.resource_leases.load(Ordering::Acquire))
     }
 
-    pub fn is_active(&self) -> bool {
-        !matches!(self, DomainState::Terminated)
+    pub(crate) fn executing(&self) -> usize {
+        self.execution_leases.load(Ordering::Acquire)
+    }
+
+    pub(crate) fn claim_reclamation(self: &Arc<Self>) -> Option<DomainReclamation> {
+        self.reclamation
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .ok()
+            .map(|_| DomainReclamation(Arc::clone(self)))
+    }
+}
+
+/// Serializes fallible teardown attempts without reopening admission on failure.
+pub(crate) struct DomainReclamation(Arc<DomainCodeState>);
+
+impl Drop for DomainReclamation {
+    fn drop(&mut self) {
+        self.0.reclamation.store(false, Ordering::Release);
+    }
+}
+
+enum CodeLeaseKind {
+    Future,
+    Execution,
+    Resource,
+}
+
+pub(crate) struct DomainCodeLease {
+    state: Arc<DomainCodeState>,
+    kind: CodeLeaseKind,
+    generation: Option<crate::loader::code::CodeLease>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FinalizationCodeRetentionError {
+    LeaseCapacityExhausted,
+    MemoryExhausted,
+}
+
+impl DomainCodeLease {
+    /// Retention derives from this owner, including after loader admission
+    /// closes. It does not reacquire authority by a generation identifier.
+    pub(crate) fn retain_finalization_code(
+        &self,
+    ) -> Result<Option<Arc<crate::loader::code::CodeLease>>, FinalizationCodeRetentionError> {
+        match &self.generation {
+            Some(generation) => {
+                let retained = generation
+                    .retain()
+                    .ok_or(FinalizationCodeRetentionError::LeaseCapacityExhausted)?;
+                Arc::try_new(retained)
+                    .map(Some)
+                    .map_err(|_| FinalizationCodeRetentionError::MemoryExhausted)
+            }
+            None => Ok(None),
+        }
+    }
+    pub(crate) fn cell(&self) -> Option<crate::loader::CellId> {
+        self.generation
+            .as_ref()
+            .map(crate::loader::code::CodeLease::cell)
+    }
+    pub(crate) fn future(
+        state: Arc<DomainCodeState>,
+        generation: Option<crate::loader::code::CodeLease>,
+    ) -> Self {
+        state.future_leases.fetch_add(1, Ordering::AcqRel);
+        Self {
+            state,
+            kind: CodeLeaseKind::Future,
+            generation,
+        }
+    }
+
+    pub(crate) fn resource(
+        state: Arc<DomainCodeState>,
+        generation: Option<crate::loader::code::CodeLease>,
+    ) -> Self {
+        state.resource_leases.fetch_add(1, Ordering::AcqRel);
+        Self {
+            state,
+            kind: CodeLeaseKind::Resource,
+            generation,
+        }
+    }
+
+    pub(crate) fn execution_from_resource(&self, state: &Arc<DomainCodeState>) -> Option<Self> {
+        if !matches!(self.kind, CodeLeaseKind::Resource) || !Arc::ptr_eq(state, &self.state) {
+            return None;
+        }
+        let generation = match &self.generation {
+            Some(generation) => Some(generation.retain()?),
+            None => None,
+        };
+        Some(Self::execution(Arc::clone(state), generation))
+    }
+
+    pub(crate) fn execution(
+        state: Arc<DomainCodeState>,
+        generation: Option<crate::loader::code::CodeLease>,
+    ) -> Self {
+        state.execution_leases.fetch_add(1, Ordering::AcqRel);
+        Self {
+            state,
+            kind: CodeLeaseKind::Execution,
+            generation,
+        }
+    }
+}
+
+impl Drop for DomainCodeLease {
+    fn drop(&mut self) {
+        let counter = match self.kind {
+            CodeLeaseKind::Future => &self.state.future_leases,
+            CodeLeaseKind::Execution => &self.state.execution_leases,
+            CodeLeaseKind::Resource => &self.state.resource_leases,
+        };
+        assert_ne!(counter.fetch_sub(1, Ordering::AcqRel), 0);
     }
 }
 
@@ -57,7 +169,7 @@ impl<'scope> DomainResourceAdmission<'scope> {
         domain: &'scope DomainId,
         state: &'scope DomainState,
     ) -> Result<Self, DomainResourceAdmissionError> {
-        if !state.is_active() {
+        if !state.is_runnable() {
             return Err(DomainResourceAdmissionError::OwnerTerminated);
         }
         Ok(Self { domain })
@@ -153,7 +265,7 @@ impl Default for DomainSecurity {
 }
 
 pub(crate) fn kernel_security_handle() -> Arc<DomainSecurity> {
-    static KERNEL_SECURITY: Once<Arc<DomainSecurity>> = Once::new();
+    static KERNEL_SECURITY: InitOnce<Arc<DomainSecurity>> = InitOnce::new();
     KERNEL_SECURITY
         .call_once(|| Arc::new(DomainSecurity::kernel()))
         .clone()

@@ -86,24 +86,6 @@ fn test_create_domain_poisoned_returns_error() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_domain_poisoned_add_remove_task_no_panic() {
-    use crate::sync::set_panicking;
-
-    let id = create_domain(String::from("task_poison")).expect("create_domain failed");
-
-    set_panicking(true);
-    if let Ok(_g) = REGISTRY.lock() {
-        // drop marks as poisoned
-    }
-    set_panicking(false);
-
-    // should not panic
-    add_task_to_domain(id, 1234);
-    remove_task_from_domain(id, 1234);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_reclaim_domain_resources_poisoned_no_panic() {
     use crate::sync::set_panicking;
 
@@ -115,76 +97,23 @@ fn test_reclaim_domain_resources_poisoned_no_panic() {
     }
     set_panicking(false);
 
-    reclaim_domain_resources(id);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_cpu_quota_demote_then_suspend() {
-    use crate::domain::quota::DomainPriority;
-
-    let id = create_domain(String::from("cpu_quota_demote")).expect("create_domain failed");
-    set_domain_priority(id, DomainPriority::High).expect("set_domain_priority failed");
-
     assert_eq!(
-        report_cpu_quota_exceeded(id, 1),
-        CpuQuotaAction::YieldDemote,
-        "first violation should demote and yield"
-    );
-    assert_eq!(
-        get_domain_snapshot(id)
-            .expect("domain snapshot missing")
-            .priority,
-        DomainPriority::Normal
-    );
-
-    assert_eq!(
-        report_cpu_quota_exceeded(id, 2),
-        CpuQuotaAction::YieldDemote,
-        "second violation should demote and yield"
-    );
-    assert_eq!(
-        get_domain_snapshot(id)
-            .expect("domain snapshot missing")
-            .priority,
-        DomainPriority::Low
-    );
-
-    let action = report_cpu_quota_exceeded(id, 10);
-    let until = match action {
-        CpuQuotaAction::Suspend { until_ns } => until_ns,
-        other => panic!("expected suspend action, got {:?}", other),
-    };
-    assert_eq!(
-        get_domain_snapshot(id)
-            .expect("domain snapshot missing")
-            .state,
-        DomainState::Suspended
-    );
-    assert!(
-        until >= 10 + CPU_QUOTA_SUSPEND_WINDOW_NS,
-        "suspend deadline should include configured window"
+        terminate_domain(id),
+        Err(DomainLifecycleError::RegistryPoisoned)
     );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_quota_suspend_auto_resume_after_window() {
-    let id = create_domain(String::from("cpu_quota_resume")).expect("create_domain failed");
-
-    let mut deadline = 0;
-    for now in [100u64, 200, 300] {
-        let action = report_cpu_quota_exceeded(id, now);
-        if let CpuQuotaAction::Suspend { until_ns } = action {
-            deadline = until_ns;
-        }
-    }
-    assert!(deadline > 0, "domain should enter suspended state");
-    assert!(!is_domain_runnable_now(id, deadline.saturating_sub(1)));
-    assert!(is_domain_runnable_now(id, deadline.saturating_add(1)));
-
-    let snapshot = get_domain_snapshot(id).expect("domain snapshot missing");
-    assert_eq!(snapshot.state, DomainState::Running);
+fn cpu_quota_waits_until_the_next_serialized_period() {
+    let quota = crate::domain::quota::CpuQuota::new(20, 100);
+    assert_eq!(quota.wait_deadline(0), None);
+    assert!(quota.consume(20_000_001, 30_000_000));
+    assert_eq!(quota.wait_deadline(99_999_999), Some(100_000_000));
+    assert_eq!(quota.wait_deadline(100_000_000), None);
+    assert!(!quota.consume(1, 100_000_001));
+    let zero = crate::domain::quota::CpuQuota::new(0, 100);
+    assert_eq!(zero.wait_deadline(0), Some(100_000_000));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -223,7 +152,7 @@ fn test_reclaim_domain_resources_also_reclaims_dma_handles() {
         &DMA_DROP_COUNTER,
     );
 
-    reclaim_domain_resources(owner);
+    terminate_domain(owner).expect("domain termination failed");
 
     assert!(!crate::resource_registry::dma::testing::test_dma_handle_exists(handle));
     assert!(

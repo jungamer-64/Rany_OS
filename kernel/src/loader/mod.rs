@@ -15,13 +15,15 @@ pub mod staged_pci;
 pub mod type_id;
 
 mod cell_lookup;
+pub(crate) mod cell_runtime;
+pub(crate) mod code;
 pub(crate) use cell_lookup::*;
+pub use cell_runtime::CellRuntimeError;
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 pub use live_update::{
     CompletedUpdateOutcome, LiveUpdateError, LiveUpdateManager, LiveUpdateState,
-    PendingUpdateStatus, RequestTracker, UpdateTransition, current_epoch, enter_critical_section,
-    enter_quiescent_state, leave_critical_section, live_update_manager, poll_pending_updates,
-    wait_for_quiescent_state,
+    PendingUpdateStatus, RequestTracker, UpdateTransition, current_epoch, live_update_manager,
+    poll_pending_updates,
 };
 pub use signature::{
     CellSignature, KeyId, KeyLevel, RevocationSet, SignatureVerifier, add_trusted_key_with_level,
@@ -130,6 +132,8 @@ impl CellId {
 pub struct CellEntry {
     /// セルID
     pub id: CellId,
+    pub(crate) code: alloc::sync::Arc<code::CodeGeneration>,
+    pub(crate) runtime: cell_runtime::CellRuntime,
     /// セル名
     pub name: String,
     /// 状態
@@ -232,7 +236,7 @@ impl CellRegistry {
     }
 
     /// セルをアンロード
-    pub fn unload(&mut self, id: CellId) -> Option<CellEntry> {
+    fn unload(&mut self, id: CellId) -> Option<CellEntry> {
         if let Some(entry) = self.cells.remove(&id) {
             let live_update_shadow_involved = entry.name.starts_with("update-")
                 || self
@@ -316,7 +320,7 @@ where
 }
 
 /// ロードエラー
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadError {
     /// ELFフォーマットが不正
     InvalidFormat(String),
@@ -338,6 +342,12 @@ pub enum LoadError {
     LoopProofInvalid(String),
     /// セルが見つからない
     CellNotFound,
+    ExecutionUnavailable,
+    CodeBusy {
+        leases: usize,
+    },
+    DriverOperation(crate::driver_registry::DriverError),
+    Finalization(kernel_api::resource::domain::CodeFinalizationError),
     /// リロケーション失敗
     RelocationFailed(String),
     /// セグメント権限エラー（W^X違反など）
@@ -361,6 +371,12 @@ impl core::fmt::Display for LoadError {
                 write!(f, "Loop proof metadata invalid: {}", msg)
             }
             LoadError::CellNotFound => write!(f, "Cell not found"),
+            LoadError::ExecutionUnavailable => {
+                f.write_str("Cell execution context or admission is unavailable")
+            }
+            LoadError::CodeBusy { leases } => write!(f, "Cell code retained by {leases} leases"),
+            LoadError::DriverOperation(cause) => cause.fmt(f),
+            LoadError::Finalization(cause) => cause.fmt(f),
             LoadError::RelocationFailed(msg) => write!(f, "Relocation failed: {}", msg),
             LoadError::InvalidPermissions(msg) => write!(f, "Invalid permissions: {}", msg),
         }
@@ -521,6 +537,8 @@ fn load_cell_with_flags(
         }
     }
 
+    let generation = alloc::sync::Arc::try_new(code::CodeGeneration::new())
+        .map_err(|_| LoadError::OutOfMemory)?;
     let loaded = loader.load(&cell_info)?;
 
     let resolver = |s: &str| with_registry(|r| r.resolve_symbol(s));
@@ -536,6 +554,8 @@ fn load_cell_with_flags(
         let imports = cell_info.imports.iter().map(|s| s.to_string()).collect();
         let entry = CellEntry {
             id,
+            code: generation,
+            runtime: cell_runtime::CellRuntime::Uninitialized,
             name: name.into(),
             state: CellState::Loaded,
             load_address: loaded.base_address,
@@ -584,6 +604,8 @@ pub(crate) fn register_driver_from_cell_with_context(
     ctx: AbiDriverContext,
     owner: crate::domain::DomainId,
 ) -> Result<DriverHandle, LoadError> {
+    let _code_scope = crate::task::enter_cell_domain(owner, cell_id)
+        .map_err(|_| LoadError::ExecutionUnavailable)?;
     crate::io::log::early_print("[LDR] regdrv: begin\n");
     let exports_addr = with_registry(|r| {
         let cell = r.get(cell_id)?;
@@ -602,14 +624,7 @@ pub(crate) fn register_driver_from_cell_with_context(
                 record_driver_handle(cell_id, handle);
                 return Ok(handle);
             }
-            Err(_) => {
-                with_registry_mut(|r| {
-                    r.unload(cell_id);
-                });
-                return Err(LoadError::InvalidFormat(
-                    "Failed to register DriverExports driver".into(),
-                ));
-            }
+            Err(cause) => return Err(LoadError::DriverOperation(cause)),
         }
     }
 
@@ -624,9 +639,6 @@ pub(crate) fn register_driver_from_cell_with_context(
     let entry_addr = match entry_addr {
         Some(a) => a,
         None => {
-            with_registry_mut(|r| {
-                r.unload(cell_id);
-            });
             return Err(LoadError::InvalidFormat(
                 "Driver entry symbol not found".into(),
             ));
@@ -643,65 +655,73 @@ pub(crate) fn register_driver_from_cell_with_context(
             record_driver_handle(cell_id, handle);
             Ok(handle)
         }
-        Err(_) => {
-            with_registry_mut(|r| {
-                r.unload(cell_id);
-            });
-            Err(LoadError::InvalidFormat(
-                "Failed to register ABI driver".into(),
-            ))
-        }
+        Err(cause) => Err(LoadError::DriverOperation(cause)),
     }
 }
 
 /// セルをアンロード
+pub(crate) fn acquire_code_lease(id: CellId) -> Option<code::CodeLease> {
+    with_registry(|registry| registry.get(id)?.code.acquire(id))
+}
+
+/// Closes admission under the registry lock. Busy retains the entry, symbols,
+/// mappings and protection key; the caller may retry after existing leases end.
 pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
-    let has_dependents = with_registry(|r| r.all_cells().any(|c| c.dependencies.contains(&id)));
-    let has_drivers = with_registry(|r| {
-        r.get(id)
-            .map(|c| !c.registered_drivers.is_empty())
-            .unwrap_or(false)
-    });
-
-    if has_dependents {
-        return Err(LoadError::UnresolvedDependency(
-            "Cell has active dependents".into(),
+    if id == CellId::KERNEL {
+        return Err(LoadError::InvalidFormat(
+            "kernel cell cannot be unloaded".into(),
         ));
     }
-    if has_drivers {
-        return Err(LoadError::UnresolvedDependency(
-            "Cell has registered drivers".into(),
-        ));
-    }
-
-    let (load_address, load_size, allocation_base, allocation_size, pkey_opt) =
-        with_registry(|r| {
-            r.get(id)
-                .map(|c| {
-                    (
-                        c.load_address,
-                        c.load_size,
-                        c.allocation_base,
-                        c.allocation_size,
-                        c.pkey,
-                    )
-                })
-                .ok_or(LoadError::CellNotFound)
-        })?;
-
-    let old_epoch = live_update::current_epoch();
-    log::info!(
-        "[Loader] Unloading cell {:?}, waiting for epoch {} quiescence\n",
-        id.as_u64(),
-        old_epoch
-    );
-
-    live_update::enter_quiescent_state();
-    live_update::wait_for_quiescent_state(old_epoch);
-
-    with_registry_mut(|r| {
-        r.unload(id);
-    });
+    with_registry(|registry| {
+        if registry
+            .all_cells()
+            .any(|cell| cell.dependencies.contains(&id))
+        {
+            return Err(LoadError::UnresolvedDependency(
+                "Cell has active dependents".into(),
+            ));
+        }
+        let cell = registry.get(id).ok_or(LoadError::CellNotFound)?;
+        if !cell.registered_drivers.is_empty() {
+            return Err(LoadError::UnresolvedDependency(
+                "Cell has registered drivers".into(),
+            ));
+        }
+        Ok(())
+    })?;
+    cell_runtime::finalize(id).map_err(LoadError::Finalization)?;
+    let entry = with_registry_mut(|registry| {
+        let cell = registry.get(id).ok_or(LoadError::CellNotFound)?;
+        if !matches!(cell.runtime, cell_runtime::CellRuntime::Finalized) {
+            return Err(LoadError::Finalization(
+                kernel_api::resource::domain::CodeFinalizationError::Busy,
+            ));
+        }
+        cell.code
+            .close()
+            .map_err(|leases| LoadError::CodeBusy { leases })?;
+        // Recheck references at the actual removal publication boundary.
+        if !cell.registered_drivers.is_empty()
+            || registry
+                .all_cells()
+                .any(|cell| cell.dependencies.contains(&id))
+        {
+            return Err(LoadError::UnresolvedDependency(
+                "Cell ownership changed during finalization".into(),
+            ));
+        }
+        Ok(registry
+            .unload(id)
+            .expect("finalized cell remains registered until removal"))
+    })?;
+    let CellEntry {
+        load_address,
+        load_size,
+        allocation_base,
+        allocation_size,
+        pkey: pkey_opt,
+        ..
+    } = entry;
 
     if let Some(_pk) = pkey_opt {
         #[cfg(any(feature = "pkey_integration_test", not(any(test, feature = "bench"))))]
@@ -739,14 +759,7 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
 
 /// Unload a registered driver by handle.
 pub(crate) fn unload_driver(handle: DriverHandle) -> Result<(), LoadError> {
-    match crate::driver_registry::unregister_driver(handle) {
-        Ok(()) => {}
-        Err(_) => {
-            return Err(LoadError::InvalidFormat(
-                "Failed to unregister driver".into(),
-            ));
-        }
-    }
+    crate::driver_registry::unregister_driver(handle).map_err(LoadError::DriverOperation)?;
 
     let mut found = false;
     with_registry_mut(|r| {

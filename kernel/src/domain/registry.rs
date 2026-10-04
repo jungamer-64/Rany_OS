@@ -1,8 +1,7 @@
 //! Domain registry and lifecycle internals.
 use super::{
-    CPU_QUOTA_SUSPEND_STREAK, CPU_QUOTA_SUSPEND_WINDOW_NS, CpuQuotaAction, DomainId,
-    DomainPolicyError, DomainSecurity, DomainSecurityLookupError, DomainSnapshot, DomainState,
-    DomainTerminationError, RequestedCap,
+    DomainId, DomainLifecycleError, DomainPolicyError, DomainSecurity, DomainSecurityLookupError,
+    DomainSnapshot, DomainState, DomainStopOutcome, RequestedCap,
     api::reclaim_domain_resources,
     kernel_security_handle,
     quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager},
@@ -27,13 +26,14 @@ pub struct Domain {
     /// ドメイン名
     pub name: String,
     /// 現在の状態
-    pub state: DomainState,
+    pub(super) state: DomainState,
     /// セキュリティ主体（資格情報/ケイパビリティ）
     pub security: Arc<DomainSecurity>,
-
-    // タスク管理
-    /// このドメインに属するタスクID
-    pub tasks: Vec<u64>,
+    pub(crate) code: Arc<super::DomainCodeState>,
+    generation: Option<(
+        crate::loader::CellId,
+        Arc<crate::loader::code::CodeGeneration>,
+    )>,
 
     // 依存関係
     /// このドメインが依存するドメイン
@@ -70,10 +70,6 @@ pub struct Domain {
     pub memory_limit_bytes: u64,
     /// I/O帯域上限（バイト/秒、0=無制限）
     pub io_bandwidth_limit: u64,
-    /// CPUクォータ連続違反回数
-    pub cpu_violation_streak: u8,
-    /// クォータ制御での一時Suspend期限（ns, 0=未設定）
-    pub quota_suspend_until_ns: u64,
 }
 
 impl Domain {
@@ -92,7 +88,9 @@ impl Domain {
             name,
             state: DomainState::Initializing,
             security,
-            tasks: Vec::new(),
+            code: Arc::try_new(super::DomainCodeState::default())
+                .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?,
+            generation: None,
             dependencies: Vec::new(),
             dependents: Vec::new(),
             rref_count: 0,
@@ -107,26 +105,12 @@ impl Domain {
             cpu_limit_percent: 100,
             memory_limit_bytes: u64::MAX,
             io_bandwidth_limit: 0,
-            cpu_violation_streak: 0,
-            quota_suspend_until_ns: 0,
         })
     }
 
     /// 実行可能かどうか
     pub fn is_runnable(&self) -> bool {
         self.state.is_runnable()
-    }
-
-    /// タスクを追加
-    pub fn add_task(&mut self, task_id: u64) {
-        if !self.tasks.contains(&task_id) {
-            self.tasks.push(task_id);
-        }
-    }
-
-    /// タスクを削除
-    pub fn remove_task(&mut self, task_id: u64) {
-        self.tasks.retain(|&id| id != task_id);
     }
 
     /// 依存関係を追加
@@ -407,7 +391,7 @@ pub fn spawn_domain_with_caps(
     }
 
     let domain_id = create_domain(name)?;
-    let _ = with_domain_mut(domain_id, |d| d.state = DomainState::Running);
+    start_domain(domain_id).map_err(|_| KernelError::Domain(DomainErrorKind::LifecycleError))?;
 
     let mut created_tokens: Vec<u64> = Vec::new();
     for req in requested {
@@ -537,8 +521,8 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
         id: domain.id,
         name: domain.name.clone(),
         state: domain.state,
-        tasks: domain.tasks.len(),
-        task_ids: domain.tasks.clone(),
+        tasks: 0,
+        task_ids: Vec::new(),
         memory_bytes: domain.allocated_memory,
         rrefs: domain.rref_count,
         runtime_ticks: domain.runtime_ticks,
@@ -558,72 +542,68 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
 
 /// List all domain snapshots.
 pub fn list_domain_snapshots() -> Vec<DomainSnapshot> {
-    match REGISTRY.lock() {
+    let mut snapshots = match REGISTRY.lock() {
         Ok(guard) => guard.domains.iter().map(to_snapshot).collect(),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (list_domain_snapshots)");
             Vec::new()
         }
+    };
+    for snapshot in &mut snapshots {
+        snapshot.task_ids = crate::task::domain_task_ids(snapshot.id);
+        snapshot.tasks = snapshot.task_ids.len();
     }
+    snapshots
 }
 
 /// Get a single domain snapshot by ID.
 pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
-    match REGISTRY.lock() {
+    let mut snapshot = match REGISTRY.lock() {
         Ok(guard) => guard.domains.iter().find(|d| d.id == id).map(to_snapshot),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (get_domain_snapshot)");
             None
         }
-    }
-}
-
-/// ドメインの状態を変更
-pub fn set_domain_state(id: DomainId, state: DomainState) -> Result<(), DomainPolicyError> {
-    if state == DomainState::Terminated {
-        return terminate_domain(id).map_err(DomainPolicyError::Termination);
-    }
-    let mut guard = REGISTRY
-        .lock()
-        .map_err(|_| DomainPolicyError::RegistryUnavailable)?;
-    let domain = guard
-        .domains
-        .iter_mut()
-        .find(|d| d.id == id)
-        .ok_or(DomainPolicyError::NotFound)?;
-    quota_manager()
-        .update_policy(domain_quota_policy(
-            id,
-            domain.priority,
-            domain.cpu_limit_percent,
-            domain.memory_limit_bytes,
-            domain.io_bandwidth_limit,
-        ))
-        .map_err(DomainPolicyError::Quota)?;
-    domain.state = state;
-    Ok(())
+    }?;
+    snapshot.task_ids = crate::task::domain_task_ids(id);
+    snapshot.tasks = snapshot.task_ids.len();
+    Some(snapshot)
 }
 
 /// ドメインを開始
-pub fn start_domain(id: DomainId) -> Result<(), &'static str> {
-    match REGISTRY.lock() {
-        Ok(mut registry) => {
-            if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
-                if domain.state != DomainState::Initializing {
-                    return Err("Domain is not in initializing state");
-                }
-                domain.state = DomainState::Running;
-                log::info!("[DOMAIN] Started {}\n", id);
-                Ok(())
-            } else {
-                Err("Domain not found")
-            }
-        }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (start_domain)");
-            Err("Domain registry poisoned")
-        }
+pub fn start_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
+    let mut registry = REGISTRY
+        .lock()
+        .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+    let domain = registry
+        .domains
+        .iter_mut()
+        .find(|domain| domain.id == id)
+        .ok_or(DomainLifecycleError::NotFound)?;
+    if domain.state != DomainState::Initializing {
+        return Err(DomainLifecycleError::InvalidState(domain.state));
     }
+    domain.state = DomainState::Running;
+    Ok(())
+}
+
+/// Clear diagnostics and reopen only a completed stop, atomically with admission.
+pub(super) fn restart_stopped_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
+    let mut registry = REGISTRY
+        .lock()
+        .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+    let domain = registry
+        .domains
+        .iter_mut()
+        .find(|domain| domain.id == id)
+        .ok_or(DomainLifecycleError::NotFound)?;
+    if domain.state != DomainState::Stopped {
+        return Err(DomainLifecycleError::InvalidState(domain.state));
+    }
+    domain.panic_message = None;
+    domain.terminated_dependency = None;
+    domain.state = DomainState::Running;
+    Ok(())
 }
 
 /// Set NUMA node for a domain
@@ -745,114 +725,16 @@ pub fn set_domain_resource_limits(
     }
 }
 
-#[inline]
-fn demote_priority(priority: DomainPriority) -> DomainPriority {
-    match priority {
-        DomainPriority::Critical => DomainPriority::Critical,
-        DomainPriority::High => DomainPriority::Normal,
-        DomainPriority::Normal | DomainPriority::Low => DomainPriority::Low,
-    }
-}
-
-pub fn report_cpu_quota_exceeded(id: DomainId, now_ns: u64) -> CpuQuotaAction {
-    if id == DomainId::KERNEL {
-        return CpuQuotaAction::None;
-    }
-
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) else {
-                return CpuQuotaAction::None;
-            };
-
-            if matches!(domain.state, DomainState::Terminated | DomainState::Stopped) {
-                return CpuQuotaAction::None;
-            }
-
-            domain.cpu_violation_streak = domain.cpu_violation_streak.saturating_add(1);
-            let next_priority = demote_priority(domain.priority);
-            if next_priority != domain.priority {
-                domain.priority = next_priority;
-            }
-
-            if let Err(error) = quota_manager().update_policy(domain_quota_policy(
-                id,
-                domain.priority,
-                domain.cpu_limit_percent,
-                domain.memory_limit_bytes,
-                domain.io_bandwidth_limit,
-            )) {
-                log::error!("Domain {} quota update failed: {}", id, error);
-                let until_ns = now_ns.saturating_add(CPU_QUOTA_SUSPEND_WINDOW_NS);
-                domain.quota_suspend_until_ns = until_ns;
-                domain.state = DomainState::Suspended;
-                return CpuQuotaAction::Suspend { until_ns };
-            }
-
-            if domain.cpu_violation_streak >= CPU_QUOTA_SUSPEND_STREAK {
-                let until_ns = now_ns.saturating_add(CPU_QUOTA_SUSPEND_WINDOW_NS);
-                domain.quota_suspend_until_ns = until_ns;
-                domain.state = DomainState::Suspended;
-                return CpuQuotaAction::Suspend { until_ns };
-            }
-
-            CpuQuotaAction::YieldDemote
-        }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (report_cpu_quota_exceeded)");
-            CpuQuotaAction::None
-        }
-    }
-}
-
-pub fn report_cpu_quota_ok(id: DomainId) {
-    if id == DomainId::KERNEL {
-        return;
-    }
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
-                domain.cpu_violation_streak = 0;
-            }
-        }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (report_cpu_quota_ok)"),
-    }
-}
-
-pub fn quota_suspend_deadline_ns(id: DomainId) -> Option<u64> {
-    match REGISTRY.lock() {
-        Ok(guard) => guard
-            .domains
-            .iter()
-            .find(|d| d.id == id && d.quota_suspend_until_ns > 0)
-            .map(|d| d.quota_suspend_until_ns),
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (quota_suspend_deadline_ns)");
-            None
-        }
-    }
-}
-
-pub fn is_domain_runnable_now(id: DomainId, now_ns: u64) -> bool {
+pub fn is_domain_runnable_now(id: DomainId, _now_ns: u64) -> bool {
     if id == DomainId::KERNEL {
         return true;
     }
 
     match REGISTRY.lock() {
-        Ok(mut guard) => {
-            let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) else {
+        Ok(guard) => {
+            let Some(domain) = guard.domains.iter().find(|d| d.id == id) else {
                 return false;
             };
-
-            if domain.state == DomainState::Suspended {
-                if domain.quota_suspend_until_ns > 0 && now_ns >= domain.quota_suspend_until_ns {
-                    domain.state = DomainState::Running;
-                    domain.quota_suspend_until_ns = 0;
-                    domain.cpu_violation_streak = 0;
-                    return true;
-                }
-                return false;
-            }
 
             domain.state.is_runnable()
         }
@@ -878,27 +760,45 @@ pub fn get_domain_numa(id: DomainId) -> Option<usize> {
     }
 }
 
-/// Stop a domain
-pub fn stop_domain(id: DomainId) -> Result<(), &'static str> {
-    match REGISTRY.lock() {
-        Ok(mut registry) => {
-            if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
-                domain.state = DomainState::Stopped;
-                log::info!("[DOMAIN] Stopped {}\n", id);
-                Ok(())
-            } else {
-                Err("Domain not found")
-            }
-        }
-        Err(_) => {
-            log::error!("[DOMAIN] Registry poisoned (stop_domain)");
-            Err("Domain registry poisoned")
-        }
+/// Requests stop before testing completion. Suspended polls retain their
+/// stack and may resume to reach a poll boundary; new polls are denied.
+pub fn stop_domain(id: DomainId) -> Result<DomainStopOutcome, DomainLifecycleError> {
+    if id == DomainId::KERNEL {
+        return Err(DomainLifecycleError::KernelDomain);
     }
+    crate::task::domain_stop_boundary(id, |outcome| {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+        let domain = registry
+            .domains
+            .iter_mut()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainLifecycleError::NotFound)?;
+        if domain.state == DomainState::Terminated {
+            return Ok(DomainStopOutcome::Complete);
+        }
+        let outcome = match outcome {
+            DomainStopOutcome::Complete if domain.code.executing() != 0 => {
+                DomainStopOutcome::InProgress {
+                    active_polls: domain.code.executing(),
+                    interrupted_polls: 0,
+                }
+            }
+            other => other,
+        };
+        if domain.state != DomainState::Terminating {
+            domain.state = match outcome {
+                DomainStopOutcome::Complete => DomainState::Stopped,
+                DomainStopOutcome::InProgress { .. } => DomainState::Stopping,
+            };
+        }
+        Ok(outcome)
+    })
 }
 
 /// Resume a stopped or suspended domain
-pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
+pub fn resume_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     match REGISTRY.lock() {
         Ok(mut registry) => {
             if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
@@ -909,48 +809,125 @@ pub fn resume_domain(id: DomainId) -> Result<(), &'static str> {
                         Ok(())
                     }
                     DomainState::Running | DomainState::Initializing => Ok(()),
-                    DomainState::Terminated => Err("Domain is terminated"),
+                    state @ (DomainState::Terminating
+                    | DomainState::Terminated
+                    | DomainState::Stopping) => Err(DomainLifecycleError::InvalidState(state)),
                 }
             } else {
-                Err("Domain not found")
+                Err(DomainLifecycleError::NotFound)
             }
         }
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (resume_domain)");
-            Err("Domain registry poisoned")
+            Err(DomainLifecycleError::RegistryPoisoned)
         }
     }
 }
 
-/// Stop admission and notify dependents in one registry publication, without
-/// allocating. Resource finalization runs after unlocking. The retained account
-/// binding rejects restart until this recovery pass has left its cleanup boundary.
-/// Rejection has zero progress. Success does not imply all RAM/DMA was returned.
-pub fn terminate_domain(id: DomainId) -> Result<(), DomainTerminationError> {
+/// ドメインを終了しリソースを回収
+pub fn terminate_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     if id == DomainId::KERNEL {
-        return Err(DomainTerminationError::KernelProtected);
+        return Err(DomainLifecycleError::KernelDomain);
     }
+
     let admission = {
+        let registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+        let domain = registry
+            .domains
+            .iter()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainLifecycleError::NotFound)?;
+        if domain.state == DomainState::Terminated {
+            return Ok(());
+        }
+        quota_manager()
+            .bind_memory(id)
+            .map_err(DomainLifecycleError::Quota)?
+    };
+    let reclamation = crate::task::domain_stop_boundary(id, |outcome| {
         let mut registry = REGISTRY
             .lock()
-            .map_err(|_| DomainTerminationError::RegistryUnavailable)?;
+            .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+        let domain = registry
+            .domains
+            .iter_mut()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainLifecycleError::NotFound)?;
+        if domain.state == DomainState::Terminated {
+            return Ok(None);
+        }
+        if outcome != DomainStopOutcome::Complete {
+            if domain.state != DomainState::Terminating {
+                domain.state = DomainState::Stopping;
+            }
+            return Err(DomainLifecycleError::Busy(outcome));
+        }
+        let executions = domain.code.executing();
+        if executions != 0 {
+            if domain.state != DomainState::Terminating {
+                domain.state = DomainState::Stopping;
+            }
+            return Err(DomainLifecycleError::CodeBusy { leases: executions });
+        }
+        let reclamation = domain
+            .code
+            .claim_reclamation()
+            .ok_or(DomainLifecycleError::ReclamationInProgress)?;
+        domain.state = DomainState::Terminating;
+        Ok(Some(reclamation))
+    })?;
+    let Some(_reclamation) = reclamation else {
+        return Ok(());
+    };
+    // Destruct Future objects while their code and domain resources remain
+    // mapped. Only poll-boundary states can be retired here.
+    crate::task::retire_domain_tasks(id);
+    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
+    let cleanup = crate::resource_registry::cleanup_owner_domain(id)?;
+    #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
+    let cleanup = crate::resource_registry::OwnerCleanupStats::default();
+    let leases = domain_code_leases(id);
+    if leases != 0 {
+        return Err(DomainLifecycleError::CodeBusy { leases });
+    }
+
+    // The bound generation is still owned while the domain is Terminating.
+    // Module teardown may admit finalization work, whose tasks and resources
+    // must finish before the domain becomes Terminated or its memory is freed.
+    let bound_cell = with_domain(id, |domain| {
+        domain.generation.as_ref().map(|(cell, _)| *cell)
+    })
+    .flatten();
+    if let Some(cell) = bound_cell {
+        // Successful loader removal has already acknowledged module teardown.
+        if crate::loader::with_registry(|registry| registry.get(cell).is_some()) {
+            crate::loader::cell_runtime::finalize(cell).map_err(|cause| {
+                DomainLifecycleError::CodeFinalization {
+                    cell_id: cell.as_u64(),
+                    cause,
+                }
+            })?;
+        }
+    }
+    let leases = domain_code_leases(id);
+    if leases != 0 {
+        return Err(DomainLifecycleError::CodeBusy { leases });
+    }
+
+    reclaim_domain_resources(id, cleanup);
+    {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
         let index = registry
             .domains
             .iter()
             .position(|domain| domain.id == id)
-            .ok_or(DomainTerminationError::NotFound)?;
+            .ok_or(DomainLifecycleError::NotFound)?;
         let (before, rest) = registry.domains.split_at_mut(index);
-        let (domain, after) = rest
-            .split_first_mut()
-            .expect("index selected an existing domain");
-        if domain.state == DomainState::Terminated {
-            return Ok(());
-        }
-        // Binding and revocation acquire no metadata. Destruction of retired
-        // accounts is deferred to cold registration/observation outside this lock.
-        let admission = quota_manager()
-            .bind_memory(id)
-            .map_err(DomainTerminationError::Quota)?;
+        let (domain, after) = rest.split_first_mut().expect("selected existing domain");
         unregister_domain_quota(id);
         domain.state = DomainState::Terminated;
         if domain.dependents.contains(&id) {
@@ -961,12 +938,29 @@ pub fn terminate_domain(id: DomainId) -> Result<(), DomainTerminationError> {
                 dependent.terminated_dependency = Some(id);
             }
         }
-        admission
-    };
-    reclaim_domain_resources(id);
+    }
     drop(admission);
     log::info!("[DOMAIN] Terminated {} and initiated resource return", id);
     Ok(())
+}
+
+/// Recovery requests stop without consuming the domain's ability to restart.
+pub(crate) fn request_fault_stop(
+    id: DomainId,
+    message: String,
+) -> Result<DomainStopOutcome, DomainLifecycleError> {
+    {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+        let domain = registry
+            .domains
+            .iter_mut()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainLifecycleError::NotFound)?;
+        domain.panic_message = Some(message);
+    }
+    stop_domain(id)
 }
 
 /// ドメインがパニックした場合の処理
@@ -977,7 +971,6 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
         match REGISTRY.lock() {
             Ok(mut registry) => {
                 if let Some(domain) = registry.domains.iter_mut().find(|d| d.id == id) {
-                    domain.state = DomainState::Stopped;
                     domain.panic_message = Some(message);
                 }
             }
@@ -987,19 +980,10 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
         }
     }
 
-    // リソース回収
-    reclaim_domain_resources(id);
-}
-
-/// ドメインにタスクを追加
-pub fn add_task_to_domain(domain_id: DomainId, task_id: u64) {
-    match REGISTRY.lock() {
-        Ok(mut guard) => {
-            if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == domain_id) {
-                domain.add_task(task_id);
-            }
-        }
-        Err(_) => log::error!("[DOMAIN] Registry poisoned (add_task_to_domain) - no-op"),
+    // A panic report does not prove that every interrupted stack is gone.
+    // Retain resources until the ordinary stop/termination boundary succeeds.
+    if let Err(error) = terminate_domain(id) {
+        log::warn!("[DOMAIN] Panic cleanup remains incomplete for {id}: {error}");
     }
 }
 
@@ -1053,7 +1037,7 @@ mod termination_tests {
             .bind_memory(source)
             .expect("execution admission");
         let credit = binding.reserve(37).expect("payload admission");
-        set_domain_state(source, DomainState::Terminated).expect("termination publication");
+        terminate_domain(source).expect("termination publication");
         assert_eq!(get_domain_state(source), Some(DomainState::Terminated));
         assert_eq!(
             with_domain(before, |d| d.terminated_dependency),
@@ -1073,8 +1057,8 @@ mod termination_tests {
         );
         assert!(matches!(
             crate::domain::lifecycle::restart_domain(source),
-            Err(crate::domain::lifecycle::DomainError::Policy(
-                DomainPolicyError::Quota(QuotaError::Retired { .. })
+            Err(crate::domain::lifecycle::DomainError::Lifecycle(
+                DomainLifecycleError::InvalidState(DomainState::Terminated)
             ))
         ));
         terminate_domain(source).expect("idempotent termination");
@@ -1090,23 +1074,17 @@ mod termination_tests {
     fn termination_rejections_leave_the_domain_and_admission_unchanged() {
         assert_eq!(
             terminate_domain(DomainId::KERNEL),
-            Err(DomainTerminationError::KernelProtected)
-        );
-        assert_eq!(
-            set_domain_state(DomainId::KERNEL, DomainState::Terminated),
-            Err(DomainPolicyError::Termination(
-                DomainTerminationError::KernelProtected
-            ))
+            Err(DomainLifecycleError::KernelDomain)
         );
         assert_eq!(
             terminate_domain(DomainId::new(u64::MAX)),
-            Err(DomainTerminationError::NotFound)
+            Err(DomainLifecycleError::NotFound)
         );
         let id = create_domain(String::from("termination_admission")).expect("domain admission");
         quota_manager().unregister(id);
         assert!(matches!(
             terminate_domain(id),
-            Err(DomainTerminationError::Quota(_))
+            Err(DomainLifecycleError::Quota(_))
         ));
         assert_eq!(get_domain_state(id), Some(DomainState::Initializing));
         assert_eq!(with_domain(id, |d| d.terminated_dependency), Some(None));
@@ -1116,4 +1094,226 @@ mod termination_tests {
             .expect("re-admission");
         terminate_domain(id).expect("fixture cleanup");
     }
+}
+
+pub(crate) fn acquire_future_code_lease(id: DomainId) -> Option<super::DomainCodeLease> {
+    let active = crate::cpu::CurrentCpu::acquire().and_then(|cpu| {
+        cpu.execution()
+            .filter(|subject| subject.domain == id)
+            .and_then(|_| cpu.execution_cell())
+    });
+    let inherited = match active {
+        Some(cell) => Some(crate::loader::acquire_code_lease(cell)?),
+        None => None,
+    };
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id && domain.state.is_runnable())?;
+    let generation = match inherited {
+        Some(lease) => Some(lease),
+        None => match &domain.generation {
+            Some((cell, generation)) => Some(generation.acquire(*cell)?),
+            None => None,
+        },
+    };
+    Some(super::DomainCodeLease::future(
+        domain.code.clone(),
+        generation,
+    ))
+}
+
+/// Capture the registering invocation's exact generation before storing callbacks.
+pub(crate) fn acquire_resource_code_lease(id: DomainId) -> Option<super::DomainCodeLease> {
+    let active = crate::cpu::CurrentCpu::acquire().and_then(|cpu| {
+        cpu.execution()
+            .filter(|subject| subject.domain == id)
+            .and_then(|_| cpu.execution_cell())
+    });
+    let inherited = match active {
+        Some(cell) => Some(crate::loader::acquire_code_lease(cell)?),
+        None => None,
+    };
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id && domain.state.is_runnable())?;
+    let generation = match inherited {
+        Some(lease) => Some(lease),
+        None => match &domain.generation {
+            Some((cell, generation)) => Some(generation.acquire(*cell)?),
+            None => None,
+        },
+    };
+    Some(super::DomainCodeLease::resource(
+        domain.code.clone(),
+        generation,
+    ))
+}
+
+#[derive(Clone, Copy)]
+pub(crate) enum ResourceInvocation {
+    Operation,
+    Finalize,
+}
+
+/// Invocation derives only from the registered owner's retained lease. Closing
+/// loader admission cannot prevent that owner from finishing its finalizer.
+pub(crate) fn acquire_resource_execution_lease(
+    id: DomainId,
+    resource: &super::DomainCodeLease,
+    invocation: ResourceInvocation,
+) -> Option<super::DomainCodeLease> {
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry.domains.iter().find(|domain| domain.id == id)?;
+    let admitted = match invocation {
+        ResourceInvocation::Operation => domain.state.is_runnable(),
+        ResourceInvocation::Finalize => domain.state != DomainState::Terminated,
+    };
+    if !admitted {
+        return None;
+    }
+    resource.execution_from_resource(&domain.code)
+}
+
+/// Retains a specific invocation generation instead of the domain's current dispatch.
+pub(crate) fn acquire_cell_execution_lease(
+    id: DomainId,
+    cell: crate::loader::CellId,
+) -> Option<super::DomainCodeLease> {
+    let generation = crate::loader::acquire_code_lease(cell)?;
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id && domain.state.is_runnable())?;
+    Some(super::DomainCodeLease::execution(
+        domain.code.clone(),
+        Some(generation),
+    ))
+}
+
+pub(crate) fn acquire_execution_code_lease(id: DomainId) -> Option<super::DomainCodeLease> {
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id && domain.state.is_runnable())?;
+    let generation = match &domain.generation {
+        Some((cell, generation)) => Some(generation.acquire(*cell)?),
+        None => None,
+    };
+    Some(super::DomainCodeLease::execution(
+        domain.code.clone(),
+        generation,
+    ))
+}
+
+pub(crate) fn domain_code_leases(id: DomainId) -> usize {
+    let registry = REGISTRY.lock().unwrap_or_else(|error| error.into_inner());
+    registry
+        .domains
+        .iter()
+        .find(|domain| domain.id == id)
+        .map_or(0, |domain| domain.code.total())
+}
+
+/// A domain delegates fresh entries to this exact loaded code generation.
+/// Existing Futures retain the old generation across publication and rollback.
+pub(crate) fn bind_code_generation(
+    id: DomainId,
+    cell: crate::loader::CellId,
+) -> Result<(), DomainLifecycleError> {
+    let generation =
+        crate::loader::with_registry(|registry| registry.get(cell).map(|cell| cell.code.clone()))
+            .ok_or(DomainLifecycleError::NotFound)?;
+    let mut registry = REGISTRY
+        .lock()
+        .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
+    let domain = registry
+        .domains
+        .iter_mut()
+        .find(|domain| domain.id == id)
+        .ok_or(DomainLifecycleError::NotFound)?;
+    if !matches!(
+        domain.state,
+        DomainState::Initializing | DomainState::Running
+    ) {
+        return Err(DomainLifecycleError::InvalidState(domain.state));
+    }
+    domain.generation = Some((cell, generation));
+    Ok(())
+}
+
+pub(crate) fn acquire_teardown_code_lease(
+    id: DomainId,
+    source: Option<&crate::loader::code::CodeLease>,
+) -> Option<super::DomainCodeLease> {
+    let generation = match source {
+        Some(source) => Some(source.retain()?),
+        None => None,
+    };
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry.domains.iter().find(|domain| {
+        domain.id == id
+            && matches!(
+                domain.state,
+                DomainState::Initializing
+                    | DomainState::Running
+                    | DomainState::Stopping
+                    | DomainState::Stopped
+                    | DomainState::Terminating
+            )
+    })?;
+    Some(super::DomainCodeLease::execution(
+        domain.code.clone(),
+        generation,
+    ))
+}
+
+/// Cleanup may continue without reopening ordinary task or code admission.
+/// This check grants no authority: the task already owns its finalization lease.
+pub(crate) fn can_finalize(id: DomainId) -> bool {
+    let registry = REGISTRY.lock().unwrap_or_else(|error| error.into_inner());
+    registry.domains.iter().any(|domain| {
+        domain.id == id
+            && matches!(
+                domain.state,
+                DomainState::Initializing
+                    | DomainState::Running
+                    | DomainState::Stopping
+                    | DomainState::Stopped
+                    | DomainState::Terminating
+            )
+    })
+}
+
+/// Acquire only from an already retained finalizer generation. Callers hold
+/// the execution authority established by the registered owner, not a cell ID.
+pub(crate) fn acquire_finalization_future_lease(
+    id: DomainId,
+    source: Option<&crate::loader::code::CodeLease>,
+) -> Option<super::DomainCodeLease> {
+    let generation = match source {
+        Some(source) => Some(source.retain()?),
+        None => None,
+    };
+    let registry = REGISTRY.lock().ok()?;
+    let domain = registry.domains.iter().find(|domain| {
+        domain.id == id
+            && matches!(
+                domain.state,
+                DomainState::Initializing
+                    | DomainState::Running
+                    | DomainState::Stopping
+                    | DomainState::Stopped
+                    | DomainState::Terminating
+            )
+    })?;
+    Some(super::DomainCodeLease::future(
+        domain.code.clone(),
+        generation,
+    ))
 }

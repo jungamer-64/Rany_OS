@@ -16,7 +16,7 @@
 //! - `restart_domain()` — 本モジュール固有（再起動ロジック）
 //! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
 //!
-use crate::domain::{DomainId, DomainState, set_domain_state, with_domain, with_domain_mut};
+use crate::domain::{DomainId, DomainState, with_domain, with_domain_mut};
 use alloc::string::String;
 
 /// ドメイン操作のエラー
@@ -31,6 +31,7 @@ pub enum DomainError {
     /// パニックが発生した
     Panicked(String),
     Policy(crate::domain::DomainPolicyError),
+    Lifecycle(crate::domain::DomainLifecycleError),
 }
 
 impl core::fmt::Display for DomainError {
@@ -41,8 +42,17 @@ impl core::fmt::Display for DomainError {
             DomainError::DependencyError(msg) => write!(f, "Dependency error: {}", msg),
             DomainError::Panicked(msg) => write!(f, "Domain panicked: {}", msg),
             DomainError::Policy(error) => write!(f, "{error}"),
+            DomainError::Lifecycle(error) => error.fmt(f),
         }
     }
+}
+
+/// ドメインを終了させる
+/// 設計書 8.1: リソース回収
+///
+/// `domain::terminate_domain()` に委譲し、エラー型を変換する。
+pub fn terminate_domain(domain_id: DomainId) -> Result<(), DomainError> {
+    crate::domain::terminate_domain(domain_id).map_err(DomainError::Lifecycle)
 }
 
 /// ドメインがパニックした場合の処理
@@ -53,65 +63,10 @@ pub fn handle_domain_panic(domain_id: DomainId, message: String) {
     crate::domain::handle_domain_panic(domain_id, message);
 }
 
-/// ドメインを再起動
+/// Reopens a completed stop and clears its failure diagnostics. The retained
+/// Futures remain registered; a terminated generation cannot be restarted.
 pub fn restart_domain(domain_id: DomainId) -> Result<(), DomainError> {
-    // ドメインの状態を確認
-    let state = with_domain(domain_id, |d| d.state);
-
-    match state {
-        Some(DomainState::Stopped) | Some(DomainState::Terminated) => {
-            if state == Some(DomainState::Terminated) {
-                let policy = with_domain(domain_id, |domain| {
-                    crate::domain::registry::domain_quota_policy(
-                        domain_id,
-                        domain.priority,
-                        domain.cpu_limit_percent,
-                        domain.memory_limit_bytes,
-                        domain.io_bandwidth_limit,
-                    )
-                })
-                .ok_or(DomainError::NotFound)?;
-                // Metadata acquisition runs outside the domain registry lock.
-                // Retained credits/bindings reject re-admission of this identity.
-                crate::domain::quota_manager()
-                    .register(policy)
-                    .map_err(|error| {
-                        DomainError::Policy(crate::domain::DomainPolicyError::Quota(error))
-                    })?;
-            }
-            set_domain_state(domain_id, DomainState::Initializing).map_err(DomainError::Policy)?;
-
-            // ドメインの状態をリセット
-            with_domain_mut(domain_id, |domain| {
-                // エラー状態をクリア
-                domain.panic_message = None;
-                domain.terminated_dependency = None;
-                // タスクリストをクリア（新しいタスクがスポーンされる）
-                domain.tasks.clear();
-                // 統計情報はリセットしない（累積）
-            });
-
-            // 注意: 現在のDomain設計ではエントリポイントやバイナリ情報を
-            // 保持していないため、完全な再ロードはできません。
-            // ドメインの再起動は、外部から新しいタスクをスポーンする
-            // 必要があります。例：
-            //   restart_domain(id)?;
-            //   spawn_domain_task_by_id(id, init_future)?;
-            //
-            // 将来的にはDomain構造体にentry_pointを追加し、
-            // 自動的に初期化タスクを再スポーンできるようにする。
-
-            log::info!(
-                "[LIFECYCLE] Domain {} restarted (awaiting task spawn)\n",
-                domain_id.as_u64()
-            );
-
-            set_domain_state(domain_id, DomainState::Running).map_err(DomainError::Policy)?;
-            Ok(())
-        }
-        Some(_) => Err(DomainError::AlreadyStopped),
-        None => Err(DomainError::NotFound),
-    }
+    super::registry::restart_stopped_domain(domain_id).map_err(DomainError::Lifecycle)
 }
 
 /// ドメイン間の依存関係を追加
@@ -143,14 +98,14 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_domain_lifecycle() {
         // ドメイン作成
-        let id = create_domain("test_domain".into()).expect("create_domain failed");
+        let id = crate::domain::create_domain("test_domain".into()).expect("create_domain failed");
 
         // 状態確認
         let state = with_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Initializing));
 
         // 状態変更
-        set_domain_state(id, DomainState::Running).expect("domain state admission");
+        crate::domain::start_domain(id).expect("initializing domain starts");
         let state = with_domain(id, |d| d.state);
         assert_eq!(state, Some(DomainState::Running));
 
@@ -161,38 +116,35 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
-    fn restart_waits_for_retained_quota_return_rights() {
+    fn completed_stop_preserves_memory_account_and_reclaimed_domain_cannot_restart() {
         let id = create_domain("retained_restart".into()).unwrap();
         let binding = crate::domain::quota_manager().bind_memory(id).unwrap();
         let credit = binding.reserve(123).unwrap();
-        crate::domain::terminate_domain(id).unwrap();
-        assert!(matches!(
-            restart_domain(id),
-            Err(DomainError::Policy(
-                crate::domain::DomainPolicyError::Quota(
-                    crate::domain::quota::QuotaError::Retired { .. }
-                )
-            ))
-        ));
         assert_eq!(
-            crate::domain::get_domain_state(id),
-            Some(DomainState::Terminated)
+            crate::domain::stop_domain(id).unwrap(),
+            crate::domain::DomainStopOutcome::Complete
         );
-        drop(credit);
-        drop(binding);
         restart_domain(id).unwrap();
-        assert_eq!(
-            crate::domain::get_domain_state(id),
-            Some(DomainState::Running)
-        );
         assert_eq!(
             crate::domain::quota_manager()
                 .get_stats(id)
                 .unwrap()
                 .memory_used,
-            0
+            123
         );
         crate::domain::terminate_domain(id).unwrap();
+        assert!(matches!(
+            restart_domain(id),
+            Err(DomainError::Lifecycle(
+                crate::domain::DomainLifecycleError::InvalidState(DomainState::Terminated)
+            ))
+        ));
+        assert!(matches!(
+            binding.reserve(1),
+            Err(crate::domain::QuotaError::Retired { .. })
+        ));
+        drop(credit);
+        drop(binding);
     }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
