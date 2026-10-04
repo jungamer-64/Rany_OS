@@ -332,7 +332,7 @@ pub enum DmaLeaseError {
 /// Mutable visits must be exclusive. Successful transitions must be linearizable. After a
 /// successful `prepare`, `prepared_queue` must return exactly the queue passed
 /// to that transition until it is aborted or armed. A failed `close` or
-/// `retry_close_after_reconcile` must retain the mapping and allocation in an
+/// final unmap must retain the mapping and allocation in an
 /// unmap-failed quarantine, and `abandon` must never free memory that a device
 /// might still access.
 /// Active shared RAM must be accessed using exactly the requested scalar width
@@ -459,15 +459,6 @@ pub unsafe trait DmaLeaseAuthority: Send + Sync {
     /// # Errors
     /// Returns an error without granting CPU access if the witness does not match.
     fn quiesce_shared(&self, witness: DmaQuiesceWitness) -> Result<(), DmaLeaseError>;
-
-    /// Retry final unmap after device reset and IOTLB reconciliation.
-    ///
-    /// # Errors
-    /// Returns an error while retaining the unmap-failed quarantine and its backing allocation.
-    fn retry_close_after_reconcile(
-        &self,
-        witness: DmaReconcileWitness,
-    ) -> Result<(), DmaLeaseError>;
 
     /// Conservatively retain a capability that was dropped without finalization.
     fn abandon(&self, observed_state: DmaLeaseState);
@@ -971,28 +962,6 @@ impl RevokedAfterResetDmaLease {
             return Err(DmaTransitionError::new(self, cause));
         }
         Ok(CpuDmaLease::from_core(self.take_core()))
-    }
-}
-
-impl UnmapFailedDmaLease {
-    /// Retry the final unmap after reset and IOTLB reconciliation.
-    ///
-    /// A repeated failure retains the same allocation in unmap-failed
-    /// quarantine. Successful completion consumes and releases it; CPU access
-    /// is never restored through this path.
-    ///
-    /// # Errors
-    /// Returns [`DmaCloseError`] containing the same unmap-failed capability if
-    /// reconciliation is invalid or final unmap fails again.
-    pub fn retry_close(mut self, witness: DmaReconcileWitness) -> Result<(), DmaCloseError> {
-        if let Err(cause) = self.authority().retry_close_after_reconcile(witness) {
-            return Err(DmaCloseError {
-                lease: UnmapFailedDmaLease::from_core(self.take_core()),
-                cause,
-            });
-        }
-        drop(self.take_core());
-        Ok(())
     }
 }
 
