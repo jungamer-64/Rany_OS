@@ -22,13 +22,13 @@ from typing import Iterable
 TARGET_DIRS = [
     "kernel",
     "drivers",
-    "filesystems",
     "interfaces",
-    "apps",
     "libs",
     "bootloader",
     "hal",
     "tools",
+    "qemu-tests",
+    "tests",
 ]
 
 ALLOWED_MODES = {"bounded", "condition", "event", "fuel", "halt"}
