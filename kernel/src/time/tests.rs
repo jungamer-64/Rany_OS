@@ -2,6 +2,26 @@ use super::*;
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn finite_pm_counter_extension_preserves_sub_tick_time_and_wraps() {
+    for (mask, initial, next) in [
+        (0x00ff_ffff, 0x00ff_fff0, 0x10),
+        (u32::MAX, 0xffff_fff0, 0x10),
+    ] {
+        let mut elapsed = CounterElapsed {
+            previous: initial,
+            ticks: 0,
+        };
+        assert_eq!(elapsed.observe(next, mask), 32);
+        assert_eq!(elapsed.observe(next, mask), 32);
+        assert_eq!(elapsed.observe(next + 7, mask), 39);
+        assert_eq!(pm_ticks_to_nanos(32), 8_939);
+    }
+    assert_eq!(pm_ticks_to_nanos(PM_COUNTER_HZ), NANOS_PER_SEC);
+    assert_eq!(pm_ticks_to_nanos(u64::MAX), u64::MAX);
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_decode_hour_24h_mode() {
     // 24時間表記: そのまま返す
 

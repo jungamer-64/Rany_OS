@@ -81,7 +81,49 @@ pub(crate) struct FirmwareRegisters {
     regions: IrqMutex<Vec<BankRegion>>,
 }
 
+/// A retained read capability for the FADT's free-running PM counter. Its
+/// register bank and width were admitted before publication; it cannot write
+/// power registers or recover their owner's wider authority.
+pub(crate) struct FirmwareTimer {
+    bank: &'static FirmwareRegisters,
+    address: GenericAddress,
+    mask: u32,
+}
+
+impl FirmwareTimer {
+    pub(crate) fn mask(&self) -> u32 {
+        self.mask
+    }
+
+    pub(crate) fn read(&self) -> u32 {
+        self.bank
+            .read(self.address, 4)
+            .expect("the immutable firmware bank retains this admitted counter") as u32
+            & self.mask
+    }
+}
+
 impl FirmwareRegisters {
+    pub(crate) fn timer(
+        &'static self,
+        power: &PowerRegisterDescription,
+    ) -> Result<Option<FirmwareTimer>, RegisterError> {
+        let Some(register) = power.timer else {
+            return Ok(None);
+        };
+        let address = fixed_address(register, 0);
+        self.validate(address, 4)?;
+        Ok(Some(FirmwareTimer {
+            bank: self,
+            address,
+            mask: if power.timer_32bit {
+                u32::MAX
+            } else {
+                0x00ff_ffff
+            },
+        }))
+    }
+
     pub(crate) fn acquire(
         runtime: &'static AcpiRuntime,
         fixed: &FixedEventDescription,

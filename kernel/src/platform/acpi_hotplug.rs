@@ -94,6 +94,13 @@ pub fn initialize() {
             return;
         }
     };
+    if let Ok(power) = &service.power {
+        match service.registers.timer(power) {
+            Ok(Some(timer)) => crate::time::system_clock().install_firmware_timer(timer),
+            Ok(None) => {}
+            Err(error) => log::warn!("ACPI PM clock admission failed: {error:?}"),
+        }
+    }
     let mut worker = service.worker.lock();
     if !matches!(*worker, WorkerState::Starting) {
         return;

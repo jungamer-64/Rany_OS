@@ -5,7 +5,7 @@
 //!
 //! システム時計、高精度タイマー、RTC (Real-Time Clock) の管理。
 //! TSC, HPET, PIT, RTC など複数のタイマーソースをサポート。
-use crate::sync::{IrqPoisonLock, PoisonLock};
+use crate::sync::{InitOnce, IrqMutex, IrqPoisonLock, PoisonLock};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 use hal::port_io::{IoPort, IoPortRange};
 
@@ -379,6 +379,7 @@ impl Rtc {
 
 /// システム時計
 pub struct SystemClock {
+    firmware_clock: InitOnce<FirmwareClock>,
     uptime_nanos: AtomicU64,
     timer_tick_nanos: AtomicU64,
     timer_tick_observed: AtomicBool,
@@ -390,9 +391,48 @@ pub struct SystemClock {
     tsc_shift: AtomicU8,
 }
 
+const PM_COUNTER_HZ: u64 = 3_579_545;
+
+/// Reads and wrap extension are serialized together, so a late SMP reader
+/// cannot turn an older observation into a spurious complete counter wrap.
+/// The BSP timer samples at least once per wrap (4.68s for the 24-bit form).
+struct FirmwareClock {
+    counter: crate::platform::firmware_registers::FirmwareTimer,
+    epoch_ns: u64,
+    elapsed: IrqMutex<CounterElapsed>,
+}
+
+struct CounterElapsed {
+    previous: u32,
+    ticks: u64,
+}
+
+impl CounterElapsed {
+    fn observe(&mut self, current: u32, mask: u32) -> u64 {
+        let delta = current.wrapping_sub(self.previous) & mask;
+        self.previous = current;
+        self.ticks = self.ticks.saturating_add(u64::from(delta));
+        self.ticks
+    }
+}
+
+fn pm_ticks_to_nanos(ticks: u64) -> u64 {
+    ((u128::from(ticks) * u128::from(NANOS_PER_SEC)) / u128::from(PM_COUNTER_HZ))
+        .min(u128::from(u64::MAX)) as u64
+}
+
+impl FirmwareClock {
+    fn time_nanos(&self) -> u64 {
+        let mut elapsed = self.elapsed.lock();
+        let ticks = elapsed.observe(self.counter.read(), self.counter.mask());
+        self.epoch_ns.saturating_add(pm_ticks_to_nanos(ticks))
+    }
+}
+
 impl SystemClock {
     pub const fn new() -> Self {
         Self {
+            firmware_clock: InitOnce::new(),
             uptime_nanos: AtomicU64::new(0),
             timer_tick_nanos: AtomicU64::new(0),
             timer_tick_observed: AtomicBool::new(false),
@@ -426,6 +466,12 @@ impl SystemClock {
     }
 
     pub fn tick(&self, delta_nanos: u64) {
+        // Extend the finite hardware counter even when no task requests time.
+        // This reads an already admitted register; it neither allocates nor
+        // publishes task notifications from interrupt context.
+        if let Some(clock) = self.firmware_clock.get() {
+            clock.time_nanos();
+        }
         if !self.timer_tick_observed.load(Ordering::Acquire) {
             // The first delivered timer IRQ can arrive long after PIT/APIC
             // programming if interrupts stayed masked during boot. Seed the
@@ -456,6 +502,20 @@ impl SystemClock {
 
     pub fn read_tsc(&self) -> u64 {
         rdtsc()
+    }
+
+    pub(crate) fn install_firmware_timer(
+        &self,
+        counter: crate::platform::firmware_registers::FirmwareTimer,
+    ) {
+        self.firmware_clock.call_once(|| FirmwareClock {
+            epoch_ns: self.best_effort_time_nanos(),
+            elapsed: IrqMutex::new(CounterElapsed {
+                previous: counter.read(),
+                ticks: 0,
+            }),
+            counter,
+        });
     }
 
     fn store_tsc_info(&self, info: TscInfo, epoch_ns: u64, epoch_tsc: u64) {
@@ -524,6 +584,10 @@ impl SystemClock {
                 .unwrap_or_else(|| self.uptime_nanos());
         }
 
+        if let Some(clock) = self.firmware_clock.get() {
+            return clock.time_nanos();
+        }
+
         if self.timer_tick_nanos() == 0 || !self.timer_tick_observed.load(Ordering::Acquire) {
             return self
                 .calibrated_tsc_time_nanos(false)
@@ -534,13 +598,18 @@ impl SystemClock {
     }
 
     pub fn precise_time_nanos(&self) -> u64 {
-        self.calibrated_tsc_time_nanos(true)
-            .unwrap_or_else(|| self.uptime_nanos())
+        self.calibrated_tsc_time_nanos(true).unwrap_or_else(|| {
+            self.firmware_clock
+                .get()
+                .map_or_else(|| self.uptime_nanos(), FirmwareClock::time_nanos)
+        })
     }
 
     pub fn timer_source(&self) -> TimerSource {
         if self.tsc_available.load(Ordering::Acquire) {
             TimerSource::TSC
+        } else if self.firmware_clock.get().is_some() {
+            TimerSource::AcpiPmTimer
         } else {
             TimerSource::PIT
         }
