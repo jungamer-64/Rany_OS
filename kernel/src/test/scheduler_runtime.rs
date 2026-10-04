@@ -88,7 +88,9 @@ async fn progress_case(quota: bool) -> RuntimeTestResult {
         return RuntimeTestResult::fail("cannot create progress peer");
     };
     let policy = if quota {
-        crate::domain::registry::set_domain_resource_limits(normal, 15, u64::MAX, 0)
+        // One poll consumes at least one percent of the 100ms quota period,
+        // so the wait is observable even when other CPUs contend for dispatch.
+        crate::domain::registry::set_domain_resource_limits(normal, 1, u64::MAX, 0)
     } else {
         crate::domain::registry::set_domain_priority(high, DomainPriority::High)
     };
