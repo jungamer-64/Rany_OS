@@ -1211,9 +1211,9 @@ unsafe extern "C" fn kernel_abi_dma_command(
             .map(crate::resource_registry::dma::DmaRegistryCommand::Revoke)
             .ok_or(DmaLeaseError::QueueMismatch)
         }
-        AbiDmaOperation::Reconcile | AbiDmaOperation::RetryClose => {
+        AbiDmaOperation::Reconcile => {
             // SAFETY: the caller contract requires reset plus completed IOTLB
-            // invalidation before selecting either reconciliation operation.
+            // invalidation before selecting reconciliation.
             let witness = unsafe {
                 DmaReconcileWitness::after_iotlb_invalidation(
                     PackedPciLocation::from_raw(request.device),
@@ -1221,13 +1221,10 @@ unsafe extern "C" fn kernel_abi_dma_command(
                 )
             }
             .ok_or(DmaLeaseError::QueueMismatch);
-            witness.map(|witness| {
-                if operation == AbiDmaOperation::RetryClose {
-                    crate::resource_registry::dma::DmaRegistryCommand::RetryClose(witness)
-                } else {
-                    crate::resource_registry::dma::DmaRegistryCommand::Reconcile(witness)
-                }
-            })
+            witness.map(crate::resource_registry::dma::DmaRegistryCommand::Reconcile)
+        }
+        AbiDmaOperation::RetryClose => {
+            Ok(crate::resource_registry::dma::DmaRegistryCommand::RetryClose)
         }
         AbiDmaOperation::Close => Ok(crate::resource_registry::dma::DmaRegistryCommand::Close),
         AbiDmaOperation::PrepareShared => {

@@ -6,7 +6,7 @@ use alloc::collections::TryReserveError;
 use alloc::vec::Vec;
 use kernel_api::dma::{
     CpuDmaLease, DmaAllocationRequest, DmaByteCount, DmaDirection, DmaLeaseError, DmaLeaseId,
-    DmaReconcileWitness, UnmapFailedDmaLease,
+    UnmapFailedDmaLease,
 };
 use kernel_api::error::KapiError;
 
@@ -210,9 +210,9 @@ impl BootstrapRetirementFailure {
     }
 
     /// # Errors
-    /// A rejected witness or repeated unmap failure retains this same owner.
+    /// A repeated unmap failure retains this same owner.
     /// Later failures preserve cumulative release progress, never CPU access.
-    pub fn reconcile(self, witness: DmaReconcileWitness) -> Result<(), Self> {
+    pub fn retry_close(self) -> Result<(), Self> {
         let Self {
             purpose,
             failed,
@@ -220,7 +220,7 @@ impl BootstrapRetirementFailure {
             released,
             ..
         } = self;
-        match failed.retry_close(witness) {
+        match failed.retry_close() {
             Ok(()) => remaining.close_after(released + 1),
             Err(error) => {
                 let (cause, failed) = error.into_parts();

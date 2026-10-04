@@ -145,11 +145,18 @@ unsafe impl DmaLeaseAuthority for Allocation {
     fn quiesce_shared(&self, _witness: DmaQuiesceWitness) -> Result<(), DmaLeaseError> {
         Err(DmaLeaseError::NotSupported)
     }
-    fn retry_close_after_reconcile(
-        &self,
-        _witness: DmaReconcileWitness,
-    ) -> Result<(), DmaLeaseError> {
-        Err(DmaLeaseError::NotSupported)
+    fn retry_close(&self) -> Result<(), DmaLeaseError> {
+        let mut inner = self.inner.lock();
+        if inner.state != State::UnmapFailed {
+            return Err(DmaLeaseError::InvalidState);
+        }
+        inner.close_attempts += 1;
+        if inner.fail_close {
+            return Err(DmaLeaseError::IommuFailure);
+        }
+        inner.state = State::Closed;
+        inner.bytes = Vec::new();
+        Ok(())
     }
 }
 
@@ -308,6 +315,42 @@ fn failed_unmap_preserves_quarantine_unattempted_prefix_and_release_progress() {
             assert_eq!(inner.close_attempts, 1);
             assert!(inner.bytes.is_empty());
         }
+    }
+}
+
+#[test]
+fn retirement_retry_preserves_released_progress_across_distinct_failures() {
+    let plan = BootstrapDmaPlan::new(Mlx5QueueProfile::default()).unwrap();
+    let mut registry = Registry::default();
+    let inventory =
+        BootstrapDmaInventory::allocate(&plan, |request| Ok(registry.allocate(request))).unwrap();
+    registry.allocations[4].inner.lock().fail_close = true;
+    let failure = inventory.close().unwrap_err();
+    let released = failure.released_count();
+    let identity = failure.lease_id();
+    let failure = failure.retry_close().unwrap_err();
+    assert_eq!(failure.lease_id(), identity);
+    assert_eq!(failure.released_count(), released);
+    assert_eq!(failure.retained_count(), 5);
+    assert_eq!(
+        registry.allocations[4].inner.lock().state,
+        State::UnmapFailed
+    );
+    assert!(!registry.allocations[4].inner.lock().bytes.is_empty());
+
+    registry.allocations[4].inner.lock().fail_close = false;
+    registry.allocations[2].inner.lock().fail_close = true;
+    let failure = failure.retry_close().unwrap_err();
+    assert_eq!(failure.lease_id(), registry.allocations[2].id);
+    assert_eq!(failure.released_count(), released + 2);
+    assert_eq!(failure.retained_count(), 3);
+    registry.allocations[2].inner.lock().fail_close = false;
+    failure.retry_close().unwrap();
+    for allocation in &registry.allocations {
+        let inner = allocation.inner.lock();
+        assert_eq!(inner.state, State::Closed);
+        assert!(inner.bytes.is_empty());
+        assert!(inner.abandoned.is_empty());
     }
 }
 

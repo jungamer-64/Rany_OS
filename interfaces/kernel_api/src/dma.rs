@@ -331,10 +331,13 @@ pub enum DmaLeaseError {
 /// request retirement but must retain backing until the visit returns or unwinds.
 /// Mutable visits must be exclusive. Successful transitions must be linearizable. After a
 /// successful `prepare`, `prepared_queue` must return exactly the queue passed
-/// to that transition until it is aborted or armed. A failed `close` or
-/// final unmap must retain the mapping and allocation in an
+/// to that transition until it is aborted or armed. Failed `close` and
+/// `retry_close` must retain the mapping and allocation in an
 /// unmap-failed quarantine, and `abandon` must never free memory that a device
 /// might still access.
+/// Only CPU-owned allocations may enter final unmap. Retry must resume the
+/// same mapping's retirement progress, including translation invalidation,
+/// before releasing its IOVA or backing. It must not restore CPU access.
 /// Active shared RAM must be accessed using exactly the requested scalar width
 /// with validated bounds/alignment and DMA ordering, without constructing Rust
 /// references to the backing bytes. Every access and transition must be
@@ -459,6 +462,12 @@ pub unsafe trait DmaLeaseAuthority: Send + Sync {
     /// # Errors
     /// Returns an error without granting CPU access if the witness does not match.
     fn quiesce_shared(&self, witness: DmaQuiesceWitness) -> Result<(), DmaLeaseError>;
+
+    /// Resume final unmap for this allocation's failed close.
+    ///
+    /// # Errors
+    /// Returns an error while retaining the allocation and retirement progress.
+    fn retry_close(&self) -> Result<(), DmaLeaseError>;
 
     /// Conservatively retain a capability that was dropped without finalization.
     fn abandon(&self, observed_state: DmaLeaseState);
@@ -965,6 +974,26 @@ impl RevokedAfterResetDmaLease {
     }
 }
 
+impl UnmapFailedDmaLease {
+    /// Resume this allocation's final unmap and translation invalidation.
+    ///
+    /// CPU access remains unavailable. Repeated failure retains the same
+    /// allocation and completed retirement steps; success consumes its owner.
+    ///
+    /// # Errors
+    /// Returns [`DmaCloseError`] retaining the owner if retirement is incomplete.
+    pub fn retry_close(mut self) -> Result<(), DmaCloseError> {
+        if let Err(cause) = self.authority().retry_close() {
+            return Err(DmaCloseError {
+                lease: UnmapFailedDmaLease::from_core(self.take_core()),
+                cause,
+            });
+        }
+        drop(self.take_core());
+        Ok(())
+    }
+}
+
 /// Explicit close failure retaining the quarantined allocation capability.
 #[derive(Debug)]
 pub struct DmaCloseError {
@@ -1186,12 +1215,9 @@ mod tests {
             Ok(())
         }
 
-        fn retry_close_after_reconcile(
-            &self,
-            witness: DmaReconcileWitness,
-        ) -> Result<(), DmaLeaseError> {
+        fn retry_close(&self) -> Result<(), DmaLeaseError> {
             let mut state = self.state.lock();
-            if state.state != DmaLeaseState::UnmapFailed || witness.device() != self.device {
+            if state.state != DmaLeaseState::UnmapFailed {
                 return Err(DmaLeaseError::InvalidState);
             }
             if self.fail_close.load(Ordering::Acquire) {
@@ -1386,14 +1412,18 @@ mod tests {
         assert_eq!(cause, DmaLeaseError::IommuFailure);
         assert_eq!(authority.state.lock().state, DmaLeaseState::UnmapFailed);
 
+        let identity = unmap_failed.lease_id();
+        let (cause, unmap_failed) = unmap_failed
+            .retry_close()
+            .expect_err("repeated failure must retain the same owner")
+            .into_parts();
+        assert_eq!(cause, DmaLeaseError::IommuFailure);
+        assert_eq!(unmap_failed.lease_id(), identity);
+        assert!(!authority.state.lock().released);
+        assert_eq!(authority.state.lock().state, DmaLeaseState::UnmapFailed);
+
         authority.fail_close.store(false, Ordering::Release);
-        // SAFETY: the fake models completed device reset and IOTLB invalidation.
-        let reconciled =
-            unsafe { DmaReconcileWitness::after_iotlb_invalidation(authority.device, 1) }
-                .expect("reconcile witness");
-        unmap_failed
-            .retry_close(reconciled)
-            .expect("reconciled close");
+        unmap_failed.retry_close().expect("resumed close");
         assert!(authority.state.lock().released);
     }
 

@@ -74,7 +74,7 @@ pub(crate) enum DmaRegistryCommand {
     PrepareShared(DmaQueueIdentity),
     ActivateShared,
     QuiesceShared(DmaQuiesceWitness),
-    RetryClose(DmaReconcileWitness),
+    RetryClose,
     ReadShared {
         offset: usize,
         width: DmaAccessWidth,
@@ -525,22 +525,14 @@ impl DmaRegistry {
         }
     }
 
-    fn retry_close_after_reconcile(
-        &self,
-        lease: DmaLeaseId,
-        owner: u64,
-        witness: DmaReconcileWitness,
-    ) -> Result<(), DmaLeaseError> {
+    fn retry_close(&self, lease: DmaLeaseId, owner: u64) -> Result<(), DmaLeaseError> {
         let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         let entry = state.entry_mut(lease, owner)?;
-        if entry.device != witness.device() {
-            return Err(DmaLeaseError::QueueMismatch);
-        }
         if !matches!(
             entry.storage.mapped()?.state,
             TransferState::Quarantined {
                 reason: QuarantineReason::UnmapFailed,
-                ..
+                queue: None,
             }
         ) {
             return Err(DmaLeaseError::InvalidState);
@@ -568,6 +560,10 @@ impl DmaRegistry {
                     TransferState::CpuOwned
                         | TransferState::Prepared { .. }
                         | TransferState::SharedPrepared { .. }
+                        | TransferState::Quarantined {
+                            reason: QuarantineReason::UnmapFailed,
+                            queue: None,
+                        }
                 ) {
                     if !matches!(
                         mapped.state,
@@ -585,8 +581,9 @@ impl DmaRegistry {
                 }
             }
         }
-        // Prepared transfers have not been armed/accepted. This same guard
-        // consumes the owner for close, excluding publication in between.
+        // Prepared transfers have not been armed/accepted; failed closes retain
+        // CPU retirement progress. This guard consumes the same mapping owner,
+        // excluding publication and competing close retries in between.
         let mapping = entry
             .storage
             .take_for_close()
@@ -796,11 +793,8 @@ unsafe impl DmaLeaseAuthority for KernelDmaLeaseAuthority {
         DMA_REGISTRY.quiesce_shared(self.lease, self.owner, witness)
     }
 
-    fn retry_close_after_reconcile(
-        &self,
-        witness: DmaReconcileWitness,
-    ) -> Result<(), DmaLeaseError> {
-        DMA_REGISTRY.retry_close_after_reconcile(self.lease, self.owner, witness)
+    fn retry_close(&self) -> Result<(), DmaLeaseError> {
+        DMA_REGISTRY.retry_close(self.lease, self.owner)
     }
 
     fn abandon(&self, observed_state: DmaLeaseState) {
@@ -965,8 +959,8 @@ pub(crate) fn command(
             DMA_REGISTRY.quiesce_shared(lease, owner, witness)?;
             Ok(DmaRegistryResponse::None)
         }
-        DmaRegistryCommand::RetryClose(witness) => {
-            DMA_REGISTRY.retry_close_after_reconcile(lease, owner, witness)?;
+        DmaRegistryCommand::RetryClose => {
+            DMA_REGISTRY.retry_close(lease, owner)?;
             Ok(DmaRegistryResponse::None)
         }
         DmaRegistryCommand::ReadShared { offset, width } => DMA_REGISTRY
@@ -988,6 +982,22 @@ pub(crate) fn command(
             Ok(DmaRegistryResponse::None)
         }
     }
+}
+
+/// Counts registry owners still retained during domain finalization, including
+/// in-flight CPU visits, armed transfers and quarantined translations.
+pub(crate) fn owner_lease_count(owner: DomainId) -> usize {
+    let state = DMA_REGISTRY
+        .state
+        .lock()
+        .unwrap_or_else(|error| error.into_inner());
+    let mut cursor = ScanCursor::new();
+    let mut count = 0;
+    // LOOP_PROOF: mode=condition; reason=The cursor advances through each of the fixed metadata slots at most once.;
+    while let Some((_, entry)) = state.next(&mut cursor) {
+        count += usize::from(entry.owner == owner.as_u64());
+    }
+    count
 }
 
 pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {

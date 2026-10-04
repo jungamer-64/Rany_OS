@@ -13,5 +13,5 @@ pub(crate) use ahci_driver::controller::{
 pub(crate) use ahci_driver::{AhciError, DmaAddressWidth, PORT_DMA_BYTES, PortNumber, SECTOR_SIZE};
 pub(crate) use runtime::{
     AdmissionCleanup, AhciPoller, AhciPortOps, AhciRuntime, AhciRuntimeShutdown, PortAdmission,
-    RuntimeReconcileError, RuntimeShutdownCause, RuntimeShutdownError, RuntimeShutdownStartError,
+    RuntimeShutdownCause, RuntimeShutdownError, RuntimeShutdownStartError,
 };

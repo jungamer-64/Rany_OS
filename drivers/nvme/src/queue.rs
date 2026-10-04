@@ -818,10 +818,7 @@ enum ResetLease {
     Shared(SharedDmaLease),
     Revoked(RevokedAfterResetDmaLease),
     Cpu(CpuDmaLease),
-    UnmapFailed {
-        cause: DmaLeaseError,
-        lease: UnmapFailedDmaLease,
-    },
+    UnmapFailed(UnmapFailedDmaLease),
     Closed,
     Transitioning,
 }
@@ -995,11 +992,7 @@ impl ResetNvmeQueue {
             .map(|command| (command_id, command))
     }
 
-    pub(crate) fn close_metadata(
-        &mut self,
-        device: kernel_api::abi::driver::PackedPciLocation,
-        generation: u64,
-    ) -> Result<(), QueueResetError> {
+    pub(crate) fn close_metadata(&mut self) -> Result<(), QueueResetError> {
         if let Some((command_id, _)) = self
             .pending
             .iter()
@@ -1013,18 +1006,8 @@ impl ResetNvmeQueue {
                 },
             });
         }
-        close_shared(
-            &mut self.submission,
-            device,
-            generation,
-            ResetDmaPhase::Submission,
-        )?;
-        close_shared(
-            &mut self.completion,
-            device,
-            generation,
-            ResetDmaPhase::Completion,
-        )
+        close_shared(&mut self.submission, ResetDmaPhase::Submission)?;
+        close_shared(&mut self.completion, ResetDmaPhase::Completion)
     }
 
     pub(crate) fn is_closed(&self) -> bool {
@@ -1167,12 +1150,7 @@ fn reconcile_command(
     }
 }
 
-fn close_shared(
-    owner: &mut ResetLease,
-    device: kernel_api::abi::driver::PackedPciLocation,
-    generation: u64,
-    phase: ResetDmaPhase,
-) -> Result<(), QueueResetError> {
+fn close_shared(owner: &mut ResetLease, phase: ResetDmaPhase) -> Result<(), QueueResetError> {
     let state = core::mem::replace(owner, ResetLease::Transitioning);
     match state {
         ResetLease::Cpu(cpu) => match cpu.close() {
@@ -1182,22 +1160,13 @@ fn close_shared(
             }
             Err(error) => retain_close_error(owner, error, phase),
         },
-        ResetLease::UnmapFailed { cause, lease } => {
-            let Some(witness) = reconcile_witness(device, generation) else {
-                *owner = ResetLease::UnmapFailed { cause, lease };
-                return Err(QueueResetError {
-                    cause: DmaLeaseError::QueueMismatch,
-                    phase,
-                });
-            };
-            match lease.retry_close(witness) {
-                Ok(()) => {
-                    *owner = ResetLease::Closed;
-                    Ok(())
-                }
-                Err(error) => retain_close_error(owner, error, phase),
+        ResetLease::UnmapFailed(lease) => match lease.retry_close() {
+            Ok(()) => {
+                *owner = ResetLease::Closed;
+                Ok(())
             }
-        }
+            Err(error) => retain_close_error(owner, error, phase),
+        },
         ResetLease::Closed => {
             *owner = ResetLease::Closed;
             Ok(())
@@ -1269,7 +1238,7 @@ fn retain_close_error(
     phase: ResetDmaPhase,
 ) -> Result<(), QueueResetError> {
     let (cause, lease) = error.into_parts();
-    *owner = ResetLease::UnmapFailed { cause, lease };
+    *owner = ResetLease::UnmapFailed(lease);
     Err(QueueResetError { cause, phase })
 }
 

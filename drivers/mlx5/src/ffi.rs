@@ -225,6 +225,7 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     dma_write: test_kernel_dma_write,
     mmio_acquire: test_kernel_mmio_acquire,
     mmio_release: test_kernel_mmio_release,
+    pci_config_read: rejected_pci_read,
     irq_bind: test_kernel_irq_bind,
     irq_unbind: test_kernel_irq_unbind,
     heap_alloc: None,
@@ -248,6 +249,11 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     enable_msix_raw: None,
     disable_msix_raw: None,
 };
+
+#[cfg(test)]
+unsafe extern "C" fn rejected_pci_read(_device: u64, _out: *mut u8) -> i32 {
+    AbiError::NotSupported as i32
+}
 
 #[cfg(test)]
 unsafe extern "C" fn test_kernel_spawn(
@@ -312,22 +318,17 @@ enum BootstrapDmaRetention {
     Released,
 }
 
-/// Does not retry uncertain release or restore CPU access. Reset reconciliation
-/// owns that separate transition; a repeated stop must retain this quarantine.
+/// Each attempt resumes the retained allocation's final unmap progress. Active
+/// device allocations are outside this unpublished bootstrap inventory.
 fn retire_bootstrap_dma(
     retention: &mut BootstrapDmaRetention,
 ) -> Result<(), kernel_api::error::KapiError> {
-    let inventory = match core::mem::replace(retention, BootstrapDmaRetention::Released) {
-        BootstrapDmaRetention::Unpublished(inventory) => inventory,
-        BootstrapDmaRetention::UnmapFailed(failure) => {
-            log::warn!(target: "mlx5", "DMA quarantine retained: {:?}, released={} retained={}",
-                failure.cause(), failure.released_count(), failure.retained_count());
-            *retention = BootstrapDmaRetention::UnmapFailed(failure);
-            return Err(kernel_api::error::KapiError::IoError);
-        }
+    let result = match core::mem::replace(retention, BootstrapDmaRetention::Released) {
+        BootstrapDmaRetention::Unpublished(inventory) => inventory.close(),
+        BootstrapDmaRetention::UnmapFailed(failure) => failure.retry_close(),
         BootstrapDmaRetention::Released => return Ok(()),
     };
-    if let Err(failure) = inventory.close() {
+    if let Err(failure) = result {
         log::warn!(target: "mlx5", "DMA close retained: {:?}, released={} retained={}",
             failure.cause(), failure.released_count(), failure.retained_count());
         *retention = BootstrapDmaRetention::UnmapFailed(failure);

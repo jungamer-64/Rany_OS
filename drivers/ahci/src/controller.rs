@@ -12,9 +12,7 @@ use core::num::NonZeroUsize;
 
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::abi::driver::PackedPciLocation;
-use kernel_api::dma::{
-    CpuDmaLease, DmaLeaseError, DmaQueueIdentity, DmaReconcileWitness, SharedDmaLease,
-};
+use kernel_api::dma::{CpuDmaLease, DmaLeaseError, DmaQueueIdentity, SharedDmaLease};
 
 use crate::command::DmaAddressWidth;
 use crate::port::{
@@ -216,7 +214,6 @@ pub enum ControllerShutdownCause {
     StopDeadline,
     Quiesce(DmaLeaseError),
     Unmap(DmaLeaseError),
-    ReconciliationRequired(DmaLeaseError),
 }
 
 /// Device state that must be covered by reset reconciliation.
@@ -233,17 +230,6 @@ pub struct ControllerShutdownError {
     pub closed_ports: u32,
     pub cause: ControllerShutdownCause,
     pub shutdown: Box<AhciControllerShutdown>,
-}
-
-/// Failure to apply an IOTLB reconciliation witness to a shutdown port.
-#[derive(Debug)]
-pub enum ControllerReconcileError {
-    NotAwaitingReconciliation {
-        port: PortNumber,
-        witness: DmaReconcileWitness,
-        shutdown: Box<AhciControllerShutdown>,
-    },
-    Shutdown(ControllerShutdownError),
 }
 
 /// One-way controller owner after interrupt and submission authority is gone.
@@ -680,54 +666,6 @@ impl AhciControllerShutdown {
         }
         Ok(())
     }
-
-    /// Retries the unmap for one port after reset and IOTLB invalidation.
-    ///
-    /// # Errors
-    /// A witness presented to the wrong phase is returned unchanged. A retry
-    /// failure consumes the witness but retains the unmap-failed allocation.
-    pub fn reconcile_port(
-        mut self: Box<Self>,
-        port: PortNumber,
-        witness: DmaReconcileWitness,
-    ) -> Result<Box<Self>, ControllerReconcileError> {
-        let index = port.as_usize();
-        let Some(slot) = self.controller.slots.get_mut(index) else {
-            return Err(ControllerReconcileError::NotAwaitingReconciliation {
-                port,
-                witness,
-                shutdown: self,
-            });
-        };
-        if !matches!(slot, PortSlot::Shutdown(owner) if owner.awaits_reconciliation()) {
-            return Err(ControllerReconcileError::NotAwaitingReconciliation {
-                port,
-                witness,
-                shutdown: self,
-            });
-        }
-        let PortSlot::Shutdown(owner) = core::mem::replace(slot, PortSlot::Transitioning) else {
-            unreachable!("the reconciliation phase was checked under exclusive ownership")
-        };
-        match owner.retry_close(witness) {
-            Ok(()) => {
-                *slot = PortSlot::Closed;
-                self.closed_ports |= 1u32 << index;
-                Ok(self)
-            }
-            Err(failure) => {
-                *slot = PortSlot::Shutdown(failure.owner);
-                Err(ControllerReconcileError::Shutdown(
-                    ControllerShutdownError {
-                        failed_port: port,
-                        closed_ports: self.closed_ports,
-                        cause: map_shutdown_cause(failure.cause),
-                        shutdown: self,
-                    },
-                ))
-            }
-        }
-    }
 }
 
 const fn map_shutdown_cause(cause: PortShutdownCause) -> ControllerShutdownCause {
@@ -735,9 +673,6 @@ const fn map_shutdown_cause(cause: PortShutdownCause) -> ControllerShutdownCause
         PortShutdownCause::StopDeadline => ControllerShutdownCause::StopDeadline,
         PortShutdownCause::Quiesce(cause) => ControllerShutdownCause::Quiesce(cause),
         PortShutdownCause::Unmap(cause) => ControllerShutdownCause::Unmap(cause),
-        PortShutdownCause::ReconciliationRequired(cause) => {
-            ControllerShutdownCause::ReconciliationRequired(cause)
-        }
     }
 }
 

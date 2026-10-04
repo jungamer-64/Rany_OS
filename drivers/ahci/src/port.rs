@@ -13,9 +13,9 @@ use core::sync::atomic::{Ordering, fence};
 use hal::{MappedMmio, MmioAccessError};
 use kernel_api::dma::{
     CompletedDmaLease, CpuDmaLease, DmaCloseError, DmaCompletionWitness, DmaDeviceAddress,
-    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness,
-    DmaTransitionError, InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease,
-    QuarantinedDmaLease, SharedDmaLease,
+    DmaDirection, DmaLeaseError, DmaQueueIdentity, DmaQuiesceWitness, DmaTransitionError,
+    InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease, QuarantinedDmaLease,
+    SharedDmaLease,
 };
 
 use crate::command::{
@@ -155,7 +155,6 @@ pub(crate) enum PortShutdownCause {
     StopDeadline,
     Quiesce(DmaLeaseError),
     Unmap(DmaLeaseError),
-    ReconciliationRequired(DmaLeaseError),
 }
 
 #[derive(Debug)]
@@ -647,36 +646,19 @@ impl PortShutdown {
                 }
             }
             PortShutdownPhase::UnmapFailed { registers, failure } => {
-                let cause = failure.cause();
-                Err(PortShutdownError {
-                    cause: PortShutdownCause::ReconciliationRequired(cause),
-                    owner: Self {
-                        phase: PortShutdownPhase::UnmapFailed { registers, failure },
-                    },
-                })
-            }
-        }
-    }
-
-    pub(crate) fn awaits_reconciliation(&self) -> bool {
-        matches!(self.phase, PortShutdownPhase::UnmapFailed { .. })
-    }
-
-    pub(crate) fn retry_close(self, witness: DmaReconcileWitness) -> Result<(), PortShutdownError> {
-        let PortShutdownPhase::UnmapFailed { registers, failure } = self.phase else {
-            unreachable!("controller checks the shutdown phase before consuming its witness")
-        };
-        let (_, lease) = failure.into_parts();
-        match lease.retry_close(witness) {
-            Ok(()) => Ok(()),
-            Err(failure) => {
-                let cause = failure.cause();
-                Err(PortShutdownError {
-                    cause: PortShutdownCause::Unmap(cause),
-                    owner: Self {
-                        phase: PortShutdownPhase::UnmapFailed { registers, failure },
-                    },
-                })
+                let (_, lease) = failure.into_parts();
+                match lease.retry_close() {
+                    Ok(()) => Ok(()),
+                    Err(failure) => {
+                        let cause = failure.cause();
+                        Err(PortShutdownError {
+                            cause: PortShutdownCause::Unmap(cause),
+                            owner: Self {
+                                phase: PortShutdownPhase::UnmapFailed { registers, failure },
+                            },
+                        })
+                    }
+                }
             }
         }
     }

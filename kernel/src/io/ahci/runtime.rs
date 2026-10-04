@@ -15,15 +15,15 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use ahci_driver::controller::{
     AhciController, AhciControllerShutdown, ControllerPortCause, ControllerPortError,
-    ControllerPortMemory, ControllerReconcileError, ControllerShutdownCause,
+    ControllerPortMemory, ControllerShutdownCause,
 };
 use ahci_driver::port::{
     CommandPoll, InitializationMemory, PortFault, RejectedBuffer, SubmitCause,
 };
 use ahci_driver::{AtaCommand, PortNumber};
 use kernel_api::dma::{
-    CpuDmaLease, DmaAllocationRequest, DmaLeaseError, DmaReconcileWitness, DmaTransitionError,
-    PreparedDmaLease, PreparedSharedDmaLease, UnmapFailedDmaLease,
+    CpuDmaLease, DmaAllocationRequest, DmaLeaseError, DmaTransitionError, PreparedDmaLease,
+    PreparedSharedDmaLease, UnmapFailedDmaLease,
 };
 
 use crate::io::io_scheduler::{
@@ -135,7 +135,7 @@ pub(crate) enum RuntimeShutdownStartError {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RuntimeShutdownCause {
     PreparedLease(DmaLeaseError),
-    ReconciliationRequired(DmaLeaseError),
+    Unmap(DmaLeaseError),
     Controller {
         port: PortNumber,
         cause: ControllerShutdownCause,
@@ -147,16 +147,6 @@ pub(crate) enum RuntimeShutdownCause {
 pub(crate) struct RuntimeShutdownError {
     pub(crate) cause: RuntimeShutdownCause,
     pub(crate) shutdown: AhciRuntimeShutdown,
-}
-
-/// Failure to apply a reconciliation witness to a retained runtime allocation.
-#[derive(Debug)]
-pub(crate) enum RuntimeReconcileError {
-    NotAwaitingReconciliation {
-        witness: DmaReconcileWitness,
-        shutdown: AhciRuntimeShutdown,
-    },
-    Shutdown(RuntimeShutdownError),
 }
 
 /// Exclusive one-way owner after all scheduler and poller references are gone.
@@ -743,80 +733,6 @@ impl AhciRuntimeShutdown {
         }
         Ok(())
     }
-
-    /// Retries one retained unmap after reset and IOTLB reconciliation.
-    pub(crate) fn reconcile_retained(
-        mut self,
-        witness: DmaReconcileWitness,
-    ) -> Result<Self, RuntimeReconcileError> {
-        let Some(index) = self
-            .retained
-            .iter()
-            .position(|lease| matches!(lease, RetainedLease::UnmapFailed { .. }))
-        else {
-            return Err(RuntimeReconcileError::NotAwaitingReconciliation {
-                witness,
-                shutdown: self,
-            });
-        };
-        let RetainedLease::UnmapFailed { lease, .. } = self.retained.swap_remove(index) else {
-            unreachable!("the retained lease phase was checked before removal")
-        };
-        match lease.retry_close(witness) {
-            Ok(()) => Ok(self),
-            Err(failure) => {
-                let (cause, lease) = failure.into_parts();
-                self.retained
-                    .push(RetainedLease::UnmapFailed { cause, lease });
-                Err(RuntimeReconcileError::Shutdown(RuntimeShutdownError {
-                    cause: RuntimeShutdownCause::ReconciliationRequired(cause),
-                    shutdown: self,
-                }))
-            }
-        }
-    }
-
-    /// Applies reconciliation to a controller port whose final unmap failed.
-    pub(crate) fn reconcile_port(
-        self,
-        port: PortNumber,
-        witness: DmaReconcileWitness,
-    ) -> Result<Self, RuntimeReconcileError> {
-        let RuntimeControllerShutdown::Pending(controller) = self.controller else {
-            return Err(RuntimeReconcileError::NotAwaitingReconciliation {
-                witness,
-                shutdown: self,
-            });
-        };
-        match controller.reconcile_port(port, witness) {
-            Ok(controller) => Ok(Self {
-                controller: RuntimeControllerShutdown::Pending(controller),
-                retained: self.retained,
-            }),
-            Err(ControllerReconcileError::NotAwaitingReconciliation {
-                witness, shutdown, ..
-            }) => Err(RuntimeReconcileError::NotAwaitingReconciliation {
-                witness,
-                shutdown: Self {
-                    controller: RuntimeControllerShutdown::Pending(shutdown),
-                    retained: self.retained,
-                },
-            }),
-            Err(ControllerReconcileError::Shutdown(error)) => {
-                let cause = RuntimeShutdownCause::Controller {
-                    port: error.failed_port,
-                    cause: error.cause,
-                };
-                Err(RuntimeReconcileError::Shutdown(RuntimeShutdownError {
-                    cause,
-                    shutdown: Self {
-                        controller: RuntimeControllerShutdown::Pending(error.shutdown),
-                        retained: self.retained,
-                    },
-                }))
-            }
-        }
-    }
 }
 
 fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, RetainedLease)> {
@@ -847,11 +763,14 @@ fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, R
                 }
             }
         }
-        RetainedLease::UnmapFailed { cause, lease } => {
-            return Err((
-                RuntimeShutdownCause::ReconciliationRequired(cause),
-                RetainedLease::UnmapFailed { cause, lease },
-            ));
+        RetainedLease::UnmapFailed { lease, .. } => {
+            return lease.retry_close().map_err(|failure| {
+                let (cause, lease) = failure.into_parts();
+                (
+                    RuntimeShutdownCause::Unmap(cause),
+                    RetainedLease::UnmapFailed { cause, lease },
+                )
+            });
         }
     };
     match memory.close() {
@@ -859,7 +778,7 @@ fn release_retained(lease: RetainedLease) -> Result<(), (RuntimeShutdownCause, R
         Err(failure) => {
             let (cause, lease) = failure.into_parts();
             Err((
-                RuntimeShutdownCause::ReconciliationRequired(cause),
+                RuntimeShutdownCause::Unmap(cause),
                 RetainedLease::UnmapFailed { cause, lease },
             ))
         }

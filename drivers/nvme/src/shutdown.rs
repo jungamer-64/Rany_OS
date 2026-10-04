@@ -516,18 +516,14 @@ impl ReconciledNvmeController {
     )]
     pub fn close(mut self) -> Result<(), ControllerCloseError> {
         let admin_identity = self.reset.admin_queue.identity();
-        if let Err(error) = self
-            .reset
-            .admin_queue
-            .close_metadata(self.reset.device, self.reset.generation)
-        {
+        if let Err(error) = self.reset.admin_queue.close_metadata() {
             return Err(self.close_error(error, admin_identity));
         }
         for index in 0..self.reset.io_queues.len() {
             let Some(queue) = self.reset.io_queues.get_mut(index) else {
                 continue;
             };
-            if let Err(error) = queue.close_metadata(self.reset.device, self.reset.generation) {
+            if let Err(error) = queue.close_metadata() {
                 let identity = queue.identity();
                 return Err(self.close_error(error, identity));
             }

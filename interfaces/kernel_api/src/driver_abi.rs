@@ -627,6 +627,8 @@ pub enum AbiDmaOperation {
     PrepareShared = 10,
     ActivateShared = 11,
     QuiesceShared = 12,
+    /// Resume a failed CPU allocation close using the retained lease only.
+    /// The mapping owner completes translation invalidation before release.
     RetryClose = 13,
     ReadShared = 14,
     WriteShared = 15,

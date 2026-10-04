@@ -788,13 +788,8 @@ unsafe impl DmaLeaseAuthority for CellDmaLeaseAuthority {
         self.call(&request).map(|_| ())
     }
 
-    fn retry_close_after_reconcile(
-        &self,
-        witness: DmaReconcileWitness,
-    ) -> Result<(), DmaLeaseError> {
-        let mut request = Self::request(crate::abi::driver::AbiDmaOperation::RetryClose);
-        request.device = witness.device().raw();
-        request.generation = witness.generation();
+    fn retry_close(&self) -> Result<(), DmaLeaseError> {
+        let request = Self::request(crate::abi::driver::AbiDmaOperation::RetryClose);
         self.call(&request).map(|_| ())
     }
 
