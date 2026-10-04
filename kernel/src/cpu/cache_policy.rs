@@ -26,18 +26,41 @@ pub(crate) fn initialize_boot_cpu() {
     POLICY.call_once(|| policy);
 }
 
-pub(crate) fn validate_secondary_cpu() -> bool {
+/// A reset AP need not inherit the firmware's BSP MTRRs. Install the retained
+/// policy before admitting it to shared mappings or task execution. This does
+/// not change the memory map on any already admitted CPU.
+pub(crate) fn initialize_secondary_cpu() -> bool {
     let Some(expected) = POLICY.get() else {
         return false;
     };
-    let Some(mut observed) = read_policy() else {
+    let Some(observed) = read_policy() else {
         return false;
     };
-    observed.pat = expected.pat;
-    if &observed != expected {
+    if observed.capability != expected.capability
+        || observed.physical_mask != expected.physical_mask
+    {
         return false;
     }
-    install_pat(expected.pat);
+    update_cache_registers(|| {
+        write_msr(0x2ff, expected.default & !((1 << 11) | (1 << 10)));
+        if expected.capability & (1 << 8) != 0 {
+            for (value, msr) in expected.fixed.iter().zip(FIXED_MSRS) {
+                write_msr(msr, *value);
+            }
+        }
+        for (index, (base, mask)) in expected
+            .variable
+            .iter()
+            .take((expected.capability & 255) as usize)
+            .enumerate()
+        {
+            let msr = 0x200 + index as u32 * 2;
+            write_msr(msr, *base);
+            write_msr(msr + 1, *mask);
+        }
+        write_msr(0x277, expected.pat);
+        write_msr(0x2ff, expected.default);
+    });
     read_policy().as_ref() == Some(expected)
 }
 
@@ -45,26 +68,62 @@ pub(crate) fn validate_secondary_cpu() -> bool {
 /// use PAT0..3, while WC uses kernel-owned PAT5. SDM Vol. 3A 13.12.4 requires
 /// retirement of global TLB entries and cached lines around PAT changes.
 fn install_pat(value: u64) {
-    // SAFETY: boot executes at CPL0 before this CPU is admitted. This sequence
-    // selects PCID zero before disabling PCIDE, preserves CR3/CR4, invalidates
-    // all local translations, drains cached data, and
-    // installs only the feature-validated legal WC encoding in PAT5. Compiler
-    // memory ordering is retained by the asm block.
+    update_cache_registers(|| write_msr(0x277, value));
+}
+
+/// SDM Vol. 3A memory-cache control requires no-fill mode, cache writeback,
+/// and retirement of global and PCID translations around register changes.
+/// The caller owns this unadmitted CPU with IF clear; the update is infallible
+/// and contains no allocation or callbacks into an admitted execution domain.
+fn update_cache_registers(update: impl FnOnce()) {
+    assert!(!crate::interrupts::are_interrupts_enabled());
+    let root: u64;
+    let saved_cr0: u64;
+    let saved_cr4: u64;
+    // SAFETY: the caller executes at CPL0 before CPU admission. Clear NW while
+    // setting CD, select PCID zero before disabling PCIDE/PGE, and preserve the
+    // original control registers. No other CPU's memory-type policy changes.
     unsafe {
         core::arch::asm!(
+            "mov {saved_cr0}, cr0", "mov {temporary}, {saved_cr0}",
+            "or {temporary}, {cd}", "and {temporary}, {nw_mask}",
+            "mov cr0, {temporary}", "wbinvd",
             "mov {root}, cr3", "mov {temporary}, {root}",
             "and {temporary}, {root_mask}", "mov cr3, {temporary}",
-            "mov {saved}, cr4", "mov {temporary}, {saved}",
+            "mov {saved_cr4}, cr4", "mov {temporary}, {saved_cr4}",
             "and {temporary}, {mask}", "mov cr4, {temporary}",
             "mov {temporary}, cr3", "mov cr3, {temporary}",
-            "wbinvd", "wrmsr", "wbinvd", "mov cr4, {saved}",
-            "mov cr3, {root}",
-            root = out(reg) _, root_mask = in(reg) !4095u64,
-            saved = out(reg) _, temporary = out(reg) _,
+            root = out(reg) root, saved_cr0 = out(reg) saved_cr0,
+            saved_cr4 = out(reg) saved_cr4, temporary = out(reg) _,
+            root_mask = in(reg) !4095u64,
+            cd = in(reg) 1u64 << 30, nw_mask = in(reg) !(1u64 << 29),
             mask = in(reg) !(1u64 << 7 | 1u64 << 17),
-            in("ecx") 0x277u32, in("eax") value as u32, in("edx") (value >> 32) as u32,
             options(nostack),
         );
+    }
+    update();
+    // SAFETY: the infallible update has installed the complete validated local
+    // policy. Flush speculative fills and local translations before restoring
+    // the original cache mode and control-register interpretation.
+    unsafe {
+        core::arch::asm!(
+            "wbinvd", "mov {temporary}, cr3", "mov cr3, {temporary}",
+            "mov cr4, {saved_cr4}", "mov cr3, {root}",
+            "mov cr0, {saved_cr0}",
+            temporary = out(reg) _, root = in(reg) root,
+            saved_cr0 = in(reg) saved_cr0, saved_cr4 = in(reg) saved_cr4,
+            options(nostack),
+        );
+    }
+}
+
+fn write_msr(index: u32, value: u64) {
+    // SAFETY: this private path runs at CPL0 in no-fill mode on the unadmitted
+    // CPU. The policy contains only feature-validated PAT/MTRR registers.
+    unsafe {
+        core::arch::asm!("wrmsr", in("ecx") index,
+            in("eax") value as u32, in("edx") (value >> 32) as u32,
+            options(nostack));
     }
 }
 

@@ -902,7 +902,7 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(ApStartupSignal::MissingXstate);
         fail_stop_ap();
     }
-    if !super::cache_policy::validate_secondary_cpu() {
+    if !super::cache_policy::initialize_secondary_cpu() {
         resource.publish(ApStartupSignal::MissingCachePolicy);
         fail_stop_ap();
     }
