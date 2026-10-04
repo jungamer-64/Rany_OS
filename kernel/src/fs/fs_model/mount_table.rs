@@ -125,9 +125,14 @@ pub(crate) fn find_inode_by_number(ino: InodeNum) -> Option<Arc<dyn Inode>> {
     use alloc::collections::VecDeque;
     use hashbrown::HashSet;
 
-    let mounts = MOUNT_TABLE.mounts.read();
-    for entry in mounts.iter() {
-        if let Ok(root) = entry.fs.root() {
+    let filesystems: Vec<_> = MOUNT_TABLE
+        .mounts
+        .read()
+        .iter()
+        .map(|entry| Arc::clone(&entry.fs))
+        .collect();
+    for fs in filesystems {
+        if let Ok(root) = fs.root() {
             let mut queue: VecDeque<Arc<dyn Inode>> = VecDeque::new();
             let mut visited: HashSet<u64> = HashSet::new();
             if let Ok(attr) = root.getattr() {
@@ -137,6 +142,7 @@ pub(crate) fn find_inode_by_number(ino: InodeNum) -> Option<Arc<dyn Inode>> {
                 visited.insert(attr.ino);
                 queue.push_back(root);
             }
+            // LOOP_PROOF: mode=condition; reason=The visited inode set admits each inode once, so the filesystem traversal drains the finite inode identity space or returns its match.;
             while let Some(node) = queue.pop_front() {
                 if let Some(found) = bfs_search_directory(&node, ino, &mut visited, &mut queue) {
                     return Some(found);
