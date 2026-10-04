@@ -139,6 +139,16 @@ def mask_non_code(text: str) -> str:
                 state = "string"
                 continue
             if ch == "'":
+                # Lifetimes and labels start with an apostrophe too. Only a
+                # one-character identifier followed by a closing apostrophe
+                # is a character literal; a lifetime must not mask later code.
+                if i + 1 < n and (chars[i + 1].isalpha() or chars[i + 1] == "_"):
+                    j = i + 2
+                    while j < n and (chars[j].isalnum() or chars[j] == "_"):
+                        j += 1
+                    if j != i + 2 or j >= n or chars[j] != "'":
+                        i = j
+                        continue
                 chars[i] = " "
                 i += 1
                 state = "char"
@@ -529,15 +539,23 @@ def collect_rs_files(root: Path, dirs: Iterable[str]) -> list[Path]:
     files: list[Path] = []
     for name in dirs:
         base = root / name
-        if not base.exists():
-            continue
+        if not base.is_dir():
+            raise ValueError(f"loop proof target is not a directory: {name}")
         files.extend(sorted(base.rglob("*.rs")))
     return files
 
 
 def run_check(root: Path, dirs: Iterable[str]) -> int:
     errors: list[CheckError] = []
-    for path in collect_rs_files(root, dirs):
+    try:
+        paths = collect_rs_files(root, dirs)
+    except ValueError as error:
+        print(f"FAIL: {error}", file=sys.stderr)
+        return 1
+    if not paths:
+        print("FAIL: loop proof targets contain no Rust source", file=sys.stderr)
+        return 1
+    for path in paths:
         errors.extend(check_file(path, root))
 
     if errors:
@@ -551,6 +569,22 @@ def run_check(root: Path, dirs: Iterable[str]) -> int:
 
 
 class LoopProofCheckerTests(unittest.TestCase):
+    def test_verification_requires_directory_targets_with_rust_source(self) -> None:
+        import contextlib
+        import io
+        import tempfile
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "input.rs").write_text("fn main() {}", encoding="utf-8")
+            (root / "empty").mkdir()
+            with contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(run_check(root, ["input.rs"]), 1)
+                self.assertEqual(run_check(root, ["missing"]), 1)
+                self.assertEqual(run_check(root, ["empty"]), 1)
+            with contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(run_check(root, ["."]), 0)
+
     def setUp(self) -> None:
         self.root = Path(__file__).resolve().parents[1]
         self.fixture_root = self.root / "scripts" / "testdata" / "loop_proof"
@@ -565,6 +599,22 @@ class LoopProofCheckerTests(unittest.TestCase):
     def test_missing_annotation_fixture(self) -> None:
         errors = self.run_fixture("missing_annotation.rs")
         self.assertTrue(errors)
+
+    def test_lifetimes_and_labels_do_not_hide_unannotated_loops(self) -> None:
+        text = (
+            "fn visit<'a>(value: &'a str, other: &'_ str) {\n"
+            "    let character = 'a';\n"
+            "    let escaped = '\\'';\n"
+            "    let message = r#\"while loop\"#;\n"
+            "    'again: loop { break 'again; }\n"
+            "    while value.len() > other.len() { break; }\n"
+            "}\n"
+        )
+        path = self.fixture_root / "lifetime_loops.rs"
+        path.write_text(text, encoding="utf-8")
+        self.addCleanup(lambda: path.unlink(missing_ok=True))
+        errors = check_file(path, self.root)
+        self.assertEqual([error.line for error in errors], [5, 6])
 
     def test_bad_reason_fixture(self) -> None:
         errors = self.run_fixture("bad_reason.rs")
