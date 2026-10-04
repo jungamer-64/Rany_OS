@@ -1,3 +1,4 @@
+pub(crate) mod cache_policy;
 mod identity;
 mod ipi;
 mod local;
@@ -6,6 +7,7 @@ mod set;
 mod startup;
 mod state;
 mod transition;
+pub(crate) mod xstate;
 
 pub use identity::{ApicId, CpuId, CpuIdOutOfRange, CpuRole, FirmwareCpuUid, MAX_POSSIBLE_CPUS};
 pub(crate) use ipi::{
@@ -28,5 +30,3 @@ pub use state::{
 pub(crate) use state::{CpuStateTransition, CpuStateTransitionError, LocatedCpu};
 pub(crate) use transition::{commit_eject, fail_eject, prepare_eject};
 pub use transition::{offline, online};
-
-pub(crate) mod cache_policy;

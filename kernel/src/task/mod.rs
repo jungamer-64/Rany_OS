@@ -13,7 +13,7 @@
 pub(crate) mod config;
 pub(crate) mod context;
 pub mod environ;
-mod execution;
+pub(crate) mod execution;
 pub mod fuel;
 pub mod interrupt_waker;
 pub mod io;
@@ -23,8 +23,7 @@ pub mod timeout;
 mod waker;
 mod yielding;
 pub use crate::drivers::time::{
-    PendingTimerWakerStats, current_tick, handle_timer_interrupt, pending_timer_waker_count,
-    pending_waker_stats, process_pending_timer_wakers, sleep_ms,
+    current_tick, handle_timer_interrupt, process_pending_timer_wakers, sleep_ms, timer_stats,
 };
 pub use environ::{
     EnvError, EnvKey, EnvValue, Environment, get_home, get_path, get_pwd, get_term, get_user,
@@ -34,7 +33,9 @@ pub use execution::{
     ExecutionAdmissionError, ExecutionContext, ExecutionContextUnavailable, Subject,
     current_subject, current_task_id,
 };
-pub(crate) use execution::{enter_cell_domain, enter_domain, enter_domain_teardown};
+pub(crate) use execution::{
+    enter_cell_domain, enter_domain, enter_domain_teardown, enter_resource_callback,
+};
 pub use interrupt_waker::{
     AtomicWaker, InterruptFuture, InterruptSource, InterruptWakerRegistry, InterruptWakerStats,
     handle_timer_interrupt_waker, interrupt_waker_registry, wait_for_interrupt,

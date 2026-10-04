@@ -5,12 +5,12 @@ use core::num::{NonZeroU32, NonZeroU64};
 use core::pin::Pin;
 use core::sync::atomic::{AtomicU8, Ordering, fence};
 
+use crate::sync::InitOnce;
 use ap_trampoline::{
     ApTrampolineLaunchInfo, PageTable32Addr, TrampolineMailboxHandle, TrampolineMailboxReadHandle,
     TrampolinePhysAddr, TrampolineVirtAddr,
 };
 use boot_proto::ExoBootInfo;
-use spin::Once;
 
 use crate::drivers::apic::{ApicDestination, ApicMode, ApicModePolicy, LocalApicError};
 use crate::sync::PoisonLock;
@@ -52,6 +52,8 @@ enum ApStartupSignal {
     CacheOwnerBorrowed = 18,
     CacheBackingBusy = 19,
     CacheBackingPoisoned = 20,
+    MissingXstate = 21,
+    MissingCachePolicy = 22,
 }
 
 impl ApStartupSignal {
@@ -78,6 +80,8 @@ impl ApStartupSignal {
             18 => Some(Self::CacheOwnerBorrowed),
             19 => Some(Self::CacheBackingBusy),
             20 => Some(Self::CacheBackingPoisoned),
+            21 => Some(Self::MissingXstate),
+            22 => Some(Self::MissingCachePolicy),
             _ => None,
         }
     }
@@ -99,6 +103,12 @@ impl ApStartupSignal {
             }
             Self::MissingInvariantTsc => Some(CpuFailureReason::MissingRequiredFeature {
                 feature: "invariant TSC",
+            }),
+            Self::MissingXstate => Some(CpuFailureReason::MissingRequiredFeature {
+                feature: "xstate mask",
+            }),
+            Self::MissingCachePolicy => Some(CpuFailureReason::MissingRequiredFeature {
+                feature: "BSP PAT/MTRR policy",
             }),
             Self::CpuLocalBindingFailed => Some(CpuFailureReason::Startup(
                 CpuStartupFailure::CpuLocalBinding,
@@ -411,14 +421,15 @@ fn invariant_tsc_supported() -> bool {
     maximum >= 0x8000_0007 && core::arch::x86_64::__cpuid(0x8000_0007).edx & (1 << 8) != 0
 }
 
-static STARTUP_CONTROLLER: Once<Result<CpuStartupController, CpuInitializationError>> = Once::new();
+static STARTUP_CONTROLLER: InitOnce<Result<CpuStartupController, CpuInitializationError>> =
+    InitOnce::new();
 
 struct BootCpuInventory {
     discovered: usize,
     enabled: Arc<[CpuId]>,
 }
 
-static BOOT_CPU_INVENTORY: Once<BootCpuInventory> = Once::new();
+static BOOT_CPU_INVENTORY: InitOnce<BootCpuInventory> = InitOnce::new();
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct CpuBootSummary {
@@ -887,6 +898,14 @@ fn ap_entry(id: CpuId) -> ! {
         resource.publish(signal);
         fail_stop_ap();
     }
+    if !super::xstate::initialize_secondary_cpu() {
+        resource.publish(ApStartupSignal::MissingXstate);
+        fail_stop_ap();
+    }
+    if !super::cache_policy::validate_secondary_cpu() {
+        resource.publish(ApStartupSignal::MissingCachePolicy);
+        fail_stop_ap();
+    }
     if super::CurrentCpu::bind(id).is_err() {
         resource.publish(ApStartupSignal::CpuLocalBindingFailed);
         fail_stop_ap();
@@ -989,7 +1008,8 @@ fn fail_stop_ap() -> ! {
 mod tests {
     use super::ApStartupSignal;
 
-    #[test]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn startup_progress_signals_are_not_failures() {
         for signal in [
             ApStartupSignal::Preparing,
@@ -1005,7 +1025,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn startup_failure_signals_cannot_be_observed_as_progress() {
         for signal in [
             ApStartupSignal::MissingApic,
@@ -1024,7 +1045,8 @@ mod tests {
         }
     }
 
-    #[test]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn startup_signal_decoder_rejects_unknown_values() {
         assert!(ApStartupSignal::from_raw(21).is_none());
         assert!(ApStartupSignal::from_raw(u8::MAX).is_none());

@@ -14,6 +14,7 @@ use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::lockfree::Backoff;
+use hal::preemption::PreemptionGuard;
 // use serial_driver::serial_println;
 
 // ============================================================================
@@ -108,6 +109,7 @@ impl<T> PoisonRwLock<T> {
 impl<T> PoisonRwLock<T> {
     /// 読み取りロックを取得
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
         #[cfg(any(not(test), not(feature = "std")))]
@@ -123,7 +125,10 @@ impl<T> PoisonRwLock<T> {
         LOCK_ACQUIRE_COUNT.fetch_add(1, Ordering::Relaxed);
         LOCK_TOTAL_ACQUIRE_TICKS.fetch_add(acquire_time, Ordering::Relaxed);
 
-        let p_guard = PoisonRwLockReadGuard { guard };
+        let p_guard = PoisonRwLockReadGuard {
+            guard,
+            _preemption: preemption,
+        };
 
         if self.poisoned.load(Ordering::Acquire) {
             Err(PoisonError::new(p_guard))
@@ -134,6 +139,7 @@ impl<T> PoisonRwLock<T> {
 
     /// 書き込みロックを取得
     pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
         #[cfg(any(not(test), not(feature = "std")))]
@@ -153,6 +159,7 @@ impl<T> PoisonRwLock<T> {
             lock: self,
             guard,
             panicking_at_acquire: is_panicking(),
+            _preemption: preemption,
         };
 
         if self.poisoned.load(Ordering::Acquire) {
@@ -164,8 +171,12 @@ impl<T> PoisonRwLock<T> {
 
     /// 読み取りロックを試行
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         self.inner.try_read().map(|guard| {
-            let p_guard = PoisonRwLockReadGuard { guard };
+            let p_guard = PoisonRwLockReadGuard {
+                guard,
+                _preemption: preemption,
+            };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
             } else {
@@ -176,11 +187,13 @@ impl<T> PoisonRwLock<T> {
 
     /// 書き込みロックを試行
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         self.inner.try_write().map(|guard| {
             let p_guard = PoisonRwLockWriteGuard {
                 lock: self,
                 guard,
                 panicking_at_acquire: is_panicking(),
+                _preemption: preemption,
             };
             if self.poisoned.load(Ordering::Acquire) {
                 Err(PoisonError::new(p_guard))
@@ -204,6 +217,7 @@ impl<T> PoisonRwLock<T> {
 /// PoisonRwLockの読み取りガード
 pub struct PoisonRwLockReadGuard<'a, T> {
     guard: spin::RwLockReadGuard<'a, T>,
+    _preemption: PreemptionGuard,
 }
 
 impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
@@ -218,6 +232,7 @@ pub struct PoisonRwLockWriteGuard<'a, T> {
     lock: &'a PoisonRwLock<T>,
     guard: spin::RwLockWriteGuard<'a, T>,
     panicking_at_acquire: bool,
+    _preemption: PreemptionGuard,
 }
 
 impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
@@ -324,6 +339,7 @@ impl<T> PoisonLock<T> {
     /// ロックが毒入れされている場合は`Err(PoisonError)`を返す。
     /// 呼び出し側は`into_inner()`で回復を試みることができる。
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
+        let preemption = PreemptionGuard::enter();
         // 1. スピンロックを取得（指数バックオフ付き）
         // 計測: ロック獲得に要した時間とコンテンション有無を記録
         #[cfg(all(test, feature = "std"))]
@@ -358,6 +374,7 @@ impl<T> PoisonLock<T> {
         let guard = PoisonLockGuard {
             lock: self,
             panicking_at_acquire: is_panicking(),
+            _preemption: preemption,
         };
 
         // 2. 毒入れ状態をチェック
@@ -370,6 +387,7 @@ impl<T> PoisonLock<T> {
 
     /// ロックを試行（失敗したら即座に返る）
     pub fn try_lock(&self) -> Result<PoisonLockGuard<'_, T>, TryLockError<PoisonLockGuard<'_, T>>> {
+        let preemption = PreemptionGuard::enter();
         // try_lock は即時取得成功時のみ計測する
         #[cfg(all(test, feature = "std"))]
         let start = std::time::Instant::now();
@@ -392,6 +410,7 @@ impl<T> PoisonLock<T> {
             let guard = PoisonLockGuard {
                 lock: self,
                 panicking_at_acquire: is_panicking(),
+                _preemption: preemption,
             };
 
             if self.poisoned.load(Ordering::Acquire) {
@@ -498,6 +517,7 @@ impl<T: fmt::Debug> fmt::Debug for PoisonLock<T> {
 pub struct PoisonLockGuard<'a, T: ?Sized> {
     lock: &'a PoisonLock<T>,
     panicking_at_acquire: bool,
+    _preemption: PreemptionGuard,
 }
 
 impl<T: ?Sized> Deref for PoisonLockGuard<'_, T> {

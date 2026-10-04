@@ -247,7 +247,7 @@ impl Pmm {
     }
 }
 
-static PMM: spin::Once<Pmm> = spin::Once::new();
+static PMM: crate::sync::InitOnce<Pmm> = crate::sync::InitOnce::new();
 static INIT: IrqPoisonLock<()> = IrqPoisonLock::new(());
 
 fn normalized(start: u64, size: u64) -> Result<Option<(u64, u64)>, FrameAllocError> {

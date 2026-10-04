@@ -376,6 +376,8 @@ pub(crate) enum CpuStateTransitionError {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CpuBlocker {
     PinnedTask { task_id: u64 },
+    ActivePoll { task_id: u64 },
+    SuspendedPoll { task_id: u64 },
     ControlQueue,
     IrqRoute { vector: u8 },
     NetworkQueue { runtime_id: u64 },
@@ -455,6 +457,7 @@ pub enum FirmwareErrorKind {
     EventDelivery,
     Resource,
     TimedOut,
+    Timer(kernel_api::service::time::TimerError),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

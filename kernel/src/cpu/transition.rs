@@ -5,11 +5,11 @@ use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
 
-use spin::Once;
+use crate::sync::InitOnce;
 
 use crate::drivers::apic::LocalApicError;
 use crate::sync::{AtomicWaker, PoisonLock};
-use crate::task::{SpawnError, TaskPlacement};
+use crate::task::{SpawnError, TaskOptions};
 
 use super::{
     CpuBlocker, CpuControlMessage, CpuDrainFailure, CpuFailurePhase, CpuFailureReason, CpuId,
@@ -155,7 +155,7 @@ impl TransitionQueue {
     }
 }
 
-static TRANSITION_QUEUE: Once<TransitionQueue> = Once::new();
+static TRANSITION_QUEUE: InitOnce<TransitionQueue> = InitOnce::new();
 
 pub(super) fn initialize() -> Result<(), SpawnError> {
     let queue = TRANSITION_QUEUE.call_once(TransitionQueue::new);
@@ -166,7 +166,7 @@ pub(super) fn initialize() -> Result<(), SpawnError> {
     {
         return Ok(());
     }
-    match crate::task::spawn(transition_worker(), TaskPlacement::Pinned(CpuId::BOOTSTRAP)) {
+    match crate::task::spawn(transition_worker(), TaskOptions::pinned(CpuId::BOOTSTRAP)) {
         Ok(_) => Ok(()),
         Err(error) => {
             queue.worker_started.store(false, Ordering::Release);
@@ -177,7 +177,7 @@ pub(super) fn initialize() -> Result<(), SpawnError> {
 
 /// Starts or resumes an application CPU and publishes it for task placement.
 ///
-/// Once submitted, cancellation of the returned future does not cancel the
+/// InitOnce submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
@@ -193,7 +193,7 @@ pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
 
 /// Removes an application CPU from task placement and parks it.
 ///
-/// Once submitted, cancellation of the returned future does not cancel the
+/// InitOnce submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
@@ -209,7 +209,7 @@ pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
 
 /// Quiesces a CPU and grants exclusive authority for its firmware eject.
 ///
-/// Once submitted, cancellation cannot cancel the drain. If the returned
+/// InitOnce submitted, cancellation cannot cancel the drain. If the returned
 /// authority is subsequently abandoned, the lifecycle worker records a typed
 /// firmware failure and restores the slot to `PresentOffline`.
 pub(crate) async fn prepare_eject(id: CpuId) -> Result<CpuEjectAuthority, CpuTransitionError> {

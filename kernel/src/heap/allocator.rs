@@ -83,6 +83,7 @@ const _: () = assert!(core::mem::size_of::<AllocHeader>() < super::raw::SMALLEST
 
 unsafe impl GlobalAlloc for KernelHeap {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        let _preemption = hal::preemption::PreemptionGuard::enter();
         let requested = layout.size() as u64;
         let Ok((extended, offset)) = Layout::new::<AllocHeader>().extend(layout) else {
             return null_mut();
@@ -131,6 +132,7 @@ unsafe impl GlobalAlloc for KernelHeap {
     }
 
     unsafe fn dealloc(&self, pointer: *mut u8, layout: Layout) {
+        let _preemption = hal::preemption::PreemptionGuard::enter();
         let Ok((_, offset)) = Layout::new::<AllocHeader>().extend(layout) else {
             return;
         };

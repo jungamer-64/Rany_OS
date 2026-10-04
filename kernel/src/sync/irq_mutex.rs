@@ -13,6 +13,7 @@
 use core::arch::asm;
 use core::cell::UnsafeCell;
 use core::fmt;
+use core::mem::ManuallyDrop;
 use core::ops::{Deref, DerefMut};
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -122,6 +123,7 @@ impl<T: ?Sized> IrqMutex<T> {
     pub fn lock(&self) -> IrqMutexGuard<'_, T> {
         // 1. 割り込みを禁止（現在の状態を保存）
         let irq_was_enabled = save_and_disable_interrupts();
+        let preemption = hal::preemption::PreemptionGuard::enter();
 
         // 2. スピンロックを取得（指数バックオフ付き）
         let mut backoff = super::lockfree::Backoff::new();
@@ -137,6 +139,7 @@ impl<T: ?Sized> IrqMutex<T> {
         IrqMutexGuard {
             lock: self,
             irq_was_enabled,
+            preemption: ManuallyDrop::new(preemption),
         }
     }
 
@@ -144,6 +147,7 @@ impl<T: ?Sized> IrqMutex<T> {
     pub fn try_lock(&self) -> Option<IrqMutexGuard<'_, T>> {
         // 1. 割り込みを禁止
         let irq_was_enabled = save_and_disable_interrupts();
+        let preemption = hal::preemption::PreemptionGuard::enter();
 
         // 2. ロック試行
         if self
@@ -154,8 +158,10 @@ impl<T: ?Sized> IrqMutex<T> {
             Some(IrqMutexGuard {
                 lock: self,
                 irq_was_enabled,
+                preemption: ManuallyDrop::new(preemption),
             })
         } else {
+            drop(preemption);
             // ロック失敗 → 割り込みを復元
             restore_interrupts(irq_was_enabled);
             None
@@ -174,6 +180,7 @@ impl<T: ?Sized> IrqMutex<T> {
 pub struct IrqMutexGuard<'a, T: ?Sized> {
     lock: &'a IrqMutex<T>,
     irq_was_enabled: bool,
+    preemption: ManuallyDrop<hal::preemption::PreemptionGuard>,
 }
 
 impl<T: ?Sized> Deref for IrqMutexGuard<'_, T> {
@@ -196,6 +203,9 @@ impl<T: ?Sized> Drop for IrqMutexGuard<'_, T> {
     fn drop(&mut self) {
         // 1. スピンロックを解放
         self.lock.locked.store(false, Ordering::Release);
+        // SAFETY: this guard owns the single initialized preemption guard;
+        // lock release must precede preemption and interrupt restoration.
+        unsafe { ManuallyDrop::drop(&mut self.preemption) };
 
         // 2. 割り込み状態を復元
         restore_interrupts(self.irq_was_enabled);

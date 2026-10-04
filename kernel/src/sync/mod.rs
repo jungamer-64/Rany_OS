@@ -30,7 +30,7 @@
 //! - `PoisonRwLock<T>`: パニック時自動毒入れRwLock（読み取り並列化用）
 //! - `IrqPoisonLock<T>`: 割り込み禁止 + パニック時毒入れ（ISRセーフな標準）
 //! - `IrqMutex<T>`: 割り込みを無効化してロックする（ISRセーフ、毒入れなし）
-//! - `spin::Mutex<T>`: 軽量スピンロック（毒入れ不要な極めて局所的な同期のみ）
+//! - `crate::sync::Mutex<T>`: 軽量スピンロック（毒入れ不要な極めて局所的な同期のみ）
 //! - `Seqlock<T>`: 読み取り優先のシーケンスロック
 //! - `MpmcRingBuffer<T>`: ロックフリーな複数プロデューサ・複数コンシューマキュー
 //!
@@ -46,6 +46,7 @@ pub use atomic_waker::WakerQueue;
 // Process deferred wake notifications (ISR -> Executor deferred wake queue)
 pub use atomic_waker::process_deferred_waker_queue_wakes;
 pub use atomic_waker::process_deferred_wakes;
+pub use exorust_sync::{InitOnce, Mutex, MutexGuard, RwLock, RwLockReadGuard, RwLockWriteGuard};
 pub use irq_mutex::{IrqMutex, IrqMutexGuard};
 pub use lockfree::{
     // Backoff strategy

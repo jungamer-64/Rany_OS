@@ -14,34 +14,16 @@
 //! - **Consumption**: The task consumes fuel during loops or heavy operations.
 //! - **Yielding**: When fuel is exhausted, the task yields (returns `Poll::Pending`).
 //!
-/// Global fuel configuration
-pub struct FuelConfig {
-    /// Default fuel per task slice
-    pub default_fuel: u64,
-}
-
-impl FuelConfig {
-    pub const DEFAULT: Self = Self {
-        default_fuel: 10_000,
-    };
-}
-
 /// Fuel manager
 pub struct Fuel;
 
 impl Fuel {
-    /// Refill the current task's fuel
-    #[inline]
-    pub fn refill(amount: u64) {
-        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
-            current.refill_task_fuel(amount);
-        }
-    }
-
     /// Consume fuel. Returns false if exhausted (should yield).
     #[inline]
     pub fn consume(amount: u64) -> bool {
-        crate::cpu::CurrentCpu::acquire().is_none_or(|current| current.consume_task_fuel(amount))
+        crate::cpu::CurrentCpu::acquire().is_none_or(|current| {
+            current.preemption_state().active_context() == 0 || current.consume_task_fuel(amount)
+        })
     }
 
     /// Check remaining fuel
@@ -50,16 +32,19 @@ impl Fuel {
         crate::cpu::CurrentCpu::acquire().map_or(0, |current| current.task_fuel())
     }
 
-    /// Check if fuel management is active (fuel has been set)
+    /// A running task remains fuel-managed after exhausting its budget.
     #[inline]
     pub fn is_active() -> bool {
-        Self::remaining() > 0
+        crate::cpu::CurrentCpu::acquire()
+            .is_some_and(|current| current.preemption_state().active_context() != 0)
     }
 
     /// Force exhaustion (e.g. on yield)
     #[inline]
     pub fn exhaust() {
-        Self::refill(0);
+        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            current.exhaust_task_fuel();
+        }
     }
 }
 
@@ -133,7 +118,7 @@ macro_rules! ffi_call {
         // 燃料が不足していれば先にyield
         if !$crate::task::fuel::Fuel::consume($cost) {
             $crate::task::yield_now().await;
-            // yield後に燃料を再充填（executorがrefillを行う想定だが念のため）
+            // The scheduler refills only when it starts the next poll.
         }
         // FFI呼び出しを実行
         $call
@@ -187,7 +172,7 @@ impl core::fmt::Display for FuelExhausted {
 /// 燃料が十分にあるかチェックし、不足時はエラーを返す
 #[inline]
 pub fn require_fuel(cost: u64) -> Result<(), FuelExhausted> {
-    if Fuel::remaining() >= cost {
+    if !Fuel::is_active() || Fuel::remaining() >= cost {
         Fuel::consume(cost);
         Ok(())
     } else {

@@ -2,7 +2,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::pin::Pin;
 
-use spin::Once;
+use crate::sync::InitOnce;
 
 use crate::sync::PoisonLock;
 
@@ -468,7 +468,8 @@ fn admit_located_slot(
             limit: MAX_POSSIBLE_CPUS,
         });
     }
-    let id = CpuId::from_valid_index(state.slots.len());
+
+    let id = CpuId::try_from(state.slots.len()).expect("bounded CPU index");
     let local = super::CpuLocal::allocate(id, state.tls_template)
         .map_err(|_| CpuTopologyIssue::CpuLocalAllocationFailed { id })?;
     local.as_ref().get_ref().remote().set_numa_node(node);
@@ -494,7 +495,7 @@ pub(crate) enum CpuRuntimeError {
     Topology(CpuTopologyIssue),
 }
 
-static CPU_RUNTIME: Once<CpuRuntime> = Once::new();
+static CPU_RUNTIME: InitOnce<CpuRuntime> = InitOnce::new();
 
 pub(crate) fn install_bootstrap(
     located: LocatedCpu,

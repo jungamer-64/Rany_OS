@@ -27,6 +27,7 @@ path = "src/lib.rs"
 # ============================================================================
 
 [dependencies]
+exorust_sync = { path = "../libs/sync" }
 # Kernel API Interface
 kernel_api = { path = "../interfaces/kernel_api" }
 

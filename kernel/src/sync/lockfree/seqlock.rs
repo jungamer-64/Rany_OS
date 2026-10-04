@@ -5,6 +5,7 @@
 
 use core::cell::UnsafeCell;
 use core::sync::atomic::{AtomicUsize, Ordering};
+use hal::preemption::PreemptionGuard;
 
 /// Seqlock - 読み取り優先のロック
 ///
@@ -56,6 +57,7 @@ impl<T: Copy> Seqlock<T> {
 
     /// 書き込み（排他ロック）
     pub fn write(&self, value: T) {
+        let _preemption = PreemptionGuard::enter();
         // シーケンス番号をインクリメント（奇数に）
         let _seq = self.sequence.fetch_add(1, Ordering::Acquire);
 
@@ -70,16 +72,21 @@ impl<T: Copy> Seqlock<T> {
 
     /// 書き込みガードを取得
     pub fn write_guard(&self) -> SeqlockWriteGuard<'_, T> {
+        let preemption = PreemptionGuard::enter();
         // シーケンス番号をインクリメント（奇数に）
         self.sequence.fetch_add(1, Ordering::Acquire);
 
-        SeqlockWriteGuard { lock: self }
+        SeqlockWriteGuard {
+            lock: self,
+            _preemption: preemption,
+        }
     }
 }
 
 /// Seqlock 書き込みガード
 pub struct SeqlockWriteGuard<'a, T> {
     lock: &'a Seqlock<T>,
+    _preemption: PreemptionGuard,
 }
 
 impl<'a, T> core::ops::Deref for SeqlockWriteGuard<'a, T> {

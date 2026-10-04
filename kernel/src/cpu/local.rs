@@ -8,12 +8,14 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, AtomicU64, Ordering};
 
 use crate::sync::MpscRingBuffer;
+use crate::sync::atomic_waker::WakerQueueState;
+use exorust_sync::{NotificationQueue, WakerSlot};
 
 use super::{CpuGenerationResource, CpuId};
 
 const CONTROL_QUEUE_SLOTS: usize = 32;
-const DEFERRED_WAKE_QUEUE_SLOTS: usize = 257;
-const INTERRUPT_WAKE_QUEUE_SLOTS: usize = 1025;
+const INTERRUPT_WAKE_WORDS: usize =
+    crate::task::interrupt_waker::MAX_INTERRUPT_INDICES.div_ceil(u64::BITS as usize);
 const IA32_FS_BASE: u32 = 0xc000_0100;
 const IA32_GS_BASE: u32 = 0xc000_0101;
 const TLB_ACTIVE: u8 = 0;
@@ -46,7 +48,50 @@ pub struct CpuRemoteAccess {
     tlb_mode: AtomicU8,
     tlb_requested_generation: AtomicU64,
     tlb_observed_generation: AtomicU64,
-    interrupt_wakes: MpscRingBuffer<usize, INTERRUPT_WAKE_QUEUE_SLOTS>,
+    atomic_notifications: NotificationQueue<WakerSlot>,
+    queue_notifications: NotificationQueue<WakerQueueState>,
+    interrupt_wakes: InterruptWakeSet,
+}
+
+/// One bit per source coalesces repeated IRQs without consuming queue slots.
+/// Draining detaches all words before callbacks, so events arriving during
+/// delivery belong to the next scheduler pass.
+struct InterruptWakeSet {
+    words: [AtomicU64; INTERRUPT_WAKE_WORDS],
+}
+
+impl InterruptWakeSet {
+    const fn new() -> Self {
+        Self {
+            words: [const { AtomicU64::new(0) }; INTERRUPT_WAKE_WORDS],
+        }
+    }
+
+    fn publish(&self, index: usize) {
+        assert!(index < crate::task::interrupt_waker::MAX_INTERRUPT_INDICES);
+        self.words[index / u64::BITS as usize]
+            .fetch_or(1 << (index % u64::BITS as usize), Ordering::Release);
+    }
+
+    fn drain(&self, mut deliver: impl FnMut(usize)) {
+        let snapshot: [u64; INTERRUPT_WAKE_WORDS] =
+            core::array::from_fn(|word| self.words[word].swap(0, Ordering::AcqRel));
+        for (word, mut bits) in snapshot.into_iter().enumerate() {
+            // LOOP_PROOF: mode=condition; reason=Each iteration clears one set bit from this detached word, which has at most 64 source notifications.;
+            while bits != 0 {
+                let bit = bits.trailing_zeros() as usize;
+                bits &= bits - 1;
+                deliver(word * u64::BITS as usize + bit);
+            }
+        }
+    }
+
+    fn pending_count(&self) -> usize {
+        self.words
+            .iter()
+            .map(|word| word.load(Ordering::Acquire).count_ones() as usize)
+            .sum()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -80,7 +125,9 @@ impl CpuRemoteAccess {
             tlb_mode: AtomicU8::new(TLB_LAZY),
             tlb_requested_generation: AtomicU64::new(0),
             tlb_observed_generation: AtomicU64::new(0),
-            interrupt_wakes: MpscRingBuffer::new(),
+            atomic_notifications: NotificationQueue::new(),
+            queue_notifications: NotificationQueue::new(),
+            interrupt_wakes: InterruptWakeSet::new(),
         }
     }
 
@@ -221,23 +268,19 @@ impl CpuRemoteAccess {
             .fetch_max(generation, Ordering::SeqCst);
     }
 
-    fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
-        self.interrupt_wakes.try_push(encoded_source).is_ok()
-    }
-
-    fn take_interrupt_wake(&self) -> Option<usize> {
-        self.interrupt_wakes.pop()
+    fn defer_interrupt_wake(&self, index: usize) {
+        self.interrupt_wakes.publish(index);
     }
 
     pub(crate) fn pending_interrupt_wakes(&self) -> usize {
-        self.interrupt_wakes.len()
+        self.interrupt_wakes.pending_count()
     }
 
     pub(crate) fn pending_deferred_work(&self) -> usize {
-        self.deferred_atomic_wakes
-            .len()
-            .saturating_add(self.deferred_queue_wakes.len())
-            .saturating_add(self.interrupt_wakes.len())
+        self.atomic_notifications
+            .pending_count()
+            .saturating_add(self.queue_notifications.pending_count())
+            .saturating_add(self.interrupt_wakes.pending_count())
     }
 
     fn physical_generation_residue(&self) -> Option<CpuGenerationResource> {
@@ -634,6 +677,34 @@ impl CurrentCpu {
         })
     }
 
+    /// CPU-local authority exists only after a bare-metal kernel entry binds
+    /// its pinned GS block. A process on a host OS cannot acquire this authority.
+    pub fn acquire() -> Option<Self> {
+        #[cfg(not(target_os = "none"))]
+        {
+            None
+        }
+        #[cfg(target_os = "none")]
+        {
+            let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
+            if address == 0 || address % core::mem::align_of::<CpuLocal>() != 0 {
+                return None;
+            }
+            // SAFETY: each kernel entry path clears IA32_GS_BASE before using
+            // allocation or locking services. A non-zero value is installed only
+            // from a pinned CpuLocal owned by CpuRuntime and is never repointed
+            // during that CPU's lifetime.
+            let local = unsafe { &*(address as *const CpuLocal) };
+            if !local.is_self_address(address) {
+                return None;
+            }
+            Some(Self {
+                local,
+                _not_send_or_sync: PhantomData,
+            })
+        }
+    }
+
     pub(crate) fn with_exchange_cache<R>(
         &self,
         operation: impl FnOnce(&mut crate::heap::ExchangeMagazine) -> R,
@@ -714,57 +785,41 @@ impl CurrentCpu {
             .numa_node()
             .map(crate::mm::types::NumaNodeId::new)
     }
-    pub fn acquire() -> Option<Self> {
-        // Hosted executions have no kernel-installed GS/MSR binding. They use
-        // the platform allocator path rather than reading a privileged register.
-        #[cfg(any(feature = "std", target_os = "linux", target_os = "windows"))]
-        {
-            None
-        }
-        #[cfg(not(any(feature = "std", target_os = "linux", target_os = "windows")))]
-        {
-            let address = usize::try_from(unsafe { read_msr(IA32_GS_BASE) }).ok()?;
-            if address == 0 || address % core::mem::align_of::<CpuLocal>() != 0 {
-                return None;
-            }
-            // SAFETY: each kernel entry path clears IA32_GS_BASE before using
-            // allocation or locking services. A non-zero value is installed only
-            // from a pinned CpuLocal owned by CpuRuntime and is never repointed
-            // during that CPU's lifetime.
-            let local = unsafe { &*(address as *const CpuLocal) };
-            if !local.is_self_address(address) {
-                return None;
-            }
-            Some(Self {
-                local,
-                _not_send_or_sync: PhantomData,
-            })
-        }
-    }
 
     pub(crate) fn clear_boot_binding() {
-        unsafe { write_msr(IA32_GS_BASE, 0) };
+        #[cfg(target_os = "none")]
+        unsafe {
+            write_msr(IA32_GS_BASE, 0)
+        };
     }
 
     pub(crate) fn bind(id: CpuId) -> Result<Self, CurrentCpuBindError> {
-        let runtime = super::try_runtime().ok_or(CurrentCpuBindError::RuntimeUnavailable)?;
-        let local = runtime
-            .cpu_local(id)
-            .ok_or(CurrentCpuBindError::UnknownCpu(id))?;
-        unsafe { local.install_on_current_cpu() };
-        let mask = match super::xstate::configuration() {
-            super::xstate::XStateConfiguration::Fxsave => 0,
-            super::xstate::XStateConfiguration::Xsave { mask, .. } => mask,
-        };
-        // SAFETY: CpuRuntime pins this CPU-local image across the whole CPU
-        // generation and the BSP/AP xstate policy bounds the image size.
-        unsafe {
-            local
-                .preemption
-                .state()
-                .configure_xstate(local.scheduler_xstate.get() as usize, mask)
-        };
-        Self::acquire().ok_or(CurrentCpuBindError::BindingRejected(id))
+        #[cfg(not(target_os = "none"))]
+        {
+            let _ = id;
+            Err(CurrentCpuBindError::UnsupportedPlatform)
+        }
+        #[cfg(target_os = "none")]
+        {
+            let runtime = super::try_runtime().ok_or(CurrentCpuBindError::RuntimeUnavailable)?;
+            let local = runtime
+                .cpu_local(id)
+                .ok_or(CurrentCpuBindError::UnknownCpu(id))?;
+            unsafe { local.install_on_current_cpu() };
+            let mask = match super::xstate::configuration() {
+                super::xstate::XStateConfiguration::Fxsave => 0,
+                super::xstate::XStateConfiguration::Xsave { mask, .. } => mask,
+            };
+            // SAFETY: CpuRuntime pins this CPU-local image across the whole CPU
+            // generation and the BSP/AP xstate policy bounds the image size.
+            unsafe {
+                local
+                    .preemption
+                    .state()
+                    .configure_xstate(local.scheduler_xstate.get() as usize, mask)
+            };
+            Self::acquire().ok_or(CurrentCpuBindError::BindingRejected(id))
+        }
     }
 
     pub const fn id(&self) -> CpuId {
@@ -788,6 +843,36 @@ impl CurrentCpu {
             match owned.execution.as_ref() {
                 Some(context) => context.reserve_memory(bytes),
                 None => Ok(None), // bootstrap/kernel execution is uncharged
+            }
+        })
+    }
+
+    pub(crate) fn execution_cell(&self) -> Option<crate::loader::CellId> {
+        with_owner_access(|| {
+            // SAFETY: the short owner-only borrow excludes replacement and
+            // returns only a copied code-generation observation.
+            unsafe {
+                (*self.local.owned.get())
+                    .execution
+                    .as_ref()
+                    .and_then(|context| context.cell)
+            }
+        })
+    }
+
+    pub(crate) fn finalization_authority(
+        &self,
+        domain: crate::domain::DomainId,
+    ) -> Option<crate::task::execution::FinalizationAuthority> {
+        with_owner_access(|| {
+            // SAFETY: Arc retention does not call into execution replacement.
+            // Derivation is limited to the installed owner's cleanup authority.
+            unsafe {
+                (*self.local.owned.get())
+                    .execution
+                    .as_ref()
+                    .filter(|context| context.subject().domain == domain)
+                    .and_then(|context| context.finalization.clone())
             }
         })
     }
@@ -909,12 +994,20 @@ impl CurrentCpu {
         self.local.remote.complete_tlb_generation(generation);
     }
 
-    pub(crate) fn defer_interrupt_wake(&self, encoded_source: usize) -> bool {
-        self.local.remote.defer_interrupt_wake(encoded_source)
+    pub(crate) fn defer_interrupt_wake(&self, index: usize) {
+        self.local.remote.defer_interrupt_wake(index);
     }
 
-    pub(crate) fn take_interrupt_wake(&self) -> Option<usize> {
-        self.local.remote.take_interrupt_wake()
+    pub(crate) fn atomic_notifications(&self) -> &NotificationQueue<WakerSlot> {
+        &self.local.remote.atomic_notifications
+    }
+
+    pub(crate) fn queue_notifications(&self) -> &NotificationQueue<WakerQueueState> {
+        &self.local.remote.queue_notifications
+    }
+
+    pub(crate) fn drain_interrupt_wakes(&self, deliver: impl FnMut(usize)) {
+        self.local.remote.interrupt_wakes.drain(deliver);
     }
 
     pub(crate) fn pending_deferred_work(&self) -> usize {
@@ -932,6 +1025,7 @@ impl CurrentCpu {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CurrentCpuBindError {
+    UnsupportedPlatform,
     RuntimeUnavailable,
     UnknownCpu(CpuId),
     BindingRejected(CpuId),
@@ -964,6 +1058,16 @@ pub(crate) struct ExecutionContextGuard {
 }
 
 impl ExecutionContextGuard {
+    /// Restore the scheduler/caller and return the exact installed execution.
+    /// Nested guards remain owned on an interrupted task's stack.
+    pub(crate) fn leave(self) -> Option<crate::task::ExecutionContext> {
+        let mut guard = core::mem::ManuallyDrop::new(self);
+        let previous = guard.previous.take();
+        let execution = guard.current.local.replace_execution(previous);
+        drop(guard.code_lease.take());
+        execution
+    }
+
     pub(crate) fn retain_code(mut self, lease: crate::domain::DomainCodeLease) -> Self {
         self.code_lease = Some(lease);
         self
@@ -1022,33 +1126,67 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn deferred_queue_is_bounded_and_preserves_fifo_order() {
+    fn deferred_notifications_coalesce_and_retain_their_target() {
         let remote = CpuRemoteAccess::new();
-
-        for pointer in 1..=DEFERRED_WAKE_QUEUE_SLOTS - 1 {
-            assert!(remote.defer_atomic_wake(pointer));
+        let target =
+            alloc::sync::Arc::new(exorust_sync::DeferredNotification::new(WakerSlot::new()));
+        let weak = alloc::sync::Arc::downgrade(&target);
+        target.value().register(core::task::Waker::noop());
+        for _ in 0..10_000 {
+            remote.atomic_notifications.publish(&target);
         }
-        assert!(!remote.defer_atomic_wake(DEFERRED_WAKE_QUEUE_SLOTS));
-
-        for pointer in 1..=DEFERRED_WAKE_QUEUE_SLOTS - 1 {
-            assert_eq!(remote.take_atomic_wake(), Some(pointer));
-        }
-        assert_eq!(remote.take_atomic_wake(), None);
+        assert_eq!(remote.pending_deferred_work(), 1);
+        assert_eq!(
+            remote.physical_generation_residue(),
+            Some(CpuGenerationResource::DeferredWork)
+        );
+        drop(target);
+        assert!(weak.upgrade().is_some());
+        remote.atomic_notifications.drain(WakerSlot::wake);
+        assert!(weak.upgrade().is_none());
+        assert_eq!(remote.pending_deferred_work(), 0);
+        assert_eq!(remote.physical_generation_residue(), None);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn deferred_queues_keep_message_classes_separate() {
         let remote = CpuRemoteAccess::new();
-
-        assert!(remote.defer_atomic_wake(11));
-        assert!(remote.defer_queue_wake(22));
-        assert!(remote.defer_interrupt_wake(66));
+        let atomic =
+            alloc::sync::Arc::new(exorust_sync::DeferredNotification::new(WakerSlot::new()));
+        let queue = alloc::sync::Arc::new(exorust_sync::DeferredNotification::new(
+            WakerQueueState::new(),
+        ));
+        remote.atomic_notifications.publish(&atomic);
+        remote.queue_notifications.publish(&queue);
+        remote.defer_interrupt_wake(66);
         assert_eq!(remote.pending_deferred_work(), 3);
-
-        assert_eq!(remote.take_atomic_wake(), Some(11));
-        assert_eq!(remote.take_queue_wake(), Some(22));
-        assert_eq!(remote.take_interrupt_wake(), Some(66));
+        remote.atomic_notifications.drain(WakerSlot::wake);
+        remote.queue_notifications.drain(WakerQueueState::wake_all);
+        remote.interrupt_wakes.drain(|index| assert_eq!(index, 66));
         assert_eq!(remote.pending_deferred_work(), 0);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn interrupt_storm_preserves_other_sources_and_snapshot_republication() {
+        let notifications = InterruptWakeSet::new();
+        for _ in 0..10_000 {
+            notifications.publish(1);
+        }
+        notifications.publish(crate::task::interrupt_waker::MAX_INTERRUPT_INDICES - 1);
+        assert_eq!(notifications.pending_count(), 2);
+        let mut delivered = alloc::vec::Vec::new();
+        notifications.drain(|index| {
+            delivered.push(index);
+            notifications.publish(1);
+        });
+        assert_eq!(
+            delivered,
+            [1, crate::task::interrupt_waker::MAX_INTERRUPT_INDICES - 1]
+        );
+        assert_eq!(notifications.pending_count(), 1);
+        notifications.drain(|index| assert_eq!(index, 1));
+        assert_eq!(notifications.pending_count(), 0);
     }
 }

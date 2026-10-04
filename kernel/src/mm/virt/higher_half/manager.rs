@@ -68,7 +68,7 @@ impl HigherHalfManager {
 // Global Instance
 // ============================================================================
 
-static HIGHER_HALF_MANAGER: spin::Once<HigherHalfManager> = spin::Once::new();
+static HIGHER_HALF_MANAGER: crate::sync::InitOnce<HigherHalfManager> = crate::sync::InitOnce::new();
 
 /// Publishes immutable HHDM geometry once before multiprocessor startup.
 pub fn init(physical_memory_offset: u64) {
@@ -172,6 +172,8 @@ pub enum MapError {
     AlignmentError,
     /// 親エントリがHuge Page
     ParentEntryHugePage,
+    /// An existing parent prevents the requested leaf access permissions.
+    ParentPermissionDenied,
     /// ハードウェア／内部状態のエラー（PoisonLockが毒入れされているなど）
     HardwareError,
 }
@@ -234,7 +236,7 @@ fn validate_physical_range(start: PhysAddr, size: u64) -> Result<(), MapError> {
 }
 
 fn supports_1g_pages() -> bool {
-    static SUPPORTED: spin::Once<bool> = spin::Once::new();
+    static SUPPORTED: crate::sync::InitOnce<bool> = crate::sync::InitOnce::new();
     *SUPPORTED.call_once(|| {
         // SAFETY: CPUID reads architectural feature information in every ring.
         core::arch::x86_64::__cpuid(0x80000000).eax >= 0x80000001
@@ -247,6 +249,19 @@ pub struct UnmappedPage {
     pub physical: PhysAddr,
     pub virtual_start: VirtAddr,
     pub size: PageSize,
+}
+
+/// x86 paging intersects writable/user permissions at every level and inherits
+/// execute disable from any parent. Leaf flags alone cannot grant these rights.
+fn validate_parent_permissions(parent: PageFlags, leaf: PageFlags) -> Result<(), MapError> {
+    if (leaf.contains(PageFlags::WRITABLE) && !parent.contains(PageFlags::WRITABLE))
+        || (leaf.contains(PageFlags::USER) && !parent.contains(PageFlags::USER))
+        || (!leaf.contains(PageFlags::NO_EXECUTE) && parent.contains(PageFlags::NO_EXECUTE))
+    {
+        Err(MapError::ParentPermissionDenied)
+    } else {
+        Ok(())
+    }
 }
 
 /// ページテーブルマネージャー
@@ -805,6 +820,7 @@ impl PageTableManager {
             if entry.is_huge() {
                 return Err(MapError::ParentEntryHugePage);
             }
+            validate_parent_permissions(entry.flags(), flags)?;
             return Ok(entry.phys_addr());
         }
         let previous = *entry;
@@ -1086,18 +1102,37 @@ pub unsafe fn global_update_flags_range(
     finish_range_update(virt, size, result)
 }
 
-/// Maps pre-owned 4 KiB frames into a contiguous virtual run. A failed map
-/// removes every page published by this call before returning. The caller
-/// retains each physical frame until unmap and the TLB shootdown complete.
+/// Maps owned stack frames above an unmapped low guard page. The guard check
+/// and leaf publication share the page-table lock. Existing permissions are
+/// never broadened. A failed map removes every page and parent installed here
+/// before returning; physical owners retain frames through TLB completion.
+///
+/// # Safety
+///
+/// The caller exclusively owns the virtual slot, including its guard, and every
+/// supplied frame until unmap and the synchronous TLB shootdown have completed.
 pub(crate) unsafe fn global_map_guarded_scatter(
     guard_page: VirtAddr,
     frames: &[PhysAddr],
-    flags: PageFlags,
 ) -> Result<(), MapError> {
+    if !guard_page.is_page_aligned() {
+        return Err(MapError::AlignmentError);
+    }
+    if frames.is_empty() {
+        return Err(MapError::InvalidAddress);
+    }
+    let base = VirtAddr::new(
+        guard_page
+            .as_u64()
+            .checked_add(4096)
+            .ok_or(MapError::InvalidAddress)?,
+    );
+    let flags = PageFlags::kernel_data();
     let bytes = u64::try_from(frames.len())
         .ok()
         .and_then(|count| count.checked_mul(4096))
         .ok_or(MapError::InvalidAddress)?;
+    let total_bytes = bytes.checked_add(4096).ok_or(MapError::InvalidAddress)?;
     base.as_u64()
         .checked_add(bytes)
         .ok_or(MapError::InvalidAddress)?;
@@ -1113,12 +1148,19 @@ pub(crate) unsafe fn global_map_guarded_scatter(
     let mut created = Vec::new();
     created
         .try_reserve_exact(capacity)
-        .map_err(|_| MapError::FrameAllocationFailed)?;
+        .map_err(|_| MapError::MetadataAllocation)?;
+    let mut retired = Vec::new();
+    retired
+        .try_reserve_exact(capacity)
+        .map_err(|_| MapError::MetadataAllocation)?;
     let mut guard = PAGE_TABLE_MANAGER
         .lock()
         .map_err(|_| MapError::HardwareError)?;
     let manager = guard.as_mut().ok_or(MapError::InvalidAddress)?;
     manager.set_pml4_phys(get_cr3());
+    if manager.translate(guard_page).is_some() {
+        return Err(MapError::AlreadyMapped);
+    }
     for (mapped, &frame) in frames.iter().enumerate() {
         let virt = base.offset(mapped as u64 * 4096);
         let result = manager.map_page_recording(virt, frame, flags, &mut |link| created.push(link));
@@ -1138,19 +1180,23 @@ pub(crate) unsafe fn global_map_guarded_scatter(
                 );
                 *entry = link.previous;
             }
+            {
+                let mut owners = manager.table_frames.borrow_mut();
+                for link in &created {
+                    let index = owners
+                        .iter()
+                        .position(|owner| owner.as_u64() == link.child.as_u64())
+                        .expect("transaction-created table retains its PMM owner");
+                    retired.push(owners.swap_remove(index));
+                }
+            }
             drop(guard);
             // Invalidate paging-structure caches even if no leaf was installed.
             if mapped != 0 || !created.is_empty() {
-                flush_range_tlb(base, bytes);
+                flush_range_tlb(guard_page, total_bytes);
             }
-            for link in created {
-                crate::security::dma::unregister_protected_page(link.child.as_u64());
-                let frame = x86_64::structures::paging::PhysFrame::<
-                    x86_64::structures::paging::Size4KiB,
-                >::from_start_address(x86_64::PhysAddr::new(
-                    link.child.as_u64(),
-                ))
-                .expect("page-table frame is aligned");
+            for frame in retired {
+                crate::security::dma::unregister_protected_page(frame.as_u64());
                 crate::mm::phys::frame_allocator::dealloc_frame(frame);
             }
             return Err(error);
@@ -1158,7 +1204,7 @@ pub(crate) unsafe fn global_map_guarded_scatter(
     }
     drop(guard);
     if bytes != 0 {
-        flush_range_tlb(base, bytes);
+        flush_range_tlb(guard_page, total_bytes);
     }
     Ok(())
 }
@@ -1194,7 +1240,7 @@ pub unsafe fn global_unmap_scatter(base: VirtAddr, frames: &[PhysAddr]) -> Resul
         let virt = base.offset(index as u64 * 4096);
         let removed = unsafe { manager.unmap_page(virt) }
             .unwrap_or_else(|_| panic!("validated scatter page disappeared during unmap"));
-        assert_eq!(removed, frame, "scatter page changed during unmap");
+        assert_eq!(removed.physical, frame, "scatter page changed during unmap");
     }
     drop(guard);
     if bytes != 0 {
@@ -1328,6 +1374,53 @@ pub unsafe fn global_update_flags(virt: VirtAddr, flags: PageFlags) -> Result<()
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;
+
+#[cfg(test)]
+mod permission_tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn leaf_mapping_requires_the_requested_effective_permissions() {
+        let writable_parent = PageFlags::new(PageFlags::PRESENT | PageFlags::WRITABLE);
+        assert_eq!(
+            validate_parent_permissions(writable_parent, PageFlags::kernel_data()),
+            Ok(())
+        );
+        assert_eq!(
+            validate_parent_permissions(
+                PageFlags::new(PageFlags::PRESENT),
+                PageFlags::kernel_data()
+            ),
+            Err(MapError::ParentPermissionDenied)
+        );
+        assert_eq!(
+            validate_parent_permissions(writable_parent, PageFlags::user_data()),
+            Err(MapError::ParentPermissionDenied)
+        );
+        assert_eq!(
+            validate_parent_permissions(
+                writable_parent.set(PageFlags::USER),
+                PageFlags::user_data()
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_parent_permissions(
+                writable_parent.set(PageFlags::NO_EXECUTE),
+                PageFlags::kernel_code()
+            ),
+            Err(MapError::ParentPermissionDenied)
+        );
+        assert_eq!(
+            validate_parent_permissions(
+                writable_parent.set(PageFlags::NO_EXECUTE),
+                PageFlags::kernel_data()
+            ),
+            Ok(())
+        );
+    }
+}
 
 /// Prepares the boot-owned pixel aperture before any AP is started. Both loader
 /// aliases are retired before either WC alias is created. Failure keeps the

@@ -10,6 +10,7 @@ use alloc::collections::VecDeque;
 use alloc::vec::Vec;
 use core::ptr::null_mut;
 use core::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use hal::preemption::PreemptionGuard;
 
 /// RCUのグレース期間を追跡するためのエポックカウンタ
 ///
@@ -33,12 +34,16 @@ pub const RCU_GRACE_PERIOD_SWITCHES: usize = 2;
 /// このガードが生存している間、RCU保護されたデータの参照は有効
 pub struct RcuReadGuard {
     current: CurrentCpu,
+    _preemption: PreemptionGuard,
 }
 
 impl RcuReadGuard {
     /// 新しいRCU読み取りガードを作成
-    fn new(current: CurrentCpu) -> Self {
-        Self { current }
+    fn new(current: CurrentCpu, preemption: PreemptionGuard) -> Self {
+        Self {
+            current,
+            _preemption: preemption,
+        }
     }
 }
 
@@ -61,13 +66,14 @@ impl Drop for RcuReadGuard {
 /// Panics if CPU-local state is not installed on the executing CPU.
 #[inline]
 pub fn rcu_read_lock() -> RcuReadGuard {
+    let preemption = PreemptionGuard::enter();
     // 読み取り開始を記録（compiler fence のみ、実際のロックなし）
     core::sync::atomic::compiler_fence(Ordering::Acquire);
 
     let current = CurrentCpu::acquire()
         .unwrap_or_else(|| panic!("RCU read-side section entered without CPU-local state"));
     current.enter_rcu_read();
-    RcuReadGuard::new(current)
+    RcuReadGuard::new(current, preemption)
 }
 
 /// 現在RCU読み取りセクション内かどうか

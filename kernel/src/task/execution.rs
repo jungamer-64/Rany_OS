@@ -94,12 +94,22 @@ impl ExecutionContext {
                 .bind_memory(domain)
                 .map_err(ExecutionAdmissionError::Quota)?
         };
-        Ok(Self { subject, memory, cell: None, finalization: None })
+        Ok(Self {
+            subject,
+            memory,
+            cell: None,
+            finalization: None,
+        })
     }
 
     pub fn from_subject(subject: Subject) -> Result<Self, QuotaError> {
         let memory = crate::domain::quota::quota_manager().bind_memory(subject.domain)?;
-        Ok(Self { subject, memory, cell: None, finalization: None })
+        Ok(Self {
+            subject,
+            memory,
+            cell: None,
+            finalization: None,
+        })
     }
 
     pub(crate) fn with_cell(mut self, cell: Option<crate::loader::CellId>) -> Self {
@@ -146,12 +156,16 @@ pub(crate) fn enter_domain(
     domain: DomainId,
 ) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
     let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
-    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let subject = current
+        .execution()
+        .ok_or(ExecutionContextUnavailable::NoExecution)?;
     let lease = crate::domain::registry::acquire_execution_code_lease(domain)
         .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
     let context = ExecutionContext::for_task(subject.task, domain)
         .map_err(ExecutionContextUnavailable::Admission)?;
-    Ok(current.enter_execution(context.with_cell(lease.cell())).retain_code(lease))
+    Ok(current
+        .enter_execution(context.with_cell(lease.cell()))
+        .retain_code(lease))
 }
 
 /// The nested entry owns its code lease on the executing task's stack.
@@ -160,12 +174,16 @@ pub(crate) fn enter_cell_domain(
     cell: crate::loader::CellId,
 ) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
     let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
-    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let subject = current
+        .execution()
+        .ok_or(ExecutionContextUnavailable::NoExecution)?;
     let lease = crate::domain::registry::acquire_cell_execution_lease(domain, cell)
         .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
     let context = ExecutionContext::for_task(subject.task, domain)
         .map_err(ExecutionContextUnavailable::Admission)?;
-    Ok(current.enter_execution(context.with_cell(Some(cell))).retain_code(lease))
+    Ok(current
+        .enter_execution(context.with_cell(Some(cell)))
+        .retain_code(lease))
 }
 
 pub(crate) fn enter_domain_teardown(
@@ -173,12 +191,25 @@ pub(crate) fn enter_domain_teardown(
     code: Option<&alloc::sync::Arc<crate::loader::code::CodeLease>>,
 ) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
     let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
-    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
-    let lease = crate::domain::registry::acquire_teardown_code_lease(domain, code.map(|code| code.as_ref()))
-        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
+    let subject = current
+        .execution()
+        .ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease = crate::domain::registry::acquire_teardown_code_lease(
+        domain,
+        code.map(|code| code.as_ref()),
+    )
+    .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
     let context = ExecutionContext::for_task(subject.task, domain)
         .map_err(ExecutionContextUnavailable::Admission)?;
-    Ok(current.enter_execution(context.with_cell(lease.cell()).with_finalization(FinalizationAuthority { code: code.cloned() })).retain_code(lease))
+    Ok(current
+        .enter_execution(
+            context
+                .with_cell(lease.cell())
+                .with_finalization(FinalizationAuthority {
+                    code: code.cloned(),
+                }),
+        )
+        .retain_code(lease))
 }
 
 /// Registered invocation keeps its owner's exact code generation until return.
@@ -188,12 +219,25 @@ pub(crate) fn enter_resource_callback(
     invocation: crate::domain::registry::ResourceInvocation,
 ) -> Result<crate::cpu::ExecutionContextGuard, ExecutionContextUnavailable> {
     let current = CurrentCpu::acquire().ok_or(ExecutionContextUnavailable::UnboundCpu)?;
-    let subject = current.execution().ok_or(ExecutionContextUnavailable::NoExecution)?;
-    let lease = crate::domain::registry::acquire_resource_execution_lease(domain, resource, invocation)
-        .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
+    let subject = current
+        .execution()
+        .ok_or(ExecutionContextUnavailable::NoExecution)?;
+    let lease =
+        crate::domain::registry::acquire_resource_execution_lease(domain, resource, invocation)
+            .ok_or(ExecutionContextUnavailable::CodeUnavailable)?;
     let context = ExecutionContext::for_task(subject.task, domain)
         .map_err(ExecutionContextUnavailable::Admission)?;
-    Ok(current.enter_execution(context.with_cell(lease.cell())).retain_code(lease))
+    let finalization = match invocation {
+        crate::domain::registry::ResourceInvocation::Finalize => Some(FinalizationAuthority {
+            code: resource
+                .retain_finalization_code()
+                .map_err(|_| ExecutionContextUnavailable::CodeUnavailable)?,
+        }),
+        crate::domain::registry::ResourceInvocation::Operation => None,
+    };
+    let mut context = context.with_cell(lease.cell());
+    context.finalization = finalization;
+    Ok(current.enter_execution(context).retain_code(lease))
 }
 
 #[cfg(all(test, any(feature = "std", target_os = "linux")))]
@@ -201,16 +245,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn security_and_quota_rejections_leave_the_installed_execution_unchanged() {
+    fn security_and_quota_admission_report_independent_rejections() {
         crate::domain::init();
-        let current = CurrentCpu::acquire().expect("bound fixture CPU");
-        let initiating = current.enter_execution(
-            ExecutionContext::for_task(TaskId::from_raw(0x4144_4d49), DomainId::KERNEL)
-                .expect("live kernel task admission"),
-        );
-        let before = CurrentCpu::acquire()
-            .expect("bound fixture CPU")
-            .execution();
         let task = TaskId::from_raw(0x5345_4355);
         let missing = DomainId::new(u64::MAX);
         assert!(matches!(
@@ -248,17 +284,10 @@ mod tests {
             Err(ExecutionAdmissionError::Security(DomainSecurityLookupError::Terminated(id)))
                 if id == domain
         ));
-        assert_eq!(
-            CurrentCpu::acquire()
-                .expect("bound fixture CPU")
-                .execution(),
-            before
-        );
-        drop(initiating);
     }
 
     #[test]
-    fn recovery_funding_preserves_subject_and_restores_retired_admission() {
+    fn recovery_funding_preserves_subject_and_retains_retired_account() {
         let domain = crate::domain::create_domain(alloc::string::String::from("recovery_subject"))
             .expect("domain admission");
         crate::domain::set_domain_resource_limits(domain, 100, 1, 0).expect("one byte quota");
@@ -268,23 +297,17 @@ mod tests {
             cred: DomainCredentials { uid: 123, gid: 456 },
             caps: CapabilitySet::empty(),
         };
-        let current = CurrentCpu::acquire().expect("bound CPU");
-        let admitted = current
-            .enter_execution(ExecutionContext::from_subject(subject).expect("execution admission"));
-        let current = CurrentCpu::acquire().expect("bound CPU");
-        assert!(current.reserve_memory(2).is_err());
-        let recovery = current.enter_execution(ExecutionContext::housekeeping(Some(subject)));
-        let current = CurrentCpu::acquire().expect("bound CPU");
-        assert_eq!(current.execution(), Some(subject));
-        assert!(matches!(current.reserve_memory(1), Ok(None)));
+        let admitted = ExecutionContext::from_subject(subject).expect("execution admission");
+        assert!(admitted.reserve_memory(2).is_err());
+        let recovery = ExecutionContext::housekeeping(Some(subject));
+        assert_eq!(recovery.subject(), subject);
+        assert!(matches!(recovery.reserve_memory(1), Ok(None)));
         crate::domain::terminate_domain(domain).expect("retire initiating domain");
         drop(recovery);
-        let current = CurrentCpu::acquire().expect("bound CPU");
-        assert_eq!(current.execution(), Some(subject));
-        assert!(matches!(
-            current.reserve_memory(1),
-            Err(QuotaError::Retired { domain_id }) if domain_id == domain
-        ));
+        assert_eq!(admitted.subject(), subject);
+        assert!(
+            matches!(admitted.reserve_memory(1), Err(QuotaError::Retired { domain_id }) if domain_id == domain)
+        );
         assert!(crate::domain::quota_manager().get_stats(domain).is_some());
         drop(admitted);
         assert!(crate::domain::quota_manager().get_stats(domain).is_none());

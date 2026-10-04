@@ -5,8 +5,6 @@
 pub mod exceptions;
 pub mod gdt;
 
-use core::cell::UnsafeCell;
-use core::mem::MaybeUninit;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use x86_64::structures::idt::InterruptDescriptorTable;
 
@@ -32,18 +30,14 @@ macro_rules! handler_to_x86 {
     };
 }
 
-/// IDT初期化完了フラグ
-static IDT_INITIALIZED: AtomicBool = AtomicBool::new(false);
 /// Network driver poll fallback gate (enabled after bridge initialization).
 static NET_DRIVER_POLL_FALLBACK_ENABLED: AtomicBool = AtomicBool::new(false);
 /// Pending flag for deferred network driver polling (handled outside ISR).
 static NET_DRIVER_POLL_FALLBACK_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// IDTコンテナ（Sync実装のため）
-struct IdtContainer(UnsafeCell<MaybeUninit<InterruptDescriptorTable>>);
-unsafe impl Sync for IdtContainer {}
-
-static IDT_CONTAINER: IdtContainer = IdtContainer(UnsafeCell::new(MaybeUninit::uninit()));
+// Build and publish once on the BSP. APs only load the immutable table; no
+// processor can observe or rewrite a partially configured descriptor table.
+static IDT: exorust_sync::InitOnce<InterruptDescriptorTable> = exorust_sync::InitOnce::new();
 
 #[inline]
 fn record_interrupt_frame(vector: u8, stack_frame: &InterruptStackFrame) {
@@ -99,20 +93,8 @@ pub enum InterruptVector {
 }
 
 /// IDTを初期化する関数
-fn init_idt() {
-    let idt = unsafe {
-        let idt_ptr = (*IDT_CONTAINER.0.get()).as_mut_ptr();
-
-        // IDTをゼロクリア（大きなstructなので慎重に）
-        let idt_bytes = idt_ptr as *mut u8;
-        let idt_size = core::mem::size_of::<InterruptDescriptorTable>();
-        for i in 0..idt_size {
-            crate::io::mmio::volatile_write::<u8>(idt_bytes.add(i) as usize, 0);
-        }
-
-        // IDTはすでにゼロ初期化されているので、ハンドラだけ設定
-        &mut *(idt_ptr as *mut InterruptDescriptorTable)
-    };
+fn build_idt() -> InterruptDescriptorTable {
+    let mut idt = InterruptDescriptorTable::new();
 
     // CPU例外ハンドラの設定
     idt.divide_error.set_handler_fn(handler_to_x86!(
@@ -172,6 +154,15 @@ fn init_idt() {
     idt[InterruptVector::Timer as u8].set_handler_fn(handler_to_x86!(
         timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
+    #[cfg(target_os = "none")]
+    unsafe {
+        // The entry saves the interrupted task's GPR and xstate before Rust
+        // runs, then returns through IRET or the CPU-owned scheduler stack.
+        idt[APIC_TIMER_VECTOR].set_handler_addr(x86_64::VirtAddr::new(
+            rany_apic_timer_entry as *const () as u64,
+        ));
+    }
+    #[cfg(not(target_os = "none"))]
     idt[APIC_TIMER_VECTOR].set_handler_fn(handler_to_x86!(
         apic_timer_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
@@ -283,21 +274,11 @@ fn init_idt() {
         spurious_interrupt_handler as extern "x86-interrupt" fn(InterruptStackFrame)
     ));
 
-    // IDTをロード
-    idt.load();
+    idt
 }
 
 pub fn load_idt_for_current_cpu() -> Result<(), &'static str> {
-    let initialized = IDT_INITIALIZED.load(Ordering::Acquire);
-    if !initialized {
-        return Err("IDT not initialized");
-    }
-
-    unsafe {
-        let idt = &*(*IDT_CONTAINER.0.get()).as_ptr();
-        idt.load();
-    }
-
+    IDT.get().ok_or("IDT not initialized")?.load();
     Ok(())
 }
 
@@ -324,8 +305,7 @@ pub fn init() {
     init_pic();
 
     // 3. IDT のロード
-    init_idt();
-    IDT_INITIALIZED.store(true, Ordering::SeqCst);
+    IDT.call_once(build_idt).load();
 }
 
 /// 割り込みを有効化
@@ -333,13 +313,7 @@ pub fn init() {
 /// # Safety
 /// IDT が初期化されていないと未定義動作
 pub fn enable_interrupts() {
-    if !IDT_INITIALIZED.load(Ordering::SeqCst) {
-        crate::io::log::early_print(
-            "[INT] WARN: IDT flag was false in enable_interrupts; reloading IDT\n",
-        );
-        init_idt();
-        IDT_INITIALIZED.store(true, Ordering::SeqCst);
-    }
+    load_idt_for_current_cpu().unwrap_or_else(|error| panic!("cannot enable interrupts: {error}"));
     // actually enable
     x86_64::instructions::interrupts::enable();
 
@@ -371,20 +345,31 @@ where
 }
 
 // ============================================================================
-// PIC (8259A) 無効化 - APIC専用設計
+// Bootstrap PIC routing and legacy-device acknowledgement
 // ============================================================================
-// 設計理念: レガシーPICはモダンx86_64では不要
-// - pic8259クレートを削除し、直接I/Oポート操作で無効化
-// - 全ての割り込みはAPIC/IO APICで処理
-// ============================================================================
-
-// use hal::port_io::PortU8; // previously used x86_64 Port, replaced by crate::io::inb/outb usage
-
-/// PICのI/Oポートアドレス
-const PIC1_COMMAND: u16 = 0x20;
-const PIC1_DATA: u16 = 0x21;
-const PIC2_COMMAND: u16 = 0xA0;
-const PIC2_DATA: u16 = 0xA1;
+// This platform owner reserves both PIC register pairs and the delay port.
+// One IRQ-safe guard serializes initialization, mask RMW and acknowledgement;
+// interrupt handlers cannot interrupt a task while it holds this protocol.
+static PIC_PORTS: crate::sync::IrqPoisonLock<[hal::IoPortRange; 5]> = {
+    // SAFETY: fixed platform PIC resources are retained here and all accesses
+    // to them go through this owner. Construction performs no port I/O.
+    let master_command = unsafe { hal::IoPortRange::single(0x20) };
+    // SAFETY: the master PIC data register belongs to the same platform owner.
+    let master_data = unsafe { hal::IoPortRange::single(0x21) };
+    // SAFETY: the slave PIC command register belongs to the same platform owner.
+    let slave_command = unsafe { hal::IoPortRange::single(0xa0) };
+    // SAFETY: the slave PIC data register belongs to the same platform owner.
+    let slave_data = unsafe { hal::IoPortRange::single(0xa1) };
+    // SAFETY: this platform owner reserves the traditional I/O delay port.
+    let delay = unsafe { hal::IoPortRange::single(0x80) };
+    crate::sync::IrqPoisonLock::new([
+        master_command,
+        master_data,
+        slave_command,
+        slave_data,
+        delay,
+    ])
+};
 
 /// ICW1: 初期化コマンド
 const ICW1_INIT: u8 = 0x10;
@@ -392,120 +377,77 @@ const ICW1_ICW4: u8 = 0x01;
 /// ICW4: 8086モード
 const ICW4_8086: u8 = 0x01;
 
-/// PICを完全に無効化（APICモードへ移行）
-///
-/// これは設計理念に基づく重要な処理：
-/// - レガシーPICはシングルコア時代の遺物
-/// - 現代のx86_64ではAPIC/MSI-Xを使用すべき
-/// - PICは初期化後に全マスクして無効化
+/// Remaps bootstrap IRQs. Timer IRQ0 is masked after local timer handoff;
+/// keyboard and serial routing remain available for legacy devices.
 fn init_pic() {
-    // unsafe block removed based on lint check
-    {
-        // Intentionally keep creation of Port inside unsafe, but use wrapper functions
-        // for the actual read/write operations to minimize scattered unsafe usage.
-
-        // PICの初期化シーケンス（リマップ）
-        // これは必要: BIOSがPIC割り込みをCPU例外と衝突する位置に設定するため
-
-        // ICW1: 初期化開始
-        crate::io::outb(PIC1_COMMAND, ICW1_INIT | ICW1_ICW4);
-        io_wait();
-        crate::io::outb(PIC2_COMMAND, ICW1_INIT | ICW1_ICW4);
-        io_wait();
-
-        // ICW2: ベクタオフセット設定（例外との衝突を回避）
-        crate::io::outb(PIC1_DATA, PIC1_OFFSET);
-        io_wait();
-        crate::io::outb(PIC2_DATA, PIC2_OFFSET);
-        io_wait();
-
-        // ICW3: カスケード設定
-        crate::io::outb(PIC1_DATA, 4); // IRQ2にスレーブ接続
-        io_wait();
-        crate::io::outb(PIC2_DATA, 2); // カスケードID
-        io_wait();
-
-        // ICW4: 8086モード
-        crate::io::outb(PIC1_DATA, ICW4_8086);
-        io_wait();
-        crate::io::outb(PIC2_DATA, ICW4_8086);
-        io_wait();
-
-        // 割り込みマスク設定
-        // PIC1: IRQ0(timer), IRQ1(keyboard), IRQ2(cascade), IRQ4(COM1) を有効化
-        // ビット0=IRQ0, ビット1=IRQ1, ビット2=IRQ2(cascade), ビット4=IRQ4
-        // 0=有効, 1=マスク
-        // ~(0x01 | 0x02 | 0x04 | 0x10) = 0xE8
-        crate::io::outb(PIC1_DATA, 0b11101000); // Timer(0), Keyboard(1), Cascade(2), COM1(4) を有効
-
-        // PIC2: keep legacy PCI IRQ9/10/11 masked.
-        // Shared INTx ISR paths can re-enter driver locks and deadlock with task-context
-        // DMA/TX paths. Completion is handled by deferred polling.
-        crate::io::outb(PIC2_DATA, 0b11111111);
+    let ports = PIC_PORTS.lock().unwrap_or_else(|error| error.into_inner());
+    let [
+        master_command,
+        master_data,
+        slave_command,
+        slave_data,
+        delay,
+    ] = &*ports;
+    let mut master_command = master_command.first::<u8>().expect("one-byte PIC port");
+    let mut master_data = master_data.first::<u8>().expect("one-byte PIC port");
+    let mut slave_command = slave_command.first::<u8>().expect("one-byte PIC port");
+    let mut slave_data = slave_data.first::<u8>().expect("one-byte PIC port");
+    let mut delay = delay.first::<u8>().expect("one-byte delay port");
+    master_command.write(ICW1_INIT | ICW1_ICW4);
+    delay.write(0);
+    slave_command.write(ICW1_INIT | ICW1_ICW4);
+    delay.write(0);
+    for (master, slave) in [(PIC1_OFFSET, PIC2_OFFSET), (4, 2), (ICW4_8086, ICW4_8086)] {
+        master_data.write(master);
+        delay.write(0);
+        slave_data.write(slave);
+        delay.write(0);
     }
+    master_data.write(0xe8);
+    // PCI completion is deferred; legacy shared INTx lines stay masked.
+    slave_data.write(0xff);
 }
 
-/// I/O待機（PICは遅いデバイス）
-#[inline]
-fn io_wait() {
-    // unsafe block removed based on lint check
+/// Called after handling a legacy IRQ, including LAPIC virtual-wire delivery.
+fn acknowledge_legacy_irq(irq: u8) {
     {
-        // 未使用ポートへのI/Oで遅延を発生
-        crate::io::outb(0x80, 0);
-    }
-}
-
-/// EOI送信（タイマー/キーボード用 - APICへの移行までの暫定）
-///
-/// # Safety
-/// 割り込みハンドラ内でのみ呼び出すこと
-pub unsafe fn send_eoi(irq: u8) {
-    if irq >= 8 {
-        crate::io::outb(PIC2_COMMAND, 0x20); // スレーブPICにEOI
-    }
-    crate::io::outb(PIC1_COMMAND, 0x20); // マスターPICにEOI
-
-    // LAPIC EOI — KVM kernel-irqchip=split ではLAPICもEOIが必要
-    core::ptr::write_volatile(0xFEE0_00B0 as *mut u32, 0);
-}
-
-/// 特定の割り込みをアンマスク（APIC移行までの暫定）
-pub fn unmask_irq(irq: u8) {
-    // unsafe block removed based on lint check
-    {
-        if irq < 8 {
-            let mask = crate::io::inb(PIC1_DATA);
-            crate::io::outb(PIC1_DATA, mask & !(1 << irq));
-        } else {
-            let mask = crate::io::inb(PIC2_DATA);
-            crate::io::outb(PIC2_DATA, mask & !(1 << (irq - 8)));
+        let ports = PIC_PORTS.lock().unwrap_or_else(|error| error.into_inner());
+        if irq >= 8 {
+            ports[2]
+                .first::<u8>()
+                .expect("one-byte PIC port")
+                .write(0x20);
         }
+        ports[0]
+            .first::<u8>()
+            .expect("one-byte PIC port")
+            .write(0x20);
+    }
+    match crate::drivers::apic::local_apic() {
+        Ok(apic) => apic.send_eoi(),
+        // Early boot may use the legacy PIC before LAPIC selection.
+        Err(crate::drivers::apic::LocalApicError::NotSelected) => {}
+        Err(cause) => panic!("legacy IRQ acknowledgement has no LAPIC backend: {cause}"),
     }
 }
 
-/// 特定の割り込みをマスク
-pub fn mask_irq(irq: u8) {
-    // unsafe block removed based on lint check
-    {
-        if irq < 8 {
-            let mask = crate::io::inb(PIC1_DATA);
-            crate::io::outb(PIC1_DATA, mask | (1 << irq));
-        } else {
-            let mask = crate::io::inb(PIC2_DATA);
-            crate::io::outb(PIC2_DATA, mask | (1 << (irq - 8)));
-        }
-    }
+fn mask_legacy_timer() {
+    let ports = PIC_PORTS.lock().unwrap_or_else(|error| error.into_inner());
+    let mut master_data = ports[1].first::<u8>().expect("one-byte PIC port");
+    let mask = master_data.read();
+    master_data.write(mask | 1);
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 fn read_pic_irq_masked(irq: u8) -> bool {
-    let (port, bit) = if irq < 8 {
-        (PIC1_DATA, irq)
-    } else {
-        (PIC2_DATA, irq - 8)
-    };
-
-    (crate::io::inb(port) & (1 << bit)) != 0
+    let ports = PIC_PORTS.lock().unwrap_or_else(|error| error.into_inner());
+    let (index, bit) = if irq < 8 { (1, irq) } else { (3, irq - 8) };
+    (ports[index]
+        .first::<u8>()
+        .expect("one-byte PIC port")
+        .read()
+        & (1 << bit))
+        != 0
 }
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -548,29 +490,8 @@ fn ensure_runtime_timer_calibrated() -> Result<(), RuntimeTimerError> {
         return Err(RuntimeTimerError::CalibrationRequiresBootstrapCpu);
     }
     let apic = crate::drivers::apic::local_apic().map_err(RuntimeTimerError::LocalApic)?;
-    // The bootstrap timer owner holds the channel-2 reference ports across
-    // calibration. Interrupt-time and concurrent recalibration cannot overlap.
-    static REFERENCE_PORTS: crate::sync::IrqPoisonLock<[hal::IoPortRange; 3]> = {
-        // SAFETY: these fixed PIT channel-2 resources belong to bootstrap
-        // timer calibration. No register access occurs during construction.
-        let command = unsafe { hal::IoPortRange::single(0x43) };
-        // SAFETY: the PIT channel-2 data port belongs to the same timer owner.
-        let data = unsafe { hal::IoPortRange::single(0x42) };
-        // SAFETY: this timer owner controls the channel-2 gate while calibrating.
-        let gate = unsafe { hal::IoPortRange::single(0x61) };
-        crate::sync::IrqPoisonLock::new([command, data, gate])
-    };
-    let mut ports = REFERENCE_PORTS
-        .lock()
-        .unwrap_or_else(|error| error.into_inner());
-    let [command, data, gate] = &mut *ports;
     if apic.ticks_per_ms() == 0 {
-        apic.calibrate_timer(
-            command.first().expect("allocated PIT command port"),
-            data.first().expect("allocated PIT data port"),
-            gate.first().expect("allocated PIT gate port"),
-        )
-        .map_err(RuntimeTimerError::LocalApic)?;
+        crate::time::calibrate_apic_timer(apic).map_err(RuntimeTimerError::LocalApic)?;
     }
     Ok(())
 }
@@ -652,7 +573,7 @@ pub fn transition_to_runtime_local_timers() -> Result<(), RuntimeTimerError> {
     ensure_runtime_timer_calibrated()?;
     arm_current_runtime_timer()?;
     RUNTIME_LOCAL_TIMERS_ENABLED.store(true, Ordering::Release);
-    mask_irq(0);
+    mask_legacy_timer();
     Ok(())
 }
 
@@ -714,9 +635,7 @@ define_interrupt!(
     fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
         record_interrupt_frame(InterruptVector::Timer as u8, &_stack_frame);
         handle_timer_interrupt_common();
-        unsafe {
-            send_eoi(InterruptVector::Timer as u8 - PIC1_OFFSET);
-        }
+        acknowledge_legacy_irq(InterruptVector::Timer as u8 - PIC1_OFFSET);
     }
 );
 
@@ -726,6 +645,158 @@ define_interrupt!(
         handle_timer_interrupt_common();
         crate::io::interrupt_manager::send_eoi();
     }
+);
+
+#[cfg(target_os = "none")]
+#[repr(C)]
+struct HardwareInterruptFrame {
+    rip: u64,
+    _cs: u64,
+    _rflags: u64,
+    rsp: u64,
+    _ss: u64,
+}
+
+#[cfg(target_os = "none")]
+unsafe extern "C" {
+    fn rany_apic_timer_entry();
+}
+
+/// Returns the active task context only after the handler, EOI, and interrupt
+/// ownership guard have all completed. The assembly entry then switches back
+/// to the scheduler stack; no Future or queue is touched in interrupt context.
+#[cfg(target_os = "none")]
+extern "C" fn apic_timer_dispatch(frame: *const HardwareInterruptFrame) -> usize {
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        handle_timer_interrupt_common();
+        crate::io::interrupt_manager::send_eoi();
+        return 0;
+    };
+    {
+        let frame = unsafe { &*frame };
+        current.record_interrupt(crate::cpu::InterruptContext {
+            vector: APIC_TIMER_VECTOR,
+            instruction_pointer: frame.rip,
+            stack_pointer: frame.rsp,
+        });
+        let _interrupt = current.enter_interrupt();
+        handle_timer_interrupt_common();
+        crate::io::interrupt_manager::send_eoi();
+    }
+    let current = crate::cpu::CurrentCpu::acquire()
+        .unwrap_or_else(|| panic!("timer interrupt lost CPU binding"));
+    let state = current.preemption_state();
+    let quantum_ticks = (crate::task::config::SCHEDULER_CONFIG.quantum_ns / 1_000_000) as u32;
+    if state.timer_tick(quantum_ticks.max(1)) {
+        return state.active_context();
+    }
+    0
+}
+
+#[cfg(target_os = "none")]
+core::arch::global_asm!(
+    r#"
+    .global rany_apic_timer_entry
+    rany_apic_timer_entry:
+        push rax
+        push rbx
+        push rcx
+        push rdx
+        push rsi
+        push rdi
+        push rbp
+        push r8
+        push r9
+        push r10
+        push r11
+        push r12
+        push r13
+        push r14
+        push r15
+        mov r11, gs:[{active_context}]
+        test r11, r11
+        jz 40f
+        add r11, {task_xstate}
+        jmp 41f
+    40:
+        mov r11, gs:[{scheduler_xstate}]
+    41:
+        mov r10, gs:[{xstate_mask}]
+        test r10, r10
+        jz 42f
+        mov eax, r10d
+        shr r10, 32
+        mov edx, r10d
+        xsave64 [r11]
+        jmp 43f
+    42:
+        fxsave64 [r11]
+    43:
+        cld
+        lea rdi, [rsp + 120]
+        call {dispatch}
+        mov r12, rax
+        test r12, r12
+        jz 50f
+        mov [r12 + {interrupted_rsp}], rsp
+        mov r11, gs:[{scheduler_xstate}]
+        jmp 51f
+    50:
+        mov r11, gs:[{active_context}]
+        test r11, r11
+        jz 52f
+        add r11, {task_xstate}
+        jmp 51f
+    52:
+        mov r11, gs:[{scheduler_xstate}]
+    51:
+        mov r10, gs:[{xstate_mask}]
+        test r10, r10
+        jz 53f
+        mov eax, r10d
+        shr r10, 32
+        mov edx, r10d
+        xrstor64 [r11]
+        jmp 54f
+    53:
+        fxrstor64 [r11]
+    54:
+        test r12, r12
+        jz 55f
+        mov rsp, [r12 + {scheduler_rsp}]
+        mov eax, 1
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop rbp
+        pop rbx
+        ret
+    55:
+        pop r15
+        pop r14
+        pop r13
+        pop r12
+        pop r11
+        pop r10
+        pop r9
+        pop r8
+        pop rbp
+        pop rdi
+        pop rsi
+        pop rdx
+        pop rcx
+        pop rbx
+        pop rax
+        iretq
+    "#,
+    active_context = const hal::preemption::ACTIVE_CONTEXT_OFFSET,
+    scheduler_xstate = const hal::preemption::SCHEDULER_XSTATE_OFFSET,
+    xstate_mask = const hal::preemption::XSTATE_MASK_OFFSET,
+    task_xstate = const crate::task::context::XSTATE_OFFSET,
+    interrupted_rsp = const crate::task::context::INTERRUPTED_RSP_OFFSET,
+    scheduler_rsp = const crate::task::context::SCHEDULER_RSP_OFFSET,
+    dispatch = sym apic_timer_dispatch,
 );
 
 /// タイマーイベントをポーリング（非ISRコンテキストから呼び出し）
@@ -777,9 +848,7 @@ define_interrupt!(
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Keyboard as u8);
 
         // EOI を送信
-        unsafe {
-            send_eoi(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
-        }
+        acknowledge_legacy_irq(InterruptVector::Keyboard as u8 - PIC1_OFFSET);
     }
 );
 
@@ -799,9 +868,7 @@ define_interrupt!(
         crate::io::interrupt_manager::push_interrupt_event(InterruptVector::Com1 as u8);
 
         // EOI を送信 (IRQ4 = COM1)
-        unsafe {
-            send_eoi(InterruptVector::Com1 as u8 - PIC1_OFFSET);
-        }
+        acknowledge_legacy_irq(InterruptVector::Com1 as u8 - PIC1_OFFSET);
     }
 );
 
@@ -872,9 +939,7 @@ define_external_vector_handler!(external_vector_0x6f_handler, 0x6F);
 define_interrupt!(
     fn pci_irq9_handler(_stack_frame: InterruptStackFrame) {
         dispatch_pci_interrupt(9);
-        unsafe {
-            send_eoi(9);
-        }
+        acknowledge_legacy_irq(9);
     }
 );
 
@@ -882,9 +947,7 @@ define_interrupt!(
 define_interrupt!(
     fn pci_irq10_handler(_stack_frame: InterruptStackFrame) {
         dispatch_pci_interrupt(10);
-        unsafe {
-            send_eoi(10);
-        }
+        acknowledge_legacy_irq(10);
     }
 );
 
@@ -892,9 +955,7 @@ define_interrupt!(
 define_interrupt!(
     fn pci_irq11_handler(_stack_frame: InterruptStackFrame) {
         dispatch_pci_interrupt(11);
-        unsafe {
-            send_eoi(11);
-        }
+        acknowledge_legacy_irq(11);
     }
 );
 
@@ -986,10 +1047,7 @@ pub fn trigger_breakpoint() {
 /// 割り込みシステムの状態をダンプ
 pub fn dump_interrupt_state() {
     log::info!("[INT] === Interrupt System State ===\n");
-    log::info!(
-        "  IDT Initialized: {}\n",
-        IDT_INITIALIZED.load(Ordering::SeqCst)
-    );
+    log::info!("  IDT Initialized: {}\n", IDT.get().is_some());
     log::info!("  Interrupts Enabled: {}\n", are_interrupts_enabled());
     log::info!("  Timer Ticks: {}\n", get_timer_ticks());
 

@@ -27,17 +27,35 @@ impl From<StackError> for SpawnError {
     fn from(error: StackError) -> Self {
         match error {
             StackError::SlotsExhausted => Self::TaskSlotsExhausted,
-            StackError::PhysicalMemoryExhausted
-            | StackError::Mapping(MapError::FrameAllocationFailed) => Self::PhysicalMemoryExhausted,
+            StackError::PhysicalMemoryExhausted => Self::PhysicalMemoryExhausted,
             StackError::Mapping(error) => Self::MappingFailed(match error {
                 MapError::AlreadyMapped => TaskMappingError::AlreadyMapped,
                 MapError::NotMapped => TaskMappingError::NotMapped,
+                MapError::MappingChanged => TaskMappingError::MappingChanged,
+                MapError::UnsupportedPageSize => TaskMappingError::UnsupportedPageSize,
                 MapError::InvalidAddress => TaskMappingError::InvalidAddress,
                 MapError::AlignmentError => TaskMappingError::Alignment,
                 MapError::ParentEntryHugePage => TaskMappingError::ParentHugePage,
                 MapError::ParentPermissionDenied => TaskMappingError::ParentPermissionDenied,
                 MapError::HardwareError => TaskMappingError::Hardware,
-                MapError::FrameAllocationFailed => unreachable!(),
+                MapError::MetadataAllocation => return Self::PhysicalMemoryExhausted,
+                MapError::FrameAllocation(cause) => match cause {
+                    crate::mm::phys::frame_allocator::FrameAllocError::Exhausted
+                    | crate::mm::phys::frame_allocator::FrameAllocError::MetadataAllocation => {
+                        return Self::PhysicalMemoryExhausted;
+                    }
+                    crate::mm::phys::frame_allocator::FrameAllocError::Alignment => {
+                        TaskMappingError::Alignment
+                    }
+                    crate::mm::phys::frame_allocator::FrameAllocError::InvalidRange
+                    | crate::mm::phys::frame_allocator::FrameAllocError::InvalidNode => {
+                        TaskMappingError::InvalidAddress
+                    }
+                    crate::mm::phys::frame_allocator::FrameAllocError::Uninitialized
+                    | crate::mm::phys::frame_allocator::FrameAllocError::AlreadyInitialized => {
+                        TaskMappingError::Hardware
+                    }
+                },
             }),
         }
     }
@@ -67,7 +85,7 @@ enum PollWakeState {
     Woken,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum TaskRunState {
     Ready {
         cpu: CpuId,
@@ -91,13 +109,13 @@ enum TaskRunState {
     Finished,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 struct PollContinuation {
     execution: ExecutionContext,
     fuel: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 enum QuotaResume {
     Ready {
         last_cpu: CpuId,
@@ -133,6 +151,54 @@ impl TaskRecord {
             crate::domain::is_domain_runnable_now(self.domain, crate::time::precise_time_nanos())
         }
     }
+
+    /// # Safety
+    /// The scheduler grants this caller exclusive completed-poll or retirement
+    /// authority. No running or suspended poll may borrow the Future here.
+    unsafe fn destroy_future(&self) {
+        if unsafe { (&*self.future.future.get()).is_destroyed() } {
+            return;
+        }
+        let current = CurrentCpu::acquire().expect("task destruction lost its CPU binding");
+        let execution = ExecutionContext::for_task(self.id, self.domain)
+            .expect("retained Future owns live domain admission")
+            .with_cell(self.future.code.cell())
+            .with_finalization(super::execution::FinalizationAuthority {
+                code: self.future.destruction_code.clone(),
+            });
+        let _subject = current.enter_execution(execution);
+        let _code = super::execution::enter_domain_teardown(
+            self.domain,
+            self.future.destruction_code.as_ref(),
+        )
+        .expect("a retained Future must keep its teardown domain available");
+        // Publish consumed ownership before calling foreign Drop. Reentrant
+        // wake/drop paths cannot poll or destroy this same Future a second time.
+        let storage = unsafe {
+            core::mem::replace(&mut *self.future.future.get(), TaskFutureStorage::Destroyed)
+        };
+        drop(storage);
+    }
+}
+
+impl Drop for TaskRecord {
+    fn drop(&mut self) {
+        // SAFETY: the final Arc owns the record exclusively. Scheduler state
+        // retains an Arc through every running and interrupted poll, and domain
+        // retirement rejects those states before removing the registry owner.
+        unsafe { self.destroy_future() };
+    }
+}
+
+enum TaskFutureStorage {
+    Live(Pin<Box<dyn Future<Output = ()> + Send>>),
+    Destroyed,
+}
+
+impl TaskFutureStorage {
+    fn is_destroyed(&self) -> bool {
+        matches!(self, Self::Destroyed)
+    }
 }
 
 /// Scheduler state grants one CPU exclusive poll authority. An interrupted
@@ -142,6 +208,9 @@ struct TaskFuture {
     future: UnsafeCell<TaskFutureStorage>,
     // Field order keeps Drop code leased until the Future's destructor returns.
     code: crate::domain::DomainCodeLease,
+    /// Prepared before publication; destructor entry and delegated cleanup
+    /// never allocate a code lease while ordinary admission is closed.
+    destruction_code: Option<Arc<crate::loader::code::CodeLease>>,
     finalization: Option<super::execution::FinalizationAuthority>,
 }
 
@@ -151,23 +220,43 @@ struct TaskFuture {
 unsafe impl Sync for TaskFuture {}
 
 impl TaskFuture {
-    fn new(
+    fn prepare(
         future: Pin<Box<dyn Future<Output = ()> + Send>>,
+        domain: crate::domain::DomainId,
         code: crate::domain::DomainCodeLease,
         finalization: Option<super::execution::FinalizationAuthority>,
-    ) -> Self {
-        Self {
-            future: UnsafeCell::new(future),
+    ) -> Result<Self, SpawnError> {
+        let mut owner = Self {
+            future: UnsafeCell::new(TaskFutureStorage::Live(future)),
             code,
+            destruction_code: None,
             finalization,
-        }
+        };
+        // Establish field-drop order before the fallible retention. Failed
+        // preparation still destroys the unpublished Future with its code live.
+        owner.destruction_code =
+            owner
+                .code
+                .retain_finalization_code()
+                .map_err(|cause| match cause {
+                    crate::domain::FinalizationCodeRetentionError::LeaseCapacityExhausted => {
+                        SpawnError::DomainUnavailable(domain)
+                    }
+                    crate::domain::FinalizationCodeRetentionError::MemoryExhausted => {
+                        SpawnError::PhysicalMemoryExhausted
+                    }
+                })?;
+        Ok(owner)
     }
 
     /// # Safety
     /// The caller must hold the scheduler's exclusive running-poll authority
     /// for this task. An interrupted poll retains that authority until resumed.
     unsafe fn poll(&self, context: &mut Context<'_>) -> Poll<()> {
-        unsafe { (&mut *self.future.get()).as_mut().poll(context) }
+        let TaskFutureStorage::Live(future) = (unsafe { &mut *self.future.get() }) else {
+            unreachable!("a destroyed Future has no poll authority");
+        };
+        future.as_mut().poll(context)
     }
 }
 
@@ -426,7 +515,7 @@ impl SchedulerState {
     }
 
     fn has_ready(&self, cpu: CpuId) -> bool {
-        self.tasks.values().any(|entry| match entry.state.clone() {
+        self.tasks.values().any(|entry| match entry.state {
             TaskRunState::Interrupted { cpu: owner, .. } => owner == cpu,
             TaskRunState::Ready { .. } => {
                 entry.record.options.placement.allowed_cpus().contains(cpu)
@@ -445,27 +534,22 @@ impl SchedulerState {
     /// Returns the CPU to notify after publishing the ready state. A wake
     /// during poll is deferred to finish_poll so a future is never polled twice.
     fn apply_wake(&mut self, id: TaskId) -> Option<CpuId> {
-        match self.tasks.get(&id)?.state.clone() {
-            TaskRunState::Ready { .. } => None,
-            TaskRunState::Running { cpu, .. } => {
-                self.tasks.get_mut(&id)?.state = TaskRunState::Running {
-                    cpu,
-                    wake: PollWakeState::Woken,
-                };
+        let entry = self.tasks.get_mut(&id)?;
+        match &mut entry.state {
+            TaskRunState::Ready { .. } | TaskRunState::Finished => None,
+            TaskRunState::Running { wake, .. } | TaskRunState::Interrupted { wake, .. } => {
+                *wake = PollWakeState::Woken;
                 None
             }
-            TaskRunState::Interrupted {
-                cpu, continuation, ..
-            } => {
-                self.tasks.get_mut(&id)?.state = TaskRunState::Interrupted {
-                    cpu,
-                    wake: PollWakeState::Woken,
-                    continuation,
-                };
+            TaskRunState::QuotaWaiting { resume, .. } => {
+                if let QuotaResume::Interrupted { wake, .. } = resume {
+                    *wake = PollWakeState::Woken;
+                }
                 None
             }
             TaskRunState::EventWaiting { last_cpu } => {
-                let placement = self.tasks.get(&id)?.record.options.placement;
+                let last_cpu = *last_cpu;
+                let placement = entry.record.options.placement;
                 let cpu = self
                     .select_target(placement, PlacementOrigin::PollBoundary(last_cpu))
                     .ok()?;
@@ -473,26 +557,6 @@ impl SchedulerState {
                 self.enqueue(id, cpu);
                 Some(cpu)
             }
-            TaskRunState::QuotaWaiting {
-                deadline_ns,
-                resume,
-            } => {
-                if let QuotaResume::Interrupted {
-                    cpu, continuation, ..
-                } = resume
-                {
-                    self.tasks.get_mut(&id)?.state = TaskRunState::QuotaWaiting {
-                        deadline_ns,
-                        resume: QuotaResume::Interrupted {
-                            cpu,
-                            continuation,
-                            wake: PollWakeState::Woken,
-                        },
-                    };
-                }
-                None
-            }
-            TaskRunState::Finished => None,
         }
     }
 
@@ -534,7 +598,14 @@ impl SchedulerState {
 
     fn dispatch(&mut self, id: TaskId, cpu: CpuId) -> Option<ScheduledTask> {
         let entry = self.tasks.get_mut(&id)?;
-        let (continuation, wake) = match entry.state.clone() {
+        let previous = core::mem::replace(
+            &mut entry.state,
+            TaskRunState::Running {
+                cpu,
+                wake: PollWakeState::Quiet,
+            },
+        );
+        let (continuation, wake) = match previous {
             TaskRunState::Ready { .. } => (None, PollWakeState::Quiet),
             TaskRunState::Interrupted {
                 cpu: owner,
@@ -562,7 +633,7 @@ impl SchedulerState {
             .tasks
             .iter()
             .filter_map(|(&id, entry)| {
-                let TaskRunState::Ready { cpu: donor } = entry.state.clone() else {
+                let TaskRunState::Ready { cpu: donor } = entry.state else {
                     return None;
                 };
                 if donor == cpu || !entry.record.options.placement.allowed_cpus().contains(cpu) {
@@ -588,7 +659,7 @@ impl SchedulerState {
             .tasks
             .get_mut(&id)
             .expect("suspended task was unpublished");
-        let TaskRunState::Running { cpu: owner, wake } = entry.state.clone() else {
+        let TaskRunState::Running { cpu: owner, wake } = entry.state else {
             panic!("timer suspended a task without running authority");
         };
         assert_eq!(owner, cpu);
@@ -607,9 +678,8 @@ impl SchedulerState {
             let Some(entry) = self.tasks.0[slot].as_ref() else {
                 continue;
             };
-            let state = entry.state.clone();
             let domain = entry.record.domain;
-            match &state {
+            match &entry.state {
                 TaskRunState::QuotaWaiting { deadline_ns, .. } if now_ns < *deadline_ns => continue,
                 TaskRunState::Ready { .. }
                 | TaskRunState::Interrupted { .. }
@@ -617,6 +687,18 @@ impl SchedulerState {
                 _ => continue,
             }
             let deadline = crate::domain::quota_manager().cpu_wait_deadline(domain, now_ns);
+            if deadline.is_none() && !matches!(entry.state, TaskRunState::QuotaWaiting { .. }) {
+                continue;
+            }
+            // The state lock excludes observers while the continuation is moved
+            // between these two authoritative variants. It is never cloned.
+            let state = core::mem::replace(
+                &mut self.tasks.0[slot]
+                    .as_mut()
+                    .expect("quota task vanished")
+                    .state,
+                TaskRunState::Finished,
+            );
             if let Some(deadline_ns) = deadline {
                 let resume = match state {
                     TaskRunState::Ready { cpu } => {
@@ -682,13 +764,9 @@ impl SchedulerState {
     }
 
     fn finish_poll(&mut self, id: TaskId, cpu: CpuId, poll: Poll<()>) -> Option<PollFinalization> {
-        let state = self.tasks.get(&id).map(|entry| entry.state.clone())?;
-        let TaskRunState::Running {
-            cpu: running_cpu,
-            mut wake,
-        } = state
-        else {
-            return None;
+        let (running_cpu, mut wake) = match &self.tasks.get(&id)?.state {
+            TaskRunState::Running { cpu, wake } => (*cpu, *wake),
+            _ => return None,
         };
         if running_cpu != cpu {
             return None;
@@ -740,7 +818,7 @@ impl SchedulerState {
             {
                 blockers.push(CpuBlocker::PinnedTask { task_id });
             }
-            match entry.state.clone() {
+            match entry.state {
                 TaskRunState::Running { cpu: owner, .. } if owner == cpu => {
                     blockers.push(CpuBlocker::ActivePoll { task_id });
                 }
@@ -869,6 +947,7 @@ impl TaskRuntime {
         let continuation = scheduled.continuation.unwrap_or_else(|| PollContinuation {
             execution: {
                 let execution = ExecutionContext::for_task(record.id, record.domain)
+                    .expect("admitted task retains its domain")
                     .with_cell(record.future.code.cell());
                 match record.future.finalization.clone() {
                     Some(authority) => execution.with_finalization(authority),
@@ -910,9 +989,8 @@ impl TaskRuntime {
         preemption.leave_task(record.context.address());
         let stopped_ns = crate::time::precise_time_nanos();
         let elapsed_ns = stopped_ns.saturating_sub(started_ns);
-        let suspended_execution = current.execution();
         let remaining_fuel = current.task_fuel();
-        drop(_execution_scope);
+        let suspended_execution = _execution_scope.leave();
         current.exhaust_task_fuel();
         if interrupts_enabled {
             x86_64::instructions::interrupts::enable();
@@ -959,9 +1037,7 @@ impl TaskRuntime {
         options: TaskOptions,
         domain: crate::domain::DomainId,
     ) -> Result<TaskId, SpawnError> {
-        let finalization = crate::task::current_execution_context()
-            .filter(|execution| execution.subject.domain == domain)
-            .and_then(|execution| execution.finalization);
+        let finalization = CurrentCpu::acquire().and_then(|cpu| cpu.finalization_authority(domain));
         let code_lease = match &finalization {
             Some(authority) => crate::domain::registry::acquire_finalization_future_lease(
                 domain,
@@ -970,12 +1046,12 @@ impl TaskRuntime {
             None => crate::domain::registry::acquire_future_code_lease(domain),
         }
         .ok_or(SpawnError::DomainUnavailable(domain))?;
-        let future = TaskFuture::new(future, code_lease, finalization);
+        let future = TaskFuture::prepare(future, domain, code_lease, finalization)?;
         let stack = TaskStack::allocate()?;
         let wake = WakeLease::activate(stack.slot());
         static NEXT_ID: AtomicU64 = AtomicU64::new(1);
         let raw_id = NEXT_ID
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
                 value.checked_add(1)
             })
             .map_err(|_| SpawnError::TaskIdentityExhausted)?;
@@ -1123,7 +1199,12 @@ pub(super) extern "sysv64" fn task_entry(task: *const ()) -> ! {
         unsafe { record.future.poll(&mut context) }
     };
     let code = match result {
-        Poll::Ready(()) => 0,
+        Poll::Ready(()) => {
+            // SAFETY: poll has returned and released its exclusive borrow. Drop
+            // executes on this task stack and can itself be interrupted/resumed.
+            unsafe { record.destroy_future() };
+            0
+        }
         Poll::Pending => 2,
     };
     drop(waker);
@@ -1157,6 +1238,9 @@ pub(crate) fn spawn_in_domain(
     domain: crate::domain::DomainId,
 ) -> Result<TaskId, SpawnError> {
     let scheduler = runtime()?;
+    if CurrentCpu::acquire().is_none() {
+        return Err(SpawnError::SchedulerUnavailable);
+    }
     let future = Box::try_new(future).map_err(|_| SpawnError::PhysicalMemoryExhausted)?;
     scheduler.spawn_task(Box::into_pin(future), options, domain)
 }
@@ -1202,7 +1286,7 @@ pub(crate) fn domain_stop_boundary<T>(
         .values()
         .filter(|entry| entry.record.domain == domain)
     {
-        match entry.state.clone() {
+        match entry.state {
             TaskRunState::Running { .. } => active_polls += 1,
             TaskRunState::Interrupted { .. }
             | TaskRunState::QuotaWaiting {

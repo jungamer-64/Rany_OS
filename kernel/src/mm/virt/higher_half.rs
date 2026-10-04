@@ -684,6 +684,16 @@ impl<'a> PageTableWalker<'a> {
 
     /// 仮想アドレスを物理アドレスに変換
     pub fn translate(&self, virt: VirtAddr) -> Option<PhysAddr> {
+        self.translate_with_attributes(virt)
+            .map(|(physical, _, _)| physical)
+    }
+
+    /// One walk supplies both physical translation and the leaf's PAT selection;
+    /// callers cannot confuse bit 7's huge-page and small-page PAT meanings.
+    pub(super) fn translate_with_attributes(
+        &self,
+        virt: VirtAddr,
+    ) -> Option<(PhysAddr, PageFlags, PageSize)> {
         let indices = virt.page_table_indices();
 
         // PML4
@@ -703,7 +713,10 @@ impl<'a> PageTableWalker<'a> {
             // 1GiB page
             let base = pdpte.phys_addr().as_u64() & !(PageSize::Size1GiB.as_bytes() - 1);
             let offset = virt.as_u64() & (PageSize::Size1GiB.as_bytes() - 1);
-            return Some(PhysAddr::new(base + offset));
+            let flags = PageFlags::new(
+                pdpte.as_u64() & (!PageTableEntry::ADDR_MASK | PageFlags::PAT_LARGE),
+            );
+            return Some((PhysAddr::new(base + offset), flags, PageSize::Size1GiB));
         }
 
         // PD
@@ -716,7 +729,9 @@ impl<'a> PageTableWalker<'a> {
             // 2MiB page
             let base = pde.phys_addr().as_u64() & !(PageSize::Size2MiB.as_bytes() - 1);
             let offset = virt.as_u64() & (PageSize::Size2MiB.as_bytes() - 1);
-            return Some(PhysAddr::new(base + offset));
+            let flags =
+                PageFlags::new(pde.as_u64() & (!PageTableEntry::ADDR_MASK | PageFlags::PAT_LARGE));
+            return Some((PhysAddr::new(base + offset), flags, PageSize::Size2MiB));
         }
 
         // PT
@@ -727,7 +742,11 @@ impl<'a> PageTableWalker<'a> {
         }
 
         // 4KiB page
-        Some(PhysAddr::new(pte.phys_addr().as_u64() + virt.page_offset()))
+        Some((
+            PhysAddr::new(pte.phys_addr().as_u64() + virt.page_offset()),
+            pte.flags(),
+            PageSize::Size4KiB,
+        ))
     }
 
     /// ページテーブルエントリーを取得
