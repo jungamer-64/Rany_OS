@@ -121,8 +121,7 @@ impl AdaptivePollingState {
             self.consecutive_empty_polls = 0;
         }
 
-        let need_rearm = self.evaluate_transition();
-        need_rearm
+        self.evaluate_transition()
     }
 
     /// モード遷移の評価

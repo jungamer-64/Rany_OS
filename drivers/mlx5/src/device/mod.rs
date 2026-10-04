@@ -37,10 +37,12 @@ pub enum DeviceState {
     CommandInitialized,
     HcaEnabled,
     CapsQueried,
-    PagesProvided,
     QueuesReady,
     Active,
     Error,
+    /// Queue/HCA teardown is complete, but the command transport has not been
+    /// revoked. The same device retains its register and command RAM owners.
+    StoppedCommandRetained,
     /// Reset was requested; no DMA-revocation authority follows from this state.
     ResetPending,
     /// Reset acknowledgement was not observed; all prior resources stay retained.
@@ -67,6 +69,8 @@ pub struct Mlx5Device {
     pub(crate) fw_function_id: u16,
     pub(crate) firmware_pages: Option<FirmwarePages>,
     pub(crate) command_generation: u64,
+    pub(crate) next_queue_identity: u16,
+    pub(crate) pending_events: alloc::collections::VecDeque<FirmwareEvent>,
 
     // Resources
     pub(crate) uar: Option<crate::registers::UarRegisters>,
@@ -93,7 +97,6 @@ pub struct Mlx5Device {
     pub(crate) cqs: Vec<CompletionQueue>,
     pub(crate) sqs: Vec<SendQueue>,
     pub(crate) rqs: Vec<ReceiveQueue>,
-    pub(crate) rmp_list: Vec<u32>,
     pub(crate) rq_tables: Vec<RqTable>,
     pub(crate) tx_cq_by_sq: Vec<usize>,
     pub(crate) rx_cq_by_rq: Vec<usize>,
@@ -123,6 +126,15 @@ pub struct Mlx5Device {
 struct UarAllocation {
     number: u32,
     uid: u16,
+}
+
+/// Consumed EQ entries remain owned until their ordinary-context action has
+/// completed. A failed action leaves the exact event available for recovery.
+#[derive(Clone, Copy)]
+pub(crate) enum FirmwareEvent {
+    RefreshPort(usize),
+    RefreshPrimaryPortConfig,
+    Pages { function: u16, count: i32 },
 }
 
 impl Mlx5Device {
@@ -185,6 +197,8 @@ impl Mlx5Device {
             fw_function_id: 0,
             firmware_pages: None,
             command_generation: 0,
+            next_queue_identity: 1,
+            pending_events: alloc::collections::VecDeque::new(),
             uar: None,
             pd: 0,
             td: 0,
@@ -206,7 +220,6 @@ impl Mlx5Device {
             cqs: Vec::new(),
             sqs: Vec::new(),
             rqs: Vec::new(),
-            rmp_list: Vec::new(),
             rq_tables: Vec::new(),
             tx_cq_by_sq: Vec::new(),
             rx_cq_by_rq: Vec::new(),
@@ -395,7 +408,7 @@ impl Mlx5Device {
     }
 
     pub(crate) fn cq_index_by_cqn(&self, cqn: u32) -> Option<usize> {
-        self.cqs.iter().position(|cq| cq.cqn == cqn)
+        self.cqs.iter().position(|cq| cq.number() == Some(cqn))
     }
 
     /// # Errors
@@ -550,15 +563,20 @@ impl Mlx5Device {
     /// Only a completed firmware rejection admits another UID attempt. A
     /// timeout, malformed response, registry failure or delivery error stops
     /// immediately with the command owner retained.
-    fn execute_cmd_with_uid_candidates(
+    fn execute_command(
         &mut self,
         opcode: CmdOpcode,
         input: &CmdMailbox,
         in_len: u32,
         out_len: u32,
-    ) -> Mlx5Result<()> {
+    ) -> Result<(), crate::error::CommandFailure> {
         let is_vf = self.is_vf();
-        let command = self.cmd.as_mut().ok_or(Mlx5Error::DeviceNotReady)?;
+        let command = self
+            .cmd
+            .as_mut()
+            .ok_or(crate::error::CommandFailure::NotPublished(
+                Mlx5Error::DeviceNotReady,
+            ))?;
         let previous = command.uid();
         let result = if CmdQueue::opcode_uses_uid(opcode) {
             let (uids, count) = Self::uid_candidates_for_opcode(previous, is_vf, opcode);
@@ -571,19 +589,6 @@ impl Mlx5Device {
         };
         command.set_uid(previous);
         result
-    }
-
-    pub(crate) fn execute_uid_sensitive_cmd(
-        &mut self,
-        opcode: CmdOpcode,
-        input: &CmdMailbox,
-        in_len: u32,
-        out_len: u32,
-    ) -> Mlx5Result<()> {
-        if !CmdQueue::opcode_uses_uid(opcode) {
-            return Err(Mlx5Error::InvalidParameter);
-        }
-        self.execute_cmd_with_uid_candidates(opcode, input, in_len, out_len)
     }
 
     pub(crate) fn default_sw_vhca_id(&self) -> u16 {
@@ -599,13 +604,14 @@ impl Mlx5Device {
 /// side-effecting page supply has its own one-shot publication protocol.
 fn try_uid_candidates<T>(
     uids: &[u16],
-    mut execute: impl FnMut(u16) -> Mlx5Result<T>,
-) -> Mlx5Result<T> {
-    let mut rejection = Mlx5Error::NotSupported;
+    mut execute: impl FnMut(u16) -> Result<T, crate::error::CommandFailure>,
+) -> Result<T, crate::error::CommandFailure> {
+    use crate::error::CommandFailure;
+    let mut rejection = CommandFailure::NotPublished(Mlx5Error::NotSupported);
     for &uid in uids {
         match execute(uid) {
             Ok(value) => return Ok(value),
-            Err(cause @ Mlx5Error::CommandFailed(_)) => rejection = cause,
+            Err(cause @ CommandFailure::Rejected(_)) => rejection = cause,
             Err(cause) => return Err(cause),
         }
     }
@@ -624,7 +630,7 @@ mod tests {
             if uid == 0xffff {
                 Ok(uid)
             } else {
-                Err(Mlx5Error::CommandFailed(3))
+                Err(crate::error::CommandFailure::Rejected(3))
             }
         })
         .unwrap();
@@ -637,11 +643,15 @@ mod tests {
             Mlx5Error::DeviceNotReady,
         ] {
             let mut attempts = 0;
-            let result: Mlx5Result<()> = try_uid_candidates(&[0x1234, 0xffff, 0], |_| {
-                attempts += 1;
-                Err(failure)
-            });
-            assert_eq!(result, Err(failure));
+            let result: Result<(), crate::error::CommandFailure> =
+                try_uid_candidates(&[0x1234, 0xffff, 0], |_| {
+                    attempts += 1;
+                    Err(crate::error::CommandFailure::OutcomeUnknown(failure))
+                });
+            assert_eq!(
+                result,
+                Err(crate::error::CommandFailure::OutcomeUnknown(failure))
+            );
             assert_eq!(attempts, 1);
         }
     }

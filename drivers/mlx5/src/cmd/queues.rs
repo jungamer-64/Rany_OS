@@ -87,7 +87,7 @@ pub fn build_create_eq_input(
     );
 
     let eq_bytes = (1usize << (log_eq_size as usize)) * crate::regs::eqe::EQE_SIZE;
-    let eq_pages = (eq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    let eq_pages = eq_bytes.div_ceil(MLX5_PAGE_SIZE);
     for i in 0..eq_pages {
         let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -129,7 +129,7 @@ pub fn build_create_cq_input(
     layout.set_dbr_addr(db_pa);
 
     let cq_bytes = (1usize << (log_cq_size as usize)) * crate::regs::cqe::SIZE;
-    let cq_pages = (cq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    let cq_pages = cq_bytes.div_ceil(MLX5_PAGE_SIZE);
     for i in 0..cq_pages {
         let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -170,6 +170,10 @@ pub fn build_modify_cq_moderation_input(
 }
 
 /// CREATE_SQ コマンド入力の構築
+#[expect(
+    clippy::too_many_arguments,
+    reason = "encodes the independent fields of one firmware queue command"
+)]
 pub fn build_create_sq_input(
     in_mbox: &mut CmdMailbox,
     log_sq_size: u8,
@@ -207,7 +211,7 @@ pub fn build_create_sq_input(
     }
 
     let sq_bytes = (1usize << (log_sq_size as usize)) * MLX5_SQ_STRIDE;
-    let sq_pages = (sq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    let sq_pages = sq_bytes.div_ceil(MLX5_PAGE_SIZE);
     for i in 0..sq_pages {
         let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -273,6 +277,10 @@ pub fn build_modify_sq_input(
 }
 
 /// CREATE_RQ コマンド入力の構築
+#[expect(
+    clippy::too_many_arguments,
+    reason = "encodes the independent fields of one firmware queue command"
+)]
 pub fn build_create_rq_input(
     in_mbox: &mut CmdMailbox,
     log_rq_size: u8,
@@ -300,6 +308,10 @@ pub fn build_create_rq_input(
 }
 
 /// CREATE_RQ コマンド入力の構築（mem_rq_type 指定）
+#[expect(
+    clippy::too_many_arguments,
+    reason = "encodes the independent fields of one firmware queue command"
+)]
 pub fn build_create_rq_input_with_mem_type(
     in_mbox: &mut CmdMailbox,
     log_rq_size: u8,
@@ -333,6 +345,10 @@ pub fn build_create_rq_input_with_mem_type(
 }
 
 /// CREATE_RQ コマンド入力の構築（互換性探索用オプション付き）
+#[expect(
+    clippy::too_many_arguments,
+    reason = "encodes the independent fields of one firmware queue command"
+)]
 pub fn build_create_rq_input_with_options(
     in_mbox: &mut CmdMailbox,
     log_rq_size: u8,
@@ -358,10 +374,10 @@ pub fn build_create_rq_input_with_options(
     layout.set_scatter_fcs(scatter_fcs);
     layout.set_vlan_strip(vlan_strip);
     layout.set_cqn(cqn);
-    if (mem_rq_type & 0x0f) == 1 {
-        if let Some(rmpn) = rmpn {
-            layout.set_rmpn(rmpn);
-        }
+    if (mem_rq_type & 0x0f) == 1
+        && let Some(rmpn) = rmpn
+    {
+        layout.set_rmpn(rmpn);
     }
 
     {
@@ -379,7 +395,7 @@ pub fn build_create_rq_input_with_options(
     }
 
     let rq_bytes = (1usize << (log_rq_size as usize)) * rq_slot_size_bytes(log_wq_stride);
-    let rq_pages = (rq_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    let rq_pages = rq_bytes.div_ceil(MLX5_PAGE_SIZE);
     for i in 0..rq_pages {
         let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -408,10 +424,15 @@ pub fn build_create_rmp_input(
         true,
         1, // cyclic
         1, // ALIGN
+        4, // 16-byte basic cyclic descriptor
     );
 }
 
 /// CREATE_RMP コマンド入力の構築（互換性探索用オプション付き）
+#[expect(
+    clippy::too_many_arguments,
+    reason = "encodes the independent fields of one firmware queue command"
+)]
 pub fn build_create_rmp_input_with_options(
     in_mbox: &mut CmdMailbox,
     log_rmp_size: u8,
@@ -423,6 +444,7 @@ pub fn build_create_rmp_input_with_options(
     basic_cyclic_rcv_wqe: bool,
     wq_type: u8,
     end_padding_mode: u8,
+    log_wq_stride: u8,
 ) {
     *in_mbox = CmdMailbox::zeroed();
     let mut layout = RmpContextLayout::new(&mut in_mbox.data[0x20..]);
@@ -437,13 +459,13 @@ pub fn build_create_rmp_input_with_options(
         // RMP-backed receive contexts also use the doorbell record directly.
         let _ = uar_page;
         wq.set_dbr_addr(db_pa);
-        wq.set_log_wq_stride(4); // 16B data segment
+        wq.set_log_wq_stride(log_wq_stride);
         wq.set_log_wq_pg_sz(0); // 4KB
         wq.set_log_wq_sz(log_rmp_size);
     }
 
     let rmp_bytes = (1usize << (log_rmp_size as usize)) * MLX5_RX_WQE_MAX_SUPPORTED_SIZE;
-    let rmp_pages = (rmp_bytes + MLX5_PAGE_SIZE - 1) / MLX5_PAGE_SIZE;
+    let rmp_pages = rmp_bytes.div_ceil(MLX5_PAGE_SIZE);
     for i in 0..rmp_pages {
         let off = MLX5_QUEUE_PAS_OFFSET + i * 8;
         if off + 8 <= MLX5_CMD_MBOX_SIZE {
@@ -455,6 +477,36 @@ pub fn build_create_rmp_input_with_options(
 /// CREATE_RMP 出力からRMP番号を解析
 pub fn parse_create_rmp_output(out_mbox: &CmdMailbox) -> u32 {
     out_mbox.read_be24(0x09)
+}
+
+/// Firmware snapshot of RMP descriptor geometry, before accepting CPU layout.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct QueryRmpInfo {
+    pub(crate) state: u8,
+    pub(crate) basic_cyclic: bool,
+    pub(crate) signature: bool,
+    pub(crate) wq_type: u8,
+    pub(crate) padding: u8,
+    pub(crate) pd: u32,
+    pub(crate) dbr_addr: u64,
+    pub(crate) log_stride: u8,
+    pub(crate) log_size: u8,
+}
+
+pub(crate) fn parse_query_rmp_output(output: &CmdMailbox) -> QueryRmpInfo {
+    let context = &output.data[0x20..];
+    let work = &context[0x30..];
+    QueryRmpInfo {
+        state: get_bits_u32(context, 8, 4) as u8,
+        basic_cyclic: get_bits_u32(context, 32, 1) != 0,
+        signature: get_bits_u32(work, 4, 1) != 0,
+        wq_type: get_bits_u32(work, 0, 4) as u8,
+        padding: get_bits_u32(work, 5, 2) as u8,
+        pd: get_bits_u32(work, 72, 24),
+        dbr_addr: get_bits_u64(work, 128),
+        log_stride: get_bits_u32(work, 268, 4) as u8,
+        log_size: get_bits_u32(work, 283, 5) as u8,
+    }
 }
 
 /// DESTROY_RMP コマンド入力の構築
@@ -724,6 +776,7 @@ mod tests {
             true,
             0,
             0,
+            6,
         );
 
         let ctx = &in_mbox.data[0x20..];

@@ -8,7 +8,7 @@
 
 use crate::defs::CqeOpcode;
 use crate::regs::cqe as cqe_regs;
-use core::sync::atomic::{AtomicU32, Ordering};
+use core::sync::atomic::{Ordering, fence};
 
 /// Completion Queue Entry (CQE) — 64バイト
 #[repr(C, align(64))]
@@ -182,30 +182,168 @@ mod tests {
     }
 }
 
-/// Completion Queue 管理構造体
+/// Completion ring and its doorbell record share one queue generation and
+/// retain their linear capabilities through failed creation/finalization.
 pub struct CompletionQueue {
-    doorbell: crate::registers::CqDoorbell,
-    /// CQのハードウェア番号（CREATE_CQで返される）
-    pub cqn: u32,
-    /// CQバッファ仮想アドレス
-    buf_virt: u64,
-    /// CQバッファ物理アドレス
-    buf_phys: u64,
-    /// ドアベルレコードの仮想アドレス（8バイト: CQ番号 + CI）
-    doorbell_virt: u64,
-    /// ログ2 CQサイズ
-    log_cq_size: u8,
-    /// CQエントリ数
-    cq_depth: u32,
-    /// コンシューマカウンタ
+    pub(crate) grant: crate::queue_memory::QueueGrant,
+    pub(crate) memory: crate::queue_memory::QueueMemory<2>,
+    pub(crate) doorbell: crate::registers::CqDoorbell,
+    pub(crate) log_cq_size: u8,
     consumer_counter: u32,
-    /// 紐づくEQ番号
     pub eq_number: u32,
-    /// CQ ARM シーケンス番号
-    arm_sn: AtomicU32,
+    arm_sn: u32,
 }
 
+impl CompletionQueue {
+    pub(crate) fn new(
+        identity: kernel_api::dma::DmaQueueIdentity,
+        leases: [kernel_api::dma::CpuDmaLease; 2],
+        doorbell: crate::registers::CqDoorbell,
+        log_cq_size: u8,
+        eq_number: u32,
+    ) -> Self {
+        Self {
+            grant: crate::queue_memory::QueueGrant::Unpublished,
+            memory: crate::queue_memory::QueueMemory::new(identity, leases),
+            doorbell,
+            log_cq_size,
+            consumer_counter: 0,
+            eq_number,
+            arm_sn: 0,
+        }
+    }
 
+    /// Firmware identity is unavailable during pending or completed destruction.
+    pub fn number(&self) -> Option<u32> {
+        self.grant.number()
+    }
+
+    pub(crate) fn prepare(&mut self) -> crate::error::Mlx5Result<()> {
+        use crate::queue_memory::RegionLayout;
+        use kernel_api::dma::DmaDirection;
+        let bytes = (1usize << self.log_cq_size) * cqe_regs::SIZE;
+        self.memory.prepare(
+            [
+                RegionLayout {
+                    bytes,
+                    direction: DmaDirection::FromDevice,
+                    alignment: crate::defs::MLX5_PAGE_SIZE,
+                },
+                RegionLayout {
+                    bytes: 8,
+                    direction: DmaDirection::ToDevice,
+                    alignment: 8,
+                },
+            ],
+            |index, region| {
+                region.fill(0);
+                if index == 0 {
+                    for entry in region[..bytes].as_chunks_mut::<{ cqe_regs::SIZE }>().0 {
+                        entry[cqe_regs::OP_OWN] = 1;
+                    }
+                } else {
+                    region[4..8].copy_from_slice(&(2u32 << 28).to_be_bytes());
+                }
+            },
+        )
+    }
+
+    pub(crate) fn next(&mut self) -> crate::error::Mlx5Result<Option<CqeInfo>> {
+        if self.number().is_none() {
+            return Err(crate::error::Mlx5Error::DeviceNotReady);
+        }
+        let offset = (self.consumer_counter % (1u32 << self.log_cq_size)) as usize * cqe_regs::SIZE;
+        let owner = self.memory.read_byte(0, offset + cqe_regs::OP_OWN)? & 1;
+        let expected = ((self.consumer_counter >> self.log_cq_size) & 1) as u8;
+        if owner != expected {
+            return Ok(None);
+        }
+        fence(Ordering::Acquire);
+        let entry = Cqe {
+            data: self.memory.read(0, offset)?,
+        };
+        if !entry.is_valid_completion() && !entry.is_error() {
+            // Unsupported CQ formats/opcodes cannot witness packet retirement.
+            // Leave the entry unconsumed so recovery retains the exact head.
+            return Err(crate::error::Mlx5Error::InvalidResponse);
+        }
+        let info = CqeInfo {
+            wqe_counter: entry.wqe_counter(),
+            byte_count: entry.byte_count(),
+            raw_byte_count: entry.raw_byte_count(),
+            opcode: entry.opcode(),
+            qpn: entry.qpn(),
+            l3_ok: entry.l3_ok(),
+            l4_ok: entry.l4_ok(),
+            vlan_tag: entry.vlan_present().then(|| entry.vlan_tag()),
+            timestamp: entry.timestamp(),
+            error_syndrome: entry.error_syndrome(),
+            vendor_error_syndrome: entry.error_vendor_syndrome(),
+            error_wqe_opcode: entry.error_wqe_opcode(),
+        };
+        self.consumer_counter = self.consumer_counter.wrapping_add(1);
+        Ok(Some(info))
+    }
+
+    pub(crate) fn acknowledge(&mut self) -> crate::error::Mlx5Result<()> {
+        self.memory
+            .write_be32(1, 0, self.consumer_counter & 0x00ff_ffff)
+    }
+
+    pub(crate) fn arm(&mut self) -> crate::error::Mlx5Result<()> {
+        let number = self
+            .number()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        let word = ((self.arm_sn & 3) << 28) | (self.consumer_counter & 0x00ff_ffff);
+        self.memory.write_be32(1, 4, word)?;
+        fence(Ordering::Release);
+        self.doorbell.arm(word, number);
+        self.arm_sn = self.arm_sn.wrapping_add(1);
+        Ok(())
+    }
+
+    pub(crate) fn snapshot(&mut self) -> crate::error::Mlx5Result<CqDebugState> {
+        let number = self
+            .number()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        let depth = 1u32 << self.log_cq_size;
+        let index = self.consumer_counter % depth;
+        // Observational sample: hardware may still own this slot. No RAM
+        // reference escapes and the sample is never a completion witness.
+        let entry = Cqe {
+            data: self.memory.read(0, index as usize * cqe_regs::SIZE)?,
+        };
+        let records = self.memory.read::<8>(1, 0)?;
+        let consumer: [u8; 4] = records[..4]
+            .try_into()
+            .expect("fixed four-byte doorbell field");
+        let arm: [u8; 4] = records[4..].try_into().expect("fixed four-byte arm field");
+        Ok(CqDebugState {
+            cqn: number,
+            consumer_counter: self.consumer_counter,
+            cq_depth: depth,
+            log_cq_size: self.log_cq_size,
+            arm_sn: self.arm_sn,
+            head_index: index,
+            expected_owner: ((self.consumer_counter >> self.log_cq_size) & 1) as u8,
+            observed_owner: entry.owner_bit(),
+            observed_opcode: entry.opcode(),
+            observed_wqe_counter: entry.wqe_counter(),
+            observed_byte_count: entry.raw_byte_count(),
+            doorbell_be: u32::from_ne_bytes(consumer),
+            doorbell_host: u32::from_be_bytes(consumer) & 0x00ff_ffff,
+            arm_db_be: u32::from_ne_bytes(arm),
+            arm_db_host: u32::from_be_bytes(arm),
+        })
+    }
+}
+
+/// All consumed entries remain available even if a later read or doorbell
+/// update fails. The caller must process this prefix and observe completion.
+pub(crate) struct CompletionBatch {
+    pub(crate) entries: alloc::vec::Vec<CqeInfo>,
+    pub(crate) completion: crate::error::Mlx5Result<()>,
+}
 
 /// CQE処理結果の情報
 #[derive(Debug, Clone)]

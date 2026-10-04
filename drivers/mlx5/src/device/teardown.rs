@@ -27,6 +27,9 @@ impl Mlx5Device {
     /// its separate lease close/quiescence protocol succeeds.
     #[deny(unsafe_op_in_unsafe_fn)]
     pub unsafe fn teardown_full(&mut self) -> Mlx5Result<()> {
+        if self.state == DeviceState::StoppedCommandRetained {
+            return Err(crate::error::Mlx5Error::CommandTransportBusy);
+        }
         if self.firmware_pages.is_none() {
             // Failed command construction has no hardware consumer. Retire the
             // actual preparation prefix before dropping its retained MMIO owner.
@@ -46,13 +49,17 @@ impl Mlx5Device {
         }
         self.tx_path_enabled = false;
         for index in 0..self.sqs.len() {
-            let number = self.sqs[index].sqn;
+            let Some(number) = self.sqs[index].number() else {
+                continue;
+            };
             // SAFETY: the caller retains SQ backing and excludes all queue users
             // as required by this finalizer's contract, including on failure.
             unsafe { self.transition_sq_to_error(number) }?;
         }
         for index in 0..self.rqs.len() {
-            let number = self.rqs[index].rqn;
+            let Some(number) = self.rqs[index].number() else {
+                continue;
+            };
             // SAFETY: the caller retains RQ backing and excludes all queue users
             // as required by this finalizer's contract, including on failure.
             unsafe { self.transition_rq_to_error(number) }?;
@@ -102,39 +109,25 @@ impl Mlx5Device {
             unsafe { self.destroy_rqt_hw(number) }?;
             self.rq_tables.pop();
         }
-        // LOOP_PROOF: mode=condition; reason=Success destroys one SQ before dropping its retained doorbell, failure retains both.;
-        while let Some(sq) = self.sqs.last() {
-            let number = sq.sqn;
-            // SAFETY: the SQ backing and UAR grant remain retained until this completion.
-            unsafe { self.destroy_sq_hw(number) }?;
-            self.sqs.pop();
+        // RAM retirement follows acknowledged firmware destruction. Unknown
+        // creation/destruction and failed unmap retain their exact queue owners.
+        // LOOP_PROOF: mode=condition; reason=Each successful SQ retirement removes the last owner, while destruction or DMA-close failure returns with that owner retained.;
+        while !self.sqs.is_empty() {
+            self.retire_last_send_queue()?;
         }
-        // LOOP_PROOF: mode=condition; reason=Success destroys one RQ before removing its entry, failure retains it.;
-        while let Some(rq) = self.rqs.last() {
-            let number = rq.rqn;
-            // SAFETY: the RQ backing remains retained until this completion.
-            unsafe { self.destroy_rq_hw(number) }?;
-            self.rqs.pop();
+        // LOOP_PROOF: mode=condition; reason=Each successful RQ retirement removes the last owner, while destruction or DMA-close failure returns with that owner retained.;
+        while !self.rqs.is_empty() {
+            self.retire_last_receive_queue()?;
         }
-        // LOOP_PROOF: mode=condition; reason=Success destroys one RMP before removing its entry, failure retains it.;
-        while let Some(&number) = self.rmp_list.last() {
-            // SAFETY: all RQ consumers were destroyed before the owned RMP.
-            unsafe { self.destroy_rmp_hw(number) }?;
-            self.rmp_list.pop();
+        // Completion/event owners are removed only after firmware destruction
+        // and successful RAM close. Quiesced entries retain failed-unmap state.
+        // LOOP_PROOF: mode=condition; reason=Each successful CQ retirement removes the last owner, while destruction or DMA-close failure returns with that owner retained.;
+        while !self.cqs.is_empty() {
+            self.retire_last_completion_queue()?;
         }
-        // LOOP_PROOF: mode=condition; reason=Success destroys one CQ before dropping its retained doorbell, failure retains both.;
-        while let Some(cq) = self.cqs.last() {
-            let number = cq.cqn;
-            // SAFETY: SQ/RQ consumers were destroyed and CQ DMA/UAR are still retained.
-            unsafe { self.destroy_cq_hw(number) }?;
-            self.cqs.pop();
-        }
-        // LOOP_PROOF: mode=condition; reason=Success destroys one EQ before dropping its retained doorbell, failure retains both.;
-        while let Some(eq) = self.eqs.last() {
-            let number = eq.eqn;
-            // SAFETY: CQ consumers were destroyed and EQ DMA/UAR are still retained.
-            unsafe { self.destroy_eq_hw(number) }?;
-            self.eqs.pop();
+        // LOOP_PROOF: mode=condition; reason=Each successful EQ retirement removes the last owner, while destruction or DMA-close failure returns with that owner retained.;
+        while !self.eqs.is_empty() {
+            self.retire_last_event_queue()?;
         }
         self.tx_cq_by_sq.clear();
         self.rx_cq_by_rq.clear();
@@ -170,107 +163,126 @@ impl Mlx5Device {
         self.finish_fw_pages()?;
         // SAFETY: the firmware pages were successfully returned before HCA disable.
         unsafe { self.disable_hca_hw() }?;
+        // DISABLE_HCA/TEARDOWN_HCA do not revoke the programmed command
+        // address. Record completed progress before testing RAM retirement.
+        self.state = DeviceState::StoppedCommandRetained;
+        if let Some(command) = self.cmd.as_mut() {
+            command.close_unpublished()?;
+        }
+        self.cmd = None;
         self.state = DeviceState::Uninitialized;
         self.resources_allocated = false;
         Ok(())
     }
 
-    /// # Errors
-    ///
-    /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn destroy_sq_hw(&mut self, sqn: u32) -> Mlx5Result<()> {
-        self.cmd
-            .as_ref()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let mut command_input = CmdMailbox::zeroed();
-        let in_mbox = &mut command_input;
-        build_destroy_sq_input(in_mbox, sqn);
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::DestroySq,
-            in_mbox,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
+    fn retire_last_completion_queue(&mut self) -> Mlx5Result<()> {
+        use crate::error::Mlx5Error;
+        let index = self
+            .cqs
+            .len()
+            .checked_sub(1)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        if let crate::queue_memory::QueueRetireAction::Destroy(number) =
+            self.cqs[index].grant.begin_retirement()?
+        {
+            // SAFETY: teardown excludes queue users and removed the queue's
+            // firmware consumers before entering this retirement boundary.
+            let result = self.destroy_completion_grant(number);
+            self.cqs[index].grant.finish_destruction(result)?;
+        }
+        // SAFETY: no accepted CREATE_CQ exists, or DESTROY_CQ completed after
+        // all consumers were destroyed. The recorded state survives unmap failure.
+        unsafe { self.cqs[index].memory.close_quiesced() }?;
+        self.cqs.pop();
         Ok(())
     }
 
-    // ... added more destroy helpers as needed
-    /// # Errors
-    ///
-    /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn destroy_rq_hw(&mut self, rqn: u32) -> Mlx5Result<()> {
-        self.cmd
-            .as_ref()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let mut command_input = CmdMailbox::zeroed();
-        let in_mbox = &mut command_input;
-        build_destroy_rq_input(in_mbox, rqn);
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::DestroyRq,
-            in_mbox,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
+    fn retire_last_event_queue(&mut self) -> Mlx5Result<()> {
+        use crate::error::Mlx5Error;
+        let index = self
+            .eqs
+            .len()
+            .checked_sub(1)
+            .ok_or(Mlx5Error::InvalidParameter)?;
+        if let crate::queue_memory::QueueRetireAction::Destroy(number) =
+            self.eqs[index].grant.begin_retirement()?
+        {
+            // SAFETY: teardown excludes queue users and removed the queue's
+            // firmware consumers before entering this retirement boundary.
+            let result = self.destroy_event_grant(number);
+            self.eqs[index].grant.finish_destruction(result)?;
+        }
+        // SAFETY: no accepted CREATE_EQ exists, or DESTROY_EQ completed after
+        // all consumers were destroyed. The recorded state survives unmap failure.
+        unsafe { self.eqs[index].memory.close_quiesced() }?;
+        self.eqs.pop();
         Ok(())
+    }
+
+    fn destroy_work_grant(
+        &mut self,
+        opcode: CmdOpcode,
+        number: u32,
+    ) -> Result<(), crate::error::CommandFailure> {
+        let mut input = CmdMailbox::zeroed();
+        match opcode {
+            CmdOpcode::DestroySq => build_destroy_sq_input(&mut input, number),
+            CmdOpcode::DestroyRq => build_destroy_rq_input(&mut input, number),
+            CmdOpcode::DestroyRmp => build_destroy_rmp_input(&mut input, number),
+            _ => unreachable!("work queue retirement selects a matching destroy opcode"),
+        }
+        self.execute_command(opcode, &input, 0x10, 0x10)
+    }
+
+    fn retire_last_send_queue(&mut self) -> Mlx5Result<()> {
+        let index = self.sqs.len() - 1;
+        if let crate::queue_memory::QueueRetireAction::Destroy(number) =
+            self.sqs[index].grant.begin_retirement()?
+        {
+            let result = self.destroy_work_grant(CmdOpcode::DestroySq, number);
+            self.sqs[index].grant.finish_destruction(result)?;
+        }
+        // SAFETY: no creation was accepted, or acknowledged DESTROY_SQ stopped
+        // this grant. Its recorded quiescence survives RAM close failure.
+        unsafe { self.sqs[index].memory.close_quiesced() }?;
+        self.sqs.pop();
+        Ok(())
+    }
+
+    fn retire_last_receive_queue(&mut self) -> Mlx5Result<()> {
+        let index = self.rqs.len() - 1;
+        if let crate::queue_memory::QueueRetireAction::Destroy(number) =
+            self.rqs[index].grant.begin_retirement()?
+        {
+            let result = self.destroy_work_grant(CmdOpcode::DestroyRq, number);
+            self.rqs[index].grant.finish_destruction(result)?;
+        }
+        if let crate::queue_memory::QueueRetireAction::Destroy(number) =
+            self.rqs[index].rmp_grant.begin_retirement()?
+        {
+            let result = self.destroy_work_grant(CmdOpcode::DestroyRmp, number);
+            self.rqs[index].rmp_grant.finish_destruction(result)?;
+        }
+        // SAFETY: both RQ and RMP consumers are known unpublished or destroyed.
+        // Both independent grants are recorded quiesced before any RAM close.
+        unsafe { self.rqs[index].memory.close_quiesced() }?;
+        self.rqs.pop();
+        Ok(())
+    }
+
+    fn destroy_completion_grant(&mut self, cqn: u32) -> Result<(), crate::error::CommandFailure> {
+        let mut input = CmdMailbox::zeroed();
+        build_destroy_cq_input(&mut input, cqn);
+        self.execute_command(CmdOpcode::DestroyCq, &input, 0x10, 0x10)
     }
 
     /// # Errors
     ///
     /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn destroy_rmp_hw(&mut self, rmpn: u32) -> Mlx5Result<()> {
-        self.cmd
-            .as_ref()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let mut command_input = CmdMailbox::zeroed();
-        let in_mbox = &mut command_input;
-        build_destroy_rmp_input(in_mbox, rmpn);
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::DestroyRmp,
-            in_mbox,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-        Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn destroy_cq_hw(&mut self, cqn: u32) -> Mlx5Result<()> {
-        self.cmd
-            .as_ref()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let mut command_input = CmdMailbox::zeroed();
-        let in_mbox = &mut command_input;
-        build_destroy_cq_input(in_mbox, cqn);
-        self.execute_uid_sensitive_cmd(
-            CmdOpcode::DestroyCq,
-            in_mbox,
-            MLX5_CMD_MBOX_SIZE as u32,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-        Ok(())
-    }
-
-    /// # Errors
-    ///
-    /// Returns an error if the resource is invalid, still in use, or cannot be released.
-    pub unsafe fn destroy_eq_hw(&mut self, eqn: u32) -> Mlx5Result<()> {
-        let cmd = self
-            .cmd
-            .as_mut()
-            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
-        let mut command_input = CmdMailbox::zeroed();
-        let in_mbox = &mut command_input;
-        build_destroy_eq_input(in_mbox, eqn);
-        cmd.execute(
-            CmdOpcode::DestroyEq,
-            in_mbox,
-            MLX5_CMD_MBOX_SIZE as u32,
-            &mut self.cmd_output,
-            MLX5_CMD_MBOX_SIZE as u32,
-        )?;
-        Ok(())
+    fn destroy_event_grant(&mut self, eqn: u32) -> Result<(), crate::error::CommandFailure> {
+        let mut input = CmdMailbox::zeroed();
+        build_destroy_eq_input(&mut input, eqn);
+        self.execute_command(CmdOpcode::DestroyEq, &input, 0x10, 0x10)
     }
 
     /// # Errors
@@ -284,7 +296,7 @@ impl Mlx5Device {
         let in_mbox = &mut command_input;
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, tirn & 0x00FF_FFFF);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DestroyTir,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -304,7 +316,7 @@ impl Mlx5Device {
         let in_mbox = &mut command_input;
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, tisn & 0x00FF_FFFF);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DestroyTis,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -323,7 +335,7 @@ impl Mlx5Device {
         let mut command_input = CmdMailbox::zeroed();
         let in_mbox = &mut command_input;
         build_destroy_qp_input(in_mbox, qpn);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DestroyQp,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -342,7 +354,7 @@ impl Mlx5Device {
         let mut command_input = CmdMailbox::zeroed();
         let in_mbox = &mut command_input;
         build_destroy_rqt_input(in_mbox, rqtn);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DestroyRqt,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -429,7 +441,7 @@ impl Mlx5Device {
         let in_mbox = &mut command_input;
         *in_mbox = CmdMailbox::zeroed();
         in_mbox.write_be32(0x04, mkey_index & 0x00FF_FFFF);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DestroyMkey,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -448,7 +460,7 @@ impl Mlx5Device {
         let mut command_input = CmdMailbox::zeroed();
         let in_mbox = &mut command_input;
         build_dealloc_pd_input(in_mbox, pd);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DeallocPd,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -467,7 +479,7 @@ impl Mlx5Device {
         let mut command_input = CmdMailbox::zeroed();
         let in_mbox = &mut command_input;
         build_dealloc_td_input(in_mbox, td);
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::DeallocTransportDomain,
             in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
@@ -486,7 +498,6 @@ impl Mlx5Device {
         use crate::error::Mlx5Error;
         if !self.sqs.is_empty()
             || !self.rqs.is_empty()
-            || !self.rmp_list.is_empty()
             || !self.cqs.is_empty()
             || !self.eqs.is_empty()
         {
@@ -579,7 +590,7 @@ impl Mlx5Device {
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
         );
-        self.execute_uid_sensitive_cmd(CmdOpcode::ModifySq, in_mbox, 0x110, 0x10)?;
+        self.execute_command(CmdOpcode::ModifySq, in_mbox, 0x110, 0x10)?;
         Ok(())
     }
 
@@ -598,7 +609,7 @@ impl Mlx5Device {
             crate::defs::WqState::Ready as u8,
             crate::defs::WqState::Error as u8,
         );
-        self.execute_uid_sensitive_cmd(CmdOpcode::ModifyRq, in_mbox, 0x110, 0x10)?;
+        self.execute_command(CmdOpcode::ModifyRq, in_mbox, 0x110, 0x10)?;
         Ok(())
     }
 }

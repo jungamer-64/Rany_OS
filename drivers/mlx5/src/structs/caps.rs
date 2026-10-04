@@ -652,7 +652,6 @@ mod tests {
         assert_eq!(view.sq_ts_format(), 0x1);
         assert_eq!(view.rq_ts_format(), 0x2);
         assert!(view.vhca_state());
-        assert_eq!(view.log_uar_page_sz(), 0x10);
         assert!(view.cqe_compression());
         assert_eq!(view.num_vhca_ports(), 3);
         assert!(view.sw_owner_id());
@@ -697,7 +696,6 @@ mod tests {
 
         let view = HcaCap2Layout::new(&data);
         assert!(view.sw_vhca_id_valid());
-        assert_eq!(view.sw_vhca_id(), 0x2aaa);
 
         let mut data = [0u8; 256];
         {

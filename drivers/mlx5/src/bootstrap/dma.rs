@@ -129,6 +129,27 @@ impl BootstrapDmaInventory {
         Some(self.allocations.swap_remove(index).lease)
     }
 
+    /// Transfer a complete, distinct queue group. Missing or repeated members
+    /// leave every allocation in this inventory.
+    pub(crate) fn take_group<const N: usize>(
+        &mut self,
+        purposes: [BootstrapDmaPurpose; N],
+    ) -> Option<[CpuDmaLease; N]> {
+        if purposes.iter().enumerate().any(|(index, purpose)| {
+            purposes[..index].contains(purpose)
+                || !self
+                    .allocations
+                    .iter()
+                    .any(|entry| entry.purpose == *purpose)
+        }) {
+            return None;
+        }
+        Some(core::array::from_fn(|index| {
+            self.take(purposes[index])
+                .expect("exclusive inventory borrow preserves the verified distinct queue group")
+        }))
+    }
+
     /// # Errors
     /// Stops at the first failed unmap, preserving the failed quarantine lease,
     /// all unattempted allocations, and the exact successful release count.

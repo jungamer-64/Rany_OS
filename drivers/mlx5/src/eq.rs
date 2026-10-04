@@ -60,8 +60,8 @@ impl Eqe {
     }
 
     /// ページ要求イベント: 要求ページ数
-    pub fn requested_pages(&self) -> u32 {
-        u32::from_be_bytes([
+    pub fn requested_pages(&self) -> i32 {
+        i32::from_be_bytes([
             self.data[eqe::NUM_PAGES],
             self.data[eqe::NUM_PAGES + 1],
             self.data[eqe::NUM_PAGES + 2],
@@ -75,28 +75,90 @@ impl Eqe {
     }
 }
 
-/// Event Queue 管理構造体
-///
-/// EQリングバッファとコンシューマインデックスを管理する。
+/// An event ring owns its RAM through creation, destruction and failed unmap.
+/// Polling produces a CPU snapshot only after observing the ownership byte.
 pub struct EventQueue {
-    doorbell: crate::registers::EqDoorbell,
-    /// EQのハードウェア番号（CREATE_EQで返される）
-    pub eqn: u32,
-    /// EQバッファの仮想アドレス
-    buf_virt: u64,
-    /// EQバッファの物理アドレス
-    buf_phys: u64,
-    /// ログ2 EQサイズ
-    log_eq_size: u8,
-    /// コンシューマカウンタ
+    pub(crate) grant: crate::queue_memory::QueueGrant,
+    pub(crate) memory: crate::queue_memory::QueueMemory<1>,
+    pub(crate) doorbell: crate::registers::EqDoorbell,
+    pub(crate) log_eq_size: u8,
     consumer_counter: u32,
-    /// EQエントリ数
-    eq_depth: u32,
-    /// 紐づくMSI-Xベクタ番号
     pub msix_vector: u32,
 }
 
+impl EventQueue {
+    pub(crate) fn new(
+        identity: kernel_api::dma::DmaQueueIdentity,
+        lease: kernel_api::dma::CpuDmaLease,
+        doorbell: crate::registers::EqDoorbell,
+        log_eq_size: u8,
+        msix_vector: u32,
+    ) -> Self {
+        Self {
+            grant: crate::queue_memory::QueueGrant::Unpublished,
+            memory: crate::queue_memory::QueueMemory::new(identity, [lease]),
+            doorbell,
+            log_eq_size,
+            consumer_counter: 0,
+            msix_vector,
+        }
+    }
 
+    /// Firmware identity is available only while normal queue access is allowed.
+    pub fn number(&self) -> Option<u32> {
+        self.grant.number()
+    }
+
+    pub(crate) fn prepare(&mut self) -> crate::error::Mlx5Result<()> {
+        let bytes = (1usize << self.log_eq_size) * eqe::EQE_SIZE;
+        self.memory.prepare(
+            [crate::queue_memory::RegionLayout {
+                bytes,
+                direction: kernel_api::dma::DmaDirection::FromDevice,
+                alignment: crate::defs::MLX5_PAGE_SIZE,
+            }],
+            |_, region| {
+                region.fill(0);
+                for entry in region[..bytes].as_chunks_mut::<{ eqe::EQE_SIZE }>().0 {
+                    entry[eqe::STATUS_OWN] = 1;
+                }
+            },
+        )
+    }
+
+    pub(crate) fn depth(&self) -> u32 {
+        1u32 << self.log_eq_size
+    }
+
+    /// Each successful read consumes one EQE. Hardware cannot reuse its slot
+    /// until acknowledge publishes the updated consumer counter.
+    pub(crate) fn next(&mut self) -> crate::error::Mlx5Result<Option<Eqe>> {
+        if self.number().is_none() {
+            return Err(crate::error::Mlx5Error::DeviceNotReady);
+        }
+        let offset = (self.consumer_counter % self.depth()) as usize * eqe::EQE_SIZE;
+        let owner = self.memory.read_byte(0, offset + eqe::STATUS_OWN)? & 1;
+        let expected = ((self.consumer_counter >> self.log_eq_size) & 1) as u8;
+        if owner != expected {
+            return Ok(None);
+        }
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Acquire);
+        let entry = Eqe {
+            data: self.memory.read(0, offset)?,
+        };
+        self.consumer_counter = self.consumer_counter.wrapping_add(1);
+        Ok(Some(entry))
+    }
+
+    pub(crate) fn acknowledge(&mut self) -> crate::error::Mlx5Result<()> {
+        let number = self
+            .number()
+            .ok_or(crate::error::Mlx5Error::DeviceNotReady)?;
+        core::sync::atomic::fence(core::sync::atomic::Ordering::Release);
+        self.doorbell.acknowledge(number, self.consumer_counter);
+        Ok(())
+    }
+}
 
 /// EQイベント処理結果
 #[derive(Debug)]
@@ -108,7 +170,7 @@ pub enum EqEvent {
     /// コマンド完了
     CommandCompletion,
     /// ページ要求（関数ID, ページ数）
-    PageRequest(u16, u32),
+    PageRequest(u16, i32),
     /// 不明なイベント
     Unknown(u8),
 }

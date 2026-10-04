@@ -27,7 +27,7 @@ impl<'a> HealthLayout<'a> {
 
     /// 拡張症候群 (Extended Syndrome)
     pub fn ext_syndrome(&self) -> u16 {
-        get_bits_u32(self.data, 13 * 32 + 0, 16) as u16
+        get_bits_u32(self.data, 13 * 32, 16) as u16
     }
 
     /// 全リセット要求フラグ

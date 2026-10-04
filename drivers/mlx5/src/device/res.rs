@@ -4,7 +4,6 @@
 
 extern crate alloc;
 use crate::cmd::CmdMailbox;
-use crate::cmd::CommandTransport; // needed to bring execute() method into scope
 use crate::cmd::hca::*; // basic HCA commands (SET_DRIVER_VERSION etc)
 use crate::cmd::res::*; // resource command builders/parsers
 use crate::defs::{CmdOpcode, MLX5_CMD_MBOX_SIZE};
@@ -50,7 +49,7 @@ impl Mlx5Device {
     }
 
     unsafe fn last_cmd_status_and_syndrome(&self) -> (u8, u32) {
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         (out_mbox.data[0], out_mbox.read_be32(0x04))
     }
 
@@ -105,16 +104,16 @@ impl Mlx5Device {
         tisn: u32,
     ) -> Mlx5Result<(crate::cmd::res::QueryTisInfo, CmdMailbox)> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_query_tis_input(in_mbox, tisn, 0, false);
-        self.execute_cmd_with_uid_candidates(
+        self.execute_command(
             CmdOpcode::QueryTis,
-            self.cmd_in_mbox_device,
+            in_mbox,
             0x10,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let mut snapshot = CmdMailbox::zeroed();
         snapshot.data.copy_from_slice(&out_mbox.data);
         Ok((parse_query_tis_output(out_mbox), snapshot))
@@ -363,16 +362,11 @@ impl Mlx5Device {
     ///
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_reserved_lkey(&mut self) -> Mlx5Result<u32> {
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_query_special_contexts_input(in_mbox);
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::QuerySpecialContexts,
-            self.cmd_in_mbox_device,
-            0x10,
-            self.cmd_out_mbox_device,
-            0x40,
-        )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        self.execute_command(CmdOpcode::QuerySpecialContexts, in_mbox, 0x10, 0x40)?;
+        let out_mbox = &*self.cmd_output;
         Ok(parse_query_special_contexts_resd_lkey(out_mbox))
     }
 
@@ -383,7 +377,9 @@ impl Mlx5Device {
     pub unsafe fn create_mkey(&mut self, params: &MkeyParams) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
 
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+
+        let in_mbox = &mut command_input;
         let (relaxed_ordering_write, relaxed_ordering_read) = self
             .hca_caps()
             .map(|caps| {
@@ -412,13 +408,14 @@ impl Mlx5Device {
             );
         }
 
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::CreateMkey,
+            in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let mkey_index = crate::cmd::res::parse_create_mkey_output(out_mbox);
         let full_mkey = mkey_index << 8;
 
@@ -479,16 +476,16 @@ impl Mlx5Device {
         &mut self,
         mkey_index: u32,
     ) -> Mlx5Result<crate::cmd::res::QueryMkeyInfo> {
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_query_mkey_input(in_mbox, mkey_index);
-        self.execute_cmd_with_uid_candidates(
+        self.execute_command(
             CmdOpcode::QueryMkey,
-            self.cmd_in_mbox_device,
+            in_mbox,
             0x10,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         Ok(parse_query_mkey_output(out_mbox))
     }
 
@@ -548,20 +545,24 @@ impl Mlx5Device {
             ts_format,
             input_qpn
         );
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::res::build_create_underlay_qp_input(in_mbox, vhca_port, input_qpn, ts_format);
         let mut pre_exec = CmdMailbox::zeroed();
         pre_exec.data[..0x110].copy_from_slice(&in_mbox.data[..0x110]);
-        match self.execute_uid_sensitive_cmd(CmdOpcode::CreateQp, 0x110, 0x10) {
+        match self.execute_command(CmdOpcode::CreateQp, in_mbox, 0x110, 0x10) {
             Ok(()) => {}
             Err(err) => {
+                if !matches!(err, crate::error::CommandFailure::Rejected(_)) {
+                    return Err(err.cause());
+                }
                 crate::boot_trace_mailbox_range("create_qp_pre", &pre_exec, 0x00, 12);
                 crate::boot_trace_mailbox_range("qpc_pre", &pre_exec, 0x18, 24);
-                return Err(err);
+                return Err(err.cause());
             }
         }
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let qpn = crate::cmd::res::parse_create_qp_output(out_mbox);
         log::warn!(
             target: "mlx5",
@@ -580,7 +581,9 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         crate::boot_trace("[MLX5_TIS] enter\n");
 
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+
+        let in_mbox = &mut command_input;
         // VF firmware behavior varies across revisions; keep a short, targeted
         // retry set that starts with the common default profile, then tries
         // conservative compatibility variants.
@@ -823,16 +826,19 @@ impl Mlx5Device {
             crate::boot_trace_mailbox_range("tisc_try_hdr", &pre_exec, 0x00, 8);
             crate::boot_trace_mailbox_range("tisc_try_ctx", &pre_exec, 0x20, 16);
 
-            match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
+            match self.execute_command(CmdOpcode::CreateTis, in_mbox, 0x110, 0x10) {
                 Ok(()) => {
                     crate::boot_trace_mailbox_range("tisc_pre", &pre_exec, 0x20, 16);
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let out_mbox = &*self.cmd_output;
                     let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
                     self.record_tis_info(tisn, params.port, TisOwnership::DriverCreated);
                     crate::boot_trace("[MLX5_TIS] create ok\n");
                     return Ok(tisn);
                 }
                 Err(err) => {
+                    if !matches!(err, crate::error::CommandFailure::Rejected(_)) {
+                        return Err(err.cause());
+                    }
                     let (fw_status, syndrome) = self.last_cmd_status_and_syndrome();
                     crate::boot_trace_mailbox_range("tisc_pre_fail", &pre_exec, 0x20, 16);
                     crate::boot_trace_tis_attempt_result("fail", attempt.name, fw_status, syndrome);
@@ -860,7 +866,7 @@ impl Mlx5Device {
                         );
                     }
                     crate::boot_trace("[MLX5_TIS] create fail\n");
-                    last_err = Err(err);
+                    last_err = Err(err.cause());
                 }
             }
         }
@@ -904,7 +910,7 @@ impl Mlx5Device {
                     );
                     crate::boot_trace_mailbox_range("tisc_try_hdr", &pre_exec, 0x00, 8);
                     crate::boot_trace_mailbox_range("tisc_try_ctx", &pre_exec, 0x20, 16);
-                    match self.execute_uid_sensitive_cmd(CmdOpcode::CreateTis, 0x110, 0x10) {
+                    match self.execute_command(CmdOpcode::CreateTis, in_mbox, 0x110, 0x10) {
                         Ok(()) => {
                             crate::boot_trace_mailbox_range(
                                 "tisc_pre_underlay",
@@ -912,7 +918,7 @@ impl Mlx5Device {
                                 0x20,
                                 16,
                             );
-                            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                            let out_mbox = &*self.cmd_output;
                             let tisn = crate::cmd::res::parse_create_tis_output(out_mbox);
                             self.underlay_qpn = qpn;
                             self.record_tis_info(tisn, params.port, TisOwnership::DriverCreated);
@@ -920,6 +926,9 @@ impl Mlx5Device {
                             return Ok(tisn);
                         }
                         Err(err) => {
+                            if !matches!(err, crate::error::CommandFailure::Rejected(_)) {
+                                return Err(err.cause());
+                            }
                             let (fw_status, syndrome) = self.last_cmd_status_and_syndrome();
                             crate::boot_trace_mailbox_range(
                                 "tisc_pre_underlay_fail",
@@ -942,7 +951,7 @@ impl Mlx5Device {
                                 syndrome
                             );
                             let _ = self.destroy_qp_hw(qpn);
-                            last_err = Err(err);
+                            last_err = Err(err.cause());
                         }
                     }
                 }
@@ -968,18 +977,21 @@ impl Mlx5Device {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
         crate::boot_trace("[MLX5_TIR] enter\n");
 
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+
+        let in_mbox = &mut command_input;
         crate::cmd::res::build_create_tir_input(in_mbox, params);
         crate::boot_trace("[MLX5_TIR] input_built\n");
 
-        self.execute_uid_sensitive_cmd(
+        self.execute_command(
             CmdOpcode::CreateTir,
+            in_mbox,
             0x110, // mailbox input length (header + payload)
             0x10,  // output length
         )?;
         crate::boot_trace("[MLX5_TIR] cmd_done\n");
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let tirn = crate::cmd::res::parse_create_tir_output(out_mbox);
 
         let info = TirInfo {
@@ -1022,25 +1034,16 @@ impl Mlx5Device {
             cmd.set_uid(uid);
             // SAFETY: command DMA is retained by the device startup owner and
             // the idle command slot permits CPU mailbox preparation.
-            let input = unsafe { &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox) };
+            let mut command_input = CmdMailbox::zeroed();
+            let input = &mut command_input;
             build_alloc_uar_input(input);
-            // SAFETY: the idle transport owns these command DMA ranges through
-            // the completion or unknown outcome; no second command is admitted.
-            let result = unsafe {
-                cmd.execute(
-                    CmdOpcode::AllocUar,
-                    self.cmd_in_mbox_device,
-                    0x10,
-                    self.cmd_out_mbox_device,
-                    0x10,
-                )
-            };
+            let result = cmd.execute(CmdOpcode::AllocUar, input, 0x10, &mut self.cmd_output, 0x10);
             cmd.set_uid(previous_uid);
             match result {
                 Ok(()) => {
                     // SAFETY: execute observed the current token's completion;
                     // output RAM is retained and no command is in flight.
-                    let output = unsafe { &*(self.cmd_out_mbox_virt as *const CmdMailbox) };
+                    let output = &*self.cmd_output;
                     let number = parse_alloc_uar_output(output);
                     self.allocated_uars
                         .push(super::UarAllocation { number, uid });
@@ -1055,10 +1058,10 @@ impl Mlx5Device {
                 }
                 // Only an explicit firmware rejection permits another UID
                 // attempt. Timeout/transport uncertainty must not touch RAM.
-                Err(Mlx5Error::CommandFailed(status)) => {
+                Err(crate::error::CommandFailure::Rejected(status)) => {
                     last_error = Mlx5Error::CommandFailed(status)
                 }
-                Err(error) => return Err(error),
+                Err(error) => return Err(error.cause()),
             }
         }
         Err(last_error)
@@ -1078,31 +1081,35 @@ impl Mlx5Device {
         let mut fallback_pd = None;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            let mut command_input = CmdMailbox::zeroed();
+            let in_mbox = &mut command_input;
             build_alloc_pd_input(in_mbox);
 
             match cmd.execute(
                 CmdOpcode::AllocPd,
-                self.cmd_in_mbox_device,
+                in_mbox,
                 0x10,
-                self.cmd_out_mbox_device,
+                &mut self.cmd_output,
                 0x10,
             ) {
                 Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let out_mbox = &*self.cmd_output;
                     self.pd = parse_alloc_pd_output(out_mbox);
                     log::info!(target: "mlx5", "ALLOC_PD assigned pd={}", self.pd);
                     cmd.set_uid(prev_uid);
                     return Ok(self.pd);
                 }
-                Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
+                Err(crate::error::CommandFailure::Rejected(status)) if status == 0x04 => {
                     fallback_pd = Some(0);
                     last_err = Err(Mlx5Error::CommandFailed(status));
                     continue;
                 }
-                Err(e) => {
-                    last_err = Err(e);
-                    continue;
+                Err(crate::error::CommandFailure::Rejected(status)) => {
+                    last_err = Err(Mlx5Error::CommandFailed(status));
+                }
+                Err(failure) => {
+                    cmd.set_uid(prev_uid);
+                    return Err(failure.cause());
                 }
             }
         }
@@ -1129,31 +1136,35 @@ impl Mlx5Device {
         let mut fallback_td = None;
         for &uid in &uids[..len] {
             cmd.set_uid(uid);
-            let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+            let mut command_input = CmdMailbox::zeroed();
+            let in_mbox = &mut command_input;
             build_alloc_td_input(in_mbox);
 
             match cmd.execute(
                 CmdOpcode::AllocTransportDomain,
-                self.cmd_in_mbox_device,
+                in_mbox,
                 0x10,
-                self.cmd_out_mbox_device,
+                &mut self.cmd_output,
                 0x10,
             ) {
                 Ok(()) => {
-                    let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+                    let out_mbox = &*self.cmd_output;
                     self.td = parse_alloc_td_output(out_mbox);
                     log::info!(target: "mlx5", "ALLOC_TD assigned td={}", self.td);
                     cmd.set_uid(prev_uid);
                     return Ok(self.td);
                 }
-                Err(Mlx5Error::CommandFailed(status)) if status == 0x04 => {
+                Err(crate::error::CommandFailure::Rejected(status)) if status == 0x04 => {
                     fallback_td = Some(0);
                     last_err = Err(Mlx5Error::CommandFailed(status));
                     continue;
                 }
-                Err(e) => {
-                    last_err = Err(e);
-                    continue;
+                Err(crate::error::CommandFailure::Rejected(status)) => {
+                    last_err = Err(Mlx5Error::CommandFailed(status));
+                }
+                Err(failure) => {
+                    cmd.set_uid(prev_uid);
+                    return Err(failure.cause());
                 }
             }
         }
@@ -1183,18 +1194,13 @@ impl Mlx5Device {
             );
             return Ok(());
         }
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
 
         // Driver-reported version string: "<os>,mlx5_core,<major>.<minor>.<patch>".
         let version = b"RanyOS,mlx5_core,0.1.0";
         build_set_driver_version_input(in_mbox, version);
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::SetDriverVersion,
-            self.cmd_in_mbox_device,
-            0x50,
-            self.cmd_out_mbox_device,
-            0x10,
-        )?;
+        self.execute_command(CmdOpcode::SetDriverVersion, in_mbox, 0x50, 0x10)?;
         Ok(())
     }
 
@@ -1210,8 +1216,10 @@ impl Mlx5Device {
         mac: [u8; 6],
         tirn: u32,
     ) -> Mlx5Result<()> {
-        let mut match_value = crate::flow::MatchValue::default();
-        match_value.dst_mac = Some(mac);
+        let match_value = crate::flow::MatchValue {
+            dst_mac: Some(mac),
+            ..Default::default()
+        };
 
         self.set_flow_table_entry(
             table_id,
@@ -1235,8 +1243,10 @@ impl Mlx5Device {
         dst_ip: u32,
         tirn: u32,
     ) -> Mlx5Result<()> {
-        let mut match_value = crate::flow::MatchValue::default();
-        match_value.dst_ipv4 = Some(dst_ip);
+        let match_value = crate::flow::MatchValue {
+            dst_ipv4: Some(dst_ip),
+            ..Default::default()
+        };
 
         self.set_flow_table_entry(
             table_id,
@@ -1260,14 +1270,16 @@ impl Mlx5Device {
         let table_id = self.create_flow_table(&ft_config)?;
 
         // グループ1: ユニキャスト/マルチキャスト用 (マッチ条件あり)
-        let mut criteria = crate::flow::MatchCriteria::default();
-        criteria.outer_l2 = true;
+        let criteria = crate::flow::MatchCriteria {
+            outer_l2: true,
+            ..Default::default()
+        };
         let group_id = self.create_flow_group(table_id, 0, 63, &criteria)?;
 
         // 自分のMACアドレスを登録
         let my_mac = self
             .ports
-            .get(0)
+            .first()
             .map(|p| p.mac_address().0)
             .unwrap_or([0; 6]);
         if my_mac != [0; 6] {
@@ -1289,16 +1301,16 @@ impl Mlx5Device {
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn create_flow_table(&mut self, config: &FlowTableConfig) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::flow::build_create_flow_table_input(in_mbox, config);
-        self.execute_cmd_with_uid_candidates(
+        self.execute_command(
             CmdOpcode::CreateFlowTable,
-            self.cmd_in_mbox_device,
+            in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let table_id = crate::cmd::flow::parse_create_flow_table_output(out_mbox);
         self.flow_tables.push(FlowTable {
             table_id,
@@ -1320,7 +1332,8 @@ impl Mlx5Device {
         criteria: &crate::flow::MatchCriteria,
     ) -> Mlx5Result<u32> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::flow::build_create_flow_group_input(
             in_mbox,
             table_id,
@@ -1328,14 +1341,13 @@ impl Mlx5Device {
             end_index,
             criteria,
         );
-        self.execute_cmd_with_uid_candidates(
+        self.execute_command(
             CmdOpcode::CreateFlowGroup,
-            self.cmd_in_mbox_device,
+            in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let group_id = crate::cmd::flow::parse_create_flow_group_output(out_mbox);
         self.flow_groups.push(FlowGroup {
             group_id,
@@ -1360,7 +1372,8 @@ impl Mlx5Device {
         match_value: &crate::flow::MatchValue,
     ) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::flow::build_set_flow_table_entry_input(
             in_mbox,
             table_id,
@@ -1370,11 +1383,10 @@ impl Mlx5Device {
             destination_tirn,
             match_value,
         );
-        self.execute_cmd_with_uid_candidates(
+        self.execute_command(
             CmdOpcode::SetFlowTableEntry,
-            self.cmd_in_mbox_device,
+            in_mbox,
             MLX5_CMD_MBOX_SIZE as u32,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         )?;
         self.flow_entries.push(FlowTableEntry {

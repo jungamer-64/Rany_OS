@@ -9,13 +9,13 @@ use crate::bootstrap::{
     Mlx5QueueProfile,
 };
 use alloc::{sync::Arc, vec, vec::Vec};
+use exorust_sync::Mutex;
 use kernel_api::dma::{
     CpuDmaLease, DmaAccessWidth, DmaAllocationRequest, DmaByteCount, DmaCompletionWitness,
     DmaDeviceAddress, DmaDirection, DmaLeaseAuthority, DmaLeaseError, DmaLeaseId, DmaLeaseState,
     DmaQueueIdentity, DmaQuiesceWitness, DmaReconcileWitness, DmaResetWitness,
 };
 use kernel_api::error::KapiError;
-use spin::Mutex;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum State {

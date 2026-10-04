@@ -78,7 +78,7 @@ impl InitializationRegisters {
 
     pub(crate) fn health_buffer(&self) -> Result<[u8; 64], MmioAccessError> {
         let mut bytes = [0; 64];
-        for (i, word) in bytes.chunks_exact_mut(4).enumerate() {
+        for (i, word) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             word.copy_from_slice(
                 &self
                     .read_be32(init_seg::HEALTH_BUFFER + i * 4)?

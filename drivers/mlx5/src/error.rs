@@ -14,8 +14,13 @@ pub enum Mlx5Error {
     CommandTimeout,
     /// Reset was published but its acknowledgement/outcome could not be established.
     ResetOutcomeUnknown,
+    /// HCA teardown completed but the device still owns command RAM.
+    /// Reset/reconciliation must finish before this transport can retire.
+    CommandTransportBusy,
     /// コマンドがエラーステータスを返した
     CommandFailed(u8),
+    /// Transport delivery failure, distinct from a firmware command rejection.
+    CommandDelivery(u8),
     /// 不正なコマンドレスポンス
     InvalidResponse,
     /// バーマッピング失敗
@@ -38,6 +43,8 @@ pub enum Mlx5Error {
     IommuError,
     /// リソース不足
     NoResources,
+    /// Allocation failed before publication; distinct from logical admission.
+    OutOfMemory,
     /// 不正なパラメータ
     InvalidParameter,
     /// このデバイス/FWで未対応
@@ -50,13 +57,61 @@ pub enum Mlx5Error {
     PageAllocation(kernel_api::error::KapiError),
 }
 
+/// Acceptance of this command, independently of the command RAM's lifetime.
+/// NotPublished grants no right to retire the already-programmed command RAM.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CommandFailure {
+    /// This opcode's acceptance boundary was not crossed. Resources already
+    /// published by earlier commands remain subject to their own leases.
+    NotPublished(Mlx5Error),
+    /// A current, token-validated firmware response rejected this command.
+    Rejected(u8),
+    /// Acceptance or completion is uncertain; another publication is forbidden.
+    OutcomeUnknown(Mlx5Error),
+}
+
+impl CommandFailure {
+    /// Error presentation/classification for an owner that has already retained
+    /// the publication state. This view alone is not rollback authority.
+    pub fn cause(self) -> Mlx5Error {
+        match self {
+            Self::NotPublished(cause) | Self::OutcomeUnknown(cause) => cause,
+            Self::Rejected(status) => Mlx5Error::CommandFailed(status),
+        }
+    }
+}
+
+impl From<CommandFailure> for Mlx5Error {
+    fn from(failure: CommandFailure) -> Self {
+        failure.cause()
+    }
+}
+
+/// Publication failure determines whether the packet owner may release its
+/// submission. Unknown publication retains the counter and exact physical slot.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkSubmissionError {
+    NotPublished(Mlx5Error),
+    OutcomeUnknown {
+        counter: u16,
+        slot: u16,
+        cause: Mlx5Error,
+    },
+}
+
 impl fmt::Display for Mlx5Error {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::FirmwareInitFailed => write!(f, "firmware init failed"),
             Self::CommandTimeout => write!(f, "command timeout"),
             Self::ResetOutcomeUnknown => write!(f, "reset outcome unknown; resources retained"),
+            Self::CommandTransportBusy => {
+                write!(f, "command DMA remains published; resources retained")
+            }
             Self::CommandFailed(status) => write!(f, "command failed: status={:#x}", status),
+            Self::CommandDelivery(status) => {
+                write!(f, "command delivery failed: status={status:#x}")
+            }
             Self::InvalidResponse => write!(f, "invalid response"),
             Self::BarMapFailed => write!(f, "BAR mapping failed"),
             Self::MmioAccess(cause) => write!(f, "MMIO access: {cause:?}"),
@@ -68,6 +123,7 @@ impl fmt::Display for Mlx5Error {
             Self::MsixSetupFailed => write!(f, "MSI-X setup failed"),
             Self::IommuError => write!(f, "IOMMU error"),
             Self::NoResources => write!(f, "no resources"),
+            Self::OutOfMemory => write!(f, "out of memory"),
             Self::InvalidParameter => write!(f, "invalid parameter"),
             Self::NotSupported => write!(f, "not supported"),
             Self::Internal => write!(f, "internal error"),

@@ -305,13 +305,13 @@ pub fn build_create_tir_input(in_mbox: &mut CmdMailbox, params: &TirParams) {
         layout.set_transport_domain(params.td);
 
         // LRO configuration can be done while layout is borrowed
-        if let Some(ref rss) = params.rss {
-            if rss.lro_enabled {
-                layout.set_lro_enable_mask(0xF); // Enable LRO for IPv4/IPv6 TCP
-                layout.set_lro_max_ip_payload_size(65535); // 64KB
-                if rss.lro_timeout_us > 0 {
-                    layout.set_lro_timeout_period_usecs(rss.lro_timeout_us);
-                }
+        if let Some(ref rss) = params.rss
+            && rss.lro_enabled
+        {
+            layout.set_lro_enable_mask(0xF); // Enable LRO for IPv4/IPv6 TCP
+            layout.set_lro_max_ip_payload_size(65535); // 64KB
+            if rss.lro_timeout_us > 0 {
+                layout.set_lro_timeout_period_usecs(rss.lro_timeout_us);
             }
         }
     }

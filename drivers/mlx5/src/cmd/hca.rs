@@ -618,24 +618,6 @@ mod tests {
     }
 
     #[test]
-    fn modify_vhca_state_builders_set_field_select_bits() {
-        let mut in_mbox = CmdMailbox::zeroed();
-        build_modify_vhca_state_arm_input(&mut in_mbox, 0x1234, 2);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 16, 16), 0x1234);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 2);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 127, 1), 1);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 128, 1), 1);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 126, 1), 0);
-
-        build_modify_vhca_state_sw_id_input(&mut in_mbox, 0xabcd, 3, 0x1020_3040);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 16, 16), 0xabcd);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 80, 16), 3);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 126, 1), 1);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 127, 1), 0);
-        assert_eq!(get_bits_u32(&in_mbox.data[..], 160, 32), 0x1020_3040);
-    }
-
-    #[test]
     fn opcode_values_match_ifc() {
         assert_eq!(CmdOpcode::ModifyVportState as u16, 0x0751);
         assert_eq!(CmdOpcode::QueryVnicEnv as u16, 0x076f);

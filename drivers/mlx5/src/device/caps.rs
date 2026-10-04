@@ -113,22 +113,17 @@ impl Mlx5Device {
         get_max: bool,
     ) -> Mlx5Result<[u8; HCA_CAP_PAGE_LEN]> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
 
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, cap_type);
         if get_max {
             in_mbox.write_be16(0x06, (cap_type << 1) | 1);
         }
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::QueryHcaCap,
-            self.cmd_in_mbox_device,
-            16,
-            self.cmd_out_mbox_device,
-            HCA_CAP_CMD_LEN,
-        )?;
+        self.execute_command(CmdOpcode::QueryHcaCap, in_mbox, 16, HCA_CAP_CMD_LEN)?;
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let mut page = [0u8; HCA_CAP_PAGE_LEN];
         page.copy_from_slice(&out_mbox.data[0x10..0x10 + HCA_CAP_PAGE_LEN]);
         Ok(page)
@@ -136,17 +131,13 @@ impl Mlx5Device {
 
     unsafe fn set_hca_cap_page(&mut self, cap_type: u16, payload: &[u8]) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
 
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_set_hca_cap_input(in_mbox, cap_type, payload);
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::SetHcaCap,
-            self.cmd_in_mbox_device,
-            HCA_CAP_CMD_LEN,
-            self.cmd_out_mbox_device,
-            16,
-        )
+        self.execute_command(CmdOpcode::SetHcaCap, in_mbox, HCA_CAP_CMD_LEN, 16)
+            .map_err(crate::error::CommandFailure::cause)
     }
 
     /// HCA Capabilities の照会と設定
@@ -308,7 +299,8 @@ impl Mlx5Device {
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_hca_cap_ethernet(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
 
         log::info!(target: "mlx5", "Querying ETHERNET_OFFLOADS Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
@@ -316,15 +308,9 @@ impl Mlx5Device {
             in_mbox,
             crate::cmd::hca::MLX5_CAP_ETHERNET_OFFLOADS,
         );
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::QueryHcaCap,
-            self.cmd_in_mbox_device,
-            16,
-            self.cmd_out_mbox_device,
-            HCA_CAP_CMD_LEN,
-        )?;
+        self.execute_command(CmdOpcode::QueryHcaCap, in_mbox, 16, HCA_CAP_CMD_LEN)?;
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let cap_view = crate::structs::caps::EthOffloadsCapLayout::new(&out_mbox.data[0x10..]);
         let rss_en = cap_view.rss_ind_tbl_cap() != 0;
         let lro_en = cap_view.lro_cap();
@@ -680,22 +666,17 @@ impl Mlx5Device {
     /// Returns an error if the request is invalid or the required device state cannot be read.
     pub unsafe fn query_hca_cap_flow_table(&mut self) -> Mlx5Result<()> {
         self.cmd.as_ref().ok_or(Mlx5Error::DeviceNotReady)?;
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
 
         log::info!(target: "mlx5", "Querying FLOW_TABLE Capabilities...");
         *in_mbox = CmdMailbox::zeroed();
         crate::cmd::hca::build_query_hca_cap_input(in_mbox, crate::cmd::hca::MLX5_CAP_FLOW_TABLE);
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::QueryHcaCap,
-            self.cmd_in_mbox_device,
-            16,
-            self.cmd_out_mbox_device,
-            HCA_CAP_CMD_LEN,
-        )?;
+        self.execute_command(CmdOpcode::QueryHcaCap, in_mbox, 16, HCA_CAP_CMD_LEN)?;
 
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         // NIC Receive Flow Table サポートの確認
-        let nic_rx_ft = (out_mbox.data[0x10 + 0x00] & 0x01) != 0;
+        let nic_rx_ft = (out_mbox.data[0x10] & 0x01) != 0;
         log::debug!(target: "mlx5", "Flow Table Caps: nic_rx_ft={}", nic_rx_ft);
 
         if let Some(caps) = self.hca_caps.as_mut() {

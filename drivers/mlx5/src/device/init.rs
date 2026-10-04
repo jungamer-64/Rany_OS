@@ -2,7 +2,6 @@
 // drivers/mlx5/src/device/init.rs - MLX5 Device Initialization
 // ============================================================================
 
-use crate::cmd::CmdQueueTransport; // needed for layout parsing
 use crate::cmd::hca::{
     MLX5_ACCESS_REGISTER_OP_MOD_WRITE, MLX5_REG_HOST_ENDIANNESS, build_access_register_input,
     build_enable_hca_input, build_init_hca_input, build_set_issi_input,
@@ -25,7 +24,6 @@ enum TxTisAttemptKind {
 
 #[derive(Debug, Clone, Copy)]
 struct TxTisSelection {
-    kind: TxTisAttemptKind,
     tisn: u32,
     implicit_tis0_fallback: bool,
 }
@@ -142,7 +140,6 @@ impl Mlx5Device {
                                 tisn
                             );
                             return TxTisSelection {
-                                kind: TxTisAttemptKind::ReuseExisting,
                                 tisn: self.adopt_external_tis(tisn, &tis_params),
                                 implicit_tis0_fallback: false,
                             };
@@ -165,7 +162,6 @@ impl Mlx5Device {
                                 tisn
                             );
                             return TxTisSelection {
-                                kind: TxTisAttemptKind::ReuseExisting,
                                 tisn: self.adopt_external_tis(tisn, &tis_params),
                                 implicit_tis0_fallback: false,
                             };
@@ -182,7 +178,6 @@ impl Mlx5Device {
                 TxTisAttemptKind::CreateTis => match self.create_tis(&tis_params) {
                     Ok(tisn) => {
                         return TxTisSelection {
-                            kind: TxTisAttemptKind::CreateTis,
                             tisn,
                             implicit_tis0_fallback: false,
                         };
@@ -202,7 +197,6 @@ impl Mlx5Device {
                         "VF TX bring-up falling back to implicit TIS=0 after reusable/create TIS attempts"
                     );
                     return TxTisSelection {
-                        kind: TxTisAttemptKind::ImplicitTis0,
                         tisn: 0,
                         implicit_tis0_fallback: true,
                     };
@@ -216,109 +210,13 @@ impl Mlx5Device {
     unsafe fn adopt_external_tis(
         &mut self,
         tisn: u32,
-        requested: &crate::resources::TisParams,
+        _requested: &crate::resources::TisParams,
     ) -> u32 {
         self.remember_external_tis(tisn, "reuse_active");
-        self.trace_adopted_external_tis("reuse_active_ctx", tisn, requested, false);
         self.trace_tis_prefix_namespace(tisn, 8);
         tisn
     }
 
-    unsafe fn trace_adopted_external_tis(
-        &mut self,
-        label: &str,
-        tisn: u32,
-        requested: &crate::resources::TisParams,
-        include_pd: bool,
-    ) {
-        match self.query_tis_with_snapshot(tisn) {
-            Ok((info, snapshot)) => {
-                crate::boot_trace_tis_query(label, tisn, &info);
-                crate::boot_trace_mailbox_range("query_tis_out_hdr", &snapshot, 0x00, 4);
-                crate::boot_trace_mailbox_range("query_tis_out_ctx", &snapshot, 0x10, 16);
-                crate::boot_trace_tis_compare(
-                    "reuse_vs_create",
-                    requested,
-                    include_pd,
-                    tisn,
-                    &info,
-                );
-                log::info!(
-                    target: "mlx5",
-                    "Adopted external TIS: tisn={:#x} requested(td={} pd={} prio={} port={} include_pd={}) adopted(td={} pd={} prio={} underlay_qpn={:#x} lag_port={} strict_lag={} tls={})",
-                    tisn,
-                    requested.td,
-                    requested.pd,
-                    requested.prio,
-                    requested.port,
-                    include_pd,
-                    info.transport_domain,
-                    info.pd,
-                    info.prio,
-                    info.underlay_qpn,
-                    info.lag_tx_port_affinity,
-                    info.strict_lag_tx_port_affinity,
-                    info.tls_en
-                );
-            }
-            Err(query_err) => {
-                log::warn!(
-                    target: "mlx5",
-                    "Failed to query adopted external TIS {:#x} for {} diagnostics: {:?}",
-                    tisn,
-                    label,
-                    query_err
-                );
-            }
-        }
-    }
-
-    unsafe fn create_sq_with_pf_tis_oracle(
-        &mut self,
-        sq_buf_virt: u64,
-        sq_buf_pa: u64,
-        db_virt: u64,
-        db_pa: u64,
-        log_sq_size: u8,
-        cqn: u32,
-    ) -> Mlx5Result<(u32, u32)> {
-        let mut last_probe_err = Err(Mlx5Error::NotSupported);
-
-        for &candidate_tisn in &Self::PF_TIS_SQ_ORACLE_CANDIDATES {
-            log::info!(
-                target: "mlx5",
-                "Probing PF TX TIS candidate via CREATE_SQ: tisn={:#x}",
-                candidate_tisn
-            );
-            match self.create_sq_hw(
-                sq_buf_virt,
-                sq_buf_pa,
-                db_virt,
-                db_pa,
-                log_sq_size,
-                cqn,
-                candidate_tisn,
-            ) {
-                Ok(sqn) => {
-                    self.remember_external_tis(candidate_tisn, "sq_oracle_active");
-                    return Ok((sqn, candidate_tisn));
-                }
-                Err(err) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "PF TX TIS candidate rejected via CREATE_SQ: tisn={:#x} err={:?}",
-                        candidate_tisn,
-                        err
-                    );
-                    last_probe_err = Err(err);
-                }
-            }
-        }
-
-        last_probe_err
-    }
-
-    /// 起動待機 (ConnectX-4 Lx 等)
     /// # Errors
     ///
     /// Returns an error if the device is not ready, times out, or reports a failed completion.
@@ -351,79 +249,46 @@ impl Mlx5Device {
         log::info!(target: "mlx5", "Assumed firmware ready for VF");
     }
 
-    /// コマンドインタフェースの初期化
-    /// # Errors
-    ///
-    /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-    pub unsafe fn init_command_interface(
+    /// Transfer all command capabilities before their first publication. The
+    /// stored transport retains partial preparation if initialization fails.
+    fn init_command_interface(
         &mut self,
-        cmdq_virt: u64,
-        cmdq_pa: u64,
-        cmd_in_mbox_virt: u64,
-        cmd_in_mbox_pa: u64,
-        cmd_out_mbox_virt: u64,
-        cmd_out_mbox_pa: u64,
+        inventory: &mut crate::bootstrap::BootstrapDmaInventory,
     ) -> Mlx5Result<()> {
-        log::info!(target: "mlx5", "Initializing command interface...");
         if self.cmd.is_some() || self.firmware_pages.is_some() {
             return Err(Mlx5Error::DeviceNotReady);
         }
-        let generation = self
-            .command_generation
-            .checked_add(1)
+        static NEXT_GENERATION: core::sync::atomic::AtomicU64 =
+            core::sync::atomic::AtomicU64::new(1);
+        let generation = NEXT_GENERATION
+            .try_update(
+                core::sync::atomic::Ordering::Relaxed,
+                core::sync::atomic::Ordering::Relaxed,
+                |next| next.checked_add(1),
+            )
+            .map_err(|_| Mlx5Error::NoResources)?;
+        let identity =
+            kernel_api::dma::DmaQueueIdentity::new(self.packed_device_id(), 0, generation)
+                .ok_or(Mlx5Error::InvalidParameter)?;
+        let (log_size, log_stride, _) =
+            CmdQueue::parse_hw_cmdq_layout(self.registers.command_layout()?);
+        let registers = self.registers.command()?;
+        let leases = inventory
+            .take_group([
+                crate::bootstrap::BootstrapDmaPurpose::CommandQueue,
+                crate::bootstrap::BootstrapDmaPurpose::CommandInput,
+                crate::bootstrap::BootstrapDmaPurpose::CommandOutput,
+            ])
             .ok_or(Mlx5Error::NoResources)?;
-        let queue = kernel_api::dma::DmaQueueIdentity::new(self.packed_device_id(), 0, generation)
-            .ok_or(Mlx5Error::InvalidParameter)?;
-
-        // Keep the mailbox addresses for later use
-        self.cmd_in_mbox_virt = cmd_in_mbox_virt;
-        self.cmd_in_mbox_device = cmd_in_mbox_pa;
-        self.cmd_out_mbox_virt = cmd_out_mbox_virt;
-        self.cmd_out_mbox_device = cmd_out_mbox_pa;
-        self.sw_owner_id = self.derive_sw_owner_id();
-        log::info!(
-            target: "mlx5",
-            "Derived sw_owner_id={:08x}:{:08x}:{:08x}:{:08x}",
-            self.sw_owner_id[0],
-            self.sw_owner_id[1],
-            self.sw_owner_id[2],
-            self.sw_owner_id[3]
-        );
-
-        if cmdq_pa == 0 {
-            log::error!(
-                target: "mlx5",
-                "CRITICAL: zero CMDQ physical address (IOMMU may block access)"
-            );
-        }
-
-        // Read layout info from BAR0 registers
-        let cmdq_addr_l_sz = self.registers.command_layout()?;
-        let (log_cmdq_size, log_cmd_stride, _nic_if_supported) =
-            CmdQueueTransport::parse_hw_cmdq_layout(cmdq_addr_l_sz);
-
-        let mut cmd = CmdQueue::from_command_dma(
-            self.registers.command()?,
-            cmdq_pa,
-            cmdq_virt,
-            self.cmd_in_mbox_virt,
-            self.cmd_out_mbox_virt,
-            log_cmdq_size,
-            log_cmd_stride,
-        )?;
-        cmd.setup_cmdq_in_bar0();
-
-        self.cmd = Some(cmd);
+        self.cmd = Some(CmdQueue::new(registers, identity, leases));
         self.command_generation = generation;
-        self.firmware_pages = Some(crate::pages::FirmwarePages::new(queue));
+        self.sw_owner_id = self.derive_sw_owner_id();
+        self.cmd
+            .as_mut()
+            .ok_or(Mlx5Error::DeviceNotReady)?
+            .initialize(log_size, log_stride)?;
+        self.firmware_pages = Some(crate::pages::FirmwarePages::new(identity));
         self.state = DeviceState::CommandInitialized;
-
-        log::info!(
-            target: "mlx5",
-            "Command interface initialized (log_sz={} stride={})",
-            log_cmdq_size,
-            log_cmd_stride
-        );
         Ok(())
     }
 
@@ -441,10 +306,11 @@ impl Mlx5Device {
             }
             let initializing = self.registers.initializing()?;
 
-            if initializing != 0 && initializing != u32::MAX {
-                if (initializing & crate::regs::fw_state::INITIALIZING_BIT) == 0 {
-                    return Ok(());
-                }
+            if initializing != 0
+                && initializing != u32::MAX
+                && (initializing & crate::regs::fw_state::INITIALIZING_BIT) == 0
+            {
+                return Ok(());
             }
 
             core::hint::spin_loop();
@@ -462,17 +328,12 @@ impl Mlx5Device {
 
         crate::boot_trace("[MLX5_BOOT] enable_hca start\n");
         log::info!(target: "mlx5", "Enabling HCA...");
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         build_enable_hca_input(in_mbox, 0);
         // enable_hca doesn't return any useful output, but the command can fail
         // when the UID isn't correct on a VF.  Try candidate UIDs.
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::EnableHca,
-            self.cmd_in_mbox_device,
-            16,
-            self.cmd_out_mbox_device,
-            16,
-        )?;
+        self.execute_command(CmdOpcode::EnableHca, in_mbox, 16, 16)?;
         crate::boot_trace("[MLX5_BOOT] enable_hca done\n");
 
         if self.is_vf() {
@@ -484,16 +345,10 @@ impl Mlx5Device {
         crate::boot_trace("[MLX5_BOOT] query_issi start\n");
         log::info!(target: "mlx5", "Querying ISSI...");
         *in_mbox = CmdMailbox::zeroed();
-        match self.execute_cmd_with_uid_candidates(
-            CmdOpcode::QueryIssi,
-            self.cmd_in_mbox_device,
-            16,
-            self.cmd_out_mbox_device,
-            64,
-        ) {
+        match self.execute_command(CmdOpcode::QueryIssi, in_mbox, 16, 64) {
             Ok(()) => {}
-            Err(Mlx5Error::CommandFailed(status)) if status != 0 => {
-                let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+            Err(crate::error::CommandFailure::Rejected(status)) if status != 0 => {
+                let out_mbox = &*self.cmd_output;
                 let syndrome = out_mbox.read_be32(0x04);
                 log::warn!(
                     target: "mlx5",
@@ -504,10 +359,10 @@ impl Mlx5Device {
                 self.state = DeviceState::HcaEnabled;
                 return Ok(());
             }
-            Err(err) => return Err(err),
+            Err(err) => return Err(err.cause()),
         }
         crate::boot_trace("[MLX5_BOOT] query_issi done\n");
-        let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+        let out_mbox = &*self.cmd_output;
         let current_issi = out_mbox.read_be16(0x0a);
         let supported_issi = out_mbox.read_be32(0x20);
         log::info!(target: "mlx5", "ISSI: current={}, supported={:#x}", current_issi, supported_issi);
@@ -515,13 +370,7 @@ impl Mlx5Device {
         if current_issi == 0 && (supported_issi & (1 << 1)) != 0 {
             log::info!(target: "mlx5", "Setting ISSI to 1...");
             build_set_issi_input(in_mbox, 1);
-            self.execute_cmd_with_uid_candidates(
-                CmdOpcode::SetIssi,
-                self.cmd_in_mbox_device,
-                16,
-                self.cmd_out_mbox_device,
-                16,
-            )?;
+            self.execute_command(CmdOpcode::SetIssi, in_mbox, 16, 16)?;
         }
 
         self.state = DeviceState::HcaEnabled;
@@ -533,7 +382,8 @@ impl Mlx5Device {
     ///
     /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
     pub unsafe fn init_hca(&mut self) -> Mlx5Result<()> {
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         let caps = self.hca_caps.as_ref();
         let sw_vhca_id = caps
             .filter(|caps| caps.sw_vhca_id_valid_cap && self.sw_vhca_id != 0)
@@ -558,13 +408,7 @@ impl Mlx5Device {
         }
         build_init_hca_input(in_mbox, sw_vhca_id, sw_owner_id);
 
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::InitHca,
-            self.cmd_in_mbox_device,
-            in_len,
-            self.cmd_out_mbox_device,
-            16,
-        )?;
+        self.execute_command(CmdOpcode::InitHca, in_mbox, in_len, 16)?;
 
         log::info!(target: "mlx5", "HCA initialized successfully");
         Ok(())
@@ -575,7 +419,9 @@ impl Mlx5Device {
             return Ok(());
         }
 
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+
+        let in_mbox = &mut command_input;
         let mut reg = [0u8; 16];
         reg[0] = if cfg!(target_endian = "big") {
             0x80
@@ -594,39 +440,40 @@ impl Mlx5Device {
             "Programming HOST_ENDIANNESS register for PF (value={:#x})...",
             reg[0]
         );
-        self.execute_cmd_with_uid_candidates(
-            CmdOpcode::AccessRegister,
-            self.cmd_in_mbox_device,
-            0x20,
-            self.cmd_out_mbox_device,
-            0x20,
-        )
+        self.execute_command(CmdOpcode::AccessRegister, in_mbox, 0x20, 0x20)
+            .map_err(crate::error::CommandFailure::cause)
     }
 
-    /// マルチキュー対応の完全初期化パイプライン
-    #[allow(clippy::too_many_arguments)]
-    pub(crate) unsafe fn init_multi_queue(
+    /// Acquires each complete DMA group from the inventory before publishing
+    /// it. Failed startup retains every accepted/uncertain hardware resource
+    /// in this device; the caller retains the unconsumed inventory separately.
+    /// # Errors
+    /// Admission, preparation, firmware rejection and uncertain command results
+    /// stop startup. Re-entry with an existing command owner is rejected.
+    pub fn bootstrap(
         &mut self,
-        cmdq_virt: u64,
-        cmdq_device: u64,
-        cmd_in_mbox_virt: u64,
-        cmd_in_mbox_device: u64,
-        cmd_out_mbox_virt: u64,
-        cmd_out_mbox_device: u64,
-        mkey_params: &crate::resources::MkeyParams,
-        eq_bufs: &[(u64, u64)],
-        tx_cq_bufs: &[(u64, u64, u64, u64)],
-        rx_cq_bufs: &[(u64, u64, u64, u64)],
-        sq_bufs: &[(u64, u64, u64, u64)],
-        rq_bufs: &[(u64, u64, u64, u64)],
-        rmp_bufs: &[(u64, u64, u64, u64)],
-        log_eq_size: u8,
-        log_cq_size: u8,
-        log_sq_size: u8,
-        log_rq_size: u8,
+        config: &crate::bootstrap::Mlx5BootstrapConfig,
+        inventory: &mut crate::bootstrap::BootstrapDmaInventory,
     ) -> Mlx5Result<()> {
+        if self.state != DeviceState::Uninitialized || self.cmd.is_some() {
+            return Err(Mlx5Error::DeviceNotReady);
+        }
+        let profile = &config.queue_profile;
+        let mkey_params = &config.mkey_params;
+        crate::bootstrap::BootstrapDmaPlan::new(*profile)
+            .map_err(|_| Mlx5Error::InvalidParameter)?;
+        if config.is_vf != self.is_vf() {
+            return Err(Mlx5Error::InvalidParameter);
+        }
+        let pci = config.pci_identity;
+        self.set_pci_location(pci.segment, pci.bus, pci.device, pci.function)?;
+        let log_eq_size = profile.log_eq_size;
+        let log_cq_size = profile.log_cq_size;
         log::info!(target: "mlx5", "=== Starting multi-queue pipeline initialization ===");
 
+        // SAFETY: hardware command calls below use this device's retained
+        // register/command owner and CPU mailboxes. Queue creation transfers
+        // retained DMA capabilities before publication. No raw RAM is borrowed.
         // Phase 1: Boot
         log::info!(target: "mlx5", "Phase 1: Waiting for firmware/BAR0 to become accessible...");
 
@@ -666,14 +513,7 @@ impl Mlx5Device {
             return Err(Mlx5Error::DeviceNotReady);
         }
 
-        self.init_command_interface(
-            cmdq_virt,
-            cmdq_device,
-            cmd_in_mbox_virt,
-            cmd_in_mbox_device,
-            cmd_out_mbox_virt,
-            cmd_out_mbox_device,
-        )?;
+        self.init_command_interface(inventory)?;
         crate::boot_trace("[MLX5_BOOT] cmd interface ready\n");
         crate::boot_trace("[MLX5_BOOT] post-cmdif wait start\n");
         self.wait_post_cmdif_ready(30_000)?;
@@ -705,7 +545,7 @@ impl Mlx5Device {
         }
 
         crate::boot_trace("[MLX5_BOOT] enable/setup phase enter\n");
-        self.enable_hca_and_setup()?;
+        unsafe { self.enable_hca_and_setup() }?;
         crate::boot_trace("[MLX5_BOOT] enable/setup phase done\n");
 
         // Phase 2: Pages & Caps
@@ -716,7 +556,7 @@ impl Mlx5Device {
         self.fw_function_id = func_id;
         self.satisfy_fw_page_request(func_id, requested_pages)?;
         crate::boot_trace("[MLX5_BOOT] query caps start\n");
-        self.query_all_caps()?;
+        unsafe { self.query_all_caps() }?;
         crate::boot_trace("[MLX5_BOOT] query caps done\n");
 
         if self.is_vf()
@@ -773,37 +613,37 @@ impl Mlx5Device {
         // SET_HCA_CAP を呼び出して、ドライバ固有の要件に合わせてデバイスを最適化
         // INIT_HCA の前に実行する必要がある
         log::info!(target: "mlx5", "Configuring HCA capabilities...");
-        if let Err(err) = self.set_hca_ctrl_pf() {
+        if let Err(err) = unsafe { self.set_hca_ctrl_pf() } {
             log::warn!(
                 target: "mlx5",
                 "HOST_ENDIANNESS register setup failed on PF; continuing anyway: {:?}",
                 err
             );
         }
-        self.set_hca_cap_general()?;
-        if let Err(err) = self.set_hca_cap_atomic() {
+        unsafe { self.set_hca_cap_general() }?;
+        if let Err(err) = unsafe { self.set_hca_cap_atomic() } {
             log::warn!(
                 target: "mlx5",
                 "SET_HCA_CAP(ATOMIC) failed; continuing without atomic tuning: {:?}",
                 err
             );
         }
-        if let Err(err) = self.set_hca_cap_odp() {
+        if let Err(err) = unsafe { self.set_hca_cap_odp() } {
             log::warn!(
                 target: "mlx5",
                 "SET_HCA_CAP(ODP) failed; continuing without ODP tuning: {:?}",
                 err
             );
         }
-        if let Err(err) = self.set_hca_cap_roce() {
+        if let Err(err) = unsafe { self.set_hca_cap_roce() } {
             log::warn!(
                 target: "mlx5",
                 "SET_HCA_CAP(ROCE) failed; continuing without RoCE tuning: {:?}",
                 err
             );
         }
-        self.set_hca_cap_general_2()?;
-        if let Err(err) = self.set_hca_cap_port_selection() {
+        unsafe { self.set_hca_cap_general_2() }?;
+        if let Err(err) = unsafe { self.set_hca_cap_port_selection() } {
             log::warn!(
                 target: "mlx5",
                 "SET_HCA_CAP(PORT_SELECTION) failed; continuing without port-selection tuning: {:?}",
@@ -821,12 +661,12 @@ impl Mlx5Device {
         self.satisfy_fw_page_request(func_id, requested_pages)?;
 
         crate::boot_trace("[MLX5_BOOT] init_hca start\n");
-        self.init_hca()?;
+        unsafe { self.init_hca() }?;
         crate::boot_trace("[MLX5_BOOT] init_hca done\n");
-        let _ = self.set_driver_version();
+        let _ = unsafe { self.set_driver_version() };
 
         log::info!(target: "mlx5", "Refreshing HCA capabilities after INIT_HCA...");
-        if let Err(err) = self.query_all_caps() {
+        if let Err(err) = unsafe { self.query_all_caps() } {
             log::warn!(
                 target: "mlx5",
                 "Post-INIT_HCA capability refresh failed: {:?}",
@@ -836,16 +676,16 @@ impl Mlx5Device {
 
         // Query adapter info (VSD)
         log::info!(target: "mlx5", "Querying Adapter info...");
-        let in_mbox = &mut *(self.cmd_in_mbox_virt as *mut CmdMailbox);
+        let mut command_input = CmdMailbox::zeroed();
+        let in_mbox = &mut command_input;
         crate::cmd::hca::build_query_adapter_input(in_mbox);
-        if let Ok(()) = self.execute_cmd_with_uid_candidates(
+        if let Ok(()) = self.execute_command(
             CmdOpcode::QueryAdapter,
-            self.cmd_in_mbox_device,
+            in_mbox,
             16,
-            self.cmd_out_mbox_device,
             MLX5_CMD_MBOX_SIZE as u32,
         ) {
-            let out_mbox = &*(self.cmd_out_mbox_virt as *const CmdMailbox);
+            let out_mbox = &*self.cmd_output;
             let vsd = crate::cmd::hca::parse_query_adapter_vsd(out_mbox);
             if let Ok(vsd_str) = core::str::from_utf8(&vsd) {
                 log::info!(target: "mlx5", "Adapter VSD: {}", vsd_str.trim_matches('\0'));
@@ -858,7 +698,7 @@ impl Mlx5Device {
                 .map(|caps| caps.vhca_state_cap)
                 .unwrap_or(false);
             if vhca_state_capable {
-                match self.query_vhca_state(0) {
+                match unsafe { self.query_vhca_state(0) } {
                     Ok(vhca_ctx) => {
                         log::info!(
                             target: "mlx5",
@@ -898,18 +738,18 @@ impl Mlx5Device {
         if self.is_vf() {
             log::info!(target: "mlx5", "Querying VF port properties and ensuring vport is active...");
             let _ = self.set_port_admin_up(0);
-            if let Err(e) = self.query_port_mac(0) {
+            if let Err(e) = unsafe { self.query_port_mac(0) } {
                 log::warn!(target: "mlx5", "Failed to query VF port MAC address: {:?}", e);
             }
-            if let Err(e) = self.query_port_mtu(0) {
+            if let Err(e) = unsafe { self.query_port_mtu(0) } {
                 log::warn!(target: "mlx5", "Failed to query VF port MTU: {:?}", e);
             }
         }
 
         // Phase 3: Resources
-        self.alloc_uar()?;
-        self.alloc_pd()?;
-        self.alloc_td()?;
+        unsafe { self.alloc_uar() }?;
+        unsafe { self.alloc_pd() }?;
+        unsafe { self.alloc_td() }?;
 
         // VF では FW 世代によって reserved lkey / CREATE_MKEY の通り方が揺れるため、
         // まずは明示的な MKEY 作成を self.pd 優先で試し、失敗時のみ reserved lkey に戻す。
@@ -929,7 +769,7 @@ impl Mlx5Device {
             }
             for &pd_try in &pd_candidates {
                 effective_mkey_params.pd = pd_try;
-                match self.create_mkey(&effective_mkey_params) {
+                match unsafe { self.create_mkey(&effective_mkey_params) } {
                     Ok(_) => {
                         mkey_ok = true;
                         self.pd = pd_try;
@@ -953,7 +793,7 @@ impl Mlx5Device {
                 target: "mlx5",
                 "[5/8] CREATE_MKEY attempts failed on VF; falling back to reserved lkey"
             );
-            match self.query_reserved_lkey() {
+            match unsafe { self.query_reserved_lkey() } {
                 Ok(lkey) => {
                     self.mkey = lkey;
                     mkey_ok = true;
@@ -980,20 +820,17 @@ impl Mlx5Device {
             self.tx_mkey
         );
 
-        let _ = self.refresh_port_runtime_state(0);
+        let _ = unsafe { self.refresh_port_runtime_state(0) };
 
-        let mut tx_path_enabled = true;
         let mut tx_using_fallback_tis0 = false;
         let mut tx_oracle_tisn = None;
         crate::boot_trace("[MLX5_STAGE] create_tis_enter\n");
-        let mut vf_tis_selection_kind = TxTisAttemptKind::CreateTis;
         let tisn = if self.is_vf() {
-            let selection = self.select_vf_tis_for_tx();
-            vf_tis_selection_kind = selection.kind;
+            let selection = unsafe { self.select_vf_tis_for_tx() };
             tx_using_fallback_tis0 = selection.implicit_tis0_fallback;
             selection.tisn
         } else {
-            self.log_port_state_before_tis_selection("PF");
+            unsafe { self.log_port_state_before_tis_selection("PF") };
             let tis_params = crate::resources::TisParams {
                 pd: self.pd,
                 td: self.td,
@@ -1068,15 +905,17 @@ impl Mlx5Device {
                         caps.max_sq
                     );
                 }
-                match self.find_existing_tis_default_profile(Self::PF_TIS_REUSE_SCAN_LIMIT) {
-                    Ok(tisn) => self.adopt_external_tis(tisn, &tis_params),
+                match unsafe {
+                    self.find_existing_tis_default_profile(Self::PF_TIS_REUSE_SCAN_LIMIT)
+                } {
+                    Ok(tisn) => unsafe { self.adopt_external_tis(tisn, &tis_params) },
                     Err(scan_err) => {
                         log::warn!(
                             target: "mlx5",
                             "No reusable PF TIS found in default-only profile pre-scan ({:?}); falling back to CREATE_TIS probes",
                             scan_err
                         );
-                        match self.create_tis(&tis_params) {
+                        match unsafe { self.create_tis(&tis_params) } {
                             Ok(tisn) => tisn,
                             Err(err) => handle_create_tis_failure(
                                 self,
@@ -1088,7 +927,7 @@ impl Mlx5Device {
                     }
                 }
             } else {
-                match self.create_tis(&tis_params) {
+                match unsafe { self.create_tis(&tis_params) } {
                     Ok(tisn) => tisn,
                     Err(err) => handle_create_tis_failure(
                         self,
@@ -1100,338 +939,93 @@ impl Mlx5Device {
             }
         };
         crate::boot_trace("[MLX5_STAGE] create_tis_done\n");
-        let mut active_vf_tisn = tisn;
 
-        // Phase 4: Queues
+        // Transfer each complete RAM group directly from the owned inventory.
         let mut eqns = Vec::new();
-        for (_i, eq_buf) in eq_bufs.iter().enumerate() {
-            // RanyOS DriverContext currently supports a single IRQ, so map all EQs to vector 0
-            let eqn = self.create_eq_hw(
-                eq_buf.0,
-                eq_buf.1,
-                log_eq_size,
-                0,
-                // Completion EQs use an empty event mask; command and async
-                // notifications are handled by dedicated EQ types.
-                0,
-            )?;
-            eqns.push(eqn);
-        }
-        crate::boot_trace("[MLX5_STAGE] eq_done\n");
-
         let mut tx_cqns = Vec::new();
-        for (i, cq_buf) in tx_cq_bufs.iter().enumerate() {
-            let eqn = eqns[i % eqns.len()];
-            let cqn =
-                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
-            tx_cqns.push(cqn);
-        }
-        crate::boot_trace("[MLX5_STAGE] tx_cq_done\n");
-
         let mut rx_cqns = Vec::new();
-        for (i, cq_buf) in rx_cq_bufs.iter().enumerate() {
-            let eqn = eqns[i % eqns.len()];
-            let cqn =
-                self.create_cq_hw(cq_buf.0, cq_buf.1, cq_buf.2, cq_buf.3, log_cq_size, eqn)?;
-            rx_cqns.push(cqn);
+        eqns.try_reserve_exact(profile.eq_count)
+            .map_err(|_| Mlx5Error::OutOfMemory)?;
+        tx_cqns
+            .try_reserve_exact(profile.tx_queue_count)
+            .map_err(|_| Mlx5Error::OutOfMemory)?;
+        rx_cqns
+            .try_reserve_exact(profile.rx_queue_count)
+            .map_err(|_| Mlx5Error::OutOfMemory)?;
+        use crate::bootstrap::BootstrapQueueKind as QueueKind;
+        for index in 0..profile.eq_count {
+            let index = u16::try_from(index).map_err(|_| Mlx5Error::InvalidParameter)?;
+            eqns.push(self.create_event_queue(inventory, index, log_eq_size, 0, 0)?);
         }
-        crate::boot_trace("[MLX5_STAGE] rx_cq_done\n");
-
-        let max_hw_sq = self
-            .hca_caps()
-            .map(|caps| core::cmp::max(caps.max_sq as usize, 1))
-            .unwrap_or(sq_bufs.len());
-        let sq_queue_count = core::cmp::min(sq_bufs.len(), max_hw_sq);
-        if sq_queue_count < sq_bufs.len() {
-            log::warn!(
-                target: "mlx5",
-                "Clamping SQ queue count from {} to {} based on HW capability",
-                sq_bufs.len(),
-                sq_queue_count
-            );
+        for index in 0..profile.tx_queue_count {
+            let eqn = *eqns
+                .get(index % eqns.len())
+                .ok_or(Mlx5Error::InvalidParameter)?;
+            tx_cqns.push(self.create_completion_queue(
+                inventory,
+                QueueKind::TransmitCompletion,
+                u16::try_from(index).map_err(|_| Mlx5Error::InvalidParameter)?,
+                log_cq_size,
+                eqn,
+            )?);
+        }
+        for index in 0..profile.rx_queue_count {
+            let eqn = *eqns
+                .get(index % eqns.len())
+                .ok_or(Mlx5Error::InvalidParameter)?;
+            rx_cqns.push(self.create_completion_queue(
+                inventory,
+                QueueKind::ReceiveCompletion,
+                u16::try_from(index).map_err(|_| Mlx5Error::InvalidParameter)?,
+                log_cq_size,
+                eqn,
+            )?);
         }
 
-        if tx_path_enabled {
-            for (i, sq_buf) in sq_bufs.iter().take(sq_queue_count).enumerate() {
-                let cqn = tx_cqns[i % tx_cqns.len()];
-                let sq_result = if self.is_vf() {
-                    let tis_params = crate::resources::TisParams {
-                        pd: self.pd,
-                        td: self.td,
-                        port: 1,
-                        prio: 0,
-                    };
-                    match self.create_sq_hw(
-                        sq_buf.0,
-                        sq_buf.1,
-                        sq_buf.2,
-                        sq_buf.3,
-                        log_sq_size,
-                        cqn,
-                        active_vf_tisn,
-                    ) {
-                        Ok(sqn) => Ok(sqn),
-                        Err(err)
-                            if active_vf_tisn != 0
-                                && !tx_using_fallback_tis0
-                                && matches!(
-                                    vf_tis_selection_kind,
-                                    TxTisAttemptKind::ReuseExisting
-                                ) =>
-                        {
-                            log::warn!(
-                                target: "mlx5",
-                                "CREATE_SQ rejected reused VF TIS {:#x}; trying CREATE_TIS before implicit TIS=0 fallback: {:?}",
-                                active_vf_tisn,
-                                err
-                            );
-                            match self.create_tis(&tis_params) {
-                                Ok(created_tisn) => {
-                                    active_vf_tisn = created_tisn;
-                                    vf_tis_selection_kind = TxTisAttemptKind::CreateTis;
-                                    self.create_sq_hw(
-                                        sq_buf.0,
-                                        sq_buf.1,
-                                        sq_buf.2,
-                                        sq_buf.3,
-                                        log_sq_size,
-                                        cqn,
-                                        active_vf_tisn,
-                                    )
-                                }
-                                Err(create_tis_err) => {
-                                    crate::boot_trace("[MLX5_STAGE] vf_sq_use_implicit_tis0\n");
-                                    log::warn!(
-                                        target: "mlx5",
-                                        "CREATE_TIS also failed after reused VF TIS rejection; retrying with implicit TIS=0 fallback: {:?}",
-                                        create_tis_err
-                                    );
-                                    active_vf_tisn = 0;
-                                    vf_tis_selection_kind = TxTisAttemptKind::ImplicitTis0;
-                                    tx_using_fallback_tis0 = true;
-                                    self.create_sq_hw(
-                                        sq_buf.0,
-                                        sq_buf.1,
-                                        sq_buf.2,
-                                        sq_buf.3,
-                                        log_sq_size,
-                                        cqn,
-                                        active_vf_tisn,
-                                    )
-                                }
-                            }
-                        }
-                        Err(err) if active_vf_tisn != 0 && !tx_using_fallback_tis0 => {
-                            crate::boot_trace("[MLX5_STAGE] vf_sq_use_implicit_tis0\n");
-                            log::warn!(
-                                target: "mlx5",
-                                "CREATE_SQ rejected VF TIS {:#x}; retrying with implicit TIS=0 fallback: {:?}",
-                                active_vf_tisn,
-                                err
-                            );
-                            active_vf_tisn = 0;
-                            vf_tis_selection_kind = TxTisAttemptKind::ImplicitTis0;
-                            tx_using_fallback_tis0 = true;
-                            self.create_sq_hw(
-                                sq_buf.0,
-                                sq_buf.1,
-                                sq_buf.2,
-                                sq_buf.3,
-                                log_sq_size,
-                                cqn,
-                                active_vf_tisn,
-                            )
-                        }
-                        Err(err) => Err(err),
-                    }
-                } else if let Some(discovered_tisn) = tx_oracle_tisn {
-                    match self.create_sq_hw(
-                        sq_buf.0,
-                        sq_buf.1,
-                        sq_buf.2,
-                        sq_buf.3,
-                        log_sq_size,
-                        cqn,
-                        discovered_tisn,
-                    ) {
-                        Ok(sqn) => {
-                            self.remember_external_tis(discovered_tisn, "sq_scan_active");
-                            tx_using_fallback_tis0 = false;
-                            Ok(sqn)
-                        }
-                        Err(err) if tx_using_fallback_tis0 => {
-                            log::warn!(
-                                target: "mlx5",
-                                "PF SQ-derived TIS candidate {:#x} was rejected by CREATE_SQ: {:?}; continuing with fallback probes",
-                                discovered_tisn,
-                                err
-                            );
-                            tx_oracle_tisn = None;
-                            match self.create_sq_with_pf_tis_oracle(
-                                sq_buf.0,
-                                sq_buf.1,
-                                sq_buf.2,
-                                sq_buf.3,
-                                log_sq_size,
-                                cqn,
-                            ) {
-                                Ok((sqn, discovered_tisn)) => {
-                                    tx_oracle_tisn = Some(discovered_tisn);
-                                    tx_using_fallback_tis0 = false;
-                                    log::warn!(
-                                        target: "mlx5",
-                                        "Using PF TX TIS discovered via CREATE_SQ oracle: tisn={:#x}",
-                                        discovered_tisn
-                                    );
-                                    Ok(sqn)
-                                }
-                                Err(err) => {
-                                    log::warn!(
-                                        target: "mlx5",
-                                        "No explicit PF TX TIS candidate worked via CREATE_SQ oracle; falling back to implicit TIS=0 after last error {:?}",
-                                        err
-                                    );
-                                    self.create_sq_hw(
-                                        sq_buf.0,
-                                        sq_buf.1,
-                                        sq_buf.2,
-                                        sq_buf.3,
-                                        log_sq_size,
-                                        cqn,
-                                        tisn,
-                                    )
-                                }
-                            }
-                        }
-                        Err(err) => Err(err),
-                    }
-                } else if tx_using_fallback_tis0 {
-                    match self.create_sq_with_pf_tis_oracle(
-                        sq_buf.0,
-                        sq_buf.1,
-                        sq_buf.2,
-                        sq_buf.3,
-                        log_sq_size,
-                        cqn,
-                    ) {
-                        Ok((sqn, discovered_tisn)) => {
-                            tx_oracle_tisn = Some(discovered_tisn);
-                            tx_using_fallback_tis0 = false;
-                            log::warn!(
-                                target: "mlx5",
-                                "Using PF TX TIS discovered via CREATE_SQ oracle: tisn={:#x}",
-                                discovered_tisn
-                            );
-                            Ok(sqn)
-                        }
-                        Err(err) => {
-                            log::warn!(
-                                target: "mlx5",
-                                "No explicit PF TX TIS candidate worked via CREATE_SQ oracle; falling back to implicit TIS=0 after last error {:?}",
-                                err
-                            );
-                            self.create_sq_hw(
-                                sq_buf.0,
-                                sq_buf.1,
-                                sq_buf.2,
-                                sq_buf.3,
-                                log_sq_size,
-                                cqn,
-                                tisn,
-                            )
-                        }
-                    }
-                } else {
-                    self.create_sq_hw(
-                        sq_buf.0,
-                        sq_buf.1,
-                        sq_buf.2,
-                        sq_buf.3,
-                        log_sq_size,
-                        cqn,
-                        tisn,
-                    )
-                };
-
-                if let Err(err) = sq_result {
-                    if self.is_vf() {
-                        log::warn!(
-                            target: "mlx5",
-                            "CREATE_SQ failed on VF ({:?}); disabling TX path and continuing RX-only",
-                            err
-                        );
-                        tx_path_enabled = false;
-                        break;
-                    }
-                    return Err(err);
-                }
+        let caps = self.hca_caps().ok_or(Mlx5Error::DeviceNotReady)?;
+        if profile.tx_queue_count > caps.max_sq as usize
+            || profile.rx_queue_count > caps.max_rq as usize
+        {
+            return Err(Mlx5Error::NoResources);
+        }
+        let mut bindings = Vec::new();
+        bindings
+            .try_reserve_exact(Self::PF_TIS_SQ_ORACLE_CANDIDATES.len() + 4)
+            .map_err(|_| Mlx5Error::OutOfMemory)?;
+        bindings.push(crate::device::queues::SendTisBinding::Explicit(tisn));
+        if let Some(candidate) = tx_oracle_tisn {
+            bindings.push(crate::device::queues::SendTisBinding::Explicit(candidate));
+        }
+        if tx_using_fallback_tis0 {
+            if !self.is_vf() {
+                bindings.extend(
+                    Self::PF_TIS_SQ_ORACLE_CANDIDATES
+                        .iter()
+                        .copied()
+                        .map(crate::device::queues::SendTisBinding::Explicit),
+                );
             }
+            bindings.push(crate::device::queues::SendTisBinding::Implicit);
         }
-
-        if !tx_path_enabled {
-            log::warn!(
-                target: "mlx5",
-                "mlx5 TX fallback active: TX path disabled (no usable TIS/SQ), continuing RX setup"
-            );
-        } else if let Some(discovered_tisn) = tx_oracle_tisn {
-            log::warn!(
-                target: "mlx5",
-                "mlx5 TX fallback resolved: TX path running with PF TIS discovered via CREATE_SQ oracle ({:#x})",
-                discovered_tisn
-            );
-        } else if tx_using_fallback_tis0 {
-            log::warn!(
-                target: "mlx5",
-                "mlx5 TX fallback active: TX path running with implicit TIS=0"
-            );
+        for (index, cqn) in tx_cqns.iter().copied().enumerate() {
+            self.create_send_queue(inventory, index as u16, profile.log_sq_size, cqn, &bindings)?;
         }
-
-        if self.is_vf() && self.sqs.is_empty() {
-            log::warn!(
-                target: "mlx5",
-                "VF bootstrap produced no working SQ; continuing RX-only with TX unavailable"
-            );
-            tx_path_enabled = false;
-        }
-
-        self.set_tx_runtime_state(tx_path_enabled, tx_using_fallback_tis0);
+        self.set_tx_runtime_state(true, tx_using_fallback_tis0);
 
         let scatter_fcs = self.hca_caps().map(|c| c.scatter_fcs).unwrap_or(false);
         let vlan_strip = self.hca_caps().map(|c| c.vlan_strip).unwrap_or(false);
-        let max_hw_rq = self
-            .hca_caps()
-            .map(|caps| core::cmp::max(caps.max_rq as usize, 1))
-            .unwrap_or(rq_bufs.len());
-        let rq_queue_count = core::cmp::min(rq_bufs.len(), max_hw_rq);
-        if rq_queue_count < rq_bufs.len() {
-            log::warn!(
-                target: "mlx5",
-                "Clamping RQ queue count from {} to {} based on HW capability",
-                rq_bufs.len(),
-                rq_queue_count
-            );
-        }
-
         let mut rqns = Vec::new();
-        for (i, rq_buf) in rq_bufs.iter().take(rq_queue_count).enumerate() {
-            let cqn = rx_cqns[i % rx_cqns.len()];
-            let rmp_buf = rmp_bufs[i % rmp_bufs.len()];
-            let rqn = self.create_rq_hw(
-                rq_buf.0,
-                rq_buf.1,
-                rq_buf.2,
-                rq_buf.3,
-                rmp_buf.0,
-                rmp_buf.1,
-                rmp_buf.2,
-                rmp_buf.3,
-                log_rq_size,
+        rqns.try_reserve_exact(profile.rx_queue_count)
+            .map_err(|_| Mlx5Error::OutOfMemory)?;
+        for (index, cqn) in rx_cqns.iter().copied().enumerate() {
+            rqns.push(self.create_receive_queue(
+                inventory,
+                index as u16,
+                profile.log_rq_size,
                 cqn,
-                0, // Dummy TIRN for DirectRq (unused in create_rq_hw)
                 scatter_fcs,
                 vlan_strip,
-            )?;
-            rqns.push(rqn);
+            )?);
         }
         crate::boot_trace("[MLX5_STAGE] rq_done\n");
 
@@ -1446,30 +1040,34 @@ impl Mlx5Device {
         let tirn = if rqns.len() > 1 {
             crate::boot_trace("[MLX5_STAGE] create_rqt_enter\n");
             let log_rqt_size = (32 - (rqns.len() as u32 - 1).leading_zeros()) as u8;
-            let rqtn = self.create_rqt(&rqns, log_rqt_size)?;
+            let rqtn = unsafe { self.create_rqt(&rqns, log_rqt_size) }?;
             crate::boot_trace("[MLX5_STAGE] create_rqt_done\n");
             crate::boot_trace("[MLX5_STAGE] create_tir_rqt_enter\n");
-            self.create_tir(&crate::resources::TirParams {
-                receive_type: crate::resources::TirReceiveType::Rqt,
-                td: self.td,
-                inline_rqn: 0,
-                rqtn,
-                rss: Some(crate::flow::RssConfig::default()),
-                scatter_fcs,
-                vlan_strip,
-            })?
+            unsafe {
+                self.create_tir(&crate::resources::TirParams {
+                    receive_type: crate::resources::TirReceiveType::Rqt,
+                    td: self.td,
+                    inline_rqn: 0,
+                    rqtn,
+                    rss: Some(crate::flow::RssConfig::default()),
+                    scatter_fcs,
+                    vlan_strip,
+                })
+            }?
         } else {
             crate::boot_trace("[MLX5_STAGE] create_tir_direct_enter\n");
             let inline_rqn = rqns.first().copied().ok_or(Mlx5Error::InvalidResponse)?;
-            self.create_tir(&crate::resources::TirParams {
-                receive_type: crate::resources::TirReceiveType::DirectRq,
-                td: self.td,
-                inline_rqn,
-                rqtn: 0,
-                rss: None,
-                scatter_fcs,
-                vlan_strip,
-            })?
+            unsafe {
+                self.create_tir(&crate::resources::TirParams {
+                    receive_type: crate::resources::TirReceiveType::DirectRq,
+                    td: self.td,
+                    inline_rqn,
+                    rqtn: 0,
+                    rss: None,
+                    scatter_fcs,
+                    vlan_strip,
+                })
+            }?
         };
         crate::boot_trace("[MLX5_STAGE] create_tir_done\n");
 
@@ -1483,18 +1081,18 @@ impl Mlx5Device {
 
         // Finalize
         crate::boot_trace("[MLX5_STAGE] flow_table_enter\n");
-        if let Err(err) = self.setup_rx_flow_table_advanced(tirn) {
-            if self.is_vf() {
-                log::warn!(
-                    target: "mlx5",
-                    "VF RX flow-table setup failed; relying on PF default steering: {:?}",
-                    err
-                );
-                let _ = err;
-                crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
-            }
+        if let Err(err) = unsafe { self.setup_rx_flow_table_advanced(tirn) }
+            && self.is_vf()
+        {
+            log::warn!(
+                target: "mlx5",
+                "VF RX flow-table setup failed; relying on PF default steering: {:?}",
+                err
+            );
+            let _ = err;
+            crate::boot_trace("[MLX5_STAGE] rx_flow_table_vf_failed\n");
         }
-        match self.set_promiscuous_mode(true) {
+        match unsafe { self.set_promiscuous_mode(true) } {
             Ok(()) => {
                 if self.is_vf() {
                     log::info!(
@@ -1550,7 +1148,7 @@ impl Mlx5Device {
         } else {
             crate::boot_trace("[MLX5_STAGE] try_port_admin_up_pf\n");
             let _ = self.set_port_admin_up(0);
-            match self.query_port_state(0) {
+            match unsafe { self.query_port_state(0) } {
                 Ok(state) => {
                     log::info!(target: "mlx5", "PF port link state after admin-up: {:?}", state);
                 }

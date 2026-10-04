@@ -350,11 +350,11 @@ impl FirmwarePages {
             }
         }
         self.close_returned()?;
-        if !self.pages.is_empty() {
-            if let Some(failure) = self.supply_failure {
-                log::error!(target: "mlx5", "Incomplete firmware page supply: accepted={} unknown={} cause={:?}",
+        if !self.pages.is_empty()
+            && let Some(failure) = self.supply_failure
+        {
+            log::error!(target: "mlx5", "Incomplete firmware page supply: accepted={} unknown={} cause={:?}",
                     failure.supplied, failure.unknown, failure.cause);
-            }
         }
         if let Some(page) = self.pages.first() {
             match &page.lease {
