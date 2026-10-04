@@ -19,7 +19,7 @@ pub enum QueueBudgetCause {
     /// Admin completion parsing or ownership validation failed.
     Poll(PollError),
     /// The Admin queue returned a completion for a different command shape.
-    UnexpectedCompletion,
+    UnexpectedCompletion(CompletedCommand),
     /// The controller rejected the Number of Queues feature request.
     ControllerRejected(CompletionStatus),
     /// Completion DW0 could not represent a valid non-zero queue count.
@@ -111,13 +111,15 @@ impl QueueBudgetRequest {
         };
         let CompletedCommand::Control(completion) = completed else {
             return Err(QueueBudgetError {
-                cause: QueueBudgetCause::UnexpectedCompletion,
+                cause: QueueBudgetCause::UnexpectedCompletion(completed),
                 controller: self.controller,
             });
         };
         if completion.command_id() != self.command_id {
             return Err(QueueBudgetError {
-                cause: QueueBudgetCause::UnexpectedCompletion,
+                cause: QueueBudgetCause::UnexpectedCompletion(CompletedCommand::Control(
+                    completion,
+                )),
                 controller: self.controller,
             });
         }
@@ -175,7 +177,7 @@ pub enum ActiveQueueCreateCause {
     /// Admin command publication failed before that command was accepted.
     Publish(SubmitFailure),
     /// Admin completion did not identify the sole provisioning command.
-    UnexpectedCompletion,
+    UnexpectedCompletion(CompletedCommand),
     /// The controller completed a creation command with an error status.
     ControllerRejected {
         /// Command stage rejected by the controller.
@@ -419,10 +421,16 @@ impl IoQueueCreation {
             return Ok(IoQueueCreatePoll::Waiting(self));
         };
         let CompletedCommand::Control(completion) = completion else {
-            return Err(self.into_active_error(ActiveQueueCreateCause::UnexpectedCompletion));
+            return Err(
+                self.into_active_error(ActiveQueueCreateCause::UnexpectedCompletion(completion))
+            );
         };
         if completion.command_id() != self.command_id {
-            return Err(self.into_active_error(ActiveQueueCreateCause::UnexpectedCompletion));
+            return Err(
+                self.into_active_error(ActiveQueueCreateCause::UnexpectedCompletion(
+                    CompletedCommand::Control(completion),
+                )),
+            );
         }
         if !completion.status().is_success() {
             let cause = ActiveQueueCreateCause::ControllerRejected {
@@ -557,7 +565,7 @@ impl NvmeController {
             .poll_completion(&self.registers)
     }
 
-    fn queue(&self, queue_id: u16) -> Option<&NvmeQueue> {
+    pub(crate) fn queue(&self, queue_id: u16) -> Option<&NvmeQueue> {
         let index = usize::from(queue_id.checked_sub(1)?);
         let queue = self.io_queues.get(index)?;
         (queue.identity().index() == queue_id).then_some(queue)

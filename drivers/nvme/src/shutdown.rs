@@ -274,6 +274,57 @@ impl ControllerResetting {
 }
 
 impl ControllerReset {
+    /// Close a stopped controller's idle queues. This path does not recover
+    /// aborted transfers. Each unmap completes its own translation barrier
+    /// before freeing backing RAM; a failed close retains the full owner.
+    ///
+    /// # Errors
+    /// A pending command, registry failure or unmap failure returns the exact
+    /// partial retirement state. No transfer notification is fabricated.
+    #[expect(
+        clippy::result_large_err,
+        reason = "partial retirement returns every unreleased owner without allocating on failure"
+    )]
+    #[expect(
+        unsafe_code,
+        reason = "this reset typestate proves controller quiescence for all owned queue allocations"
+    )]
+    pub fn close_idle(mut self) -> Result<(), IdleControllerCloseError> {
+        let identity = self.admin_queue.identity();
+        // SAFETY: this typestate is created only after CC.EN is cleared and
+        // CSTS.RDY is observed clear. The queue rejects pending commands.
+        let result = unsafe { self.admin_queue.close_idle_metadata() };
+        if let Err(error) = result {
+            return Err(self.idle_close_error(error, identity));
+        }
+        for index in 0..self.io_queues.len() {
+            let queue = &mut self.io_queues[index];
+            let identity = queue.identity();
+            // SAFETY: the same reset observation covers this controller's
+            // unique I/O queue pair, and the pending table is checked first.
+            let result = unsafe { queue.close_idle_metadata() };
+            if let Err(error) = result {
+                return Err(self.idle_close_error(error, identity));
+            }
+        }
+        Ok(())
+    }
+
+    fn idle_close_error(
+        self,
+        error: QueueResetError,
+        queue: DmaQueueIdentity,
+    ) -> IdleControllerCloseError {
+        IdleControllerCloseError {
+            cause: error.cause,
+            location: ControllerDmaLocation {
+                queue,
+                phase: map_phase(error.phase),
+            },
+            controller: self,
+        }
+    }
+
     /// Record reset revocation for all shared queue RAM and accepted transfers.
     ///
     /// # Errors
@@ -312,6 +363,23 @@ impl ControllerReset {
             },
             controller: self,
         }
+    }
+}
+
+/// Partial idle retirement retaining stopped hardware and all unreleased RAM.
+pub struct IdleControllerCloseError {
+    pub cause: DmaLeaseError,
+    pub location: ControllerDmaLocation,
+    pub controller: ControllerReset,
+}
+
+impl core::fmt::Debug for IdleControllerCloseError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("IdleControllerCloseError")
+            .field("cause", &self.cause)
+            .field("location", &self.location)
+            .finish_non_exhaustive()
     }
 }
 

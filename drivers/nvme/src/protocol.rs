@@ -5,7 +5,8 @@ use kernel_api::dma::{DmaByteCount, DmaDeviceAddress, DmaQueueIdentity};
 use crate::identify::NamespaceInfo;
 
 const COMMAND_DWORDS: usize = 16;
-const PAGE_SIZE: u64 = 4096;
+pub(crate) const PAGE_BYTES: usize = 4096;
+const PAGE_SIZE: u64 = PAGE_BYTES as u64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]

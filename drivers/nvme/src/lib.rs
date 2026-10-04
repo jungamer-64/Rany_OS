@@ -7,6 +7,7 @@
 
 #![no_std]
 #![deny(unsafe_code)]
+#![feature(allocator_ext)]
 
 extern crate alloc;
 
@@ -17,6 +18,9 @@ mod provision;
 mod queue;
 mod registers;
 mod shutdown;
+mod standalone;
+
+pub use standalone::standalone_driver_vtable;
 
 pub use controller::{
     AdminQueueInstallError, ControllerAcquire, ControllerAcquireError, ControllerDisableError,
@@ -37,14 +41,14 @@ pub use provision::{
     QueueCreationStage, QueueInputError,
 };
 pub use queue::{
-    CompletedCommand, CompletedOwnership, NvmeQueue, PollError, PreparedQueuePair,
-    QueueActivationError, QueueMemory, QueuePrepareError, QueueSubmission, ReconciledResetCommand,
-    SubmitError, SubmitFailure,
+    CompletedCommand, CompletedOwnership, CompletionNotification, NvmeQueue, PollError,
+    PreparedQueuePair, QueueActivationError, QueueMemory, QueuePrepareError, QueueSubmission,
+    ReconciledResetCommand, SubmitError, SubmitFailure,
 };
 pub use registers::{ControllerCapabilities, ControllerStatus, NvmeRegisterError, NvmeRegisters};
 pub use shutdown::{
     ControllerCloseError, ControllerDmaLocation, ControllerDmaPhase, ControllerDmaReconcileError,
     ControllerDmaReconciliation, ControllerDmaResetError, ControllerDmaRevoked, ControllerReset,
     ControllerResetPoll, ControllerResetPollError, ControllerResetStartError, ControllerResetting,
-    ReconciledIoCommand, ReconciledNvmeController,
+    IdleControllerCloseError, ReconciledIoCommand, ReconciledNvmeController,
 };

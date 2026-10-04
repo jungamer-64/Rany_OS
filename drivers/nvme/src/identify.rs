@@ -1,3 +1,7 @@
+use crate::protocol::{IoTransfer, PAGE_BYTES, TransferDirection};
+use kernel_api::abi::driver::{AbiBlockCommandKind, AbiBlockSubmission, AbiError};
+use kernel_api::dma::DmaDeviceAddress;
+
 use kernel_api::dma::{CompletedDmaLease, CpuDmaLease, DmaLeaseError, DmaQueueIdentity};
 
 use crate::controller::NvmeAdminController;
@@ -37,7 +41,70 @@ pub struct NamespaceInfo {
     block_size: u32,
 }
 
+pub(crate) enum BlockCommand {
+    Transfer {
+        transfer: IoTransfer,
+        address: DmaDeviceAddress,
+        prp2: Option<DmaDeviceAddress>,
+    },
+    Flush,
+}
+
 impl NamespaceInfo {
+    // Interpret a host publication against this identified controller generation.
+    // The notification carries lease identity only; it grants no CPU DMA access.
+    pub(crate) fn admit_submission(
+        self,
+        input: &AbiBlockSubmission,
+    ) -> Result<BlockCommand, AbiError> {
+        if input.request_id == 0 || input.generation != self.controller.generation() {
+            return Err(AbiError::InvalidParam);
+        }
+        if input.command == AbiBlockCommandKind::Flush as u32 {
+            return if input.bytes == 0
+                && input.blocks == 0
+                && input.lease_id == 0
+                && input.iova == 0
+            {
+                Ok(BlockCommand::Flush)
+            } else {
+                Err(AbiError::InvalidParam)
+            };
+        }
+        let direction = match input.command {
+            value if value == AbiBlockCommandKind::Read as u32 => TransferDirection::Read,
+            value if value == AbiBlockCommandKind::Write as u32 => TransferDirection::Write,
+            _ => return Err(AbiError::NotSupported),
+        };
+        let transfer = IoTransfer::for_namespace(self, direction, input.lba, input.blocks)
+            .map_err(|_| AbiError::InvalidParam)?;
+        if input.bytes != transfer.logical_byte_count().get()
+            || input.bytes > PAGE_BYTES
+            || input.lease_id == 0
+            || input.iova == 0
+            || !input.iova.is_multiple_of(4)
+            || input.iova.checked_add(input.bytes as u64).is_none()
+        {
+            return Err(AbiError::InvalidParam);
+        }
+        let first_bytes = PAGE_BYTES - (input.iova as usize & (PAGE_BYTES - 1));
+        let address = DmaDeviceAddress::from_abi(input.iova);
+        let prp2 = if input.bytes > first_bytes {
+            Some(
+                address
+                    .checked_add(first_bytes)
+                    .ok_or(AbiError::InvalidAddress)?,
+            )
+        } else {
+            None
+        };
+        Ok(BlockCommand::Transfer {
+            transfer,
+            address,
+            prp2,
+        })
+    }
+
     pub(crate) const fn controller_identity(self) -> DmaQueueIdentity {
         self.controller
     }
@@ -188,6 +255,13 @@ pub enum IdentifyNamespaceError {
         completion: NvmeCompletion,
         ownership: CompletedOwnership,
     },
+    /// An externally owned notification appeared on the Admin queue; retain
+    /// its unique metadata and the controller rather than discarding it.
+    UnexpectedNotification {
+        controller: NvmeAdminController,
+        completion: NvmeCompletion,
+        notification: crate::CompletionNotification,
+    },
     /// The Identify command completed with an NVMe error status.
     ControllerRejected {
         controller: NvmeAdminController,
@@ -211,6 +285,10 @@ pub enum IdentifyNamespaceError {
 impl core::fmt::Debug for IdentifyNamespaceError {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnexpectedNotification { completion, .. } => formatter
+                .debug_tuple("UnexpectedNotification")
+                .field(completion)
+                .finish(),
             Self::Poll { cause, .. } => formatter.debug_tuple("Poll").field(cause).finish(),
             Self::UnexpectedControl { completion, .. } => formatter
                 .debug_tuple("UnexpectedControl")
@@ -298,6 +376,16 @@ impl IdentifyNamespaceRequest {
             return Ok(IdentifyNamespacePoll::Waiting(self));
         };
         let (completion, ownership) = match completed {
+            CompletedCommand::Notification {
+                completion,
+                notification,
+            } => {
+                return Err(IdentifyNamespaceError::UnexpectedNotification {
+                    controller: self.controller,
+                    completion,
+                    notification,
+                });
+            }
             CompletedCommand::Control(completion) => {
                 return Err(IdentifyNamespaceError::UnexpectedControl {
                     controller: self.controller,
@@ -480,5 +568,109 @@ mod tests {
             IoTransfer::for_namespace(namespace, TransferDirection::Read, 7, 2),
             Err(TransferRangeError::OutsideNamespace)
         );
+    }
+    fn namespace() -> NamespaceInfo {
+        // NSZE=64, one format, 512-byte data blocks, no metadata.
+        let mut bytes = [0; 4096];
+        bytes[..8].copy_from_slice(&64u64.to_le_bytes());
+        bytes[130] = 9;
+        let identity =
+            kernel_api::dma::DmaQueueIdentity::new(PackedPciLocation::new(0, 0, 3, 0), 0, 11)
+                .expect("fixture queue");
+        NamespaceInfo::parse(identity, 1, &bytes).expect("literal Identify Namespace vector")
+    }
+
+    extern "C" fn activation_must_not_run(_cookie: *mut core::ffi::c_void) -> i32 {
+        panic!("validation must not consume the activation cookie");
+    }
+
+    fn submission() -> AbiBlockSubmission {
+        AbiBlockSubmission {
+            request_id: 17,
+            command: AbiBlockCommandKind::Read as u32,
+            lba: 63,
+            blocks: 1,
+            bytes: 512,
+            iova: 0x1ff0,
+            lease_id: 5,
+            generation: 11,
+            activation: core::ptr::null_mut(),
+            activate: activation_must_not_run,
+        }
+    }
+
+    #[test]
+    fn admitted_transfer_encodes_two_page_prps_without_cpu_authority() {
+        let BlockCommand::Transfer {
+            transfer,
+            address,
+            prp2,
+        } = namespace()
+            .admit_submission(&submission())
+            .expect("last complete namespace block")
+        else {
+            panic!("read must remain a transfer");
+        };
+        assert_eq!(transfer.logical_byte_count().get(), 512);
+        assert_eq!(address.get(), 0x1ff0);
+        assert_eq!(prp2.map(DmaDeviceAddress::get), Some(0x2000));
+    }
+
+    #[test]
+    fn submission_validation_rejects_stale_or_outside_geometry_before_activation() {
+        let namespace = namespace();
+        let mut input = submission();
+        assert!(matches!(
+            namespace.admit_submission(&AbiBlockSubmission {
+                generation: 12,
+                ..input
+            }),
+            Err(AbiError::InvalidParam)
+        ));
+        input.blocks = 0;
+        assert!(namespace.admit_submission(&input).is_err());
+        input.blocks = 1;
+        input.lba = 64;
+        assert!(namespace.admit_submission(&input).is_err());
+        input.lba = u64::MAX;
+        assert!(namespace.admit_submission(&input).is_err());
+    }
+
+    #[test]
+    fn transfer_extent_alignment_and_inline_capacity_are_admission_conditions() {
+        let namespace = namespace();
+        let mut input = submission();
+        input.bytes = 511;
+        assert!(namespace.admit_submission(&input).is_err());
+        input.bytes = 512;
+        input.iova = 0x1001;
+        assert!(namespace.admit_submission(&input).is_err());
+        input.iova = u64::MAX - 3;
+        assert!(namespace.admit_submission(&input).is_err());
+        input.iova = 0x1000;
+        input.lba = 0;
+        input.blocks = 9;
+        input.bytes = 4608;
+        assert!(namespace.admit_submission(&input).is_err());
+    }
+
+    #[test]
+    fn flush_has_a_notification_and_no_transfer_allocation() {
+        let mut input = submission();
+        input.command = AbiBlockCommandKind::Flush as u32;
+        assert!(namespace().admit_submission(&input).is_err());
+        input.blocks = 0;
+        input.bytes = 0;
+        input.iova = 0;
+        input.lease_id = 0;
+        assert!(matches!(
+            namespace().admit_submission(&input),
+            Ok(BlockCommand::Flush)
+        ));
+        input.command = AbiBlockCommandKind::Discard as u32;
+        assert!(matches!(
+            namespace().admit_submission(&input),
+            Err(AbiError::NotSupported)
+        ));
     }
 }

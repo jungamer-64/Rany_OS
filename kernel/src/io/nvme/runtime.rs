@@ -20,9 +20,9 @@ use nvme_driver::{
 };
 
 use crate::io::io_scheduler::{
-    DeviceCompletion, DeviceId, DeviceOps, IoCommand, IoCompletion, IoCompletionRoute, IoError,
-    IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity, PollHandler, hybrid_coordinator,
-    io_scheduler,
+    BlockGeometry, DeviceCompletion, DeviceId, DeviceOps, IoCommand, IoCompletion,
+    IoCompletionRoute, IoError, IoOperationType, IoSubmission, IoSubmitOutcome, PollAffinity,
+    PollHandler, hybrid_coordinator, io_scheduler,
 };
 use crate::sync::PoisonLock;
 
@@ -520,9 +520,9 @@ fn queue_for_cpu(queues: &[RuntimeQueue], cpu_id: crate::cpu::CpuId) -> Option<&
 
 fn completed_command_id(completed: &CompletedCommand) -> u16 {
     match completed {
-        CompletedCommand::Transfer { completion, .. } | CompletedCommand::Control(completion) => {
-            completion.command_id()
-        }
+        CompletedCommand::Transfer { completion, .. }
+        | CompletedCommand::Notification { completion, .. }
+        | CompletedCommand::Control(completion) => completion.command_id(),
     }
 }
 
@@ -734,6 +734,36 @@ impl DeviceOps for NvmeDeviceOps {
 
     fn is_ready(&self) -> bool {
         self.0.is_ready()
+    }
+
+    fn allocate_transfer(
+        &self,
+        request: kernel_api::dma::DmaAllocationRequest,
+    ) -> Result<CpuDmaLease, IoError> {
+        if !self.0.accepting.load(Ordering::Acquire) {
+            return Err(IoError::Cancelled);
+        }
+        kernel_api::service::kernel::instance()
+            .alloc_dma_for_device(request, self.0.controller.device())
+            .map_err(|cause| match cause {
+                kernel_api::KapiError::OutOfMemory | kernel_api::KapiError::ResourceExhausted => {
+                    IoError::NoResources
+                }
+                kernel_api::KapiError::Busy => IoError::Busy,
+                kernel_api::KapiError::NotSupported => IoError::NotSupported,
+                _ => IoError::DeviceError,
+            })
+    }
+
+    fn block_geometry(&self) -> Option<BlockGeometry> {
+        if !self.0.accepting.load(Ordering::Acquire) {
+            return None;
+        }
+        BlockGeometry::new(
+            self.0.namespace.block_size(),
+            self.0.namespace.block_count(),
+            u16::MAX,
+        )
     }
 }
 

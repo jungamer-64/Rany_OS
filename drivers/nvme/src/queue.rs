@@ -1,4 +1,5 @@
 use alloc::vec::Vec;
+use exorust_sync::Mutex;
 use hal::mmio::sfence;
 use kernel_api::dma::{
     CompletedDmaLease, CpuDmaLease, DmaCloseError, DmaCompletionWitness, DmaDescriptor,
@@ -6,7 +7,6 @@ use kernel_api::dma::{
     DmaResetWitness, InFlightDmaLease, PreparedDmaLease, PreparedSharedDmaLease,
     RevokedAfterResetDmaLease, SharedDmaLease, UnmapFailedDmaLease,
 };
-use spin::Mutex;
 
 use crate::protocol::{AdminCommand, IoTransfer, NvmeCommand, NvmeCompletion, TransferDirection};
 use crate::registers::{NvmeRegisterError, NvmeRegisters};
@@ -313,7 +313,18 @@ impl QueueSubmission {
 
 enum PendingCommand {
     Transfer(InFlightDmaLease),
+    Notification(CompletionNotification),
     Control,
+}
+
+/// Unique terminal notification owed to the owner of an externally activated
+/// transfer. This record grants no CPU access to its backing allocation.
+#[derive(Debug)]
+pub struct CompletionNotification {
+    pub(crate) request_id: u64,
+    pub(crate) lease_id: u64,
+    pub(crate) generation: u64,
+    pub(crate) bytes: usize,
 }
 
 #[derive(Clone, Copy)]
@@ -403,6 +414,10 @@ impl NvmeQueue {
 
     pub(crate) const fn depth(&self) -> u16 {
         self.depth
+    }
+
+    pub(crate) fn outstanding(&self) -> u16 {
+        self.state.lock().outstanding
     }
 
     /// Device-visible queue bases for controller setup commands.
@@ -624,6 +639,34 @@ impl NvmeQueue {
         registers: &NvmeRegisters,
         command: impl FnOnce(u16) -> Option<NvmeCommand>,
     ) -> Result<QueueSubmission, SubmitFailure> {
+        self.publish_command(registers, command, PendingCommand::Control, || Ok(()))
+    }
+
+    /// The caller retains the DMA lease. All fallible descriptor work precedes
+    /// its one-use activation; the unique notification stays in the CID slot
+    /// until a validated CQE or an explicit reset reconciliation consumes it.
+    pub(crate) fn submit_notified(
+        &self,
+        registers: &NvmeRegisters,
+        command: impl FnOnce(u16) -> Option<NvmeCommand>,
+        notification: CompletionNotification,
+        activate: impl FnOnce() -> Result<(), SubmitFailure>,
+    ) -> Result<QueueSubmission, SubmitFailure> {
+        self.publish_command(
+            registers,
+            command,
+            PendingCommand::Notification(notification),
+            activate,
+        )
+    }
+
+    fn publish_command(
+        &self,
+        registers: &NvmeRegisters,
+        command: impl FnOnce(u16) -> Option<NvmeCommand>,
+        pending: PendingCommand,
+        activate: impl FnOnce() -> Result<(), SubmitFailure>,
+    ) -> Result<QueueSubmission, SubmitFailure> {
         let mut doorbell = registers
             .submission_doorbell(self.identity.index())
             .map_err(SubmitFailure::Register)?;
@@ -650,7 +693,11 @@ impl NvmeQueue {
             state.fault = Some(QueueFault::SharedMemory);
             SubmitFailure::Dma(cause)
         })?;
-        state.pending[usize::from(command_id)] = Some(PendingCommand::Control);
+        if let Err(cause) = activate() {
+            state.command_ids.release(command_id);
+            return Err(cause);
+        }
+        state.pending[usize::from(command_id)] = Some(pending);
         state.tail = (state.tail + 1) % self.depth;
         state.outstanding += 1;
         sfence();
@@ -694,6 +741,10 @@ impl NvmeQueue {
         };
         let completed = match pending {
             PendingCommand::Control => CompletedCommand::Control(completion),
+            PendingCommand::Notification(notification) => CompletedCommand::Notification {
+                completion,
+                notification,
+            },
             PendingCommand::Transfer(inflight) => {
                 let lease_id = inflight.lease_id();
                 let completed = match complete_transfer(inflight, self.identity, lease_id) {
@@ -741,6 +792,9 @@ impl NvmeQueue {
                     pending.map(|pending| match pending {
                         PendingCommand::Transfer(lease) => ResetCommand::InFlight(lease),
                         PendingCommand::Control => ResetCommand::Control,
+                        PendingCommand::Notification(notification) => {
+                            ResetCommand::Notification(notification)
+                        }
                     })
                 })
                 .collect(),
@@ -774,6 +828,7 @@ enum ResetLease {
 
 enum ResetCommand {
     Control,
+    Notification(CompletionNotification),
     InFlight(InFlightDmaLease),
     Revoked(RevokedAfterResetDmaLease),
     Cpu(CpuDmaLease),
@@ -790,6 +845,41 @@ pub(crate) struct ResetNvmeQueue {
 impl ResetNvmeQueue {
     pub(crate) const fn identity(&self) -> DmaQueueIdentity {
         self.identity
+    }
+
+    /// # Safety
+    /// The controller's CC.EN is clear and CSTS.RDY has been observed clear.
+    /// No hardware consumer can reach either unique queue allocation.
+    #[expect(
+        unsafe_code,
+        reason = "controller reset observation supplies quiescence for each owned queue allocation"
+    )]
+    pub(crate) unsafe fn close_idle_metadata(&mut self) -> Result<(), QueueResetError> {
+        if let Some(command_id) = self.pending.iter().position(Option::is_some) {
+            return Err(QueueResetError {
+                cause: DmaLeaseError::InvalidState,
+                phase: ResetDmaPhase::Transfer {
+                    command_id: command_id as u16,
+                },
+            });
+        }
+        // SAFETY: the enclosing controller reset owner proves both unique
+        // allocations are unreachable and the pending table is empty.
+        unsafe {
+            close_idle_region(
+                &mut self.submission,
+                self.identity,
+                ResetDmaPhase::Submission,
+            )
+        }?;
+        // SAFETY: the same stopped controller owns this distinct CQ allocation.
+        unsafe {
+            close_idle_region(
+                &mut self.completion,
+                self.identity,
+                ResetDmaPhase::Completion,
+            )
+        }
     }
 
     pub(crate) fn revoke_all(
@@ -866,7 +956,11 @@ impl ResetNvmeQueue {
             && self.pending.iter().all(|pending| {
                 matches!(
                     pending,
-                    None | Some(ResetCommand::Control | ResetCommand::Cpu(_))
+                    None | Some(
+                        ResetCommand::Control
+                            | ResetCommand::Cpu(_)
+                            | ResetCommand::Notification(_)
+                    )
                 )
             })
     }
@@ -882,6 +976,9 @@ impl ResetNvmeQueue {
         match pending {
             ResetCommand::Control => Some(ReconciledResetCommand::Control),
             ResetCommand::Cpu(lease) => Some(ReconciledResetCommand::Transfer(lease)),
+            ResetCommand::Notification(notification) => {
+                Some(ReconciledResetCommand::Notification(notification))
+            }
             ResetCommand::InFlight(_) | ResetCommand::Revoked(_) | ResetCommand::Transitioning => {
                 None
             }
@@ -1115,6 +1212,57 @@ fn close_shared(
     }
 }
 
+/// # Safety
+/// Hardware has stopped and drained this unique queue allocation. No transfer
+/// is pending and no other queue contains a reference to its descriptor RAM.
+#[expect(
+    unsafe_code,
+    reason = "a stopped controller supplies the queue allocation's quiescence witness"
+)]
+unsafe fn close_idle_region(
+    owner: &mut ResetLease,
+    queue: DmaQueueIdentity,
+    phase: ResetDmaPhase,
+) -> Result<(), QueueResetError> {
+    let state = core::mem::replace(owner, ResetLease::Transitioning);
+    let cpu = match state {
+        ResetLease::Shared(shared) => {
+            // SAFETY: each Shared state is consumed once after hardware stop.
+            // Failure restores Shared; no witness escapes this close operation.
+            let witness = unsafe {
+                kernel_api::dma::DmaQuiesceWitness::after_queue_quiesced(queue, shared.lease_id())
+            };
+            match shared.quiesce(witness) {
+                Ok(cpu) => cpu,
+                Err(error) => {
+                    let (cause, shared) = error.into_parts();
+                    *owner = ResetLease::Shared(shared);
+                    return Err(QueueResetError { cause, phase });
+                }
+            }
+        }
+        ResetLease::Cpu(cpu) => cpu,
+        ResetLease::Closed => {
+            *owner = ResetLease::Closed;
+            return Ok(());
+        }
+        other => {
+            *owner = other;
+            return Err(QueueResetError {
+                cause: DmaLeaseError::InvalidState,
+                phase,
+            });
+        }
+    };
+    match cpu.close() {
+        Ok(()) => {
+            *owner = ResetLease::Closed;
+            Ok(())
+        }
+        Err(error) => retain_close_error(owner, error, phase),
+    }
+}
+
 fn retain_close_error(
     owner: &mut ResetLease,
     error: DmaCloseError,
@@ -1160,6 +1308,9 @@ pub enum ReconciledResetCommand {
     /// A transfer whose buffer is safe for CPU access but whose device outcome
     /// remains unknown.
     Transfer(CpuDmaLease),
+    /// Reset-aborted notification metadata. The external DMA owner still must
+    /// reconcile its lease; this is not evidence of a hardware CQ completion.
+    Notification(CompletionNotification),
 }
 
 fn direction_matches(transfer: TransferDirection, mapping: DmaDirection) -> bool {
@@ -1304,6 +1455,11 @@ pub enum CompletedCommand {
     },
     /// Command with no transfer allocation.
     Control(NvmeCompletion),
+    /// Matching CQE for a transfer whose DMA lease belongs to its host.
+    Notification {
+        completion: NvmeCompletion,
+        notification: CompletionNotification,
+    },
 }
 
 /// Completion parsing or ownership failure.

@@ -35,7 +35,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 - Boot artifact behavior is now split:
   - `drivers/*.cell` without a PCI selector autostart immediately.
   - driver packs with a PCI selector are staged and matched during PCI enumeration with a real `DriverContext::for_pci(...)`.
-  - a matching pack claims its physical function before external startup effects. Any failed or uncertain start remains claimed; built-in acquisition is permitted only after `NoMatch`.
+  - a matching pack claims its physical function and enables memory decoding and bus mastering before driver startup. The host retains PCI command policy; the cell owns controller activation and must prove device quiescence before closing DMA resources. Any failed or uncertain start remains claimed; built-in acquisition is permitted only after `NoMatch`.
   - `storage`, `driver_domain`, `network`, and `iommu` QEMU profiles now consume the boot partition's `/drivers/*.cell` and `/cells/*.cell` payloads by default.
 
 ## CI による検証
