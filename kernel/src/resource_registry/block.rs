@@ -583,7 +583,9 @@ impl DeviceOps for BlockDeviceAdapter {
         let Ok(_execution) = self.callbacks.enter(ResourceInvocation::Operation) else {
             return false;
         };
-        (self.registration.is_ready)(self.registration.opaque)
+        // SAFETY: the callback gate and retained registration keep this exact
+        // runtime/code live and exclude lifecycle mutation for the observation.
+        unsafe { (self.registration.is_ready)(self.registration.opaque) }
     }
 
     fn allocate_transfer(&self, request: DmaAllocationRequest) -> Result<CpuDmaLease, IoError> {

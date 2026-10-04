@@ -634,6 +634,10 @@ impl BlockQueue {
             unreported,
         }
         .quiesce(ring_witness)
+        .map_err(|failure| BlockQueueRetireError::Ring {
+            cause: failure.cause,
+            retirement: failure.retirement,
+        })
     }
 }
 
@@ -694,6 +698,12 @@ pub struct BlockQueueRingRetirement {
     unreported: Option<QueueCompletion<BlockNotification>>,
 }
 
+#[derive(Debug)]
+pub struct BlockQueueRingRetireError {
+    pub cause: DmaLeaseError,
+    pub retirement: BlockQueueRingRetirement,
+}
+
 impl BlockQueueRingRetirement {
     pub const fn identity(&self) -> DmaQueueIdentity {
         self.ring.identity()
@@ -713,7 +723,7 @@ impl BlockQueueRingRetirement {
     pub fn quiesce(
         self,
         witness: DmaQuiesceWitness,
-    ) -> Result<RetiredBlockQueue, BlockQueueRetireError> {
+    ) -> Result<RetiredBlockQueue, BlockQueueRingRetireError> {
         let Self {
             metadata,
             ring,
@@ -725,7 +735,7 @@ impl BlockQueueRingRetirement {
                 ring,
                 unreported,
             }),
-            Err(failure) => Err(BlockQueueRetireError::Ring {
+            Err(failure) => Err(BlockQueueRingRetireError {
                 cause: failure.cause,
                 retirement: Self {
                     metadata,

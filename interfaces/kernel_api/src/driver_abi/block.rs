@@ -138,7 +138,9 @@ pub struct AbiBlockDeviceRegistration {
     /// report `written <= capacity`, including a committed prefix on failure.
     /// No unreported completion may be consumed.
     pub poll: unsafe extern "C" fn(u64, *mut AbiBlockCompletion, usize, *mut usize) -> i32,
-    pub is_ready: extern "C" fn(u64) -> bool,
+    /// The registered opaque runtime and its code must remain live for this
+    /// call, with lifecycle mutation excluded by the host's callback gate.
+    pub is_ready: unsafe extern "C" fn(u64) -> bool,
     /// Close admission and finalize descriptor/ring DMA. Success certifies that
     /// the runtime has no device access, deferred callbacks, or retained buffers.
     /// Busy/failure retains the runtime and is retried by its shutdown owner.
