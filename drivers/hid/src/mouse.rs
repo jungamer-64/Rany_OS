@@ -224,10 +224,10 @@ impl Mouse {
         self.write_controller_command(CMD_WRITE_TO_AUX);
         self.write_data(cmd);
 
-        if let Some(response) = self.read_data_timeout() {
-            if response == ACK {
-                return Ok(response);
-            }
+        if let Some(response) = self.read_data_timeout()
+            && response == ACK
+        {
+            return Ok(response);
         }
         Err(())
     }

@@ -61,9 +61,8 @@ pub struct ScancodeQueue {
 impl ScancodeQueue {
     /// Create a new empty queue
     pub const fn new() -> Self {
-        const ZERO: AtomicU16 = AtomicU16::new(0);
         Self {
-            buffer: [ZERO; DEFAULT_QUEUE_SIZE],
+            buffer: [const { AtomicU16::new(0) }; DEFAULT_QUEUE_SIZE],
             tail: AtomicUsize::new(0),
             head: AtomicUsize::new(0),
         }
@@ -152,9 +151,8 @@ pub struct KeyEventQueue {
 
 impl KeyEventQueue {
     pub const fn new() -> Self {
-        const ZERO: AtomicU32 = AtomicU32::new(0);
         Self {
-            buffer: [ZERO; DEFAULT_QUEUE_SIZE],
+            buffer: [const { AtomicU32::new(0) }; DEFAULT_QUEUE_SIZE],
             tail: AtomicUsize::new(0),
             head: AtomicUsize::new(0),
         }

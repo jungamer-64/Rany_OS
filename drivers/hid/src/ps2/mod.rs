@@ -25,7 +25,7 @@ pub use keycode::{KeyCode, KeyEvent, Modifiers};
 pub use mouse::MouseHandler;
 pub use mouse_types::{MouseButton, MouseEvent};
 
-use spin::Mutex;
+use exorust_sync::Mutex;
 
 // ============================================================================
 // Global State

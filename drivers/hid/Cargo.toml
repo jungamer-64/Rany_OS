@@ -19,6 +19,7 @@ path = "src/lib.rs"
 # driver entry symbol for standalone cell builds.
 
 [dependencies]
+exorust_sync = { path = "../../libs/sync" }
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 kernel_api = { path = "../../interfaces/kernel_api" }

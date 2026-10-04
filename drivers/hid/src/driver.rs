@@ -15,8 +15,9 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use core::task::Waker;
+use exorust_sync::WakerSlot;
 
-use crate::keyboard::{IsrSafeWaker, KeyCodeExt, ModifierState};
+use crate::keyboard::{KeyCodeExt, ModifierState};
 use crate::keymap::{DEFAULT_KEYMAP, Keymap};
 use crate::queue::KeyEventQueue;
 use crate::stream::{DriverOps, KeyboardStream, KeyboardStreamArc};
@@ -77,8 +78,9 @@ pub struct KeyboardDriver {
     modifiers: ModifierState,
     /// ISR extended scancode pending flag
     extended_pending: AtomicBool,
-    /// Waker notification (ISR-safe)
-    waker: IsrSafeWaker,
+    /// ISR publication is distinct from the deferred registration owner.
+    pending_wake: AtomicBool,
+    waker: WakerSlot,
     /// Stream issued flag
     stream_taken: AtomicBool,
     /// Dropped events counter (diagnostic)
@@ -95,7 +97,8 @@ impl KeyboardDriver {
             queue: KeyEventQueue::new(),
             modifiers: ModifierState::new(),
             extended_pending: AtomicBool::new(false),
-            waker: IsrSafeWaker::new(),
+            pending_wake: AtomicBool::new(false),
+            waker: WakerSlot::new(),
             stream_taken: AtomicBool::new(false),
             dropped_events: AtomicU64::new(0),
             event_tap: AtomicUsize::new(0),
@@ -171,7 +174,7 @@ impl KeyboardDriver {
     #[inline]
     fn enqueue_key_event(&self, event: KeyEvent) {
         if self.queue.push(pack_key_event(event)) {
-            self.waker.notify();
+            self.pending_wake.store(true, Ordering::Release);
             return;
         }
 
@@ -180,7 +183,7 @@ impl KeyboardDriver {
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |v| {
                 v.checked_add(1).or(Some(u64::MAX))
             });
-        self.waker.notify();
+        self.pending_wake.store(true, Ordering::Release);
     }
 
     /// Update modifier-state bits from a raw set-1 scancode.
@@ -280,8 +283,9 @@ impl KeyboardDriver {
         Ok(KeyboardStreamArc::new(self, keymap))
     }
 
-    /// Return stream (for testing)
+    /// Retire the consumer's registration before permitting a new stream owner.
     fn return_stream(&self) {
+        self.waker.clear();
         self.stream_taken.store(false, Ordering::SeqCst);
     }
 
@@ -296,14 +300,19 @@ impl KeyboardDriver {
     /// ISR notifications to actual Waker wake-ups.
     ///
     /// # Returns
-    /// `true` if a wake was performed, `false` otherwise
+    /// `true` if an IRQ notification was handed to the registration slot.
+    /// Without a registered listener, the slot retains it for registration.
     pub fn process_pending_wake(&self) -> bool {
-        self.waker.check_and_wake()
+        if !self.pending_wake.swap(false, Ordering::AcqRel) {
+            return false;
+        }
+        self.waker.wake();
+        true
     }
 
     /// Check if there are pending wake notifications
     pub fn has_pending_wake(&self) -> bool {
-        self.waker.is_pending()
+        self.pending_wake.load(Ordering::Acquire)
     }
 
     /// Check if there are events in the queue
@@ -422,5 +431,60 @@ fn unpack_key_event(packed: u32) -> KeyEvent {
         state,
         modifiers,
         raw_scancode,
+    }
+}
+
+#[cfg(test)]
+mod notification_tests {
+    use super::*;
+    use alloc::task::Wake;
+
+    struct WakeCount(AtomicUsize);
+
+    impl Wake for WakeCount {
+        fn wake(self: Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn irq_notifications_are_deferred_and_coalesced() {
+        let driver = KeyboardDriver::new();
+        let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+        driver.register_waker(&Waker::from(Arc::clone(&wakes)));
+        for _ in 0..1_000 {
+            driver.handle_scancode(0x1e);
+        }
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 0);
+        assert!(driver.has_pending_wake());
+        assert!(driver.process_pending_wake());
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+        assert!(!driver.process_pending_wake());
+    }
+
+    #[test]
+    fn delivery_before_registration_retains_the_notification() {
+        let driver = KeyboardDriver::new();
+        driver.handle_scancode(0x1e);
+        assert!(driver.process_pending_wake());
+        let wakes = Arc::new(WakeCount(AtomicUsize::new(0)));
+        driver.register_waker(&Waker::from(Arc::clone(&wakes)));
+        assert_eq!(wakes.0.load(Ordering::Relaxed), 1);
+    }
+
+    #[test]
+    fn stream_cancellation_retires_only_its_registration() {
+        static DRIVER: KeyboardDriver = KeyboardDriver::new();
+        let stream = DRIVER.take_stream().expect("first consumer");
+        let retired = Arc::new(WakeCount(AtomicUsize::new(0)));
+        DRIVER.register_waker(&Waker::from(Arc::clone(&retired)));
+        DRIVER.handle_scancode(0x1e);
+        drop(stream);
+        let _stream = DRIVER.take_stream().expect("next consumer");
+        let current = Arc::new(WakeCount(AtomicUsize::new(0)));
+        DRIVER.register_waker(&Waker::from(Arc::clone(&current)));
+        assert!(DRIVER.process_pending_wake());
+        assert_eq!(retired.0.load(Ordering::Relaxed), 0);
+        assert_eq!(current.0.load(Ordering::Relaxed), 1);
     }
 }

@@ -173,10 +173,12 @@ pub trait Keymap: Send + Sync {
     fn to_char(&self, key: KeyCode, modifiers: &Modifiers) -> Option<char> {
         // Ctrl+文字の制御文字変換（全キーマップ共通）
         // Ctrlのみが押されている場合に制御コードを返す
-        if modifiers.ctrl && !modifiers.shift && !modifiers.alt {
-            if let Some(ctrl_char) = ctrl_char_map(key) {
-                return Some(ctrl_char);
-            }
+        if modifiers.ctrl
+            && !modifiers.shift
+            && !modifiers.alt
+            && let Some(ctrl_char) = ctrl_char_map(key)
+        {
+            return Some(ctrl_char);
         }
 
         // 通常の文字変換はキーマップ実装に委譲

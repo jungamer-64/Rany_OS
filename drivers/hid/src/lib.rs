@@ -690,6 +690,11 @@ mod smoke_tests {
     }
 
     #[test]
+    fn driver_handle_key_event_smoke() {
+        assert!(tests::driver_handle_key_event_smoke());
+    }
+
+    #[test]
     fn from_scancode_basic_smoke() {
         assert!(tests::from_scancode_basic_smoke());
     }

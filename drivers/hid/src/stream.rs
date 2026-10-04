@@ -231,18 +231,18 @@ impl Future for CharFutureArc<'_> {
 
             if let Some(event) = self.driver.poll_key_event_internal() {
                 events_processed += 1;
-                if event.state == crate::KeyState::Pressed {
-                    if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
-                        return Poll::Ready(ch);
-                    }
+                if event.state == crate::KeyState::Pressed
+                    && let Some(ch) = self.keymap.to_char(event.key, &event.modifiers)
+                {
+                    return Poll::Ready(ch);
                 }
             } else {
                 self.driver.register_waker(cx.waker());
                 if let Some(event) = self.driver.poll_key_event_internal() {
-                    if event.state == crate::KeyState::Pressed {
-                        if let Some(ch) = self.keymap.to_char(event.key, &event.modifiers) {
-                            return Poll::Ready(ch);
-                        }
+                    if event.state == crate::KeyState::Pressed
+                        && let Some(ch) = self.keymap.to_char(event.key, &event.modifiers)
+                    {
+                        return Poll::Ready(ch);
                     }
                 } else {
                     return Poll::Pending;

@@ -288,10 +288,8 @@ impl Ps2Controller {
 
     /// デバイスを初期化する
     fn init_devices(&mut self, port1_ok: bool, port2_ok: bool) {
-        if port1_ok {
-            if self.init_keyboard() {
-                self.port1_type = Some(DeviceType::MfKeyboard);
-            }
+        if port1_ok && self.init_keyboard() {
+            self.port1_type = Some(DeviceType::MfKeyboard);
         }
 
         if port2_ok {
