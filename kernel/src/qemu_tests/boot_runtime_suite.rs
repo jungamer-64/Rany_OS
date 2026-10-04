@@ -14,7 +14,7 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 #[cfg(feature = "qemu-test-export")]
 use crate::fs::{FileMode, Inode, MemoryInode};
 #[cfg(feature = "qemu-test-export")]
-use crate::task::{self, InterruptSource, TaskPlacement, TimeoutResult};
+use crate::task::{self, InterruptSource, TaskOptions, TimeoutResult};
 
 #[cfg(feature = "qemu-test-export")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -292,7 +292,7 @@ fn case_pinned_task_runs_on_online_cpu() -> Result<(), BootCaseError> {
                 .unwrap_or(u64::MAX - 1);
             observed_cpu_task.store(observed, Ordering::Release);
         },
-        TaskPlacement::Pinned(target),
+        TaskOptions::pinned(target),
     )
     .map_err(|error| {
         BootCaseError::failed(format!(
@@ -356,7 +356,7 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
         ));
     }
 
-    if task::current_tick() <= tick_before {
+    if !wait_for_task_tick_advance(tick_before, 250) {
         return Err(BootCaseError::failed(
             "task timer tick did not advance on the ISR-driven time service path",
         ));
@@ -376,11 +376,14 @@ fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
 
     task::spawn(
         async move {
-            task::sleep_ms(2).await;
+            if let Err(cause) = task::sleep_ms(2).await {
+                log::error!("boot test poll timer unavailable: {cause}");
+                return;
+            }
             completed_at_tick_clone.store(task::current_tick(), Ordering::Release);
             completed_clone.store(true, Ordering::Release);
         },
-        TaskPlacement::Pinned(target),
+        TaskOptions::pinned(target),
     )
     .map_err(|error| {
         BootCaseError::failed(format!(
@@ -421,10 +424,15 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
             .await
             {
                 TimeoutResult::Completed(()) => completed_clone.store(true, Ordering::Release),
+                TimeoutResult::TimerFailed(cause) => {
+                    log::error!("boot test deadline unavailable: {cause}");
+                    // The success signal stays false, so this case fails without
+                    // reporting timer admission failure as an elapsed timeout.
+                }
                 TimeoutResult::TimedOut => timed_out_clone.store(true, Ordering::Release),
             }
         },
-        TaskPlacement::Pinned(target),
+        TaskOptions::pinned(target),
     )
     .map_err(|error| {
         BootCaseError::failed(format!(
@@ -447,7 +455,7 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
             "raw timer IRQ did not arrive for timer_waker_deferred_path",
         ));
     }
-    if task::current_tick() <= delegated_tick_before {
+    if !wait_for_task_tick_advance(delegated_tick_before, 250) {
         return Err(BootCaseError::failed(
             "timer service tick did not advance on the raw IRQ path",
         ));
@@ -550,10 +558,15 @@ fn case_synthetic_interrupt_deferred_path(
             match task::with_timeout(wait_for_registered_interrupt(source, armed_clone), 500).await
             {
                 TimeoutResult::Completed(()) => completed_clone.store(true, Ordering::Release),
+                TimeoutResult::TimerFailed(cause) => {
+                    log::error!("boot test deadline unavailable: {cause}");
+                    // The success signal stays false, so this case fails without
+                    // reporting timer admission failure as an elapsed timeout.
+                }
                 TimeoutResult::TimedOut => timed_out_clone.store(true, Ordering::Release),
             }
         },
-        TaskPlacement::Pinned(target),
+        TaskOptions::pinned(target),
     )
     .map_err(|error| {
         BootCaseError::failed(format!(
@@ -670,5 +683,20 @@ fn wait_for_raw_tick_advance(start_tick: u64, timeout_ms: u64) -> bool {
         core::hint::spin_loop();
     }
 
+    false
+}
+
+#[cfg(feature = "qemu-test-export")]
+fn wait_for_task_tick_advance(start_tick: u64, timeout_ms: u64) -> bool {
+    let deadline_ns = crate::time::precise_time_nanos().saturating_add(timeout_ms * 1_000_000);
+    // LAPIC IRQs on any CPU advance the raw counter, while the BSP alone owns
+    // the time-service tick. Observe that owner's progress separately on SMP.
+    // LOOP_PROOF: mode=condition; reason=The task tick advances or the independent nanosecond deadline expires.;
+    while crate::time::precise_time_nanos() < deadline_ns {
+        if task::current_tick() > start_tick {
+            return true;
+        }
+        core::hint::spin_loop();
+    }
     false
 }
