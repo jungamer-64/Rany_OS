@@ -228,7 +228,7 @@ impl VirtioTransport for VirtioMmioTransport {
 
     fn acknowledge_interrupt(&self) -> u32 {
         let mut registers = self.registers.lock();
-        let status = registers.interrupt_status.read();
+        let status = registers.interrupt_status.read() & 3;
         registers.interrupt_ack.write(status);
         status
     }

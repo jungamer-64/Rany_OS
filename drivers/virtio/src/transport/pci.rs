@@ -239,7 +239,7 @@ impl VirtioTransport for VirtioPciTransport {
     }
 
     fn acknowledge_interrupt(&self) -> u32 {
-        u32::from(self.registers.lock().interrupt_status.read())
+        u32::from(self.registers.lock().interrupt_status.read() & 3)
     }
     fn read_config_u8(&self, offset: usize) -> TransportResult<u8> {
         Ok(self

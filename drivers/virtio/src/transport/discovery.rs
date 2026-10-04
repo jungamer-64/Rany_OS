@@ -49,6 +49,33 @@ struct Capabilities {
     notification_multiplier: u32,
 }
 
+impl Capabilities {
+    fn bar_ranges(&self) -> Result<[Option<MmioByteRange>; 6], PciCapabilityError> {
+        let mut ranges: [Option<MmioByteRange>; 6] = [None; 6];
+        for capability in [
+            Some(self.common),
+            Some(self.notification),
+            Some(self.interrupt_status),
+            self.device_configuration,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            let slot = &mut ranges[usize::from(capability.bar)];
+            *slot = Some(match *slot {
+                Some(previous) => {
+                    let start = previous.offset().min(capability.range.offset());
+                    let end = previous.end().max(capability.range.end());
+                    MmioByteRange::new(start, end - start)
+                        .map_err(PciCapabilityError::InvalidRange)?
+                }
+                None => capability.range,
+            });
+        }
+        Ok(ranges)
+    }
+}
+
 impl VirtioPciTransport {
     /// Discover modern capabilities of one authorized PCI function and acquire
     /// their exact BAR-relative byte windows. Configuration observations grant
@@ -67,14 +94,45 @@ impl VirtioPciTransport {
             .map_err(PciTransportDiscoveryError::Configuration)?;
         let capabilities =
             parse(&snapshot, device_type).map_err(PciTransportDiscoveryError::Capabilities)?;
-        let map = |capability: Capability| {
-            let request =
-                PciMmioRequest::new(device, capability.bar, capability.range).map_err(|cause| {
+        let ranges = capabilities
+            .bar_ranges()
+            .map_err(PciTransportDiscoveryError::Capabilities)?;
+        let mut mappings: [Option<hal::MappedMmio>; 6] = core::array::from_fn(|_| None);
+        for (bar, range) in ranges.iter().enumerate() {
+            if let Some(range) = range {
+                let request = PciMmioRequest::new(device, bar as u8, *range).map_err(|cause| {
                     PciTransportDiscoveryError::Mapping(MmioAcquireError::Request(cause))
                 })?;
-            let mapping = services
-                .acquire_pci_mmio(request)
-                .map_err(PciTransportDiscoveryError::Mapping)?;
+                mappings[bar] = Some(
+                    services
+                        .acquire_pci_mmio(request)
+                        .map_err(PciTransportDiscoveryError::Mapping)?,
+                );
+            }
+        }
+        let map = |capability: Capability| {
+            let index = usize::from(capability.bar);
+            let source =
+                mappings[index]
+                    .as_ref()
+                    .ok_or(PciTransportDiscoveryError::Capabilities(
+                        PciCapabilityError::InvalidBar,
+                    ))?;
+            let range = ranges[index].ok_or(PciTransportDiscoveryError::Capabilities(
+                PciCapabilityError::InvalidBar,
+            ))?;
+            let offset = capability
+                .range
+                .offset()
+                .checked_sub(range.offset())
+                .ok_or(PciTransportDiscoveryError::Capabilities(
+                    PciCapabilityError::InvalidRange(MmioRequestError::OutOfBounds),
+                ))?;
+            let mapping = source
+                .subregion(offset, capability.range.byte_count())
+                .map_err(|cause| {
+                    PciTransportDiscoveryError::Registers(TransportError::Access(cause))
+                })?;
             Arc::try_new(mapping).map_err(|_| PciTransportDiscoveryError::Allocation)
         };
         let apertures = PciTransportApertures {
@@ -254,6 +312,21 @@ mod tests {
         assert_eq!(parsed.interrupt_status.range.byte_count(), 1);
         assert!(parsed.device_configuration.is_none());
     }
+    #[test]
+    fn overlapping_capability_extents_share_one_bar_claim() {
+        let mut bytes = header();
+        bytes[0x4c..0x50].copy_from_slice(&0x4000u32.to_le_bytes());
+        let parsed =
+            parse(&snapshot(bytes), VirtioDeviceType::Block).expect("capability with padding");
+        let ranges = parsed.bar_ranges().expect("checked union");
+        assert_eq!(
+            ranges[4].map(|range| (range.offset(), range.byte_count())),
+            Some((0x1000, 0x4000))
+        );
+        assert_eq!(ranges.iter().filter(|range| range.is_some()).count(), 1);
+        assert_eq!(parsed.notification.range.offset(), 0x2000);
+    }
+
     #[test]
     fn transitional_type_is_read_from_subsystem_identity() {
         let mut bytes = header();
