@@ -118,6 +118,10 @@ async fn progress_case(quota: bool) -> RuntimeTestResult {
         log::error!("scheduler progress policy admission failed: {error:?}");
         result = RuntimeTestResult::fail("cannot admit progress policy");
     } else {
+        // Every contender is pinned to this CPU. Admit the finite batch before
+        // allowing a timer to run its first task, so stack preparation does not
+        // give an earlier registration an unmeasured head start.
+        let _admission_batch = hal::preemption::PreemptionGuard::enter();
         for (index, &(domain, priority)) in tasks.iter().enumerate() {
             if crate::task::spawn_in_domain(
                 ProgressPoll {
@@ -136,7 +140,8 @@ async fn progress_case(quota: bool) -> RuntimeTestResult {
             }
         }
     }
-    let deadline = crate::time::precise_time_nanos().saturating_add(400_000_000);
+    let sample_ns = if quota { 400_000_000 } else { 1_000_000_000 };
+    let deadline = crate::time::precise_time_nanos().saturating_add(sample_ns);
     let mut waited_at = None;
     let mut blocked_sample = None;
     let mut successor_progressed = false;
