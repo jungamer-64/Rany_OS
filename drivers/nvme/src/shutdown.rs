@@ -245,6 +245,10 @@ impl ControllerResetting {
     ///
     /// # Errors
     /// A CSTS access failure returns the unchanged one-way reset owner.
+    #[expect(
+        clippy::result_large_err,
+        reason = "a register failure must return the complete reset owner without allocating during failure handling"
+    )]
     pub fn poll(self) -> Result<ControllerResetPoll, ControllerResetPollError> {
         let status = match self.registers.status() {
             Ok(status) => status,
@@ -274,6 +278,10 @@ impl ControllerReset {
     ///
     /// # Errors
     /// The first registry failure returns this owner with exact partial progress.
+    #[expect(
+        clippy::result_large_err,
+        reason = "partial DMA revocation must retain every queue owner without allocating on the error path"
+    )]
     pub fn revoke_dma(mut self) -> Result<ControllerDmaRevoked, ControllerDmaResetError> {
         let admin_identity = self.admin_queue.identity();
         if let Err(error) = self.admin_queue.revoke_all(self.device, self.generation) {
@@ -339,6 +347,10 @@ impl ControllerDmaReconciliation {
     ///
     /// # Errors
     /// The first registry failure returns this owner with exact partial progress.
+    #[expect(
+        clippy::result_large_err,
+        reason = "failed reconciliation returns all recovered and unreconciled DMA owners without an allocation"
+    )]
     pub fn advance(mut self) -> Result<ReconciledNvmeController, ControllerDmaReconcileError> {
         if let Err(error) = self
             .reset
@@ -430,6 +442,10 @@ impl ReconciledNvmeController {
     /// # Errors
     /// Pending commands, unmap failures, and reconciliation-state errors retain
     /// the complete owner. Repeated calls retry only the first incomplete close.
+    #[expect(
+        clippy::result_large_err,
+        reason = "unmap failure must preserve the remaining controller resources without requiring new memory"
+    )]
     pub fn close(mut self) -> Result<(), ControllerCloseError> {
         let admin_identity = self.reset.admin_queue.identity();
         if let Err(error) = self
