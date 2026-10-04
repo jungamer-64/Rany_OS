@@ -125,7 +125,7 @@ async fn wait_http_poller_signal_or_timeout(
     runtime: NetRuntimeHandle,
     observed_seq: &mut u64,
     timeout_ms: u64,
-) -> bool {
+) -> Result<bool, kernel_api::service::time::TimerError> {
     match task::with_timeout(
         HttpPollerSignalFuture {
             runtime,
@@ -137,9 +137,10 @@ async fn wait_http_poller_signal_or_timeout(
     {
         TimeoutResult::Completed(next_seq) => {
             *observed_seq = next_seq;
-            true
+            Ok(true)
         }
-        TimeoutResult::TimedOut => false,
+        TimeoutResult::TimedOut => Ok(false),
+        TimeoutResult::TimerFailed(cause) => Err(cause),
     }
 }
 
@@ -181,7 +182,7 @@ pub fn start_once(runtime: NetRuntimeHandle) -> Result<(), crate::task::SpawnErr
                 .store(false, Ordering::Release);
             log::error!("[HOST-HTTP] service loops terminated unexpectedly");
         },
-        crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+        crate::task::TaskOptions::pinned(crate::cpu::CpuId::BOOTSTRAP),
     ) {
         Ok(_) => Ok(()),
         Err(error) => {
@@ -239,8 +240,13 @@ async fn run_net_poller_in(runtime: NetRuntimeHandle) {
             host_http_idle_wait_ms(consecutive_idle)
         };
 
-        if wait_http_poller_signal_or_timeout(runtime, &mut observed_signal_seq, wait_ms).await {
-            consecutive_idle = 0;
+        match wait_http_poller_signal_or_timeout(runtime, &mut observed_signal_seq, wait_ms).await {
+            Ok(true) => consecutive_idle = 0,
+            Ok(false) => {}
+            Err(cause) => {
+                log::error!("HTTP poll timer failed: {cause}");
+                return;
+            }
         }
 
         // active 接続時は高頻度で、idle 時も最大待機に達したサイクルで Poll を投入する。
@@ -290,11 +296,14 @@ fn http_network_ready_in(runtime: NetRuntimeHandle) -> bool {
         .is_some_and(http_config_usable)
 }
 
-async fn wait_for_http_network_ready_in(runtime: NetRuntimeHandle) {
+async fn wait_for_http_network_ready_in(
+    runtime: NetRuntimeHandle,
+) -> Result<(), kernel_api::service::time::TimerError> {
     let mut logged_wait = false;
+    // LOOP_PROOF: mode=event; reason=Readiness is rechecked after an admitted timer wait and success or timer admission failure returns.;
     loop {
         if http_network_ready_in(runtime) {
-            return;
+            return Ok(());
         }
 
         if !logged_wait {
@@ -302,7 +311,7 @@ async fn wait_for_http_network_ready_in(runtime: NetRuntimeHandle) {
             logged_wait = true;
         }
 
-        task::sleep_ms(HOST_HTTP_READY_POLL_MS).await;
+        task::sleep_ms(HOST_HTTP_READY_POLL_MS).await?;
     }
 }
 
@@ -338,8 +347,12 @@ async fn bind_http_acceptor_in(runtime: NetRuntimeHandle) -> Result<TcpAcceptor,
 async fn run_service_supervisor_in(runtime: NetRuntimeHandle) {
     let mut consecutive_failures = 0u32;
 
+    // LOOP_PROOF: mode=event; reason=The supervisor awaits network readiness, accepts connections or waits its restart backoff, and terminal timer failure returns.;
     loop {
-        wait_for_http_network_ready_in(runtime).await;
+        if let Err(cause) = wait_for_http_network_ready_in(runtime).await {
+            log::error!("HTTP network readiness timer failed: {cause}");
+            return;
+        }
 
         let acceptor = match bind_http_acceptor_in(runtime).await {
             Ok(acceptor) => {
@@ -361,12 +374,19 @@ async fn run_service_supervisor_in(runtime: NetRuntimeHandle) {
                     backoff_ms,
                 );
                 consecutive_failures = consecutive_failures.saturating_add(1);
-                task::sleep_ms(backoff_ms).await;
+                if let Err(cause) = task::sleep_ms(backoff_ms).await {
+                    log::error!("HTTP restart timer failed: {cause}");
+                    return;
+                }
                 continue;
             }
         };
 
         if let Err(err) = run_service_in(runtime, acceptor).await {
+            if let TcpError::Timer(cause) = err {
+                log::error!("HTTP accept timer failed: {cause}");
+                return;
+            }
             let backoff_ms = http_supervisor_backoff_ms(consecutive_failures);
             log_http_restart(
                 ServiceRestartCause::NextConnection(err),
@@ -374,7 +394,10 @@ async fn run_service_supervisor_in(runtime: NetRuntimeHandle) {
                 backoff_ms,
             );
             consecutive_failures = consecutive_failures.saturating_add(1);
-            task::sleep_ms(backoff_ms).await;
+            if let Err(cause) = task::sleep_ms(backoff_ms).await {
+                log::error!("HTTP restart timer failed: {cause}");
+                return;
+            }
         }
     }
 }
@@ -383,6 +406,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         match task::with_timeout(acceptor.next_connection(), 500).await {
+            TimeoutResult::TimerFailed(cause) => return Err(TcpError::Timer(cause)),
             TimeoutResult::TimedOut => {
                 task::yield_now().await;
             }
@@ -416,7 +440,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                             .fetch_sub(1, Ordering::AcqRel);
                         notify_http_poller_signal(runtime);
                     },
-                    crate::task::TaskPlacement::Any,
+                    crate::task::TaskOptions::any(),
                 ) {
                     http_runtime_in(runtime)
                         .active_connections
@@ -438,6 +462,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
 
 fn try_acquire_connection_slot(runtime: NetRuntimeHandle) -> Option<u32> {
     let active_connections = &http_runtime_in(runtime).active_connections;
+    // LOOP_PROOF: mode=event; reason=CAS reserves one connection slot or a changed observation is retried, and the concurrent-connection limit rejects further admission.;
     loop {
         let current = active_connections.load(Ordering::Acquire);
         if current >= MAX_CONCURRENT_CONNECTIONS {

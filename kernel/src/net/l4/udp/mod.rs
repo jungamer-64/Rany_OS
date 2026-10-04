@@ -418,6 +418,7 @@ fn socket_error_to_network(err: EndpointError) -> NetworkError {
             NetworkError::PortInUse
         }
         EndpointError::Timeout => NetworkError::Timeout,
+        EndpointError::Timer(cause) => NetworkError::Timer(cause),
         EndpointError::NotConnected => NetworkError::ConnectionClosed,
         EndpointError::NetworkUnreachable
         | EndpointError::HostUnreachable

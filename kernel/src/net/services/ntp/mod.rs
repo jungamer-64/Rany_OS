@@ -249,6 +249,7 @@ impl NtpClient {
                 log::warn!("[NTP] Socket closed during recv");
                 Err(EndpointError::Internal)
             }
+            TimeoutResult::TimerFailed(cause) => Err(EndpointError::Timer(cause)),
             TimeoutResult::TimedOut => {
                 log::warn!("[NTP] Response timed out ({}ms)", NTP_TIMEOUT_MS);
                 Err(EndpointError::Timeout)
@@ -271,6 +272,9 @@ pub async fn ntp_sync_task(runtime: NetRuntimeHandle, server: Ipv4Address) {
         }
 
         // 1時間待機 (1 * 60 * 60 * 1000 ms)
-        crate::task::sleep_ms(3600 * 1000).await;
+        if let Err(cause) = crate::task::sleep_ms(3600 * 1000).await {
+            log::error!("NTP sync timer failed: {cause}");
+            return;
+        }
     }
 }

@@ -112,7 +112,7 @@ pub(crate) fn ensure_interface_runtime_in(
     if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
         if let Err(error) = crate::task::spawn(
             dhcp_v4_drive_task(interface_runtime),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         ) {
             interface_runtime
                 .drive_started
@@ -127,7 +127,7 @@ pub(crate) fn ensure_interface_runtime_in(
     {
         if let Err(error) = crate::task::spawn(
             dhcp_v6_drive_task(interface_runtime),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         ) {
             interface_runtime
                 .v6_drive_started
@@ -203,7 +203,7 @@ pub(crate) fn restart_interface_runtime_in(
     if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
         if let Err(error) = crate::task::spawn(
             dhcp_v4_drive_task(interface_runtime),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         ) {
             interface_runtime
                 .drive_started
@@ -241,7 +241,7 @@ fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRun
     {
         if let Err(error) = crate::task::spawn(
             dhcp_v4_dispatcher_task(runtime),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         ) {
             runtime_state_for(runtime)
                 .v4_dispatcher_started
@@ -260,7 +260,7 @@ fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRun
     {
         if let Err(error) = crate::task::spawn(
             dhcp_v6_dispatcher_task(runtime),
-            crate::task::TaskPlacement::Any,
+            crate::task::TaskOptions::any(),
         ) {
             runtime_state_for(runtime)
                 .v6_dispatcher_started
@@ -278,9 +278,13 @@ async fn dhcp_v4_drive_task(runtime: &'static DhcpInterfaceRuntime) {
         runtime.mac()
     );
 
+    // LOOP_PROOF: mode=condition; reason=The interface owner can deactivate this worker and each IPv4 drive or suspended-state wait awaits an admitted timer.;
     while runtime.active.load(Ordering::Acquire) {
         if runtime.suspended.load(Ordering::Acquire) {
-            crate::task::sleep_ms(200).await;
+            if let Err(cause) = crate::task::sleep_ms(200).await {
+                log::error!("DHCP driver timer failed: {cause}");
+                break;
+            }
             continue;
         }
 
@@ -292,7 +296,10 @@ async fn dhcp_v4_drive_task(runtime: &'static DhcpInterfaceRuntime) {
                 err
             );
         }
-        crate::task::sleep_ms(200).await;
+        if let Err(cause) = crate::task::sleep_ms(200).await {
+            log::error!("DHCP driver timer failed: {cause}");
+            break;
+        }
     }
 
     runtime.drive_started.store(false, Ordering::Release);
@@ -305,9 +312,13 @@ async fn dhcp_v6_drive_task(runtime: &'static DhcpInterfaceRuntime) {
         runtime.mac()
     );
 
+    // LOOP_PROOF: mode=condition; reason=The interface owner can deactivate this worker and each IPv6 iteration awaits an admitted timer or reports its failure.;
     while runtime.active.load(Ordering::Acquire) {
         if runtime.suspended.load(Ordering::Acquire) {
-            crate::task::sleep_ms(200).await;
+            if let Err(cause) = crate::task::sleep_ms(200).await {
+                log::error!("DHCP driver timer failed: {cause}");
+                break;
+            }
             continue;
         }
 
@@ -319,7 +330,10 @@ async fn dhcp_v6_drive_task(runtime: &'static DhcpInterfaceRuntime) {
                 err
             );
         }
-        crate::task::sleep_ms(1000).await;
+        if let Err(cause) = crate::task::sleep_ms(1000).await {
+            log::error!("DHCPv6 driver timer failed: {cause}");
+            break;
+        }
     }
 
     runtime.v6_drive_started.store(false, Ordering::Release);
@@ -344,6 +358,7 @@ async fn dhcp_v4_dispatcher_task(runtime: NetRuntimeHandle) {
 
     log::info!("[NET] DHCPv4 dispatcher task started");
 
+    // LOOP_PROOF: mode=event; reason=Each iteration awaits a datagram and socket closure ends the retained IPv4 dispatcher.;
     loop {
         match socket.recv().await {
             Some((if_id, _src, _ttl, packet)) => {
@@ -437,6 +452,7 @@ async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
 
     log::info!("[NET] DHCPv6 dispatcher task started");
 
+    // LOOP_PROOF: mode=event; reason=Each iteration awaits a datagram and socket closure ends the retained IPv6 dispatcher.;
     loop {
         match socket.recv().await {
             Some((if_id, src, _ttl, packet)) => {

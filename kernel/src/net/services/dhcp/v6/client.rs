@@ -198,6 +198,10 @@ impl DhcpV6Client {
                         log::info!("[NET] DHCPv6 packet handled from {}", src_v6);
                     }
                 }
+                TimeoutResult::TimerFailed(cause) => {
+                    log::error!("DHCPv6 receive timer failed: {cause}");
+                    return Err("DHCPv6 receive timer unavailable");
+                }
                 _ => {}
             }
         }

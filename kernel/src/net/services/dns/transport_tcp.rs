@@ -27,6 +27,7 @@ impl DnsClient {
         }
 
         let mut attempt = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each unsuccessful reply or timeout consumes one of DNS_MAX_RETRIES and successful parsing or timer failure returns.;
         while attempt < DNS_MAX_RETRIES {
             match task::with_timeout(socket.recv(), DNS_RETRY_TIMEOUT_MS).await {
                 TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
@@ -44,6 +45,10 @@ impl DnsClient {
                     }
 
                     attempt += 1;
+                }
+                TimeoutResult::TimerFailed(cause) => {
+                    log::error!("DNS query timer failed: {cause}");
+                    return Err((name, "DNS query timer unavailable"));
                 }
                 _ => {
                     attempt += 1;
@@ -75,6 +80,7 @@ impl DnsClient {
             stash: &mut Option<kernel_api::resource::net::PacketPayload>,
             len: usize,
         ) -> Result<Option<kernel_api::resource::net::PacketPayload>, &'static str> {
+            // LOOP_PROOF: mode=condition; reason=Each iteration awaits a nonempty owned payload, advancing the requested byte prefix or ending on closure or allocation failure.;
             while stash.as_ref().map_or(0, |payload| payload.total_len()) < len {
                 let Some(payload) = connection.recv_payload().await else {
                     break;

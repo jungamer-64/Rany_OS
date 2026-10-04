@@ -56,6 +56,7 @@ pub enum EndpointError {
     HostUnreachable,
     /// タイムアウト
     Timeout,
+    Timer(kernel_api::service::time::TimerError),
     /// 操作中断
     Interrupted,
     /// バッファフル
@@ -86,6 +87,7 @@ impl core::fmt::Display for EndpointError {
             Self::NetworkUnreachable => write!(f, "Network unreachable"),
             Self::HostUnreachable => write!(f, "Host unreachable"),
             Self::Timeout => write!(f, "Operation timed out"),
+            Self::Timer(cause) => write!(f, "Deadline unavailable: {cause}"),
             Self::Interrupted => write!(f, "Operation interrupted"),
             Self::BufferFull => write!(f, "Buffer full"),
             Self::PermissionDenied => write!(f, "Permission denied"),
@@ -106,6 +108,7 @@ impl EndpointError {
             TcpError::ConnectionRefused => EndpointError::ConnectionRefused,
             TcpError::ConnectionReset => EndpointError::NotConnected,
             TcpError::Timeout => EndpointError::Timeout,
+            TcpError::Timer(cause) => EndpointError::Timer(cause),
             TcpError::AddressInUse => EndpointError::AddressInUse,
             TcpError::BufferFull => EndpointError::BufferFull,
             TcpError::PermissionDenied => EndpointError::PermissionDenied,

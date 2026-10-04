@@ -60,7 +60,10 @@ pub(crate) async fn timeout_task_in(runtime: NetRuntimeHandle) {
     // LOOP_PROOF: mode=event; reason=Timeout task intentionally runs for system lifetime and sleeps between finite timeout-processing passes.;
     loop {
         // 100msごとにタイムアウトを処理
-        crate::task::sleep_ms(100).await;
+        if let Err(cause) = crate::task::sleep_ms(100).await {
+            log::error!("network timeout timer failed: {cause}");
+            return;
+        }
 
         // 全 CPU コアのキューへローカルタイムアウト処理（100ms）をブロードキャスト
         let report = crate::net::runtime::command::broadcast_command_in(runtime, || {

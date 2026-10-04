@@ -33,6 +33,7 @@ pub(super) fn endpoint_is_native_v6_pair(local: EndpointAddr, remote: EndpointAd
 #[inline]
 pub(super) fn endpoint_error_from_network(error: crate::net::types::NetworkError) -> EndpointError {
     match error {
+        crate::net::types::NetworkError::Timer(cause) => EndpointError::Timer(cause),
         crate::net::types::NetworkError::InvalidAddress => EndpointError::InvalidArgument,
         crate::net::types::NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
         _ => EndpointError::Internal,
@@ -45,6 +46,7 @@ pub(super) fn tcp_error_from_endpoint_error(error: EndpointError) -> crate::net:
         EndpointError::NotConnected => crate::net::l4::tcp::TcpError::ConnectionClosed,
         EndpointError::ConnectionRefused => crate::net::l4::tcp::TcpError::ConnectionRefused,
         EndpointError::Timeout => crate::net::l4::tcp::TcpError::Timeout,
+        EndpointError::Timer(cause) => crate::net::l4::tcp::TcpError::Timer(cause),
         EndpointError::AddressInUse | EndpointError::PortInUse => {
             crate::net::l4::tcp::TcpError::AddressInUse
         }

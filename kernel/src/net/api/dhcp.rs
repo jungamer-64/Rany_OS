@@ -196,10 +196,13 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
                             Ok(()) => log::error!("[NET] mDNS service stopped unexpectedly"),
                             Err(error) => log::warn!("[NET] mDNS service failed: {}", error),
                         }
-                        crate::task::sleep_ms(1_000).await;
+                        if let Err(cause) = crate::task::sleep_ms(1_000).await {
+                            log::error!("network service restart timer failed: {cause}");
+                            return;
+                        }
                     }
                 },
-                crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+                crate::task::TaskOptions::pinned(crate::cpu::CpuId::BOOTSTRAP),
             ) {
                 log::error!("[NET][boot] failed to schedule mDNS service: {:?}", error);
             }
@@ -225,11 +228,14 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
                             Ok(()) => log::error!("[NET] DNS client stopped unexpectedly"),
                             Err(error) => log::warn!("[NET] DNS client failed: {}", error),
                         }
-                        crate::task::sleep_ms(1_000).await;
+                        if let Err(cause) = crate::task::sleep_ms(1_000).await {
+                            log::error!("network service restart timer failed: {cause}");
+                            return;
+                        }
                     }
                 }
             },
-            crate::task::TaskPlacement::Pinned(crate::cpu::CpuId::BOOTSTRAP),
+            crate::task::TaskOptions::pinned(crate::cpu::CpuId::BOOTSTRAP),
         ) {
             log::error!("[NET][boot] failed to schedule DNS client: {:?}", error);
         }

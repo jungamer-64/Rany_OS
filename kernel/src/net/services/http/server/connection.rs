@@ -141,6 +141,10 @@ async fn process_receive_result(
     saw_payload: &mut bool,
 ) -> ReceiveLoopControl {
     match receive_result {
+        TimeoutResult::TimerFailed(cause) => {
+            log::warn!("HTTP connection deadline unavailable: {cause}");
+            ReceiveLoopControl::Return(ReadOutcome::CloseConnection)
+        }
         TimeoutResult::TimedOut => {
             task::yield_now().await;
             ReceiveLoopControl::Continue

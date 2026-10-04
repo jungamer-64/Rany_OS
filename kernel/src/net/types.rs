@@ -21,6 +21,7 @@ pub enum NetworkError {
     PortInUse,
     InvalidAddress,
     Timeout,
+    Timer(kernel_api::service::time::TimerError),
     Unknown,
     /// Connection was closed
     ConnectionClosed,

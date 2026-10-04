@@ -104,6 +104,10 @@ impl DhcpClient {
                         }
                     }
                 }
+                TimeoutResult::TimerFailed(cause) => {
+                    log::error!("DHCPv4 receive timer failed: {cause}");
+                    return Err("DHCPv4 receive timer unavailable");
+                }
                 TimeoutResult::TimedOut => {
                     // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
                 }

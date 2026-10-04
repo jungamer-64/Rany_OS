@@ -49,45 +49,65 @@ pub(crate) async fn runtime_command_task_in(
 
     let handler = RuntimeCommandHandler::new();
 
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.
+    // LOOP_PROOF: mode=event; reason=Each iteration awaits a command and consumes a bounded batch, releasing the stack guard before yielding.;
     loop {
         let event = resources.command_queue.wait_for_events().await;
 
-        if let Ok(mut stack_guard) = resources.stack.lock() {
-            if let Some(ref mut stack) = *stack_guard {
-                let result = handler.handle_event_with_stack_in(runtime, event, stack);
-                process_handle_result(runtime, result);
+        // The lock result and its preemption guard end before the yield point.
+        // Return the unhandled command when the stack is unavailable.
+        let handled = {
+            if let Ok(mut stack_guard) = resources.stack.lock() {
+                if let Some(ref mut stack) = *stack_guard {
+                    let result = handler.handle_event_with_stack_in(runtime, event, stack);
+                    process_handle_result(runtime, result);
 
-                let mut batch_count = 1usize;
-                // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
-                while batch_count < MAX_BATCH_SIZE {
-                    match resources.command_queue.recv() {
-                        Some(batch_event) => {
-                            let result =
-                                handler.handle_event_with_stack_in(runtime, batch_event, stack);
-                            process_handle_result(runtime, result);
-                            batch_count += 1;
+                    let mut batch_count = 1usize;
+                    // LOOP_PROOF: mode=bounded; reason=Every consumed command advances batch_count toward MAX_BATCH_SIZE and an empty queue ends the batch.;
+                    while batch_count < MAX_BATCH_SIZE {
+                        match resources.command_queue.recv() {
+                            Some(batch_event) => {
+                                let result =
+                                    handler.handle_event_with_stack_in(runtime, batch_event, stack);
+                                process_handle_result(runtime, result);
+                                batch_count += 1;
+                            }
+                            None => break,
                         }
-                        None => break,
                     }
+
+                    Ok(batch_count)
+                } else {
+                    Err(event)
                 }
-
-                drop(stack_guard);
-
-                if batch_count >= MAX_BATCH_SIZE {
+            } else {
+                Err(event)
+            }
+        };
+        let event = match handled {
+            Ok(batch_count) => {
+                if batch_count == MAX_BATCH_SIZE {
                     crate::task::yield_now().await;
                 }
                 continue;
             }
-        }
+            Err(event) => event,
+        };
 
         let result = handler.handle_event_in(runtime, event);
         process_handle_result(runtime, result);
 
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
-        while let Some(batch_event) = resources.command_queue.recv() {
+        let mut batch_count = 1;
+        // LOOP_PROOF: mode=bounded; reason=Every consumed command advances batch_count toward MAX_BATCH_SIZE and an empty queue ends the batch.;
+        while batch_count < MAX_BATCH_SIZE {
+            let Some(batch_event) = resources.command_queue.recv() else {
+                break;
+            };
             let result = handler.handle_event_in(runtime, batch_event);
             process_handle_result(runtime, result);
+            batch_count += 1;
+        }
+        if batch_count == MAX_BATCH_SIZE {
+            crate::task::yield_now().await;
         }
     }
 }

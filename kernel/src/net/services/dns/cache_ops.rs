@@ -283,7 +283,9 @@ impl DnsClient {
         log::info!("[NET][boot] DNS client task stage: registering first cleanup timer");
 
         loop {
-            crate::task::sleep_ms(5000).await;
+            crate::task::sleep_ms(5000)
+                .await
+                .map_err(|_| "DNS cleanup timer failed")?;
 
             let now = crate::task::current_tick();
             if let Ok(mut cache) = self.cache.lock() {

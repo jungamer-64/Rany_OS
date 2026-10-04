@@ -193,9 +193,12 @@ impl MdnsService {
         if self.local_ip.is_any() {
             log::info!("[NET] mDNS: deferring multicast join until IPv4 address is assigned");
         }
+        // LOOP_PROOF: mode=condition; reason=Each iteration drains configuration commands and awaits an admitted timer until an address arrives or timer failure returns.;
         while self.local_ip.is_any() {
             self.drain_runtime_commands();
-            crate::task::sleep_ms(100).await;
+            crate::task::sleep_ms(100)
+                .await
+                .map_err(|_| "mDNS configuration timer failed")?;
         }
 
         // SECURITY: RFC 6762 Section 11 に従い、mDNS packet の IP TTL は 255 でなければならない。
@@ -210,6 +213,7 @@ impl MdnsService {
             self.hostname
         );
 
+        // LOOP_PROOF: mode=event; reason=The retained responder awaits datagrams with a timer and returns when the socket or timer can no longer provide service.;
         loop {
             self.drain_runtime_commands();
             // パケット受信を待機
@@ -266,6 +270,10 @@ impl MdnsService {
                 }
                 crate::task::TimeoutResult::Completed(None) => {
                     return Err("mDNS socket closed");
+                }
+                crate::task::TimeoutResult::TimerFailed(cause) => {
+                    log::error!("mDNS receive timer failed: {cause}");
+                    return Err("mDNS receive timer failed");
                 }
                 crate::task::TimeoutResult::TimedOut => {}
             }
@@ -697,6 +705,7 @@ pub fn decode_dns_name_view(
     let mut jump_count = 0;
     let max_jumps = 128;
 
+    // LOOP_PROOF: mode=event; reason=Labels advance within the finite packet and compression pointers consume the jump budget, with termination or invalid encoding returning.;
     loop {
         if current >= view.total_len() {
             return None;
@@ -764,6 +773,7 @@ pub fn decode_dns_name_range_view(
     let mut jump_count = 0;
     let max_jumps = 128;
 
+    // LOOP_PROOF: mode=event; reason=Labels advance within the finite packet and compression pointers consume the jump budget, with termination or invalid encoding returning.;
     loop {
         if current >= view.total_len() {
             return None;

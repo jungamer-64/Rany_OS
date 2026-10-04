@@ -69,6 +69,7 @@ fn network_error_to_socket(error: NetworkError) -> EndpointError {
     match error {
         NetworkError::PermissionDenied => EndpointError::PermissionDenied,
         NetworkError::Timeout => EndpointError::Timeout,
+        NetworkError::Timer(cause) => EndpointError::Timer(cause),
         NetworkError::NetworkUnreachable => EndpointError::NetworkUnreachable,
         NetworkError::PortInUse => EndpointError::PortInUse,
         NetworkError::BufferTooSmall => EndpointError::BufferFull,
