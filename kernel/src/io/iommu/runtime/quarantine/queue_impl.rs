@@ -537,6 +537,7 @@ impl QuarantineQueue {
         batch_id: u64,
         cx: &mut Context<'_>,
     ) -> bool {
+        // LOOP_PROOF: mode=event; reason=A complete batch returns true, and an incomplete registered wait returns false, with a racing completion rechecked before either result.;
         loop {
             let completed = self.completed_batch.load(Ordering::Acquire);
             if completed >= batch_id {

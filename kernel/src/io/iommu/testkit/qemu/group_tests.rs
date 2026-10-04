@@ -215,7 +215,7 @@ pub(crate) fn wave5_cmdqueue_map_unmap_with_domain_canonical_impl() -> bool {
 
 /// API path parity for test_map_for_device_async_and_unmap:
 /// use map_for_device_async/unmap_for_device_async with deterministic no-CQ setup.
-pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
+pub(crate) async fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     use crate::io::iommu::api::{map_for_device_async, unmap_for_device_async};
     use crate::io::iommu::runtime::config::IommuConfig;
     use crate::io::iommu::runtime::registry::get_iommu_driver;
@@ -286,13 +286,15 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
     }
 
     let mut mapped_iova: Option<u64> = None;
-    let result = (|| {
-        let iova = match crate::task::block_on(async {
+    let result = (async {
+        let iova = match (async {
             // SAFETY: deterministic test mapping of fixed aligned test address.
             unsafe {
                 map_for_device_async(&device, x86_64::PhysAddr::new(0x2000_0000), 0x1000).await
             }
-        }) {
+        })
+        .await
+        {
             Ok(iova) => iova,
             Err(_) => return false,
         };
@@ -302,18 +304,19 @@ pub(crate) fn wave5_map_for_device_async_and_unmap_canonical_impl() -> bool {
             return false;
         }
 
-        if crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await })
+        if (async { unmap_for_device_async(&device, iova, 0x1000).await })
+            .await
             .is_err()
         {
             return false;
         }
         mapped_iova = None;
         domain_arc.mapping(iova).is_none()
-    })();
+    })
+    .await;
 
     if let Some(iova) = mapped_iova {
-        let _ =
-            crate::task::block_on(async { unmap_for_device_async(&device, iova, 0x1000).await });
+        let _ = (async { unmap_for_device_async(&device, iova, 0x1000).await }).await;
     }
     match controller.device_domains.lock() {
         Ok(mut dmap) => {
@@ -495,8 +498,8 @@ pub fn wave5_qi_metrics_pressure_canonical_smoke() -> bool {
 }
 
 /// Wave5 canonical required export: API-path async map/unmap parity.
-pub fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
-    wave5_map_for_device_async_and_unmap_canonical_impl()
+pub async fn wave5_map_for_device_async_and_unmap_canonical_smoke() -> bool {
+    wave5_map_for_device_async_and_unmap_canonical_impl().await
 }
 
 /// Wave5 canonical required export: cmdqueue map/unmap with domain parity.

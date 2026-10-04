@@ -187,3 +187,41 @@ pub(super) fn ivhd_entry_flags_for_devid(entry: &IvhdDeviceEntry, devid: u16) ->
         }
     }
 }
+
+pub(super) fn flags_for_entries(entries: &[IvhdDeviceEntry], devid: u16) -> u8 {
+    entries.iter().fold(0, |flags, entry| {
+        flags | ivhd_entry_flags_for_devid(entry, devid)
+    })
+}
+
+pub(super) fn aliases_for_entries(entries: &[IvhdDeviceEntry], devid: u16) -> Vec<u16> {
+    let mut aliases = Vec::new();
+    for entry in entries {
+        AmdIommuDriver::collect_alias_from_entry(entry, devid, &mut aliases);
+    }
+    aliases.sort_unstable();
+    aliases.dedup();
+    aliases
+}
+
+pub(super) fn reject_excluded_ranges(
+    ranges: &[AmdIvmdRange],
+    physical: u64,
+    size: u64,
+) -> Result<(), IommuError> {
+    if size == 0 {
+        return Ok(());
+    }
+    let end = physical
+        .checked_add(size)
+        .ok_or(IommuError::InvalidAddress)?;
+    if ranges.iter().any(|range| {
+        range.exclusion
+            && range.range_start < range.range_end
+            && physical < range.range_end
+            && end > range.range_start
+    }) {
+        return Err(IommuError::InvalidAddress);
+    }
+    Ok(())
+}

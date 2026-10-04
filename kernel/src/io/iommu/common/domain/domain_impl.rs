@@ -120,7 +120,7 @@ impl IommuDomain {
             ),
             page_table_pool,
             pte_format,
-            security_notifier: Once::new(),
+            security_notifier: crate::sync::InitOnce::new(),
             poisoned: AtomicBool::new(false),
             per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),

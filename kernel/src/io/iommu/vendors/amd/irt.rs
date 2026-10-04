@@ -252,3 +252,83 @@ impl AmdUnitIrt {
         Ok(Self { table, size_log2 })
     }
 }
+
+#[cfg(all(test, feature = "qemu-test-export"))]
+mod tests {
+    use super::*;
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_wave5_irt_entry_construction() {
+        let irte = AmdIrte::fixed(0x42, crate::cpu::ApicId::new(0x0A), false, None);
+        assert!((irte.lo & IRTE_REMAP_EN != 0));
+        assert_eq!(((irte.lo >> IRTE_VECTOR_SHIFT) & 0xff), 0x42);
+        assert_eq!(((irte.lo >> IRTE_DESTINATION_SHIFT) as u32), 0x0A);
+        assert!(!(irte.lo & IRTE_DM_LOGICAL != 0));
+
+        let irte_logical = AmdIrte::fixed(0xFF, crate::cpu::ApicId::new(0xDEAD), true, None);
+        assert!((irte_logical.lo & IRTE_DM_LOGICAL != 0));
+        assert_eq!(((irte_logical.lo >> IRTE_VECTOR_SHIFT) & 0xff), 0xFF);
+        assert_eq!(((irte_logical.lo >> IRTE_DESTINATION_SHIFT) as u32), 0xDEAD);
+
+        let empty = AmdIrte::new();
+        assert!(!(empty.lo & IRTE_REMAP_EN != 0));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_wave5_irt_alloc_free() {
+        let mut irt = AmdInterruptRemapTable::new(4).unwrap();
+        let h0 = irt.allocate().unwrap();
+        let h1 = irt.allocate().unwrap();
+        let h2 = irt.allocate().unwrap();
+        assert_ne!(h0, h1);
+        assert_ne!(h1, h2);
+        assert_ne!(h0, h2);
+
+        irt.set_entry(
+            h0,
+            AmdIrte::fixed(0x30, crate::cpu::ApicId::new(1), false, None),
+        )
+        .unwrap();
+        irt.free(h0).unwrap();
+        irt.free(h1).unwrap();
+        irt.free(h2).unwrap();
+
+        assert_eq!(
+            irt.table.get(usize::from(h0)).unwrap().lo & IRTE_REMAP_EN,
+            0
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_wave5_irt_exhaustion() {
+        let mut irt = AmdInterruptRemapTable::new(2).unwrap(); // 4 entries
+
+        let mut handles = alloc::vec::Vec::new();
+        for _ in 0..4 {
+            handles.push(irt.allocate().unwrap());
+        }
+        assert!(irt.allocate().is_err());
+
+        irt.free(handles[1]).unwrap();
+        assert_eq!(irt.allocate().unwrap(), handles[1]);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_interrupt_table_publishes_selected_vector_and_destination() {
+        let mut unit = AmdUnitIrt::new(4).unwrap();
+        let handle = unit.table.allocate().unwrap();
+        unit.table
+            .set_entry(
+                handle,
+                AmdIrte::fixed(0x42, crate::cpu::ApicId::new(0x0a), false, Some(0x08)),
+            )
+            .unwrap();
+        let entry = unit.table.table.get(usize::from(handle)).unwrap();
+        assert!((entry.lo & IRTE_REMAP_EN != 0));
+        assert_eq!(((entry.lo >> IRTE_VECTOR_SHIFT) & 0xff), 0x42);
+        assert_eq!(((entry.lo >> IRTE_DESTINATION_SHIFT) as u32), 0x0a);
+    }
+}

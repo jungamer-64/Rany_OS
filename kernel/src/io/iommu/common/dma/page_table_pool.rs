@@ -46,8 +46,8 @@ struct PageTableRegistryEntry {
 /// Global registry mapping page table physical addresses to their metadata.
 /// Metadata and the published owner share one registry entry. Address lookup
 /// cannot reconstruct a release capability.
-static PAGE_TABLE_REGISTRY: spin::Once<IrqMutex<BTreeMap<u64, PageTableRegistryEntry>>> =
-    spin::Once::new();
+static PAGE_TABLE_REGISTRY: crate::sync::InitOnce<IrqMutex<BTreeMap<u64, PageTableRegistryEntry>>> =
+    crate::sync::InitOnce::new();
 
 /// Get or initialize the page table registry
 fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEntry>> {

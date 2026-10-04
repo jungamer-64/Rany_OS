@@ -14,13 +14,14 @@ use crate::io::iommu::runtime::quarantine::QuarantineQueue;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::amd::tables::AmdPte;
+use crate::sync::InitOnce;
+use crate::sync::RwLock;
 use crate::sync::{IrqMutex, PoisonLock, PoisonLockGuard};
 use alloc::boxed::Box;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use bitflags::bitflags;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Once, RwLock};
 mod domain_impl;
 mod leaf_walk;
 mod mapping;
@@ -715,7 +716,7 @@ pub struct IommuDomain {
     /// PTE format (Intel or AMD)
     pte_format: PteFormat,
     /// Optional security notifier for fatal domain errors
-    security_notifier: Once<Arc<dyn SecurityNotifier>>,
+    security_notifier: InitOnce<Arc<dyn SecurityNotifier>>,
     /// Fatal error flag; once set, the domain rejects new map/unmap operations.
     poisoned: AtomicBool,
     /// Per-Domain IOVA Allocator (Phase 7: Scalability Improvement)

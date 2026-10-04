@@ -4,14 +4,166 @@
 
 //! AMD-Vi MMIO register offsets and hardware constant definitions.
 
+use crate::io::iommu::types::IommuError;
+use crate::sync::IrqMutex;
+use alloc::sync::Arc;
+use hal::mmio::{MappedMmio, OwnedMmioRegister, ReadOnly, ReadWrite, WriteOnly};
+
+type ReadRegister = OwnedMmioRegister<u64, ReadOnly>;
+type WriteRegister = OwnedMmioRegister<u64, WriteOnly>;
+type UpdateRegister = OwnedMmioRegister<u64, ReadWrite>;
+
+struct CommandRegisters {
+    base: WriteRegister,
+    head: UpdateRegister,
+    tail: WriteRegister,
+}
+
+struct EventRegisters {
+    base: WriteRegister,
+    head: UpdateRegister,
+    tail: UpdateRegister,
+    status: UpdateRegister,
+}
+
+/// Every register retains the admitted firmware mapping. Control updates are
+/// serialized with IRQ exclusion because command setup and fault handling share
+/// the same hardware word. No allocation or hardware wait occurs under a guard.
+pub(super) struct AmdRegisters {
+    control: IrqMutex<UpdateRegister>,
+    command: IrqMutex<CommandRegisters>,
+    event: IrqMutex<EventRegisters>,
+    device_table: IrqMutex<WriteRegister>,
+    interrupt_table: IrqMutex<WriteRegister>,
+    extended_features: ReadRegister,
+}
+
+impl core::fmt::Debug for AmdRegisters {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AmdRegisters")
+            .finish_non_exhaustive()
+    }
+}
+
+impl AmdRegisters {
+    pub(super) fn new(mapping: MappedMmio) -> Result<Self, IommuError> {
+        let mapping = Arc::try_new(mapping).map_err(|_| IommuError::OutOfMemory)?;
+        let write = |offset| {
+            mapping
+                .owned_write_only::<u64>(offset)
+                .map_err(IommuError::RegisterAccess)
+        };
+        let read = |offset| {
+            mapping
+                .owned_read_only::<u64>(offset)
+                .map_err(IommuError::RegisterAccess)
+        };
+        let update = |offset| {
+            mapping
+                .owned_read_write::<u64>(offset)
+                .map_err(IommuError::RegisterAccess)
+        };
+        Ok(Self {
+            control: IrqMutex::new(update(MMIO_CONTROL_OFFSET as usize)?),
+            command: IrqMutex::new(CommandRegisters {
+                base: write(0x0008)?,
+                head: update(0x2000)?,
+                tail: write(0x2008)?,
+            }),
+            event: IrqMutex::new(EventRegisters {
+                base: write(MMIO_EVT_BUF_OFFSET as usize)?,
+                head: update(MMIO_EVT_HEAD_OFFSET as usize)?,
+                tail: update(MMIO_EVT_TAIL_OFFSET as usize)?,
+                status: update(MMIO_STATUS_OFFSET as usize)?,
+            }),
+            device_table: IrqMutex::new(write(MMIO_DEV_TABLE_OFFSET as usize)?),
+            interrupt_table: IrqMutex::new(write(MMIO_IRT_BASE_OFFSET as usize)?),
+            extended_features: read(MMIO_EXT_FEATURE_OFFSET as usize)?,
+        })
+    }
+
+    pub(super) fn extended_features(&self) -> u64 {
+        self.extended_features.read()
+    }
+
+    pub(super) fn update_control(&self, update: impl FnOnce(u64) -> u64) {
+        let mut register = self.control.lock();
+        let value = update(register.read());
+        register.write(value);
+    }
+
+    pub(super) fn program_device_table(&self, value: u64) {
+        self.device_table.lock().write(value);
+    }
+
+    pub(super) fn program_interrupt_table(&self, value: u64) {
+        self.interrupt_table.lock().write(value);
+    }
+
+    pub(super) fn program_command_buffer(&self, base: u64) {
+        let mut registers = self.command.lock();
+        registers.base.write(base);
+        registers.head.write(0);
+        registers.tail.write(0);
+    }
+
+    pub(super) fn command_head(&self) -> u64 {
+        self.command.lock().head.read()
+    }
+
+    pub(super) fn publish_command_tail(&self, tail: u32) {
+        hal::mmio::sfence();
+        self.command.lock().tail.write(u64::from(tail));
+    }
+
+    pub(super) fn program_event_log(&self, base: u64) {
+        let mut registers = self.event.lock();
+        registers.base.write(base);
+        registers.head.write(0);
+        registers.tail.write(0);
+    }
+
+    pub(super) fn event_status(&self) -> u64 {
+        self.event.lock().status.read()
+    }
+
+    pub(super) fn acknowledge_event_status(&self, bits: u64) {
+        self.event.lock().status.write(bits);
+    }
+
+    pub(super) fn event_cursors(&self) -> Option<(u32, u32)> {
+        let registers = self.event.lock();
+        let head = u32::try_from(registers.head.read()).ok()?;
+        let tail = u32::try_from(registers.tail.read()).ok()?;
+        if head >= EVT_BUFFER_BYTES
+            || tail >= EVT_BUFFER_BYTES
+            || !head.is_multiple_of(EVENT_ENTRY_SIZE)
+            || !tail.is_multiple_of(EVENT_ENTRY_SIZE)
+        {
+            return None;
+        }
+        Some((head, tail))
+    }
+
+    pub(super) fn advance_event_head(&self, head: u32) {
+        self.event.lock().head.write(u64::from(head));
+    }
+
+    pub(super) fn restart_event_log(&self) {
+        let mut control = self.control.lock();
+        let value = control.read();
+        control.write(value & !CONTROL_EVT_LOG_EN);
+        self.acknowledge_event_status(MMIO_STATUS_EVT_OVERFLOW_MASK);
+        control.write(value | CONTROL_EVT_LOG_EN);
+    }
+}
+
 // MMIO register offsets
 pub(crate) const MMIO_DEV_TABLE_OFFSET: u64 = 0x0000;
 pub(crate) const MMIO_EVT_BUF_OFFSET: u64 = 0x0010;
 pub(crate) const MMIO_CONTROL_OFFSET: u64 = 0x0018;
 pub(crate) const MMIO_IRT_BASE_OFFSET: u64 = 0x0068;
-pub(crate) const MMIO_MSI_ADDR_LO_OFFSET: u64 = 0x015c;
-pub(crate) const MMIO_MSI_ADDR_HI_OFFSET: u64 = 0x0160;
-pub(crate) const MMIO_MSI_DATA_OFFSET: u64 = 0x0164;
 pub(crate) const MMIO_EVT_HEAD_OFFSET: u64 = 0x2010;
 pub(crate) const MMIO_EVT_TAIL_OFFSET: u64 = 0x2018;
 pub(crate) const MMIO_STATUS_OFFSET: u64 = 0x2020;
@@ -41,9 +193,9 @@ pub(crate) const EVT_BUFFER_BYTES: u32 = 8192;
 pub(crate) const EVT_BUFFER_SIZE_MASK: u64 = 0x9 << 56;
 
 // Event log MMIO status bits
-pub(crate) const MMIO_STATUS_EVT_OVERFLOW_MASK: u32 = 1 << 0;
-pub(crate) const MMIO_STATUS_EVT_INT_MASK: u32 = 1 << 1;
-pub(crate) const MMIO_STATUS_EVT_RUN_MASK: u32 = 1 << 3;
+pub(crate) const MMIO_STATUS_EVT_OVERFLOW_MASK: u64 = 1 << 0;
+pub(crate) const MMIO_STATUS_EVT_INT_MASK: u64 = 1 << 1;
+pub(crate) const MMIO_STATUS_EVT_RUN_MASK: u64 = 1 << 3;
 
 // Event type field extraction
 pub(crate) const EVENT_TYPE_SHIFT: u32 = 28;
@@ -87,9 +239,7 @@ pub(crate) const EFR_HATS_MASK: u64 = 0x03; // bits [11:10] — Host Address Tra
 ///  - 0b10, 0b11 = reserved
 ///
 /// Falls back to `AMD_DEFAULT_MAX_ADDR_BITS` on unknown values.
-#[cfg(not(test))]
-pub(super) fn read_max_addr_bits(mmio_base: usize) -> u8 {
-    let efr = crate::io::mmio::mmio_read_u64(mmio_base + MMIO_EXT_FEATURE_OFFSET as usize);
+pub(super) fn max_addr_bits(efr: u64) -> u8 {
     let hats = (efr >> EFR_HATS_SHIFT) & EFR_HATS_MASK;
     match hats {
         0b00 => 48,
@@ -106,10 +256,24 @@ pub(super) fn read_max_addr_bits(mmio_base: usize) -> u8 {
     }
 }
 
-/// Test stub: always returns 48-bit address width.
 #[cfg(test)]
-pub(super) fn read_max_addr_bits(_mmio_base: usize) -> u8 {
-    48
+mod tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn hats_encodings_select_supported_page_table_widths() {
+        assert_eq!(max_addr_bits(0), 48);
+        assert_eq!(max_addr_bits(1 << EFR_HATS_SHIFT), 57);
+        assert_eq!(
+            max_addr_bits(2 << EFR_HATS_SHIFT),
+            AMD_DEFAULT_MAX_ADDR_BITS
+        );
+        assert_eq!(
+            max_addr_bits(3 << EFR_HATS_SHIFT),
+            AMD_DEFAULT_MAX_ADDR_BITS
+        );
+    }
 }
 
 // IVHD device entry flags

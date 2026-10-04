@@ -6,18 +6,14 @@ use super::*;
 
 impl AmdIommuDriver {
     pub(crate) fn ivhd_flags_for_device(&self, device: DeviceId) -> u8 {
-        let mut flags = 0u8;
+        let flags = 0u8;
         let devid = device.requester_id();
         let unit = match self.find_unit_for_device(device) {
             Some(unit) => unit,
             None => return flags,
         };
 
-        for entry in &unit.device_entries {
-            flags |= ivhd_entry_flags_for_devid(entry, devid);
-        }
-
-        flags
+        flags_for_entries(&unit.device_entries, devid)
     }
 
     pub(super) fn ivhd_global_flags(&self, segment: u16) -> u8 {
@@ -77,20 +73,14 @@ impl AmdIommuDriver {
     }
 
     pub(crate) fn alias_devids_for_device(&self, device: DeviceId) -> Vec<u16> {
-        let mut aliases = Vec::new();
+        let aliases = Vec::new();
         let devid = device.requester_id();
         let unit = match self.find_unit_for_device(device) {
             Some(unit) => unit,
             None => return aliases,
         };
 
-        for entry in &unit.device_entries {
-            Self::collect_alias_from_entry(entry, devid, &mut aliases);
-        }
-
-        aliases.sort_unstable();
-        aliases.dedup();
-        aliases
+        aliases_for_entries(&unit.device_entries, devid)
     }
 
     pub(super) fn collect_alias_from_entry(
@@ -139,24 +129,7 @@ impl AmdIommuDriver {
         phys_addr: u64,
         size: u64,
     ) -> Result<(), IommuError> {
-        if size == 0 {
-            return Ok(());
-        }
-        let end = phys_addr
-            .checked_add(size)
-            .ok_or(IommuError::InvalidAddress)?;
-        for range in self.ivmd_ranges_for_device(device) {
-            if !range.exclusion {
-                continue;
-            }
-            if range.range_end <= range.range_start {
-                continue;
-            }
-            if phys_addr < range.range_end && end > range.range_start {
-                return Err(IommuError::InvalidAddress);
-            }
-        }
-        Ok(())
+        reject_excluded_ranges(&self.ivmd_ranges_for_device(device), phys_addr, size)
     }
 
     /// DTEエントリを書き込み（デバイス本体+エイリアス）

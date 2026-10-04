@@ -5,7 +5,8 @@
 use alloc::sync::Arc;
 use core::sync::atomic::{AtomicUsize, Ordering};
 
-use spin::{Once, RwLock};
+use crate::sync::InitOnce;
+use crate::sync::RwLock;
 
 use super::{FaultSummary, IsolationDecision, SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::IommuError;
@@ -114,7 +115,7 @@ impl SecurityNotifier for IommuSecurityMonitor {
     }
 }
 
-static DEFAULT_SECURITY_MONITOR: Once<Arc<IommuSecurityMonitor>> = Once::new();
+static DEFAULT_SECURITY_MONITOR: InitOnce<Arc<IommuSecurityMonitor>> = InitOnce::new();
 
 /// Waker for the security monitor task (signals new events or isolation requests).
 static SECURITY_MONITOR_WAKER: crate::sync::AtomicWaker = crate::sync::AtomicWaker::new();

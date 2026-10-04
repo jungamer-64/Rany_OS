@@ -48,6 +48,7 @@ pub async fn security_monitor_task() -> Result<(), kernel_api::service::time::Ti
     let mut aggregate_counter: u64 = 0;
     let mut aggregator = EventAggregator::new();
 
+    // LOOP_PROOF: mode=event; reason=The service-owned monitor awaits its next notification or interval after each finite batch and returns a timer admission failure to its host.;
     loop {
         let _ = monitor.drain_events(SECURITY_MONITOR_BATCH, |event| {
             if let SecurityEvent::DmaViolation { source_id, .. } = event {
@@ -153,4 +154,3 @@ pub(crate) fn run_zombie_dma_gc() {
         );
     }
 }
-

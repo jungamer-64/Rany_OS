@@ -24,6 +24,8 @@ mod tests;
 // Re-exports for external callers (driver.rs, backend.rs, etc.)
 #[cfg(all(test, feature = "qemu-test-export"))]
 pub(crate) use self::domain::map_ivmd_ranges;
+pub(crate) use self::fault::{fault_handler_task, poll_firmware_event_logs};
+pub(crate) use self::init::command_queue_worker;
 pub use self::init::init_iommu_from_ivrs;
 
 use alloc::sync::Arc;
@@ -31,10 +33,8 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
-use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::command::queue::CommandQueue;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
-use crate::io::mmio::{mmio_read_u64, mmio_write_u64};
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::sync::PoisonLock;
 use acpi_driver::ivrs::{IvhdDeviceEntry, IvmdInfo};
@@ -70,17 +70,29 @@ pub(super) fn devid_to_bdf(devid: u16) -> (u8, u8, u8) {
 // IOMMU Unit descriptor (parsed from IVHD)
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct AmdIommuUnit {
     pub segment: u16,
     pub base_addr: u64,
     pub(super) registers: Arc<registers::AmdRegisters>,
+    pub(super) pci: Arc<pci_driver::resource::FunctionResources>,
     pub flags: u8,
     pub device_id: u16,
     pub iommu_info: u16,
     pub iommu_feature: u32,
     pub device_entries: Vec<IvhdDeviceEntry>,
     pub max_addr_bits: u8,
+}
+
+impl core::fmt::Debug for AmdIommuUnit {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter
+            .debug_struct("AmdIommuUnit")
+            .field("segment", &self.segment)
+            .field("base_addr", &self.base_addr)
+            .field("device_id", &self.device_id)
+            .finish_non_exhaustive()
+    }
 }
 
 impl AmdIommuUnit {
@@ -340,7 +352,7 @@ impl AmdIommuDriver {
         driver.populate_default_entries()?;
         init_driver(Arc::new(IommuBackend::Amd(Arc::new(driver))));
         #[cfg(not(test))]
-        fault::spawn_fault_handler_task().map_err(|_| IommuError::RuntimeUnavailable)?;
+        crate::services::start_amd_services()?;
         Ok(())
     }
 
@@ -404,13 +416,7 @@ impl AmdIommuDriver {
     }
 
     /// Configure event log and IRT control bits for a single unit.
-    fn configure_event_and_irt(
-        &self,
-        idx: usize,
-        unit: &AmdIommuUnit,
-        mmio_base: usize,
-        control: &mut u64,
-    ) {
+    fn configure_event_and_irt(&self, idx: usize, unit: &AmdIommuUnit, control: &mut u64) {
         if self
             .event_logs
             .get(idx)
@@ -437,7 +443,7 @@ impl AmdIommuDriver {
             match irt_lock.lock() {
                 Ok(irt) => {
                     let base_reg = irt.table.base_register_value(irt.size_log2);
-                    mmio_write_u64(mmio_base + MMIO_IRT_BASE_OFFSET as usize, base_reg);
+                    unit.registers.program_interrupt_table(base_reg);
                     *control |= CONTROL_INT_MAP_EN;
                 }
                 Err(_) => {
@@ -461,9 +467,7 @@ impl AmdIommuDriver {
                 .ok_or(IommuError::NotPresent)?;
             table.program(unit)?;
 
-            let mmio_base = phys_to_virt_usize(unit.base_addr);
-            let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-            control |= CONTROL_IOMMU_EN;
+            let mut control = CONTROL_IOMMU_EN;
             if self
                 .cmd_states
                 .get(idx)
@@ -474,8 +478,14 @@ impl AmdIommuDriver {
             } else {
                 control &= !CONTROL_CMDBUF_EN;
             }
-            self.configure_event_and_irt(idx, unit, mmio_base, &mut control);
-            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
+            self.configure_event_and_irt(idx, unit, &mut control);
+            const MANAGED: u64 = CONTROL_IOMMU_EN
+                | CONTROL_CMDBUF_EN
+                | CONTROL_EVT_LOG_EN
+                | CONTROL_EVT_INT_EN
+                | CONTROL_INT_MAP_EN;
+            unit.registers
+                .update_control(|previous| (previous & !MANAGED) | control);
         }
         self.enabled.store(true, Ordering::Release);
         Ok(())
@@ -483,14 +493,14 @@ impl AmdIommuDriver {
 
     pub(crate) fn disable(&self) -> Result<(), IommuError> {
         for unit in &self.units {
-            let mmio_base = phys_to_virt_usize(unit.base_addr);
-            let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-            control &= !(CONTROL_IOMMU_EN
-                | CONTROL_CMDBUF_EN
-                | CONTROL_EVT_LOG_EN
-                | CONTROL_EVT_INT_EN
-                | CONTROL_INT_MAP_EN);
-            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
+            unit.registers.update_control(|control| {
+                control
+                    & !(CONTROL_IOMMU_EN
+                        | CONTROL_CMDBUF_EN
+                        | CONTROL_EVT_LOG_EN
+                        | CONTROL_EVT_INT_EN
+                        | CONTROL_INT_MAP_EN)
+            });
         }
         self.enabled.store(false, Ordering::Release);
         Ok(())

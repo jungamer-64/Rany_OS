@@ -8,12 +8,10 @@ use core::future::poll_fn;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use core::task::Poll;
 
-use crate::io::iommu::common::tables::phys_to_virt_usize;
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::runtime::registry::get_iommu_driver;
 use crate::io::iommu::runtime::security::SecurityEvent;
 use crate::io::iommu::types::IommuError;
-use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
 use crate::sync::{MpscRingBuffer, WakerQueue};
 
 use super::event_log::AmdEventEntry;
@@ -224,35 +222,32 @@ async fn wait_for_fault_events() {
     .await;
 }
 
-pub async fn fault_handler_task() {
+pub(crate) async fn fault_handler_task() -> Result<(), IommuError> {
     // LOOP_PROOF: mode=event; reason=AMD fault task runs continuously and awaits new events after each finite drain pass.;
     loop {
         let driver = get_iommu_driver().and_then(|backend| match backend.as_ref() {
             IommuBackend::Amd(driver) => Some(driver.as_ref()),
             _ => None,
         });
-        let _ = drain_deferred_faults_with_driver(driver);
+        let driver = driver.ok_or(IommuError::RuntimeUnavailable)?;
+        let _processed = drain_deferred_faults_with_driver(Some(driver));
         wait_for_fault_events().await;
     }
 }
 
-pub fn spawn_fault_handler_task() -> Result<(), crate::task::SpawnError> {
-    crate::task::spawn(fault_handler_task(), crate::task::TaskPlacement::Any).map(|_| ())
+/// Periodic service work also services units without an admitted MSI route.
+/// Hardware reads and deferred event publication are bounded by the event ring.
+pub(crate) fn poll_firmware_event_logs() {
+    if let Some(backend) = get_iommu_driver()
+        && let IommuBackend::Amd(driver) = backend.as_ref()
+    {
+        driver.handle_fault();
+    }
 }
 
 // ---------------------------------------------------------------------------
 // Helper functions
 // ---------------------------------------------------------------------------
-
-pub(super) fn msi_message(vector: u8) -> Result<(u64, u32), IommuError> {
-    const MSI_ADDRESS_BASE: u64 = 0xFEE0_0000;
-    let apic_id =
-        crate::io::interrupt_manager::current_apic_id().map_err(|_| IommuError::NotInitialized)?;
-    let apic_id = u8::try_from(apic_id.as_u32()).map_err(|_| IommuError::NotSupported)?;
-    let address = MSI_ADDRESS_BASE | (u64::from(apic_id) << 12);
-    let data = vector as u32;
-    Ok((address, data))
-}
 
 pub(super) fn event_type_name(event_type: u8) -> &'static str {
     match event_type {
@@ -289,10 +284,10 @@ impl AmdIommuDriver {
 
     /// Handle event log status bits: clear interrupts, restart/enable if needed.
     /// Returns `true` if the log is running and entries should be processed.
-    fn handle_event_log_status(&self, mmio_base: usize, status: u32) -> bool {
+    fn handle_event_log_status(&self, registers: &AmdRegisters, status: u64) -> bool {
         let clear_mask = status & (MMIO_STATUS_EVT_INT_MASK | MMIO_STATUS_EVT_OVERFLOW_MASK);
         if clear_mask != 0 {
-            mmio_write_u32(mmio_base + MMIO_STATUS_OFFSET as usize, clear_mask);
+            registers.acknowledge_event_status(clear_mask);
         }
 
         if status & MMIO_STATUS_EVT_RUN_MASK != 0 {
@@ -300,9 +295,9 @@ impl AmdIommuDriver {
         }
 
         if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
-            self.restart_event_log(mmio_base);
+            registers.restart_event_log();
         } else {
-            self.enable_event_log(mmio_base);
+            registers.update_control(|control| control | CONTROL_EVT_LOG_EN);
         }
         false
     }
@@ -318,23 +313,22 @@ impl AmdIommuDriver {
             None => return,
         };
 
-        let mmio_base = phys_to_virt_usize(unit.base_addr);
-        let status = mmio_read_u32(mmio_base + MMIO_STATUS_OFFSET as usize);
+        let registers = &unit.registers;
+        let status = registers.event_status();
 
-        if !self.handle_event_log_status(mmio_base, status) {
+        if !self.handle_event_log_status(registers, status) {
             if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
                 AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::overflow(unit.segment));
             }
             return;
         }
 
-        let mut head = mmio_read_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize);
-        let tail = mmio_read_u32(mmio_base + MMIO_EVT_TAIL_OFFSET as usize);
-        if head >= EVT_BUFFER_BYTES || tail >= EVT_BUFFER_BYTES {
+        let Some((mut head, tail)) = registers.event_cursors() else {
             return;
-        }
+        };
 
         let mut processed = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Each consumed hardware event increments processed and advances head, stopping at the tail, an empty event, or the ISR batch limit.;
         while head != tail && processed < AMD_FAULT_LOG_RATE_LIMIT {
             if let Some(entry) = log.read_entry(head) {
                 if entry.event_type() == 0 {
@@ -343,35 +337,13 @@ impl AmdIommuDriver {
                 AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::from_entry(unit.segment, entry));
             }
             head = (head + EVENT_ENTRY_SIZE) % EVT_BUFFER_BYTES;
-            mmio_write_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize, head);
+            registers.advance_event_head(head);
             processed += 1;
         }
 
         if status & MMIO_STATUS_EVT_OVERFLOW_MASK != 0 {
-            self.restart_event_log(mmio_base);
+            registers.restart_event_log();
             AMD_DEFERRED_FAULT_QUEUE.push(AmdFaultEvent::overflow(unit.segment));
-        }
-    }
-
-    pub(super) fn restart_event_log(&self, mmio_base: usize) {
-        let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-        if (control & CONTROL_EVT_LOG_EN) != 0 {
-            control &= !CONTROL_EVT_LOG_EN;
-            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
-        }
-        mmio_write_u32(
-            mmio_base + MMIO_STATUS_OFFSET as usize,
-            MMIO_STATUS_EVT_OVERFLOW_MASK,
-        );
-        control |= CONTROL_EVT_LOG_EN;
-        mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
-    }
-
-    pub(super) fn enable_event_log(&self, mmio_base: usize) {
-        let mut control = mmio_read_u64(mmio_base + MMIO_CONTROL_OFFSET as usize);
-        if (control & CONTROL_EVT_LOG_EN) == 0 {
-            control |= CONTROL_EVT_LOG_EN;
-            mmio_write_u64(mmio_base + MMIO_CONTROL_OFFSET as usize, control);
         }
     }
 
@@ -379,17 +351,22 @@ impl AmdIommuDriver {
         &self,
         unit: &AmdIommuUnit,
     ) -> Result<(), IommuError> {
-        let (addr, data) = msi_message(AMD_IOMMU_FAULT_VECTOR)?;
-        let mmio_base = phys_to_virt_usize(unit.base_addr);
-        mmio_write_u32(
-            mmio_base + MMIO_MSI_ADDR_LO_OFFSET as usize,
-            (addr & 0xffff_ffff) as u32,
-        );
-        mmio_write_u32(
-            mmio_base + MMIO_MSI_ADDR_HI_OFFSET as usize,
-            (addr >> 32) as u32,
-        );
-        mmio_write_u32(mmio_base + MMIO_MSI_DATA_OFFSET as usize, data);
+        // A single-message assignment cannot address another message number.
+        // Leave event interrupts disabled unless the admitted capability matches
+        // this vector assignment; event-log storage remains live and readable.
+        if unit.segment != 0 || unit.iommu_info & 0x1f != 0 {
+            return Err(IommuError::NotSupported);
+        }
+        let destination = crate::io::interrupt_manager::current_apic_id()
+            .map_err(|_| IommuError::NotInitialized)?;
+        let destination =
+            u8::try_from(destination.as_u32()).map_err(|_| IommuError::NotSupported)?;
+        unit.pci
+            .configure_msi(&pci_driver::MsiConfig::new(
+                destination,
+                AMD_IOMMU_FAULT_VECTOR,
+            ))
+            .map_err(|_| IommuError::NotSupported)?;
         Ok(())
     }
 }

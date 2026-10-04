@@ -9,8 +9,6 @@ use core::ptr::{self, NonNull};
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::mmio::mmio_write_u64;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
@@ -132,8 +130,7 @@ impl AmdDeviceTable {
 
         let size_field = (self.size_bytes >> 12).saturating_sub(1);
         let entry = (self.phys_base & !0xfff) | size_field;
-        let mmio_base = phys_to_virt_usize(unit.base_addr);
-        mmio_write_u64(mmio_base + MMIO_DEV_TABLE_OFFSET as usize, entry);
+        unit.registers.program_device_table(entry);
         Ok(())
     }
 

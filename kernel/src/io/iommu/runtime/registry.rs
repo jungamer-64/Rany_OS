@@ -12,11 +12,11 @@ use alloc::sync::Arc;
 use crate::io::iommu::runtime::backend::IommuBackend;
 pub use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 
-// Global IOMMU driver stored in a lock-free spin::Once.
+// Global IOMMU driver stored in a lock-free crate::sync::InitOnce.
 // Written exactly once during boot via init_driver(), then read-only.
 // This avoids deadlocks when IOMMU fault interrupts fire while
 // the boot context is reading the driver pointer.
-static IOMMU_DRIVER: spin::Once<Arc<IommuBackend>> = spin::Once::new();
+static IOMMU_DRIVER: crate::sync::InitOnce<Arc<IommuBackend>> = crate::sync::InitOnce::new();
 
 /// Get reference to the registered IOMMU driver (backend abstraction)
 pub fn get_iommu_driver() -> Option<&'static Arc<IommuBackend>> {

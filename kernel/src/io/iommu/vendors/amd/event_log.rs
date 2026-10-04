@@ -9,8 +9,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use x86_64::PhysAddr;
 
-use crate::io::iommu::common::tables::phys_to_virt_usize;
-use crate::io::mmio::{mmio_write_u32, mmio_write_u64};
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
 use crate::mm::types::PAGE_SIZE_4K;
 use crate::mm::virt::mapping::phys_to_virt;
@@ -102,10 +100,7 @@ impl AmdEventLog {
         }
 
         let entry = (self.phys_base & !0xfff) | EVT_BUFFER_SIZE_MASK;
-        let mmio_base = phys_to_virt_usize(unit.base_addr);
-        mmio_write_u64(mmio_base + MMIO_EVT_BUF_OFFSET as usize, entry);
-        mmio_write_u32(mmio_base + MMIO_EVT_HEAD_OFFSET as usize, 0);
-        mmio_write_u32(mmio_base + MMIO_EVT_TAIL_OFFSET as usize, 0);
+        unit.registers.program_event_log(entry);
         Ok(())
     }
 

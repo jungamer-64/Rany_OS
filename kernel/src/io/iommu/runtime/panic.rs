@@ -10,7 +10,7 @@
 
 use core::sync::atomic::{AtomicU64, Ordering};
 
-use spin::Once;
+use crate::sync::InitOnce;
 use x86_64::PhysAddr;
 
 use crate::io::iommu::types::IommuError;
@@ -58,7 +58,7 @@ pub struct PanicDmaRegion {
 unsafe impl Send for PanicDmaRegion {}
 unsafe impl Sync for PanicDmaRegion {}
 
-static PANIC_DMA_POOL: Once<PanicDmaPool> = Once::new();
+static PANIC_DMA_POOL: InitOnce<PanicDmaPool> = InitOnce::new();
 static LAST_PANIC_DMA_PHYS: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_LEN: AtomicU64 = AtomicU64::new(0);
 static LAST_PANIC_DMA_SIZE: AtomicU64 = AtomicU64::new(0);

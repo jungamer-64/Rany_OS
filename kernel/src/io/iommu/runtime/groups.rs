@@ -11,10 +11,10 @@
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::types::{IommuGroup, IommuGroupId};
+#[cfg(not(test))]
+use crate::sync::InitOnce;
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
-#[cfg(not(test))]
-use spin::Once;
 // ============================================================================
 // PCI Topology Abstraction
 // ============================================================================
@@ -558,7 +558,7 @@ mod tests {
 // ============================================================================
 
 #[cfg(not(test))]
-pub static IOMMU_GROUP_MANAGER: Once<IommuGroupManager> = Once::new();
+pub static IOMMU_GROUP_MANAGER: InitOnce<IommuGroupManager> = InitOnce::new();
 
 #[cfg(not(test))]
 pub fn get_iommu_group_manager() -> Option<&'static IommuGroupManager> {

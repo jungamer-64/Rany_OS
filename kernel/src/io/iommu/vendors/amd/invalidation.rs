@@ -220,10 +220,7 @@ impl AmdIommuDriver {
 
         for idx in 0..self.units.len() {
             let res = self.with_cmd_state(idx, |state| {
-                let efr = crate::io::mmio::mmio_read_u64(
-                    state.buffer.mmio_base as usize
-                        + super::registers::MMIO_EXT_FEATURE_OFFSET as usize,
-                );
+                let efr = state.buffer.registers.extended_features();
                 // AMD-Vi §2.4.8: without IASup this opcode is illegal, not a flush.
                 if efr & super::registers::EFR_IA_SUP == 0 {
                     return Err(IommuError::NotSupported);

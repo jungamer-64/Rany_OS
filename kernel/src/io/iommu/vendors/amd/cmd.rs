@@ -7,8 +7,7 @@ use core::mem::size_of;
 use core::ptr::NonNull;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
-use crate::io::iommu::types::IommuError;
-use crate::io::mmio::{mmio_read_u32, mmio_read_u64, mmio_write_u32, mmio_write_u64};
+use crate::io::iommu::types::{DeviceId, IommuError};
 
 use super::AmdIommuDriver;
 
@@ -200,15 +199,13 @@ impl AmdCommandBuffer {
         }
 
         let base = (self.phys_base & !0xfff) | MMIO_CMD_SIZE_512;
-        mmio_write_u64((self.mmio_base + MMIO_CMD_BUF_OFFSET) as usize, base);
-        mmio_write_u32((self.mmio_base + MMIO_CMD_TAIL_OFFSET) as usize, 0);
+        self.registers.program_command_buffer(base);
         Ok(())
     }
 
     pub unsafe fn enable(&self) {
-        let mut control = mmio_read_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize);
-        control |= CONTROL_CMDBUF_EN;
-        mmio_write_u64((self.mmio_base + MMIO_CONTROL_OFFSET) as usize, control);
+        self.registers
+            .update_control(|control| control | super::registers::CONTROL_CMDBUF_EN);
     }
 
     pub fn submit(&mut self, cmd: AmdCommand) -> Result<u32, IommuError> {
@@ -235,12 +232,12 @@ impl AmdCommandBuffer {
     }
 
     fn read_head(&self) -> u32 {
-        let head = mmio_read_u32((self.mmio_base + MMIO_CMD_HEAD_OFFSET) as usize) as u64;
+        let head = self.registers.command_head();
         (head & MMIO_CMD_PTR_MASK) as u32
     }
 
     fn write_tail(&self, tail: u32) {
-        mmio_write_u32((self.mmio_base + MMIO_CMD_TAIL_OFFSET) as usize, tail);
+        self.registers.publish_command_tail(tail);
     }
 }
 

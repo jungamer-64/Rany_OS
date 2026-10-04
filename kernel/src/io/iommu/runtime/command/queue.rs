@@ -20,7 +20,7 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering}
 use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
-#[cfg(test)]
+#[cfg(any(test, feature = "qemu-test-export"))]
 use alloc::vec::Vec;
 
 use crate::io::iommu::types::IommuError;
@@ -996,7 +996,7 @@ pub(crate) fn qemu_smoke_reclaim_completed_slot() -> bool {
 }
 
 #[cfg(feature = "qemu-test-export")]
-pub(crate) fn qemu_smoke_cancel_queued_command() -> bool {
+pub(crate) async fn qemu_smoke_cancel_queued_command() -> bool {
     let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
 
     let comp = q
@@ -1011,7 +1011,7 @@ pub(crate) fn qemu_smoke_cancel_queued_command() -> bool {
         return false;
     }
 
-    let rc = crate::task::block_on(async { comp.await });
+    let rc = (async { comp.await }).await;
     rc == RESULT_CANCELLED
 }
 
@@ -1052,30 +1052,6 @@ pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
     let third = q.process_up_to(|_k| Ok(0), 2);
     let _ = comps;
     first == 2 && second == 2 && third == 1
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub(crate) fn qemu_smoke_fuel_shim_basic() -> bool {
-    crate::task::fuel::Fuel::refill(2);
-    if !crate::task::fuel::Fuel::is_active() {
-        return false;
-    }
-    if crate::task::fuel::Fuel::remaining() != 2 {
-        return false;
-    }
-    if !crate::task::fuel::Fuel::consume(1) {
-        return false;
-    }
-    if crate::task::fuel::Fuel::remaining() != 1 {
-        return false;
-    }
-    if !crate::task::fuel::Fuel::consume(1) {
-        return false;
-    }
-    if crate::task::fuel::Fuel::remaining() != 0 {
-        return false;
-    }
-    !crate::task::fuel::Fuel::consume(1)
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -1125,6 +1101,7 @@ mod tests {
         let worker_q: &'static CommandQueue = &*q;
         let worker = std::thread::spawn(move || {
             let mut attempts = 0;
+            // LOOP_PROOF: mode=event; reason=The command worker stops after executing an admitted batch or fails the fixture after 1000 unsuccessful attempts.;
             loop {
                 let processed = worker_q.process_once(|_k| Ok(0));
                 if processed > 0 {
@@ -1313,6 +1290,7 @@ mod tests {
 
         let worker = std::thread::spawn(move || {
             let mut attempts = 0;
+            // LOOP_PROOF: mode=event; reason=The command worker stops after executing an admitted batch or fails the fixture after 1000 unsuccessful attempts.;
             loop {
                 let processed = worker_q.process_once(|k| match k {
                     IommuCommandKind::InvalidateIotlbDomain { domain } => {
