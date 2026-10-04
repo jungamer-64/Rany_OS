@@ -212,3 +212,113 @@ pub(super) async fn weighted_progress() -> RuntimeTestResult {
 pub(super) async fn quota_recovery() -> RuntimeTestResult {
     progress_case(true).await
 }
+
+struct RetainedWake {
+    polls: AtomicU64,
+    drops: AtomicU64,
+    waker: crate::sync::Mutex<Option<core::task::Waker>>,
+}
+
+struct WaitingPoll(Arc<RetainedWake>);
+
+impl Future for WaitingPoll {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<()> {
+        self.0.polls.fetch_add(1, Ordering::AcqRel);
+        let mut waker = self.0.waker.lock();
+        if waker.is_none() {
+            *waker = Some(context.waker().clone());
+        }
+        Poll::Pending
+    }
+}
+
+impl Drop for WaitingPoll {
+    fn drop(&mut self) {
+        self.0.drops.fetch_add(1, Ordering::Release);
+    }
+}
+
+fn retained_wake() -> Arc<RetainedWake> {
+    Arc::new(RetainedWake {
+        polls: AtomicU64::new(0),
+        drops: AtomicU64::new(0),
+        waker: crate::sync::Mutex::new(None),
+    })
+}
+
+async fn wait_for_poll(state: &RetainedWake) -> bool {
+    let deadline = crate::time::precise_time_nanos().saturating_add(2_000_000_000);
+    // LOOP_PROOF: mode=condition; reason=Each unsuccessful observation awaits a timer and the independent nanosecond deadline bounds the admission-to-poll wait.;
+    while state.polls.load(Ordering::Acquire) == 0 && crate::time::precise_time_nanos() < deadline {
+        if crate::task::sleep_ms(1).await.is_err() {
+            return false;
+        }
+    }
+    state.polls.load(Ordering::Acquire) != 0
+}
+
+pub(super) async fn capacity_retirement_and_stale_wake() -> RuntimeTestResult {
+    let Some(cpu) = CurrentCpu::acquire().map(|current| current.id()) else {
+        return RuntimeTestResult::fail("capacity probe has no CPU owner");
+    };
+    let Ok(domain) = crate::domain::create_domain("scheduler-capacity".into()) else {
+        return RuntimeTestResult::fail("cannot create capacity domain");
+    };
+    let state = retained_wake();
+    let mut admitted = 0;
+    let mut slots_exhausted = false;
+    for _ in 0..=crate::task::config::SCHEDULER_CONFIG.max_tasks {
+        match crate::task::spawn_in_domain(
+            WaitingPoll(Arc::clone(&state)),
+            TaskOptions::pinned(cpu),
+            domain,
+        ) {
+            Ok(_) => admitted += 1,
+            Err(crate::task::SpawnError::TaskSlotsExhausted) => {
+                slots_exhausted = true;
+                break;
+            }
+            Err(error) => {
+                log::error!("scheduler capacity admission failed: {error:?}");
+                break;
+            }
+        }
+    }
+    let polled = admitted != 0 && wait_for_poll(&state).await;
+    if !close_domain(domain).await {
+        return RuntimeTestResult::fail("capacity shutdown retained task resources");
+    }
+    if !slots_exhausted || !polled || state.drops.load(Ordering::Acquire) != admitted + 1 {
+        return RuntimeTestResult::fail("task limit or unpublished Future rollback was invalid");
+    }
+    let stale = state.waker.lock().take();
+    let Some(stale) = stale else {
+        return RuntimeTestResult::fail("capacity probe did not retain a task waker");
+    };
+    let Ok(replacement_domain) = crate::domain::create_domain("scheduler-capacity-reuse".into())
+    else {
+        return RuntimeTestResult::fail("cannot create replacement domain");
+    };
+    let replacement = retained_wake();
+    let admitted = crate::task::spawn_in_domain(
+        WaitingPoll(Arc::clone(&replacement)),
+        TaskOptions::pinned(cpu),
+        replacement_domain,
+    )
+    .is_ok();
+    let polled = admitted && wait_for_poll(&replacement).await;
+    for _ in 0..1000 {
+        stale.wake_by_ref();
+    }
+    let observed = crate::task::sleep_ms(20).await.is_ok();
+    let polls = replacement.polls.load(Ordering::Acquire);
+    let closed = close_domain(replacement_domain).await;
+    if !admitted || !polled || !observed || !closed || polls != 1 {
+        return RuntimeTestResult::fail(
+            "retired stack slot was not reusable or a stale wake repolled its successor",
+        );
+    }
+    RuntimeTestResult::pass()
+}

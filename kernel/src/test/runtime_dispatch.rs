@@ -71,6 +71,7 @@ enum RuntimeTestBody {
     SchedulerTaskTimeAbi,
     SchedulerWeightedProgress,
     SchedulerQuotaRecovery,
+    SchedulerCapacityRetirement,
 }
 
 pub struct RuntimeTestCase {
@@ -316,6 +317,12 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Scheduler,
     },
     RuntimeTestCase {
+        id: "scheduler.capacity_retirement_and_stale_wake",
+        body: RuntimeTestBody::SchedulerCapacityRetirement,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Scheduler,
+    },
+    RuntimeTestCase {
         id: "boot.smoke_cmdline_dispatch",
         body: RuntimeTestBody::Sync(boot_smoke_cmdline_dispatch),
         tier: RuntimeTier::PrRequired,
@@ -501,6 +508,9 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
                 scheduler_runtime::weighted_progress().await
             }
             RuntimeTestBody::SchedulerQuotaRecovery => scheduler_runtime::quota_recovery().await,
+            RuntimeTestBody::SchedulerCapacityRetirement => {
+                scheduler_runtime::capacity_retirement_and_stale_wake().await
+            }
         };
         log_case_result(case.id, result);
 
