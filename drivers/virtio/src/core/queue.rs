@@ -15,7 +15,7 @@ use crate::queue_memory::{
 };
 use crate::transport::VirtioTransport;
 
-const MAX_DESCRIPTORS: usize = 256;
+pub(crate) const MAX_SPLIT_QUEUE_DESCRIPTORS: usize = 256;
 
 #[derive(Debug)]
 enum Slot<T> {
@@ -65,7 +65,7 @@ impl<T> PreparedSplitVirtQueue<T> {
         memory: CpuDmaLease,
     ) -> Result<Self, QueueBuildError> {
         let count = usize::from(layout.size());
-        if count > MAX_DESCRIPTORS {
+        if count > MAX_SPLIT_QUEUE_DESCRIPTORS {
             return Err(QueueBuildError::DescriptorLimit { memory });
         }
         let mut slots = Vec::new();
@@ -263,7 +263,7 @@ impl<T> SplitVirtQueue<T> {
                 });
             }
         };
-        let mut reserved = [0u16; MAX_DESCRIPTORS];
+        let mut reserved = [0u16; MAX_SPLIT_QUEUE_DESCRIPTORS];
         let mut count = 0;
         for (index, slot) in self.slots.iter_mut().enumerate() {
             if matches!(slot, Slot::Free) {
