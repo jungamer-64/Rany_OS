@@ -515,6 +515,7 @@ impl HttpParser {
         let mut content_length = None;
         let mut chunked = false;
 
+        // LOOP_PROOF: mode=condition; reason=Each valid header line advances cursor past its CRLF toward header_end, and an empty or rejected line ends parsing.;
         while cursor < header_end {
             let Some(next_cursor) = self.parse_header_line(
                 full,

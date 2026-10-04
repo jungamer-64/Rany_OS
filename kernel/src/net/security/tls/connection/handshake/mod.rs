@@ -95,6 +95,7 @@ impl TlsConnectionCore {
         }
 
         let mut offset = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Each valid handshake message advances offset by its four-byte header and body, while incomplete or rejected input returns an error.;
         while offset < handshake.total_len() {
             if handshake.total_len() - offset < 4 {
                 return Err(TlsError::DecodeError);

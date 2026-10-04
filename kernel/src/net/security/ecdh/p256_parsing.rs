@@ -405,6 +405,7 @@ pub(crate) fn parse_ecdsa_signature_der(der: &[u8]) -> Result<([u8; 32], [u8; 32
 pub(crate) fn normalize_integer_32(data: &[u8]) -> Result<[u8; 32], EcdsaError> {
     // 先頭の0x00を除去
     let mut stripped = data;
+    // LOOP_PROOF: mode=condition; reason=Each stripped leading zero shortens the finite DER integer slice until one byte remains or a nonzero byte appears.;
     while stripped.len() > 1 && stripped[0] == 0 {
         stripped = &stripped[1..];
     }

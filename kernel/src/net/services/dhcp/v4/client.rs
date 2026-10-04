@@ -58,6 +58,7 @@ impl DhcpClient {
 
         log::info!("[NET] DHCPv4 client task started");
 
+        // LOOP_PROOF: mode=event; reason=Each DHCP state-machine step awaits a packet or its one-second timeout, and transport or timer failures terminate the client.;
         loop {
             let now = crate::task::current_tick();
 
@@ -897,6 +898,7 @@ impl DhcpClient {
         };
 
         let mut offset = DhcpHeader::SIZE + 4;
+        // LOOP_PROOF: mode=bounded; reason=Each padding byte or complete option advances offset within the finite DHCP packet, and End or malformed input stops parsing.;
         while offset < view.total_len() {
             let Some(opt) = view.read_array::<1>(offset).map(|bytes| bytes[0]) else {
                 break;

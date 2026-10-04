@@ -66,6 +66,7 @@ impl TlsConnectionCore {
 
         let mut saw_tls13 = false;
         let mut server_key_share = None;
+        // LOOP_PROOF: mode=condition; reason=Each checked extension advances offset by at least its four-byte header within extensions_end, and malformed lengths return an error.;
         while offset < extensions_end {
             if offset + 4 > extensions_end {
                 return Err(TlsError::DecodeError);

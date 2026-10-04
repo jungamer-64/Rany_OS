@@ -519,6 +519,7 @@ impl TlsConnectionCore {
         self.record.ingress.push(payload)?;
         let mut plaintext = None;
 
+        // LOOP_PROOF: mode=event; reason=Each ready record is removed from the exclusively borrowed ingress buffer, and incomplete input or a decode failure ends processing.;
         loop {
             let Some(record) = self.record.ingress.pop_ready_record()? else {
                 break;
@@ -718,6 +719,7 @@ impl TlsConnectionCore {
         data: PayloadSpanRef<'_>,
     ) -> TlsResult<()> {
         let mut offset = 0usize;
+        // LOOP_PROOF: mode=condition; reason=Each post-handshake message advances offset by its four-byte header and body within the finite input, while malformed input returns an error.;
         while offset < data.total_len() {
             if data.total_len() - offset < 4 {
                 return Err(TlsError::DecodeError);

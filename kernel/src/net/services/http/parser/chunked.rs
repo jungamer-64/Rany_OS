@@ -25,6 +25,7 @@ impl HttpParser {
         let mut body = alloc::vec::Vec::new();
         let mut total_len = 0usize;
 
+        // LOOP_PROOF: mode=event; reason=Each complete chunk advances the cursor past its header, nonempty body, and CRLF within finite input, while incomplete input or a zero terminal chunk returns.;
         loop {
             let Some((chunk_size, next_cursor)) = self.read_chunk_header(full, cursor)? else {
                 return Ok(None);
@@ -119,6 +120,7 @@ impl HttpParser {
         full: &PayloadSpanRef<'_>,
         mut cursor: usize,
     ) -> Result<Option<usize>, HttpParseError> {
+        // LOOP_PROOF: mode=event; reason=Each nonempty trailer advances the cursor past its line and CRLF within finite input, while an empty line or incomplete input returns.;
         loop {
             let line_end = match self.find_line_end(full, cursor) {
                 Some(index) => index,

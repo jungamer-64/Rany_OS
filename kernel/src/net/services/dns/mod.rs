@@ -669,6 +669,7 @@ fn compare_dns_name_ranges(
     rhs: &[PayloadRange],
 ) -> CmpOrdering {
     let mut index = 0usize;
+    // LOOP_PROOF: mode=bounded; reason=Every equal label pair increments index through the two finite DNS label arrays, and the first differing label returns.;
     while index < lhs.len() && index < rhs.len() {
         match compare_dns_label_ranges(lhs_payload, lhs[index], rhs_payload, rhs[index]) {
             CmpOrdering::Equal => {}

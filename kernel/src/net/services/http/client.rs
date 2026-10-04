@@ -45,7 +45,7 @@ async fn complete_tls_handshake(
     mut handshake: TlsHandshake,
     connection: &mut TcpConnection,
 ) -> Result<TlsEstablishedSession, HttpClientError> {
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+    // LOOP_PROOF: mode=event; reason=Each handshake step awaits incoming TCP data and any outgoing ClientHello, returning an established session or transport or TLS failure.;
     loop {
         let in_payload = recv_tls_handshake_payload(connection).await?;
         match handshake

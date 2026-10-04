@@ -164,6 +164,7 @@ impl TlsConnectionCore {
         if end > data.total_len() {
             return Err(TlsError::DecodeError);
         }
+        // LOOP_PROOF: mode=bounded; reason=Each checked extension advances offset by its four-byte header and value within the finite extension region.;
         while offset < end {
             if offset + 4 > end {
                 return Err(TlsError::DecodeError);
@@ -209,6 +210,7 @@ impl TlsConnectionCore {
         }
 
         let mut certs = ArrayVec::<PayloadSpanRef<'a>, TLS_CERT_CHAIN_CAPACITY>::new();
+        // LOOP_PROOF: mode=bounded; reason=Each certificate consumes its three-byte length and two-byte extension header, bounded by cert_list_end and the certificate chain capacity.;
         while offset < cert_list_end {
             if offset + 3 > cert_list_end {
                 return Err(TlsError::DecodeError);

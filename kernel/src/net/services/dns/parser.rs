@@ -327,6 +327,7 @@ impl DnsClient {
         let mut pointer_end = None;
         let mut jump_count = 0usize;
 
+        // LOOP_PROOF: mode=event; reason=Each label advances the packet cursor and label count, each pointer consumes the independent 128-jump budget, and end or budget or malformed input returns.;
         loop {
             let len = view
                 .read_array::<1>(current)
@@ -375,6 +376,7 @@ impl DnsClient {
         let end = rdata_offset.saturating_add(rdlength);
         let mut text_len = 0usize;
 
+        // LOOP_PROOF: mode=bounded; reason=Each TXT string consumes its length byte and checked value within the finite RDATA range, while malformed input returns the raw owner.;
         while offset < end {
             let Some(len) = view.read_u8(offset).map(usize::from) else {
                 return DnsRecordData::Raw(
@@ -422,6 +424,7 @@ impl DnsClient {
         mut offset: usize,
     ) -> Result<usize, DnsResponseCode> {
         let mut labels = 0usize;
+        // LOOP_PROOF: mode=event; reason=Each label advances offset and the bounded label count, while a terminator, pointer, 128-label exhaustion, or malformed input returns.;
         loop {
             let len = view
                 .read_array::<1>(offset)

@@ -415,6 +415,7 @@ impl Poly1305State {
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=Each processed Poly1305 block advances offset by sixteen bytes within the finite input slice.;
         while offset + 16 <= data.len() {
             let mut block = [0u8; 16];
             block.copy_from_slice(&data[offset..offset + 16]);

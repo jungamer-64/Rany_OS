@@ -238,6 +238,7 @@ fn ghash_feed(
     block_len: &mut usize,
     mut bytes: &[u8],
 ) {
+    // LOOP_PROOF: mode=condition; reason=Each iteration consumes input bytes into a partial block or flushes the full sixteen-byte block so the next iteration consumes bytes.;
     while !bytes.is_empty() {
         let take = (16 - *block_len).min(bytes.len());
         block[*block_len..*block_len + take].copy_from_slice(&bytes[..take]);

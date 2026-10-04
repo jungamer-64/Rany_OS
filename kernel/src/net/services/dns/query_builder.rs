@@ -14,6 +14,7 @@ impl DnsClient {
     pub(super) fn register_pending_query_id(&self, id: u16) {
         self.cleanup_stale_pending_ids(crate::task::current_tick());
         if let Ok(mut pending) = self.pending_ids.lock() {
+            // LOOP_PROOF: mode=condition; reason=Each removal decreases the exclusively locked pending query table until below its 256-entry admission bound.;
             while pending.len() >= 256 {
                 let oldest_id = pending
                     .iter()

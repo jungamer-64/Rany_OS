@@ -282,6 +282,7 @@ impl DnsClient {
         log::info!("[NET] DNS client task started on CPU {}", cpu);
         log::info!("[NET][boot] DNS client task stage: registering first cleanup timer");
 
+        // LOOP_PROOF: mode=event; reason=The DNS service awaits its five-second cleanup timer on each iteration and returns when timer admission fails.;
         loop {
             crate::task::sleep_ms(5000)
                 .await

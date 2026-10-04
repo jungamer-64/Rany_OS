@@ -175,6 +175,7 @@ impl DhcpV6Client {
 
         log::info!("[NET] DHCPv6 client task started");
 
+        // LOOP_PROOF: mode=event; reason=The DHCPv6 owner drives one state-machine step and awaits a packet or one-second timeout, returning transport or timer failure.;
         loop {
             let now = crate::task::current_tick();
 
@@ -905,6 +906,7 @@ impl DhcpV6Client {
         let mut status_code: Option<u16> = None;
         let mut server_duid_range = None;
 
+        // LOOP_PROOF: mode=bounded; reason=Each complete DHCPv6 option consumes its four-byte header and value within the finite packet, while an overrun ends parsing.;
         while off + 4 <= view.total_len() {
             let code = u16::from_be_bytes(view.read_array::<2>(off).ok_or("packet too small")?);
             let len = u16::from_be_bytes(view.read_array::<2>(off + 2).ok_or("packet too small")?)
@@ -929,6 +931,7 @@ impl DhcpV6Client {
                             view.read_array::<4>(off + 8).ok_or("packet too small")?,
                         );
                         let mut sub_off = off + 12;
+                        // LOOP_PROOF: mode=bounded; reason=Each IA suboption consumes its four-byte header and value within the checked outer option, while an overrun ends parsing.;
                         while sub_off + 4 <= off + len {
                             let sc = u16::from_be_bytes(
                                 view.read_array::<2>(sub_off).ok_or("packet too small")?,
@@ -1056,6 +1059,7 @@ impl DhcpV6Client {
 
         // DUID一致を確認するためオプションを走査
         let mut off = 4usize;
+        // LOOP_PROOF: mode=bounded; reason=Each checked Client Identifier option scan advances off by its four-byte header and payload within the finite packet.;
         while off + 4 <= view.total_len() {
             let code = u16::from_be_bytes(view.read_array::<2>(off).unwrap_or([0, 0]));
             let len = u16::from_be_bytes(view.read_array::<2>(off + 2).unwrap_or([0, 0])) as usize;

@@ -506,6 +506,7 @@ fn parse_extended_key_usage(value: PayloadSpanRef<'_>) -> Option<ExtendedKeyUsag
     let seq = StrictDerCursor::new(value).read_sequence()?;
     let mut cursor = StrictDerCursor::new(seq.value);
     let mut usage = ExtendedKeyUsage::default();
+    // LOOP_PROOF: mode=condition; reason=Each successful DER OID read consumes a tag, length, and value from the finite sequence or malformed input returns None.;
     while !cursor.is_empty() {
         let oid = cursor.read_oid()?;
         if oid.eq_bytes(OID_EKU_SERVER_AUTH) {
@@ -526,6 +527,7 @@ struct ParsedExtensions<'a> {
 
 fn parse_extensions<'a>(tbs: &mut StrictDerCursor<'a>) -> Option<ParsedExtensions<'a>> {
     let mut parsed = ParsedExtensions::default();
+    // LOOP_PROOF: mode=condition; reason=Every TLV read consumes its tag and length from the finite TBS sequence, including unrelated tags that are skipped.;
     while !tbs.is_empty() {
         let tlv = tbs.read_tlv()?;
         if tlv.tag != 0xA3 {
@@ -533,6 +535,7 @@ fn parse_extensions<'a>(tbs: &mut StrictDerCursor<'a>) -> Option<ParsedExtension
         }
         let ext_seq = StrictDerCursor::new(tlv.value).read_sequence()?;
         let mut extensions = StrictDerCursor::new(ext_seq.value);
+        // LOOP_PROOF: mode=condition; reason=Each extension sequence read consumes at least its DER header from the finite extension cursor, while malformed input returns None.;
         while !extensions.is_empty() {
             let ext = extensions.read_sequence()?;
             let mut item = StrictDerCursor::new(ext.value);
@@ -799,6 +802,7 @@ fn match_hostname_in_san(san_der: PayloadSpanRef<'_>, hostname: &str) -> bool {
         return false;
     };
     let mut names = StrictDerCursor::new(seq.value);
+    // LOOP_PROOF: mode=condition; reason=Each DER GeneralName read advances the finite SAN cursor, and a match or exhausted or malformed input terminates lookup.;
     while let Some(name) = names.read_tlv() {
         if name.tag == 0x82 && match_dns_name(name.value, hostname) {
             return true;
@@ -815,11 +819,13 @@ fn match_hostname_in_subject(subject_der: PayloadSpanRef<'_>, hostname: &str) ->
         return false;
     };
     let mut rdns = StrictDerCursor::new(seq.value);
+    // LOOP_PROOF: mode=condition; reason=Each DER RDN read advances the finite subject cursor, while invalid sets or exhausted input terminate lookup.;
     while let Some(rdn) = rdns.read_tlv() {
         if rdn.tag != 0x31 {
             return false;
         }
         let mut attrs = StrictDerCursor::new(rdn.value);
+        // LOOP_PROOF: mode=condition; reason=Each DER attribute sequence read advances the finite RDN cursor, while a matching name or exhausted input ends lookup.;
         while let Some(attr) = attrs.read_sequence() {
             let mut attr = StrictDerCursor::new(attr.value);
             let oid = attr.read_oid();
