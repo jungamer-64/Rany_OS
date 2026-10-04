@@ -1,5 +1,8 @@
 use log::info;
 
+#[path = "scheduler_runtime.rs"]
+mod scheduler_runtime;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RuntimeCaseStatus {
     Pass,
@@ -66,6 +69,8 @@ enum RuntimeTestBody {
     SchedulerPreemption,
     SchedulerCriticalSection,
     SchedulerTaskTimeAbi,
+    SchedulerWeightedProgress,
+    SchedulerQuotaRecovery,
 }
 
 pub struct RuntimeTestCase {
@@ -299,6 +304,18 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Scheduler,
     },
     RuntimeTestCase {
+        id: "scheduler.weighted_progress_and_poll_fuel",
+        body: RuntimeTestBody::SchedulerWeightedProgress,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Scheduler,
+    },
+    RuntimeTestCase {
+        id: "scheduler.quota_wait_and_recovery",
+        body: RuntimeTestBody::SchedulerQuotaRecovery,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Scheduler,
+    },
+    RuntimeTestCase {
         id: "boot.smoke_cmdline_dispatch",
         body: RuntimeTestBody::Sync(boot_smoke_cmdline_dispatch),
         tier: RuntimeTier::PrRequired,
@@ -480,6 +497,10 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
                 scheduler_preemption_case(SchedulerProbe::CriticalSection).await
             }
             RuntimeTestBody::SchedulerTaskTimeAbi => scheduler_task_time_abi_case().await,
+            RuntimeTestBody::SchedulerWeightedProgress => {
+                scheduler_runtime::weighted_progress().await
+            }
+            RuntimeTestBody::SchedulerQuotaRecovery => scheduler_runtime::quota_recovery().await,
         };
         log_case_result(case.id, result);
 
@@ -626,7 +647,7 @@ async fn scheduler_task_time_abi_case() -> RuntimeTestResult {
     let Some(deadline) = crate::task::current_tick().checked_add(1_000) else {
         return RuntimeTestResult::fail("ABI task observation clock exhausted");
     };
-    // LOOP_PROOF: mode=condition; reason=The owned task reports completion and destruction, or the monotonic deadline ends observation; each unsuccessful observation awaits a timer tick.;
+    // LOOP_PROOF: mode=condition; reason=The owned task reports completion and destruction, or the monotonic deadline ends observation, with each unsuccessful observation awaiting a timer tick.;
     while drops.load(Ordering::Acquire) == 0 && crate::task::current_tick() < deadline {
         if crate::task::sleep_ms(1).await.is_err() {
             return RuntimeTestResult::fail("ABI task observation timer unavailable");
