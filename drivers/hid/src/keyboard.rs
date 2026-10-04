@@ -5,10 +5,8 @@
 //! `hid_driver` crate. These are used by the kernel-side keyboard driver
 //! implementation but don't depend on kernel-only APIs.
 use crate::keymap::Keymap;
-use core::cell::UnsafeCell;
 use core::fmt;
-use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use core::task::Waker;
+use core::sync::atomic::{AtomicU32, Ordering};
 
 use crate::keymap::DEFAULT_KEYMAP;
 use crate::{KeyCode, KeyEvent, KeyState, Modifiers};
@@ -283,94 +281,10 @@ impl ModifierState {
     }
 }
 
-// ============================================================================
-// IsrSafeWaker - IRQ-safe Waker
-// ============================================================================
-
-#[cfg(not(target_arch = "x86_64"))]
-compile_error!(
-    "IsrSafeWaker is only verified on x86_64 (TSO memory model). \
-     ARM/RISC-V require formal verification with Loom/Miri before use. \
-     To enable on other architectures, add feature 'experimental-weak-memory'."
-);
-
-pub struct IsrSafeWaker {
-    pending: AtomicBool,
-    current_epoch: AtomicU64,
-    waker_slots: [UnsafeCell<Option<Waker>>; 2],
-    has_waker: AtomicBool,
-}
-
-unsafe impl Send for IsrSafeWaker {}
-unsafe impl Sync for IsrSafeWaker {}
-
-impl IsrSafeWaker {
-    pub const fn new() -> Self {
-        Self {
-            pending: AtomicBool::new(false),
-            current_epoch: AtomicU64::new(0),
-            waker_slots: [UnsafeCell::new(None), UnsafeCell::new(None)],
-            has_waker: AtomicBool::new(false),
-        }
-    }
-
-    pub fn register(&self, waker: &Waker) {
-        let old_epoch = self.current_epoch.load(Ordering::Acquire);
-        let next_epoch = old_epoch.wrapping_add(1);
-        let next_slot = (next_epoch % 2) as usize;
-
-        unsafe {
-            let slot = &mut *self.waker_slots[next_slot].get();
-            if let Some(existing) = slot {
-                if existing.will_wake(waker) {
-                    return;
-                }
-            }
-            *slot = Some(waker.clone());
-        }
-
-        self.current_epoch.store(next_epoch, Ordering::Release);
-        self.has_waker.store(true, Ordering::Release);
-    }
-
-    #[inline]
-    pub fn notify(&self) {
-        self.pending.store(true, Ordering::Release);
-    }
-
-    pub fn check_and_wake(&self) -> bool {
-        if !self.pending.swap(false, Ordering::AcqRel) {
-            return false;
-        }
-
-        if self.has_waker.load(Ordering::Acquire) {
-            let epoch = self.current_epoch.load(Ordering::Acquire);
-            let slot_idx = (epoch % 2) as usize;
-            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
-            if let Some(waker) = waker_slot {
-                waker.wake_by_ref();
-                return true;
-            }
-        }
-
-        false
-    }
-    pub fn wake_now(&self) {
-        if self.has_waker.load(Ordering::Acquire) {
-            let epoch = self.current_epoch.load(Ordering::Acquire);
-            let slot_idx = (epoch % 2) as usize;
-            let waker_slot = unsafe { &*self.waker_slots[slot_idx].get() };
-            if let Some(waker) = waker_slot {
-                waker.wake_by_ref();
-            }
-        }
-    }
-
-    #[inline]
-    pub fn is_pending(&self) -> bool {
-        self.pending.load(Ordering::Acquire)
-    }
-    pub fn is_registered(&self) -> bool {
-        self.has_waker.load(Ordering::Acquire)
+impl Default for ModifierState {
+    fn default() -> Self {
+        Self::new()
     }
 }
+
+// ============================================================================
