@@ -14,12 +14,12 @@
 //! ## 参照仕様
 //! - USB HID Specification 1.11
 //! - HID Usage Tables 1.12
-use alloc::boxed::Box;
+use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicUsize, Ordering};
+use exorust_sync::Mutex;
 use hid_driver::{KeyCode, KeyEvent, KeyState, Modifiers};
-use spin::Mutex;
 mod keycodes;
 
 use super::{
@@ -422,11 +422,11 @@ impl UsbClassDriver for HidDevice {
             status,
             bytes_transferred,
         } = event
+            && endpoint == self.in_endpoint
+            && status == TransferStatus::Success
         {
-            if endpoint == self.in_endpoint && status == TransferStatus::Success {
-                // レポートを処理
-                let _ = bytes_transferred;
-            }
+            // レポートを処理
+            let _ = bytes_transferred;
         }
     }
 }
@@ -478,6 +478,9 @@ pub enum KeyboardModifier {
     RightGui = 0x80,
 }
 
+type KeyCallback = Arc<dyn Fn(KeyEvent) + Send + Sync>;
+type MouseCallback = Arc<dyn Fn(MouseEvent) + Send + Sync>;
+
 /// USB キーボードドライバ
 pub struct UsbKeyboard {
     /// 基本HIDデバイス
@@ -487,7 +490,7 @@ pub struct UsbKeyboard {
     /// LEDステータス
     led_status: AtomicU8,
     /// キー押下コールバック
-    key_callback: Mutex<Option<Box<dyn Fn(KeyEvent) + Send + Sync>>>,
+    key_callback: Mutex<Option<KeyCallback>>,
 }
 
 impl UsbKeyboard {
@@ -506,7 +509,7 @@ impl UsbKeyboard {
     where
         F: Fn(KeyEvent) + Send + Sync + 'static,
     {
-        *self.key_callback.lock() = Some(Box::new(callback));
+        *self.key_callback.lock() = Some(Arc::new(callback));
     }
 
     /// LEDステータスを設定
@@ -629,8 +632,10 @@ impl UsbKeyboard {
             let guard = self.prev_report.lock();
             *guard
         };
-        let callback_guard = self.key_callback.lock();
-        let callback = callback_guard
+        // Keep the selected callback alive while releasing its registration
+        // lock before invoking caller code, which may replace the callback.
+        let callback_owner = self.key_callback.lock().clone();
+        let callback = callback_owner
             .as_ref()
             .map(|cb| cb.as_ref() as &dyn Fn(KeyEvent));
         let mut lock_state = self.led_status.load(Ordering::Acquire);
@@ -820,7 +825,7 @@ pub struct UsbMouse {
     /// ホイール移動量
     accumulated_wheel: Mutex<i32>,
     /// マウスイベントコールバック
-    mouse_callback: Mutex<Option<Box<dyn Fn(MouseEvent) + Send + Sync>>>,
+    mouse_callback: Mutex<Option<MouseCallback>>,
 }
 
 /// マウスイベント
@@ -853,7 +858,7 @@ impl UsbMouse {
     where
         F: Fn(MouseEvent) + Send + Sync + 'static,
     {
-        *self.mouse_callback.lock() = Some(Box::new(callback));
+        *self.mouse_callback.lock() = Some(Arc::new(callback));
     }
 
     /// 累積移動量を取得してリセット
@@ -878,7 +883,8 @@ impl UsbMouse {
 
         let prev_buttons = self.prev_buttons.swap(buttons, Ordering::SeqCst);
 
-        if let Some(ref callback) = *self.mouse_callback.lock() {
+        let callback = self.mouse_callback.lock().clone();
+        if let Some(callback) = callback {
             // 移動イベント
             if dx != 0 || dy != 0 {
                 callback(MouseEvent::Move { dx, dy });
@@ -929,12 +935,54 @@ impl UsbMouse {
     }
 }
 
+impl Default for UsbMouse {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use alloc::sync::Arc;
     use alloc::vec::Vec;
-    use spin::Mutex;
+    use exorust_sync::Mutex;
+
+    #[test]
+    fn keyboard_callback_can_replace_its_registration() {
+        let keyboard = Arc::new(UsbKeyboard::new(1));
+        let weak = Arc::downgrade(&keyboard);
+        let events = Arc::new(Mutex::new(Vec::<KeyEvent>::new()));
+        let sink = Arc::clone(&events);
+        keyboard.set_key_callback(move |event| {
+            sink.lock().push(event);
+            if let Some(keyboard) = weak.upgrade() {
+                keyboard.set_key_callback(|_| {});
+            }
+        });
+        keyboard.process_report(&[0, 0, keycodes::KEY_A, 0, 0, 0, 0, 0]);
+        keyboard.process_report(&[0; 8]);
+        assert_eq!(events.lock().len(), 1);
+    }
+
+    #[test]
+    fn mouse_callback_can_replace_its_registration() {
+        let mouse = Arc::new(UsbMouse::new());
+        let weak = Arc::downgrade(&mouse);
+        let events = Arc::new(Mutex::new(Vec::<MouseEvent>::new()));
+        let sink = Arc::clone(&events);
+        mouse.set_mouse_callback(move |event| {
+            sink.lock().push(event);
+            if let Some(mouse) = weak.upgrade() {
+                mouse.set_mouse_callback(|_| {});
+            }
+        });
+        mouse.process_report(&[1, 1, 0, 1]);
+        mouse.process_report(&[0, 1, 0, 0]);
+        // One report retains its selected callback for movement, button and
+        // wheel even when the first event changes the next report's callback.
+        assert_eq!(events.lock().len(), 3);
+    }
 
     #[test]
     fn usb_boot_keycode_translation_smoke() {
