@@ -136,17 +136,29 @@ async fn progress_case(quota: bool) -> RuntimeTestResult {
     }
     let deadline = crate::time::precise_time_nanos().saturating_add(400_000_000);
     let mut waited_at = None;
+    let mut blocked_sample = None;
+    let mut successor_progressed = false;
     let mut recovered = false;
     // LOOP_PROOF: mode=condition; reason=Each progress sample awaits the production timer, and the fixed nanosecond deadline or an observed failure ends sampling.;
     while result.status == super::RuntimeCaseStatus::Pass
         && crate::time::precise_time_nanos() < deadline
     {
-        if let Some(snapshot) = crate::task::scheduler_snapshot()
-            && snapshot.quota_waiting != 0
+        let limited = progress.polls[0].load(Ordering::Acquire);
+        let peer = progress.polls[1].load(Ordering::Acquire);
+        if crate::domain::quota_manager()
+            .cpu_wait_deadline(normal, crate::time::precise_time_nanos())
+            .is_some()
+            && crate::task::scheduler_snapshot().is_some_and(|snapshot| snapshot.quota_waiting != 0)
         {
-            waited_at.get_or_insert(progress.polls[0].load(Ordering::Acquire));
+            waited_at.get_or_insert(limited);
+            if let Some((previous_limited, previous_peer)) = blocked_sample {
+                successor_progressed |= limited == previous_limited && peer > previous_peer;
+            }
+            blocked_sample = Some((limited, peer));
+        } else {
+            blocked_sample = None;
         }
-        if waited_at.is_some_and(|before| progress.polls[0].load(Ordering::Acquire) > before) {
+        if waited_at.is_some_and(|before| limited > before) {
             recovered = true;
         }
         if crate::task::sleep_ms(2).await.is_err() {
@@ -171,8 +183,16 @@ async fn progress_case(quota: bool) -> RuntimeTestResult {
         return RuntimeTestResult::fail("a priority starved or new-poll fuel/identity was invalid");
     }
     if quota {
-        if waited_at.is_none() || !recovered || counts[1] <= counts[0] {
-            return RuntimeTestResult::fail("quota wait blocked a successor or failed to reopen");
+        if waited_at.is_none() {
+            return RuntimeTestResult::fail("limited task never entered quota waiting");
+        }
+        if !recovered {
+            return RuntimeTestResult::fail("limited task did not resume after quota rollover");
+        }
+        if !successor_progressed {
+            return RuntimeTestResult::fail(
+                "successor did not progress while its peer waited for quota",
+            );
         }
     } else if counts[3] < counts[0] * 3
         || counts[3] > counts[0] * 16
