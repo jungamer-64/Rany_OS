@@ -8,6 +8,8 @@ use crate::defs::VirtioDeviceType;
 use crate::queue_memory::{ConfiguredQueueMemory, QueueConfiguration, QueueConfigureError};
 use hal::MmioAccessError;
 
+mod discovery;
+pub use discovery::{PciCapabilityError, PciTransportDiscoveryError};
 mod mmio;
 mod pci;
 mod sealed {

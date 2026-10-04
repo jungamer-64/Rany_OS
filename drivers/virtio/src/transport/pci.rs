@@ -299,7 +299,7 @@ impl VirtioTransport for VirtioPciTransport {
     }
 }
 
-fn notification_offset(queue_offset: u16, multiplier: u32) -> TransportResult<usize> {
+pub(super) fn notification_offset(queue_offset: u16, multiplier: u32) -> TransportResult<usize> {
     if multiplier != 0 && (multiplier < 2 || !multiplier.is_power_of_two()) {
         return Err(TransportError::ConfigAccessFailed);
     }

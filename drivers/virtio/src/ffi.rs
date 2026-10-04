@@ -4,19 +4,19 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
+use exorust_sync::Mutex;
 use kernel_api::abi::driver::{
     AbiBlockCommandKind, AbiBlockDeviceInfo, AbiBlockDeviceRegistration, AbiBlockTransport,
-    AbiError, AbiIoCompletion, AbiMmioHandle, AbiNetDriverEvent, AbiNetDriverEventKind,
-    AbiNetPortInfo, AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats,
-    AbiNetRxFrameLayout, AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiRxLease,
-    AbiRxLeaseGuard, AbiTxDeviceOutcome, DRIVER_ABI_VERSION, DriverCapabilities, DriverContext,
-    DriverVTable, DriverVTableFns, PackedPciLocation, pack_version,
+    AbiError, AbiIoCompletion, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo,
+    AbiNetPortOps, AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout,
+    AbiNetRxMeta, AbiNetTxMeta, AbiNetTxSubmission, AbiRxLease, AbiRxLeaseGuard,
+    AbiTxDeviceOutcome, DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable,
+    DriverVTableFns, PackedPciLocation, pack_version,
 };
 use kernel_api::dma::{CpuOwned, DmaSlice};
 use kernel_api::driver::DriverType;
 use kernel_api::netdev::{NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_HEALTHY, NetPortId, TxLeaseId};
 use kernel_api::service::kernel;
-use spin::Mutex;
 
 use crate::blk::{get_virtio_blk_device_at_index, init_virtio_blk_with_transport_at_index};
 use crate::defs::VirtioDeviceType;
@@ -24,14 +24,10 @@ use crate::net::{
     NetDmaPurpose, NetRuntime, RxDmaLease, VirtioNetError, handle_virtio_net_interrupt_for_index,
     init_virtio_net_with_transport_at_index, with_virtio_net_at_index,
 };
-use crate::transport::{VirtioMmioTransport, VirtioPciTransport, VirtioTransport};
+use crate::transport::{
+    PciTransportDiscoveryError, TransportType, VirtioPciTransport, VirtioTransport,
+};
 
-const PCI_CONFIG_ADDR: u16 = 0xCF8;
-const PCI_CONFIG_DATA: u16 = 0xCFC;
-const PCI_CAP_PTR: u8 = 0x34;
-const PCI_CAP_VENDOR_SPECIFIC: u8 = 0x09;
-const PCI_BAR0: u8 = 0x10;
-const PCI_BAR_MAP_SIZE: usize = 0x20_000;
 const PORT_INDEX: u8 = 0;
 const NET_PORT_ID: u64 = 0x0001_0000 | PORT_INDEX as u64;
 const BLOCK_DEVICE_ID: u64 = 0x0001_0000_0000_0000;
@@ -41,11 +37,6 @@ enum VirtioStandaloneKind {
     Net,
     Block,
     Unsupported,
-}
-
-struct MappedBar {
-    bar: u8,
-    handle: AbiMmioHandle,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -96,7 +87,6 @@ impl StandaloneNetRuntime {
 struct VirtioStandaloneState {
     kind: VirtioStandaloneKind,
     pci_locator: PackedPciLocation,
-    mapped_bars: Vec<MappedBar>,
     net_runtime: Option<StandaloneNetRuntimeHandle>,
     interrupt: StandaloneInterrupt,
     registration: StandaloneRegistration,
@@ -136,154 +126,13 @@ fn device_type_for_id(device_id: u16) -> VirtioDeviceType {
     }
 }
 
-fn config_addr(locator: PackedPciLocation, offset: u8) -> u32 {
-    0x8000_0000
-        | ((locator.bus() as u32) << 16)
-        | ((locator.device() as u32) << 11)
-        | ((locator.function() as u32) << 8)
-        | ((offset as u32) & 0xFC)
-}
-
-fn pci_read32(locator: PackedPciLocation, offset: u8) -> u32 {
-    hal::port_io::outl(PCI_CONFIG_ADDR, config_addr(locator, offset));
-    hal::port_io::inl(PCI_CONFIG_DATA)
-}
-
-fn pci_read8(locator: PackedPciLocation, offset: u8) -> u8 {
-    let shift = ((offset & 3) as u32) * 8;
-    ((pci_read32(locator, offset) >> shift) & 0xFF) as u8
-}
-
-fn pci_bar_phys(locator: PackedPciLocation, bar: u8) -> Option<u64> {
-    if bar >= 6 {
-        return None;
-    }
-    let offset = PCI_BAR0 + bar.saturating_mul(4);
-    let raw = pci_read32(locator, offset);
-    if raw & 1 != 0 {
-        return None;
-    }
-    let low = (raw & 0xFFFF_FFF0) as u64;
-    let bar_type = (raw >> 1) & 0x3;
-    if bar_type == 0x2 && bar + 1 < 6 {
-        Some(low | ((pci_read32(locator, offset + 4) as u64) << 32))
-    } else {
-        Some(low)
-    }
-}
-
-#[derive(Clone, Copy)]
-struct PciCap {
-    bar: u8,
-    offset: u32,
-}
-
-#[derive(Default)]
-struct PciCaps {
-    common: Option<PciCap>,
-    notify: Option<PciCap>,
-    isr: Option<PciCap>,
-    device: Option<PciCap>,
-    notify_multiplier: u32,
-}
-
-fn pci_read_cap_u32(locator: PackedPciLocation, cap: u8, rel: u8) -> u32 {
-    pci_read32(locator, cap.wrapping_add(rel))
-}
-
-fn parse_pci_caps(locator: PackedPciLocation) -> PciCaps {
-    let mut caps = PciCaps {
-        notify_multiplier: 1,
-        ..PciCaps::default()
-    };
-    let mut cap = pci_read8(locator, PCI_CAP_PTR) & 0xFC;
-    let mut visited = 0u8;
-    while cap != 0 && visited < 48 {
-        visited = visited.wrapping_add(1);
-        let cap_id = pci_read8(locator, cap);
-        let next = pci_read8(locator, cap.wrapping_add(1)) & 0xFC;
-        if cap_id == PCI_CAP_VENDOR_SPECIFIC {
-            let cfg_type = pci_read8(locator, cap.wrapping_add(3));
-            let bar = pci_read8(locator, cap.wrapping_add(4));
-            let offset = pci_read_cap_u32(locator, cap, 8);
-            let pci_cap = PciCap { bar, offset };
-            match cfg_type {
-                1 => caps.common = Some(pci_cap),
-                2 => {
-                    caps.notify = Some(pci_cap);
-                    caps.notify_multiplier = pci_read_cap_u32(locator, cap, 16);
-                }
-                3 => caps.isr = Some(pci_cap),
-                4 => caps.device = Some(pci_cap),
-                _ => {}
-            }
-        }
-        cap = next;
-    }
-    caps
-}
-
-fn map_bar(
-    mapped_bars: &mut Vec<MappedBar>,
-    locator: PackedPciLocation,
-    bar: u8,
-) -> Option<AbiMmioHandle> {
-    if let Some(mapped) = mapped_bars.iter().find(|mapped| mapped.bar == bar) {
-        return Some(mapped.handle);
-    }
-
-    let phys_base = pci_bar_phys(locator, bar)?;
-    let mut handle = AbiMmioHandle::default();
-    let status = (kernel_api().map_mmio)(phys_base, PCI_BAR_MAP_SIZE, &mut handle);
-    if status != 0 {
-        return None;
-    }
-    mapped_bars.push(MappedBar { bar, handle });
-    Some(handle)
-}
-
-fn cap_addr(
-    mapped_bars: &mut Vec<MappedBar>,
-    locator: PackedPciLocation,
-    cap: Option<PciCap>,
-) -> Option<usize> {
-    let cap = cap?;
-    let mapped = map_bar(mapped_bars, locator, cap.bar)?;
-    Some((mapped.base + cap.offset as u64) as usize)
-}
-
-fn pci_transport(
-    ctx: &DriverContext,
-    mapped_bars: &mut Vec<MappedBar>,
-) -> Option<Box<dyn VirtioTransport>> {
-    let locator = ctx.pci_location();
-    let caps = parse_pci_caps(locator);
-    let common = cap_addr(mapped_bars, locator, caps.common)?;
-    let notify = cap_addr(mapped_bars, locator, caps.notify)?;
-    let isr = cap_addr(mapped_bars, locator, caps.isr).unwrap_or(0);
-    let device = cap_addr(mapped_bars, locator, caps.device)?;
-    let transport = unsafe {
-        VirtioPciTransport::new(
-            common,
-            notify,
-            caps.notify_multiplier,
-            isr,
-            device,
-            device_type_for_id(ctx.device_id),
-        )
-        .ok()?
-    };
-    Some(Box::new(transport))
-}
-
 fn transport_for_context(
     ctx: &DriverContext,
-    mapped_bars: &mut Vec<MappedBar>,
-) -> Option<Box<dyn VirtioTransport>> {
-    pci_transport(ctx, mapped_bars).or_else(|| {
-        let transport = unsafe { VirtioMmioTransport::new(ctx.device_address as usize).ok()? };
-        Some(Box::new(transport))
-    })
+) -> Result<Box<dyn VirtioTransport>, PciTransportDiscoveryError> {
+    let transport =
+        VirtioPciTransport::acquire(ctx.pci_location(), device_type_for_id(ctx.device_id))?;
+    let transport = Box::try_new(transport).map_err(|_| PciTransportDiscoveryError::Allocation)?;
+    Ok(transport)
 }
 
 impl NetRuntime for StandaloneNetRuntime {
@@ -680,28 +529,27 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
         return AbiError::NotSupported as i32;
     }
 
-    let mut mapped_bars = Vec::new();
-    let Some(transport) = transport_for_context(ctx, &mut mapped_bars) else {
-        return AbiError::DeviceNotFound as i32;
+    let transport = match transport_for_context(ctx) {
+        Ok(transport) => transport,
+        Err(cause) => {
+            log::error!("VirtIO PCI register acquisition failed: {:?}", cause);
+            return AbiError::DeviceNotFound as i32;
+        }
     };
     let pci_locator = ctx.pci_location();
-    let interrupt = if kind == VirtioStandaloneKind::Net && transport.supports_msix() {
+    let interrupt = if kind == VirtioStandaloneKind::Net
+        && transport.transport_type() == TransportType::PciModern
+    {
         let Some(vector) = kernel::instance()
             .enable_msix(pci_locator, 1)
             .ok()
             .and_then(|vectors| vectors.into_iter().next())
         else {
-            for mapped in &mapped_bars {
-                let _ = (kernel_api().unmap_mmio)(&mapped.handle);
-            }
             return AbiError::IoError as i32;
         };
         let bind_status = (kernel_api().irq_bind)(vector.vector, 0);
         if !AbiError::from_raw(bind_status).is_success() {
             let _ = kernel::instance().disable_msix(pci_locator);
-            for mapped in &mapped_bars {
-                let _ = (kernel_api().unmap_mmio)(&mapped.handle);
-            }
             return bind_status;
         }
         Some((vector.vector, vector.table_index))
@@ -739,9 +587,6 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
                 let _ = (kernel_api().irq_unbind)(vector);
                 let _ = kernel::instance().disable_msix(pci_locator);
             }
-            for mapped in &mapped_bars {
-                let _ = (kernel_api().unmap_mmio)(&mapped.handle);
-            }
             return AbiError::IoError as i32;
         }
     };
@@ -749,7 +594,6 @@ extern "C" fn virtio_probe(ctx: *mut DriverContext) -> i32 {
     *VIRTIO_STANDALONE_STATE.lock() = Some(VirtioStandaloneState {
         kind,
         pci_locator,
-        mapped_bars,
         net_runtime,
         interrupt: interrupt.map_or(StandaloneInterrupt::None, |(vector, _)| {
             StandaloneInterrupt::Bound { vector }
@@ -878,6 +722,7 @@ extern "C" fn virtio_stop(_ctx: *mut DriverContext) -> i32 {
 }
 
 fn release_standalone_interrupt() -> i32 {
+    // LOOP_PROOF: mode=event; reason=Exclusive lifecycle retirement advances bound to unbound to absent IRQ state, and any unsuccessful operation returns with its remaining ownership.;
     loop {
         let action = {
             let guard = VIRTIO_STANDALONE_STATE.lock();
@@ -918,11 +763,7 @@ extern "C" fn virtio_remove(ctx: *mut DriverContext) -> i32 {
     if status != AbiError::Success as i32 {
         return status;
     }
-    if let Some(state) = VIRTIO_STANDALONE_STATE.lock().take() {
-        for mapped in &state.mapped_bars {
-            let _ = (kernel_api().unmap_mmio)(&mapped.handle);
-        }
-    }
+    drop(VIRTIO_STANDALONE_STATE.lock().take());
     AbiError::Success as i32
 }
 

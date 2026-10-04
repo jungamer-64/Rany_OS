@@ -3,6 +3,7 @@
 // ============================================================================
 
 #![no_std]
+#![feature(allocator_ext)]
 #![allow(clippy::collapsible_if)]
 #![allow(clippy::type_complexity)]
 
