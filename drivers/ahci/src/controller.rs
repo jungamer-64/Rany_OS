@@ -1,7 +1,7 @@
 //! AHCI controller ownership and per-port capability admission.
 //!
 //! One controller consumes the complete HBA aperture, attenuates it into a
-//! global register prefix and 32 disjoint port apertures, and is the only
+//! global register prefix and disjoint implemented-port apertures, and is the only
 //! source of queue generations. Port DMA memory remains registry-owned.
 
 #![deny(unsafe_code, unsafe_op_in_unsafe_fn)]
@@ -22,11 +22,10 @@ use crate::port::{
     PortShutdownCause,
 };
 use crate::types::{
-    GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PX_CI, PortNumber,
+    GHC_AE, GHC_CAP, GHC_GHC, GHC_IE, GHC_PI, GHC_VS, PORT_BASE, PORT_SIZE, PortNumber,
 };
 
 const PORT_COUNT: usize = 32;
-const HBA_REGISTER_BYTES: usize = PORT_BASE as usize + PORT_COUNT * PORT_SIZE as usize;
 const CAP_S64A: u32 = 1 << 31;
 const CAP2: usize = 0x24;
 const BOHC: usize = 0x28;
@@ -84,7 +83,7 @@ impl AhciAcquisition {
         mapping: MappedMmio,
         device: PackedPciLocation,
     ) -> Result<Self, ControllerOpenError> {
-        if device.is_null() || mapping.len() < HBA_REGISTER_BYTES {
+        if device.is_null() || mapping.len() < PORT_BASE as usize {
             return Err(ControllerOpenError {
                 cause: if device.is_null() {
                     ControllerOpenCause::NullDevice
@@ -167,6 +166,7 @@ pub struct ControllerOpenError {
 pub enum ControllerOpenCause {
     NullDevice,
     ApertureTooSmall,
+    InvalidPortMap,
     Registers(MmioAccessError),
 }
 
@@ -350,7 +350,7 @@ impl AhciController {
                 mapping,
             });
         }
-        if mapping.len() < HBA_REGISTER_BYTES {
+        if mapping.len() < PORT_BASE as usize {
             return Err(ControllerOpenError {
                 cause: ControllerOpenCause::ApertureTooSmall,
                 mapping,
@@ -369,11 +369,7 @@ impl AhciController {
             .and_then(|(capability, ports_implemented)| {
                 read(GHC_VS as usize).map(|version| (capability, ports_implemented, version))
             })
-            .and_then(|values| read(GHC_GHC as usize).map(|_| values))
-            .and_then(|values| {
-                read(PORT_BASE as usize + (PORT_COUNT - 1) * PORT_SIZE as usize + PX_CI as usize)
-                    .map(|_| values)
-            });
+            .and_then(|values| read(GHC_GHC as usize).map(|_| values));
         let (capability, ports_implemented, version) = match values {
             Ok(values) => values,
             Err(cause) => {
@@ -384,8 +380,20 @@ impl AhciController {
             }
         };
 
-        let mapping = retain_hba_prefix(mapping);
-        let (global, port_mappings) = split_hba(mapping);
+        let bytes = match hba_bytes(capability, ports_implemented) {
+            Ok(bytes) => bytes,
+            Err(cause) => {
+                return Err(ControllerOpenError { cause, mapping });
+            }
+        };
+        if mapping.len() < bytes {
+            return Err(ControllerOpenError {
+                cause: ControllerOpenCause::ApertureTooSmall,
+                mapping,
+            });
+        }
+        let mapping = retain_hba_prefix(mapping, bytes);
+        let (global, port_mappings) = split_hba(mapping, ports_implemented);
         let registers = ControllerRegisters(global);
         registers.enable_ahci();
 
@@ -393,12 +401,8 @@ impl AhciController {
             registers,
             device,
             ports_implemented,
-            slots: port_mappings.map(|mapping| {
-                let Some(mapping) = mapping else {
-                    unreachable!("every hardware port has one attenuated aperture")
-                };
-                PortSlot::Available(mapping)
-            }),
+            slots: port_mappings
+                .map(|mapping| mapping.map_or(PortSlot::Closed, PortSlot::Available)),
             version,
             command_slots: (((capability >> 8) & 0x1f) as u8) + 1,
             address_width: if capability & CAP_S64A == 0 {
@@ -744,27 +748,43 @@ fn returned_port_error(
     ControllerPortError::Returned { cause, memory }
 }
 
-fn retain_hba_prefix(mapping: MappedMmio) -> MappedMmio {
-    if mapping.len() == HBA_REGISTER_BYTES {
+/// AHCI 1.3.1 sections 2.1.11 and 3.1.4: PI selects register banks, including
+/// sparse numbering. CAP.NP limits the number of asserted bits, not their indices.
+fn hba_bytes(capability: u32, implemented: u32) -> Result<usize, ControllerOpenCause> {
+    if implemented == 0 || implemented.count_ones() > (capability & 0x1f) + 1 {
+        return Err(ControllerOpenCause::InvalidPortMap);
+    }
+    Ok(
+        PORT_BASE as usize
+            + (u32::BITS - implemented.leading_zeros()) as usize * PORT_SIZE as usize,
+    )
+}
+
+fn retain_hba_prefix(mapping: MappedMmio, bytes: usize) -> MappedMmio {
+    if mapping.len() == bytes {
         return mapping;
     }
-    let Ok((prefix, _unused)) = mapping.split_at(HBA_REGISTER_BYTES) else {
+    let Ok((prefix, _unused)) = mapping.split_at(bytes) else {
         unreachable!("the caller validated the complete HBA prefix")
     };
     prefix
 }
 
-fn split_hba(mapping: MappedMmio) -> (MappedMmio, [Option<MappedMmio>; PORT_COUNT]) {
+fn split_hba(
+    mapping: MappedMmio,
+    implemented: u32,
+) -> (MappedMmio, [Option<MappedMmio>; PORT_COUNT]) {
     let Ok((global, tail)) = mapping.split_at(PORT_BASE as usize) else {
         unreachable!("the HBA prefix contains global and port registers")
     };
     let mut tail = Some(tail);
     let mut ports = core::array::from_fn(|_| None);
-    for index in 0..PORT_COUNT {
+    let banks = (u32::BITS - implemented.leading_zeros()) as usize;
+    for index in 0..banks {
         let remaining = tail
             .take()
             .expect("one exact port aperture remains for each iteration");
-        let (port, rest) = if index + 1 == PORT_COUNT {
+        let (port, rest) = if index + 1 == banks {
             (remaining, None)
         } else {
             let Ok((port, rest)) = remaining.split_at(PORT_SIZE as usize) else {
@@ -772,9 +792,11 @@ fn split_hba(mapping: MappedMmio) -> (MappedMmio, [Option<MappedMmio>; PORT_COUN
             };
             (port, Some(rest))
         };
-        *ports
-            .get_mut(index)
-            .expect("fixed loop range indexes the fixed port array") = Some(port);
+        if implemented & (1 << index) != 0 {
+            *ports
+                .get_mut(index)
+                .expect("the validated port bitmap indexes the fixed port array") = Some(port);
+        }
         tail = rest;
     }
     (global, ports)
@@ -783,10 +805,17 @@ fn split_hba(mapping: MappedMmio) -> (MappedMmio, [Option<MappedMmio>; PORT_COUN
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::PX_CI;
+    const REGISTER_RAM_BYTES: usize = 0x1100;
 
     #[test]
-    fn aperture_size_covers_every_port_register_set() {
-        assert_eq!(HBA_REGISTER_BYTES, 0x1100);
+    fn aperture_tracks_implemented_banks_including_sparse_port_numbers() {
+        assert_eq!(hba_bytes(0, 1), Ok(0x180));
+        assert_eq!(hba_bytes(5, 0x3f), Ok(0x400));
+        assert_eq!(hba_bytes(0, 1 << 31), Ok(0x1100));
+        assert_eq!(hba_bytes(31, u32::MAX), Ok(0x1100));
+        assert_eq!(hba_bytes(0, 0), Err(ControllerOpenCause::InvalidPortMap));
+        assert_eq!(hba_bytes(0, 3), Err(ControllerOpenCause::InvalidPortMap));
         assert_eq!(
             PORT_BASE as usize + 31 * PORT_SIZE as usize + PX_CI as usize + 4,
             0x10bc
@@ -803,7 +832,7 @@ mod tests {
         assert!(firmware_released(OS_OWNED | OWNERSHIP_SMI_ENABLE));
     }
 
-    struct RegisterRam(core::cell::UnsafeCell<[u32; HBA_REGISTER_BYTES / 4]>);
+    struct RegisterRam(core::cell::UnsafeCell<[u32; REGISTER_RAM_BYTES / 4]>);
 
     #[expect(
         unsafe_code,
@@ -819,7 +848,7 @@ mod tests {
             reason = "register fixture simulates a firmware register write"
         )]
         fn write(&self, offset: usize, value: u32) {
-            assert!(offset.is_multiple_of(4) && offset < HBA_REGISTER_BYTES);
+            assert!(offset.is_multiple_of(4) && offset < REGISTER_RAM_BYTES);
             // SAFETY: the asserted offset belongs to the aligned UnsafeCell
             // allocation; the single-threaded fixture has no CPU byte borrows.
             unsafe {
@@ -832,6 +861,94 @@ mod tests {
         }
     }
 
+    #[expect(
+        unsafe_code,
+        reason = "the private initialized register allocation retains each simulated PCI mapping"
+    )]
+    fn register_mapping(
+        capability: u32,
+        implemented: u32,
+        bytes: usize,
+    ) -> (alloc::sync::Arc<RegisterRam>, MappedMmio) {
+        let ram = alloc::sync::Arc::new(RegisterRam(core::cell::UnsafeCell::new(
+            [0; REGISTER_RAM_BYTES / 4],
+        )));
+        ram.write(GHC_CAP as usize, capability);
+        ram.write(GHC_PI as usize, implemented);
+        ram.write(GHC_VS as usize, 0x0001_0301);
+        assert!(bytes <= REGISTER_RAM_BYTES);
+        // SAFETY: initialized aligned UnsafeCell words have no competing owner,
+        // and the retained Arc covers every byte in the advertised aperture.
+        let mapping =
+            unsafe { MappedMmio::from_raw_parts(ram.clone(), ram.0.get().addr(), bytes) }.unwrap();
+        (ram, mapping)
+    }
+
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "private simulated PCI resources have no firmware or hardware DMA"
+    )]
+    fn controller_admits_small_and_sparse_port_apertures() {
+        for (capability, implemented, bytes) in
+            [(0, 1, 0x200), (5, 0x3f, 0x1000), (0, 1 << 31, 0x1100)]
+        {
+            let (ram, mapping) = register_mapping(capability, implemented, bytes);
+            let weak = alloc::sync::Arc::downgrade(&ram);
+            // SAFETY: the mapping is exclusive initialized fixture RAM for this
+            // PCI identity and contains no firmware or hardware DMA activity.
+            let acquisition =
+                unsafe { AhciAcquisition::begin(mapping, PackedPciLocation::new(0, 0, 31, 2)) }
+                    .unwrap();
+            let AhciAcquisitionPoll::Ready(controller) = acquisition.poll().unwrap() else {
+                panic!("CAP2 does not request firmware handoff in this fixture")
+            };
+            assert_eq!(controller.ports_implemented(), implemented);
+            assert_eq!(controller.registers.read(GHC_GHC), GHC_AE);
+            drop(ram);
+            assert!(weak.upgrade().is_some());
+            drop(controller);
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
+    #[test]
+    #[expect(
+        unsafe_code,
+        reason = "private simulated PCI resources have no firmware or hardware DMA"
+    )]
+    fn invalid_port_admission_retains_the_unsplit_mapping_before_enabling_ahci() {
+        for (capability, implemented, bytes, expected) in [
+            (0, 0, 0x200, ControllerOpenCause::InvalidPortMap),
+            (0, 3, 0x200, ControllerOpenCause::InvalidPortMap),
+            (0, 1 << 31, 0x1000, ControllerOpenCause::ApertureTooSmall),
+        ] {
+            let (ram, mapping) = register_mapping(capability, implemented, bytes);
+            let weak = alloc::sync::Arc::downgrade(&ram);
+            // SAFETY: the mapping exclusively retains initialized fixture RAM
+            // for this PCI identity without firmware or hardware DMA activity.
+            let acquisition =
+                unsafe { AhciAcquisition::begin(mapping, PackedPciLocation::new(0, 0, 31, 2)) }
+                    .unwrap();
+            let error = acquisition.poll().unwrap_err();
+            assert_eq!(error.cause, expected);
+            assert_eq!(error.mapping.len(), bytes);
+            assert_eq!(
+                error
+                    .mapping
+                    .region()
+                    .read_only::<u32>(GHC_GHC as usize)
+                    .unwrap()
+                    .read(),
+                0
+            );
+            drop(ram);
+            assert!(weak.upgrade().is_some());
+            drop(error);
+            assert!(weak.upgrade().is_none());
+        }
+    }
+
     #[test]
     #[expect(
         unsafe_code,
@@ -840,8 +957,9 @@ mod tests {
     fn acquisition_keeps_registers_and_waits_for_actual_firmware_release() {
         use alloc::sync::Arc;
         let ram = Arc::new(RegisterRam(core::cell::UnsafeCell::new(
-            [0; HBA_REGISTER_BYTES / 4],
+            [0; REGISTER_RAM_BYTES / 4],
         )));
+        ram.write(GHC_PI as usize, 1);
         ram.write(GHC_VS as usize, 0x0001_0301);
         ram.write(CAP2, BOH);
         ram.write(
@@ -852,7 +970,7 @@ mod tests {
         // SAFETY: the interior-mutable words are initialized and aligned; the
         // retained Arc covers this complete aperture for every derived access.
         let mapping = unsafe {
-            MappedMmio::from_raw_parts(ram.clone(), ram.0.get().addr(), HBA_REGISTER_BYTES)
+            MappedMmio::from_raw_parts(ram.clone(), ram.0.get().addr(), REGISTER_RAM_BYTES)
         }
         .unwrap();
         let device = PackedPciLocation::new(0, 0, 31, 2);
