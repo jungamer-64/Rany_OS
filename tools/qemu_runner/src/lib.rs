@@ -53,7 +53,7 @@ impl RunConfig {
         let (smp, max_cpus) = match cpu_hotplug_mode(&profile) {
             Some(CpuHotplugMode::Lifecycle) => (1, 2),
             Some(CpuHotplugMode::Sparse) => (1, 256),
-            None if profile == "mm" => (4, 4),
+            None if matches!(profile.as_str(), "mm" | "pr-required") => (4, 4),
             None => (2, 2),
         };
         let cpu = if matches!(cpu_hotplug_mode(&profile), Some(CpuHotplugMode::Sparse)) {
@@ -1112,13 +1112,13 @@ fn validate_cpu_topology(config: &RunConfig) -> Result<(), RunError> {
     Ok(())
 }
 
-/// The MM profile exercises two real firmware NUMA domains, each with its own
+/// Memory contract profiles exercise two real firmware NUMA domains, each with its own
 /// RAM backend. Overrides must preserve a balanced, fully online CPU topology.
 fn memory_topology_args(config: &RunConfig) -> Result<Vec<String>, RunError> {
-    if config.profile != "mm" {
+    if !matches!(config.profile.as_str(), "mm" | "pr-required") {
         return Ok(Vec::new());
     }
-    if config.smp < 2
+    if config.smp < 4
         || !config.smp.is_multiple_of(2)
         || config.max_cpus != config.smp
         || config.memory_mb < 2
@@ -1333,7 +1333,7 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
         .arg("-m")
         .arg(format!("{}M", config.memory_mb))
         .arg("-smp")
-        .arg(if config.profile == "mm" {
+        .arg(if matches!(config.profile.as_str(), "mm" | "pr-required") {
             format!(
                 "cpus={},maxcpus={},sockets=2,cores={},threads=1",
                 config.smp,
@@ -1449,7 +1449,17 @@ mod tests {
             args.iter()
                 .any(|arg| arg == "node,nodeid=1,memdev=mm-node1,cpus=2-3")
         );
-        for (cpus, maximum, ram) in [(1, 1, 1024), (3, 3, 1024), (4, 8, 1024), (4, 4, 1)] {
+        assert_eq!(
+            memory_topology_args(&RunConfig::for_profile("pr-required")).unwrap(),
+            args
+        );
+        for (cpus, maximum, ram) in [
+            (1, 1, 1024),
+            (2, 2, 1024),
+            (3, 3, 1024),
+            (4, 8, 1024),
+            (4, 4, 1),
+        ] {
             let mut invalid = config.clone();
             invalid.smp = cpus;
             invalid.max_cpus = maximum;

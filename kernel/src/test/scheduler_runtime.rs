@@ -220,6 +220,191 @@ pub(super) async fn quota_recovery() -> RuntimeTestResult {
     progress_case(true).await
 }
 
+struct StealObservation {
+    started: AtomicU64,
+    release: [AtomicBool; 3],
+    valid: AtomicBool,
+    sequence: AtomicU64,
+    order: [AtomicU64; 2],
+}
+
+struct OccupiedCpu {
+    state: Arc<StealObservation>,
+    index: usize,
+    cpu: CpuId,
+}
+
+impl Future for OccupiedCpu {
+    type Output = ();
+
+    fn poll(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<()> {
+        let _guard = hal::preemption::PreemptionGuard::enter();
+        self.state.valid.fetch_and(
+            CurrentCpu::acquire().is_some_and(|current| current.id() == self.cpu),
+            Ordering::AcqRel,
+        );
+        self.state
+            .started
+            .fetch_or(1 << self.index, Ordering::Release);
+        let deadline = crate::time::precise_time_nanos().saturating_add(10_000_000_000);
+        // LOOP_PROOF: mode=condition; reason=The controller releases each occupied CPU, with an independent ten-second deadline bounding failure cleanup.;
+        while !self.state.release[self.index].load(Ordering::Acquire)
+            && crate::time::precise_time_nanos() < deadline
+        {
+            core::hint::spin_loop();
+        }
+        self.state.valid.fetch_and(
+            self.state.release[self.index].load(Ordering::Acquire),
+            Ordering::AcqRel,
+        );
+        Poll::Ready(())
+    }
+}
+
+struct StealRelease(Arc<StealObservation>);
+
+impl Drop for StealRelease {
+    fn drop(&mut self) {
+        for release in &self.0.release {
+            release.store(true, Ordering::Release);
+        }
+    }
+}
+
+fn node_of(cpu: CpuId) -> Option<u8> {
+    crate::cpu::try_runtime()?
+        .cpu_local(cpu)?
+        .remote()
+        .numa_node()
+}
+
+/// Keep both donors occupied while the worker becomes idle. The remote
+/// candidate is published first, so task identity cannot explain local-first
+/// selection. No execution or queue state is injected into the scheduler.
+fn admit_steal_contenders(
+    state: &Arc<StealObservation>,
+    domain: DomainId,
+    worker: CpuId,
+    local: CpuId,
+    remote: CpuId,
+) -> Result<(), &'static str> {
+    let _controller = hal::preemption::PreemptionGuard::enter();
+    for (index, cpu) in [worker, local, remote].into_iter().enumerate() {
+        crate::task::spawn_in_domain(
+            OccupiedCpu {
+                state: Arc::clone(state),
+                index,
+                cpu,
+            },
+            TaskOptions::pinned(cpu),
+            domain,
+        )
+        .map_err(|_| "cannot admit occupied NUMA CPU")?;
+    }
+    let deadline = crate::time::precise_time_nanos().saturating_add(2_000_000_000);
+    // LOOP_PROOF: mode=condition; reason=All three pinned polls acknowledge CPU ownership or the independent two-second admission deadline expires.;
+    while state.started.load(Ordering::Acquire) != 7 && crate::time::precise_time_nanos() < deadline
+    {
+        core::hint::spin_loop();
+    }
+    if state.started.load(Ordering::Acquire) != 7 {
+        return Err("a NUMA donor or idle worker did not begin its owned poll");
+    }
+    for (index, donor) in [(1, remote), (0, local)] {
+        let mut allowed = crate::cpu::CpuSet::singleton(donor);
+        allowed
+            .insert(worker)
+            .map_err(|_| "invalid NUMA worker CPU")?;
+        let placement = TaskPlacement::new(allowed, Some(donor), None)
+            .map_err(|_| "cannot validate NUMA candidate placement")?;
+        let observed = Arc::clone(state);
+        crate::task::spawn_in_domain(
+            async move {
+                observed.valid.fetch_and(
+                    CurrentCpu::acquire().is_some_and(|current| current.id() == worker),
+                    Ordering::AcqRel,
+                );
+                let order = observed.sequence.fetch_add(1, Ordering::AcqRel) + 1;
+                observed.order[index].store(order, Ordering::Release);
+            },
+            TaskOptions::new(TaskPriority::Normal, placement),
+            domain,
+        )
+        .map_err(|_| "cannot admit ready NUMA candidate")?;
+    }
+    state.release[0].store(true, Ordering::Release);
+    Ok(())
+}
+
+pub(super) async fn numa_ready_stealing() -> RuntimeTestResult {
+    let Some(controller) = CurrentCpu::acquire().map(|current| current.id()) else {
+        return RuntimeTestResult::fail("NUMA probe has no CPU owner");
+    };
+    let topology = crate::cpu::snapshot();
+    let peers = topology.online();
+    let roles = peers
+        .iter()
+        .filter(|&cpu| cpu != controller)
+        .find_map(|worker| {
+            let node = node_of(worker)?;
+            let local = peers
+                .iter()
+                .find(|&cpu| cpu != controller && cpu != worker && node_of(cpu) == Some(node))?;
+            let remote = peers.iter().find(|&cpu| {
+                cpu != controller && node_of(cpu).is_some_and(|other| other != node)
+            })?;
+            Some((worker, local, remote))
+        });
+    let Some((worker, local, remote)) = roles else {
+        return RuntimeTestResult::fail(
+            "NUMA stealing requires four online CPUs across two firmware nodes",
+        );
+    };
+    let Ok(domain) = crate::domain::create_domain("scheduler-numa-steal".into()) else {
+        return RuntimeTestResult::fail("cannot create NUMA probe domain");
+    };
+    let state = Arc::new(StealObservation {
+        started: AtomicU64::new(0),
+        release: [const { AtomicBool::new(false) }; 3],
+        valid: AtomicBool::new(true),
+        sequence: AtomicU64::new(0),
+        order: [const { AtomicU64::new(0) }; 2],
+    });
+    let release = StealRelease(Arc::clone(&state));
+    let admission = admit_steal_contenders(&state, domain, worker, local, remote);
+    let deadline = crate::time::precise_time_nanos().saturating_add(2_000_000_000);
+    let mut timer_ok = true;
+    // LOOP_PROOF: mode=condition; reason=The observer waits for both candidate polls or the independent two-second deadline and exits on timer admission failure.;
+    while admission.is_ok()
+        && state.order[1].load(Ordering::Acquire) == 0
+        && crate::time::precise_time_nanos() < deadline
+    {
+        if crate::task::sleep_ms(1).await.is_err() {
+            timer_ok = false;
+            break;
+        }
+    }
+    drop(release);
+    let closed = close_domain(domain).await;
+    if !closed {
+        return RuntimeTestResult::fail("NUMA contender ownership did not retire");
+    }
+    if let Err(reason) = admission {
+        return RuntimeTestResult::fail(reason);
+    }
+    if !timer_ok
+        || !state.valid.load(Ordering::Acquire)
+        || state.order[0].load(Ordering::Acquire) != 1
+        || state.order[1].load(Ordering::Acquire) != 2
+    {
+        return RuntimeTestResult::fail(
+            "idle CPU did not steal the local ready task before the remote task",
+        );
+    }
+    log::info!("NUMA steal worker={worker:?} local={local:?} remote={remote:?} order=[1, 2]");
+    RuntimeTestResult::pass()
+}
+
 struct RetainedWake {
     polls: AtomicU64,
     drops: AtomicU64,

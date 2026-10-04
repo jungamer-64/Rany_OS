@@ -72,6 +72,7 @@ enum RuntimeTestBody {
     SchedulerWeightedProgress,
     SchedulerQuotaRecovery,
     SchedulerCapacityRetirement,
+    SchedulerNumaStealing,
 }
 
 pub struct RuntimeTestCase {
@@ -262,6 +263,12 @@ fn case_accepts_nested_filter(profile: &str, case_id: &str) -> bool {
 }
 
 static CASES: &[RuntimeTestCase] = &[
+    RuntimeTestCase {
+        id: "scheduler.numa_ready_stealing",
+        body: RuntimeTestBody::SchedulerNumaStealing,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
     RuntimeTestCase {
         id: "mm.owned_frames",
         body: RuntimeTestBody::Sync(super::mm_runtime::owned_frames),
@@ -510,6 +517,9 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
             RuntimeTestBody::SchedulerQuotaRecovery => scheduler_runtime::quota_recovery().await,
             RuntimeTestBody::SchedulerCapacityRetirement => {
                 scheduler_runtime::capacity_retirement_and_stale_wake().await
+            }
+            RuntimeTestBody::SchedulerNumaStealing => {
+                scheduler_runtime::numa_ready_stealing().await
             }
         };
         log_case_result(case.id, result);
