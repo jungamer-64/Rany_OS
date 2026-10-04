@@ -104,6 +104,7 @@ pub fn parse(bytes: &[u8]) -> Result<IvrsInfo, AcpiError> {
     let mut ivhds = Vec::new();
     let mut ivmds = Vec::new();
     let mut offset = IVRS_FIXED_LENGTH;
+    // LOOP_PROOF: mode=condition; reason=Each checked block length is at least four bytes and advances offset to its validated end within the finite IVRS table.;
     while offset < bytes.len() {
         let block_type = bytes[offset];
         let length = usize::from(read_u16(bytes, offset + 2)?);
@@ -175,6 +176,7 @@ enum PendingRange {
 fn parse_device_entries(mut bytes: &[u8]) -> Result<Vec<IvhdDeviceEntry>, AcpiError> {
     let mut entries = Vec::new();
     let mut pending = None;
+    // LOOP_PROOF: mode=condition; reason=Each decoded device entry has a checked length of at least four bytes and shortens the finite IVHD entry slice.;
     while !bytes.is_empty() {
         let kind = bytes[0];
         let length = entry_length(kind, bytes)?;

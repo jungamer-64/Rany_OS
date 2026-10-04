@@ -575,6 +575,7 @@ fn parse_madt(bytes: &[u8]) -> Result<ParsedMadt, AcpiError> {
         overrides: Vec::new(),
     };
     let mut offset = 44usize;
+    // LOOP_PROOF: mode=bounded; reason=Each validated MADT entry has length at least two and advances offset through the finite table, while malformed entries return an error.;
     while offset < bytes.len() {
         let entry_type = *bytes
             .get(offset)
@@ -644,6 +645,7 @@ fn parse_srat(bytes: &[u8]) -> Result<(Vec<NumaCpuAffinity>, Vec<NumaMemoryAffin
     let mut cpus = Vec::new();
     let mut memory = Vec::new();
     let mut offset = 48usize;
+    // LOOP_PROOF: mode=bounded; reason=Each validated SRAT entry has length at least two and advances offset through the finite table, while malformed entries return an error.;
     while offset < bytes.len() {
         let entry_type = bytes[offset];
         let length = usize::from(
@@ -756,6 +758,7 @@ fn parse_nfit_spa_ranges(bytes: &[u8]) -> Result<Vec<NfitSpaRange>, AcpiError> {
 
     let mut ranges = Vec::new();
     let mut offset = NFIT_FIXED_LEN;
+    // LOOP_PROOF: mode=condition; reason=Each checked NFIT structure has length at least four and advances offset to its end within the finite table.;
     while offset < bytes.len() {
         let structure_type = read_u16(bytes, offset)?;
         let length = usize::from(read_u16(bytes, offset + 2)?);

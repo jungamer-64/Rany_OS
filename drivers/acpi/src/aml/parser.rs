@@ -60,6 +60,7 @@ impl<'a> Decoder<'a> {
         scope: &AmlPath,
         end: usize,
     ) -> Result<(), AmlError> {
+        // LOOP_PROOF: mode=condition; reason=Every supported AML term consumes its opcode and operands before the enclosing package end, while malformed or unsupported terms return an error.;
         while self.cursor < end {
             let opcode = self.byte()?;
             match opcode {
@@ -190,6 +191,7 @@ impl<'a> Decoder<'a> {
             _ => return Err(self.malformed("AML Field has a reserved update rule")),
         };
         let mut bit_offset = 0u64;
+        // LOOP_PROOF: mode=condition; reason=Each field element consumes its prefix or NameSeg and checked length, advancing the cursor through the finite field package.;
         while self.cursor < end {
             match self.peek()? {
                 0x00 => {
@@ -293,6 +295,7 @@ impl<'a> Decoder<'a> {
     fn string_object(&mut self) -> Result<AmlValue, AmlError> {
         self.cursor += 1;
         let start = self.cursor;
+        // LOOP_PROOF: mode=condition; reason=Each nonzero byte advances the cursor through the finite AML stream until a terminator or a truncated-input error.;
         while self.peek()? != 0 {
             self.cursor += 1;
         }
@@ -347,6 +350,7 @@ impl<'a> Decoder<'a> {
             self.cursor += 1;
             base = AmlPath::root();
         } else {
+            // LOOP_PROOF: mode=condition; reason=Every parent prefix consumes one byte from the finite AML name stream, stopping at a different byte or a truncated-input error.;
             while self.peek()? == b'^' {
                 self.cursor += 1;
                 base = base.parent();

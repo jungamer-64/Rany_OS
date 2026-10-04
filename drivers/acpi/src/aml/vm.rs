@@ -311,6 +311,7 @@ impl AmlVm {
         }
 
         let mut quantum = 0u32;
+        // LOOP_PROOF: mode=event; reason=Each instruction consumes the VM budget and increments the resume quantum, returning on quantum exhaustion, sleep, mutex wait, completion, or failure.;
         loop {
             if quantum == RESUME_INSTRUCTION_QUANTUM {
                 return Ok(VmProgress::Yielded);
@@ -709,6 +710,7 @@ impl AmlVm {
     ) -> Result<AmlValue, AmlError> {
         let mut path = path.clone();
         let mut visited = BTreeSet::new();
+        // LOOP_PROOF: mode=event; reason=Each reference consumes allocation budget and visits a new namespace path, while a repeated path, terminal object, or missing object returns.;
         loop {
             self.consume_allocation(path.as_str().len())?;
             if !visited.insert(path.clone()) {
@@ -776,6 +778,7 @@ impl AmlVm {
         let mut remaining = field.bit_length;
         let mut destination_bit = 0u32;
         let mut result = 0u64;
+        // LOOP_PROOF: mode=bounded; reason=A validated positive access width consumes at least one remaining field bit per register read, bounded by the checked field width.;
         while remaining != 0 {
             let unit_width = u64::from(access_width);
             let unit_start = bit / unit_width * unit_width;
@@ -813,6 +816,7 @@ impl AmlVm {
         let mut bit = field.bit_offset;
         let mut remaining = field.bit_length;
         let mut source_bit = 0u32;
+        // LOOP_PROOF: mode=bounded; reason=A validated positive access width consumes at least one remaining field bit per register write, bounded by the checked field width.;
         while remaining != 0 {
             let unit_width = u64::from(access_width);
             let unit_start = bit / unit_width * unit_width;
@@ -1011,6 +1015,7 @@ impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
     }
 
     fn term_list(&mut self, end: usize) -> Result<(), AmlError> {
+        // LOOP_PROOF: mode=condition; reason=Every supported method term advances the byte cursor through its finite package, while unsupported or malformed terms return an error.;
         while self.cursor < end {
             match self.peek()? {
                 0x08 => self.name_op()?,
@@ -1315,6 +1320,7 @@ impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
         let count = usize::from(self.byte()?);
         self.consume_compiler_allocation(count)?;
         let mut values = Vec::with_capacity(count);
+        // LOOP_PROOF: mode=condition; reason=Each data object appends one package value and consumes encoded bytes, stopping at the declared element count or package end.;
         while values.len() < count && self.cursor < end {
             values.push(self.data_object()?);
         }
@@ -1348,6 +1354,7 @@ impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
             upward_search = false;
         } else if self.peek()? == b'^' {
             upward_search = false;
+            // LOOP_PROOF: mode=condition; reason=Each parent prefix consumes one byte from the finite AML name stream, stopping at a different byte or a truncated-input error.;
             while self.peek()? == b'^' {
                 self.cursor += 1;
                 base = base.parent();
@@ -1376,6 +1383,7 @@ impl<'namespace, 'budget> MethodCompiler<'namespace, 'budget> {
         {
             return Ok(candidate);
         }
+        // LOOP_PROOF: mode=condition; reason=Each parent step removes one namespace path component, stopping at the finite root or the first matching name.;
         while base != AmlPath::root() {
             base = base.parent();
             let candidate = build_path(&base, &segments)?;
