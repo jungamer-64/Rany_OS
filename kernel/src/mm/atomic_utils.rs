@@ -247,6 +247,7 @@ impl AtomicU16 {
     /// アトミックに加算を行い、以前の値を返す
     #[inline]
     pub fn fetch_add(&self, val: u16, order: Ordering) -> u16 {
+        // LOOP_PROOF: mode=event; reason=Addition returns the prior value after a successful CAS, retrying only contention or a weak-CAS spurious failure.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u16).wrapping_add(val);
@@ -264,6 +265,7 @@ impl AtomicU16 {
     /// アトミックに減算を行い、以前の値を返す
     #[inline]
     pub fn fetch_sub(&self, val: u16, order: Ordering) -> u16 {
+        // LOOP_PROOF: mode=event; reason=Subtraction returns the prior value after a successful CAS, retrying only contention or a weak-CAS spurious failure.;
         loop {
             let current = self.0.load(Ordering::Acquire);
             let new_val = (current as u16).wrapping_sub(val);

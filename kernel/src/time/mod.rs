@@ -440,6 +440,7 @@ impl SystemClock {
 
     pub fn seed_uptime_nanos(&self, nanos: u64) {
         let mut current = self.uptime_nanos.load(Ordering::Acquire);
+        // LOOP_PROOF: mode=condition; reason=Seeding stops after publishing the requested time or observing a concurrent time at least as large.;
         while nanos > current {
             match self.uptime_nanos.compare_exchange(
                 current,

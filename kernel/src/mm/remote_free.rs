@@ -182,6 +182,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             return true;
         }
         let mut pos = self.head.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=event; reason=Enqueue returns after reserving a sequence slot or observing a full ring and retries only concurrent producer progress.;
         loop {
             let idx = pos & (N - 1);
             let seq = self.sequences[idx].load(Ordering::Acquire);
@@ -238,6 +239,7 @@ impl<const N: usize> RemoteFreeRing<N> {
         let mut drained = start;
         {
             let mut lock = self.overflow.lock().unwrap_or_else(|e| e.into_inner());
+            // LOOP_PROOF: mode=condition; reason=Each removed overflow entry advances the output cursor until its finite slice is full or the locked list is empty.;
             while drained < out.len() {
                 if let Some(entry) = lock.pop() {
                     out[drained] = entry;
@@ -256,6 +258,7 @@ impl<const N: usize> RemoteFreeRing<N> {
             return drained;
         }
         let mut pos = self.tail.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Each ready ring slot advances the output cursor, and an unpublished sequence stops the finite output drain.;
         while drained < out.len() {
             let idx = pos & (N - 1);
             let seq = self.sequences[idx].load(Ordering::Acquire);
@@ -292,6 +295,7 @@ impl<const N: usize> RemoteFreeRing<N> {
         let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
+            // LOOP_PROOF: mode=condition; reason=Insertion sort decreases j after each swap and stops at zero or the first ordered predecessor.;
             while j > 0
                 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater
             {
@@ -316,6 +320,7 @@ impl<const N: usize> RemoteFreeRing<N> {
     {
         let mut drained = 0;
         let mut pos = self.tail.load(Ordering::Relaxed);
+        // LOOP_PROOF: mode=condition; reason=Each ready ring slot advances drained toward the caller's maximum and an unpublished sequence ends the batch.;
         while drained < max {
             let idx = pos & (N - 1);
             let seq = self.sequences[idx].load(Ordering::Acquire);
@@ -515,6 +520,7 @@ impl<const N: usize> RemoteFreeRing<N> {
         }
         let mut write_idx = 0;
         let mut read_idx = 1;
+        // LOOP_PROOF: mode=condition; reason=The read cursor consumes one sorted entry per iteration until the finite input slice has been merged.;
         while read_idx < entries.len() {
             let current = &entries[write_idx];
             let next = &entries[read_idx];
@@ -560,6 +566,7 @@ impl<const N: usize> RemoteFreeRing<N> {
         let entries = &mut out[..drained];
         for i in 1..entries.len() {
             let mut j = i;
+            // LOOP_PROOF: mode=condition; reason=Insertion sort decreases j after each swap and stops at zero or the first ordered predecessor.;
             while j > 0
                 && Self::entry_cmp(&entries[j - 1], &entries[j]) == core::cmp::Ordering::Greater
             {

@@ -423,7 +423,9 @@ pub fn get_log_len() -> usize {
 
 /// ロガー初期化
 pub fn init() -> Result<(), LogInitError> {
+    let _preemption = hal::preemption::PreemptionGuard::enter();
     init_serial().map_err(LogInitError::Serial)?;
+    // LOOP_PROOF: mode=event; reason=Logger initialization claims the state or observes another initializer's publication before returning, without repeating serial admission.;
     loop {
         match LOGGER_INITIALIZED.compare_exchange(
             LOGGER_UNINITIALIZED,

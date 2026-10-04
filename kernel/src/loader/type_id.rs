@@ -119,6 +119,7 @@ fn str_eq_bytewise(lhs: &str, rhs: &str) -> bool {
     }
 
     let mut index = 0usize;
+    // LOOP_PROOF: mode=condition; reason=The byte index increases once per matched byte and a mismatch or the finite equal slice length ends comparison.;
     while index < lhs_bytes.len() {
         if lhs_bytes[index] != rhs_bytes[index] {
             return false;

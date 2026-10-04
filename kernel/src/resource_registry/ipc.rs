@@ -140,6 +140,7 @@ impl ChannelRegistry {
             }
         }
 
+        // LOOP_PROOF: mode=condition; reason=Every iteration removes one retained message from the finite detached queue before returning its RRef ownership.;
         while let Some(raw) = drained.pop_front() {
             drop_abi_rref_raw(raw);
         }

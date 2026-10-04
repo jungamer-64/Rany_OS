@@ -146,6 +146,7 @@ impl<const N: usize> QuarantineRing<N> {
     ) -> usize {
         let mut drained = 0;
 
+        // LOOP_PROOF: mode=condition; reason=Each eligible entry decreases the retained queue count and increases the output index, while an unexpired epoch stops draining.;
         while drained < max && drained < out.len() && self.count > 0 {
             let entry = &self.entries[self.tail];
 

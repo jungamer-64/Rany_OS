@@ -344,6 +344,7 @@ impl<T, const N: usize> core::fmt::Debug for MpmcRingBuffer<T, N> {
 impl<T, const N: usize> Drop for MpmcRingBuffer<T, N> {
     fn drop(&mut self) {
         // 残っている要素をドロップ
+        // LOOP_PROOF: mode=condition; reason=Exclusive destruction admits no producers and each successful pop removes one of the finite buffered values.;
         while self.pop().is_some() {}
     }
 }

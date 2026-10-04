@@ -650,6 +650,7 @@ impl IoModeStats {
         self.recent_count.fetch_add(1, Ordering::Relaxed);
 
         // min/max 更新
+        // LOOP_PROOF: mode=event; reason=The minimum update stops after publishing this sample or observing an equal or smaller concurrently published latency.;
         loop {
             let current_min = self.min_latency.load(Ordering::Relaxed);
             if latency_us >= current_min {
@@ -669,6 +670,7 @@ impl IoModeStats {
             }
         }
 
+        // LOOP_PROOF: mode=event; reason=The maximum update stops after publishing this sample or observing an equal or larger concurrently published latency.;
         loop {
             let current_max = self.max_latency.load(Ordering::Relaxed);
             if latency_us <= current_max {

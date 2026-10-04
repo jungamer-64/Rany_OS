@@ -127,6 +127,7 @@ impl<T: ?Sized> IrqMutex<T> {
 
         // 2. スピンロックを取得（指数バックオフ付き）
         let mut backoff = super::lockfree::Backoff::new();
+        // LOOP_PROOF: mode=condition; reason=The IRQ-excluded lock waits for the current owner to release and stops when this CPU acquires the lock bit.;
         while self
             .locked
             .compare_exchange_weak(false, true, Ordering::Acquire, Ordering::Relaxed)
