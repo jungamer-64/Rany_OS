@@ -1187,6 +1187,7 @@ fn poll_qemu(
         )
     });
 
+    // LOOP_PROOF: mode=event; reason=Each child observation exits on the run deadline, QMP failure, guest result, or process termination, retaining diagnostics on failure.;
     loop {
         if start.elapsed() > timeout {
             let _ = child.kill();

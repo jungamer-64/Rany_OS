@@ -132,7 +132,7 @@ impl SystemIntegration {
         }
         // LOOP_PROOF: mode=bounded; reason=Every admitted controller owner is advanced once in this finite table; waits occur in the per-owner event loop.;
         for index in 0..self.ahci_controllers.len() {
-            // LOOP_PROOF: mode=event; reason=Each unfinished hardware acquisition or IDENTIFY is sampled once and yields; deadlines retain the owner and end discovery.;
+            // LOOP_PROOF: mode=event; reason=Each unfinished hardware acquisition or IDENTIFY is sampled once and yields, with deadlines retaining the owner and ending discovery.;
             loop {
                 let owner = self.ahci_controllers.remove(index);
                 let (owner, done) = owner.advance();

@@ -74,6 +74,7 @@ pub fn exit_qemu(exit_code: QemuExitCode) -> ! {
     let mut port = PortU32::new(0xf4);
     port.write(exit_code as u32);
 
+    // LOOP_PROOF: mode=halt; reason=After the emulator exit command the standalone test image permanently halts if execution continues.;
     loop {
         x86_64::instructions::hlt();
     }
@@ -134,10 +135,19 @@ mod serial {
     }
 
     #[inline]
-    fn write_byte(byte: u8) {
+    fn write_byte(byte: u8) -> core::fmt::Result {
         ensure_initialized();
-        while (inb(COM1 + 5) & 0x20) == 0 {}
+        let mut remaining = 100_000usize;
+        // LOOP_PROOF: mode=condition; reason=Each non-ready UART observation consumes one retry, with exhaustion reporting a diagnostic write failure.;
+        while (inb(COM1 + 5) & 0x20) == 0 {
+            if remaining == 0 {
+                return Err(core::fmt::Error);
+            }
+            remaining -= 1;
+            core::hint::spin_loop();
+        }
         outb(COM1, byte);
+        Ok(())
     }
 
     struct SerialWriter;
@@ -146,9 +156,9 @@ mod serial {
         fn write_str(&mut self, s: &str) -> core::fmt::Result {
             for b in s.bytes() {
                 if b == b'\n' {
-                    write_byte(b'\r');
+                    write_byte(b'\r')?;
                 }
-                write_byte(b);
+                write_byte(b)?;
             }
             Ok(())
         }
@@ -204,6 +214,7 @@ pub extern "C" fn _start() -> ! {
 
     test_main();
 
+    // LOOP_PROOF: mode=halt; reason=Once the standalone harness completes, no work remains and this entry point permanently halts.;
     loop {
         x86_64::instructions::hlt();
     }

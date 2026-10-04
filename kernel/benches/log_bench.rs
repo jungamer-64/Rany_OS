@@ -20,6 +20,7 @@ fn run_benchmark(threads: usize, entries: usize, entry_size: usize) -> Duration 
     let producers_done_consumer = producers_done.clone();
     let consumer = thread::spawn(move || {
         let mut temporary = vec![0u8; 1024];
+        // LOOP_PROOF: mode=event; reason=The consumer drains the finite producer workload and exits once every producer has finished and pending bytes reach zero.;
         loop {
             let consumed = bench_pop_global_buf(&mut temporary);
             if consumed == 0 {

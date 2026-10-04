@@ -504,6 +504,7 @@ fn internet_checksum(bytes: &[u8]) -> u16 {
     if let Some(last) = chunks.remainder().first() {
         sum = sum.wrapping_add((*last as u32) << 8);
     }
+    // LOOP_PROOF: mode=condition; reason=Each checksum fold reduces a nonzero high word of this u32 accumulator until the carry fits in sixteen bits.;
     while sum >> 16 != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -547,7 +548,13 @@ fn process_runtime_commands(
                 crate::net::runtime::command::command_resources_for_cpu_in(runtime, cpu_id).ok()?;
             let mut stack_guard = resources.stack.lock().ok()?;
             let core_stack = stack_guard.as_mut()?;
-            while let Some(command) = resources.command_queue.recv() {
+            let mut remaining = crate::net::runtime::command::RuntimeCommandQueue::CAPACITY;
+            // LOOP_PROOF: mode=bounded; reason=Each test pass consumes at most one queue capacity, leaving further handler-generated commands for one of the eight following passes.;
+            while remaining != 0 {
+                let Some(command) = resources.command_queue.recv() else {
+                    break;
+                };
+                remaining -= 1;
                 let observed = match &command {
                     crate::net::runtime::command::RuntimeCommand::Ingress(
                         crate::net::runtime::command::IngressCommand::Packet { if_id, packet },

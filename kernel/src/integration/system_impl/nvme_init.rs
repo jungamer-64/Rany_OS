@@ -692,6 +692,7 @@ fn await_disabled(
         ControllerAcquire::Disabling(controller) => controller,
     };
     let start = crate::time::best_effort_time_nanos();
+    // LOOP_PROOF: mode=event; reason=Each RDY observation completes disable or returns the retained controller at the CAP-derived hardware deadline.;
     loop {
         match controller.poll().map_err(NvmeStartupFailure::Disable)? {
             ControllerDisablePoll::Disabled(disabled) => return Ok(disabled),
@@ -711,6 +712,7 @@ fn await_enabled(
     timeout_ns: u64,
 ) -> Result<NvmeAdminController, NvmeStartupFailure> {
     let start = crate::time::best_effort_time_nanos();
+    // LOOP_PROOF: mode=event; reason=Each RDY observation completes enable or returns the retained controller at the CAP-derived hardware deadline.;
     loop {
         match controller.poll().map_err(NvmeStartupFailure::Enable)? {
             ControllerEnablePoll::Ready(ready) => return Ok(ready),
@@ -729,6 +731,7 @@ fn await_identify(
     mut request: IdentifyNamespaceRequest,
 ) -> Result<crate::drivers::nvme::IdentifiedNamespace, NvmeStartupFailure> {
     let start = crate::time::best_effort_time_nanos();
+    // LOOP_PROOF: mode=event; reason=Identify CQ polling returns its completed namespace or the retained request after the admin-command deadline.;
     loop {
         match request.poll().map_err(NvmeStartupFailure::Identify)? {
             IdentifyNamespacePoll::Ready(identified) => return Ok(identified),
@@ -747,6 +750,7 @@ fn await_queue_budget(
     mut request: QueueBudgetRequest,
 ) -> Result<IoQueueProvisioner, NvmeStartupFailure> {
     let start = crate::time::best_effort_time_nanos();
+    // LOOP_PROOF: mode=event; reason=Queue-budget CQ polling returns the provisioner or the retained request after the admin-command deadline.;
     loop {
         match request.poll().map_err(NvmeStartupFailure::QueueBudget)? {
             QueueBudgetPoll::Ready(provisioner) => return Ok(provisioner),
@@ -763,6 +767,7 @@ fn await_queue_budget(
 
 fn await_io_queue(mut creation: IoQueueCreation) -> Result<IoQueueProvisioner, NvmeStartupFailure> {
     let start = crate::time::best_effort_time_nanos();
+    // LOOP_PROOF: mode=event; reason=The finite CQ and SQ construction protocol returns its provisioner or the retained creation after the admin-command deadline.;
     loop {
         match creation.poll().map_err(NvmeStartupFailure::IoQueueCreate)? {
             IoQueueCreatePoll::Ready(provisioner) => return Ok(provisioner),

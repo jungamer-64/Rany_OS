@@ -345,6 +345,7 @@ fn parse_efi_signature_list_sha256(data: &[u8], out: &mut [[u8; 32]; MAX_DBX_HAS
     let mut count = 0;
     let mut offset = 0;
 
+    // LOOP_PROOF: mode=bounded; reason=Each validated signature list has a positive header-sized length that advances offset, with malformed geometry or output capacity ending the scan.;
     while offset + SIGNATURE_LIST_HEADER_SIZE <= data.len() && count < MAX_DBX_HASHES {
         // Read header (little-endian fields)
         let header_bytes = &data[offset..offset + SIGNATURE_LIST_HEADER_SIZE];
@@ -372,6 +373,7 @@ fn parse_efi_signature_list_sha256(data: &[u8], out: &mut [[u8; 32]; MAX_DBX_HAS
 
             if payload_size == 32 {
                 let mut sig_off = sig_data_start;
+                // LOOP_PROOF: mode=condition; reason=Each admitted SHA256 signature advances sig_off by the positive validated signature size and increments the bounded output count.;
                 while sig_off + sig_size <= sig_data_end && count < MAX_DBX_HASHES {
                     let hash_start = sig_off + SIGNATURE_OWNER_GUID_SIZE;
                     if hash_start + 32 <= data.len() {

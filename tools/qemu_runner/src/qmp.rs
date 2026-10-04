@@ -157,6 +157,7 @@ pub(super) struct QmpClient {
 
 impl QmpClient {
     pub(super) fn connect(address: SocketAddr, deadline: Instant) -> Result<Self, QmpError> {
+        // LOOP_PROOF: mode=event; reason=Each bounded TCP connection attempt succeeds or stops retrying at the caller deadline.;
         let stream = loop {
             match TcpStream::connect_timeout(&address, Duration::from_millis(200)) {
                 Ok(stream) => break stream,
@@ -303,6 +304,7 @@ impl QmpClient {
         cpu: &HotpluggedCpu,
         deadline: Instant,
     ) -> Result<DeviceDeleteOutcome, QmpError> {
+        // LOOP_PROOF: mode=event; reason=Finite queued events are consumed before deadline-bound reads, with matching delete outcomes or transport failures ending the wait.;
         loop {
             let event = match self.events.pop_front() {
                 Some(event) => event,
@@ -371,6 +373,7 @@ impl QmpClient {
             source,
         })?;
 
+        // LOOP_PROOF: mode=event; reason=Each deadline-bound read delivers a queued event or the matching command response, and malformed responses or deadline expiry return an error.;
         loop {
             let response = self.read_message(deadline, "command response")?;
             if response.get("event").is_some() {

@@ -382,7 +382,7 @@ impl GdbTransport for SerialCom1Transport {
     }
 }
 
-static GDB_SERVER: spin::Once<GdbServer> = spin::Once::new();
+static GDB_SERVER: crate::sync::InitOnce<GdbServer> = crate::sync::InitOnce::new();
 
 pub fn init_gdb_stub() -> &'static GdbServer {
     GDB_SERVER.call_once(GdbServer::new)
@@ -513,6 +513,7 @@ fn decode_hex(hex: &str) -> Result<Vec<u8>, GdbStubError> {
     let mut out = Vec::with_capacity(hex.len() / 2);
     let bytes = hex.as_bytes();
     let mut i = 0usize;
+    // LOOP_PROOF: mode=bounded; reason=The validated even-length input consumes two hexadecimal bytes per iteration and rejects an invalid digit immediately.;
     while i < bytes.len() {
         let hi = hex_nibble(bytes[i]).ok_or(GdbStubError::InvalidHex)?;
         let lo = hex_nibble(bytes[i + 1]).ok_or(GdbStubError::InvalidHex)?;

@@ -556,6 +556,7 @@ impl MicroBenchmarkRunner {
         let mut total_bytes = 0u64;
         let mut ops = 0u64;
 
+        // LOOP_PROOF: mode=condition; reason=The requested cycle duration is compared against the advancing hardware counter after each measured operation.;
         while rdtsc().saturating_sub(start) < duration_cycles {
             total_bytes += f();
             ops += 1;

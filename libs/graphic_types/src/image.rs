@@ -1053,6 +1053,7 @@ fn decode_tga_rle(
     let mut x = 0u32;
     let mut y = 0u32;
 
+    // LOOP_PROOF: mode=condition; reason=Every RLE packet consumes a header byte and any checked pixel payload, ending at the image height or finite input extent.;
     while y < height && src_idx < pixel_data.len() {
         let packet = pixel_data[src_idx];
         src_idx += 1;

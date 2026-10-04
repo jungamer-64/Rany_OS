@@ -116,6 +116,7 @@ fn validate_pci_selector(
 fn parse_args() -> Config {
     let mut cfg = Config::default();
     let mut args = env::args().skip(1);
+    // LOOP_PROOF: mode=condition; reason=Each iteration consumes one argument and its optional value from the finite process argument sequence, rejecting invalid syntax.;
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--name" => cfg.name = args.next().unwrap_or_else(|| usage()),
