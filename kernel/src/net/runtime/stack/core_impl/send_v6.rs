@@ -42,6 +42,7 @@ fn payload_checksum(view: &crate::net::payload::PacketPayloadView<'_>, initial: 
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=index advances by two through the finite IPv6 transport payload chunk, leaving at most one trailing byte.;
         while index + 1 < chunk.len() {
             sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
             index += 2;
@@ -55,6 +56,7 @@ fn payload_checksum(view: &crate::net::payload::PacketPayloadView<'_>, initial: 
         sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
     }
 
+    // LOOP_PROOF: mode=condition; reason=Each carry fold reduces the high half of the 32-bit checksum accumulator until it fits in 16 bits.;
     while (sum >> 16) != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -154,6 +156,7 @@ impl NetworkStack {
         let mut fragments = Vec::new();
         let mut offset = 0usize;
 
+        // LOOP_PROOF: mode=bounded; reason=The checked positive fragment limit advances offset by each nonempty fragment through the finite IPv6 payload.;
         while offset < total_payload_len {
             let remaining = total_payload_len - offset;
             let fragment_data_len = if remaining > fragment_payload_limit {

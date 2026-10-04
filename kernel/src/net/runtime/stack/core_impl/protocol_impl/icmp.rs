@@ -29,6 +29,7 @@ fn checksum_payload_span(span: crate::net::payload::PayloadSpanRef<'_>, initial:
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=index advances by two through the finite ICMP payload chunk and leaves at most one trailing byte.;
         while index + 1 < chunk.len() {
             sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
             index += 2;
@@ -41,6 +42,7 @@ fn checksum_payload_span(span: crate::net::payload::PayloadSpanRef<'_>, initial:
     if let Some(last) = trailing {
         sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
     }
+    // LOOP_PROOF: mode=condition; reason=Each carry fold reduces the high half of the 32-bit checksum accumulator until it fits in 16 bits.;
     while (sum >> 16) != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }

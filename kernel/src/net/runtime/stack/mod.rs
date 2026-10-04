@@ -191,6 +191,7 @@ impl RedirectCache {
 
     fn find_index(&self, destination: Ipv4Address) -> Option<usize> {
         let mut index = self.buckets[Self::bucket_for(destination)];
+        // LOOP_PROOF: mode=condition; reason=rebuild_index links each entry once to an earlier entry in its bucket, so traversal visits at most entries.len nodes before None.;
         while let Some(current) = index {
             let entry = &self.entries[current];
             if entry.destination == destination {
@@ -508,6 +509,7 @@ impl NdpPendingQueue {
     fn drain_for(&mut self, dst: &Ipv6Address) -> Vec<PendingIpv6Packet> {
         let mut matched = Vec::new();
         let mut i = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each iteration removes one matching pending IPv6 packet or advances the index, exhausting the exclusively borrowed finite deque.;
         while i < self.packets.len() {
             if self.packets[i].dst == *dst {
                 if let Some(pkt) = self.packets.remove(i) {
@@ -653,6 +655,7 @@ impl ArpPendingQueue {
     pub(crate) fn drain_for(&mut self, dst: &Ipv4Address) -> Vec<PendingIpv4Packet> {
         let mut matched = Vec::new();
         let mut i = 0;
+        // LOOP_PROOF: mode=bounded; reason=Each iteration removes one matching pending IPv4 packet or advances the index, exhausting the exclusively borrowed finite deque.;
         while i < self.packets.len() {
             if self.packets[i].dst == *dst {
                 if let Some(pkt) = self.packets.remove(i) {

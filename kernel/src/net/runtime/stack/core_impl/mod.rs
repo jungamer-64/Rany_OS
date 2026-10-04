@@ -705,6 +705,7 @@ impl NetworkStack {
         }
 
         let mut pending = requests.into_iter();
+        // LOOP_PROOF: mode=condition; reason=Each next consumes one request from the finite owned fragment vector, and a failed submission ends the drain after cancelling the suffix.;
         while let Some(request) = pending.next() {
             if crate::net::runtime::device::transmit_registered_tx_request_in(
                 runtime, if_id, request,
@@ -890,6 +891,7 @@ impl NetworkStack {
             .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let mut fragments = Vec::new();
         let mut offset = 0usize;
+        // LOOP_PROOF: mode=bounded; reason=The positive fragment length advances offset through the finite IPv4 payload, and invalid fragment geometry returns an error.;
         while offset < payload_len {
             let remaining = payload_len - offset;
             let fragment_data_len = if remaining > unfragmented_payload_limit {
@@ -1386,6 +1388,7 @@ mod interface_topology_tests {
         .expect("bootstrap command resources")
         .command_queue
         .clone();
+        // LOOP_PROOF: mode=condition; reason=This isolated fixture has no producers and each recv removes one command from the bounded queue until empty.;
         while queue.recv().is_some() {}
         for _ in 0..crate::net::runtime::command::RuntimeCommandQueue::CAPACITY {
             assert!(queue.send(RuntimeCommand::Control(
@@ -1394,6 +1397,7 @@ mod interface_topology_tests {
         }
         stack.process_timeouts();
         assert!(stack.needs_interface_topology_revision(changed_revision));
+        // LOOP_PROOF: mode=condition; reason=The fixture has stopped producing commands and recv drains at most the queue capacity before returning None.;
         while queue.recv().is_some() {}
 
         stack.process_timeouts();

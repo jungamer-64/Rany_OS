@@ -51,7 +51,13 @@ impl RuntimeCommandHandler {
             None => return EventHandleResult::SocketNotFound(fd),
         };
 
-        loop {
+        // A concurrent writer may append while this command owns the stack
+        // guard. Only the bytes observed at entry belong to this batch.
+        let mut remaining = socket
+            .with_inner(|inner| inner.send_payload_bytes())
+            .unwrap_or(0);
+        // LOOP_PROOF: mode=bounded; reason=Each nonempty segment consumes remaining bytes from the entry snapshot, while a closed window or failed submission ends the batch.;
+        while remaining != 0 {
             let send_params = tcb_table
                 .read_by_socket_id(fd, |entry| TcpControlBlockSnapshot::from(entry))
                 .and_then(|tcb| {
@@ -60,7 +66,7 @@ impl RuntimeCommandHandler {
                     }
 
                     let inner_result = socket.with_inner_mut(|inner| {
-                        let pending_len = inner.send_payload_bytes();
+                        let pending_len = inner.send_payload_bytes().min(remaining);
                         if pending_len == 0 || tcb.should_delay_send(pending_len) {
                             return None;
                         }
@@ -93,6 +99,7 @@ impl RuntimeCommandHandler {
             };
 
             let data_len = send_payload.total_len() as u32;
+            remaining -= send_payload.total_len();
             let segment = TcpSegmentBuilder::new(local.port(), remote.port())
                 .seq(seq)
                 .ack(ack)

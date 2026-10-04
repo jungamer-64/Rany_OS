@@ -766,7 +766,7 @@ fn build_tx_descriptors_in(
 
 fn next_tx_lease_id(runtime: NetRuntimeHandle) -> TxLeaseId {
     let context = runtime_context_for(runtime);
-    // LOOP_PROOF: mode=condition; reason=Only the single zero value is skipped after counter wrap.;
+    // LOOP_PROOF: mode=event; reason=Every atomic fetch advances the identifier sequence and the call returns at the next nonzero identifier.;
     loop {
         let raw = context.tx_lease_next_id.fetch_add(1, Ordering::Relaxed);
         if let Some(id) = TxLeaseId::new(raw) {
@@ -882,6 +882,7 @@ fn release_interface_tx_leases_in(
     scope: TxLeaseReleaseScope,
     outcome: TxDeviceOutcome,
 ) {
+    // LOOP_PROOF: mode=event; reason=Port stop has closed admission under driver_gate, each iteration removes one retained lease, and an empty matching set ends finalization.;
     loop {
         let lease = {
             let mut leases = runtime_context_for(runtime)
@@ -1474,6 +1475,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
         log::error!(target: "net::device", "failed to reserve TX descriptor scratch");
         return;
     }
+    // LOOP_PROOF: mode=event; reason=The TX worker awaits its queue when empty, consumes accepted requests, and returns after its port owner closes admission.;
     loop {
         if !with_port_handle_in(runtime, if_id, |handle| {
             handle.active.load(Ordering::Acquire)
@@ -1489,6 +1491,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
             pending = pop_tx_request_in(runtime, if_id);
         }
 
+        // LOOP_PROOF: mode=condition; reason=Each iteration consumes one queued TX request and returns on closed admission or an unavailable port, with queue exhaustion ending the batch.;
         while let Some(request) = pending {
             if !with_port_handle_in(runtime, if_id, |handle| {
                 handle.active.load(Ordering::Acquire)
@@ -1572,6 +1575,7 @@ async fn tx_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
 }
 
 async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    // LOOP_PROOF: mode=event; reason=The port owner controls worker lifetime, an empty event queue is awaited, and closed admission terminates the worker.;
     loop {
         if !with_port_handle_in(runtime, if_id, |handle| {
             handle.active.load(Ordering::Acquire)
@@ -1587,6 +1591,7 @@ async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
             pending = pop_driver_event_in(runtime, if_id);
         }
 
+        // LOOP_PROOF: mode=condition; reason=Each handled event is removed from the bounded port queue, and queue exhaustion or closed admission ends this batch.;
         while let Some(event) = pending {
             if !with_port_handle_in(runtime, if_id, |handle| {
                 handle.active.load(Ordering::Acquire)
