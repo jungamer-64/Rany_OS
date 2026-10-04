@@ -409,6 +409,9 @@ fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
 #[cfg(feature = "qemu-test-export")]
 fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
     let target = peer_online_cpu()?;
+    let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
+    let observation = Arc::new(WakeObservation::new());
+    let task_observation = Arc::clone(&observation);
     let armed = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -418,7 +421,11 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
     task::spawn(
         async move {
             match task::with_timeout(
-                wait_for_registered_interrupt(InterruptSource::Timer, armed_clone),
+                wait_for_registered_interrupt(
+                    InterruptSource::Timer,
+                    armed_clone,
+                    task_observation,
+                ),
                 500,
             )
             .await
@@ -446,7 +453,6 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
         )));
     }
 
-    let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
     let raw_before = crate::interrupts::get_timer_ticks();
     let delegated_tick_before = task::current_tick();
 
@@ -480,6 +486,11 @@ fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
     if stats_after.wake_count <= stats_before.wake_count {
         return Err(BootCaseError::failed(
             "timer wake was not drained outside ISR context",
+        ));
+    }
+    if !observation.delivered_outside_interrupt() {
+        return Err(BootCaseError::failed(
+            "timer callback ran in ISR context or was not delivered",
         ));
     }
 
@@ -547,6 +558,8 @@ fn case_synthetic_interrupt_deferred_path(
     label: &str,
 ) -> Result<(), BootCaseError> {
     let target = peer_online_cpu()?;
+    let observation = Arc::new(WakeObservation::new());
+    let task_observation = Arc::clone(&observation);
     let armed = Arc::new(AtomicBool::new(false));
     let completed = Arc::new(AtomicBool::new(false));
     let timed_out = Arc::new(AtomicBool::new(false));
@@ -555,7 +568,11 @@ fn case_synthetic_interrupt_deferred_path(
     let timed_out_clone = timed_out.clone();
     task::spawn(
         async move {
-            match task::with_timeout(wait_for_registered_interrupt(source, armed_clone), 500).await
+            match task::with_timeout(
+                wait_for_registered_interrupt(source, armed_clone, task_observation),
+                500,
+            )
+            .await
             {
                 TimeoutResult::Completed(()) => completed_clone.store(true, Ordering::Release),
                 TimeoutResult::TimerFailed(cause) => {
@@ -581,16 +598,15 @@ fn case_synthetic_interrupt_deferred_path(
     }
 
     let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
-    task::wake_from_interrupt(source);
+    x86_64::instructions::interrupts::without_interrupts(|| {
+        let current = crate::cpu::CurrentCpu::acquire().expect("interrupt injection owns its CPU");
+        let _interrupt = current.enter_interrupt();
+        task::wake_from_interrupt(source);
+    });
     let stats_after_enqueue = task::interrupt_waker::interrupt_waker_registry().stats();
     if stats_after_enqueue.interrupt_count <= stats_before.interrupt_count {
         return Err(BootCaseError::failed(format!(
             "{label} interrupt was not queued into the deferred wake registry"
-        )));
-    }
-    if stats_after_enqueue.wake_count != stats_before.wake_count {
-        return Err(BootCaseError::failed(format!(
-            "{label} interrupt woke a task before executor-side drain"
         )));
     }
     task::interrupt_waker::process_interrupt_events();
@@ -610,21 +626,77 @@ fn case_synthetic_interrupt_deferred_path(
             "{label} wait future did not complete after deferred wake"
         )));
     }
+    if !observation.delivered_outside_interrupt() {
+        return Err(BootCaseError::failed(format!(
+            "{label} callback ran in ISR context or was not delivered"
+        )));
+    }
 
     Ok(())
 }
 
 #[cfg(feature = "qemu-test-export")]
-async fn wait_for_registered_interrupt(source: InterruptSource, armed: Arc<AtomicBool>) {
+async fn wait_for_registered_interrupt(
+    source: InterruptSource,
+    armed: Arc<AtomicBool>,
+    observation: Arc<WakeObservation>,
+) {
     let mut wait = Box::pin(task::wait_for_interrupt(source));
     core::future::poll_fn(move |context| {
-        let poll = wait.as_mut().poll(context);
+        let waker = core::task::Waker::from(Arc::new(ObservedWake {
+            parent: context.waker().clone(),
+            observation: Arc::clone(&observation),
+        }));
+        let poll = wait
+            .as_mut()
+            .poll(&mut core::task::Context::from_waker(&waker));
         if poll.is_pending() {
             armed.store(true, Ordering::Release);
         }
         poll
     })
     .await;
+}
+
+#[cfg(feature = "qemu-test-export")]
+struct WakeObservation {
+    in_interrupt: AtomicBool,
+    calls: AtomicU64,
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl WakeObservation {
+    fn new() -> Self {
+        Self {
+            in_interrupt: AtomicBool::new(false),
+            calls: AtomicU64::new(0),
+        }
+    }
+
+    fn delivered_outside_interrupt(&self) -> bool {
+        !self.in_interrupt.load(Ordering::Acquire) && self.calls.load(Ordering::Acquire) != 0
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+struct ObservedWake {
+    parent: core::task::Waker,
+    observation: Arc<WakeObservation>,
+}
+
+#[cfg(feature = "qemu-test-export")]
+impl alloc::task::Wake for ObservedWake {
+    fn wake(self: Arc<Self>) {
+        self.wake_by_ref();
+    }
+
+    fn wake_by_ref(self: &Arc<Self>) {
+        if crate::cpu::CurrentCpu::acquire().is_none_or(|current| current.in_interrupt()) {
+            self.observation.in_interrupt.store(true, Ordering::Release);
+        }
+        self.observation.calls.fetch_add(1, Ordering::AcqRel);
+        self.parent.wake_by_ref();
+    }
 }
 
 #[cfg(feature = "qemu-test-export")]
