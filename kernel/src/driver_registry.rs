@@ -1682,6 +1682,7 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     timer_statistics: kernel_abi_timer_statistics,
     current_tick: kernel_abi_current_tick,
     current_task_id: kernel_abi_current_task_id,
+    pci_config_read: kernel_abi_pci_config_read,
     mmio_acquire: kernel_abi_mmio_acquire,
     mmio_release: kernel_abi_mmio_release,
     dma_allocate: kernel_abi_dma_allocate,
@@ -1797,6 +1798,24 @@ extern "C" fn kernel_abi_timer_statistics() -> kernel_api::abi::driver::AbiTimer
         total_fired: stats.total_fired,
         notifications: stats.notifications,
         due_timers: u64::try_from(stats.due_timers).unwrap_or(u64::MAX),
+    }
+}
+
+unsafe extern "C" fn kernel_abi_pci_config_read(device: u64, out: *mut u8) -> i32 {
+    use kernel_api::pci_config::PciConfigReadError;
+    if out.is_null() {
+        return PciConfigReadError::InvalidResponse.into_abi();
+    }
+    match kernel_api::service::kernel::instance()
+        .read_pci_config(PackedPciLocation::from_raw(device))
+    {
+        Ok(snapshot) => {
+            // SAFETY: the importer provides an exclusive writable 256-byte
+            // buffer for this synchronous call. The snapshot is separate storage.
+            unsafe { core::ptr::copy_nonoverlapping(snapshot.bytes().as_ptr(), out, 256) };
+            0
+        }
+        Err(cause) => cause.into_abi(),
     }
 }
 

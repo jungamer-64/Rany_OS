@@ -22,6 +22,7 @@ Drivers are intended to be built separately from the kernel core and must not de
 ## カーネル機能が必要な場合
 
 - Request access via `kernel_api::service::kernel::instance()`, which provides device-scoped services such as `alloc_dma_for_device(DmaAllocationRequest, pci_locator)`.
+- PCI capability discovery uses an authorized conventional configuration snapshot for the bound function. The snapshot is observation metadata; register access requires a separate BAR-relative MMIO acquisition whose retained owner prevents resource reconfiguration. Drivers do not read shared PCI configuration ports directly.
 - DMA ownership is an explicit lease protocol. CPU access is available only in CPU-owned states, submission consumes that authority, and release is an explicit fallible close/reconciliation boundary. `Drop` is abandonment bookkeeping and must not be treated as proof that unmap or backing-memory reclamation succeeded.
 - Obtain `pci_locator` from `kernel_api::abi::driver::DriverContext::pci_location()` or from PCI enumeration using `PackedPciLocation::new(segment, bus, device, function)`.
 - If additional kernel capabilities are required, add them to `interfaces/kernel_api` and implement them inside the kernel service implementation.

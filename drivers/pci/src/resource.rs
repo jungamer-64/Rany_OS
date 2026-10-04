@@ -31,6 +31,23 @@ impl FunctionResources {
         &self.info
     }
 
+    /// Observe the complete conventional header while this function remains
+    /// pinned. Each hardware transaction is serialized by the configuration
+    /// accessor. The returned bytes retain no assignment or write authority.
+    #[must_use]
+    pub fn conventional_configuration(&self) -> [u8; 256] {
+        let accessor = crate::legacy::get_legacy_accessor();
+        let mut bytes = [0u8; 256];
+        for (index, word) in bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            word.copy_from_slice(
+                &accessor
+                    .read32(self.info.bdf, (index * 4) as u16)
+                    .to_le_bytes(),
+            );
+        }
+        bytes
+    }
+
     /// Resolves this pinned bridge's downstream bus range. The pin excludes
     /// bus-number repurposing while the caller uses the resulting observation.
     ///

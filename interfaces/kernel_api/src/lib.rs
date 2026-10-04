@@ -31,6 +31,7 @@ pub mod error;
 pub mod ipc;
 pub mod mmio;
 pub mod msix;
+pub mod pci_config;
 pub mod provider;
 
 pub mod resource;

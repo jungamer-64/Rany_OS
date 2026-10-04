@@ -63,3 +63,30 @@ pub(super) fn acquire(request: PciMmioRequest) -> Result<hal::MappedMmio, MmioAc
     unsafe { hal::MappedMmio::from_raw_parts(owner, grant.base, grant.length) }
         .map_err(|_| MmioAcquireError::MappingFailed)
 }
+
+#[expect(
+    unsafe_code,
+    reason = "The authorized synchronous ABI snapshotter borrows an exclusive complete header buffer."
+)]
+pub(super) fn read_pci_config(
+    device: crate::abi::driver::PackedPciLocation,
+) -> Result<crate::pci_config::PciConfigSnapshot, crate::pci_config::PciConfigReadError> {
+    use crate::pci_config::{PciConfigReadError, PciConfigSnapshot};
+    if device.is_null() || !device.is_canonical() {
+        return Err(PciConfigReadError::InvalidDevice);
+    }
+    let api = super::abi();
+    if api.abi_version != KERNEL_API_ABI_VERSION
+        || (api.abi_size as usize) < core::mem::size_of::<KernelApiV4>()
+    {
+        return Err(PciConfigReadError::Unavailable);
+    }
+    let mut bytes = [0u8; 256];
+    // SAFETY: the complete table was validated. The initialized header buffer
+    // remains exclusively borrowed for this synchronous call; no pointer escapes.
+    let status = unsafe { (api.pci_config_read)(device.raw(), bytes.as_mut_ptr()) };
+    if status != 0 {
+        return Err(PciConfigReadError::from_abi(status));
+    }
+    PciConfigSnapshot::from_bytes(device, bytes)
+}

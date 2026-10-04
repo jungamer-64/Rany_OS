@@ -31,6 +31,7 @@ mod kernel;
 mod maintenance;
 mod net;
 mod network;
+mod pci;
 mod providers;
 mod storage;
 mod task;

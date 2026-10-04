@@ -24,6 +24,7 @@ use crate::dma::{
 use crate::ipc::{ChannelHandle, DomainId};
 use crate::mmio::{MmioAcquireError, PciMmioRequest};
 use crate::msix::MsixVectorInfo;
+use crate::pci_config::{PciConfigReadError, PciConfigSnapshot};
 #[cfg(feature = "cell_runtime")]
 #[path = "services/cell_mmio.rs"]
 mod cell_mmio;
@@ -54,6 +55,18 @@ use core::ptr::NonNull;
 /// The kernel implements this trait and registers itself at boot time.
 /// All KAPI functions delegate to this implementation.
 pub trait KernelServices: Send + Sync {
+    /// Observe the conventional header of the caller's authorized PCI function.
+    /// The provider pins enumeration while reading; the returned snapshot retains
+    /// no resource. Register acquisition separately pins its complete lifetime.
+    ///
+    /// # Errors
+    /// Distinguishes function validity, authorization, absence, resource
+    /// admission and an unavailable configuration access mechanism.
+    fn read_pci_config(
+        &self,
+        device: PackedPciLocation,
+    ) -> Result<PciConfigSnapshot, PciConfigReadError>;
+
     /// Acquires the caller's PCI register aperture. Request validity alone does
     /// not grant access: the implementation authorizes the function, excludes
     /// RAM/conflicting grants, pins PCI configuration, and retains cache-correct
@@ -1004,6 +1017,13 @@ mod standalone {
             // borrowed. The current invocation retains originating code while
             // the provider consumes or rejects its single Future owner.
             unsafe { (super::abi().spawn)(&mut future, &options) }.into_result()
+        }
+
+        fn read_pci_config(
+            &self,
+            device: PackedPciLocation,
+        ) -> Result<PciConfigSnapshot, PciConfigReadError> {
+            super::cell_mmio::read_pci_config(device)
         }
 
         fn acquire_pci_mmio(

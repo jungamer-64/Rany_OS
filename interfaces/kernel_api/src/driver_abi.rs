@@ -304,6 +304,13 @@ impl PackedPciLocation {
         self.0
     }
 
+    /// Whether every segment/BDF field fits the supported locator domain.
+    /// Null remains a separate absence value at device acquisition boundaries.
+    pub const fn is_canonical(self) -> bool {
+        const MASK: u64 = (0xffff << 32) | (0xff << 16) | (0x1f << 8) | 7;
+        self.0 & !MASK == 0
+    }
+
     pub const fn is_null(self) -> bool {
         self.0 == 0
     }
@@ -1589,6 +1596,11 @@ pub struct KernelApiV4 {
     /// Execution identity is observed, never reconstructed from a global slot.
     /// Zero indicates execution outside an admitted task.
     pub current_task_id: extern "C" fn() -> u64,
+
+    /// Snapshot the caller's authorized conventional PCI header. `out` must
+    /// point to an exclusive writable 256-byte range for this synchronous call.
+    /// Success writes the complete header; no PCI write authority is granted.
+    pub pci_config_read: unsafe extern "C" fn(device: u64, out: *mut u8) -> i32,
 
     /// `aperture` is 0 for a complete BAR, 1 for the checked byte window.
     /// A successful call transfers one retained grant into aligned writable

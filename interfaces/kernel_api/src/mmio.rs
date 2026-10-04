@@ -193,8 +193,7 @@ impl PciMmioRequest {
         bar_index: u8,
         aperture: MmioAperture,
     ) -> Result<Self, MmioRequestError> {
-        const LOCATOR_MASK: u64 = (0xffff << 32) | (0xff << 16) | (0x1f << 8) | 7;
-        if device.is_null() || device.raw() & !LOCATOR_MASK != 0 {
+        if device.is_null() || !device.is_canonical() {
             return Err(MmioRequestError::InvalidDevice);
         }
         if bar_index >= 6 {

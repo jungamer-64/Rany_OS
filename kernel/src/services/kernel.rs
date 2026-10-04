@@ -16,6 +16,13 @@ use kernel_api::abi::driver::{
 use kernel_api::msix::MsixVectorInfo;
 
 impl KernelServices for KernelServiceHost {
+    fn read_pci_config(
+        &self,
+        device: PackedPciLocation,
+    ) -> Result<kernel_api::pci_config::PciConfigSnapshot, kernel_api::pci_config::PciConfigReadError>
+    {
+        super::pci::read_config(device)
+    }
     fn acquire_pci_mmio(
         &self,
         request: kernel_api::mmio::PciMmioRequest,
@@ -646,9 +653,13 @@ mod dma_tests {
             let _owner_guard = set_current_subject(owner);
             let mut open =
                 KERNEL_SERVICE_HOST.fs_open_with_token("foreign-close-test", OpenMode::Write, None);
-            match open.as_mut().poll(&mut core::task::Context::from_waker(core::task::Waker::noop())) {
+            match open.as_mut().poll(&mut core::task::Context::from_waker(
+                core::task::Waker::noop(),
+            )) {
                 core::task::Poll::Ready(result) => result.expect("owner should open file"),
-                core::task::Poll::Pending => panic!("volatile memfs open should complete immediately"),
+                core::task::Poll::Pending => {
+                    panic!("volatile memfs open should complete immediately")
+                }
             }
         };
         let handle_id = handle.id();
