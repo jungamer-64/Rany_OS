@@ -311,6 +311,7 @@ async fn transition_worker() {
     let queue = TRANSITION_QUEUE
         .get()
         .unwrap_or_else(|| panic!("CPU transition worker started without its request queue"));
+    // LOOP_PROOF: mode=event; reason=The service-owned transition worker awaits each admitted control request and its completion before accepting another.;
     loop {
         let request = NextRequestFuture { queue }.await;
         match request {

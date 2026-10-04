@@ -76,7 +76,7 @@ impl Drop for KeyboardStream {
     }
 }
 
-/// Arc-based variant that owns an Arc<dyn Keymap>
+/// Arc-based variant that owns an `Arc<dyn Keymap>`
 pub struct KeyboardStreamArc {
     driver: &'static dyn DriverOps,
     keymap: Arc<dyn Keymap>,
@@ -176,6 +176,7 @@ impl Future for CharFuture {
         let mut events_checked: usize = 0;
         let budget = self.budget;
 
+        // LOOP_PROOF: mode=event; reason=An accepted character, an empty input queue, or the finite poll budget returns Ready or Pending to the stream owner.;
         loop {
             if events_checked >= budget {
                 cx.waker().wake_by_ref();
@@ -209,7 +210,7 @@ impl Future for CharFuture {
     }
 }
 
-/// CharFuture using Arc<dyn Keymap>
+/// CharFuture using `Arc<dyn Keymap>`
 pub struct CharFutureArc<'a> {
     driver: &'static dyn DriverOps,
     keymap: &'a Arc<dyn Keymap>,

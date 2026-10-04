@@ -248,10 +248,12 @@ fn rdtsc() -> u64 {
 
 fn internet_checksum(mut bytes: impl Iterator<Item = u8>) -> u16 {
     let mut sum = 0u32;
+    // LOOP_PROOF: mode=condition; reason=The descriptor-backed byte iterator is finite and each iteration consumes up to two bytes.;
     while let Some(high) = bytes.next() {
         let low = bytes.next().unwrap_or(0);
         sum += u32::from(u16::from_be_bytes([high, low]));
     }
+    // LOOP_PROOF: mode=condition; reason=Folding the upper 16 bits into the lower half reduces a u32 sum until no carry remains.;
     while sum >> 16 != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }
@@ -465,6 +467,7 @@ fn drain_runtime_commands(
             let core_stack = stack_guard
                 .as_mut()
                 .ok_or("benchmark stack is not initialized")?;
+            // LOOP_PROOF: mode=condition; reason=This benchmark drain consumes each admitted command until the queue is empty, with handler failure returning immediately.;
             while let Some(command) = resources.command_queue.recv() {
                 let result = handler.handle_event_with_stack_in(runtime, command, core_stack);
                 if !matches!(

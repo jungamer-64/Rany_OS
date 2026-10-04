@@ -267,7 +267,7 @@ impl KeyboardDriver {
         Ok(KeyboardStream::new(self, keymap))
     }
 
-    /// Take keyboard stream with Arc<dyn Keymap>
+    /// Take keyboard stream with `Arc<dyn Keymap>`
     ///
     /// For dynamic keymap switching or non-'static keymaps.
     /// # Errors
