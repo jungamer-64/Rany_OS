@@ -14,7 +14,7 @@
 //! 2. LiveUpdateManager経由でアップデート実行
 //!    a. グローバルエポックをインクリメント
 //!    b. 新ドライバを旧ドライバのハンドルに差し替え
-//!    c. Quiescent State Detection で全コアの離脱を確認
+//!    c. 中断スタック・Future・ドライバが保持する旧コード lease の解消を確認
 //! 3. 旧セルのメモリを安全に解放
 //! 4. DriverCellのメタデータを更新
 //! ```
@@ -111,6 +111,7 @@ pub fn hot_swap(
     new_elf_data: &[u8],
 ) -> Result<HotSwapResult, DriverDomainError> {
     let manager = driver_domain_manager();
+    let _invocation = manager.reserve_call(id, super::LifecycleOperation::Update)?;
     let start_tick = crate::task::current_tick();
 
     // 状態チェック: Runningのみホットスワップ可能
@@ -156,14 +157,9 @@ pub fn hot_swap(
                 cell.hot_swap_state = HotSwapState::Validating;
                 cell.validation_deadline_tick = crate::loader::live_update::live_update_manager()
                     .pending_status(new_cell_id.as_u64())
-                    .map(|s| s.deadline_tick);
+                    .and_then(|s| s.deadline_tick);
                 cell.last_health_failure = None;
             })?;
-
-            // 新ドライバのハンドルを更新
-            // LiveUpdateManagerが内部的にDriverRegistryを更新しているため、
-            // DriverCellのdriver_handlesは旧ハンドルを維持（replace_driver済み）
-            update_driver_handles_after_swap(id, new_cell_id)?;
 
             // Running状態に復帰
             manager.with_cell_mut(id, |cell| {
@@ -178,7 +174,7 @@ pub fn hot_swap(
                 name,
                 old_cell_id.as_u64(),
                 new_cell_id_u64,
-                duration / 1000 // rough tick→ms (depends on timer)
+                duration
             );
 
             Ok(HotSwapResult {
@@ -189,6 +185,20 @@ pub fn hot_swap(
             })
         }
         Err(e) => {
+            if let Some(pending) = live_update.pending_status(old_cell_id.as_u64()) {
+                manager.with_cell_mut(id, |cell| {
+                    cell.hot_swap_state = if pending.health_failed {
+                        HotSwapState::Error
+                    } else {
+                        HotSwapState::Switching
+                    };
+                    cell.validation_deadline_tick = pending.deadline_tick;
+                    if pending.health_failed {
+                        cell.last_health_failure = Some(format!("{e}"));
+                    }
+                })?;
+                return Err(DriverDomainError::LiveUpdate(e));
+            }
             let msg = format!("LiveUpdate failed: {}", e);
             log::error!("[DriverDomain] Hot-swap failed for '{}': {}\n", name, msg);
 
@@ -199,36 +209,9 @@ pub fn hot_swap(
                 cell.transition_to(DriverDomainState::Running);
             })?;
 
-            Err(DriverDomainError::HotSwapFailed(msg))
+            Err(DriverDomainError::LiveUpdate(e))
         }
     }
-}
-
-/// ホットスワップ後のドライバハンドル更新
-///
-/// LiveUpdateManagerがDriverRegistryのreplace_driverを呼んでいるため、
-/// 既存のDriverHandleは有効なまま（vtableが新コードを指している）。
-/// CellEntryのregistered_driversを新セルに付け替える。
-fn update_driver_handles_after_swap(
-    id: DriverDomainId,
-    new_cell_id: CellId,
-) -> Result<(), DriverDomainError> {
-    let manager = driver_domain_manager();
-
-    let handles = manager.with_cell(id, |cell| cell.driver_handles.clone())?;
-
-    // 新セルのregistered_driversを更新
-    crate::loader::with_registry_mut(|r| {
-        if let Some(entry) = r.get_mut(new_cell_id) {
-            for handle in &handles {
-                if !entry.registered_drivers.contains(handle) {
-                    entry.registered_drivers.push(*handle);
-                }
-            }
-        }
-    });
-
-    Ok(())
 }
 
 /// ホットスワップをロールバック
@@ -237,11 +220,15 @@ fn update_driver_handles_after_swap(
 /// LiveUpdateManagerのrollback()を使用して旧バージョンに復帰する。
 pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let manager = driver_domain_manager();
+    let _invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
 
     let (hot_swap_state, current_cell_id) =
         manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
-    if hot_swap_state != HotSwapState::Validating && hot_swap_state != HotSwapState::Error {
+    if !matches!(
+        hot_swap_state,
+        HotSwapState::Validating | HotSwapState::Switching | HotSwapState::Error
+    ) {
         return Err(DriverDomainError::HotSwapFailed(
             "No active hot-swap to rollback".into(),
         ));
@@ -264,10 +251,7 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
                     cell.hot_swap_state = HotSwapState::Error;
                 })
                 .ok();
-            return Err(DriverDomainError::HotSwapFailed(format!(
-                "Rollback failed: {}",
-                e
-            )));
+            return Err(DriverDomainError::LiveUpdate(e));
         }
     };
 
@@ -300,6 +284,7 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
 /// ホットスワップをコミット（猶予期間前の明示コミット）
 pub fn commit(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let manager = driver_domain_manager();
+    let _invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
     let (hot_swap_state, current_cell_id) =
         manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
@@ -315,10 +300,7 @@ pub fn commit(id: DriverDomainId) -> Result<(), DriverDomainError> {
 
     let live_update = crate::loader::live_update_manager();
     if let Err(e) = live_update.commit_for_cell(current_cell_id.as_u64()) {
-        return Err(DriverDomainError::HotSwapFailed(format!(
-            "Commit failed: {}",
-            e
-        )));
+        return Err(DriverDomainError::LiveUpdate(e));
     }
 
     manager.with_cell_mut(id, |cell| {
@@ -365,12 +347,15 @@ pub fn health_status(id: DriverDomainId) -> Result<CellHealthStatus, DriverDomai
     })
 }
 
-/// Quiescent point から呼ばれる検証猶予ウィンドウの監視
+/// The service host reconciles switching, validation and retained reclamation.
 pub fn poll_validation_windows() {
     let manager = driver_domain_manager();
     let snapshots = manager.list_snapshots();
     for snap in snapshots {
-        if snap.hot_swap_state != HotSwapState::Validating {
+        if !matches!(
+            snap.hot_swap_state,
+            HotSwapState::Validating | HotSwapState::Switching | HotSwapState::Error
+        ) {
             continue;
         }
         poll_one_validation(&snap);
@@ -382,6 +367,28 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
         return;
     };
     let live_update = crate::loader::live_update::live_update_manager();
+
+    if let Some(pending) = live_update.pending_status(current_cell_id.as_u64()) {
+        if pending.phase == crate::loader::live_update::UpdatePhase::Validating
+            && snap.hot_swap_state == HotSwapState::Switching
+        {
+            if let Err(cause) = driver_domain_manager().with_cell_mut(snap.id, |cell| {
+                cell.cell_id = Some(CellId::from_u64(pending.new_cell_id));
+                cell.hot_swap_state = HotSwapState::Validating;
+                cell.validation_deadline_tick = pending.deadline_tick;
+                cell.transition_to(DriverDomainState::Running);
+                cell.stats.record_hot_swap();
+            }) {
+                log::error!("[DriverDomain] Retained update observer failed: {cause}");
+            } else {
+                super::stats::global_stats().on_hot_swap();
+            }
+            return;
+        }
+        if pending.phase != crate::loader::live_update::UpdatePhase::Validating {
+            return;
+        }
+    }
 
     // カーネル観測型ヘルスチェック
     if snap.state != DriverDomainState::Running {
@@ -406,7 +413,7 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
     if let Some(pending) = live_update.pending_status(current_cell_id.as_u64()) {
         driver_domain_manager()
             .with_cell_mut(snap.id, |cell| {
-                cell.validation_deadline_tick = Some(pending.deadline_tick);
+                cell.validation_deadline_tick = pending.deadline_tick;
                 if pending.health_failed && cell.last_health_failure.is_none() {
                     cell.last_health_failure = Some("Marked unhealthy during validation".into());
                 }
@@ -416,7 +423,10 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
         let now = crate::task::current_tick();
         if pending.health_failed {
             let _ = rollback(snap.id);
-        } else if now >= pending.deadline_tick {
+        } else if pending
+            .deadline_tick
+            .is_some_and(|deadline| now >= deadline)
+        {
             let _ = commit(snap.id);
         }
         return;

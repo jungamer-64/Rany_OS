@@ -7,23 +7,10 @@
 //! 設計書 8.1: スタックアンワインドとリソース回収
 //! 設計書 8.2: RedLeafの知見：プロキシパターン
 //!
-//! ## 障害処理フロー
-//!
-//! ```text
-//! ドライバパニック検出
-//!     │
-//!     ▼
-//! PoisonLock毒入れ + DOM状態更新
-//!     │
-//!     ▼
-//! Exchange Heap上のRRefリソース回収
-//!     │
-//!     ▼
-//! RestartPolicy判定
-//!     ├─ Never → Faulted状態で放置
-//!     ├─ OnPanic → リトライ数チェック → 再起動
-//!     └─ Always → リトライ数チェック → 再起動
-//! ```
+//! Fault reporting publishes a stop request and preserves outstanding callbacks.
+//! The service host advances an admitted restart after its deadline, retaining
+//! incomplete stop/remove/start phases and observing terminal recovery failure.
+//! An active live update owns replacement until rollback or commit completes.
 use alloc::format;
 use alloc::string::String;
 
@@ -112,6 +99,23 @@ impl Default for RestartPolicy {
             max_retries: 3,
             backoff_ms: 100,
         }
+    }
+}
+
+/// A runtime deadline in nanoseconds, independent of APIC delivery count.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestartDeadline {
+    nanos: u64,
+}
+
+impl RestartDeadline {
+    fn after_millis(now_nanos: u64, delay_millis: u64) -> Self {
+        Self {
+            nanos: now_nanos.saturating_add(delay_millis.saturating_mul(1_000_000)),
+        }
+    }
+    fn is_due(self, now_nanos: u64) -> bool {
+        now_nanos >= self.nanos
     }
 }
 
@@ -230,7 +234,11 @@ pub fn handle_fault(
     // ドメインのリソースを回収
     if let Some(did) = domain_id {
         crate::io::log::early_print("[DCF] handle_fault: domain panic begin\n");
-        crate::domain::handle_domain_panic(did, format!("DriverDomain fault: {}", fault_kind));
+        crate::domain::registry::request_fault_stop(
+            did,
+            format!("DriverDomain fault: {}", fault_kind),
+        )
+        .map_err(DriverDomainError::DomainLifecycle)?;
         crate::io::log::early_print("[DCF] handle_fault: domain panic done\n");
     }
 
@@ -239,14 +247,23 @@ pub fn handle_fault(
     stop_drivers_for_cell(id);
     crate::io::log::early_print("[DCF] handle_fault: stop drivers done\n");
 
-    // ホットスワップ検証中の障害は、再起動より先にロールバックを優先
-    if hot_swap_state == HotSwapState::Validating {
+    // The update owns driver replacement until resolution, including a foreign
+    // invocation currently on another task's stack. Do not start a second owner.
+    if matches!(
+        hot_swap_state,
+        HotSwapState::Switching | HotSwapState::Validating | HotSwapState::Error
+    ) && cell_id.is_some_and(|cid| {
+        crate::loader::live_update::live_update_manager()
+            .pending_status(cid.as_u64())
+            .is_some()
+            || hot_swap_state == HotSwapState::Switching
+    }) {
         crate::io::log::early_print("[DCF] handle_fault: validating rollback path\n");
         if let Some(cid) = cell_id {
             crate::io::log::early_print("[DCF] handle_fault: mark health failure\n");
             let _ = crate::loader::live_update::live_update_manager().mark_health_failure(
                 cid.as_u64(),
-                format!("Fault during validation: {}", fault_kind),
+                format!("Fault during live update: {}", fault_kind),
             );
         }
 
@@ -259,7 +276,7 @@ pub fn handle_fault(
             Err(e) => {
                 crate::io::log::early_print("[DCF] handle_fault: rollback err\n");
                 log::warn!("[DriverDomain] Validation rollback failed: {}\n", e);
-                return Ok(FaultAction::RollbackFailed(format!("{}", e)));
+                return Ok(FaultAction::RollbackFailed(e));
             }
         }
     }
@@ -275,26 +292,16 @@ pub fn handle_fault(
             backoff
         );
 
-        spin_wait_ticks(backoff);
-
-        // 再起動を実行
-        match attempt_restart(id) {
-            Ok(()) => {
-                super::stats::global_stats().on_restart_succeeded();
-                // 障害レコードを更新
-                manager.with_cell_mut(id, |cell| {
-                    if let Some(last) = cell.fault_history.last_mut() {
-                        last.restart_succeeded = true;
-                    }
-                })?;
-                Ok(FaultAction::Restarted)
-            }
-            Err(e) => {
-                super::stats::global_stats().on_restart_failed();
-                log::warn!("[DriverDomain] Restart failed for '{}': {}\n", name, e);
-                Ok(FaultAction::RestartFailed(format!("{}", e)))
-            }
-        }
+        let not_before =
+            RestartDeadline::after_millis(crate::time::best_effort_time_nanos(), backoff);
+        manager.with_cell_mut(id, |cell| {
+            cell.transition_to(DriverDomainState::Restarting(
+                super::RestartPhase::Backoff { not_before },
+            ));
+        })?;
+        // The maintenance service owns execution and completion observation.
+        // Fault reporting never spins or re-enters an active lifecycle callback.
+        Ok(FaultAction::RestartScheduled { not_before })
     } else {
         log::info!(
             "[DriverDomain] No restart for '{}' (policy: {:?}, faults: {})\n",
@@ -346,7 +353,7 @@ fn stop_drivers_for_cell(id: DriverDomainId) {
     for handle in &handles {
         if let Err(e) = registry.stop(*handle) {
             log::warn!(
-                "[DriverDomain] Force stop driver {:?} failed: {}\n",
+                "[DriverDomain] Requested stop driver {:?} remains incomplete: {}\n",
                 handle.index(),
                 e
             );
@@ -354,30 +361,200 @@ fn stop_drivers_for_cell(id: DriverDomainId) {
     }
 }
 
-fn spin_wait_ticks(delay_ticks: u64) {
-    if delay_ticks == 0 {
-        return;
+/// The owner records progress between calls; one admitted stack owns each call.
+/// Removal acknowledgements and the published new handle survive Busy retries.
+fn attempt_restart(id: DriverDomainId) -> Result<(), DriverDomainError> {
+    use super::RestartPhase;
+    use kernel_api::driver::DriverState;
+    let manager = driver_domain_manager();
+    let _invocation = manager.reserve_call(id, super::LifecycleOperation::Restart)?;
+    let mut phase = manager.with_cell_mut(id, |cell| match cell.state {
+        DriverDomainState::Restarting(super::RestartPhase::Backoff { not_before }) => {
+            if !not_before.is_due(crate::time::best_effort_time_nanos()) {
+                return Err(DriverDomainError::RestartBackoff { not_before });
+            }
+            cell.transition_to(DriverDomainState::Restarting(RestartPhase::Removing));
+            Ok(RestartPhase::Removing)
+        }
+        DriverDomainState::Restarting(phase) => Ok(phase),
+        state => Err(DriverDomainError::InvalidStateTransition {
+            from: state,
+            to: DriverDomainState::Restarting(RestartPhase::Removing),
+        }),
+    })??;
+    let domain = manager
+        .with_cell(id, |cell| cell.domain_id)?
+        .ok_or_else(|| {
+            DriverDomainError::DomainCreationFailed("restart has no domain owner".into())
+        })?;
+    if phase == RestartPhase::Removing {
+        let outcome =
+            crate::domain::stop_domain(domain).map_err(DriverDomainError::DomainLifecycle)?;
+        if outcome != crate::domain::DomainStopOutcome::Complete {
+            return Err(DriverDomainError::DomainLifecycle(
+                crate::domain::DomainLifecycleError::Busy(outcome),
+            ));
+        }
+        let registry = crate::driver_registry::driver_registry();
+        let handles = manager.with_cell(id, |cell| cell.driver_handles.clone())?;
+        // LOOP_PROOF: mode=bounded; reason=The finite retained handle snapshot is visited once and Busy returns with the remaining owners registered.;
+        for handle in handles {
+            if !matches!(
+                registry.state(handle),
+                Some(DriverState::Stopped | DriverState::Removed)
+            ) {
+                registry
+                    .stop(handle)
+                    .map_err(DriverDomainError::DriverOperation)?;
+            }
+            crate::loader::unload_driver(handle).map_err(DriverDomainError::CodeReclamation)?;
+            manager.with_cell_mut(id, |cell| {
+                cell.driver_handles.retain(|owned| *owned != handle)
+            })?;
+        }
+        manager.with_cell_mut(id, |cell| {
+            if cell.state != DriverDomainState::Restarting(RestartPhase::Removing) {
+                return Err(DriverDomainError::InvalidStateTransition {
+                    from: cell.state,
+                    to: DriverDomainState::Restarting(RestartPhase::Registering),
+                });
+            }
+            cell.driver_handles
+                .try_reserve(1)
+                .map_err(|_| DriverDomainError::OutOfMemory)?;
+            cell.transition_to(DriverDomainState::Restarting(RestartPhase::Registering));
+            Ok(())
+        })??;
+        phase = RestartPhase::Registering;
     }
-    let start = crate::task::current_tick();
-    let mut last_tick = start;
-    let mut stagnant_loops = 0usize;
-    while crate::task::current_tick().saturating_sub(start) < delay_ticks {
-        let now = crate::task::current_tick();
-        if now > last_tick {
-            last_tick = now;
-            stagnant_loops = 0;
-        } else {
-            stagnant_loops = stagnant_loops.saturating_add(1);
-            #[cfg(feature = "qemu-test-export")]
-            if stagnant_loops != 0 && (stagnant_loops % 1024) == 0 {
-                // Full-boot tests run with qemu_no_if=1, so timer IRQs may not
-                // advance. Inject synthetic ticks to avoid deadlocking fault
-                // backoff waits in restart paths.
-                crate::task::handle_timer_interrupt();
-                crate::task::process_pending_timer_wakers();
+    if phase == RestartPhase::Registering {
+        let (cell_id, mut context) = manager.with_cell_mut(id, |cell| {
+            if cell.state != DriverDomainState::Restarting(RestartPhase::Registering) {
+                return Err(DriverDomainError::InvalidStateTransition {
+                    from: cell.state,
+                    to: DriverDomainState::Restarting(RestartPhase::Registering),
+                });
+            }
+            crate::domain::resume_domain(domain).map_err(DriverDomainError::DomainLifecycle)?;
+            Ok((
+                cell.cell_id.ok_or_else(|| {
+                    DriverDomainError::LoadFailed("restart has no code owner".into())
+                })?,
+                cell.abi_driver_context,
+            ))
+        })??;
+        context.driver_data = 0;
+        let handle =
+            crate::loader::register_driver_from_cell_with_context(cell_id, context, domain)
+                .map_err(DriverDomainError::CodeReclamation)?;
+        manager.with_cell_mut(id, |cell| {
+            cell.driver_handles.push(handle);
+            if cell.state != DriverDomainState::Restarting(RestartPhase::Registering) {
+                return Err(DriverDomainError::InvalidStateTransition {
+                    from: cell.state,
+                    to: DriverDomainState::Restarting(RestartPhase::Starting),
+                });
+            }
+            cell.transition_to(DriverDomainState::Restarting(RestartPhase::Starting));
+            Ok(())
+        })??;
+    }
+    let handle = manager
+        .with_cell(id, |cell| cell.driver_handles.first().copied())?
+        .ok_or_else(|| {
+            DriverDomainError::DriverInitFailed("restart lost its admitted driver".into())
+        })?;
+    match crate::driver_registry::driver_registry().probe_and_start(handle) {
+        Ok(()) => {}
+        Err(crate::driver_registry::DriverError::Busy { .. }) => {
+            return Err(DriverDomainError::StartupPending { id, handle });
+        }
+        Err(cause) => return Err(DriverDomainError::DriverOperation(cause)),
+    }
+    manager.with_cell_mut(id, |cell| {
+        if cell.state != DriverDomainState::Restarting(RestartPhase::Starting) {
+            return Err(DriverDomainError::InvalidStateTransition {
+                from: cell.state,
+                to: DriverDomainState::Running,
+            });
+        }
+        cell.transition_to(DriverDomainState::Running);
+        cell.stats.record_restart();
+        if let Some(last) = cell.fault_history.last_mut() {
+            last.restart_succeeded = true;
+        }
+        Ok(())
+    })??;
+    super::stats::global_stats().on_restart_succeeded();
+    Ok(())
+}
+
+fn restart_waiting(cause: &DriverDomainError) -> bool {
+    use crate::domain::DomainLifecycleError;
+    use crate::driver_registry::DriverError;
+    match cause {
+        DriverDomainError::DomainLifecycle(error)
+        | DriverDomainError::DriverOperation(DriverError::ResourceCleanup(error))
+        | DriverDomainError::CodeReclamation(crate::loader::LoadError::DriverOperation(
+            DriverError::ResourceCleanup(error),
+        )) => match error {
+            DomainLifecycleError::Busy(_)
+            | DomainLifecycleError::CodeBusy { .. }
+            | DomainLifecycleError::ReclamationInProgress
+            | DomainLifecycleError::ResourceCleanupIncomplete {
+                cause: kernel_api::error::KapiError::Busy,
+                ..
+            } => true,
+            DomainLifecycleError::CodeFinalization { cause, .. } => cause.is_pending(),
+            _ => false,
+        },
+        DriverDomainError::CodeReclamation(crate::loader::LoadError::Finalization(error)) => {
+            error.is_pending()
+        }
+        DriverDomainError::InvalidStateTransition {
+            from: DriverDomainState::Restarting(super::RestartPhase::Backoff { .. }),
+            ..
+        } => true,
+        DriverDomainError::StartupPending { .. }
+        | DriverDomainError::LifecycleInProgress { .. }
+        | DriverDomainError::RestartBackoff { .. }
+        | DriverDomainError::DriverOperation(DriverError::Busy { .. })
+        | DriverDomainError::CodeReclamation(crate::loader::LoadError::DriverOperation(
+            DriverError::Busy { .. },
+        )) => true,
+        _ => false,
+    }
+}
+
+pub(crate) fn progress_restarts() {
+    let manager = driver_domain_manager();
+    for snapshot in manager.list_snapshots() {
+        if !matches!(snapshot.state, DriverDomainState::Restarting(_)) {
+            continue;
+        }
+        if let Err(cause) = attempt_restart(snapshot.id) {
+            if !restart_waiting(&cause) {
+                super::stats::global_stats().on_restart_failed();
+                if let Err(observer) = manager.with_cell_mut(snapshot.id, |cell| {
+                    if matches!(
+                        cell.state,
+                        DriverDomainState::Restarting(
+                            super::RestartPhase::Removing
+                                | super::RestartPhase::Registering
+                                | super::RestartPhase::Starting
+                        )
+                    ) {
+                        cell.transition_to(DriverDomainState::Faulted);
+                    }
+                }) {
+                    log::error!("restart failure observer unavailable: {observer}");
+                }
+                log::error!(
+                    "driver restart {} failed with its owners retained: {cause}",
+                    snapshot.id
+                );
             }
         }
-        core::hint::spin_loop();
     }
 }
 
@@ -388,14 +565,12 @@ fn spin_wait_ticks(delay_ticks: u64) {
 /// 障害処理の結果アクション
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FaultAction {
-    /// 再起動に成功した
-    Restarted,
-    /// 再起動に失敗した
-    RestartFailed(String),
+    /// Admitted recovery is owned by the maintenance service until completion.
+    RestartScheduled { not_before: RestartDeadline },
     /// 検証中アップデートをロールバックした
     RolledBack,
     /// 検証中アップデートのロールバックに失敗した
-    RollbackFailed(String),
+    RollbackFailed(DriverDomainError),
     /// 停止のまま（再起動なし）
     Stopped,
 }
@@ -403,8 +578,9 @@ pub enum FaultAction {
 impl core::fmt::Display for FaultAction {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Restarted => write!(f, "Restarted"),
-            Self::RestartFailed(msg) => write!(f, "Restart failed: {}", msg),
+            Self::RestartScheduled { not_before } => {
+                write!(f, "Restart scheduled after {}ns", not_before.nanos)
+            }
             Self::RolledBack => write!(f, "Rolled back"),
             Self::RollbackFailed(msg) => write!(f, "Rollback failed: {}", msg),
             Self::Stopped => write!(f, "Stopped (no restart)"),
@@ -542,4 +718,20 @@ pub fn inject_test_fault(
         consecutive_faults_after,
         last_health_failure_after,
     })
+}
+
+#[cfg(test)]
+mod deadline_tests {
+    use super::RestartDeadline;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn backoff_uses_elapsed_time_and_saturates_at_the_clock_limit() {
+        let deadline = RestartDeadline::after_millis(500, 10);
+        assert!(!deadline.is_due(10_000_499));
+        assert!(deadline.is_due(10_000_500));
+        let deadline = RestartDeadline::after_millis(u64::MAX - 1, 1);
+        assert!(!deadline.is_due(u64::MAX - 1));
+        assert!(deadline.is_due(u64::MAX));
+    }
 }

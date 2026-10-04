@@ -1,64 +1,11 @@
 // ============================================================================
 // kernel/src/driver_domain/mod.rs - Driver Domain: 統一ドライバ隔離モデル
 // ============================================================================
-//! # Driver Domain (ドライバドメイン)
-//!
-//! 設計書 3.1: 「セル (Cell)」モデルによるモジュール化
-//! 設計書 8: フォールトアイソレーションと回復メカニズム
-//!
-//! ## 概要
-//!
-//! `DriverDomain` は、以下の3つの概念を統合する実行時抽象です:
-//!
-//! 1. **Cell** (ローダーレベル) - ELFバイナリとしてロードされたコード
-//! 2. **Domain** (実行時管理) - リソースクォータ、ケイパビリティ、状態追跡
-//! 3. **Driver** (デバイスインターフェース) - ドライバライフサイクル管理
-//!
-//! ```text
-//! ┌─────────────────────────────────────────────────────────┐
-//! │                    DriverDomain                           │
-//! │                                                         │
-//! │  ┌──────────────┐  ┌───────────┐  ┌────────────────┐   │
-//! │  │ Cell (ELF)   │  │  Domain   │  │  Driver(s)     │   │
-//! │  │  - コード     │  │ - クォータ │  │ - probe/start  │   │
-//! │  │  - シンボル   │  │ - 状態    │  │ - stop/remove  │   │
-//! │  │  - 署名検証   │  │ - タスク  │  │ - hot-swap     │   │
-//! │  └──────────────┘  └───────────┘  └────────────────┘   │
-//! │                                                         │
-//! │  ┌──────────────────────────────────────────────────┐   │
-//! │  │              Isolation Layer                      │   │
-//! │  │  - DomainProxy (パニック捕捉)                     │   │
-//! │  │  - PoisonLock (毒入れ対応)                        │   │
-//! │  │  - Exchange Heap (ゼロコピーIPC)                   │   │
-//! │  │  - MPK/PKU (ハードウェア保護)                     │   │
-//! │  └──────────────────────────────────────────────────┘   │
-//! │                                                         │
-//! │  ┌──────────────────────────────────────────────────┐   │
-//! │  │              Recovery & Policy                    │   │
-//! │  │  - RestartPolicy (自動再起動)                     │   │
-//! │  │  - FaultHistory (障害履歴)                        │   │
-//! │  │  - LiveUpdate (ホットスワップ)                    │   │
-//! │  └──────────────────────────────────────────────────┘   │
-//! └─────────────────────────────────────────────────────────┘
-//! ```
-//!
-//! ## ライフサイクル
-//!
-//! ```text
-//! Created → Loading → Loaded → Starting → Running → Stopping → Stopped → Unloaded
-//!                                  │                    ↑
-//!                                  │   (panic)          │
-//!                                  ▼                    │
-//!                               Faulted ──(restart)─────┘
-//! ```
-//!
-//! ## 設計原則
-//!
-//! - **障害分離**: ドライバのパニックがカーネルに波及しない
-//! - **リソース制限**: CPU/メモリ/I/Oクォータでリソース独占を防止
-//! - **自動回復**: 設定可能な再起動ポリシーで障害から自動復旧
-//! - **ホットスワップ**: StateTransfer + Epoch-based Reclamationでゼロダウンタイム更新
-//! - **Safe Rust**: Framework API以外でunsafeを使用しない
+//! DriverDomain owns the loaded cell, runtime domain and registered driver handles.
+//! Lifecycle calls reserve one invocation before entering foreign code. Fault
+//! notification preserves an active invocation, including a suspended task stack.
+//! Restart phases retain removal acknowledgements and a published startup handle.
+//! The owner can be removed only after every driver, domain and code owner completes.
 pub mod fault;
 pub mod hot_swap;
 pub mod lifecycle;
@@ -165,6 +112,7 @@ impl DriverDomainState {
             self,
             DriverDomainState::Running
                 | DriverDomainState::Starting
+                | DriverDomainState::Restarting(_)
                 | DriverDomainState::Faulted
                 | DriverDomainState::Stopping
         )
@@ -199,8 +147,74 @@ impl core::fmt::Display for DriverDomainState {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RestartPhase {
+    Backoff { not_before: fault::RestartDeadline },
     Removing,
+    Registering,
     Starting,
+}
+
+/// Lifecycle work that exclusively owns a DriverDomain while callbacks run.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LifecycleOperation {
+    Load,
+    Start,
+    Stop,
+    Unload,
+    Restart,
+    Update,
+    ResolveUpdate,
+}
+
+/// The registry records admission; this stack guard owns the admitted call.
+/// Fault notifications may change domain state without revoking this owner.
+/// A suspended callback therefore cannot be bypassed by a second lifecycle call.
+struct LifecycleCall<'a> {
+    manager: &'a DriverDomainManager,
+    id: DriverDomainId,
+    operation: LifecycleOperation,
+}
+
+impl LifecycleCall<'_> {
+    fn remove_owner(self) -> Result<DriverDomain, DriverDomainError> {
+        let mut cells = self
+            .manager
+            .cells
+            .lock()
+            .map_err(|_| DriverDomainError::RegistryPoisoned)?;
+        let cell = cells
+            .get(&self.id)
+            .ok_or(DriverDomainError::NotFound(self.id))?;
+        if self.operation != LifecycleOperation::Unload
+            || cell.state != DriverDomainState::Unloaded
+            || cell.cell_id.is_some()
+            || cell.domain_id.is_some()
+            || !cell.driver_handles.is_empty()
+        {
+            return Err(DriverDomainError::OwnerRetained { id: self.id });
+        }
+        let removed = cells
+            .remove(&self.id)
+            .ok_or(DriverDomainError::NotFound(self.id))?;
+        drop(cells);
+        Ok(removed)
+    }
+}
+
+impl Drop for LifecycleCall<'_> {
+    fn drop(&mut self) {
+        match self.manager.cells.lock() {
+            Ok(mut cells) => {
+                if let Some(cell) = cells.get_mut(&self.id) {
+                    assert_eq!(cell.active_call, Some(self.operation));
+                    cell.active_call = None;
+                }
+            }
+            Err(_) => log::error!(
+                "lifecycle invocation {} retains its poisoned owner",
+                self.id
+            ),
+        }
+    }
 }
 
 // ============================================================================
@@ -234,6 +248,8 @@ pub struct DriverDomain {
     pub state: DriverDomainState,
     /// 前回の状態（遷移追跡用）
     previous_state: Option<DriverDomainState>,
+    /// Independent of fault state: only the stack owner can release admission.
+    active_call: Option<LifecycleOperation>,
 
     // === ポリシー・設定 ===
     /// 再起動ポリシー
@@ -292,6 +308,7 @@ impl DriverDomain {
             driver_handles: Vec::new(),
             state: DriverDomainState::Created,
             previous_state: None,
+            active_call: None,
             restart_policy: RestartPolicy::default(),
             priority: DomainPriority::Normal,
             capabilities: CapabilitySet::empty(),
@@ -509,6 +526,24 @@ impl DriverDomainManager {
             .ok_or(DriverDomainError::NotFound(id))
     }
 
+    fn reserve_call(
+        &self,
+        id: DriverDomainId,
+        operation: LifecycleOperation,
+    ) -> Result<LifecycleCall<'_>, DriverDomainError> {
+        self.with_cell_mut(id, |cell| {
+            if let Some(operation) = cell.active_call {
+                return Err(DriverDomainError::LifecycleInProgress { id, operation });
+            }
+            cell.active_call = Some(operation);
+            Ok(LifecycleCall {
+                manager: self,
+                id,
+                operation,
+            })
+        })?
+    }
+
     /// DriverCellを削除
     pub fn remove(&self, id: DriverDomainId) -> Result<DriverDomain, DriverDomainError> {
         let mut cells = self.cells.lock().map_err(|_| {
@@ -516,6 +551,13 @@ impl DriverDomainManager {
             DriverDomainError::RegistryPoisoned
         })?;
 
+        let cell = cells.get(&id).ok_or(DriverDomainError::NotFound(id))?;
+        if let Some(operation) = cell.active_call {
+            return Err(DriverDomainError::LifecycleInProgress { id, operation });
+        }
+        if cell.cell_id.is_some() || cell.domain_id.is_some() || !cell.driver_handles.is_empty() {
+            return Err(DriverDomainError::OwnerRetained { id });
+        }
         cells.remove(&id).ok_or(DriverDomainError::NotFound(id))
     }
 
@@ -663,6 +705,11 @@ pub enum DriverDomainError {
         cell: CellId,
         domain: DomainId,
     },
+    CodeAdmissionFailed {
+        cause: crate::domain::DomainLifecycleError,
+        cell: CellId,
+        domain: DomainId,
+    },
     /// ドライバの初期化に失敗
     DriverInitFailed(String),
     /// ドライバの停止に失敗
@@ -688,6 +735,18 @@ pub enum DriverDomainError {
         id: DriverDomainId,
         handle: DriverHandle,
     },
+    RestartBackoff {
+        not_before: fault::RestartDeadline,
+    },
+    LifecycleInProgress {
+        id: DriverDomainId,
+        operation: LifecycleOperation,
+    },
+    /// A loaded cell, runtime domain, or registered driver still needs shutdown.
+    OwnerRetained {
+        id: DriverDomainId,
+    },
+    OutOfMemory,
     /// アンロード時に依存関係がある
     HasDependents,
 }
@@ -710,6 +769,17 @@ impl core::fmt::Display for DriverDomainError {
             } => write!(
                 f,
                 "Policy admission failed after creating cell {} / domain {}: {}",
+                cell.as_u64(),
+                domain,
+                cause
+            ),
+            Self::CodeAdmissionFailed {
+                cause,
+                cell,
+                domain,
+            } => write!(
+                f,
+                "Code admission failed with cell {} / domain {} retained: {}",
                 cell.as_u64(),
                 domain,
                 cause
@@ -738,6 +808,15 @@ impl core::fmt::Display for DriverDomainError {
                 "driver startup {id}/{} awaits completion",
                 handle.index()
             ),
+            Self::RestartBackoff { not_before } => write!(f, "restart awaits {not_before:?}"),
+            Self::LifecycleInProgress { id, operation } => {
+                write!(
+                    f,
+                    "driver domain {id} has an active {operation:?} invocation"
+                )
+            }
+            Self::OwnerRetained { id } => write!(f, "driver domain {id} retains loaded resources"),
+            Self::OutOfMemory => write!(f, "driver lifecycle allocation failed"),
             Self::HasDependents => write!(f, "Cell has active dependents"),
         }
     }
@@ -777,5 +856,56 @@ mod tests {
         assert_eq!(domain.abi_driver_context.device_address, 0xfeed_0000);
         assert_eq!(domain.abi_driver_context.irq, 9);
         assert_eq!(domain.abi_driver_context.pci_location(), locator);
+    }
+}
+
+#[cfg(test)]
+mod lifecycle_call_tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn fault_notification_keeps_the_active_invocation_reserved() {
+        let manager = DriverDomainManager::new();
+        let id = DriverDomainId::new(1);
+        manager
+            .register(DriverDomain::new(id, String::from("owner")))
+            .unwrap();
+        let call = manager.reserve_call(id, LifecycleOperation::Start).unwrap();
+        manager
+            .with_cell_mut(id, |cell| cell.transition_to(DriverDomainState::Faulted))
+            .unwrap();
+        assert!(matches!(
+            manager.reserve_call(id, LifecycleOperation::Restart),
+            Err(DriverDomainError::LifecycleInProgress {
+                operation: LifecycleOperation::Start,
+                ..
+            })
+        ));
+        assert!(matches!(
+            manager.remove(id),
+            Err(DriverDomainError::LifecycleInProgress { .. })
+        ));
+        drop(call);
+        let call = manager
+            .reserve_call(id, LifecycleOperation::Restart)
+            .unwrap();
+        drop(call);
+        drop(manager.remove(id).unwrap());
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn loaded_resources_cannot_be_removed_by_a_registry_observer() {
+        let manager = DriverDomainManager::new();
+        let id = DriverDomainId::new(2);
+        let mut owner = DriverDomain::new(id, String::from("retained"));
+        owner.cell_id = Some(CellId::from_u64(20));
+        manager.register(owner).unwrap();
+        assert!(matches!(
+            manager.remove(id),
+            Err(DriverDomainError::OwnerRetained { .. })
+        ));
+        assert_eq!(manager.count(), 1);
     }
 }

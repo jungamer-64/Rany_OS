@@ -1010,13 +1010,32 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
         super::fault::TestFaultKind::Panic,
     )
     .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
-    poll_runtime();
-
-    if outcome.action != super::fault::FaultAction::Restarted {
+    if !matches!(
+        outcome.action,
+        super::fault::FaultAction::RestartScheduled { .. }
+    ) {
         return Err(RuntimeCaseError::failed(format!(
-            "expected Restarted action in Idle panic path, got {}",
+            "expected admitted restart, got {}",
             outcome.action
         )));
+    }
+    let deadline = crate::time::best_effort_time_nanos().saturating_add(2_000_000_000);
+    // LOOP_PROOF: mode=bounded; reason=The real two-second deadline and finite iteration limit bound recovery observation without injecting timer interrupts.;
+    for _ in 0..10_000_000 {
+        super::fault::progress_restarts();
+        if driver_domain_manager()
+            .with_cell(ctx.driver_domain_id, |cell| cell.state)
+            .map_err(|error| {
+                RuntimeCaseError::failed(format!("restart owner unavailable: {error}"))
+            })?
+            == DriverDomainState::Running
+        {
+            break;
+        }
+        if crate::time::best_effort_time_nanos() >= deadline {
+            break;
+        }
+        core::hint::spin_loop();
     }
 
     let (restart_after, state_after, hot_swap_after) = driver_domain_manager()
