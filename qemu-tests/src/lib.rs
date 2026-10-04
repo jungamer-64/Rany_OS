@@ -56,21 +56,30 @@ fn base_config(profile: &str) -> RunConfig {
 #[cfg(test)]
 fn run_required_profile(profile: &str) {
     let guard = qemu_lock().lock().expect("qemu lock poisoned");
-    let cfg = base_config(profile);
-    let result = run_fullboot(&cfg);
-    drop(guard);
-
-    match result {
-        Ok(report) => {
-            eprintln!(
-                "required full-boot profile '{}' passed in {:?} (log: {})",
+    let mut cfg = base_config(profile);
+    let cpu_counts: &[u16] = if profile == "scheduler" {
+        &[1, 4]
+    } else {
+        core::slice::from_ref(&cfg.smp)
+    };
+    let cpu_counts = cpu_counts.to_vec();
+    for count in cpu_counts {
+        cfg.smp = count;
+        if profile == "scheduler" {
+            cfg.max_cpus = count;
+        }
+        match run_fullboot(&cfg) {
+            Ok(report) => eprintln!(
+                "required full-boot profile '{}' SMP={} passed in {:?} (log: {})",
                 report.profile,
+                count,
                 report.duration,
                 report.log_path.display()
-            );
+            ),
+            Err(err) => panic!("required full-boot profile '{profile}' SMP={count} failed: {err}"),
         }
-        Err(err) => panic!("required full-boot profile '{profile}' failed: {err}"),
     }
+    drop(guard);
 }
 
 #[test]
@@ -80,6 +89,7 @@ fn fullboot_pr_required() {
     // Each profile owns its interrupt and topology requirements.
     for profile in [
         "boot-smoke",
+        "scheduler",
         "storage",
         "driver_domain",
         "iommu",
