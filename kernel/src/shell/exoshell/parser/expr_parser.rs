@@ -197,6 +197,7 @@ impl ExprParser {
     fn parse_pipe_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_or_expr()?;
 
+        // LOOP_PROOF: mode=condition; reason=Each matched pipe consumes one operator token and its right expression from the finite token stream.;
         while self.match_operator("|>") {
             let right = self.parse_or_expr()?;
             left = Expr::Binary {
@@ -230,6 +231,7 @@ impl ExprParser {
     fn parse_and_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_compare_expr()?;
 
+        // LOOP_PROOF: mode=condition; reason=Each matched conjunction consumes one operator token and its right expression from the finite token stream.;
         while self.match_operator("&&") {
             let right = self.parse_compare_expr()?;
             left = Expr::Binary {
@@ -302,6 +304,7 @@ impl ExprParser {
     fn parse_add_expr(&mut self) -> Result<Expr<'static>, ParseError> {
         let mut left = self.parse_mul_expr()?;
 
+        // LOOP_PROOF: mode=event; reason=Each addition or subtraction consumes one operator and right expression from the finite token stream, while a different token ends the expression.;
         loop {
             let op = if self.match_operator("+") {
                 BinaryOp::Add
@@ -436,6 +439,7 @@ impl ExprParser {
             return Ok(Expr::Block(stmts));
         }
 
+        // LOOP_PROOF: mode=condition; reason=Each parsed statement consumes tokens toward the closing brace, while end of input or a syntax failure returns an error.;
         while !self.match_token(&Token::RBrace) {
             if self.is_at_end() {
                 return Err(ParseError::UnexpectedEof);

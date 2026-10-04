@@ -39,7 +39,7 @@ impl SerialFrontend {
     }
 
     fn write_str(&self, s: &str) {
-        serial::write_str(s);
+        crate::io::log::write_serial_bytes(s.as_bytes());
     }
 
     fn redraw_line(&mut self, shell: &ExoShell) {
@@ -105,6 +105,7 @@ impl ShellFrontend for SerialFrontend {
         self.line_buffer.clear();
         self.navigator.reset_navigation();
 
+        // LOOP_PROOF: mode=event; reason=Each shell input step awaits one UART byte and returns a completed line on newline, preserving partial input between notifications.;
         loop {
             let byte = serial::read_byte_for_shell().await;
 

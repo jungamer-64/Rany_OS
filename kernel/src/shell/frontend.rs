@@ -133,6 +133,7 @@ impl ShellFrontend for ConsoleFrontend {
         self.line_buffer.clear();
         self.navigator.reset_navigation();
 
+        // LOOP_PROOF: mode=event; reason=Each console input step awaits a key event, filters releases or inactive consoles, and returns a completed line on Enter.;
         loop {
             let event = stream.read_key().await;
 

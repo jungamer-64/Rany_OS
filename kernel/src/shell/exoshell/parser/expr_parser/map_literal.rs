@@ -8,6 +8,7 @@ impl ExprParser {
 
         // 空マップチェック
         if !self.match_token(&Token::RBrace) {
+            // LOOP_PROOF: mode=event; reason=Each map entry consumes its key, colon, expression, and optional comma from the finite token stream, while a closing brace or syntax failure ends parsing.;
             loop {
                 // キー（識別子または文字列）
                 let key = match self.peek().cloned() {
@@ -106,6 +107,7 @@ impl ExprParser {
         args.push(self.parse_expr()?);
 
         // カンマ区切りで追加の引数
+        // LOOP_PROOF: mode=condition; reason=Each matched comma consumes one token and parses an expression from the finite token stream, stopping at a different token or syntax failure.;
         while self.match_token(&Token::Comma) {
             args.push(self.parse_expr()?);
         }

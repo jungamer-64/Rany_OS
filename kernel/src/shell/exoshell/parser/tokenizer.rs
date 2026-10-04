@@ -71,6 +71,7 @@ impl<'a> Tokenizer<'a> {
     }
 
     fn skip_whitespace(&mut self) {
+        // LOOP_PROOF: mode=condition; reason=Each whitespace scalar advances pos by its nonzero UTF-8 length within the finite input, while a nonspace or end stops scanning.;
         while let Some(c) = self.peek() {
             if c.is_whitespace() {
                 self.advance();
@@ -83,6 +84,7 @@ impl<'a> Tokenizer<'a> {
     pub fn tokenize(&mut self) -> Vec<Token> {
         let mut tokens = Vec::new();
 
+        // LOOP_PROOF: mode=condition; reason=Every token or skipped unknown scalar advances pos within the finite UTF-8 input, and trailing whitespace ends scanning.;
         while self.pos < self.input.len() {
             self.skip_whitespace();
 
@@ -208,6 +210,7 @@ impl<'a> Tokenizer<'a> {
         self.advance(); // skip opening quote
         let start = self.pos;
 
+        // LOOP_PROOF: mode=condition; reason=Every nonclosing scalar advances pos by its UTF-8 length, while the matching quote or end terminates the finite string scan.;
         while let Some(c) = self.peek() {
             if c == quote {
                 let s = self.input[start..self.pos].to_string();
@@ -230,6 +233,7 @@ impl<'a> Tokenizer<'a> {
             self.advance();
         }
 
+        // LOOP_PROOF: mode=condition; reason=Each accepted digit or first decimal point advances pos within the finite input, while a different scalar or end stops scanning.;
         while let Some(c) = self.peek() {
             if c.is_ascii_digit() {
                 self.advance();
@@ -252,6 +256,7 @@ impl<'a> Tokenizer<'a> {
     fn read_ident(&mut self) -> Token {
         let start = self.pos;
 
+        // LOOP_PROOF: mode=condition; reason=Each accepted identifier scalar advances pos by its UTF-8 length within the finite input, while a different scalar or end stops scanning.;
         while let Some(c) = self.peek() {
             if c.is_alphanumeric() || c == '_' || c == '$' || c == '/' {
                 self.advance();
@@ -274,6 +279,7 @@ impl<'a> Tokenizer<'a> {
     fn read_operator(&mut self) -> Token {
         let start = self.pos;
 
+        // LOOP_PROOF: mode=condition; reason=Each accepted comparison-operator scalar advances pos within the finite input, while a different scalar or end stops scanning.;
         while let Some(c) = self.peek() {
             if c == '>' || c == '<' || c == '=' || c == '!' {
                 self.advance();
