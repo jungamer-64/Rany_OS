@@ -220,6 +220,7 @@ impl Rtc {
 
     pub fn read_datetime(&self) -> DateTime {
         unsafe {
+            // LOOP_PROOF: mode=condition; reason=Each observation rereads the RTC update flag and proceeds when hardware finishes its update cycle.;
             while Self::is_update_in_progress() {}
             let second = Self::read_cmos(regs::SECONDS);
             let minute = Self::read_cmos(regs::MINUTES);
@@ -369,10 +370,12 @@ impl Rtc {
         let mut second = now.second + seconds;
         let mut minute = now.minute;
         let mut hour = now.hour;
+        // LOOP_PROOF: mode=bounded; reason=Each carry subtracts sixty from the finite seconds value.;
         while second >= 60 {
             second -= 60;
             minute += 1;
         }
+        // LOOP_PROOF: mode=bounded; reason=Each carry subtracts sixty from the finite minutes value.;
         while minute >= 60 {
             minute -= 60;
             hour += 1;

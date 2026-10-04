@@ -372,6 +372,7 @@ impl<'a> PciBusScanner<'a> {
         let mut bars: [Option<Bar>; 6] = [None; 6];
         let mut i = 0;
 
+        // LOOP_PROOF: mode=bounded; reason=The cursor advances across the six BAR slots and a 64-bit BAR consumes two slots.;
         while i < 6 {
             let bar_offset = config_regs::BAR0 + (i as u16 * 4);
             let bar_value = self.accessor.read32(bdf, bar_offset);
@@ -472,7 +473,8 @@ impl<'a> PciBusScanner<'a> {
 
         // ケーパビリティチェーンを走査
         let mut visited = 0u8;
-        while cap_ptr != 0 && visited < 48 {
+        // LOOP_PROOF: mode=bounded; reason=The visit counter limits even a cyclic device capability chain to forty-eight records.;
+        while visited < 48 && cap_ptr != 0 {
             let cap_id_raw = self.accessor.read8(bdf, cap_ptr as u16);
             let next_ptr = self.accessor.read8(bdf, cap_ptr as u16 + 1);
 

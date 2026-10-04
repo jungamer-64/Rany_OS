@@ -140,7 +140,7 @@ impl Future for TimerRegistration {
             TimerBackend::Foreign(registration) => return Pin::new(registration).poll(cx),
         };
         event.waker.register(cx.waker());
-        // LOOP_PROOF: mode=event; reason=A CAS consumes a pending tick or observes a terminal outcome; quiet returns Pending and a racing notification wakes the current registration.;
+        // LOOP_PROOF: mode=event; reason=A CAS consumes a pending tick or observes a terminal outcome, quiet returns Pending and a racing notification wakes the current registration.;
         loop {
             match event.state.load(Ordering::Acquire) {
                 QUIET => return Poll::Pending,
@@ -192,7 +192,7 @@ impl TimerSignal {
             TimerOutcome::Tick => TICK,
             TimerOutcome::ClockExhausted => CLOCK_EXHAUSTED,
         };
-        // LOOP_PROOF: mode=event; reason=Each CAS either publishes a notification or observes another completed publication or cancellation; terminal states reject later notifications.;
+        // LOOP_PROOF: mode=event; reason=Each CAS publishes a notification or observes competing publication or cancellation, and terminal states reject later notifications.;
         loop {
             let current = event.state.load(Ordering::Acquire);
             if current >= CLOCK_EXHAUSTED {

@@ -89,7 +89,7 @@ impl TimerRegistry {
     }
 
     fn take_due(&mut self, now: u64) -> Option<(TimerSignal, TimerOutcome)> {
-        // LOOP_PROOF: mode=condition; reason=Each cancelled head is removed from this finite heap under the same exclusive guard; a live head ends cleanup.
+        // LOOP_PROOF: mode=condition; reason=Each cancelled head is removed from the finite heap under the same exclusive guard and a live head ends cleanup.;
         while self
             .entries
             .peek()

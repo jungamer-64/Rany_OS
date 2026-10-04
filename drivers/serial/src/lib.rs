@@ -245,6 +245,7 @@ impl SerialPort {
         let mut report = SerialInterruptReport::default();
         let mut causes = 0usize;
 
+        // LOOP_PROOF: mode=bounded; reason=Each handled cause increments the counter and an empty interrupt status ends this admitted ISR budget.;
         while causes < budget.causes {
             let interrupt_id = registers.port_at(reg::IIR).read();
             if (interrupt_id & 1) != 0 {
@@ -254,6 +255,7 @@ impl SerialPort {
 
             match interrupt_id & 0x0e {
                 0x02 => {
+                    // LOOP_PROOF: mode=bounded; reason=Each write consumes one byte of the admitted transmit budget and an empty source or nonready UART ends the batch.;
                     while report.transmitted_bytes < budget.transmitted_bytes
                         && registers.line_status().is_tx_ready()
                     {
@@ -268,6 +270,7 @@ impl SerialPort {
                     }
                 }
                 0x04 | 0x0c => {
+                    // LOOP_PROOF: mode=bounded; reason=Every UART read increments delivered or dropped bytes toward the admitted receive budget and empty hardware ends the batch.;
                     while report.received_bytes + report.dropped_bytes < budget.received_bytes {
                         let status = registers.line_status();
                         if !status.is_data_ready() {
