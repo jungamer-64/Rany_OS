@@ -167,7 +167,7 @@ pub fn spawn_console_shell() {
             #[cfg(feature = "qemu-test-export")]
             crate::io::log::early_print("[SHELL] console shell task exit\n");
         },
-        crate::task::TaskPlacement::Any,
+        crate::task::TaskOptions::any(),
     ) {
         log::error!("failed to schedule console shell: {:?}", error);
     }
@@ -187,7 +187,7 @@ pub fn spawn_serial_shell() {
             #[cfg(feature = "qemu-test-export")]
             crate::io::log::early_print("[SHELL] serial shell task exit\n");
         },
-        crate::task::TaskPlacement::Any,
+        crate::task::TaskOptions::any(),
     ) {
         log::error!("failed to schedule serial shell: {:?}", error);
     }

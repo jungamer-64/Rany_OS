@@ -472,7 +472,12 @@ impl CellNamespace {
             "started_at_tick",
             Self::vint_u64(p.started_at_tick),
         );
-        Self::map_insert(&mut map, "deadline_tick", Self::vint_u64(p.deadline_tick));
+        Self::map_insert(&mut map, "deadline_tick", Self::opt_u64(p.deadline_tick));
+        Self::map_insert(
+            &mut map,
+            "phase",
+            Self::vstr(alloc::format!("{:?}", p.phase)),
+        );
         Self::map_insert(&mut map, "health_failed", ExoValue::Bool(p.health_failed));
         ExoValue::Map(map)
     }
@@ -568,8 +573,8 @@ impl CellNamespace {
         );
         Self::map_insert(
             &mut epoch_hint,
-            "all_cores_past_target",
-            ExoValue::Bool(live_update::all_cores_past_epoch(target_epoch)),
+            "generations_quiescent_through_target",
+            ExoValue::Bool(live_update::generations_quiescent_through(target_epoch)),
         );
         Self::map_insert(
             &mut epoch_hint,
@@ -819,13 +824,13 @@ impl CellNamespace {
         );
         Self::map_insert(
             &mut epoch,
-            "in_critical_sections",
-            Self::vint_usize(stats.in_critical_sections),
+            "retained_generations",
+            Self::vint_usize(stats.retained_generations),
         );
         Self::map_insert(
             &mut epoch,
             "active_cores",
-            Self::vint_usize(stats.active_cores),
+            Self::vint_usize(crate::cpu::snapshot().online().len()),
         );
 
         let mut validating_cells = Vec::new();
@@ -861,8 +866,8 @@ impl CellNamespace {
         );
         Self::map_insert(
             &mut quiescent_check,
-            "all_cores_past",
-            ExoValue::Bool(live_update::all_cores_past_epoch(target_epoch)),
+            "generations_quiescent",
+            ExoValue::Bool(live_update::generations_quiescent_through(target_epoch)),
         );
 
         let mut out = BTreeMap::new();
@@ -892,8 +897,7 @@ impl CellNamespace {
             Ok(v) => v,
             Err(e) => return e,
         };
-        let reached =
-            live_update::wait_for_quiescent_state_with_timeout(target_epoch, max_attempts);
+        let reached = live_update::wait_for_generations_with_timeout(target_epoch, max_attempts);
         let mut out = BTreeMap::new();
         Self::map_insert(&mut out, "target_epoch", Self::vint_u64(target_epoch));
         Self::map_insert(&mut out, "max_attempts", Self::vint_u64(max_attempts));

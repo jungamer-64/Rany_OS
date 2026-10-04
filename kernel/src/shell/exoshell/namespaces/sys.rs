@@ -409,6 +409,7 @@ impl SysNamespace {
                 crate::cpu::FirmwareErrorKind::EventDelivery => "event-delivery",
                 crate::cpu::FirmwareErrorKind::Resource => "resource",
                 crate::cpu::FirmwareErrorKind::TimedOut => "timed-out",
+                crate::cpu::FirmwareErrorKind::Timer(_) => "timer",
             })),
         );
         map.insert(
@@ -489,6 +490,10 @@ impl SysNamespace {
     fn cpu_blocker(blocker: &crate::cpu::CpuBlocker) -> String {
         match blocker {
             crate::cpu::CpuBlocker::PinnedTask { task_id } => format!("pinned-task:{}", task_id),
+            crate::cpu::CpuBlocker::ActivePoll { task_id } => format!("active-poll:{}", task_id),
+            crate::cpu::CpuBlocker::SuspendedPoll { task_id } => {
+                format!("suspended-poll:{}", task_id)
+            }
             crate::cpu::CpuBlocker::ControlQueue => String::from("control-queue"),
             crate::cpu::CpuBlocker::IrqRoute { vector } => format!("irq-route:{:#04x}", vector),
             crate::cpu::CpuBlocker::NetworkQueue { runtime_id } => {

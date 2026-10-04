@@ -1,12 +1,10 @@
 use super::*;
 
-pub(super) fn spawn_task(
+pub(super) fn spawn(
     future: Pin<Box<dyn Future<Output = ()> + Send>>,
-) -> Result<TaskHandle, KapiError> {
-    let task_id = crate::task::spawn(future, crate::task::TaskPlacement::Any)
-        .map_err(|_| KapiError::ResourceExhausted)?
-        .as_u64();
-    Ok(TaskHandle::new(task_id))
+    options: TaskOptions,
+) -> Result<TaskId, SpawnError> {
+    crate::task::spawn(future, options)
 }
 
 pub(super) fn current_tick() -> u64 {

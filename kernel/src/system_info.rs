@@ -116,7 +116,9 @@ fn state_to_str(state: DomainState) -> &'static str {
         DomainState::Initializing => "initializing",
         DomainState::Running => "running",
         DomainState::Suspended => "suspended",
+        DomainState::Stopping => "stopping",
         DomainState::Stopped => "stopped",
+        DomainState::Terminating => "terminating",
         DomainState::Terminated => "terminated",
     }
 }

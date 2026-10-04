@@ -7,9 +7,8 @@
 //!
 //! ## 使用例 (ExoShell)
 //! ```text
-//! task.stats()        → { wake_queue_len, wake_queue_capacity, fuel_remaining, ... }
+//! task.stats()        → { task_count, forced_switches, runtime_ns, quota_waiting, ... }
 //! task.fuel()         → { remaining, is_active }
-//! task.preemption()   → { yields_requested, timer_ticks, ... }
 //! task.tick()         → 現在のティック値
 //! task.yield()        → 手動yield
 //! ```
@@ -50,26 +49,16 @@ impl TaskNamespace {
         if let Err(e) = Self::require_sys_admin(caps, "task.stats") {
             return e;
         }
-        let wake_stats = crate::task::wake_queue_stats();
         let scheduler = crate::task::scheduler_snapshot();
-        let timer_stats = crate::task::pending_waker_stats();
+        let timer_stats = crate::task::timer_stats();
         let fuel_remaining = crate::task::fuel::Fuel::remaining();
         let fuel_active = crate::task::fuel::Fuel::is_active();
         let current_tick = crate::task::current_tick();
 
         let mut map = BTreeMap::new();
-        map.insert(s("wake_queue_len"), ExoValue::Int(wake_stats.len as i64));
         map.insert(
-            s("wake_queue_capacity"),
-            ExoValue::Int(wake_stats.capacity as i64),
-        );
-        map.insert(
-            s("wake_queue_enqueued"),
-            ExoValue::Int(wake_stats.enqueued as i64),
-        );
-        map.insert(
-            s("wake_queue_dropped"),
-            ExoValue::Int(wake_stats.dropped as i64),
+            s("pending_wakes"),
+            ExoValue::Int(scheduler.as_ref().map_or(0, |state| state.pending_wakes) as i64),
         );
         let task_count = scheduler.as_ref().map_or(0, |state| state.task_count);
         let poll_count = scheduler.as_ref().map_or(0, |state| state.poll_count);
@@ -82,12 +71,37 @@ impl TaskNamespace {
         map.insert(s("ready_tasks"), ExoValue::Int(ready_tasks as i64));
         map.insert(s("online_queues"), ExoValue::Int(online_queues as i64));
         map.insert(
-            s("timer_pending"),
-            ExoValue::Int(timer_stats.pending as i64),
+            s("timer_registered"),
+            ExoValue::Int(timer_stats.active_timers as i64),
+        );
+        map.insert(s("timer_due"), ExoValue::Int(timer_stats.due_timers as i64));
+        map.insert(
+            s("timer_fired"),
+            ExoValue::Int(timer_stats.total_fired as i64),
         );
         map.insert(
-            s("timer_capacity"),
-            ExoValue::Int(timer_stats.capacity as i64),
+            s("timer_notifications"),
+            ExoValue::Int(timer_stats.notifications as i64),
+        );
+        map.insert(
+            s("forced_switches"),
+            ExoValue::Int(scheduler.as_ref().map_or(0, |state| state.forced_switches) as i64),
+        );
+        map.insert(
+            s("runtime_ns"),
+            ExoValue::Int(scheduler.as_ref().map_or(0, |state| state.runtime_ns) as i64),
+        );
+        map.insert(
+            s("quota_waiting"),
+            ExoValue::Int(scheduler.as_ref().map_or(0, |state| state.quota_waiting) as i64),
+        );
+        map.insert(
+            s("interrupted_polls"),
+            ExoValue::Int(
+                scheduler
+                    .as_ref()
+                    .map_or(0, |state| state.interrupted_polls) as i64,
+            ),
         );
         map.insert(s("fuel_remaining"), ExoValue::Int(fuel_remaining as i64));
         map.insert(s("fuel_active"), ExoValue::Bool(fuel_active));

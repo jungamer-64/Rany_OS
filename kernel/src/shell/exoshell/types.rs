@@ -173,14 +173,7 @@ pub struct DomainInfo {
     pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DomainState {
-    Initializing,
-    Running,
-    Suspended,
-    Stopped,
-    Terminated,
-}
+pub use kernel_api::resource::domain::DomainState;
 
 /// Capability（権限トークン）
 /// ExoRustのセキュリティモデルの中核

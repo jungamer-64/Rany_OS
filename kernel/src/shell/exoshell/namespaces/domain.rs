@@ -52,13 +52,7 @@ impl DomainNamespace {
         let result: Vec<ExoValue<'static>> = domains
             .into_iter()
             .map(|d| {
-                let state = match d.state {
-                    kernel_api::shell::DomainState::Initializing => DomainState::Initializing,
-                    kernel_api::shell::DomainState::Running => DomainState::Running,
-                    kernel_api::shell::DomainState::Suspended => DomainState::Suspended,
-                    kernel_api::shell::DomainState::Stopped => DomainState::Stopped,
-                    kernel_api::shell::DomainState::Terminated => DomainState::Terminated,
-                };
+                let state = d.state;
                 ExoValue::Domain(DomainInfo {
                     id: d.id,
                     name: d.name,
@@ -83,13 +77,7 @@ impl DomainNamespace {
         let domain = crate::shell::runtime::get_domain(id);
 
         if let Some(d) = domain {
-            let state = match d.state {
-                kernel_api::shell::DomainState::Initializing => DomainState::Initializing,
-                kernel_api::shell::DomainState::Running => DomainState::Running,
-                kernel_api::shell::DomainState::Suspended => DomainState::Suspended,
-                kernel_api::shell::DomainState::Stopped => DomainState::Stopped,
-                kernel_api::shell::DomainState::Terminated => DomainState::Terminated,
-            };
+            let state = d.state;
             ExoValue::Domain(DomainInfo {
                 id: d.id,
                 name: d.name,
@@ -118,7 +106,7 @@ impl DomainNamespace {
 
         match crate::shell::runtime::terminate_domain(id) {
             Ok(()) => ExoValue::Bool(true),
-            Err(e) => ExoValue::Error(String::from(e)),
+            Err(e) => ExoValue::Error(format!("{e}")),
         }
     }
 }

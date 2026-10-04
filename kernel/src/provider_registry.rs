@@ -423,7 +423,6 @@ pub fn serial_service() -> Option<&'static dyn SerialServices> {
 mod tests {
     use super::*;
     use alloc::vec;
-    use core::task::Waker;
     use kernel_api::service::netdev::{
         MacAddress, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDeviceServices,
         NetPortId,
@@ -433,7 +432,7 @@ mod tests {
     };
     use kernel_api::service::storage::{StorageDeviceInfo, StorageServices, StorageTransport};
     use kernel_api::service::time::{
-        CpuTimeStats, TimeService, TimerHandle, TimerMode, TimerServiceStats,
+        TimeService, TimerError, TimerRegistration, TimerSchedule, TimerServiceStats,
     };
 
     struct FakeAcpi;
@@ -525,19 +524,12 @@ mod tests {
     }
 
     impl TimeService for FakeTime {
-        fn compute_wake_tick(&self, duration_ms: u64) -> u64 {
-            duration_ms
-        }
         fn register_timer(
             &self,
-            _interval_ms: u64,
-            _mode: TimerMode,
-            _waker: Waker,
-        ) -> TimerHandle {
-            TimerHandle(1)
-        }
-        fn cancel_timer(&self, _handle: TimerHandle) -> bool {
-            true
+            _schedule: TimerSchedule,
+        ) -> Result<TimerRegistration, TimerError> {
+            // Provider registry tests do not drive a clock; admission explicitly fails.
+            Err(TimerError::ServiceUnavailable)
         }
         fn current_tick_ms(&self) -> u64 {
             0
@@ -554,16 +546,6 @@ mod tests {
         fn stats(&self) -> TimerServiceStats {
             TimerServiceStats::default()
         }
-        fn task_cpu_stats(&self, _task_id: u64) -> Option<CpuTimeStats> {
-            None
-        }
-        fn record_task_start(&self, _task_id: u64) {}
-        fn record_task_stop(&self, _task_id: u64) {}
-        fn on_timer_interrupt(&self) {}
-        fn process_pending_wakers(&self) {}
-        fn adjust_wall_clock(&self, _delta_ns: i64) {}
-        fn register_sleep(&self, _wake_tick: u64, _waker: Waker) {}
-        fn unregister_sleep(&self, _wake_tick: u64) {}
     }
 
     impl StorageServices for FakeStorage {
