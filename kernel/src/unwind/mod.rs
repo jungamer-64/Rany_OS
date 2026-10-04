@@ -457,24 +457,25 @@ fn resolve_rbp(ctx: &registers::UnwindContext, cfa: u64, current_rbp: u64) -> u6
 
 /// DWARF命令を実行する共通ヘルパー
 fn execute_dwarf_instructions(
-    parser: &mut SafeEhFrameParser,
+    instructions: &[u8],
     interpreter: &mut SafeCfiInterpreter,
     data_alignment_factor: i64,
-    start: usize,
-    end: usize,
     pc_limit: Option<u64>,
-) {
-    parser.reader.set_position(start);
-    while parser.reader.position() < end {
+) -> Result<(), UnwindError> {
+    let mut parser = SafeEhFrameParser::new(instructions);
+    // LOOP_PROOF: mode=condition; reason=Every decoded instruction consumes an opcode within the bounded instruction slice, and a malformed or unsupported instruction returns an error.;
+    while !parser.reader.is_exhausted() {
         if let Some(target_pc) = pc_limit {
             if interpreter.location() > target_pc {
                 break;
             }
         }
-        if let Some(instr) = parser.parse_instruction(data_alignment_factor) {
-            interpreter.execute(instr);
-        }
+        let instruction = parser
+            .parse_instruction(data_alignment_factor)
+            .ok_or(UnwindError::InvalidDwarf)?;
+        interpreter.execute(instruction);
     }
+    Ok(())
 }
 
 /// DWARFベースのアンワインドを実行
@@ -507,24 +508,39 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
 
     // CIEの初期命令を実行
     execute_dwarf_instructions(
-        &mut parser,
+        parser
+            .reader
+            .data()
+            .get(
+                initial_start
+                    ..initial_start
+                        .checked_add(initial_len)
+                        .ok_or(UnwindError::InvalidDwarf)?,
+            )
+            .ok_or(UnwindError::InvalidDwarf)?,
         &mut interpreter,
         data_alignment_factor,
-        initial_start,
-        initial_start + initial_len,
         None,
-    );
+    )?;
 
     // FDEの命令を実行（PCまで）
     let pc_offset = (frame.instruction_pointer as u64).saturating_sub(fde.initial_location);
     execute_dwarf_instructions(
-        &mut parser,
+        parser
+            .reader
+            .data()
+            .get(
+                fde.instructions_offset
+                    ..fde
+                        .instructions_offset
+                        .checked_add(fde.instructions_len)
+                        .ok_or(UnwindError::InvalidDwarf)?,
+            )
+            .ok_or(UnwindError::InvalidDwarf)?,
         &mut interpreter,
         data_alignment_factor,
-        fde.instructions_offset,
-        fde.instructions_offset + fde.instructions_len,
         Some(pc_offset),
-    );
+    )?;
 
     // CFAを計算
     let ctx = interpreter.context();
@@ -537,4 +553,48 @@ pub fn unwind_frame(frame: &StackFrame) -> Result<StackFrame, UnwindError> {
         stack_pointer: cfa as usize,
         frame_pointer: new_rbp as usize,
     })
+}
+
+#[cfg(test)]
+mod instruction_tests {
+    use super::*;
+
+    #[test]
+    fn malformed_instruction_cannot_consume_an_adjacent_instruction_range() {
+        let records = [0x02, 0x40]; // advance_loc1 lacks its operand in the first range
+        let mut interpreter = SafeCfiInterpreter::new(1, -8);
+        assert_eq!(
+            execute_dwarf_instructions(&records[..1], &mut interpreter, -8, None),
+            Err(UnwindError::InvalidDwarf)
+        );
+        assert_eq!(interpreter.location(), 0);
+        assert_eq!(
+            execute_dwarf_instructions(&records[1..], &mut interpreter, -8, None),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn unsupported_instruction_ends_decode_after_a_valid_prefix() {
+        let mut interpreter = SafeCfiInterpreter::new(1, -8);
+        assert_eq!(
+            execute_dwarf_instructions(&[0x41, 0x3f], &mut interpreter, -8, None),
+            Err(UnwindError::InvalidDwarf)
+        );
+        assert_eq!(interpreter.location(), 1);
+        assert_eq!(
+            execute_dwarf_instructions(&[], &mut interpreter, -8, None),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn entry_fields_cannot_read_the_following_record() {
+        // The four-byte CIE payload ends immediately after its ID. Bytes of the
+        // following record could otherwise form a valid CIE header.
+        let records = [4, 0, 0, 0, 0, 0, 0, 0, 1, 0, 1, 0x78, 16];
+        let mut parser = SafeEhFrameParser::new(&records);
+        assert!(parser.find_fde(0).is_none());
+        assert!(parser.get_cached_cie(0).is_none());
+    }
 }

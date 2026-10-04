@@ -96,24 +96,34 @@ impl<'a> SafeEhFrameParser<'a> {
         length: u64,
         pc: u64,
     ) -> Option<Option<SafeFde>> {
-        let entry_end = self.reader.position() + length as usize;
-        let cie_id = self.reader.read_u32().ok()?;
+        let length = usize::try_from(length).ok()?;
+        let content_length = length.checked_sub(core::mem::size_of::<u32>())?;
+        let entry_end = self
+            .reader
+            .position()
+            .checked_add(length)
+            .filter(|end| *end <= self.reader.data().len())?;
+        let payload_start = self.reader.position();
+        let mut entry = SafeEhFrameParser::new(self.reader.data().get(payload_start..entry_end)?);
+        let cie_id = entry.reader.read_u32().ok()?;
         if cie_id == 0 {
-            let cie = self.parse_cie_content(length as usize - 4)?;
+            let mut cie = entry.parse_cie_content(content_length)?;
+            cie.initial_instructions_offset =
+                payload_start.checked_add(cie.initial_instructions_offset)?;
             self.cache_cie(entry_start as u64, cie);
             self.reader.set_position(entry_end);
             return Some(None);
         }
-        let cie_offset = entry_start as u64 + 4 - cie_id as u64;
+        let cie_offset = (payload_start as u64).checked_sub(u64::from(cie_id))?;
         let fde_encoding = self
             .get_cached_cie(cie_offset)
             .and_then(|c| c.augmentation.fde_encoding)
             .unwrap_or(0x03);
-        let initial_location = self.read_encoded_value(fde_encoding)?;
-        let address_range = self.read_encoded_value(fde_encoding & 0x0F)?;
-        if pc >= initial_location && pc < initial_location + address_range {
-            let instructions_offset = self.reader.position();
-            let instructions_len = entry_end.saturating_sub(instructions_offset);
+        let initial_location = entry.read_encoded_value(fde_encoding)?;
+        let address_range = entry.read_encoded_value(fde_encoding & 0x0F)?;
+        if pc >= initial_location && pc < initial_location.checked_add(address_range)? {
+            let instructions_offset = payload_start.checked_add(entry.reader.position())?;
+            let instructions_len = entry_end.checked_sub(instructions_offset)?;
             return Some(Some(SafeFde {
                 cie_offset,
                 initial_location,
@@ -128,7 +138,8 @@ impl<'a> SafeEhFrameParser<'a> {
 
     pub fn find_fde(&mut self, pc: u64) -> Option<SafeFde> {
         self.reader.set_position(0);
-        while !self.reader.is_empty() {
+        // LOOP_PROOF: mode=condition; reason=Each nonzero entry consumes its length header and checked payload range, while a terminator, malformed entry, or matching FDE ends the scan.;
+        while !self.reader.is_exhausted() {
             let entry_start = self.reader.position();
             let length = self.reader.read_u32().ok()? as u64;
             if length == 0 {
@@ -150,6 +161,7 @@ impl<'a> SafeEhFrameParser<'a> {
 
     pub(super) fn parse_cie_content(&mut self, remaining_len: usize) -> Option<SafeCie> {
         let content_start = self.reader.position();
+        let content_end = content_start.checked_add(remaining_len)?;
         let version = self.reader.read_u8().ok()?;
         if version != 1 && version != 3 {
             return None;
@@ -165,8 +177,11 @@ impl<'a> SafeEhFrameParser<'a> {
         };
         let return_address_register = DwarfRegister::from_dwarf_number(ra_reg as u8)?;
         if aug_string.starts_with(b"z") {
-            let aug_len = self.reader.read_uleb128().ok()? as usize;
-            let aug_end = self.reader.position() + aug_len;
+            let aug_len = usize::try_from(self.reader.read_uleb128().ok()?).ok()?;
+            let aug_end = self.reader.position().checked_add(aug_len)?;
+            if aug_end > content_end {
+                return None;
+            }
             for &ch in aug_string.iter().skip(1) {
                 match ch {
                     b'L' => {
@@ -188,10 +203,13 @@ impl<'a> SafeEhFrameParser<'a> {
                     _ => {}
                 }
             }
+            if self.reader.position() > aug_end {
+                return None;
+            }
             self.reader.set_position(aug_end);
         }
         let initial_instructions_offset = self.reader.position();
-        let initial_instructions_len = content_start + remaining_len - initial_instructions_offset;
+        let initial_instructions_len = content_end.checked_sub(initial_instructions_offset)?;
         Some(SafeCie {
             version,
             augmentation,
