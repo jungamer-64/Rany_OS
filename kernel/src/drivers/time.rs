@@ -1,18 +1,8 @@
-use core::future::Future;
-use core::pin::Pin;
-use core::task::{Context, Poll};
-
-use kernel_api::service::time::TimeService;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct PendingTimerWakerStats {
-    pub pending: usize,
-    pub capacity: usize,
-}
+use kernel_api::service::time::{SleepFuture, TimeService};
 
 /// The concrete time cell implementation linked into the kernel.
 #[inline]
-pub(crate) fn concrete_service() -> &'static dyn TimeService {
+pub(crate) fn concrete_service() -> &'static time_driver::TimeManagement {
     time_driver::time_service()
 }
 
@@ -28,7 +18,7 @@ pub fn register_builtin_service() {
 /// statically linked time driver instance.
 #[inline]
 pub fn service() -> &'static dyn TimeService {
-    kernel_api::service::time::try_instance().unwrap_or_else(concrete_service)
+    kernel_api::service::time::try_instance().unwrap_or_else(|| concrete_service())
 }
 
 #[inline]
@@ -45,16 +35,8 @@ pub fn process_pending_timer_wakers() {
 }
 
 #[inline]
-pub fn pending_timer_waker_count() -> usize {
-    concrete_service().stats().pending_wakers
-}
-
-#[inline]
-pub fn pending_waker_stats() -> PendingTimerWakerStats {
-    PendingTimerWakerStats {
-        pending: service().stats().pending_wakers,
-        capacity: 0,
-    }
+pub fn timer_stats() -> kernel_api::service::time::TimerServiceStats {
+    service().stats()
 }
 
 #[inline]
@@ -89,3 +71,7 @@ pub fn set_unix_timestamp_ms(target_ms: u64) {
     adjust_wall_clock(delta_ns.clamp(i64::MIN as i128, i64::MAX as i128) as i64);
 }
 
+#[inline]
+pub fn sleep_ms(duration_ms: u64) -> SleepFuture {
+    SleepFuture::new(service(), duration_ms)
+}

@@ -10,9 +10,8 @@
 // 1. ISR内ではCPU専用のソース通知集合へ記録するのみ
 // 2. schedulerが有限のsnapshotを処理してwake()を呼び出す
 // ============================================================================
-use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
-use core::task::Waker;
+use exorust_sync::{BroadcastEvent, EventListener};
 
 // ============================================================================
 // Interrupt Source Types
@@ -28,40 +27,35 @@ pub enum InterruptSource {
 
     /// シリアルポート (COM1)
     Serial,
-    /// NVMe
-    Nvme(u16), // queue ID
     /// 汎用IRQ
     Irq(u8),
 }
 
 impl InterruptSource {
     /// IRQベクターから割り込みソースに変換
-    pub fn from_vector(vector: u8) -> Option<Self> {
+    pub fn from_vector(vector: u8) -> Self {
         match vector {
-            0x20 => Some(InterruptSource::Timer),
-            0x21 => Some(InterruptSource::Keyboard),
-            0x24 => Some(InterruptSource::Serial), // COM1 = IRQ4 = 0x20 + 4
+            0x20 => InterruptSource::Timer,
+            0x21 => InterruptSource::Keyboard,
+            0x24 => InterruptSource::Serial, // COM1 = IRQ4 = 0x20 + 4
 
-            0x50..=0x5F => Some(InterruptSource::Nvme((vector - 0x50) as u16)),
-            _ => Some(InterruptSource::Irq(vector)),
+            _ => InterruptSource::Irq(vector),
         }
     }
 
-    /// インデックスに変換（配列アクセス用）
-    pub fn to_index(&self) -> usize {
+    /// Named sources and raw vectors address the same delivery slot.
+    fn to_index(self) -> usize {
         match self {
-            InterruptSource::Timer => 0,
-            InterruptSource::Keyboard => 1,
-
-            InterruptSource::Serial => 3,
-            InterruptSource::Nvme(id) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + (*id as usize),
-            InterruptSource::Irq(irq) => 16 + 32 + 32 + 16 + 16 + 16 + 16 + 256 + (*irq as usize),
+            Self::Timer => 0x20,
+            Self::Keyboard => 0x21,
+            Self::Serial => 0x24,
+            Self::Irq(vector) => usize::from(vector),
         }
     }
 }
 
-/// 最大インデックスサイズ（配列サイズ）
-pub(crate) const MAX_INTERRUPT_INDICES: usize = 2048;
+/// x86 interrupt vector domain. CPU pending sets derive their size from this.
+pub(crate) const MAX_INTERRUPT_INDICES: usize = 256;
 
 // ============================================================================
 // Atomic Waker - ISR-safe Waker storage
@@ -73,11 +67,9 @@ pub use crate::sync::AtomicWaker;
 // Interrupt Waker Registry
 // ============================================================================
 
-/// 割り込みソースごとのWaker管理（ロックフリー版）
+/// Source notifications are deferred by CPU; each listener owns its receipt.
 pub struct InterruptWakerRegistry {
-    /// 割り込みソース -> AtomicWakerのマッピング（配列）
-    /// crate::sync::InitOnceを使って遅延初期化（カーネルヒープ初期化後）
-    wakers: crate::sync::InitOnce<Vec<AtomicWaker>>,
+    events: [BroadcastEvent; MAX_INTERRUPT_INDICES],
     /// 統計: 割り込み回数
     interrupt_count: AtomicU64,
     /// 統計: Wake回数
@@ -86,79 +78,40 @@ pub struct InterruptWakerRegistry {
 
 impl InterruptWakerRegistry {
     /// 新しいレジストリを作成
-    pub const fn new() -> Self {
+    const fn new() -> Self {
         Self {
-            wakers: crate::sync::InitOnce::new(),
+            events: [const { BroadcastEvent::new() }; MAX_INTERRUPT_INDICES],
             interrupt_count: AtomicU64::new(0),
             wake_count: AtomicU64::new(0),
         }
     }
 
-    /// Waker配列を取得（未初期化なら初期化）
-    fn get_wakers(&self) -> &[AtomicWaker] {
-        self.wakers.call_once(|| {
-            let mut v = Vec::with_capacity(MAX_INTERRUPT_INDICES);
-            for _ in 0..MAX_INTERRUPT_INDICES {
-                v.push(AtomicWaker::new());
-            }
-            v
-        })
-    }
-
     /// 割り込みソースのWakerを起動要求（ISRから呼ばれる）
     ///
     /// 2段階Wake方式:
-    /// ISRではイベントキューに積むのみ。実際のwake()は非ISR側で実行する。
-    pub fn wake(&self, source: InterruptSource) {
+    /// ISR records a bit without initialization, allocation, locks, or callbacks.
+    fn wake(&self, source: InterruptSource) {
         self.interrupt_count.fetch_add(1, Ordering::Relaxed);
 
-        let idx = source.to_index();
-        if idx >= MAX_INTERRUPT_INDICES {
-            return;
-        }
-
-        // crate::sync::InitOnceが初期化済みかチェック（初期化前はwake不可）
-        if self.wakers.get().is_some() {
-            if let Some(current) = crate::cpu::CurrentCpu::acquire() {
-                current.defer_interrupt_wake(idx);
-            }
-        }
-    }
-
-    /// 複数の割り込みソースのWakerを一度に起動
-    pub fn wake_many(&self, sources: &[InterruptSource]) {
-        self.interrupt_count
-            .fetch_add(sources.len() as u64, Ordering::Relaxed);
-
-        if self.wakers.get().is_some() {
-            if let Some(current) = crate::cpu::CurrentCpu::acquire() {
-                for source in sources {
-                    let idx = source.to_index();
-                    if idx < MAX_INTERRUPT_INDICES {
-                        current.defer_interrupt_wake(idx);
-                    }
-                }
-            }
+        if let Some(current) = crate::cpu::CurrentCpu::acquire() {
+            current.defer_interrupt_wake(source.to_index());
         }
     }
 
     /// 保留ソースの有限の snapshot を非割込みコンテキストで処理する。
     /// 同じソースへの通知は合流し、処理中の通知は次回の処理へ残る。
-    pub fn process_pending_events(&self) {
-        let Some(wakers) = self.wakers.get() else {
-            return;
-        };
+    fn process_pending_events(&self) {
         let Some(current) = crate::cpu::CurrentCpu::acquire() else {
             return;
         };
         current.drain_interrupt_wakes(|idx| {
-            wakers[idx].wake();
+            self.events[idx].notify();
             self.wake_count.fetch_add(1, Ordering::Relaxed);
         });
     }
 
     /// 保留中のイベント数を取得
-    pub fn pending_event_count(&self) -> usize {
+    fn pending_event_count(&self) -> usize {
         let Some(runtime) = crate::cpu::try_runtime() else {
             return 0;
         };
@@ -173,11 +126,11 @@ impl InterruptWakerRegistry {
 
     /// 統計を取得
     pub fn stats(&self) -> InterruptWakerStats {
-        let registered = if let Some(wakers) = self.wakers.get() {
-            wakers.iter().filter(|w| w.has_waker()).count()
-        } else {
-            0
-        };
+        let registered = self
+            .events
+            .iter()
+            .filter(|event| event.listener_count() > 0)
+            .count();
 
         InterruptWakerStats {
             interrupt_count: self.interrupt_count.load(Ordering::Relaxed),
@@ -213,16 +166,16 @@ pub fn interrupt_waker_registry() -> &'static InterruptWakerRegistry {
 /// 割り込みハンドラから呼ばれる（便利関数）
 ///
 /// 【設計書 4.2】2段階Wake方式: ISR安全
-/// イベントキューに積むのみで、実際のwake()は呼ばない
+/// CPU-local source bits coalesce repeated notifications without losing a source.
 #[inline]
 pub fn wake_from_interrupt(source: InterruptSource) {
     INTERRUPT_WAKER_REGISTRY.wake(source);
 }
 
-/// 保留中の割り込みイベントを処理（Executorから呼び出す）
+/// scheduler の通常コンテキストで割り込み通知を配送する。
 ///
 /// 【設計書 4.2】2段階Wake方式: 非ISRコンテキストで呼び出す
-/// Executorのイベントループの各イテレーションで呼び出すべき
+/// ISR 完了後、タスクを選択する前に有限の snapshot を処理する。
 #[inline]
 pub fn process_interrupt_events() {
     INTERRUPT_WAKER_REGISTRY.process_pending_events();
@@ -245,17 +198,12 @@ pub fn pending_interrupt_events() -> usize {
 /// let data = wait_for_interrupt(InterruptSource::Irq(0x60)).await;
 /// ```
 pub fn wait_for_interrupt(source: InterruptSource) -> InterruptFuture {
-    InterruptFuture {
-        source,
-        registered: false,
-    }
+    INTERRUPT_WAKER_REGISTRY.events[source.to_index()].listen()
 }
 
-/// 割り込み待ちFuture
-pub struct InterruptFuture {
-    source: InterruptSource,
-    registered: bool,
-}
+/// An IRQ receipt owns its registration until completion or cancellation.
+/// Repolling after an unrelated task wake leaves the receipt pending.
+pub type InterruptFuture = EventListener<'static>;
 
 // ============================================================================
 // Integration with Timer
@@ -278,28 +226,17 @@ pub fn handle_timer_interrupt_waker() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core::task::{RawWaker, RawWakerVTable};
-
-    fn dummy_waker() -> Waker {
-        const VTABLE: RawWakerVTable = RawWakerVTable::new(
-            |_| RawWaker::new(core::ptr::null(), &VTABLE),
-            |_| {},
-            |_| {},
-            |_| {},
-        );
-
-        unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
-    }
+    use core::task::Waker;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_atomic_waker() {
         let atomic_waker = AtomicWaker::new();
-        let waker = dummy_waker();
+        let waker = Waker::noop();
 
         assert!(!atomic_waker.has_waker());
 
-        atomic_waker.register(&waker);
+        atomic_waker.register(waker);
         assert!(atomic_waker.has_waker());
 
         atomic_waker.wake();
@@ -309,17 +246,22 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_interrupt_source_from_vector() {
-        assert_eq!(
-            InterruptSource::from_vector(0x20),
-            Some(InterruptSource::Timer)
-        );
+        assert_eq!(InterruptSource::from_vector(0x20), InterruptSource::Timer);
         assert_eq!(
             InterruptSource::from_vector(0x21),
-            Some(InterruptSource::Keyboard)
+            InterruptSource::Keyboard
         );
         assert_eq!(
             InterruptSource::from_vector(0x30),
-            Some(InterruptSource::Irq(0x30))
+            InterruptSource::Irq(0x30)
+        );
+        assert_eq!(
+            InterruptSource::Timer.to_index(),
+            InterruptSource::Irq(0x20).to_index()
+        );
+        assert_eq!(
+            InterruptSource::Irq(u8::MAX).to_index(),
+            MAX_INTERRUPT_INDICES - 1
         );
     }
 }

@@ -10,20 +10,16 @@
 //! - `TimeoutResult<T>`: タイムアウト結果型
 //! - `TimeoutFuture<F>`: デッドライン付きFutureラッパー
 //! - `with_timeout()`: タイムアウト付き実行
-//! - `block_on()`: テスト用同期実行ヘルパー
 //!
 //! ## 注意
-//! コアなタスク型定義 (`TaskId`, `Task`) は `task/mod.rs` に残ります。
+//! `TimeoutFuture` is polled only as part of its owning scheduler task.
 //! 実行基盤と配置判断は `task/scheduler.rs` が担当します。
 
-use alloc::boxed::Box;
-use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
-use core::sync::atomic::{AtomicBool, Ordering};
-use core::task::{Context, Poll, RawWaker, RawWakerVTable, Waker};
+use core::task::{Context, Poll};
 
-use super::current_tick;
+use kernel_api::service::time::{SleepFuture, TimerError};
 
 // ============================================================================
 // Timeout Support (設計書 4.4)
@@ -36,6 +32,8 @@ pub enum TimeoutResult<T> {
     Completed(T),
     /// タイムアウト
     TimedOut,
+    /// The deadline could not be armed; this is not elapsed time.
+    TimerFailed(TimerError),
 }
 
 impl<T> TimeoutResult<T> {
@@ -53,7 +51,7 @@ impl<T> TimeoutResult<T> {
     pub fn ok(self) -> Option<T> {
         match self {
             TimeoutResult::Completed(v) => Some(v),
-            TimeoutResult::TimedOut => None,
+            TimeoutResult::TimedOut | TimeoutResult::TimerFailed(_) => None,
         }
     }
 }
@@ -66,17 +64,17 @@ impl<T> TimeoutResult<T> {
 /// タイマーwaker経由でタスクを再pollし、タイムアウトを確実に発火させる。
 pub struct TimeoutFuture<F: Future> {
     inner: F,
-    deadline: u64,
-    timer_registered: bool,
+    timer: Option<SleepFuture>,
 }
 
 impl<F: Future> TimeoutFuture<F> {
-    /// 新しいタイムアウト付きFutureを作成
     pub fn new(future: F, timeout_ms: u64) -> Self {
         Self {
             inner: future,
-            deadline: current_tick() + timeout_ms,
-            timer_registered: false,
+            timer: Some(SleepFuture::new(
+                crate::drivers::time::service(),
+                timeout_ms,
+            )),
         }
     }
 }
@@ -85,50 +83,31 @@ impl<F: Future> Future for TimeoutFuture<F> {
     type Output = TimeoutResult<F::Output>;
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // SAFETY: inner futureをpinするためにunsafeが必要
+        // SAFETY: inner is never moved by this implementation, including on
+        // completion. Timer registrations are Unpin and have independent owners.
         let this = unsafe { self.get_unchecked_mut() };
-
-        let now = current_tick();
-        let time_service = crate::drivers::time::service();
-
-        // タイムアウトチェック
-        if now >= this.deadline {
-            // タイマー登録を解除
-            if this.timer_registered {
-                time_service.unregister_sleep(this.deadline);
-                this.timer_registered = false;
-            }
-            return Poll::Ready(TimeoutResult::TimedOut);
+        // SAFETY: projection preserves inner's pin for the entire parent lifetime.
+        let inner = unsafe { Pin::new_unchecked(&mut this.inner) };
+        if let Poll::Ready(result) = inner.poll(cx) {
+            // Completion wins if both sides are ready in this poll. Cancellation
+            // drops only this timeout's timer; other equal deadlines are untouched.
+            this.timer.take();
+            return Poll::Ready(TimeoutResult::Completed(result));
         }
-
-        // 内部Futureをpoll
-        // SAFETY: selfがpinnedなので、innerもpinされている
-        let inner_pin = unsafe { Pin::new_unchecked(&mut this.inner) };
-        match inner_pin.poll(cx) {
-            Poll::Ready(result) => {
-                // 完了時にタイマー登録を解除
-                if this.timer_registered {
-                    time_service.unregister_sleep(this.deadline);
-                    this.timer_registered = false;
-                }
-                Poll::Ready(TimeoutResult::Completed(result))
+        let timer = this
+            .timer
+            .as_mut()
+            .expect("a pending timeout retains its timer");
+        match Pin::new(timer).poll(cx) {
+            Poll::Pending => Poll::Pending,
+            Poll::Ready(Ok(())) => {
+                this.timer.take();
+                Poll::Ready(TimeoutResult::TimedOut)
             }
-            Poll::Pending => {
-                // デッドライン到達時にタスクを起床させるためタイマーwaker登録
-                if !this.timer_registered {
-                    time_service.register_sleep(this.deadline, cx.waker().clone());
-                    this.timer_registered = true;
-                }
-                Poll::Pending
+            Poll::Ready(Err(cause)) => {
+                this.timer.take();
+                Poll::Ready(TimeoutResult::TimerFailed(cause))
             }
-        }
-    }
-}
-
-impl<F: Future> Drop for TimeoutFuture<F> {
-    fn drop(&mut self) {
-        if self.timer_registered {
-            crate::drivers::time::service().unregister_sleep(self.deadline);
         }
     }
 }
@@ -141,66 +120,9 @@ impl<F: Future> Drop for TimeoutFuture<F> {
 /// match result {
 ///     TimeoutResult::Completed(value) => println!("Got: {:?}", value),
 ///     TimeoutResult::TimedOut => println!("Operation timed out"),
+///     TimeoutResult::TimerFailed(cause) => println!("Cannot arm deadline: {cause}"),
 /// }
 /// ```
 pub fn with_timeout<F: Future>(future: F, timeout_ms: u64) -> TimeoutFuture<F> {
     TimeoutFuture::new(future, timeout_ms)
-}
-
-/// Simple helper to synchronously run a `Future` to completion in tests or
-/// synchronous contexts. This creates a minimal local Waker that spins waiting
-/// to be notified. Intended for tests and transitional use only.
-pub fn block_on<F: Future>(future: F) -> F::Output {
-    // Shared wake flag
-    let flag = Arc::new(AtomicBool::new(false));
-
-    unsafe fn clone_data(data: *const ()) -> RawWaker {
-        // Convert back to Arc and increment refcount
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        let cloned = arc.clone();
-        // Re-leak the original Arc
-        let _ = Arc::into_raw(arc);
-        RawWaker::new(Arc::into_raw(cloned) as *const (), &VTABLE)
-    }
-
-    unsafe fn wake_data(data: *const ()) {
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        arc.store(true, Ordering::SeqCst);
-        // Drop original Arc reference obtained from from_raw
-    }
-
-    unsafe fn wake_by_ref_data(data: *const ()) {
-        let arc = Arc::from_raw(data as *const AtomicBool);
-        arc.store(true, Ordering::SeqCst);
-        // Re-leak
-        let _ = Arc::into_raw(arc);
-    }
-
-    unsafe fn drop_data(data: *const ()) {
-        // Convert back to Arc and drop it so refcount decreases
-        let _arc = Arc::from_raw(data as *const AtomicBool);
-    }
-
-    const VTABLE: RawWakerVTable =
-        RawWakerVTable::new(clone_data, wake_data, wake_by_ref_data, drop_data);
-
-    // Build initial RawWaker
-    let raw = RawWaker::new(Arc::into_raw(flag.clone()) as *const (), &VTABLE);
-    let waker = unsafe { Waker::from_raw(raw) };
-    let mut cx = Context::from_waker(&waker);
-
-    let mut fut = Box::pin(future);
-
-    loop {
-        match fut.as_mut().poll(&mut cx) {
-            Poll::Ready(v) => return v,
-            Poll::Pending => {
-                // Wait until woken
-                while !flag.load(Ordering::SeqCst) {
-                    core::hint::spin_loop();
-                }
-                flag.store(false, Ordering::SeqCst);
-            }
-        }
-    }
 }

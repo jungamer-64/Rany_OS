@@ -1,4 +1,5 @@
 use super::*;
+use kernel_api::service::time::TimeService;
 
 static EARLY_WALL_CLOCK_INITIALIZED: AtomicBool = AtomicBool::new(false);
 static EARLY_TSC_INITIALIZED: AtomicBool = AtomicBool::new(false);
@@ -23,22 +24,26 @@ pub fn calibrate_tsc() -> Option<TscInfo> {
         // 50ms 分の tick 数
         let pit_ticks = (pit::BASE_FREQUENCY / 20) as u16;
 
-        // I/O ポート準備
-        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
-        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL2_DATA);
-        let mut speaker_port: PortU8 = IoPort::new(pit::SPEAKER_PORT);
+        let ports = PIT_PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cmd_port = ports[0].first::<u8>().expect("one-byte PIT port");
+        let mut data_port = ports[2].first::<u8>().expect("one-byte PIT port");
+        let mut speaker_port = ports[3].first::<u8>().expect("one-byte gate port");
 
         // スピーカーポートの初期状態を保存
         let old_speaker = speaker_port.read();
 
-        for i in 0..TRIALS {
-            measurements[i] = perform_single_pit_measurement(
+        for measurement in &mut measurements {
+            let Some(value) = perform_single_pit_measurement(
                 &mut cmd_port,
                 &mut data_port,
                 &mut speaker_port,
                 old_speaker,
                 pit_ticks,
-            )?;
+            ) else {
+                speaker_port.write(old_speaker);
+                return None;
+            };
+            *measurement = value;
         }
 
         // スピーカーポート復元

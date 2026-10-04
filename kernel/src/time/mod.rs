@@ -7,7 +7,7 @@
 //! TSC, HPET, PIT, RTC など複数のタイマーソースをサポート。
 use crate::sync::{IrqPoisonLock, PoisonLock};
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
-use hal::port_io::{IoPort, PortU8};
+use hal::port_io::{IoPort, IoPortRange};
 
 /// ナノ秒単位の時間
 mod api;
@@ -241,8 +241,39 @@ impl DateTime {
     }
 }
 
-/// CMOS ポートアクセス用のグローバルロック
-static CMOS_LOCK: IrqPoisonLock<()> = IrqPoisonLock::new(());
+// The platform time subsystem owns these fixed legacy resources. The guards
+// retain port authority and serialize full address/data and timer protocols.
+static CMOS_PORTS: IrqPoisonLock<[IoPortRange; 2]> = {
+    // SAFETY: the RTC owner exclusively reserves the CMOS index port.
+    let address = unsafe { IoPortRange::single(rtc::CMOS_ADDR) };
+    // SAFETY: the RTC owner exclusively reserves the CMOS data port.
+    let data = unsafe { IoPortRange::single(rtc::CMOS_DATA) };
+    IrqPoisonLock::new([address, data])
+};
+
+static PIT_PORTS: IrqPoisonLock<[IoPortRange; 4]> = {
+    // SAFETY: the time owner reserves the shared PIT command register.
+    let command = unsafe { IoPortRange::single(pit::COMMAND) };
+    // SAFETY: channel 0 belongs to bootstrap timekeeping.
+    let channel0 = unsafe { IoPortRange::single(pit::CHANNEL0_DATA) };
+    // SAFETY: channel 2 belongs to this owner's delay and calibration protocols.
+    let channel2 = unsafe { IoPortRange::single(pit::CHANNEL2_DATA) };
+    // SAFETY: this owner retains the channel-2 speaker gate during calibration.
+    let gate = unsafe { IoPortRange::single(pit::SPEAKER_PORT) };
+    IrqPoisonLock::new([command, channel0, channel2, gate])
+};
+
+pub(crate) fn calibrate_apic_timer(
+    apic: &crate::drivers::apic::LocalApic,
+) -> Result<(), crate::drivers::apic::LocalApicError> {
+    let ports = PIT_PORTS.lock().unwrap_or_else(|error| error.into_inner());
+    let [command, _, channel2, gate] = &*ports;
+    apic.calibrate_timer(
+        command.first::<u8>().expect("one-byte PIT port"),
+        channel2.first::<u8>().expect("one-byte PIT port"),
+        gate.first::<u8>().expect("one-byte gate port"),
+    )
+}
 
 /// RTCドライバ
 pub struct Rtc;
@@ -253,9 +284,9 @@ impl Rtc {
     }
 
     fn read_cmos(&self, reg: u8) -> u8 {
-        let _guard = CMOS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
-        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
+        let ports = CMOS_PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut addr_port = ports[0].first::<u8>().expect("one-byte CMOS port");
+        let mut data_port = ports[1].first::<u8>().expect("one-byte CMOS port");
         addr_port.write(reg);
         data_port.read()
     }
@@ -313,9 +344,9 @@ impl Rtc {
     }
 
     fn read_datetime_internal(&self) -> DateTime {
-        let _guard = CMOS_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        let mut addr_port: PortU8 = IoPort::new(rtc::CMOS_ADDR);
-        let mut data_port: PortU8 = IoPort::new(rtc::CMOS_DATA);
+        let ports = CMOS_PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut addr_port = ports[0].first::<u8>().expect("one-byte CMOS port");
+        let mut data_port = ports[1].first::<u8>().expect("one-byte CMOS port");
         let mut read_cmos_raw = |reg| {
             addr_port.write(reg);
             data_port.read()
@@ -534,8 +565,9 @@ impl Pit {
         }
         let divisor = pit::BASE_FREQUENCY / frequency;
         let divisor = divisor.max(1).min(65535) as u16;
-        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
-        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL0_DATA);
+        let ports = PIT_PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cmd_port = ports[0].first::<u8>().expect("one-byte PIT port");
+        let mut data_port = ports[1].first::<u8>().expect("one-byte PIT port");
         cmd_port.write(pit::MODE_SQUARE_WAVE);
         data_port.write((divisor & 0xFF) as u8);
         data_port.write((divisor >> 8) as u8);
@@ -561,9 +593,10 @@ impl Pit {
         let ticks = (pit::BASE_FREQUENCY * microseconds) / 1_000_000;
         let ticks = ticks.max(1).min(65535) as u16;
         let max_spins = (u32::from(ticks).saturating_mul(16)).max(1024);
-        let mut cmd_port: PortU8 = IoPort::new(pit::COMMAND);
-        let mut data_port: PortU8 = IoPort::new(pit::CHANNEL2_DATA);
-        let mut speaker_port: PortU8 = IoPort::new(pit::SPEAKER_PORT);
+        let ports = PIT_PORTS.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cmd_port = ports[0].first::<u8>().expect("one-byte PIT port");
+        let mut data_port = ports[2].first::<u8>().expect("one-byte PIT port");
+        let mut speaker_port = ports[3].first::<u8>().expect("one-byte gate port");
         let old_speaker = speaker_port.read();
         speaker_port.write(old_speaker & 0xFC);
         core::hint::spin_loop();
@@ -581,9 +614,9 @@ impl Pit {
 }
 
 fn perform_single_pit_measurement(
-    cmd_port: &mut PortU8,
-    data_port: &mut PortU8,
-    speaker_port: &mut PortU8,
+    cmd_port: &mut IoPort<'_, u8>,
+    data_port: &mut IoPort<'_, u8>,
+    speaker_port: &mut IoPort<'_, u8>,
     old_speaker: u8,
     pit_ticks: u16,
 ) -> Option<u64> {

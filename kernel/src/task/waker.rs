@@ -1,220 +1,192 @@
-// ============================================================================
-// src/task/waker.rs - Lock-Free Waker Queue
-// ============================================================================
-//! Lock-free wake queue for ISR-safe task notification.
-//!
-//! Uses a bounded MPSC ring buffer to avoid lock contention when waking
-//! tasks from interrupt contexts.
+//! Per-task wake coalescing with generation-bound, allocation-free wakers.
 
-use super::TaskId;
-use crate::sync::MpscRingBuffer;
-use alloc::sync::Arc;
-use alloc::task::Wake;
-use core::sync::atomic::{AtomicUsize, Ordering};
-use core::task::Waker;
+use core::sync::atomic::{AtomicU64, Ordering};
+use core::task::{RawWaker, RawWakerVTable, Waker};
 
-// ============================================================================
-// Lock-Free Wake Queue
-// ============================================================================
+use super::config::SCHEDULER_CONFIG;
 
-const WAKE_QUEUE_CAPACITY: usize = 1024;
-const WAKE_QUEUE_BACKING_CAPACITY: usize = WAKE_QUEUE_CAPACITY + 1;
+const PENDING: u64 = 1;
+const ACTIVE: u64 = 2;
+const GENERATION_SHIFT: u32 = 2;
+const SLOT_BITS: u32 = SCHEDULER_CONFIG.max_tasks.next_power_of_two().ilog2();
+const SLOT_MASK: usize = (1 << SLOT_BITS) - 1;
+const MAX_GENERATION: u64 = {
+    let pointer_limit = (usize::MAX >> SLOT_BITS) as u64;
+    let state_limit = u64::MAX >> GENERATION_SHIFT;
+    if pointer_limit < state_limit {
+        pointer_limit
+    } else {
+        state_limit
+    }
+};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WakeQueueStats {
-    pub len: usize,
-    pub capacity: usize,
-    pub enqueued: usize,
-    pub dropped: usize,
-}
+struct WakeSlot(AtomicU64);
 
-/// Lock-free MPSC wake queue
-///
-/// Multiple producers (ISRs, tasks) can enqueue task IDs concurrently.
-/// Single consumer (executor) dequeues them.
-#[repr(C, align(64))]
-struct LockFreeWakeQueue {
-    /// Shared MPSC wake queue
-    queue: MpscRingBuffer<TaskId, WAKE_QUEUE_BACKING_CAPACITY>,
-    /// Statistics
-    enqueued: AtomicUsize,
-    dropped: AtomicUsize,
-}
-
-impl LockFreeWakeQueue {
+impl WakeSlot {
     const fn new() -> Self {
-        Self {
-            queue: MpscRingBuffer::new(),
-            enqueued: AtomicUsize::new(0),
-            dropped: AtomicUsize::new(0),
-        }
+        Self(AtomicU64::new(0))
     }
+}
 
-    /// Enqueue a task ID (lock-free, ISR-safe)
-    fn push(&self, task_id: TaskId) -> bool {
-        match self.queue.push(task_id) {
-            Ok(()) => {
-                self.enqueued.fetch_add(1, Ordering::Relaxed);
-                true
+static WAKE_SLOTS: [WakeSlot; SCHEDULER_CONFIG.max_tasks] =
+    [const { WakeSlot::new() }; SCHEDULER_CONFIG.max_tasks];
+static WAKE_REVISION: AtomicU64 = AtomicU64::new(0);
+
+/// Owned by exactly one published task record. Dropping it invalidates every
+/// previously cloned waker before the stack arena slot can be reused.
+pub(super) struct WakeLease {
+    slot: usize,
+    generation: u64,
+}
+
+impl WakeLease {
+    pub(super) fn activate(slot: usize) -> Self {
+        assert!(slot < SCHEDULER_CONFIG.max_tasks);
+        let state = &WAKE_SLOTS[slot].0;
+        // LOOP_PROOF: mode=event; reason=CAS retries until ownership changes or the atomic wake transition commits.;
+        loop {
+            let previous = state.load(Ordering::Acquire);
+            assert!(previous & ACTIVE == 0, "wake slot activated twice");
+            let generation = (previous >> GENERATION_SHIFT)
+                .checked_add(1)
+                .filter(|&value| value <= MAX_GENERATION)
+                .expect("wake generation exhausted");
+            let next = (generation << GENERATION_SHIFT) | ACTIVE;
+            if state
+                .compare_exchange(previous, next, Ordering::AcqRel, Ordering::Acquire)
+                .is_ok()
+            {
+                return Self { slot, generation };
             }
-            Err(_) => {
-                self.dropped.fetch_add(1, Ordering::Relaxed);
-                false
+        }
+    }
+
+    pub(super) fn waker(&self) -> Waker {
+        let token = ((self.generation as usize) << SLOT_BITS) | self.slot;
+        let raw = RawWaker::new(token as *const (), &VTABLE);
+        // SAFETY: clone and drop never dereference the token; wake validates
+        // generation and active ownership against the static slot array.
+        unsafe { Waker::from_raw(raw) }
+    }
+
+    pub(super) fn take_pending(&self) -> bool {
+        let state = &WAKE_SLOTS[self.slot].0;
+        // LOOP_PROOF: mode=event; reason=CAS retries until ownership changes or the atomic wake transition commits.;
+        loop {
+            let previous = state.load(Ordering::Acquire);
+            if previous >> GENERATION_SHIFT != self.generation
+                || previous & ACTIVE == 0
+                || previous & PENDING == 0
+            {
+                return false;
+            }
+            if state
+                .compare_exchange(
+                    previous,
+                    previous & !PENDING,
+                    Ordering::AcqRel,
+                    Ordering::Acquire,
+                )
+                .is_ok()
+            {
+                return true;
             }
         }
     }
 
-    /// Dequeue a task ID (single consumer)
-    fn pop(&self) -> Option<TaskId> {
-        self.queue.pop()
+    pub(super) fn is_pending(&self) -> bool {
+        let state = WAKE_SLOTS[self.slot].0.load(Ordering::Acquire);
+        state >> GENERATION_SHIFT == self.generation
+            && state & (ACTIVE | PENDING) == (ACTIVE | PENDING)
     }
+}
 
-    /// Get queue length (approximate)
-    #[inline]
-    fn len(&self) -> usize {
-        self.queue.len()
+impl Drop for WakeLease {
+    fn drop(&mut self) {
+        let state = &WAKE_SLOTS[self.slot].0;
+        let previous = state.swap(self.generation << GENERATION_SHIFT, Ordering::AcqRel);
+        assert_eq!(previous >> GENERATION_SHIFT, self.generation);
+        assert!(previous & ACTIVE != 0, "wake lease retired twice");
     }
+}
 
-    #[inline]
-    fn capacity(&self) -> usize {
-        WAKE_QUEUE_CAPACITY
-    }
+pub(super) fn wake_revision() -> u64 {
+    WAKE_REVISION.load(Ordering::Acquire)
+}
 
-    #[cfg(test)]
-    /// Check if queue is empty
-    #[inline]
-    fn is_empty(&self) -> bool {
-        self.queue.is_empty()
-    }
-
-    fn stats(&self) -> WakeQueueStats {
-        WakeQueueStats {
-            len: self.len(),
-            capacity: self.capacity(),
-            enqueued: self.enqueued.load(Ordering::Relaxed),
-            dropped: self.dropped.load(Ordering::Relaxed),
+fn wake_token(token: usize) {
+    let slot = token & SLOT_MASK;
+    let generation = (token >> SLOT_BITS) as u64;
+    let Some(state) = WAKE_SLOTS.get(slot).map(|slot| &slot.0) else {
+        return;
+    };
+    // LOOP_PROOF: mode=event; reason=CAS retries until ownership changes or the atomic wake transition commits.;
+    loop {
+        let previous = state.load(Ordering::Acquire);
+        if previous >> GENERATION_SHIFT != generation
+            || previous & ACTIVE == 0
+            || previous & PENDING != 0
+        {
+            return;
+        }
+        if state
+            .compare_exchange(
+                previous,
+                previous | PENDING,
+                Ordering::AcqRel,
+                Ordering::Acquire,
+            )
+            .is_ok()
+        {
+            WAKE_REVISION.fetch_add(1, Ordering::Release);
+            return;
         }
     }
 }
 
-/// Global lock-free wake queue
-static WAKE_QUEUE: LockFreeWakeQueue = LockFreeWakeQueue::new();
-
-// ============================================================================
-// Waker Implementation
-// ============================================================================
-
-/// ArcWakeトレイトを使った効率的なWaker実装
-struct TaskWaker {
-    task_id: TaskId,
+unsafe fn clone_waker(data: *const ()) -> RawWaker {
+    RawWaker::new(data, &VTABLE)
 }
 
-impl Wake for TaskWaker {
-    fn wake(self: Arc<Self>) {
-        self.wake_by_ref();
-    }
-
-    fn wake_by_ref(self: &Arc<Self>) {
-        // Lock-free enqueue - ISR-safe
-        let _ = WAKE_QUEUE.push(self.task_id);
-    }
+unsafe fn wake(data: *const ()) {
+    wake_token(data as usize);
 }
 
-/// Wakerを作成する公開API
-pub fn create_waker(task_id: TaskId) -> Waker {
-    Waker::from(Arc::new(TaskWaker { task_id }))
+unsafe fn wake_by_ref(data: *const ()) {
+    wake_token(data as usize);
 }
 
-pub(crate) fn pop_woken_task() -> Option<TaskId> {
-    WAKE_QUEUE.pop()
-}
+unsafe fn drop_waker(_data: *const ()) {}
 
-#[cfg(test)]
-/// Wake queueの長さを取得
-pub fn wake_queue_len() -> usize {
-    WAKE_QUEUE.len()
-}
-
-#[cfg(test)]
-/// Wake queueの論理容量を取得
-pub fn wake_queue_capacity() -> usize {
-    WAKE_QUEUE.capacity()
-}
-
-#[cfg(test)]
-/// Wake queueが空かどうか
-pub fn wake_queue_is_empty() -> bool {
-    WAKE_QUEUE.is_empty()
-}
-
-/// Wake queueの統計を取得
-pub fn wake_queue_stats() -> WakeQueueStats {
-    WAKE_QUEUE.stats()
-}
-
-#[cfg(test)]
-fn reset_wake_queue_for_tests() {
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while WAKE_QUEUE.pop().is_some() {}
-    WAKE_QUEUE.enqueued.store(0, Ordering::Release);
-    WAKE_QUEUE.dropped.store(0, Ordering::Release);
-}
+static VTABLE: RawWakerVTable = RawWakerVTable::new(clone_waker, wake, wake_by_ref, drop_waker);
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use super::WakeLease;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_waker_wake() {
-        reset_wake_queue_for_tests();
-
-        let task_id = TaskId::new();
-        let waker = create_waker(task_id);
-
-        // Wake should push to queue
+    fn repeated_wakes_merge_until_consumed() {
+        let lease = WakeLease::activate(254);
+        let waker = lease.waker();
         waker.wake_by_ref();
-
-        // Should be able to pop the task
-        assert_eq!(pop_woken_task(), Some(task_id));
-
-        let stats = wake_queue_stats();
-        assert_eq!(stats.len, 0);
-        assert_eq!(stats.capacity, WAKE_QUEUE_CAPACITY);
-        assert_eq!(stats.enqueued, 1);
-        assert_eq!(stats.dropped, 0);
-        assert_eq!(wake_queue_len(), 0);
-        assert_eq!(wake_queue_capacity(), WAKE_QUEUE_CAPACITY);
-        assert!(wake_queue_is_empty());
-
-        reset_wake_queue_for_tests();
+        waker.wake_by_ref();
+        assert!(lease.take_pending());
+        assert!(!lease.take_pending());
+        waker.wake_by_ref();
+        assert!(lease.take_pending());
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn wake_queue_preserves_full_capacity() {
-        reset_wake_queue_for_tests();
-
-        for _ in 0..WAKE_QUEUE_CAPACITY {
-            assert!(WAKE_QUEUE.push(TaskId::new()));
-        }
-        assert!(!WAKE_QUEUE.push(TaskId::new()));
-
-        let stats = wake_queue_stats();
-        assert_eq!(stats.len, WAKE_QUEUE_CAPACITY);
-        assert_eq!(stats.capacity, WAKE_QUEUE_CAPACITY);
-        assert_eq!(stats.enqueued, WAKE_QUEUE_CAPACITY);
-        assert_eq!(stats.dropped, 1);
-        assert_eq!(wake_queue_len(), WAKE_QUEUE_CAPACITY);
-        assert_eq!(wake_queue_capacity(), WAKE_QUEUE_CAPACITY);
-        assert!(!wake_queue_is_empty());
-
-        for _ in 0..WAKE_QUEUE_CAPACITY {
-            assert!(pop_woken_task().is_some());
-        }
-        assert_eq!(pop_woken_task(), None);
-        assert!(wake_queue_is_empty());
-
-        reset_wake_queue_for_tests();
+    fn retired_waker_cannot_wake_reused_slot() {
+        let old = WakeLease::activate(255);
+        let stale = old.waker();
+        drop(old);
+        let replacement = WakeLease::activate(255);
+        stale.wake_by_ref();
+        assert!(!replacement.take_pending());
+        replacement.waker().wake_by_ref();
+        assert!(replacement.take_pending());
     }
 }
