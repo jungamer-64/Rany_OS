@@ -184,7 +184,10 @@ impl VirtQueue {
     }
 
     pub fn free_desc_chain(&self, mut head: u16) {
-        while head < self.queue_size {
+        let mut remaining = self.queue_size;
+        // LOOP_PROOF: mode=condition; reason=Every descriptor visit consumes one queue-sized chain budget, with a terminal link or invalid head ending traversal even for a cyclic link list.;
+        while head < self.queue_size && remaining != 0 {
+            remaining -= 1;
             let (flags, next) = {
                 let desc = self.get_desc_mut(head);
                 (desc.flags, desc.next)

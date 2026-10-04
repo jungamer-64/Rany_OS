@@ -91,8 +91,12 @@ impl<K> OwnedVirtQueue<K> {
         F: FnMut(u16, u32),
     {
         let mut count = 0;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.
-        while let Some((id, len)) = self.inner.poll_complete() {
+        let limit = usize::from(self.queue_size());
+        // LOOP_PROOF: mode=bounded; reason=Each observation counts one completion up to the queue capacity, so callbacks that submit more work cannot extend this drain indefinitely.;
+        while count < limit {
+            let Some((id, len)) = self.inner.poll_complete() else {
+                break;
+            };
             on_complete(id, len);
             count += 1;
         }

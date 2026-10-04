@@ -659,7 +659,13 @@ impl VirtioBlkDevice {
     pub fn handle_interrupt(&self) {
         for (queue_idx, queue) in self.queues.iter().enumerate() {
             let queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some((desc_id, completed_len)) = queue_guard.poll_complete() {
+            let mut processed = 0;
+            // LOOP_PROOF: mode=bounded; reason=Each interrupt drain processes at most the per-poll completion budget before releasing the queue guard.;
+            while processed < MAX_BLK_COMPLETIONS_PER_POLL {
+                let Some((desc_id, completed_len)) = queue_guard.poll_complete() else {
+                    break;
+                };
+                processed += 1;
                 let _ = self.process_completion_entry(
                     &queue_guard,
                     queue_idx,
@@ -678,7 +684,13 @@ impl VirtioBlkDevice {
         let mut processed = 0usize;
         for (queue_idx, queue) in self.queues.iter().enumerate() {
             let queue_guard = queue.lock().unwrap_or_else(|e| e.into_inner());
-            while let Some((desc_id, completed_len)) = queue_guard.poll_complete() {
+            let mut batch = 0;
+            // LOOP_PROOF: mode=bounded; reason=Each callback drain processes at most the per-poll completion budget even when its callback submits additional requests.;
+            while batch < MAX_BLK_COMPLETIONS_PER_POLL {
+                let Some((desc_id, completed_len)) = queue_guard.poll_complete() else {
+                    break;
+                };
+                batch += 1;
                 let status_ok = self.process_completion_entry(
                     &queue_guard,
                     queue_idx,
@@ -755,6 +767,7 @@ fn poll_for_completion(
     let mut target = None;
     let mut processed = 0usize;
 
+    // LOOP_PROOF: mode=bounded; reason=Every consumed used entry advances processed up to the fixed per-poll budget while an empty ring ends this observation.;
     while processed < MAX_BLK_COMPLETIONS_PER_POLL {
         let Some((completed_id, len)) = queue_guard.poll_complete() else {
             break;
@@ -1001,6 +1014,7 @@ impl ZeroCopyBlockDevice for VirtioBlkDevice {
         }
 
         let desc_id = self.submit_flush(0).map_err(map_block_error)?;
+        // LOOP_PROOF: mode=event; reason=The flush retains its descriptors until a validated used entry completes, with the queue guard released between bounded completion observations.;
         loop {
             if poll_for_completion(self, 0, desc_id).is_some() {
                 return Ok(());
