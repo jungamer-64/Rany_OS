@@ -5,13 +5,13 @@ pub use crate::heap::ExtendedHeapStats;
 /// CPU magazines retain backing independently of this facade's lifetime.
 /// Each CPU binds at most one backing and can only drain its own magazine.
 pub struct ExchangeHeap {
-    backing: spin::Once<Arc<PoisonLock<ExchangeBlocks>>>,
+    backing: crate::sync::InitOnce<Arc<PoisonLock<ExchangeBlocks>>>,
     admission: PoisonLock<()>,
 }
 impl ExchangeHeap {
     pub const fn new() -> Self {
         Self {
-            backing: spin::Once::new(),
+            backing: crate::sync::InitOnce::new(),
             admission: PoisonLock::new(()),
         }
     }
