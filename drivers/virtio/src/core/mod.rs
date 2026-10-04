@@ -1,16 +1,12 @@
-// ============================================================================
-// drivers/virtio/src/core/mod.rs - VirtIO Core Components
-// ============================================================================
+//! The split queue owns RAM, descriptors and accepted command metadata together.
 
-pub mod owned;
-pub mod tracked;
-pub mod virtqueue;
+mod queue;
+pub use queue::*;
 
-pub use owned::OwnedVirtQueue;
-pub use virtqueue::{VIRTIO_F_IOMMU_PLATFORM, VIRTIO_F_VERSION_1, VirtQueue};
+pub const VIRTIO_F_VERSION_1: u64 = 1 << 32;
+pub const VIRTIO_F_IOMMU_PLATFORM: u64 = 1 << 33;
 
-/// Standard feature bits that may be used across multiple devices
 pub mod features {
-    pub use super::virtqueue::{VIRTIO_F_IOMMU_PLATFORM, VIRTIO_F_VERSION_1};
+    pub use super::{VIRTIO_F_IOMMU_PLATFORM, VIRTIO_F_VERSION_1};
     pub const VIRTIO_F_RING_PACKED: u64 = 1 << 34;
 }

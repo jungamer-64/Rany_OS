@@ -16,20 +16,19 @@ pub mod blk;
 pub mod console;
 pub mod core;
 pub mod defs;
-pub mod dma;
 pub mod ffi;
 pub mod gpu;
 pub mod input;
 pub mod net;
+pub mod queue_memory;
 pub mod transport;
-pub mod virtqueue;
 
 // Re-export core types
-pub use crate::core::{OwnedVirtQueue, virtqueue::VirtQueue};
+pub use crate::core::SplitVirtQueue;
 
 // Re-export transport types
 pub use transport::{
-    TransportError, TransportResult, TransportType, VirtioDeviceInit, VirtioMmioTransport,
+    TransportAcquireError, TransportError, TransportResult, TransportType, VirtioMmioTransport,
     VirtioPciTransport, VirtioTransport,
 };
 
