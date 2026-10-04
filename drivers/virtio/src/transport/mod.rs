@@ -8,6 +8,14 @@ use crate::defs::VirtioDeviceType;
 use crate::queue_memory::{ConfiguredQueueMemory, QueueConfiguration, QueueConfigureError};
 use hal::MmioAccessError;
 
+mod mmio;
+mod pci;
+mod sealed {
+    pub trait Transport {}
+}
+pub use mmio::VirtioMmioTransport;
+pub use pci::{PciTransportApertures, VirtioPciTransport};
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportError {
     Access(MmioAccessError),
@@ -17,9 +25,11 @@ pub enum TransportError {
     DeviceError,
     FeatureNegotiationFailed,
     InvalidQueueIndex,
+    UnsupportedInterruptVector,
     QueueAlreadyEnabled,
     QueueSetupFailed,
     ConfigAccessFailed,
+    ConfigurationChanged,
     OutOfResources,
     Timeout,
 }
@@ -32,6 +42,13 @@ impl From<MmioAccessError> for TransportError {
 
 pub type TransportResult<T> = Result<T, TransportError>;
 
+/// Register validation returned all retained input apertures; no DMA was started.
+#[derive(Debug)]
+pub struct TransportAcquireError<Owner> {
+    pub cause: TransportError,
+    pub owner: Owner,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportType {
     Mmio,
@@ -41,7 +58,7 @@ pub enum TransportType {
 /// Register operations shared by modern PCI and MMIO devices. Implementations
 /// serialize each feature-bank and queue-selector transaction internally.
 /// Configuration offsets remain fallible, including alignment and width checks.
-pub trait VirtioTransport: Send + Sync + core::fmt::Debug {
+pub trait VirtioTransport: sealed::Transport + Send + Sync + core::fmt::Debug {
     fn device_type(&self) -> VirtioDeviceType;
     fn transport_type(&self) -> TransportType;
     fn status(&self) -> u8;
@@ -51,24 +68,44 @@ pub trait VirtioTransport: Send + Sync + core::fmt::Debug {
     fn set_driver_features(&self, features: u64);
     fn config_generation(&self) -> u32;
     fn queue_count(&self) -> Option<u16>;
+    /// # Errors
+    /// Rejects an absent queue or a size outside the transport representation.
     fn queue_capacity(&self, index: u16) -> TransportResult<u16>;
 
     /// Reserve all register accesses and the notification capability before
     /// activating RAM. On failure no queue is published; the prepared owner is
     /// returned. After activation register publication cannot fail locally.
+    ///
+    /// # Errors
+    /// Returns the prepared owner for a foreign device, absent/enabled queue,
+    /// invalid geometry/vector/doorbell, or failed shared activation.
     fn configure_queue(
         &self,
         configuration: QueueConfiguration,
-        interrupt_vector: Option<u16>,
     ) -> Result<ConfiguredQueueMemory, QueueConfigureError>;
 
     /// One read/ack transaction. PCI ISR reads acknowledge the interrupt; MMIO
     /// uses the captured status value in its write-only acknowledgement register.
     fn acknowledge_interrupt(&self) -> u32;
+    /// # Errors
+    /// Rejects absent configuration, invalid offset/width/alignment.
     fn read_config_u8(&self, offset: usize) -> TransportResult<u8>;
+    /// # Errors
+    /// Rejects absent configuration, invalid offset/width/alignment.
     fn read_config_u16(&self, offset: usize) -> TransportResult<u16>;
+    /// # Errors
+    /// Rejects absent configuration, invalid offset/width/alignment.
     fn read_config_u32(&self, offset: usize) -> TransportResult<u32>;
+    /// # Errors
+    /// Rejects absent configuration, invalid offset/width/alignment or a changed configuration generation.
+    fn read_config_u64(&self, offset: usize) -> TransportResult<u64>;
+    /// # Errors
+    /// Rejects absent configuration or invalid offset/width/alignment before I/O.
     fn write_config_u8(&self, offset: usize, value: u8) -> TransportResult<()>;
+    /// # Errors
+    /// Rejects absent configuration or invalid offset/width/alignment before I/O.
     fn write_config_u16(&self, offset: usize, value: u16) -> TransportResult<()>;
+    /// # Errors
+    /// Rejects absent configuration or invalid offset/width/alignment before I/O.
     fn write_config_u32(&self, offset: usize, value: u32) -> TransportResult<()>;
 }
