@@ -25,6 +25,7 @@ fn packet_payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
             }
         }
 
+        // LOOP_PROOF: mode=bounded; reason=Each checksum word advances index by two bytes toward the fixed chunk length;
         while index + 1 < chunk.len() {
             sum = sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
             index += 2;
@@ -38,6 +39,7 @@ fn packet_payload_checksum(view: &PacketPayloadView<'_>, initial: u32) -> u16 {
         sum = sum.saturating_add(u16::from_be_bytes([last, 0]) as u32);
     }
 
+    // LOOP_PROOF: mode=condition; reason=Folding the upper 16 bits reduces a u32 sum to at most 0x1fffe then clears its final carry;
     while (sum >> 16) != 0 {
         sum = (sum & 0xffff) + (sum >> 16);
     }

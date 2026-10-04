@@ -191,6 +191,7 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
                         return;
                     };
                     log::info!("[NET][boot] mDNS service task running on CPU {}", cpu);
+                    // LOOP_PROOF: mode=event; reason=The owner awaits service termination and the restart interval and exits if timer admission fails;
                     loop {
                         match service.run().await {
                             Ok(()) => log::error!("[NET] mDNS service stopped unexpectedly"),
@@ -223,6 +224,7 @@ pub(crate) fn start_background_service_tasks_in(runtime: NetRuntimeHandle) {
                 log::info!("[NET][boot] DNS client task running on CPU {}", cpu);
                 let client = crate::net::services::dns::shared_client_in(runtime);
                 if let Some(client) = client {
+                    // LOOP_PROOF: mode=event; reason=The owner awaits service termination and the restart interval and exits if timer admission fails;
                     loop {
                         match client.run().await {
                             Ok(()) => log::error!("[NET] DNS client stopped unexpectedly"),

@@ -288,6 +288,7 @@ fn write_ipv6_compressed(
 ) -> fmt::Result {
     let mut i = 0;
     let mut first = true;
+    // LOOP_PROOF: mode=bounded; reason=Formatting advances i by one word or a nonempty compression span within eight words;
     while i < 8 {
         if i == best_start && best_len > 0 {
             if i == 0 {
@@ -679,6 +680,7 @@ pub fn skip_extension_headers<'a>(
     mut data: &'a [u8],
 ) -> (IpProtocol, &'a [u8]) {
     let mut headers_seen = 0;
+    // LOOP_PROOF: mode=event; reason=Each extension consumes a header count and traversal returns after MAX_EXTENSION_HEADERS or terminal input;
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {
@@ -861,6 +863,7 @@ fn process_extension_header_options(
 ) -> Result<(), ExtHeaderResult<'static>> {
     let mut i = offset + 2; // Skip Next Header and Hdr Ext Len
     let end = offset + ext_len;
+    // LOOP_PROOF: mode=bounded; reason=Each option advances i by at least one padding byte or a validated option length or returns discard;
     while i < end {
         let opt_type = data[i];
         if opt_type == 0 {
@@ -930,6 +933,7 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
     let mut offset = 40usize; // after fixed header
     let mut headers_seen = 0;
 
+    // LOOP_PROOF: mode=event; reason=Each header increments headers_seen and returns by MAX_EXTENSION_HEADERS or a terminal fragment result;
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {

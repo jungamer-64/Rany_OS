@@ -272,6 +272,7 @@ impl core::cmp::Ord for EndpointAddr {
                 },
             ) => {
                 let mut i = 0usize;
+                // LOOP_PROOF: mode=bounded; reason=The comparison advances i once per address byte and returns on the first difference;
                 while i < lhs_ip.len() {
                     match lhs_ip[i].cmp(&rhs_ip[i]) {
                         Ordering::Equal => {}
@@ -292,6 +293,7 @@ impl core::cmp::Ord for EndpointAddr {
                 },
             ) => {
                 let mut i = 0usize;
+                // LOOP_PROOF: mode=bounded; reason=The comparison advances i once per address byte and returns on the first difference;
                 while i < lhs_ip.len() {
                     match lhs_ip[i].cmp(&rhs_ip[i]) {
                         Ordering::Equal => {}

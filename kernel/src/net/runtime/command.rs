@@ -781,6 +781,7 @@ impl RuntimeCommandQueue {
 
     fn admit_producer(&self) -> Option<ProducerAdmission<'_>> {
         let mut state = self.producer_state.load(Ordering::Acquire);
+        // LOOP_PROOF: mode=event; reason=Admission returns on a successful atomic reservation or observes closed producer admission;
         loop {
             if state & PRODUCER_ADMISSION_CLOSED != 0 {
                 return None;

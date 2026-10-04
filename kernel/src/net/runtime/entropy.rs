@@ -77,6 +77,7 @@ pub(crate) fn fill_secure_random(output: &mut [u8]) -> Result<(), NetEntropyErro
     }
 
     let mut cursor = 0usize;
+    // LOOP_PROOF: mode=bounded; reason=Each successful hardware entropy word advances cursor by at least one byte or returns an error;
     while cursor < output.len() {
         let value = rdrand64().ok_or(NetEntropyError::HardwareFailure)?;
         let bytes = value.to_ne_bytes();

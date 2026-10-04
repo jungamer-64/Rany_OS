@@ -39,6 +39,7 @@ mod tests {
             if let Poll::Ready(output) = Future::poll(future.as_mut(), &mut context) {
                 return output;
             }
+            // LOOP_PROOF: mode=condition; reason=Each receive consumes an admitted command from the finite fixture queue until it is empty;
             while let Some(command) = resources.command_queue.recv() {
                 let _ = handler.handle_event_in(runtime, command);
             }

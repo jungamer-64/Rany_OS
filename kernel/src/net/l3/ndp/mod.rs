@@ -224,6 +224,7 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
     let mut offset = start_offset;
     let total_len = view.total_len();
 
+    // LOOP_PROOF: mode=bounded; reason=Each NDP option advances offset by its validated nonzero eight-byte-unit length or breaks on invalid input;
     while offset + 2 <= total_len {
         let Some(header) = view.read_array::<2>(offset) else {
             break;
@@ -299,6 +300,7 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
                     let lifetime = u32::from_be_bytes(lifetime_bytes);
                     let mut servers = Vec::new();
                     let mut addr_offset = offset + 8;
+                    // LOOP_PROOF: mode=bounded; reason=Each DNS server address advances addr_offset by 16 bytes within the validated option;
                     while addr_offset + 16 <= offset + opt_len {
                         let Some(addr_bytes) = view.read_array::<16>(addr_offset) else {
                             break;

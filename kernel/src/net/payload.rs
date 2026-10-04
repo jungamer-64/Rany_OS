@@ -394,6 +394,7 @@ impl<'a> PayloadSpanRef<'a> {
         let mut start = 0usize;
         let mut end = self.len;
 
+        // LOOP_PROOF: mode=bounded; reason=Each whitespace byte advances start toward the fixed payload end;
         while start < end {
             let byte = self.byte_at(start)?;
             if !byte.is_ascii_whitespace() {
@@ -402,6 +403,7 @@ impl<'a> PayloadSpanRef<'a> {
             start += 1;
         }
 
+        // LOOP_PROOF: mode=bounded; reason=Each trailing whitespace byte decrements end toward start;
         while end > start {
             let byte = self.byte_at(end - 1)?;
             if !byte.is_ascii_whitespace() {
@@ -870,6 +872,7 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
     let mut offset = IPV6_HEADER_SIZE;
     let mut headers_seen = 0usize;
 
+    // LOOP_PROOF: mode=event; reason=Extension traversal returns after MAX_EXTENSION_HEADERS or any invalid or terminal header;
     loop {
         headers_seen += 1;
         if headers_seen > MAX_EXTENSION_HEADERS {

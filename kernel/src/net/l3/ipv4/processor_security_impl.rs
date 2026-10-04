@@ -46,6 +46,7 @@ impl Ipv4Processor {
         let options = &data[20..header_len];
         let mut i = 0usize;
 
+        // LOOP_PROOF: mode=bounded; reason=Each option advances i by a positive validated length or exits on end padding or malformed data;
         while i < options.len() {
             let opt_type = options[i];
             if opt_type == 0 {

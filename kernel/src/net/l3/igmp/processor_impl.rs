@@ -176,6 +176,7 @@ impl IgmpProcessor {
                 }
             }
 
+            // LOOP_PROOF: mode=bounded; reason=Each checksum word advances index by two bytes toward the fixed chunk length;
             while index + 1 < chunk.len() {
                 sum =
                     sum.saturating_add(u16::from_be_bytes([chunk[index], chunk[index + 1]]) as u32);
@@ -191,6 +192,7 @@ impl IgmpProcessor {
             sum = sum.saturating_add((last as u32) << 8);
         }
 
+        // LOOP_PROOF: mode=condition; reason=Folding the upper 16 bits reduces a u32 sum to at most 0x1fffe then clears its final carry;
         while sum >> 16 != 0 {
             sum = (sum & 0xffff) + (sum >> 16);
         }
@@ -323,6 +325,7 @@ impl IgmpProcessor {
 
             let mut source_addresses = Vec::with_capacity(num_sources);
             let mut src_offset = sources_start;
+            // LOOP_PROOF: mode=bounded; reason=Each source address advances src_offset by four bytes within the validated source range;
             while src_offset < sources_end {
                 source_addresses.push(Ipv4Address::new(data.read_array::<4>(src_offset)?));
                 src_offset += 4;
