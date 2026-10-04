@@ -177,6 +177,37 @@ impl MappedMmio {
         self: &Arc<Self>,
         offset: usize,
     ) -> Result<OwnedMmioRegister<T, WriteOnly>, MmioAccessError> {
+        self.owned_register(offset)
+    }
+
+    /// Delegates one readable register while retaining its mapping owner.
+    ///
+    /// # Errors
+    /// Rejects overflow, out-of-bounds access, and misalignment before I/O.
+    pub fn owned_read_only<T: MmioValue>(
+        self: &Arc<Self>,
+        offset: usize,
+    ) -> Result<OwnedMmioRegister<T, ReadOnly>, MmioAccessError> {
+        self.owned_register(offset)
+    }
+
+    /// Delegates one readable/writable register to a device state owner.
+    /// Writes require exclusive access to the register handle; hardware protocol
+    /// serialization remains the device owner's responsibility.
+    ///
+    /// # Errors
+    /// Rejects overflow, out-of-bounds access, and misalignment before I/O.
+    pub fn owned_read_write<T: MmioValue>(
+        self: &Arc<Self>,
+        offset: usize,
+    ) -> Result<OwnedMmioRegister<T, ReadWrite>, MmioAccessError> {
+        self.owned_register(offset)
+    }
+
+    fn owned_register<T: MmioValue, Access: sealed::Access>(
+        self: &Arc<Self>,
+        offset: usize,
+    ) -> Result<OwnedMmioRegister<T, Access>, MmioAccessError> {
         let address = checked_register_address::<T>(self.base, self.len(), offset)?;
         Ok(OwnedMmioRegister {
             address,
@@ -191,17 +222,26 @@ impl MappedMmio {
     /// # Errors
     /// Rejects empty, overflowing, or out-of-bounds ranges without I/O.
     pub fn into_subregion(self, offset: usize, length: usize) -> Result<Self, MmioAccessError> {
-        let length = NonZeroUsize::new(length).ok_or(MmioAccessError::OutOfBounds)?;
-        let end = offset
-            .checked_add(length.get())
-            .ok_or(MmioAccessError::OffsetOverflow)?;
-        if end > self.length.get() {
-            return Err(MmioAccessError::OutOfBounds);
-        }
+        let (base, length) = checked_subregion(self.base, self.len(), offset, length)?;
         Ok(Self {
-            base: self.base + offset,
+            base,
             length,
             owner: self.owner,
+        })
+    }
+
+    /// Attenuates a shared mapping to a retained byte window. Overlapping
+    /// register windows share the same resource claim and retirement owner;
+    /// they neither remap memory nor create independent unmap authority.
+    ///
+    /// # Errors
+    /// Rejects empty, overflowing, or out-of-bounds windows before access.
+    pub fn subregion(&self, offset: usize, length: usize) -> Result<Self, MmioAccessError> {
+        let (base, length) = checked_subregion(self.base, self.len(), offset, length)?;
+        Ok(Self {
+            base,
+            length,
+            owner: Arc::clone(&self.owner),
         })
     }
 
@@ -228,6 +268,25 @@ impl MappedMmio {
         };
         Ok((left, right))
     }
+}
+
+fn checked_subregion(
+    base: usize,
+    extent: usize,
+    offset: usize,
+    length: usize,
+) -> Result<(usize, NonZeroUsize), MmioAccessError> {
+    let length = NonZeroUsize::new(length).ok_or(MmioAccessError::OutOfBounds)?;
+    let end = offset
+        .checked_add(length.get())
+        .ok_or(MmioAccessError::OffsetOverflow)?;
+    if end > extent {
+        return Err(MmioAccessError::OutOfBounds);
+    }
+    let base = base
+        .checked_add(offset)
+        .ok_or(MmioAccessError::OffsetOverflow)?;
+    Ok((base, length))
 }
 
 /// A register aperture borrowed from its live mapping owner.
@@ -345,6 +404,23 @@ pub struct OwnedMmioRegister<T: MmioValue, Access: sealed::Access> {
 
 macro_rules! register_access {
     ($value:ty) => {
+        impl<Access: Readable> OwnedMmioRegister<$value, Access> {
+            /// Performs one volatile read at the prevalidated width/address.
+            /// This is not a memory barrier or a device-completion proof.
+            #[must_use]
+            #[expect(
+                unsafe_code,
+                reason = "the owned register retains its checked live mapping"
+            )]
+            pub fn read(&self) -> $value {
+                let _owner = &self.mapping;
+                let pointer = core::ptr::without_provenance::<$value>(self.address);
+                // SAFETY: derivation checked the complete extent and alignment;
+                // the strong owner prevents invalidation, and integers admit
+                // every hardware bit pattern.
+                unsafe { core::ptr::read_volatile(pointer) }
+            }
+        }
         impl<Access: Readable> MmioRegister<'_, $value, Access> {
             /// Performs one volatile register read; this is not a memory barrier.
             #[must_use]
@@ -462,6 +538,26 @@ pub fn bench_debug_print_allowed() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn subregions_preserve_exact_geometry_and_complete_range_admission() {
+        assert_eq!(
+            checked_subregion(0x1000, 0x100, 0x40, 0x20).map(|(base, len)| (base, len.get())),
+            Ok((0x1040, 0x20))
+        );
+        assert_eq!(
+            checked_subregion(0x1000, 0x100, 0, 0),
+            Err(MmioAccessError::OutOfBounds)
+        );
+        assert_eq!(
+            checked_subregion(0x1000, 0x100, 0xff, 2),
+            Err(MmioAccessError::OutOfBounds)
+        );
+        assert_eq!(
+            checked_subregion(0x1000, 0x100, usize::MAX, 2),
+            Err(MmioAccessError::OffsetOverflow)
+        );
+    }
 
     #[test]
     fn mapping_geometry_rejects_empty_overflow_and_oversize() {
