@@ -948,7 +948,9 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             return Err("standalone netdev runtime already owned");
         }
         *owned = Some(state);
-        let status = (self.registration.start)(self.registration.opaque, table_ptr);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe { (self.registration.start)(self.registration.opaque, table_ptr) };
         if !AbiErrorCode::from_raw(status).is_success() {
             return Err("standalone netdev start failed");
         }
@@ -960,7 +962,9 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
-        let status = (self.registration.bind)(self.registration.opaque, if_id);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe { (self.registration.bind)(self.registration.opaque, if_id) };
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -1006,11 +1010,11 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             vlan_tag: meta.vlan_tag.unwrap_or(0),
             reserved1: 0,
         };
-        let status = (self.registration.submit_tx_chain)(
-            self.registration.opaque,
-            &abi_submission,
-            abi_meta,
-        );
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe {
+            (self.registration.submit_tx_chain)(self.registration.opaque, &abi_submission, abi_meta)
+        };
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -1023,7 +1027,11 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
-        let status = (self.registration.set_interrupts_enabled)(self.registration.opaque, enabled);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe {
+            (self.registration.set_interrupts_enabled)(self.registration.opaque, enabled)
+        };
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -1036,7 +1044,9 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
-        let status = (self.registration.poll)(self.registration.opaque, if_id);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe { (self.registration.poll)(self.registration.opaque, if_id) };
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -1066,7 +1076,10 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
                 _padding: 0,
             },
         };
-        let status = (self.registration.handle_event)(self.registration.opaque, if_id, abi_event);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status =
+            unsafe { (self.registration.handle_event)(self.registration.opaque, if_id, abi_event) };
         if AbiErrorCode::from_raw(status).is_success() {
             Ok(())
         } else {
@@ -1082,7 +1095,9 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             return NetPortStats::default();
         };
         let mut stats = AbiNetPortStats::default();
-        let status = (self.registration.stats)(self.registration.opaque, &mut stats);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe { (self.registration.stats)(self.registration.opaque, &mut stats) };
         if !AbiErrorCode::from_raw(status).is_success() {
             return NetPortStats::default();
         }
@@ -1099,7 +1114,9 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
         let _execution = self
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Finalize)?;
-        let status = (self.registration.stop)(self.registration.opaque);
+        // SAFETY: the callback admission/code guard retains the registered
+        // opaque instance and every synchronous input/output borrow.
+        let status = unsafe { (self.registration.stop)(self.registration.opaque) };
         match AbiErrorCode::from_raw(status) {
             AbiErrorCode::Success => {}
             AbiErrorCode::DeviceBusy => return Err(kernel_api::error::KapiError::Busy),

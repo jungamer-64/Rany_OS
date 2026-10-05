@@ -366,7 +366,6 @@ impl ReceiveQueue {
     pub(crate) fn post_recv(
         &mut self,
         address: u64,
-        virtual_address: u64,
         size: u32,
     ) -> Result<ReceivePost, WorkSubmissionError> {
         let layout = self
@@ -417,10 +416,8 @@ impl ReceiveQueue {
             counter,
             buffer: RxBufferInfo {
                 slot_index: slot,
-                virt_addr: virtual_address,
                 device_addr: address,
                 size,
-                in_use: true,
                 l3_ok: false,
                 l4_ok: false,
             },

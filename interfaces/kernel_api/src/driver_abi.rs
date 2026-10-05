@@ -56,6 +56,13 @@ pub use time::{
     AbiTimeSnapshot, AbiTimerAdmission, AbiTimerRegistration, AbiTimerSchedule, AbiTimerStatistics,
 };
 
+#[path = "driver_abi/rx.rs"]
+mod rx;
+pub use rx::{
+    CompletedRxLease, CpuRxLease, PostedRxLease, RxDeviceRegion, RxLeaseCloseError,
+    RxLeaseCompletionError,
+};
+
 // ============================================================================
 // ABI Version
 // ============================================================================
@@ -1347,18 +1354,29 @@ impl AbiTxDeviceOutcome {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+/// Borrowed callbacks into a retained network runtime. Calling any entry
+/// requires its cookie and code owner to remain live. RX callbacks consume a
+/// lease by clearing its wire slot; an uncleared slot remains framework owned.
 pub struct AbiNetPortRuntime {
     pub abi_size: u64,
     pub runtime_cookie: u64,
-    pub lease_rx_buffer: unsafe extern "C" fn(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32,
+    pub lease_rx_buffer:
+        unsafe extern "C" fn(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32,
     pub release_rx_buffer: unsafe extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease) -> i32,
-    pub submit_rx_buffer:
-        unsafe extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease, meta: AbiNetRxMeta) -> i32,
-    pub complete_tx_lease:
-        unsafe extern "C" fn(runtime_cookie: u64, lease_id: u64, outcome: AbiTxDeviceOutcome) -> i32,
+    pub submit_rx_buffer: unsafe extern "C" fn(
+        runtime_cookie: u64,
+        lease: *mut AbiRxLease,
+        meta: AbiNetRxMeta,
+    ) -> i32,
+    pub complete_tx_lease: unsafe extern "C" fn(
+        runtime_cookie: u64,
+        lease_id: u64,
+        outcome: AbiTxDeviceOutcome,
+    ) -> i32,
     pub schedule_event: unsafe extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
     pub update_link: unsafe extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
-    pub log: unsafe extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
+    pub log:
+        unsafe extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
     pub reserved: [u64; 1],
 }
 
@@ -1395,6 +1413,10 @@ impl AbiNetPortRuntime {
 
 #[repr(C)]
 #[derive(Clone, Copy)]
+/// Borrowed driver entry points. The host must retain the opaque instance,
+/// callback admission guard and code lease throughout each call, including
+/// every synchronous input/output borrow. Stop success ends device access;
+/// Busy or failure retains the instance and all outstanding packet leases.
 pub struct AbiNetPortRegistration {
     pub abi_size: u64,
     pub info: AbiNetPortInfo,
@@ -1407,7 +1429,8 @@ pub struct AbiNetPortRegistration {
         meta: AbiNetTxMeta,
     ) -> i32,
     pub poll: unsafe extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub handle_event: unsafe extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
+    pub handle_event:
+        unsafe extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
     pub stats: unsafe extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
     pub stop: unsafe extern "C" fn(opaque: u64) -> i32,
     pub set_interrupts_enabled: unsafe extern "C" fn(opaque: u64, enabled: bool) -> i32,

@@ -77,7 +77,6 @@ impl Mlx5Device {
         &mut self,
         rq_index: usize,
         buf_phys: u64,
-        buf_virt: u64,
         buf_size: u32,
     ) -> Result<crate::wq::ReceivePost, WorkSubmissionError> {
         if self.state != DeviceState::Active && self.state != DeviceState::QueuesReady {
@@ -89,7 +88,7 @@ impl Mlx5Device {
             .ok_or(WorkSubmissionError::NotPublished(
                 Mlx5Error::InvalidParameter,
             ))?;
-        rq.post_recv(buf_phys, buf_virt, buf_size)
+        rq.post_recv(buf_phys, buf_size)
     }
 
     /// Ordinary service-task polling, with allocation before consuming entries.

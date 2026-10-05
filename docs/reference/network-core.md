@@ -74,6 +74,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 
 - RX posting は `RxBuffer` の空 window から作る、backing を保持した writable region を使う。容量は現在の data origin から末尾までであり、headroom を含めない。device address は port ごとの DMA admission で確立し、packet の属性として保持しない。
 - completion は device が書き終えた frame layout を検証して `ReceivedPacket` へ一方向に遷移する。frame length より後ろの tail は初期化済みデータとして公開しない。
+- driver の RX lease は投稿前、device 所有中、検証済み完了後を区別する。device 所有中の capsule を破棄しても packet を返却せず、framework の停止 owner が backing を保持する。CPU アクセスと返却には、対応する terminal completion または確認済みの queue 停止が必要となる。
+- ABI callback の cookie、instance、code lease は借用中および packet lease の返却完了まで保持する。停止後の返却失敗は同じ未消費 owner で再試行し、消費済みの失敗は再返却しない。
 - TX queue の受理は DMA read authority の取得を意味し、driver は buffer を参照しなくなった後に exactly-once completion を返す。拒否は buffer を一切保持していないことを意味する。descriptor visit は packet header を保持し、同期 completion による pool 再利用を visit の終了まで保留する。
 - port の mapping owner は packet window と独立に物理 backing を保持する。固定 pool は mapping を保ったまま window を再利用できる。動的 packet の header が返却されても、IOTLB の退役完了まで RAM を解放しない。translation の未完了状態は再投稿へ使わず、port の終了は owner を保持して `Busy` を返す。
 - TX lease は `Queued -> Submitting -> DeviceOwned -> Released(outcome)` の順序を持つ。同期 completion、重複 completion、reset を同じ state transition で扱い、caller 向け送信通知と DMA lease の解放を同一視しない。

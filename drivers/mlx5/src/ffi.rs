@@ -21,7 +21,7 @@ use kernel_api::abi::driver::{
 use kernel_api::abi::driver::{
     AbiError, AbiNetDriverEvent, AbiNetDriverEventKind, AbiNetPortInfo, AbiNetPortOps,
     AbiNetPortRegistration, AbiNetPortRuntime, AbiNetPortStats, AbiNetRxFrameLayout, AbiNetRxMeta,
-    AbiNetTxMeta, AbiNetTxSubmission, AbiRxLeaseGuard, AbiTxDeviceOutcome, DriverContext,
+    AbiNetTxMeta, AbiNetTxSubmission, AbiTxDeviceOutcome, CpuRxLease, DriverContext, PostedRxLease,
 };
 use kernel_api::driver::{AsyncDriver, DriverType, DriverVersion};
 use kernel_api::service::netdev::{NETDEV_FLAG_HEALTHY, NETDEV_FLAG_LINK_UP, TxLeaseId};
@@ -372,7 +372,14 @@ struct Mlx5StandaloneState {
     tx_errors: u64,
     rx_errors: u64,
     tx_slots: Vec<Vec<Option<TxLeaseRecord>>>,
-    rx_slots: Vec<Vec<Option<AbiRxLeaseGuard>>>,
+    rx_slots: Vec<Vec<Option<RxLeaseRecord>>>,
+}
+
+/// A stop retry retains CPU ownership after hardware quiescence; it never
+/// repeats a completion claim or posts that storage back to a stopped queue.
+enum RxLeaseRecord {
+    Posted(PostedRxLease),
+    Returning(CpuRxLease),
 }
 
 enum Mlx5Lifecycle {
@@ -430,104 +437,97 @@ fn init_slot_ring<T>() -> Vec<Option<T>> {
     ring
 }
 
-fn lease_runtime_rx_buffer(runtime: AbiNetPortRuntime) -> Result<AbiRxLeaseGuard, AbiError> {
-    AbiRxLeaseGuard::acquire(runtime)
+fn lease_runtime_rx_buffer(runtime: AbiNetPortRuntime) -> Result<CpuRxLease, AbiError> {
+    // SAFETY: start retains the host's callback binding until every packet
+    // lease returns and stop succeeds. The host owns packet backing/mappings.
+    unsafe { CpuRxLease::acquire(runtime) }
 }
 
 fn schedule_runtime_poll_locked(state: &Mlx5StandaloneState) {
     let Some(runtime) = state.runtime else {
         return;
     };
-    let _ = (runtime.schedule_event)(
-        runtime.runtime_cookie,
-        AbiNetDriverEvent {
-            kind: AbiNetDriverEventKind::Poll as u32,
-            queue_index: 0,
-            _padding: 0,
-        },
-    );
+    // SAFETY: the retained runtime binding remains live until stop completes.
+    let status = unsafe {
+        (runtime.schedule_event)(
+            runtime.runtime_cookie,
+            AbiNetDriverEvent {
+                kind: AbiNetDriverEventKind::Poll as u32,
+                queue_index: 0,
+                _padding: 0,
+            },
+        )
+    };
+    let cause = AbiError::from_raw(status);
+    if !cause.is_success() {
+        // The owned periodic worker retries polling. Accepted descriptors and
+        // notification records remain retained when event admission fails.
+        log::warn!(target: "mlx5", "Poll notification deferred to owned worker: {cause:?}");
+    }
+}
+
+fn post_runtime_receive(
+    state: &mut Mlx5StandaloneState,
+    runtime: AbiNetPortRuntime,
+    rq_index: usize,
+) -> Result<(), AbiError> {
+    let buffer = lease_runtime_rx_buffer(runtime)?;
+    let region = buffer.device_region();
+    let size = u32::try_from(region.writable_len).map_err(|_| AbiError::InvalidParam)?;
+    let buffer = buffer.arm();
+    // SAFETY: this posted owner retains unique packet backing and its admitted
+    // IOVA before publication. Every accepted/uncertain result stores it below.
+    let result = unsafe {
+        state
+            .device
+            .post_receive(rq_index, region.device_addr, size)
+    };
+    match result {
+        Ok(posted) => {
+            state.rx_slots[rq_index][posted.slot as usize] = Some(RxLeaseRecord::Posted(buffer));
+            Ok(())
+        }
+        Err(crate::error::WorkSubmissionError::OutcomeUnknown { slot, cause, .. }) => {
+            state.rx_slots[rq_index][slot as usize] = Some(RxLeaseRecord::Posted(buffer));
+            state.device.state = crate::device::DeviceState::Error;
+            log::error!(target: "mlx5", "RX publication uncertain; retaining slot {slot}: {cause:?}");
+            Err(AbiError::IoError)
+        }
+        Err(crate::error::WorkSubmissionError::NotPublished(cause)) => {
+            // SAFETY: NotPublished guarantees no descriptor or doorbell became
+            // visible to hardware. CPU Drop may return this unpublished lease.
+            drop(unsafe { buffer.quiesce() });
+            if cause == Mlx5Error::NoResources {
+                Err(AbiError::DeviceBusy)
+            } else {
+                log::warn!(target: "mlx5", "RX publication rejected: {cause:?}");
+                Err(AbiError::IoError)
+            }
+        }
+    }
 }
 
 fn refill_rx_ring(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
-    let Some(runtime) = state.runtime else {
-        return Err(AbiError::NotInitialized);
-    };
-
+    let runtime = state.runtime.ok_or(AbiError::NotInitialized)?;
     for rq_index in 0..state.rx_slots.len() {
         for slot in 0..MLX5_WQ_DEPTH as usize {
             if state.rx_slots[rq_index][slot].is_some() {
                 continue;
             }
-            let buffer = lease_runtime_rx_buffer(runtime)?;
-            let region = buffer.writable_region();
-            let device_addr = region.device_addr;
-            let virt_addr = region.cpu_ptr as u64;
-            let size = u32::try_from(region.writable_len).map_err(|_| AbiError::InvalidParam)?;
-            match unsafe {
-                state
-                    .device
-                    .post_receive(rq_index, device_addr, virt_addr, size)
-            } {
-                Ok(posted) => state.rx_slots[rq_index][posted.slot as usize] = Some(buffer),
-                Err(crate::error::WorkSubmissionError::OutcomeUnknown { slot, cause, .. }) => {
-                    state.rx_slots[rq_index][slot as usize] = Some(buffer);
-                    state.device.state = crate::device::DeviceState::Error;
-                    log::error!(target: "mlx5", "RX publication uncertain; retaining slot {slot}: {cause:?}");
-                    return Err(AbiError::IoError);
-                }
-                Err(err) => {
-                    log::warn!(
-                        target: "mlx5",
-                        "RX prefill stopped at rq={} slot={} with {:?}",
-                        rq_index,
-                        slot,
-                        err
-                    );
-                    break;
-                }
+            match post_runtime_receive(state, runtime, rq_index) {
+                Ok(()) => {}
+                Err(AbiError::DeviceBusy) => break,
+                Err(cause) => return Err(cause),
             }
         }
     }
-
     Ok(())
 }
 
-fn replenish_rx_slot(
-    state: &mut Mlx5StandaloneState,
-    runtime: AbiNetPortRuntime,
-    rq_index: usize,
-    slot: usize,
-) {
-    let Ok(buffer) = lease_runtime_rx_buffer(runtime) else {
+fn replenish_rx_slot(state: &mut Mlx5StandaloneState, runtime: AbiNetPortRuntime, rq_index: usize) {
+    if let Err(cause) = post_runtime_receive(state, runtime, rq_index) {
         state.rx_errors = state.rx_errors.saturating_add(1);
-        return;
-    };
-    let region = buffer.writable_region();
-    let Ok(len) = u32::try_from(region.writable_len) else {
-        state.rx_errors = state.rx_errors.saturating_add(1);
-        return;
-    };
-    match unsafe {
-        state
-            .device
-            .post_receive(rq_index, region.device_addr, region.cpu_ptr as u64, len)
-    } {
-        Ok(posted) => state.rx_slots[rq_index][posted.slot as usize] = Some(buffer),
-        Err(crate::error::WorkSubmissionError::OutcomeUnknown { slot, cause, .. }) => {
-            state.rx_slots[rq_index][slot as usize] = Some(buffer);
-            state.device.state = crate::device::DeviceState::Error;
-            log::error!(target: "mlx5", "RX publication uncertain; retaining slot {slot}: {cause:?}");
-        }
-        Err(err) => {
-            state.rx_errors = state.rx_errors.saturating_add(1);
-            log::warn!(
-                target: "mlx5",
-                "RX repost failed at rq={} slot={} with {:?}",
-                rq_index,
-                slot,
-                err
-            );
-        }
+        log::warn!(target: "mlx5", "RX repost deferred at rq={rq_index}: {cause:?}");
     }
 }
 
@@ -535,18 +535,15 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
     let Some(runtime) = state.runtime else {
         return;
     };
-
     for rq_index in 0..state.rx_slots.len() {
         let Some(rx_cq_index) = state.device.rx_cq_index_for_rq(rq_index) else {
             continue;
         };
-
         let batch = state.device.poll_cq(rx_cq_index, MLX5_POLL_BATCH);
         if let Err(cause) = batch.completion {
             log::error!(target: "mlx5", "RX completion polling failed; consumed entries remain valid: {cause:?}");
         }
-        let cqes = batch.entries;
-        for cqe in cqes {
+        for cqe in batch.entries {
             let Ok(rx_info) = state
                 .device
                 .process_rx_completion(rq_index, rx_cq_index, &cqe)
@@ -555,38 +552,62 @@ fn poll_rx_locked(state: &mut Mlx5StandaloneState) {
                 continue;
             };
             let slot = rx_info.slot_index as usize;
-
-            let Some(buffer) = state.rx_slots[rq_index][slot].take() else {
+            let Some(record) = state.rx_slots[rq_index][slot].take() else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
                 continue;
             };
-
-            if matches!(cqe.opcode, CqeOpcode::ReqErr | CqeOpcode::RespErr) {
+            let buffer = match record {
+                RxLeaseRecord::Posted(buffer) => buffer,
+                returning @ RxLeaseRecord::Returning(_) => {
+                    state.rx_slots[rq_index][slot] = Some(returning);
+                    state.rx_errors = state.rx_errors.saturating_add(1);
+                    continue;
+                }
+            };
+            let region = buffer.device_region();
+            if rx_info.device_addr != region.device_addr
+                || rx_info.size as usize != region.writable_len
+                || cqe.byte_count as usize > region.writable_len
+            {
+                // A malformed completion cannot authorize packet reuse. The
+                // slot owner remains until acknowledged queue destruction.
+                state.rx_slots[rq_index][slot] = Some(RxLeaseRecord::Posted(buffer));
+                state.device.state = crate::device::DeviceState::Error;
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                replenish_rx_slot(state, runtime, rq_index, slot);
                 continue;
             }
-
-            let region = buffer.writable_region();
-            let byte_count = cqe.byte_count as usize;
-            if byte_count > region.writable_len {
+            if cqe.opcode == CqeOpcode::RespErr {
+                // SAFETY: matching response/error CQE consumed the exact active
+                // RQ counter and ended DMA; no initialized payload is claimed.
+                drop(unsafe { buffer.quiesce() });
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                replenish_rx_slot(state, runtime, rq_index, slot);
+                replenish_rx_slot(state, runtime, rq_index);
                 continue;
             }
-            let Some(rx_layout) = AbiNetRxFrameLayout::whole_payload(byte_count) else {
+            // SAFETY: CQ parsing acquired device writes and validated RQ/CQ,
+            // active counter and retained IOVA/length. RespOk wrote this prefix.
+            let completed = unsafe { buffer.complete(cqe.byte_count as usize) };
+            let completed = match completed {
+                Ok(completed) => completed,
+                Err(failure) => {
+                    state.rx_slots[rq_index][slot] = Some(RxLeaseRecord::Posted(failure.lease));
+                    state.device.state = crate::device::DeviceState::Error;
+                    state.rx_errors = state.rx_errors.saturating_add(1);
+                    continue;
+                }
+            };
+            let Some(layout) = AbiNetRxFrameLayout::whole_payload(completed.bytes().len()) else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
-                replenish_rx_slot(state, runtime, rq_index, slot);
+                replenish_rx_slot(state, runtime, rq_index);
                 continue;
             };
-            let status = buffer.submit(AbiNetRxMeta::new(rq_index as u16, rx_layout, 0));
+            let status = completed.submit(AbiNetRxMeta::new(rq_index as u16, layout, 0));
             if status.is_success() {
                 state.rx_packets = state.rx_packets.saturating_add(1);
             } else {
                 state.rx_errors = state.rx_errors.saturating_add(1);
             }
-
-            replenish_rx_slot(state, runtime, rq_index, slot);
+            replenish_rx_slot(state, runtime, rq_index);
         }
     }
 }
@@ -608,15 +629,45 @@ fn deliver_tx_completions(state: &mut Mlx5StandaloneState) -> Result<(), AbiErro
             let Some(outcome) = record.completion else {
                 continue;
             };
-            let result = AbiError::from_raw((runtime.complete_tx_lease)(
-                runtime.runtime_cookie,
-                record.lease.get(),
-                outcome,
-            ));
+            // SAFETY: the runtime binding remains retained until every
+            // completion record is acknowledged, including stop retries.
+            let status = unsafe {
+                (runtime.complete_tx_lease)(runtime.runtime_cookie, record.lease.get(), outcome)
+            };
+            let result = AbiError::from_raw(status);
             if !result.is_success() {
                 return Err(result);
             }
             *slot = None;
+        }
+    }
+    Ok(())
+}
+
+/// Called only after acknowledged destruction of every packet queue. Preserve
+/// notification failures and RX return failures in their original slot owner.
+fn return_stopped_packets(state: &mut Mlx5StandaloneState) -> Result<(), AbiError> {
+    for record in state.tx_slots.iter_mut().flatten().flatten() {
+        if record.completion.is_none() {
+            record.completion = Some(AbiTxDeviceOutcome::OUTCOME_UNKNOWN);
+        }
+    }
+    deliver_tx_completions(state)?;
+    for slot in state.rx_slots.iter_mut().flatten() {
+        let Some(record) = slot.take() else {
+            continue;
+        };
+        let buffer = match record {
+            RxLeaseRecord::Posted(buffer) => {
+                // SAFETY: teardown_full acknowledged RQ/RMP destruction and
+                // ended DMA before this boundary. No packet bytes are claimed.
+                unsafe { buffer.quiesce() }
+            }
+            RxLeaseRecord::Returning(buffer) => buffer,
+        };
+        if let Err(failure) = buffer.close() {
+            *slot = failure.retained.map(RxLeaseRecord::Returning);
+            return Err(failure.cause);
         }
     }
     Ok(())
@@ -681,7 +732,14 @@ fn poll_device_locked(state: &mut Mlx5StandaloneState) {
         .unwrap_or(false);
     if link_up != state.last_link_up {
         if let Some(runtime) = state.runtime {
-            let _ = (runtime.update_link)(runtime.runtime_cookie, link_up);
+            // SAFETY: the owned runtime remains live through this callback.
+            let status = unsafe { (runtime.update_link)(runtime.runtime_cookie, link_up) };
+            let cause = AbiError::from_raw(status);
+            if !cause.is_success() {
+                // Keep the old observation so the owned worker retries it.
+                log::warn!(target: "mlx5", "Link notification remains pending: {cause:?}");
+                return;
+            }
         }
         state.last_link_up = link_up;
     }
@@ -707,6 +765,10 @@ fn destroy_state(
             state.lifecycle = Mlx5Lifecycle::DeviceStopped;
         }
         Mlx5Lifecycle::DeviceStopped => {}
+    }
+    if let Err(cause) = return_stopped_packets(&mut state) {
+        log::warn!(target: "mlx5", "Stopped packet returns remain incomplete: {cause:?}");
+        return Err((kernel_api::error::KapiError::Busy, state));
     }
     if let Err(cause) = retire_bootstrap_dma(&mut state.dma) {
         return Err((cause, state));
@@ -803,10 +865,10 @@ extern "C" fn mlx5_netdev_start(_opaque: u64, runtime: *const AbiNetPortRuntime)
         return AbiError::IoError as i32;
     }
     if let Some(runtime) = state.runtime {
-        let status = AbiError::from_raw((runtime.update_link)(
-            runtime.runtime_cookie,
-            state.last_link_up,
-        ));
+        // SAFETY: the host retains this runtime through incomplete startup
+        // and its subsequent stop, including all previously posted RX leases.
+        let result = unsafe { (runtime.update_link)(runtime.runtime_cookie, state.last_link_up) };
+        let status = AbiError::from_raw(result);
         if !status.is_success() {
             state.lifecycle = Mlx5Lifecycle::StopRequested;
             return status as i32;
@@ -997,7 +1059,9 @@ extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
         let mut guard = MLX5_STANDALONE_STATE.lock();
         match core::mem::replace(&mut *guard, Mlx5Slot::Finalizing) {
             Mlx5Slot::Live(mut state) => {
-                state.lifecycle = Mlx5Lifecycle::StopRequested;
+                if !matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
+                    state.lifecycle = Mlx5Lifecycle::StopRequested;
+                }
                 state
             }
             slot @ Mlx5Slot::Finalizing => {
@@ -1010,9 +1074,13 @@ extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
             }
         }
     };
-    // SAFETY: Finalizing excludes new TX/RX/poll callbacks. This local owner
-    // retains all queue, command, packet and MMIO resources on every outcome.
-    let result = unsafe { state.device.teardown_full() };
+    let result = if matches!(state.lifecycle, Mlx5Lifecycle::DeviceStopped) {
+        Ok(())
+    } else {
+        // SAFETY: Finalizing excludes new TX/RX/poll callbacks. This local
+        // owner retains queue, command, packet and MMIO on every outcome.
+        unsafe { state.device.teardown_full() }
+    };
     let status = match result {
         Err(Mlx5Error::CommandTransportBusy) => AbiError::DeviceBusy,
         Err(cause) => {
@@ -1020,17 +1088,16 @@ extern "C" fn mlx5_netdev_stop(_opaque: u64) -> i32 {
             AbiError::IoError
         }
         Ok(()) => {
-            // Packet leases need their own completion/return acknowledgement.
-            // Empty rings authorize runtime detachment; a count is never DMA
-            // quiescence evidence for a non-empty ring.
-            let packets_remain = state.tx_slots.iter().flatten().any(Option::is_some)
-                || state.rx_slots.iter().flatten().any(Option::is_some);
-            if packets_remain {
-                AbiError::DeviceBusy
-            } else {
-                state.lifecycle = Mlx5Lifecycle::DeviceStopped;
-                state.runtime = None;
-                AbiError::Success
+            state.lifecycle = Mlx5Lifecycle::DeviceStopped;
+            match return_stopped_packets(&mut state) {
+                Ok(()) => {
+                    state.runtime = None;
+                    AbiError::Success
+                }
+                Err(cause) => {
+                    log::warn!(target: "mlx5", "Stopped packet owner retained: {cause:?}");
+                    AbiError::DeviceBusy
+                }
             }
         }
     };
@@ -1193,7 +1260,7 @@ impl AsyncDriver for Mlx5AsyncDriver {
             let mut tx_slots = Vec::with_capacity(device.num_sqs());
             tx_slots.resize_with(device.num_sqs(), init_slot_ring::<TxLeaseRecord>);
             let mut rx_slots = Vec::with_capacity(device.num_rqs());
-            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<AbiRxLeaseGuard>);
+            rx_slots.resize_with(device.num_rqs(), init_slot_ring::<RxLeaseRecord>);
 
             let last_link_up = device
                 .port(0)

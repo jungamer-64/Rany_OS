@@ -248,14 +248,10 @@ impl ResolvedRqLayout {
 pub struct RxBufferInfo {
     /// バッファが対応する RQ スロット番号
     pub slot_index: u16,
-    /// DMAバッファの仮想アドレス
-    pub virt_addr: u64,
     /// DMAバッファのデバイスアドレス（IOMMU IOVA）
     pub device_addr: u64,
     /// バッファサイズ
     pub size: u32,
-    /// 使用中フラグ
-    pub in_use: bool,
     /// L3 チェックサム検証成功
     pub l3_ok: bool,
     /// L4 チェックサム検証成功
