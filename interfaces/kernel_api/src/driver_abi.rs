@@ -1064,7 +1064,13 @@ impl AbiNetTxSubmission {
         crate::service::netdev::TxLeaseId::new(self.lease_id)
     }
 
-    pub fn segments(&self) -> Option<AbiNetTxSegments<'_>> {
+    /// Borrow descriptors during the host's synchronous submission callback.
+    ///
+    /// # Safety
+    /// The host must retain the complete initialized descriptor slice named by
+    /// this capsule, excluding mutation for the returned borrow's lifetime.
+    /// A copied ABI capsule does not extend the descriptor backing's lifetime.
+    pub unsafe fn segments(&self) -> Option<AbiNetTxSegments<'_>> {
         if self.segments_ptr.is_null() || self.segments_len == 0 {
             return None;
         }
