@@ -1074,6 +1074,8 @@ impl AbiNetTxSubmission {
         if self.segments_ptr.is_null() || self.segments_len == 0 {
             return None;
         }
+        // SAFETY: the callback borrower retains the exact initialized, immutable
+        // descriptor slice for this capsule and the returned borrow.
         AbiNetTxSegments::new(unsafe {
             core::slice::from_raw_parts(self.segments_ptr, self.segments_len)
         })
@@ -1168,17 +1170,17 @@ mod tests {
             segments_ptr: zero_len.as_ptr(),
             segments_len: zero_len.len(),
         };
-        assert!(raw_invalid.segments().is_none());
+        // SAFETY: zero_len is retained and initialized for this observation.
+        assert!(unsafe { raw_invalid.segments() }.is_none());
 
         let valid_segments = [valid];
         let lease_id = crate::service::netdev::TxLeaseId::new(9).expect("non-zero lease");
         let submission =
             AbiNetTxSubmission::new(lease_id, &valid_segments).expect("valid ABI submission");
         assert_eq!(submission.lease_id(), Some(lease_id));
-        assert_eq!(
-            submission.segments().expect("validated segments").count(),
-            1
-        );
+        // SAFETY: valid_segments remains live and immutable during the borrow.
+        let borrowed = unsafe { submission.segments() }.expect("validated segments");
+        assert_eq!(borrowed.count(), 1);
     }
 
     #[test]
@@ -1211,9 +1213,8 @@ mod tests {
         let lease_id = crate::service::netdev::TxLeaseId::new(11).expect("non-zero lease");
         let submission =
             AbiNetTxSubmission::new(lease_id, &segments).expect("fragmented submission");
-        let submitted = submission
-            .segments()
-            .expect("validated submission segments");
+        // SAFETY: the exact segments slice is retained throughout the observation.
+        let submitted = unsafe { submission.segments() }.expect("validated submission segments");
         assert_eq!(submitted.first().cpu_ptr(), FIRST.as_ptr());
         assert_eq!(
             submitted

@@ -828,7 +828,9 @@ extern "C" fn mlx5_netdev_submit_tx_chain(
         return AbiError::InvalidParam as i32;
     }
     let submission = unsafe { &*submission };
-    let Some(segments) = submission.segments() else {
+    // SAFETY: the registered host retains the initialized immutable descriptor
+    // slice for this synchronous submission callback. No borrow is stored.
+    let Some(segments) = (unsafe { submission.segments() }) else {
         return AbiError::InvalidParam as i32;
     };
     let mut guard = MLX5_STANDALONE_STATE.lock();
