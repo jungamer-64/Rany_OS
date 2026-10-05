@@ -52,6 +52,14 @@ pub struct QueueActivationError<T> {
 }
 
 impl<T> PreparedSplitVirtQueue<T> {
+    pub const fn identity(&self) -> DmaQueueIdentity {
+        self.configuration.identity()
+    }
+
+    pub const fn capacity(&self) -> u16 {
+        self.configuration.layout().size()
+    }
+
     /// Reserve command ownership slots before preparing the shared allocation.
     /// The implementation admits at most 256 descriptors per queue.
     ///
@@ -232,6 +240,19 @@ impl<T> SplitVirtQueue<T> {
     }
     pub const fn pending_count(&self) -> u16 {
         self.pending
+    }
+
+    /// Set interrupt delivery for the retained queue before the caller's idle
+    /// recheck. No queue selection or descriptor allocation occurs here.
+    ///
+    /// # Errors
+    /// Shared RAM access failure leaves the caller responsible for polling.
+    pub fn set_interrupts_enabled(&mut self, enabled: bool) -> Result<(), DmaLeaseError> {
+        let mut available = self
+            .memory
+            .memory
+            .window(self.memory.layout.available_offset(), 2)?;
+        available.write_u16(0, u16::from(!enabled))
     }
 
     /// Publish one chain after storage is reserved and its DMA owner is activated.

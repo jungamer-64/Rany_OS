@@ -4,9 +4,11 @@
 
 #![deny(unsafe_code)]
 
+mod command_memory;
 pub mod features;
 mod protocol;
 mod queue;
 
+pub use command_memory::*;
 pub use protocol::*;
 pub use queue::*;
