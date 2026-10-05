@@ -1350,15 +1350,15 @@ impl AbiTxDeviceOutcome {
 pub struct AbiNetPortRuntime {
     pub abi_size: u64,
     pub runtime_cookie: u64,
-    pub lease_rx_buffer: extern "C" fn(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32,
-    pub release_rx_buffer: extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease) -> i32,
+    pub lease_rx_buffer: unsafe extern "C" fn(runtime_cookie: u64, out_lease: *mut AbiRxLease) -> i32,
+    pub release_rx_buffer: unsafe extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease) -> i32,
     pub submit_rx_buffer:
-        extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease, meta: AbiNetRxMeta) -> i32,
+        unsafe extern "C" fn(runtime_cookie: u64, lease: *mut AbiRxLease, meta: AbiNetRxMeta) -> i32,
     pub complete_tx_lease:
-        extern "C" fn(runtime_cookie: u64, lease_id: u64, outcome: AbiTxDeviceOutcome) -> i32,
-    pub schedule_event: extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
-    pub update_link: extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
-    pub log: extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
+        unsafe extern "C" fn(runtime_cookie: u64, lease_id: u64, outcome: AbiTxDeviceOutcome) -> i32,
+    pub schedule_event: unsafe extern "C" fn(runtime_cookie: u64, event: AbiNetDriverEvent) -> i32,
+    pub update_link: unsafe extern "C" fn(runtime_cookie: u64, up: bool) -> i32,
+    pub log: unsafe extern "C" fn(runtime_cookie: u64, level: u32, msg_ptr: *const u8, msg_len: usize),
     pub reserved: [u64; 1],
 }
 
@@ -1369,13 +1369,13 @@ impl AbiNetPortRuntime {
     )]
     pub const fn new(
         runtime_cookie: u64,
-        lease_rx_buffer: extern "C" fn(u64, *mut AbiRxLease) -> i32,
-        release_rx_buffer: extern "C" fn(u64, *mut AbiRxLease) -> i32,
-        submit_rx_buffer: extern "C" fn(u64, *mut AbiRxLease, AbiNetRxMeta) -> i32,
-        complete_tx_lease: extern "C" fn(u64, u64, AbiTxDeviceOutcome) -> i32,
-        schedule_event: extern "C" fn(u64, AbiNetDriverEvent) -> i32,
-        update_link: extern "C" fn(u64, bool) -> i32,
-        log: extern "C" fn(u64, u32, *const u8, usize),
+        lease_rx_buffer: unsafe extern "C" fn(u64, *mut AbiRxLease) -> i32,
+        release_rx_buffer: unsafe extern "C" fn(u64, *mut AbiRxLease) -> i32,
+        submit_rx_buffer: unsafe extern "C" fn(u64, *mut AbiRxLease, AbiNetRxMeta) -> i32,
+        complete_tx_lease: unsafe extern "C" fn(u64, u64, AbiTxDeviceOutcome) -> i32,
+        schedule_event: unsafe extern "C" fn(u64, AbiNetDriverEvent) -> i32,
+        update_link: unsafe extern "C" fn(u64, bool) -> i32,
+        log: unsafe extern "C" fn(u64, u32, *const u8, usize),
     ) -> Self {
         Self {
             // ABI header size recorded as u64 to avoid truncation on large targets.
@@ -1393,108 +1393,37 @@ impl AbiNetPortRuntime {
     }
 }
 
-/// Driver-side ownership guard for one kernel-owned RX DMA lease.
-///
-/// Dropping the guard returns the lease through the runtime that issued it.
-/// Submitting a completed frame consumes the same authority and prevents a
-/// second release.
-pub struct AbiRxLeaseGuard {
-    runtime: AbiNetPortRuntime,
-    lease: AbiRxLease,
-}
-
-unsafe impl Send for AbiRxLeaseGuard {}
-
-impl core::fmt::Debug for AbiRxLeaseGuard {
-    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
-        f.debug_struct("AbiRxLeaseGuard")
-            .field("lease_id", &self.lease.lease_id())
-            .field("region", &self.lease.writable_region())
-            .finish()
-    }
-}
-
-impl AbiRxLeaseGuard {
-    /// Acquire one RX DMA lease from `runtime`.
-    ///
-    /// # Errors
-    ///
-    /// Returns the runtime's typed ABI error, or `InvalidParam` if a successful
-    /// callback did not publish a valid non-empty lease.
-    pub fn acquire(runtime: AbiNetPortRuntime) -> Result<Self, AbiError> {
-        let mut lease = AbiRxLease::default();
-        let status = AbiError::from_raw((runtime.lease_rx_buffer)(
-            runtime.runtime_cookie,
-            &mut lease,
-        ));
-        if !status.is_success() {
-            if lease.lease_id().is_some() {
-                let _ = (runtime.release_rx_buffer)(runtime.runtime_cookie, &mut lease);
-            }
-            return Err(status);
-        }
-        if lease.writable_region().is_none() {
-            if lease.lease_id().is_some() {
-                let _ = (runtime.release_rx_buffer)(runtime.runtime_cookie, &mut lease);
-            }
-            return Err(AbiError::InvalidParam);
-        }
-        Ok(Self { runtime, lease })
-    }
-
-    pub const fn writable_region(&self) -> AbiRxWritableRegion {
-        self.lease.region
-    }
-
-    /// Publish the exact device-written frame layout and consume this lease.
-    pub fn submit(mut self, meta: AbiNetRxMeta) -> AbiError {
-        AbiError::from_raw((self.runtime.submit_rx_buffer)(
-            self.runtime.runtime_cookie,
-            &mut self.lease,
-            meta,
-        ))
-    }
-}
-
-impl Drop for AbiRxLeaseGuard {
-    fn drop(&mut self) {
-        if self.lease.lease_id().is_some() {
-            let _ = (self.runtime.release_rx_buffer)(self.runtime.runtime_cookie, &mut self.lease);
-        }
-    }
-}
-
 #[repr(C)]
 #[derive(Clone, Copy)]
 pub struct AbiNetPortRegistration {
     pub abi_size: u64,
     pub info: AbiNetPortInfo,
     pub opaque: u64,
-    pub start: extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntime) -> i32,
-    pub bind: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub submit_tx_chain: extern "C" fn(
+    pub start: unsafe extern "C" fn(opaque: u64, runtime: *const AbiNetPortRuntime) -> i32,
+    pub bind: unsafe extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub submit_tx_chain: unsafe extern "C" fn(
         opaque: u64,
         submission: *const AbiNetTxSubmission,
         meta: AbiNetTxMeta,
     ) -> i32,
-    pub poll: extern "C" fn(opaque: u64, if_id: u16) -> i32,
-    pub handle_event: extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
-    pub stats: extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
-    pub stop: extern "C" fn(opaque: u64) -> i32,
-    pub set_interrupts_enabled: extern "C" fn(opaque: u64, enabled: bool) -> i32,
+    pub poll: unsafe extern "C" fn(opaque: u64, if_id: u16) -> i32,
+    pub handle_event: unsafe extern "C" fn(opaque: u64, if_id: u16, event: AbiNetDriverEvent) -> i32,
+    pub stats: unsafe extern "C" fn(opaque: u64, out: *mut AbiNetPortStats) -> i32,
+    pub stop: unsafe extern "C" fn(opaque: u64) -> i32,
+    pub set_interrupts_enabled: unsafe extern "C" fn(opaque: u64, enabled: bool) -> i32,
     pub reserved: [u64; 3],
 }
 
 #[derive(Clone, Copy)]
 pub struct AbiNetPortOps {
-    pub start: extern "C" fn(u64, *const AbiNetPortRuntime) -> i32,
-    pub bind: extern "C" fn(u64, u16) -> i32,
-    pub submit_tx_chain: extern "C" fn(u64, *const AbiNetTxSubmission, AbiNetTxMeta) -> i32,
-    pub poll: extern "C" fn(u64, u16) -> i32,
-    pub handle_event: extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
-    pub stats: extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
-    pub stop: extern "C" fn(u64) -> i32,
-    pub set_interrupts_enabled: extern "C" fn(u64, bool) -> i32,
+    pub start: unsafe extern "C" fn(u64, *const AbiNetPortRuntime) -> i32,
+    pub bind: unsafe extern "C" fn(u64, u16) -> i32,
+    pub submit_tx_chain: unsafe extern "C" fn(u64, *const AbiNetTxSubmission, AbiNetTxMeta) -> i32,
+    pub poll: unsafe extern "C" fn(u64, u16) -> i32,
+    pub handle_event: unsafe extern "C" fn(u64, u16, AbiNetDriverEvent) -> i32,
+    pub stats: unsafe extern "C" fn(u64, *mut AbiNetPortStats) -> i32,
+    pub stop: unsafe extern "C" fn(u64) -> i32,
+    pub set_interrupts_enabled: unsafe extern "C" fn(u64, bool) -> i32,
 }
 
 impl AbiNetPortRegistration {
