@@ -533,12 +533,6 @@ pub fn instance() -> &'static dyn KernelServices {
     panic!("Kernel not initialized! Call install() first.")
 }
 
-/// Check if kernel is registered
-#[inline]
-pub fn is_installed() -> bool {
-    KERNEL.get().is_some()
-}
-
 // ============================================================================
 // Stable ABI Kernel API
 // ============================================================================
