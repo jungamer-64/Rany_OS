@@ -22,11 +22,18 @@ struct VirtioCell {
 
 impl VirtioCell {
     const fn new() -> Self {
-        Self { device: Device::Unprobed }
+        Self {
+            device: Device::Unprobed,
+        }
     }
 }
 
 impl AsyncDriver for VirtioCell {
+    const IRQ_SOURCE: Option<kernel_api::driver::DriverIrqSourceAcquire<Self>> =
+        Some(|cell| match &cell.device {
+            Device::Network(cell) => cell.irq_source(),
+            Device::Block(_) | Device::Unprobed => None,
+        });
     fn name(&self) -> &str {
         "virtio"
     }
@@ -80,7 +87,10 @@ impl AsyncDriver for VirtioCell {
     }
 }
 
-#[allow(unsafe_code, reason = "export_async_driver owns the permanent foreign lifecycle callbacks and retained host vtable")]
+#[allow(
+    unsafe_code,
+    reason = "export_async_driver owns the permanent foreign lifecycle callbacks and retained host vtable"
+)]
 mod exports {
     use super::*;
     kernel_api::export_async_driver! {
