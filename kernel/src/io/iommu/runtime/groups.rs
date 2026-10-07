@@ -11,7 +11,6 @@
 use crate::io::iommu::runtime::backend::IommuBackend;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError};
 use crate::io::iommu::types::{IommuGroup, IommuGroupId};
-#[cfg(not(test))]
 use crate::sync::InitOnce;
 use crate::sync::PoisonLock;
 use hashbrown::HashMap;
@@ -87,7 +86,6 @@ pub trait PciTopologyProvider {
 // Real PCI Topology (production - delegates to pci_driver crate)
 // ============================================================================
 
-#[cfg(not(test))]
 pub struct RealPciTopology {
     ext_manager: &'static pci_driver::PcieExtManager,
 }
@@ -103,10 +101,8 @@ pub struct RealPciTopology {
 /// conservatively treats each device as having NO ACS isolation.  This means
 /// all devices behind the same non-ACS bridge are grouped together, which is
 /// the safe default.
-#[cfg(not(test))]
 pub struct LegacyPciTopology;
 
-#[cfg(not(test))]
 impl PciTopologyProvider for LegacyPciTopology {
     fn read_header_type(&self, bus: u8, device: u8, function: u8) -> Option<u8> {
         // Legacy PCI config space: Header Type is at offset 0x0E
@@ -147,14 +143,12 @@ impl PciTopologyProvider for LegacyPciTopology {
     }
 }
 
-#[cfg(not(test))]
 impl RealPciTopology {
     pub fn new(ext_manager: &'static pci_driver::PcieExtManager) -> Self {
         Self { ext_manager }
     }
 }
 
-#[cfg(not(test))]
 impl PciTopologyProvider for RealPciTopology {
     fn read_header_type(&self, bus: u8, device: u8, function: u8) -> Option<u8> {
         let bdf = pci_driver::PcieBdf::new(bus, device, function);
@@ -557,10 +551,8 @@ mod tests {
 // Global IOMMU Group Manager
 // ============================================================================
 
-#[cfg(not(test))]
 pub static IOMMU_GROUP_MANAGER: InitOnce<IommuGroupManager> = InitOnce::new();
 
-#[cfg(not(test))]
 pub fn get_iommu_group_manager() -> Option<&'static IommuGroupManager> {
     IOMMU_GROUP_MANAGER.get()
 }

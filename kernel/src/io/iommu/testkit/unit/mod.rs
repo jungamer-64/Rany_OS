@@ -16,9 +16,6 @@ use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
-use crate::io::iommu::vendors::intel::controller::fault::{
-    RawFaultEvent, drain_deferred_faults_with_controller, push_deferred_fault_for_test,
-};
 use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
@@ -36,13 +33,32 @@ use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 #[cfg(feature = "std")]
 #[cfg(feature = "qemu-test-export")]
 use crate::io::iommu::vendors::intel::qi::InvalidationQueueEntry;
-#[cfg(feature = "std")]
 use alloc::boxed::Box;
+
+struct RegisterMemory(core::cell::UnsafeCell<[u64; 512]>);
+// SAFETY: only the admitted controller accesses these cells, through its
+// synchronized register protocol. Fixtures never retain an ordinary RAM borrow.
+unsafe impl Sync for RegisterMemory {}
+
+fn controller_with_registers(mut words: [u64; 512]) -> IommuController {
+    // Four-level 48-bit translation, one fault record at 0x300, IOTLB at 0x200.
+    words[1] = (2 << 8) | (47 << 16) | (0x30 << 24);
+    words[2] = 0x20 << 8;
+    let owner = Arc::new(RegisterMemory(core::cell::UnsafeCell::new(words)));
+    let base = owner.0.get().cast::<u64>() as usize;
+    // SAFETY: the owner retains aligned backing used exclusively as the
+    // emulated register aperture. No borrowed RAM or DMA address escapes it.
+    let registers = unsafe { hal::MappedMmio::from_raw_parts(owner, base, 4096) }.unwrap();
+    IommuController::new(registers, 0).unwrap()
+}
+
+fn controller() -> IommuController {
+    controller_with_registers([0; 512])
+}
 
 fn test_iommu_registry(controllers: Vec<Arc<IommuController>>) -> IommuRegistry {
     IommuRegistry {
         controllers,
-        default_iommu_idx: Some(0),
         reserved_regions: Vec::new(),
     }
 }
@@ -423,7 +439,7 @@ fn test_map_rollback_superpage_2mb_collision() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_create_domain_with_numa_hint() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     let id = ctrl
         .create_domain(Some(2), IommuDomainType::Translated)
         .expect("create_domain failed");
@@ -442,7 +458,7 @@ fn test_create_domain_with_numa_hint() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_create_domain_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     // Poison domains lock
     set_panicking(true);
     if let Ok(_g) = ctrl.domains.lock() {
@@ -460,7 +476,7 @@ fn test_create_domain_poisoned_returns_hw_error() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
 
     // Allocate a context table and mark entry 0 as Present
     let mut table = HardwareTable::<ContextEntry>::new(256, None).expect("context table");
@@ -552,7 +568,12 @@ fn test_scalable_mode_pasid0_fault_resolution() {
         }
     }
 
-    let ctrl = IommuController::new(0x0, 0);
+    let mut registers = [0; 512];
+    registers[0x34 / 8] =
+        (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_PPF as u64) << 32;
+    registers[0x300 / 8] = 0xdeadb000;
+    registers[0x308 / 8] = FaultRecord::FAULT | FaultRecord::PASID_PRESENT | (5 << 32) | 8;
+    let ctrl = controller_with_registers(registers);
     ctrl.set_scalable_mode_enabled(true);
 
     let root_table = HardwareTable::<RootEntry>::new(256, None).expect("root table");
@@ -614,17 +635,8 @@ fn test_scalable_mode_pasid0_fault_resolution() {
     let notifier_dyn: Arc<dyn SecurityNotifier> = notifier.clone();
     ctrl.set_security_notifier(notifier_dyn);
 
-    push_deferred_fault_for_test(RawFaultEvent {
-        source_id: device.requester_id(),
-        fault_address: 0xdeadbeef,
-        reason: 0x05,
-        pasid: Some(0),
-        lo: 0,
-        hi: 0,
-        is_overflow: false,
-    });
-
-    drain_deferred_faults_with_controller(Some(&ctrl));
+    assert_eq!(ctrl.process_faults(), 1);
+    assert_eq!(ctrl.drain_deferred_faults(), 1);
 
     assert!(notifier.seen());
     assert_eq!(notifier.domain_id(), domain_id as u32);
@@ -634,7 +646,7 @@ fn test_scalable_mode_pasid0_fault_resolution() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_map_poisoned_returns_none() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     let id = ctrl
         .create_domain(None, IommuDomainType::Translated)
         .expect("create_domain failed");
@@ -653,7 +665,7 @@ fn test_domain_map_poisoned_returns_none() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_get_domain_for_device_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     let id = ctrl
         .create_domain(None, IommuDomainType::Translated)
         .expect("create_domain failed");
@@ -684,7 +696,7 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_set_domain_numa_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     let id = ctrl
         .create_domain(None, IommuDomainType::Translated)
         .expect("create_domain failed");
@@ -705,7 +717,7 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iova_allocator_basic() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     // Small IOVA space for testing (64KB)
     ctrl.init_iova(0x1000_0000, 0x10000)
         .expect("init_iova failed");
@@ -749,7 +761,7 @@ fn test_iova_allocator_basic() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_init_iova_poisoned_proceeds_with_best_effort() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
 
     // Poison the iova_allocator lock
     set_panicking(true);
@@ -776,7 +788,7 @@ fn test_init_iova_poisoned_proceeds_with_best_effort() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
 
     // Poison invalidation_queue lock
     set_panicking(true);
@@ -792,7 +804,7 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_iova_alloc_non_identity() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
     // Create default domain 0 for mapping
@@ -850,7 +862,7 @@ fn test_domain_iova_alloc_non_identity() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_map_for_device_async_and_unmap() {
-    let controller = Arc::new(IommuController::new(0, 0));
+    let controller = Arc::new(controller());
     controller
         .init_iova(0x1000, 0x10000)
         .expect("IOVA admission");
@@ -900,7 +912,7 @@ fn test_map_for_device_respects_dma_mask() {
             .cloned()
             .expect("no IOMMU controller in registry")
     } else {
-        let ctrl = IommuController::new(0x0, 0);
+        let ctrl = controller();
         let arc_ctrl = AllocArc::new(ctrl);
         let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
         init_registry(registry);
@@ -966,7 +978,7 @@ fn test_map_unmap_for_device_does_not_leak_iova() {
             .cloned()
             .expect("no IOMMU controller in registry")
     } else {
-        let ctrl = IommuController::new(0x0, 0);
+        let ctrl = controller();
         let arc_ctrl = AllocArc::new(ctrl);
         let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
         init_registry(registry);
@@ -1173,7 +1185,7 @@ fn test_unmap_mixed_superpages() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_submit_invalidation_poisoned_returns_error() {
-    let mut ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = controller();
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
@@ -1194,7 +1206,7 @@ fn test_submit_invalidation_poisoned_returns_error() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_qi_wait_sync_poisoned_returns_error() {
-    let mut ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = controller();
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
@@ -1215,7 +1227,7 @@ fn test_qi_wait_sync_poisoned_returns_error() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_qi_wait_async_poisoned_returns_error() {
-    let mut ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = controller();
 
     // Enable queued invalidation support for testing
     ctrl.ecap = ecap_bits::ECAP_QI;
@@ -1236,7 +1248,7 @@ fn test_qi_wait_async_poisoned_returns_error() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_qi_metrics_pressure() {
-    let mut ctrl = IommuController::new(0x0, 0);
+    let mut ctrl = controller();
 
     ctrl.ecap = ecap_bits::ECAP_QI;
     ctrl.init_queued_invalidation(8).expect("init_qi failed");
@@ -1429,7 +1441,7 @@ fn test_page_table_scope_drop_rolls_back_parent() {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_security_notifier_registration() {
-        let ctrl = crate::io::iommu::vendors::intel::controller::IommuController::new(0x0, 0);
+        let ctrl = controller();
         let notifier = Arc::new(MockSecurityNotifier::new());
 
         // First registration should succeed
@@ -1449,7 +1461,7 @@ fn test_page_table_scope_drop_rolls_back_parent() {
         use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry};
 
         if get_iommu_registry().is_none() {
-            let ctrl = IommuController::new(0x0, 0);
+            let ctrl = controller();
             let registry = test_iommu_registry(alloc::vec![Arc::new(ctrl)]);
             init_registry(registry);
         }
@@ -1557,7 +1569,7 @@ fn test_page_table_scope_drop_rolls_back_parent() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iova_not_equal_phys() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     // Start IOVA range at high address to avoid collision with typical phys
     ctrl.init_iova(0xF000_0000, 0x10000).expect("init_iova");
 
@@ -1610,7 +1622,7 @@ fn test_domain_type_not_passthrough() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mapping_iova_phys_distinct() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
 
     let domain = Arc::new(IommuDomain::new(
@@ -1674,7 +1686,7 @@ fn test_mapping_iova_phys_distinct() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_ats_admission_requires_controller_resources() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     assert_eq!(
         ctrl.check_ats_admission(crate::io::iommu::runtime::security::DeviceTrustLevel::Trusted),
         Err(IommuError::NotSupported),
@@ -1684,7 +1696,7 @@ fn test_ats_admission_requires_controller_resources() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_iova_quarantine_and_epoch_drain() {
-    let ctrl = IommuController::new(0x0, 0);
+    let ctrl = controller();
     // Initialize with a small space
     ctrl.init_iova(0x1000_0000, 0x10000).expect("init_iova");
 

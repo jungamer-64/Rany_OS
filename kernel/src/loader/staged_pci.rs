@@ -2,18 +2,13 @@ use alloc::borrow::Cow;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use kernel_api::abi::driver::DriverContext as AbiDriverContext;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::service::platform::PciDeviceInfo;
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::driver_domain::DriverDomainId;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::driver_domain::RestartPolicy;
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::driver_domain::lifecycle::{self, DriverDomainConfig};
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 use crate::driver_registry::DriverHandle;
 use crate::sync::PoisonLock;
 
@@ -35,7 +30,6 @@ pub enum StageArtifactResult {
     Rejected(String),
 }
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub enum StagedPciClaimOutcome {
     NoMatch,
     AlreadyClaimed,
@@ -46,7 +40,6 @@ pub enum StagedPciClaimOutcome {
     Failed(StagedPciClaimFailure),
 }
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 #[derive(Debug)]
 pub enum StagedPciClaimFailure {
     PlatformServicesUnavailable {
@@ -71,7 +64,6 @@ pub enum StagedPciClaimFailure {
     },
 }
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 impl core::fmt::Display for StagedPciClaimFailure {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         let (driver, device) = match self {
@@ -270,7 +262,6 @@ pub fn stage_boot_artifact(
     stage_driver_artifact_inner(artifact_name, Cow::Owned(artifact.to_vec()), allow_unsafe)
 }
 
-#[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
 pub fn claim_and_start_for_device(
     dev: &PciDeviceInfo,
     mut ctx: AbiDriverContext,

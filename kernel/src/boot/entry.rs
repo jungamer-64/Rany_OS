@@ -135,7 +135,6 @@ pub(super) fn ensure_phys_bar_mapped(base_phys: u64, bar_size: u64) -> Option<u6
 // room for initialization and avoid hitting the guard page unexpectedly.
 pub(super) const KERNEL_STACK_PAGES: usize = 256;
 
-#[cfg(not(test))]
 #[repr(C, align(4096))]
 pub(super) struct KernelStack {
     _bytes: core::cell::UnsafeCell<[u8; 4096 * KERNEL_STACK_PAGES]>,
@@ -144,7 +143,6 @@ pub(super) struct KernelStack {
 // SAFETY: the naked entry point claims this storage exactly once for the BSP
 // before Rust code runs. It is never exposed as a Rust reference or reused by
 // another CPU; all later access occurs through the active stack pointer.
-#[cfg(not(test))]
 unsafe impl Sync for KernelStack {}
 
 /// Boot stack for the BSP (Bootstrap Processor).

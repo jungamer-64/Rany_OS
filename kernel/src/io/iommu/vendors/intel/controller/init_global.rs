@@ -16,7 +16,6 @@ use crate::io::iommu::types::IommuError;
 use super::super::registry::{IommuRegistry, init_registry};
 use super::IommuController;
 
-#[cfg(not(test))]
 use super::dma::DomainManager;
 use super::fault::FaultHandler;
 use super::init::CapabilityManager;
@@ -29,14 +28,12 @@ const COMMAND_QUEUE_BATCH: usize = 64;
 
 const RUNTIME_INTERRUPT_VECTOR: u8 = 0x50;
 
-#[cfg(not(test))]
 fn early_stage_marker(stage: &str) {
     crate::io::log::early_print("[IOMMU][BOOT] ");
     crate::io::log::early_print(stage);
     crate::io::log::early_print("\n");
 }
 
-#[cfg(not(test))]
 fn early_stage_marker_controller(stage: &str, idx: usize) {
     crate::io::log::early_print("[IOMMU][BOOT] ");
     crate::io::log::early_print(stage);
@@ -84,7 +81,6 @@ pub(crate) async fn command_queue_worker() -> Result<(), IommuError> {
     }
 }
 
-#[cfg(not(test))]
 pub(crate) fn start_runtime_services() -> Result<usize, IommuError> {
     let Some(registry) = super::super::registry::get_iommu_registry() else {
         return Ok(0);
@@ -150,7 +146,6 @@ pub fn init_iommu_from_dmar(dmar: &[u8], config: IommuConfig) -> Result<(), Iomm
         reserved_regions,
     };
 
-    #[cfg(not(test))]
     early_stage_marker("publishing registry");
     let registry = init_registry(registry)?;
 
@@ -167,7 +162,6 @@ pub fn init_iommu_from_dmar(dmar: &[u8], config: IommuConfig) -> Result<(), Iomm
         }
     }
     apply_rmrr_reservations(registry)?;
-    #[cfg(not(test))]
     finalize_iommu_setup()?;
 
     Ok(())
@@ -347,7 +341,6 @@ fn apply_rmrr_reservations(registry: &IommuRegistry) -> Result<(), IommuError> {
 }
 
 /// Final setup: register driver and synchronously enable translation.
-#[cfg(not(test))]
 fn finalize_iommu_setup() -> Result<(), IommuError> {
     super::super::IntelIommuDriver::register_driver();
 

@@ -98,8 +98,8 @@ impl Default for FaultLog {
 mod tests {
     use super::*;
 
-    #[cfg_attr(feature = "std", test)]
-    #[cfg_attr(not(feature = "std"), test_case)]
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn decodes_independent_intel_fault_register_vector() {
         // FRCD[127:64]: F=1, PV=0xabcde, FR=0x42, PP=1, SID=0x1234.
         let record = FaultRecord {

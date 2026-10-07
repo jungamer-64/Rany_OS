@@ -8,7 +8,6 @@ pub(crate) mod fault_log;
 pub(crate) mod groups;
 pub(crate) mod irq;
 pub(crate) mod panic;
-#[cfg(not(test))]
 pub(crate) mod pci;
 pub(crate) mod registry;
 pub(crate) mod security;

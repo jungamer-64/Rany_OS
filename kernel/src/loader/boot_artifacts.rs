@@ -144,7 +144,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn empty_boot_artifact_table_is_noop() {
-        let table = unsafe { BootArtifactTable::default().view() }.unwrap();
+        let artifacts = BootArtifactTable::default();
+        let table = unsafe { artifacts.view() }.unwrap();
         assert_eq!(load_cells_from_boot_artifacts(&table), 0);
     }
 

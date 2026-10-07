@@ -311,8 +311,8 @@ impl From<u8> for FaultReason {
 #[cfg(test)]
 mod scope_tests {
     use super::*;
-    #[cfg_attr(feature = "std", test)]
-    #[cfg_attr(not(feature = "std"), test_case)]
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn resolved_scope_matches_only_its_actual_segment_and_bridge_extent() {
         let endpoint = IommuDeviceScope::Endpoint(DeviceId::new(2, 7, 3, 1));
         assert!(endpoint.matches(DeviceId::new(2, 7, 3, 1)));

@@ -416,7 +416,6 @@ pub struct CpuLocal {
     scheduler_xstate: UnsafeCell<super::xstate::XStateImage>,
     id: CpuId,
     owned: UnsafeCell<CpuOwnedState>,
-    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
     frame_cache: core::cell::RefCell<crate::mm::phys::frame_allocator::LocalFrameCache>,
     heap_cache: core::cell::RefCell<crate::heap::HeapCache>,
     exchange_cache: core::cell::RefCell<crate::heap::ExchangeMagazine>,
@@ -450,7 +449,6 @@ impl CpuLocal {
                 page_fault_active: false,
                 task_fuel: 0,
             }),
-            #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
             frame_cache: core::cell::RefCell::new(
                 crate::mm::phys::frame_allocator::LocalFrameCache::new(),
             ),
@@ -493,7 +491,6 @@ impl CpuLocal {
             self.heap_cache.borrow().is_empty(),
             "offline CPU must drain its heap cache"
         );
-        #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
         assert!(
             self.frame_cache.borrow().is_empty(),
             "CPU cache must be drained before re-add"
@@ -744,21 +741,9 @@ impl CurrentCpu {
     pub(crate) fn memory_caches_empty(&self) -> bool {
         let empty = self.with_exchange_cache(|cache| cache.is_empty()) == Some(true)
             && self.with_heap_cache(|cache| cache.is_empty()) == Some(true);
-        #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-        {
-            empty && self.with_frame_cache(|cache| cache.is_empty()) == Some(true)
-        }
-        #[cfg(all(
-            test,
-            not(feature = "full_mm_tests"),
-            not(feature = "qemu-test-export")
-        ))]
-        {
-            empty
-        }
+        empty && self.with_frame_cache(|cache| cache.is_empty()) == Some(true)
     }
 
-    #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
     pub(crate) fn with_frame_cache<R>(
         &self,
         operation: impl FnOnce(&mut crate::mm::phys::frame_allocator::LocalFrameCache) -> R,

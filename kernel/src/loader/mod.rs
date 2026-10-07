@@ -4,7 +4,6 @@
 // 設計書 3.3: コンパイラ署名とロード時検証
 // 設計書 3.4: ABIの安定性とType ID Check
 // ============================================================================
-#[cfg(any(not(any(test, feature = "bench")), feature = "full_mm_tests"))]
 pub mod boot_artifacts; // Boot artifact handoff からのセルロード
 pub mod driver_pack;
 pub mod elf;

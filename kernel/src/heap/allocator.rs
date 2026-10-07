@@ -2,17 +2,13 @@
 #[path = "oom.rs"]
 pub mod oom;
 
-#[cfg(any(not(test), feature = "full_mm_tests"))]
 #[path = "bootstrap.rs"]
 mod bootstrap;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub(crate) use bootstrap::init;
-#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub use bootstrap::{
     free_memory_kb, heap_stats, is_initialized, total_memory_kb, used_memory_kb,
     verify_buddy_integrity,
 };
-#[cfg(any(not(test), feature = "full_mm_tests"))]
 pub(crate) use bootstrap::{physical_memory_offset, set_physical_memory_offset};
 
 use super::HeapMemory;

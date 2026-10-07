@@ -6,16 +6,11 @@
 //!
 //! Functions for setting up IOMMU protection for PCI devices.
 
-#[cfg(not(test))]
 use crate::io::iommu::api::is_iommu_enabled;
-#[cfg(not(test))]
 use crate::io::iommu::runtime::groups::{RealPciTopology, get_iommu_group_manager};
-#[cfg(not(test))]
 use crate::io::iommu::runtime::registry::get_iommu_driver;
-#[cfg(not(test))]
 use crate::io::iommu::types::{DeviceId, IommuDomainType};
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
-#[cfg(not(test))]
 use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 
 // ============================================================================
@@ -31,7 +26,6 @@ use pci_driver::{AtsController, PcieBdf, pcie_ext_config, pcie_ext_manager};
 /// # Security Note
 /// IOMMU Registry and Group Manager are MANDATORY for secure operation.
 /// Fallback to legacy/no-grouping mode is disabled to prevent spoofing.
-#[cfg(not(test))]
 pub fn setup_iommu_for_pci_device(
     device: &mut crate::io::pci::PciDeviceInfo,
 ) -> Result<u16, crate::io::iommu::types::IommuError> {
@@ -165,7 +159,6 @@ pub fn setup_iommu_for_pci_device(
     Ok(domain_id)
 }
 
-#[cfg(not(test))]
 fn try_enable_ats(
     controller: &alloc::sync::Arc<crate::io::iommu::vendors::intel::controller::IommuController>,
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
@@ -204,7 +197,6 @@ fn try_enable_ats(
     }
 }
 
-#[cfg(not(test))]
 fn determine_trust_level(
     pcie_ext_manager: &'static pci_driver::PcieExtManager,
     device: &crate::io::pci::PciDeviceInfo,
@@ -249,7 +241,6 @@ fn determine_trust_level(
     DeviceTrustLevel::Trusted
 }
 
-#[cfg(not(test))]
 fn log_device_protection(
     device_id: DeviceId,
     iommu_group: &crate::io::iommu::types::IommuGroup,
@@ -276,7 +267,6 @@ fn log_device_protection(
 /// すべてのPCIデバイスにIOMMUドメインを設定
 ///
 /// PCI初期化後に呼び出して、全デバイスを保護します。
-#[cfg(not(test))]
 pub fn setup_iommu_for_all_pci_devices(
     devices: &mut [crate::io::pci::PciDeviceInfo],
 ) -> Result<(), crate::io::iommu::types::IommuError> {

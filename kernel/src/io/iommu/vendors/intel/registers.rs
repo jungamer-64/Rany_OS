@@ -315,8 +315,8 @@ impl FaultRegisters<'_> {
 mod tests {
     use super::*;
 
-    #[cfg_attr(feature = "std", test)]
-    #[cfg_attr(not(feature = "std"), test_case)]
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn variable_banks_determine_the_claim_extent() {
         // Independent field encodings: FRO=0x3ff, NFR=255, IRO=0x10.
         assert_eq!(
@@ -327,8 +327,8 @@ mod tests {
         assert_eq!(register_extent(0x10 << 24, 0x20 << 8), Ok(0x1000));
     }
 
-    #[cfg_attr(feature = "std", test)]
-    #[cfg_attr(not(feature = "std"), test_case)]
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn register_banks_cannot_alias_fixed_or_variable_registers() {
         assert!(register_extent(0, 0x20 << 8).is_err());
         assert!(register_extent(0x10 << 24, 0).is_err());
