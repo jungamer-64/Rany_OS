@@ -1197,10 +1197,6 @@ impl LiveUpdateManager {
         }
     }
 
-    #[cfg(feature = "qemu-test-export")]
-    pub fn set_rollback_grace_period_for_test(&self, ticks: u64) -> u64 {
-        self.rollback_grace_period.swap(ticks, Ordering::AcqRel)
-    }
 }
 
 impl Default for LiveUpdateManager {
@@ -1459,11 +1455,6 @@ pub fn live_update_manager() -> &'static LiveUpdateManager {
 /// Quiescent point などから呼ぶ保留更新の自動処理
 pub fn poll_pending_updates() {
     LIVE_UPDATE_MANAGER.poll_pending_updates();
-}
-
-#[cfg(feature = "qemu-test-export")]
-pub fn set_rollback_grace_period_for_test(ticks: u64) -> u64 {
-    LIVE_UPDATE_MANAGER.set_rollback_grace_period_for_test(ticks)
 }
 
 /// 現在のグローバルエポックを取得
