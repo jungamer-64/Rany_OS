@@ -8,5 +8,6 @@ mod memory;
 mod protocol;
 mod queue;
 pub use device::*;
+pub use protocol::GpuDeviceError;
 #[cfg(test)]
 mod tests;
