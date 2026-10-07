@@ -6,7 +6,7 @@
 
 ExoRust のカーネル初期化は、実装上 6 フェーズに分割されている。大枠の制御遷移は次のとおり。
 
-`ExoLoader -> _start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner -> Executor runtime tasks`
+`ExoLoader -> _start -> kernel_boot_entry -> boot::kmain -> boot::enter -> kmain_inner -> scheduler runtime tasks`
 
 この文書は、現行コードの責務境界と依存関係を明示するための整理資料であり、外部 ABI や boot handoff の仕様を変更するものではない。
 
@@ -41,37 +41,37 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 
 - 実装関数: `phase_early_kernel_substrate()`
 - 例外/割り込み基盤、PIT、メモリ管理、BSP スタックガード、interrupt waker の事前確保を行う。
-- `heap::init()` 完了直後に BSP 用の per-core executor slot を先行確保し、その後の `bootstrap_smp_early()` で online CPU 数まで拡張する。これにより、以後の同期初期化中に発生する async task 登録を bootstrap queue ではなく実 executor に受けられるようにする。
-- `heap::init()` は loader から渡された排他的なヒープ RAM owner を消費する。この領域は PMM への登録対象から除外する。残りの usable RAM は firmware の NUMA topology と合わせて PMM に一度だけ登録し、slab・ノード別 Buddy・mobility pool は PMM owner を消費して借用領域を管理する。
+- `heap::init()` 完了後に domain と BSP の CPU-local storage・scheduler stack を準備する。割込み基盤と local timer の準備後に AP を開始し、各 CPU が自身の storage と scheduler stack を保持する。
+- `heap::init()` は loader から渡された排他的なヒープ RAM owner を消費する。この領域は PMM への登録対象から除外する。残りの usable RAM は firmware の NUMA topology と合わせて PMM に一度だけ登録し、slab・ノード別 Buddy・mobility pool は PMM owner を消費して借用領域を管理する。firmware の DMA 保護範囲は、PMM への移譲済み RAM と admission が完了した bootstrap slab を除いて登録する。UEFI の型だけで移譲済み RAM を firmware 所有と判定しない。全 descriptor の geometry 検証が成功してから保護範囲を公開し、失敗時は device DMA を開始せず終了する。
 - scanout mapping は immutable な GOP handoff と物理 resource claim を保持する。AP 起動前に identity/HHDM の両 alias を退避し、TLB と cache を無効化して同じ WC 属性で再構築する。失敗時は claim を保持し、部分的な mapping を他の利用者へ再公開しない。BSP/AP は同じ PAT/MTRR policy で実行する。
 - VGA text mode の mapping claim と描画状態は heap 初期化後に取得する。映像出力の metadata や観測アドレスだけからアクセス権限を作らない。
 - allocator 初期化は bootstrap RAM owner を消費し、完了した状態だけを公開する。途中失敗は未使用 RAM の ownership を保持した terminal outcome とし、既存 allocation のある heap を再初期化しない。usable RAM が存在しない場合も推測した領域へ fallback しない。
 - `heap::init()` が完了して初めて、ページテーブル操作や後続の割り当て依存サブシステムを安全に呼べる。
-- CPU の NUMA 所属は PMM と共通の正規化済み配置から登録前に検証し、固定された CPU-local storage へ保持する。AP の起動と executor の公開はその後に行う。namespace で追加された CPU も同じ登録経路を通り、所属の変更は drain と eject が完了した物理世代間でのみ許可する。
+- CPU の NUMA 所属は PMM と共通の正規化済み配置から登録前に検証し、固定された CPU-local storage へ保持する。AP の起動と scheduler の開始はその後に行う。namespace で追加された CPU も同じ登録経路を通り、所属の変更は drain と eject が完了した物理世代間でのみ許可する。
 - 依存:
   - Phase 2 で `physical_memory_offset` が設定済みであること
   - ISR 側の lazy init を避けるため、waker registry は割り込み有効化前に確保すること
 
-## Phase 4: Early Executor Handoff
+## Phase 4: Scheduler Handoff
 
 - 実装関数: `start_async_boot_runtime()`
-- Phase 3 の直後に、per-core executor の run loop を開始し、runtime worker を先行解放する。
-- この段階では executor は `Boot` run mode で入り、interrupt policy は boot policy / `qemu_no_if=1` に従って明示的に設定される。
-- APIC runtime local timer への切替はまだ行わず、finalizer 側に残す。
+- Phase 3 の直後に boot stage task を登録し、CPU 専用スタックで scheduler の run loop を開始する。各 stage は通常のタスク所有権と配置制約に従う。
+- interrupt policy は boot policy / `qemu_no_if=1` に従って設定する。強制プリエンプションの保証には割込みが有効であることが必要である。
+- APIC timer は CPU 起動時に準備する。runtime の timer policy は finalizer が確定する。
 - 依存:
-  - Phase 3 のメモリ初期化と early SMP bootstrap が完了していること
-  - BSP/AP とも executor slot は provision 済みであること
+  - Phase 3 のメモリ初期化と CPU bootstrap が完了していること
+  - BSP/AP とも CPU-local storage と scheduler stack が provision 済みであること
 
 ## Phase 5: Async Boot Orchestration
 
 - 実装単位: `AsyncBootCoordinator` と stage task 群
-- Phase 4 で動き始めた executor 上に、残りの boot を高優先度 task 群として展開する。
+- Phase 4 で動き始めた scheduler 上に、残りの boot を高優先度 task 群として展開する。
 - stage 構成:
   - `platform_task`: ACPI/IOMMU、heap available 通知、`services` 経由の kernel services/provider 登録、async logging 切替
   - `graphics_task`: framebuffer/text console 初期化
   - `core_services_task`: domain/SAS/security/MPK、loader/live update/driver domain、boot artifact cell load
   - `driver_task`: HID/serial/NVMe/AHCI/USB、system integration
-  - `post_driver_task`: pre-executor network infra、memfs、durability/kgdb
+  - `post_driver_task`: network infra、memfs、durability/kgdb
 - `graphics_task` は `platform_task` と並行に走り、それ以外は dependency latch に従って段階実行される。
 - Intel IOMMU は firmware が所有するレジスタ範囲を検証し、controller を registry が保持してから hardware pointer を公開する。応答失敗でも mapping・queue・table を保持し、依存する device の起動は完了させない。
 - ACPI firmware service は固定レジスタと AML OperationRegion の寿命を保持し、SCI 通知・電源要求を一つの interpreter environment で処理する。割込みではレジスタ処理と通知のみを行う。電源 command の受付と hardware の完了を区別し、未確認の publication は失敗理由と資源を保持して自動再試行しない。CPU idle の観測値は scheduler が最終 wake 確認後に入った待機から得る。
@@ -85,7 +85,7 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `graphics_task` と `post_driver_task` の完了を待って、shell mode 決定、symbol table、test framework、late integration retry、IOMMU runtime services、runtime local timer 切替、stats 出力、runtime task spawn、runtime test dispatchを行う。
 - IOMMU の command/fault worker は kernel service host が所有する通常タスクであり、通知用 queue とタスクの admission が完了してから割込みを有効化する。保守処理の失敗は service host が保持・観測する。
 - `BOOT COMPLETE!` はこの finalization 完了時点でのみ出力される。
-- `Starting per-core executor main loop` は Phase 4 に前倒しされるため、`BOOT COMPLETE!` より先に現れる。
+- `Starting topology-aware scheduler main loop` は Phase 4 に前倒しされるため、`BOOT COMPLETE!` より先に現れる。
 - 依存:
   - async boot stage が完了していること
   - `qemu_no_if=1` / `run_integration=*` の分岐は finalizer で評価されること
@@ -99,13 +99,13 @@ ExoRust のカーネル初期化は、実装上 6 フェーズに分割されて
 - `spawn_core_runtime_tasks()`
   - I/O scheduler 初期化、network bootstrap、network event task、timeout task、DHCP/DNS/mDNS 背景タスク
 
-デモ domain、ping demo、boot-time HTTP listener は通常ブートから外され、early executor handoff 後の async boot 完了点と通常 runtime task の責務がより小さく保たれる。
+デモ domain、ping demo、boot-time HTTP listener は通常ブートから外され、scheduler handoff 後の async boot 完了点と通常 runtime task の責務がより小さく保たれる。
 
 ## Phase 1 Closure Validation
 
 - Phase 1 の正規 runtime 受け入れ経路は TCG full-boot ではなく、KVM + VFIO + `SERIAL=file` の smoke run を使う。
 - 既定コマンドは `make smoke-multicore-vfio`。これは `make build-kernel`、`timeout 90s make run NETWORK=pcie VFIO_NET_BDFS=0000:06:00.0,0000:06:00.1 VFIO_ACK=1 SERIAL=file`、`scripts/verify_multicore_serial_log.sh` を 1 回で再現する。
-- serial log は `target/x86_64-exorust/debug/serial.log` に出力され、少なくとも `BOOT COMPLETE!`、`Starting per-core executor main loop`、`[SMP][TOPOLOGY]`、`[SMP][ONLINE]`、`[SMP][HANDOFF]` を含む。
+- serial log は `target/x86_64-exorust/debug/serial.log` に出力され、少なくとも `BOOT COMPLETE!`、`Starting topology-aware scheduler main loop`、`[SMP][TOPOLOGY]`、`[SMP][ONLINE]`、`[SMP][HANDOFF]` を含む。
 - multicore 実行では `serial.log` に `[C1]` 以上の AP runtime log が現れることを成功条件にする。`make smoke-multicore-vfio SMP=1` では逆に AP runtime log が出ないことを確認する。
 - `>64 CPUs` の clamp / truncation は `CpuTopology` / `CpuLifecycle` の unit test を正ゲートとし、現行の KVM/VFIO runtime smoke の必須条件にはしない。
 

@@ -4,7 +4,7 @@ pub mod oom;
 
 #[path = "bootstrap.rs"]
 mod bootstrap;
-pub(crate) use bootstrap::init;
+pub(crate) use bootstrap::{BootRamAdmission, init};
 pub use bootstrap::{
     free_memory_kb, heap_stats, is_initialized, total_memory_kb, used_memory_kb,
     verify_buddy_integrity,

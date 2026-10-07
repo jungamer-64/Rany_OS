@@ -113,3 +113,27 @@ fn subtract_range(
         (admitted.end < source.end).then_some(admitted.end..source.end),
     ]
 }
+
+#[cfg(test)]
+mod tests {
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn retained_firmware_preserves_both_sides_of_admitted_bootstrap_slab() {
+        assert_eq!(
+            super::subtract_range(0x1000..0x8000, 0x3000..0x6000),
+            [Some(0x1000..0x3000), Some(0x6000..0x8000)]
+        );
+        assert_eq!(
+            super::subtract_range(0x3000..0x6000, 0x3000..0x6000),
+            [None, None]
+        );
+        assert_eq!(
+            super::subtract_range(0x1000..0x3000, 0x3000..0x6000),
+            [Some(0x1000..0x3000), None]
+        );
+        assert_eq!(
+            super::subtract_range(0x4000..0x5000, 0x3000..0x6000),
+            [None, None]
+        );
+    }
+}

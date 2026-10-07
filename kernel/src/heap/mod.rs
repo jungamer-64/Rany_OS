@@ -22,7 +22,9 @@ pub use allocator::{
     verify_buddy_integrity,
 };
 
-pub(crate) use allocator::{init, physical_memory_offset, set_physical_memory_offset};
+pub(crate) use allocator::{
+    BootRamAdmission, init, physical_memory_offset, set_physical_memory_offset,
+};
 
 #[cfg(test)]
 mod exchange_blocks_tests;

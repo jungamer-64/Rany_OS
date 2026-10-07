@@ -867,6 +867,65 @@ pub fn is_range_managed_by_pmm(start: PhysAddr, size: u64) -> bool {
             })
         })
 }
+/// Firmware exclusions are the complement of immutable admitted RAM, never
+/// a projection of current allocation occupancy. An outstanding or returned
+/// allocation stays within its original RAM admission until kernel shutdown.
+/// This observer grants no allocation, mapping, or release authority.
+///
+/// # Errors
+/// PMM admission must be complete; the source must be a nonempty, representable
+/// physical extent. The iterator borrows immutable admission and allocates nothing.
+pub(crate) fn unmanaged_physical_ranges(
+    start: PhysAddr,
+    size: u64,
+) -> Result<impl Iterator<Item = (PhysAddr, u64)>, FrameAllocError> {
+    let end = start
+        .as_u64()
+        .checked_add(size)
+        .ok_or(FrameAllocError::InvalidRange)?;
+    let last = end
+        .checked_sub(1)
+        .filter(|_| size != 0)
+        .ok_or(FrameAllocError::InvalidRange)?;
+    PhysAddr::try_new(last).map_err(|_| FrameAllocError::InvalidRange)?;
+    let pmm = PMM.get().ok_or(FrameAllocError::Uninitialized)?;
+    let admitted = pmm
+        .nodes
+        .iter()
+        .flatten()
+        .flat_map(|pool| pool.usable.iter().copied());
+    Ok(unmanaged_ranges(admitted, start.as_u64()..end)
+        .map(|(first, last)| (PhysAddr::new(first), last - first)))
+}
+
+fn unmanaged_ranges<I: Iterator<Item = (u64, u64)> + Clone>(
+    admitted: I,
+    source: core::ops::Range<u64>,
+) -> impl Iterator<Item = (u64, u64)> {
+    let mut cursor = source.start;
+    core::iter::from_fn(move || {
+        // LOOP_PROOF: mode=condition; reason=Each admitted interval advances the physical cursor to its strictly greater end. The finite immutable intervals and source end bound every scan.;
+        while cursor < source.end {
+            let next = admitted
+                .clone()
+                .filter(|&(first, last)| cursor < last && first < source.end)
+                .min_by_key(|&(first, _)| first);
+            let Some((first, last)) = next else {
+                let gap = (cursor, source.end);
+                cursor = source.end;
+                return Some(gap);
+            };
+            if cursor < first {
+                let gap = (cursor, first);
+                cursor = first;
+                return Some(gap);
+            }
+            cursor = last.min(source.end);
+        }
+        None
+    })
+}
+
 pub fn pmm_managed_end() -> Option<u64> {
     PMM.get()?
         .nodes
@@ -924,6 +983,49 @@ pub(crate) fn node_distance(from: NumaNodeId, to: NumaNodeId) -> Option<u8> {
 
 #[cfg(test)]
 mod tests {
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn firmware_gaps_exclude_admitted_ram_across_unordered_nodes() {
+        let admitted = [
+            (0x8000, 0x9000),
+            (0x2000, 0x3000),
+            (0x4000, 0x5000),
+            (0x7000, 0x8000),
+        ];
+        let actual: alloc::vec::Vec<_> =
+            super::unmanaged_ranges(admitted.into_iter(), 0x1000..0xa000).collect();
+        assert_eq!(
+            actual,
+            [
+                (0x1000, 0x2000),
+                (0x3000, 0x4000),
+                (0x5000, 0x7000),
+                (0x9000, 0xa000)
+            ]
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn firmware_gaps_clip_admission_at_source_boundaries() {
+        assert_eq!(
+            super::unmanaged_ranges([(0x1000, 0x5000)].into_iter(), 0x2000..0x4000).next(),
+            None
+        );
+        assert_eq!(
+            super::unmanaged_ranges(core::iter::empty(), 0x2000..0x4000)
+                .collect::<alloc::vec::Vec<_>>(),
+            [(0x2000, 0x4000)]
+        );
+        assert_eq!(
+            super::unmanaged_ranges(
+                [(0x1000, 0x3000), (0x5000, 0x7000)].into_iter(),
+                0x2000..0x6000
+            )
+            .collect::<alloc::vec::Vec<_>>(),
+            [(0x3000, 0x5000)]
+        );
+    }
     use super::*;
     use alloc::boxed::Box;
 

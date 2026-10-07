@@ -174,6 +174,19 @@ fn initialize_firmware_catalog(boot_info: Option<&ExoBootInfoView<'_>>) {
     }
 }
 
+/// Observation of the bootstrap slab after both heaps and the PMM have
+/// accepted their disjoint RAM owners. It grants no allocation or release right;
+/// firmware protection consumes it before devices may publish DMA mappings.
+pub(crate) struct BootRamAdmission {
+    bootstrap: core::ops::Range<u64>,
+}
+
+impl BootRamAdmission {
+    pub(crate) fn bootstrap_range(&self) -> core::ops::Range<u64> {
+        self.bootstrap.clone()
+    }
+}
+
 #[derive(Debug)]
 pub(crate) enum HeapInitError {
     AlreadyStarted {
@@ -230,7 +243,7 @@ impl core::fmt::Display for HeapInitError {
 pub(crate) fn init(
     boot_info: &ExoBootInfoView<'_>,
     heaps: super::super::BootstrapHeaps,
-) -> Result<(), HeapInitError> {
+) -> Result<BootRamAdmission, HeapInitError> {
     use core::sync::atomic::Ordering;
 
     crate::io::log::early_print("[MEM] init start\n");
@@ -294,7 +307,10 @@ pub(crate) fn init(
 
     MEMORY_STATE.store(MemoryState::Ready as u8, Ordering::Release);
     crate::io::log::early_print("[MEM] init done\n");
-    Ok(())
+    let (start, size) = geometry.allocation_range();
+    Ok(BootRamAdmission {
+        bootstrap: start..start + size,
+    })
 }
 
 /// ヒープ整合性チェック（デバッグ用）
