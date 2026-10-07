@@ -200,7 +200,7 @@ pub fn handle_fault(
     let manager = driver_domain_manager();
 
     // 障害情報を記録
-    let (restart_policy, consecutive, domain_id, hot_swap_state, cell_id) =
+    let (restart_policy, consecutive, domain_id, rollback_cell) =
         manager.with_cell_mut(id, |cell| {
             cell.consecutive_faults += 1;
             let consecutive = cell.consecutive_faults;
@@ -208,6 +208,17 @@ pub fn handle_fault(
             let record = FaultRecord::new(fault_kind.clone(), consecutive);
             cell.fault_history.push(record);
 
+            // Publish recovery direction before Faulted is observable. The
+            // update owns replacement and teardown even if this call is preempted.
+            let rollback_cell = cell.cell_id.filter(|cell_id| {
+                matches!(
+                    cell.hot_swap_state,
+                    HotSwapState::Switching | HotSwapState::Validating | HotSwapState::Error
+                ) && crate::loader::live_update::live_update_manager().mark_health_failure(
+                    cell_id.as_u64(),
+                    format!("Fault during live update: {fault_kind}"),
+                )
+            });
             cell.transition_to(DriverDomainState::Faulted);
             cell.stats.record_fault();
 
@@ -215,11 +226,41 @@ pub fn handle_fault(
                 cell.restart_policy,
                 consecutive,
                 cell.domain_id,
-                cell.hot_swap_state,
-                cell.cell_id,
+                rollback_cell,
             )
         })?;
     super::stats::global_stats().on_fault();
+
+    if let Some(_cell_id) = rollback_cell {
+        // The service may have completed the accepted request while this call
+        // was suspended. Its Idle publication is the completion boundary.
+        if manager.with_cell(id, |cell| {
+            cell.state == DriverDomainState::Running && cell.hot_swap_state == HotSwapState::Idle
+        })? {
+            return Ok(FaultAction::RolledBack);
+        }
+        crate::io::log::early_print("[DCF] handle_fault: rollback begin\n");
+        match super::hot_swap::rollback(id) {
+            Ok(()) => {
+                crate::io::log::early_print("[DCF] handle_fault: rollback ok\n");
+                return Ok(FaultAction::RolledBack);
+            }
+            Err(cause) => {
+                let retained = match &cause {
+                    DriverDomainError::LifecycleInProgress { .. } => true,
+                    DriverDomainError::LiveUpdate(cause) => cause.is_waiting(),
+                    _ => false,
+                };
+                if retained {
+                    // Health publication already requested rollback. The update
+                    // and service host retain its callback and completion owner.
+                    return Ok(FaultAction::RollbackPending(cause));
+                }
+                log::warn!("[DriverDomain] Validation rollback failed: {cause}");
+                return Ok(FaultAction::RollbackFailed(cause));
+            }
+        }
+    }
 
     let name = manager.with_cell(id, |cell| cell.name.clone())?;
     crate::io::log::early_print("[DCF] handle_fault: recorded\n");
@@ -246,49 +287,6 @@ pub fn handle_fault(
     crate::io::log::early_print("[DCF] handle_fault: stop drivers begin\n");
     stop_drivers_for_cell(id);
     crate::io::log::early_print("[DCF] handle_fault: stop drivers done\n");
-
-    // The update owns driver replacement until resolution, including a foreign
-    // invocation currently on another task's stack. Do not start a second owner.
-    if matches!(
-        hot_swap_state,
-        HotSwapState::Switching | HotSwapState::Validating | HotSwapState::Error
-    ) && cell_id.is_some_and(|cid| {
-        crate::loader::live_update::live_update_manager()
-            .pending_status(cid.as_u64())
-            .is_some()
-            || hot_swap_state == HotSwapState::Switching
-    }) {
-        crate::io::log::early_print("[DCF] handle_fault: validating rollback path\n");
-        if let Some(cid) = cell_id {
-            crate::io::log::early_print("[DCF] handle_fault: mark health failure\n");
-            let _ = crate::loader::live_update::live_update_manager().mark_health_failure(
-                cid.as_u64(),
-                format!("Fault during live update: {}", fault_kind),
-            );
-        }
-
-        crate::io::log::early_print("[DCF] handle_fault: rollback begin\n");
-        match super::hot_swap::rollback(id) {
-            Ok(()) => {
-                crate::io::log::early_print("[DCF] handle_fault: rollback ok\n");
-                return Ok(FaultAction::RolledBack);
-            }
-            Err(cause) => {
-                let retained = match &cause {
-                    DriverDomainError::LifecycleInProgress { .. } => true,
-                    DriverDomainError::LiveUpdate(cause) => cause.is_waiting(),
-                    _ => false,
-                };
-                if retained {
-                    // Health publication already requested rollback. The update
-                    // and service host retain its callback and completion owner.
-                    return Ok(FaultAction::RollbackPending(cause));
-                }
-                log::warn!("[DriverDomain] Validation rollback failed: {cause}");
-                return Ok(FaultAction::RollbackFailed(cause));
-            }
-        }
-    }
 
     // 再起動ポリシーを評価
     if restart_policy.should_restart(fault_kind.clone(), consecutive) {

@@ -433,8 +433,6 @@ pub fn run_driver_domain_runtime_suite(
         }
     };
 
-    let old_grace = crate::loader::live_update::set_rollback_grace_period_for_test(1_000);
-
     if case_matches_filter(case_filter, "staged_pci_probe_receives_real_driver_context") {
         run_case(
             &mut summary,
@@ -494,7 +492,6 @@ pub fn run_driver_domain_runtime_suite(
         run_case(&mut summary, "unload", case_unload(&mut ctx));
     }
 
-    crate::loader::live_update::set_rollback_grace_period_for_test(old_grace);
     crate::loader::elf::set_aslr_enabled(old_aslr);
     log_summary(&summary);
     summary
