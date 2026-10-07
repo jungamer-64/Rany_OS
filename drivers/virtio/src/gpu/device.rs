@@ -614,15 +614,10 @@ impl VirtioGpu {
             OperationStage::Submit(action) => {
                 let deadline = deadline(now).map_err(retry)?;
                 let cursor = matches!(action, Action::UpdateCursor | Action::MoveCursor);
-                let fence = if cursor {
-                    0
-                } else {
-                    let fence = self.next_fence;
-                    self.next_fence = fence
-                        .checked_add(1)
-                        .ok_or_else(|| terminal(KapiError::ResourceExhausted))?;
-                    fence
-                };
+                let fence = self.next_fence;
+                self.next_fence = fence
+                    .checked_add(1)
+                    .ok_or_else(|| terminal(KapiError::ResourceExhausted))?;
                 let wire = self.encode(action, operation, fence).map_err(terminal)?;
                 let queue = if cursor {
                     &mut self.cursor
@@ -766,8 +761,8 @@ impl VirtioGpu {
             Action::Scanout | Action::Disable => (GpuCmd::SetScanout, Response::Header),
             Action::Detach => (GpuCmd::ResourceDetachBacking, Response::Header),
             Action::Unref => (GpuCmd::ResourceUnref, Response::Header),
-            Action::UpdateCursor => (GpuCmd::UpdateCursor, Response::Cursor),
-            Action::MoveCursor => (GpuCmd::MoveCursor, Response::Cursor),
+            Action::UpdateCursor => (GpuCmd::UpdateCursor, Response::Header),
+            Action::MoveCursor => (GpuCmd::MoveCursor, Response::Header),
         };
         let mut wire = WireCommand::new(command, fence, response);
         let frame = operation

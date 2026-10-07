@@ -73,3 +73,22 @@ fn request_encoding_uses_specification_coordinates_and_zero_padding() {
         ]
     );
 }
+
+#[test]
+fn cursor_commands_require_a_fenced_header_response() {
+    let mut request =
+        protocol::WireCommand::new(defs::GpuCmd::UpdateCursor, 11, protocol::Response::Header);
+    for value in [0, 20, 30, 0, 1, 2, 3, 0] {
+        request.u32(value).unwrap();
+    }
+    assert_eq!(request.bytes().len(), 56);
+    assert_eq!(
+        &request.bytes()[..16],
+        &[0, 3, 0, 0, 1, 0, 0, 0, 11, 0, 0, 0, 0, 0, 0, 0]
+    );
+    assert_eq!(request.response.byte_count(), 24);
+    assert!(matches!(
+        protocol::decode(&[], 11, protocol::Response::Header),
+        Err(protocol::ReplyError::Protocol)
+    ));
+}

@@ -24,14 +24,12 @@ pub enum GpuDeviceError {
 pub(super) enum Response {
     Header,
     Display,
-    Cursor,
 }
 impl Response {
     pub(super) fn byte_count(self) -> usize {
         match self {
             Self::Header => HEADER_BYTES,
             Self::Display => DISPLAY_BYTES,
-            Self::Cursor => 0,
         }
     }
 }
@@ -46,10 +44,8 @@ impl WireCommand {
     pub(super) fn new(command: GpuCmd, fence: u64, response: Response) -> Self {
         let mut bytes = [0; REQUEST_BYTES];
         bytes[..4].copy_from_slice(&(command as u32).to_le_bytes());
-        if !matches!(response, Response::Cursor) {
-            bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
-            bytes[8..16].copy_from_slice(&fence.to_le_bytes());
-        }
+        bytes[4..8].copy_from_slice(&1u32.to_le_bytes());
+        bytes[8..16].copy_from_slice(&fence.to_le_bytes());
         Self {
             bytes,
             length: HEADER_BYTES,
@@ -100,13 +96,6 @@ pub(super) enum ReplyError {
 }
 
 pub(super) fn decode(bytes: &[u8], fence: u64, response: Response) -> Result<Reply, ReplyError> {
-    if matches!(response, Response::Cursor) {
-        return if bytes.is_empty() {
-            Ok(Reply::Done)
-        } else {
-            Err(ReplyError::Protocol)
-        };
-    }
     if bytes.len() < HEADER_BYTES {
         return Err(ReplyError::Protocol);
     }

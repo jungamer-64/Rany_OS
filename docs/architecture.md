@@ -29,7 +29,7 @@ ExoRust は、次の三原則を採用します。
 - 実行単位は `Future` ベースのタスクとする。
 - I/O 待機は `await` で表現し、ブロッキング API を避ける。
 - 公平性の最終担保は APIC タイマーによる強制プリエンプションで行う。
-- executor locality は同一 NUMA ノードを優先し、cross-node 移動は最終手段にする。
+- scheduler は同一 NUMA ノードの配置と負荷分散を優先し、cross-node 移動は最終手段にする。
 - Fuel や静的解析は最適化であり、停止性の唯一の前提にはしない。
 
 ### 1.4 運用前提とハードウェア要件
@@ -57,7 +57,6 @@ ExoRust は、次の三原則を採用します。
 - `interfaces/kernel_api/` が共有サービス契約を定義し、`kernel/src/services/` が呼び出し時の認可とカーネル内部実装への接続を担う。実装型は外部公開しない。
 - `kernel/src/resource_registry/` は runtime-owned resource state の唯一の所有者とする。
 - `kernel/src/fs/` はカーネル内ファイルシステム実装の正規配置とし、cross-tree path include を使わない。
-- `kernel/src/host_support/` は test/bench 専用の軽量差し替え面として本番経路と分離する。
 - ドライバ責務との切り分けは [kernel-driver-boundary.md](kernel-driver-boundary.md) に従う。
 
 ## 3. メモリと DMA
@@ -152,11 +151,11 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 
 ## 5. Async 実行と割り込み
 
-- 各 CPU コアに executor を配置する。
+- scheduler は各 CPU の専用スタックで動作し、Future はタスク専用スタックで poll する。
 - ISR はイベント ID を deferred wake キューへ積み、通常コンテキストで `wake()` を行う。
 - ポーリングと割り込みは workload に応じて切り替える。
 - share-nothing を優先し、共有状態が必要な場合は owner を明確にした message passing を使う。
-- Fuel-based execution、loop-bound proof、FFI / 外部クレート境界 checkpoint、APIC timeslice の reference default は [reference/execution-fairness.md](reference/execution-fairness.md) に集約する。
+- Fuel 補充、loop-bound proof、FFI / 外部クレート境界 checkpoint、APIC timeslice の実行 contract は [reference/execution-fairness.md](reference/execution-fairness.md) に集約する。
 
 ### 5.1 Runtime policy と quota
 
@@ -166,17 +165,10 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 
 ### 5.2 Locality と adaptive power
 
-- executor は同一 NUMA ノード内の task / memory / device locality を優先する。
-- task affinity mask と same-node-first scheduling は canonical target interface とする。
+- scheduler は同一 NUMA ノード内の task / memory / device locality を優先する。
+- `CpuSet` による実行許可集合と CPU / NUMA の優先指定を分離し、同一ノードを先に選択・stealing する。中断中の poll は元の CPU に保持する。
 - adaptive polling / interrupt switching と C-state 制御は baseline の一部とする。
 - idle path は HLT / MWAIT 相当の低電力待機を優先し、割り込み到着で即時復帰できることを要求する。
-
-### 5.3 旧設計案からの読み替え
-
-| 旧設計案の項目 | 現行の扱い |
-| --- | --- |
-| 4.4 Fuel-based Execution / loop-bound proof / FFI checkpoint | baseline は本節、細部は [reference/execution-fairness.md](reference/execution-fairness.md) の Reference |
-| 4.4.4 APIC タイマーによる最終防御 | Canonical requirement |
 
 ## 6. ライブアップデートの制約
 
@@ -201,9 +193,8 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 ### 6.3 更新手順
 
 - 新セルを別領域にロードする。
-- quiescent state を待つ。
-- 旧セルから移行可能状態を export する。
-- 新セルで import して切り替える。
+- ドライバ呼び出しの直列化境界で、旧セルから移行可能状態を export する。
+- 新セルで import し、保持したコード参照の下で dispatch を切り替える。
 - in-flight 参照が消えたことを確認して旧セルを回収する。
 
 ### 6.4 判定基準とロールバック条件
@@ -211,7 +202,8 @@ ExoRust では、authority の根は次の組み合わせで定義する。
 運用上の曖昧さを避けるため、live update では次を基準として扱う。
 
 - quiescent state 判定:
-  - 全 executor が更新対象セルの古い参照を保持しない状態を確認する。
+  - 更新対象の旧コードへの lease が解消した状態を確認する。scheduler へ戻ったことだけでは quiescent と判定しない。
+  - 待機中の Future、中断スタック、入れ子の呼び出し、ドライバ vtable と rollback 用の関数参照も保持対象に含める。
   - in-flight リクエストが追跡可能であることを前提にする。
 - rollback trigger:
   - 新セルの初期化失敗
@@ -220,7 +212,9 @@ ExoRust では、authority の根は次の組み合わせで定義する。
   - 管理者による明示 rollback 指示
 - 回収条件:
   - 旧セルへの in-flight 参照数が 0 になってから回収する。
-  - 参照が残る場合は旧セルを保持し、切り替え完了扱いにしない。
+  - 参照が残る場合は旧セルを保持し、回収要求は型付きの Busy を返す。新コードの実行と旧コードの保持は同時に成立してよい。
+  - commit の回収開始で rollback 権限を消費する。失敗時は保留した同じ方向の終了処理を再開し、完了済みの dispatch 変更を再実行しない。
+  - CPU offline とドメイン終了も、中断した poll を明示的 blocker とし、CPU 移動・強制スタック破棄・コード回収を行わない。
 - 監査要件:
   - `swap` / `commit` / `rollback` / 自動判定の理由をログに残す。
 

@@ -136,19 +136,14 @@ impl CommandQueue {
             fence: wire.fence,
             response: wire.response,
         };
-        let response = if response_length == 0 {
-            request
-        } else {
-            segment(address, RESPONSE_OFFSET, response_length, true)?
-        };
+        let response = segment(address, RESPONSE_OFFSET, response_length, true)?;
         let segments = [request, response];
-        let segments = &segments[..if response_length == 0 { 1 } else { 2 }];
         // SAFETY: admitted protocol RAM belongs to this exact device/generation
         // and remains owned through terminal completion/reset. Only an idle
         // queue permits writing the request slot; response RAM is read only after
         // the matching used entry and fence response have been validated.
         unsafe {
-            ring.publish(segments, command, |command| {
+            ring.publish(&segments, command, |command| {
                 Ok::<_, QueueCommandActivationError<Command, core::convert::Infallible>>(command)
             })
         }

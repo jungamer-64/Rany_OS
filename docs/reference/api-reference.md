@@ -151,29 +151,40 @@ let transferred: Transfer<ExchangeBox<Packet>> = data.transfer_to(target_domain)
 #### 非同期タスクのスポーン
 
 ```rust
-use exorust::task::{spawn, JoinHandle};
+use exorust::task::{spawn, TaskOptions};
 
-// グローバルタスクをスポーン
-let handle: JoinHandle<i32> = spawn(async {
-    compute_result().await
-});
-
-// 完了を待機
-let result = handle.await?;
+let task = spawn(async {
+    maintain_service().await;
+}, TaskOptions::any())?;
 ```
 
-#### Per-Core Executor（NUMA-local First Scheduling）
+登録成功前に guarded stack、実行コンテキスト、登録枠を確保します。
+`SpawnError` は枠不足、物理メモリ不足、mapping 失敗、配置不能を区別し、
+失敗した Future と未公開の資源は回収します。`TaskId` は観測用の識別子であり、
+実行・終了・スタック回収の権限を持ちません。
+
+#### 配置と実行境界
 
 ```rust
-use exorust::task::per_core_executor::PerCoreExecutor;
+use exorust::cpu::CpuId;
+use exorust::task::{spawn, TaskOptions};
 
-// 各CPUコアに専用Executor
-// 同一NUMAノード内を優先して負荷分散し、
-// cross-node migration は最終手段にする
-PerCoreExecutor::current().spawn_local(async {
-    // このコアで実行
-});
+let cpu = CpuId::new(71)?;
+let task = spawn(async {
+    maintain_service().await;
+}, TaskOptions::pinned(cpu))?;
 ```
+
+`TaskPlacement` の CPU 許可集合と CPU／NUMA の優先指定は独立です。
+中断した poll は同じ CPU で再開し、poll が戻った境界でだけ移動します。
+状態と終了時の保持契約は [execution-fairness.md](execution-fairness.md)、
+quota と実行時間の課金は [runtime-qos.md](runtime-qos.md) を参照してください。
+
+KAPI のセル実装も同じ `spawn(future, TaskOptions)` に登録します。セルを
+呼び出したコード世代の lease を、Future の poll、中断、destructor の完了まで
+保持します。タイマーは利用者が取消 receipt を所有し、待機中断・終了時に
+取消します。時計更新と通知配送は time driver が所有し、タイマー利用者へ
+その操作権限を渡しません。
 
 ---
 
@@ -243,14 +254,16 @@ let packet: Packet = rx.recv().await;
 
 ### 設計原則（I/O）
 
-全てのI/O操作は**バッファの所有権**を明示的に扱います。
-カーネル内でのバッファコピーは発生しません。
+ブロック転送は CPU-owned DMA lease を移し、完了結果を一意に所有して待機します。
+request ID は観測用で、完了の取出しやバッファ返却の権限を持ちません。
 
-### モジュール: `exorust::io`
+`BlockTransferOutcome::Returned` は拒否・転送エラー時も使用可能な CPU lease を返します。
+`Retained` では完了未確定または authority の隔離を区別し、デバイスの回復処理が
+lease を保持します。この結果だけを根拠に同じ書込みを再投入できません。
+取消時も受理済み DMA を破棄せず、完了または hardware quiescence を確認するまで保持します。
 
-> [!NOTE]
-> 旧設計案でいう `mempool`、batch processing、scatter-gather I/O は、この文書では
-> RAW / datapath packet pool、`PacketBatch`、descriptor chaining を伴う multi-buffer submission として説明します。
+lease を受け渡す API はバッファをコピーしません。借用 slice を扱うファイル I/O は
+CPU lease との境界でコピーし、返却後の unmap 失敗は回復処理が保持します。
 
 #### DMA allocation と転送所有権
 
@@ -285,17 +298,37 @@ typed な DMA mapping は `DmaElement` を要求する。要素は padding、参
 
 解放失敗は handle と回収段階を保持する。再試行は葉の削除、table cohort の捕捉、IOTLB / ATS 同期、IOVA 返却のうち未完了の段階だけを実行する。`unmap_async` の取消でも backing を回収先へ移し、同期完了まで保持する。背景回収へ移せるデータには `Send` を要求する。
 
-#### VirtIO（所有権ベースのリングバッファ）
+### DMA 転送
 
 ```rust
-use virtio_driver::virtqueue::{VirtQueue, VringDesc};
+use kernel_api::dma::CpuDmaLease;
+use kernel_api::resource::storage::DirectBlockHandle;
+use kernel_api::service::storage::BlockTransferOutcome;
 
-// バッファをキューに投入（所有権を放棄）
-virtqueue.submit(buffer);  // bufferは消費される
-
-// 完了を待機（所有権を回収）
-let completed: Buffer = virtqueue.poll().await;
+async fn read_blocks(handle: DirectBlockHandle, buffer: CpuDmaLease) -> BlockTransferOutcome {
+    kernel_api::service::kernel::instance()
+        .nvme_read_blocks_dma(handle, 0, buffer).await
+}
 ```
+
+ブロックの配置と範囲はデバイス所有者が検証した geometry を使います。
+登録の失効は新規投入を閉じ、受理済みコマンドの完了処理は維持します。
+登録 index の削除は物理コントローラやキューメモリの quiescence を意味しません。
+
+#### VirtIO（所有権ベースのリングバッファ）
+
+サービスがデバイス、queue RAM、受理済みコマンドと payload の所有者を保持します。
+descriptor の公開に先立って DMA と metadata の admission を完了し、used entry の
+head・長さ・generation を検証してから完了を消費します。通知書込みが不確定でも
+受理済みの所有者を保持し、同じ payload を再投入しません。
+
+GPU の制御コマンドは fence 応答で処理完了を確認します。応答読取りの失敗では
+completion を保持し、framebuffer の backing は fenced detach／unref または
+確認済み reset の後に回収します。input は検証済みイベントをスカラーで返し、
+console の部分読取りは未返却の suffix と cursor を保持します。
+
+stop の要求と RAM の回収完了は別の境界です。途中の準備、DMA quiescence、
+unmap の失敗は所有者に残し、IOTLB 完了前に allocation を再利用しません。
 
 ---
 
@@ -422,7 +455,7 @@ let flags = OpenFlags(OpenFlags::O_RDONLY);
 ```rust
 // 各権限は型として表現される
 pub struct NetCapability { ... }      // ネットワーク
-pub struct IoCapability { ... }       // I/Oポート
+// I/O は割り当て済みポート範囲の hal::IoPortRange を所有する
 pub struct DmaCapability { ... }      // DMA
 pub struct MemoryCapability { ... }   // メモリマッピング
 
@@ -436,7 +469,6 @@ fn send_packet(cap: &NetCapability, data: &[u8]) -> Result<usize>;
 // カーネルがドメインに権限を付与
 fn spawn_driver_domain(entry: DomainEntryFn) {
     let caps = DomainCapabilities {
-        io: Some(unsafe { grant_io_capability() }),
         dma: Some(unsafe { grant_dma_capability() }),
         net: None,  // ネットワーク権限は付与しない
         ..DomainCapabilities::empty()
@@ -447,10 +479,12 @@ fn spawn_driver_domain(entry: DomainEntryFn) {
 
 // ドライバドメインのエントリポイント
 fn driver_entry(caps: DomainCapabilities) {
-    let io = caps.require_io();  // I/O権限を取得
-    
-    // ネットワーク操作は不可能（コンパイルエラー）
-    // let net = caps.require_net();  // パニック！
+    if let Some(ports) = caps.io {
+        // オフセットとアクセス幅が割り当て範囲内の場合だけポートを取得できる。
+        if let Ok(mut status) = ports.port::<u8>(7) {
+            let _status = status.read();
+        }
+    }
 }
 ```
 
