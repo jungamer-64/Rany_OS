@@ -1,38 +1,60 @@
-//! USB Driver Wrapper for Driver Trait
-//!
-//! Implements the kernel_api::Driver trait for xHCI USB controller.
+//! USB driver lifecycle retains hardware and DMA owners through failed stop.
 
-extern crate alloc;
-
+use crate::UsbError;
+use crate::xhci::XhciController;
+use crate::xhci::controller::ControllerRetirement;
 use alloc::sync::Arc;
 use kernel_api::abi::driver::PackedPciLocation;
 use kernel_api::driver::{Driver, DriverType};
+use kernel_api::mmio::PciMmioRequest;
 use kernel_api::{KapiError, KapiResult};
 
-use crate::xhci::{XhciController, init_from_pci};
+#[expect(
+    clippy::large_enum_variant,
+    reason = "retirement owns DMA capabilities inline so entering shutdown cannot require allocation after hardware effects"
+)]
+enum UsbDriverState {
+    Unprobed,
+    Prepared(Arc<XhciController>),
+    Running(Arc<XhciController>),
+    Failed {
+        controller: Arc<XhciController>,
+        cause: UsbError,
+    },
+    AcquisitionFailed(UsbError),
+    Halted(Arc<XhciController>),
+    Retiring(ControllerRetirement),
+    Removed,
+}
 
-/// USB driver wrapper implementing the Driver trait
+/// Probe acquires resources; start owns hardware publication; removal finishes
+/// DMA retirement before releasing register mappings. Busy keeps the owner.
 pub struct UsbDriverWrapper {
-    base_addr: u64,
     pci_locator: PackedPciLocation,
-    controller: Option<Arc<XhciController>>,
+    state: UsbDriverState,
 }
 
 impl UsbDriverWrapper {
-    /// Create a new USB driver wrapper
-    pub fn new(base_addr: u64, pci_locator: PackedPciLocation) -> Self {
+    pub fn new(pci_locator: PackedPciLocation) -> Self {
         Self {
-            base_addr,
             pci_locator,
-            controller: None,
+            state: UsbDriverState::Unprobed,
         }
     }
 
-    /// Process pending events (should be called from a polling task or loop)
-    pub fn poll(&self) {
-        if let Some(controller) = &self.controller {
-            controller.process_pending_events();
+    fn poll(&mut self) -> KapiResult<()> {
+        let UsbDriverState::Running(controller) = &self.state else {
+            return Err(KapiError::Busy);
+        };
+        if let Err(cause) = controller.process_events() {
+            let error = map_usb_error(&cause);
+            self.state = UsbDriverState::Failed {
+                controller: Arc::clone(controller),
+                cause,
+            };
+            return Err(error);
         }
+        Ok(())
     }
 }
 
@@ -40,26 +62,141 @@ impl Driver for UsbDriverWrapper {
     fn name(&self) -> &str {
         "usb_xhci"
     }
-
     fn driver_type(&self) -> DriverType {
         DriverType::Usb
     }
 
     fn probe(&mut self) -> KapiResult<()> {
-        let controller =
-            init_from_pci(self.base_addr, self.pci_locator).map_err(|_| KapiError::Internal(-1))?;
-
-        self.controller = Some(controller);
+        if !matches!(self.state, UsbDriverState::Unprobed) {
+            return Err(KapiError::AlreadyExists);
+        }
+        let request = PciMmioRequest::whole_bar(self.pci_locator, 0)
+            .map_err(|error| KapiError::Mmio(kernel_api::mmio::MmioAcquireError::Request(error)))?;
+        let mapping = kernel_api::service::kernel::instance()
+            .acquire_pci_mmio(request)
+            .map_err(KapiError::Mmio)?;
+        match XhciController::new(mapping, self.pci_locator) {
+            Ok(controller) => self.state = UsbDriverState::Prepared(Arc::new(controller)),
+            Err(cause) => {
+                let error = map_usb_error(&cause);
+                self.state = UsbDriverState::AcquisitionFailed(cause);
+                return Err(error);
+            }
+        }
         Ok(())
     }
 
     fn start(&mut self) -> KapiResult<()> {
-        // Controller is already started in probe via init_from_pci
+        let UsbDriverState::Prepared(controller) = &mut self.state else {
+            return Err(KapiError::Busy);
+        };
+        let unique = Arc::get_mut(controller).ok_or(KapiError::Busy)?;
+        if let Err(cause) = unique.init() {
+            let error = map_usb_error(&cause);
+            self.state = UsbDriverState::Failed {
+                controller: Arc::clone(controller),
+                cause,
+            };
+            return Err(error);
+        }
+        self.state = UsbDriverState::Running(Arc::clone(controller));
         Ok(())
     }
 
     fn stop(&mut self) -> KapiResult<()> {
-        // USB controller doesn't have explicit stop
+        let controller = match &self.state {
+            UsbDriverState::Prepared(controller)
+            | UsbDriverState::Running(controller)
+            | UsbDriverState::Failed { controller, .. } => controller,
+            UsbDriverState::Halted(_) | UsbDriverState::Retiring(_) | UsbDriverState::Removed => {
+                return Ok(());
+            }
+            UsbDriverState::Unprobed => return Ok(()),
+            UsbDriverState::AcquisitionFailed(cause) => {
+                log::warn!("xHCI acquisition retained resources: {cause:?}");
+                return Err(KapiError::Busy);
+            }
+        };
+        // Device objects and their polling Futures own additional Arc handles.
+        // Their leases must retire before the driver can halt their queues.
+        if Arc::strong_count(controller) != 1 {
+            return Err(KapiError::Busy);
+        }
+        controller.stop().map_err(|cause| map_usb_error(&cause))?;
+        self.state = UsbDriverState::Halted(Arc::clone(controller));
         Ok(())
+    }
+
+    fn remove(&mut self) -> KapiResult<()> {
+        self.stop()?;
+        let state = core::mem::replace(&mut self.state, UsbDriverState::Removed);
+        match state {
+            UsbDriverState::Halted(controller) => {
+                let controller = match Arc::try_unwrap(controller) {
+                    Ok(controller) => controller,
+                    Err(controller) => {
+                        self.state = UsbDriverState::Halted(controller);
+                        return Err(KapiError::Busy);
+                    }
+                };
+                match controller.into_retirement() {
+                    Ok(retirement) => self.state = UsbDriverState::Retiring(retirement),
+                    Err((cause, controller)) => {
+                        let error = map_usb_error(&cause);
+                        self.state = UsbDriverState::Failed {
+                            controller: Arc::new(controller),
+                            cause,
+                        };
+                        return Err(error);
+                    }
+                }
+            }
+            UsbDriverState::Retiring(retirement) => {
+                self.state = UsbDriverState::Retiring(retirement)
+            }
+            UsbDriverState::Removed | UsbDriverState::Unprobed => return Ok(()),
+            other => {
+                self.state = other;
+                return Err(KapiError::Busy);
+            }
+        }
+        if let UsbDriverState::Retiring(retirement) = &mut self.state {
+            retirement.finish().map_err(|cause| map_usb_error(&cause))?;
+            self.state = UsbDriverState::Removed;
+        }
+        Ok(())
+    }
+
+    fn has_irq_handler(&self) -> bool {
+        true
+    }
+    fn handle_irq(&mut self, _irq: u32) -> bool {
+        match self.poll() {
+            Ok(()) => true,
+            Err(error) => {
+                if let UsbDriverState::Failed { cause, .. } = &self.state {
+                    log::error!("xHCI relay retained failed controller: {cause:?}");
+                } else {
+                    log::warn!("xHCI relay: {error}");
+                }
+                false
+            }
+        }
+    }
+}
+
+fn map_usb_error(cause: &UsbError) -> KapiError {
+    match cause {
+        UsbError::Busy | UsbError::TransferInFlight { .. } => KapiError::Busy,
+        UsbError::Timeout => KapiError::Timeout,
+        UsbError::Timer(cause) => KapiError::Timer(*cause),
+        UsbError::Allocation(cause) => *cause,
+        UsbError::NoResources => KapiError::OutOfMemory,
+        UsbError::InvalidController
+        | UsbError::InvalidParameter
+        | UsbError::InvalidDevice
+        | UsbError::BufferSize
+        | UsbError::Mmio(_) => KapiError::InvalidHandle,
+        _ => KapiError::IoError,
     }
 }

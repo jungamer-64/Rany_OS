@@ -40,7 +40,7 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 use core::pin::Pin;
-use spin::RwLock;
+use exorust_sync::RwLock;
 
 // ============================================================================
 // USB Constants
@@ -351,8 +351,31 @@ impl SetupPacket {
 // ============================================================================
 
 /// USBエラー
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum UsbError {
+    Busy,
+    /// This queue still owns a transfer; halt does not establish its outcome.
+    TransferInFlight {
+        queue: kernel_api::dma::DmaQueueIdentity,
+        lease: Option<kernel_api::dma::DmaLeaseId>,
+    },
+    /// The retained PCI aperture does not contain a valid xHCI register layout.
+    InvalidController,
+    /// Register derivation failed before the requested hardware access.
+    Mmio(hal::MmioAccessError),
+    /// Device-scoped allocation failed before publication.
+    Allocation(kernel_api::KapiError),
+    /// The failed memory transition retains its CPU or prepared capability.
+    MemoryBuild(Box<xhci::MemoryBuildError>),
+    /// The failed ring transition retains the capability in its actual state.
+    RingBuild(Box<xhci::ring::RingBuildError>),
+    /// An active resource is retained by its controller after access failure.
+    Dma(kernel_api::dma::DmaLeaseError),
+    Ring(xhci::ring::RingError),
+    CpuTransfer(Box<kernel_api::dma::DmaTransitionError<kernel_api::dma::CpuDmaLease>>),
+    PreparedTransfer(Box<kernel_api::dma::DmaTransitionError<kernel_api::dma::PreparedDmaLease>>),
+    CompletedTransfer(Box<kernel_api::dma::DmaTransitionError<kernel_api::dma::CompletedDmaLease>>),
+    ActiveTransfer(Box<kernel_api::dma::DmaTransitionError<kernel_api::dma::InFlightDmaLease>>),
     /// デバイスが見つからない
     DeviceNotFound,
     /// エンドポイントが見つからない
@@ -363,6 +386,9 @@ pub enum UsbError {
     Stalled,
     /// タイムアウト
     Timeout,
+    /// The task's polling deadline could not be armed; hardware may still own
+    /// the submitted request, so the controller retains it for completion/stop.
+    Timer(kernel_api::service::time::TimerError),
     /// バッファサイズエラー
     BufferSize,
     /// 無効なパラメータ
@@ -380,6 +406,33 @@ pub enum UsbError {
 }
 
 pub type UsbResult<T> = Result<T, UsbError>;
+
+impl From<hal::MmioAccessError> for UsbError {
+    fn from(error: hal::MmioAccessError) -> Self {
+        Self::Mmio(error)
+    }
+}
+
+impl From<kernel_api::dma::DmaLeaseError> for UsbError {
+    fn from(error: kernel_api::dma::DmaLeaseError) -> Self {
+        Self::Dma(error)
+    }
+}
+impl From<xhci::MemoryBuildError> for UsbError {
+    fn from(error: xhci::MemoryBuildError) -> Self {
+        Self::MemoryBuild(Box::new(error))
+    }
+}
+impl From<xhci::ring::RingBuildError> for UsbError {
+    fn from(error: xhci::ring::RingBuildError) -> Self {
+        Self::RingBuild(Box::new(error))
+    }
+}
+impl From<xhci::ring::RingError> for UsbError {
+    fn from(error: xhci::ring::RingError) -> Self {
+        Self::Ring(error)
+    }
+}
 
 // ============================================================================
 // USB Device Trait
@@ -409,39 +462,39 @@ pub trait UsbDevice: Send + Sync {
     fn speed(&self) -> UsbSpeed;
 
     /// コントロール転送を実行
-    fn control_transfer(
-        &self,
+    fn control_transfer<'a>(
+        &'a self,
         setup: &SetupPacket,
-        data: Option<&mut [u8]>,
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+        data: Option<&'a mut [u8]>,
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>>;
 
     /// バルクIN転送
-    fn bulk_in(
-        &self,
+    fn bulk_in<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        buffer: &mut [u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>>;
 
     /// バルクOUT転送
-    fn bulk_out(
-        &self,
+    fn bulk_out<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        data: &[u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>>;
 
     /// インタラプトIN転送
-    fn interrupt_in(
-        &self,
+    fn interrupt_in<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        buffer: &mut [u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>>;
 
     /// インタラプトOUT転送
-    fn interrupt_out(
-        &self,
+    fn interrupt_out<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        data: &[u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>>;
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>>;
 
     /// デバイスをサスペンド
     fn suspend(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>>;
@@ -511,6 +564,12 @@ pub struct UsbManager {
     class_drivers: RwLock<Vec<Arc<dyn UsbClassDriver>>>,
     /// 接続されたデバイス
     devices: RwLock<Vec<Arc<dyn UsbDevice>>>,
+}
+
+impl Default for UsbManager {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl UsbManager {
@@ -607,65 +666,42 @@ pub fn init() {
 
 #[cfg(test)]
 mod tests {
-    use crate::xhci::{CommandBuilder, DoorbellBatch, DoorbellTarget, TransferBuilder, TrbType};
+    use super::{EndpointAddress, SetupPacket};
+    use crate::xhci::Trb;
 
     #[test]
-    fn doorbell_target_smoke() {
-        assert_eq!(DoorbellTarget::CommandRing.target_value(), 0);
-        assert_eq!(DoorbellTarget::ControlEndpoint0.target_value(), 1);
-        assert_eq!(DoorbellTarget::OutEndpoint(1).target_value(), 2);
-        assert_eq!(DoorbellTarget::InEndpoint(1).target_value(), 3);
-        assert_eq!(DoorbellTarget::OutEndpoint(2).target_value(), 4);
-        assert_eq!(DoorbellTarget::InEndpoint(2).target_value(), 5);
+    fn endpoint_dci_preserves_number_and_direction() {
+        assert_eq!(EndpointAddress::CONTROL.to_dci(), 1);
+        for number in 1..=15 {
+            assert_eq!(EndpointAddress::out_endpoint(number).to_dci(), number * 2);
+            assert_eq!(
+                EndpointAddress::in_endpoint(number).to_dci(),
+                number * 2 + 1
+            );
+        }
     }
 
     #[test]
-    fn doorbell_from_endpoint_smoke() {
-        assert_eq!(
-            DoorbellTarget::from_endpoint(0),
-            DoorbellTarget::ControlEndpoint0
-        );
-        assert_eq!(
-            DoorbellTarget::from_endpoint(1),
-            DoorbellTarget::OutEndpoint(1)
-        );
-        assert_eq!(
-            DoorbellTarget::from_endpoint(0x81),
-            DoorbellTarget::InEndpoint(1)
-        );
-        assert_eq!(
-            DoorbellTarget::from_endpoint(0x82),
-            DoorbellTarget::InEndpoint(2)
-        );
+    fn command_fields_follow_hardware_encoding() {
+        assert_eq!(Trb::enable_slot(false).control, 9 << 10);
+        assert_eq!(Trb::noop_command(false).control, 23 << 10);
     }
 
     #[test]
-    fn doorbell_batch_smoke() {
-        let mut batch = DoorbellBatch::new();
-        assert!(batch.is_empty());
-        batch
-            .add(1, DoorbellTarget::ControlEndpoint0)
-            .add(2, DoorbellTarget::InEndpoint(1));
-        assert_eq!(batch.len(), 2);
-        assert!(!batch.is_empty());
-        batch.clear();
-        assert!(batch.is_empty());
-    }
-
-    #[test]
-    fn command_builder_smoke() {
-        let noop = CommandBuilder::noop();
-        let noop_type = (noop.control >> 10) & 0x3F;
-        assert_eq!(noop_type, TrbType::NoOpCommand as u32);
-        let enable = CommandBuilder::enable_slot();
-        let enable_type = (enable.control >> 10) & 0x3F;
-        assert_eq!(enable_type, TrbType::EnableSlot as u32);
-    }
-
-    #[test]
-    fn transfer_builder_smoke() {
-        let setup = TransferBuilder::setup_stage(0x80, 0x06, 0x0100, 0, 18, 3);
-        let setup_type = (setup.control >> 10) & 0x3F;
-        assert_eq!(setup_type, TrbType::SetupStage as u32);
+    fn setup_packet_encodes_usb_little_endian_fields() {
+        let packet = SetupPacket {
+            bm_request_type: 0x80,
+            b_request: 6,
+            w_value: 0x0100,
+            w_index: 0x1234,
+            w_length: 18,
+        };
+        let trb = Trb::setup_stage(&packet, 3, false);
+        assert_eq!(
+            trb.parameter.to_le_bytes(),
+            [0x80, 6, 0, 1, 0x34, 0x12, 18, 0]
+        );
+        assert_eq!(trb.status, 8);
+        assert_eq!(trb.control, (2 << 10) | (1 << 6) | (3 << 16));
     }
 }

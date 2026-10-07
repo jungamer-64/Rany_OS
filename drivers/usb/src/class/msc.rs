@@ -17,7 +17,7 @@
 //! - SCSI Block Commands (SBC)
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, AtomicU8, AtomicU32, Ordering};
-use spin::Mutex;
+use exorust_sync::Mutex;
 mod block_device;
 pub use block_device::*;
 
@@ -721,10 +721,10 @@ impl UsbClassDriver for MscDevice {
             status,
             bytes_transferred,
         } = event
+            && endpoint == self.bulk_in
+            && status == TransferStatus::Success
         {
-            if endpoint == self.bulk_in && status == TransferStatus::Success {
-                let _ = bytes_transferred;
-            }
+            let _ = bytes_transferred;
         }
     }
 }

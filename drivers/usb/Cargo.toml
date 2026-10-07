@@ -20,6 +20,7 @@ path = "src/lib.rs"
 # For normal static linking with kernel, rlib is sufficient
 
 [dependencies]
+exorust_sync = { path = "../../libs/sync" }
 # HAL for MMIO and port I/O wrappers
 hal = { path = "../../hal" }
 spin = "0.12"

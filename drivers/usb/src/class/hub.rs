@@ -16,7 +16,7 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
-use spin::Mutex;
+use exorust_sync::Mutex;
 
 use super::{ClassDriverError, ClassDriverEvent, TransferStatus, UsbClass, UsbClassDriver};
 use crate::{SetupPacket, UsbDevice, descriptor::SafePackedRead};
@@ -325,7 +325,7 @@ impl HubDevice {
         // Parse variable fields
         // DeviceRemovable: requires enough bits for bNbrPorts
         let num_ports = header.b_nbr_ports as usize;
-        let param_bytes = (num_ports + 1 + 7) / 8;
+        let param_bytes = (num_ports + 1).div_ceil(8);
 
         if 7 + param_bytes * 2 > total_len {
             return Err(ClassDriverError::ProtocolError);
@@ -484,11 +484,11 @@ impl UsbClassDriver for HubDevice {
         if let ClassDriverEvent::TransferComplete {
             endpoint, status, ..
         } = event
+            && endpoint == self.status_endpoint
+            && status == TransferStatus::Success
         {
-            if endpoint == self.status_endpoint && status == TransferStatus::Success {
-                // TODO: Handle status change bitmap
-                // Bitmap indicates which port has a status change
-            }
+            // TODO: Handle status change bitmap
+            // Bitmap indicates which port has a status change
         }
     }
 }

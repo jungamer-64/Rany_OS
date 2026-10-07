@@ -23,17 +23,18 @@
 //! - `controller`: xHCI コントローラ
 //! - `device`: USB デバイス実装
 //! - `event_handler`: イベントの形式と解釈
-use kernel_api::abi::driver::PackedPciLocation;
 
+mod completion;
 pub mod context;
 pub mod controller;
 pub mod device;
 pub mod event_handler;
+mod memory;
+mod registers;
+mod request;
+pub mod ring;
+pub use memory::MemoryBuildError;
 pub mod trb;
-
-use alloc::sync::Arc;
-
-use crate::{PortNumber, UsbResult};
 
 // Re-exports
 pub use context::{DeviceContext, EndpointContext, InputContext, InputControlContext, SlotContext};
@@ -54,7 +55,7 @@ pub const MAX_SLOTS: usize = 256;
 /// 最大ポート数
 pub const MAX_PORTS: usize = 256;
 /// 最大エンドポイント数（スロットあたり）
-pub const MAX_ENDPOINTS: usize = 31;
+pub const MAX_ENDPOINTS: usize = 32;
 /// コマンドリングサイズ
 pub const COMMAND_RING_SIZE: usize = 256;
 /// イベントリングサイズ
@@ -139,31 +140,3 @@ pub const PORTSC_PLC: u32 = 1 << 22; // Port Link State Change
 pub const PORTSC_CEC: u32 = 1 << 23; // Port Config Error Change
 pub const PORTSC_CHANGE_MASK: u32 =
     PORTSC_CSC | PORTSC_PEC | PORTSC_WRC | PORTSC_PRC | PORTSC_PLC | PORTSC_CEC;
-
-// ============================================================================
-// xHCI Initialization from PCI
-// ============================================================================
-
-/// PCIデバイスからxHCIを初期化
-/// # Errors
-///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
-pub fn init_from_pci(
-    base_addr: u64,
-    pci_locator: PackedPciLocation,
-) -> UsbResult<Arc<XhciController>> {
-    let mut controller = XhciController::new(base_addr, pci_locator)?;
-    controller.init()?;
-
-    let controller = Arc::new(controller);
-
-    // ポートをスキャン
-    for port in 0..controller.port_count() {
-        let status = controller.port_status(PortNumber(port));
-        if status.connected {
-            let _ = status.speed; // suppress unused warning
-        }
-    }
-
-    Ok(controller)
-}

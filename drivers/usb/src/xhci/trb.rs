@@ -214,18 +214,18 @@ impl Trb {
 
     /// Setup Stage TRB を作成
     pub fn setup_stage(setup: &SetupPacket, transfer_type: u8, cycle: bool) -> Self {
-        // SAFETY: 'setup' is a valid reference to SetupPacket, which is 8 bytes.
-        // Reinterpreting as u8 slice of length 8 is safe.
-        let setup_bytes = unsafe { core::slice::from_raw_parts(setup as *const _ as *const u8, 8) };
+        let value = setup.w_value.to_le_bytes();
+        let index = setup.w_index.to_le_bytes();
+        let length = setup.w_length.to_le_bytes();
         let parameter = u64::from_le_bytes([
-            setup_bytes[0],
-            setup_bytes[1],
-            setup_bytes[2],
-            setup_bytes[3],
-            setup_bytes[4],
-            setup_bytes[5],
-            setup_bytes[6],
-            setup_bytes[7],
+            setup.bm_request_type,
+            setup.b_request,
+            value[0],
+            value[1],
+            index[0],
+            index[1],
+            length[0],
+            length[1],
         ]);
 
         Self {
@@ -348,6 +348,10 @@ impl Trb {
     /// * `tbc` - Transfer Burst Count (0-3)
     /// * `tlbpc` - Transfer Last Burst Packet Count (0-15)
     /// * `cycle` - サイクルビット
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "encodes the independent fields of one isochronous hardware TRB"
+    )]
     pub fn isoch(
         data_ptr: u64,
         length: u32,
@@ -458,7 +462,7 @@ impl Trb {
 // ============================================================================
 
 /// イベントリングセグメントテーブルエントリ
-#[repr(C, align(64))]
+#[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ErstEntry {
     /// リングセグメントベースアドレス
@@ -468,3 +472,6 @@ pub struct ErstEntry {
     /// 予約
     pub reserved: [u8; 6],
 }
+
+// The table allocation, rather than each 16-byte entry, is rounded to 64 bytes.
+const _: () = assert!(core::mem::size_of::<ErstEntry>() == 16);

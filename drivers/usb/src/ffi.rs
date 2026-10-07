@@ -6,13 +6,13 @@
 //!
 //! Exports a C-compatible `DriverVTable` for dynamic loading.
 
+use exorust_sync::Mutex;
 use kernel_api::abi::driver::{
     DRIVER_ABI_VERSION, DriverCapabilities, DriverContext, DriverVTable, DriverVTableFns,
     pack_version,
 };
 use kernel_api::driver::Driver;
 use kernel_api::driver::DriverType;
-use spin::Mutex;
 
 use crate::driver_impl::UsbDriverWrapper;
 
@@ -37,12 +37,11 @@ extern "C" fn usb_probe(ctx: *mut DriverContext) -> i32 {
     if slot.is_some() {
         return -1;
     }
-    let mut driver = UsbDriverWrapper::new(ctx.device_address, ctx.pci_location());
-    if driver.probe().is_err() {
-        return -1;
+    *slot = Some(UsbDriverWrapper::new(ctx.pci_location()));
+    match slot.as_mut().map(Driver::probe) {
+        Some(Ok(())) => 0,
+        _ => -1,
     }
-    *slot = Some(driver);
-    0
 }
 
 /// Start function for USB driver.
@@ -63,8 +62,25 @@ extern "C" fn usb_stop(_ctx: *mut DriverContext) -> i32 {
 
 /// Remove/cleanup function for USB driver.
 extern "C" fn usb_remove(_ctx: *mut DriverContext) -> i32 {
-    let _removed = USB_DRIVER.lock().take();
-    0
+    let mut slot = USB_DRIVER.lock();
+    match slot.as_mut().map(Driver::remove) {
+        Some(Ok(())) => {
+            drop(slot.take());
+            0
+        }
+        None => 0,
+        Some(Err(_)) => -1,
+    }
+}
+
+extern "C" fn usb_handle_irq(ctx: *mut DriverContext) -> bool {
+    if ctx.is_null() {
+        return false;
+    }
+    // SAFETY: the relay framework retains the initialized DriverContext for
+    // this synchronous callback. Only the observed vector is copied here.
+    let irq = unsafe { (*ctx).irq };
+    with_usb_driver(|driver| driver.handle_irq(irq)).unwrap_or(false)
 }
 
 // ============================================================================
@@ -72,7 +88,7 @@ extern "C" fn usb_remove(_ctx: *mut DriverContext) -> i32 {
 // ============================================================================
 
 extern "C" fn usb_name() -> *const u8 {
-    b"usb_xhci\0".as_ptr()
+    c"usb_xhci".as_ptr().cast()
 }
 
 extern "C" fn usb_name_len() -> usize {
@@ -116,7 +132,7 @@ pub fn standalone_driver_vtable() -> *const DriverVTable {
             driver_type: usb_driver_type,
             version: usb_version,
             request_capabilities: Some(usb_request_capabilities),
-            handle_irq: None, // TODO: implement interrupt handler
+            handle_irq: Some(usb_handle_irq),
         },
     );
 

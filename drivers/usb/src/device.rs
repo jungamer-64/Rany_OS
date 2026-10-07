@@ -176,7 +176,7 @@ impl DeviceEnumerator {
         let setup = SetupPacket {
             bm_request_type: 0x80,
             b_request: 0x06,
-            w_value: ((3 as u16) << 8) | (string_index as u16), // String descriptor
+            w_value: (3_u16 << 8) | (string_index as u16), // String descriptor
             w_index: lang_id,
             w_length: 256,
         };

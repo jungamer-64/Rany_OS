@@ -116,10 +116,12 @@ impl EndpointContext {
         interval: u8,
         error_count: u8,
     ) {
-        self.ep_state_and_type =
-            ((ep_type as u32) << 3) | ((error_count as u32) << 1) | ((interval as u32) << 16);
+        self.ep_state_and_type = u32::from(interval) << 16;
 
-        self.max_packet_and_burst = (max_packet_size as u32) | ((max_burst_size as u32) << 8);
+        self.max_packet_and_burst = (u32::from(max_packet_size) << 16)
+            | (u32::from(max_burst_size) << 8)
+            | (u32::from(ep_type & 7) << 3)
+            | (u32::from(error_count & 3) << 1);
 
         // DCS (Dequeue Cycle State) = 1
         self.tr_dequeue_ptr = tr_dequeue_ptr | 1;
@@ -134,6 +136,7 @@ impl EndpointContext {
 
 /// デバイスコンテキスト
 #[repr(C, align(64))]
+#[derive(Default)]
 pub struct DeviceContext {
     pub slot: SlotContext,
     pub endpoints: [EndpointContext; 31],
@@ -266,24 +269,10 @@ impl InputContext {
 
         ctx
     }
-
-    /// 物理アドレスを取得
-    pub fn physical_address(&self) -> u64 {
-        self as *const Self as u64
-    }
 }
 
 impl Default for InputContext {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-impl Default for DeviceContext {
-    fn default() -> Self {
-        Self {
-            slot: SlotContext::default(),
-            endpoints: [EndpointContext::default(); 31],
-        }
     }
 }

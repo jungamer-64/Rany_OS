@@ -546,18 +546,17 @@ fn process_descriptor_at_offset(
             handle_interface_descriptor(data, offset, current_interface, interfaces);
         }
         Some(DescriptorType::Endpoint) => {
-            if let Some(iface) = current_interface {
-                if let Some(endpoint) = EndpointDescriptor::from_bytes(&data[offset..]) {
-                    iface.endpoints.push(endpoint);
-                }
+            if let Some(iface) = current_interface
+                && let Some(endpoint) = EndpointDescriptor::from_bytes(&data[offset..])
+            {
+                iface.endpoints.push(endpoint);
             }
         }
         Some(DescriptorType::SuperSpeedEndpointCompanion) => {
-            if let Some(iface) = current_interface {
-                if let Some(companion) = SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
-                {
-                    iface.ss_companions.push(companion);
-                }
+            if let Some(iface) = current_interface
+                && let Some(companion) = SsEndpointCompanionDescriptor::from_bytes(&data[offset..])
+            {
+                iface.ss_companions.push(companion);
             }
         }
         _ => {

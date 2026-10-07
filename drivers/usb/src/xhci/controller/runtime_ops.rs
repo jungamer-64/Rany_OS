@@ -2,63 +2,9 @@
 use super::*;
 
 impl XhciController {
-    pub(super) fn write_runtime(&self, offset: usize, value: u32) {
-        hal::mmio::mmio_write_u32(
-            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
-            value,
-        );
-    }
-
-    pub(super) fn write_runtime_64(&self, offset: usize, value: u64) {
-        hal::mmio::mmio_write_u64(
-            (self.rt_offset + IR0 as u64 + offset as u64) as usize,
-            value,
-        );
-    }
-
     /// ポート数を取得
     pub fn port_count(&self) -> u8 {
         self.max_ports
-    }
-
-    /// 転送完了待ちを登録
-    pub(crate) fn register_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8, waker: Waker) {
-        let mut completions = self.transfer_completions.lock();
-        completions.push(TransferCompletion {
-            slot_id,
-            endpoint_id,
-            completion_code: CompletionCode::Invalid,
-            transferred: 0,
-            waker: Some(waker),
-            completed: false,
-        });
-    }
-
-    /// 転送完了を確認
-    pub(crate) fn check_transfer_completion(
-        &self,
-        slot_id: SlotId,
-        endpoint_id: u8,
-    ) -> Option<TransferCompletionResult> {
-        let mut completions = self.transfer_completions.lock();
-        if let Some(pos) = completions
-            .iter()
-            .position(|c| c.slot_id == slot_id && c.endpoint_id == endpoint_id && c.completed)
-        {
-            let completion = completions.remove(pos);
-            return Some(TransferCompletionResult {
-                completion_code: completion.completion_code,
-                transferred: completion.transferred,
-            });
-        }
-        None
-    }
-
-    /// 転送完了待ちをキャンセル
-    pub(crate) fn cancel_transfer_wait(&self, slot_id: SlotId, endpoint_id: u8) {
-        let mut completions = self.transfer_completions.lock();
-        completions
-            .retain(|c| !(c.slot_id == slot_id && c.endpoint_id == endpoint_id && !c.completed));
     }
 
     // ========================================================================
@@ -76,34 +22,30 @@ impl XhciController {
             return Err(UsbError::InvalidDevice);
         }
 
-        // デバイスコンテキストをDMAバッファで作成
-        let ctx_size = core::mem::size_of::<DeviceContext>();
-        let dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma_for_device(ctx_size, self.pci_locator)
-            .map_err(|_| UsbError::Other("Failed to allocate DMA for DeviceContext".into()))?;
-        let ctx_ptr = dma_buf.as_ptr() as *mut DeviceContext;
-        let ctx_device_addr = dma_buf.device_address();
-
-        // ゼロ初期化
-        unsafe {
-            core::ptr::write_bytes(ctx_ptr, 0, 1);
+        let mut contexts = self.device_contexts.lock();
+        let entry = contexts
+            .get_mut(slot_id.as_usize())
+            .ok_or(UsbError::InvalidDevice)?;
+        if entry.is_some() {
+            return Err(UsbError::NoResources);
         }
-
-        // DCBAAに登録 (デバイス可視アドレスで)
-        // SAFETY: slot_id は max_slots 以下であることを確認済み
-        unsafe {
-            core::ptr::write_volatile(self.dcbaa_ptr.add(slot_id.as_usize()), ctx_device_addr);
-        }
-
-        // DMA-backedデバイスコンテキストを保存
-        let dma_ctx = DmaDeviceContext {
-            ptr: ctx_ptr,
-            _dma_buf: dma_buf,
-        };
-        let mut device_contexts = self.device_contexts.lock();
-        if slot_id.as_usize() < device_contexts.len() {
-            device_contexts[slot_id.as_usize()] = Some(dma_ctx);
-        }
+        let context = SharedRegion::prepare(
+            allocate_dma(
+                self.pci_locator,
+                32 * self.context_stride,
+                DmaDirection::Bidirectional,
+            )?,
+            self.command_ring.lock().identity(),
+            |bytes| bytes.fill(0),
+        )?;
+        let address = context.address;
+        // Retain before publication so even a failed scalar store has an owner.
+        *entry = Some(context);
+        self.dcbaa
+            .lock()
+            .memory
+            .window(slot_id.as_usize() * 8, 8)?
+            .write_u64(0, address.get())?;
 
         Ok(())
     }
@@ -119,16 +61,32 @@ impl XhciController {
             return Err(UsbError::InvalidDevice);
         }
 
-        let ring = Box::new(TrbRing::new(TRANSFER_RING_SIZE, self.pci_locator));
-        let ring_addr = ring.device_address();
-
         let mut transfer_rings = self.transfer_rings.lock();
-        if let Some(slot_rings) = transfer_rings.get_mut(slot_id.as_usize()) {
-            if let Some(endpoint_ring) = slot_rings.get_mut(dci as usize) {
-                *endpoint_ring = Some(ring);
-            }
+        let entry = transfer_rings
+            .get_mut(slot_id.as_usize())
+            .and_then(|rings| rings.get_mut(usize::from(dci)))
+            .ok_or(UsbError::InvalidDevice)?;
+        if entry.is_some() {
+            return Err(UsbError::NoResources);
         }
-
+        let ring = PreparedProducerRing::prepare(
+            allocate_dma(
+                self.pci_locator,
+                TRANSFER_RING_SIZE * 16,
+                DmaDirection::ToDevice,
+            )?,
+            queue_identity(
+                self.pci_locator,
+                2 + u16::from(slot_id.0) * 32 + u16::from(dci),
+            )?,
+            TRANSFER_RING_SIZE as u16,
+        )?
+        .activate()?;
+        let ring_addr = ring.device_address().get();
+        *entry = Some(Box::new(EndpointQueue {
+            ring,
+            state: EndpointState::Idle,
+        }));
         Ok(ring_addr)
     }
 
@@ -162,26 +120,12 @@ impl XhciController {
             tr_dequeue_ptr,
         );
 
-        // InputContextをDMAバッファにコピー
-        let input_ctx_size = core::mem::size_of::<InputContext>();
-        let input_dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma_for_device(input_ctx_size, self.pci_locator)
-            .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
-        let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
-        unsafe {
-            core::ptr::copy_nonoverlapping(&input_context as *const InputContext, input_dma_ptr, 1);
-        }
-        let input_context_ptr = input_dma_buf.device_address();
-
-        // Address Device TRB を作成
-        let cycle = self.command_ring.lock().cycle_bit();
-        let trb = Trb::address_device(input_context_ptr, slot_id, block_set_address, cycle);
-
-        // コマンドを送信
-        let trb_addr = self.send_command(trb)?;
+        let request = self.send_input_command(&input_context, |address| {
+            Trb::address_device(address, slot_id, block_set_address, true)
+        })?;
 
         // 完了を待機
-        let completion = self.wait_command_completion(trb_addr).await?;
+        let completion = request.await?;
 
         if completion.completion_code == CompletionCode::Success {
             Ok(())
@@ -206,7 +150,7 @@ impl XhciController {
     /// Returns an error if the supplied configuration is invalid or the required device resources cannot be acquired.
     pub async fn enumerate_device(&self, port: PortNumber) -> UsbResult<SlotId> {
         // ポートの状態を確認
-        let status = self.port_status(port);
+        let status = self.port_status(port)?;
         if !status.connected {
             return Err(UsbError::NotConnected);
         }
@@ -244,45 +188,28 @@ impl XhciController {
         use crate::xhci::context::InputContext;
 
         // 現在のスロットコンテキストを取得
-        let device_contexts = self.device_contexts.lock();
+        let mut device_contexts = self.device_contexts.lock();
         let slot_context = device_contexts
-            .get(slot_id.as_usize())
-            .and_then(|opt| opt.as_ref())
-            .map(|ctx| ctx.context().slot)
-            .ok_or(UsbError::InvalidDevice)?;
+            .get_mut(slot_id.as_usize())
+            .and_then(|opt| opt.as_mut())
+            .map(SharedRegion::slot_context)
+            .ok_or(UsbError::InvalidDevice)??;
         drop(device_contexts);
 
-        // 入力コンテキストを作成
-        let input_context = InputContext::for_configure_endpoint(&slot_context, endpoints);
-
-        // InputContextをDMAバッファにコピー
-        let input_ctx_size = core::mem::size_of::<InputContext>();
-        let input_dma_buf = kernel_api::service::kernel::instance()
-            .alloc_dma_for_device(input_ctx_size, self.pci_locator)
-            .map_err(|_| UsbError::Other("Failed to allocate DMA for InputContext".into()))?;
-        let input_dma_ptr = input_dma_buf.as_ptr() as *mut InputContext;
-        unsafe {
-            core::ptr::copy_nonoverlapping(&input_context as *const InputContext, input_dma_ptr, 1);
-        }
-        let input_context_ptr = input_dma_buf.device_address();
-
-        // 各エンドポイント用の転送リングを割り当て
+        let mut input_context = InputContext::for_configure_endpoint(&slot_context, endpoints);
         for (dci, _) in endpoints {
-            let tr_addr = self.allocate_transfer_ring(slot_id, *dci)?;
-            // 既に設定済みの入力コンテキストのエンドポイントにTRアドレスを設定
-            // (InputContext::for_configure_endpoint で設定されていると仮定)
-            let _ = tr_addr;
+            if *dci == 0 || *dci > 31 {
+                return Err(UsbError::InvalidParameter);
+            }
+            let address = self.allocate_transfer_ring(slot_id, *dci)?;
+            input_context.endpoints[usize::from(*dci) - 1].tr_dequeue_ptr = address | 1;
         }
-
-        // Configure Endpoint TRB を作成
-        let cycle = self.command_ring.lock().cycle_bit();
-        let trb = Trb::configure_endpoint(input_context_ptr, slot_id, cycle);
-
-        // コマンドを送信
-        let trb_addr = self.send_command(trb)?;
+        let request = self.send_input_command(&input_context, |address| {
+            Trb::configure_endpoint(address, slot_id, true)
+        })?;
 
         // 完了を待機
-        let completion = self.wait_command_completion(trb_addr).await?;
+        let completion = request.await?;
 
         if completion.completion_code == CompletionCode::Success {
             Ok(())

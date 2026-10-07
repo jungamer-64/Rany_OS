@@ -13,10 +13,9 @@ use alloc::boxed::Box;
 use alloc::sync::Arc;
 use core::future::Future;
 use core::pin::Pin;
-use core::task::{Context, Poll};
 
+use super::controller::TransferKind;
 use super::controller::XhciController;
-use super::trb::{CompletionCode, Trb};
 use crate::descriptor::DeviceDescriptor;
 use crate::{
     DeviceAddress, EndpointAddress, SetupPacket, SlotId, UsbDevice, UsbError, UsbResult, UsbSpeed,
@@ -58,350 +57,58 @@ impl XhciDevice {
         }
     }
 
-    /// 転送を開始（TRBをエンキュー）
-    fn start_control_transfer(&self, setup: &SetupPacket, data_len: usize) -> UsbResult<u8> {
-        let direction_in = (setup.bm_request_type & 0x80) != 0;
-        let actual_data_len = setup.w_length;
-
-        // Transfer Ringを取得（エンドポイント0 = DCI 1）
-        let dci: u8 = 1; // Control endpoint 0 IN/OUT
-
-        let mut transfer_rings = self.controller.transfer_rings.lock();
-        let ring = transfer_rings
-            .get_mut(self.slot_id.as_usize())
-            .and_then(|slots| slots.get_mut(dci as usize))
-            .and_then(|opt| opt.as_mut())
-            .ok_or(UsbError::NoResources)?;
-
-        // Setup Stage TRB
-        let transfer_type = if actual_data_len == 0 {
-            0 // No data stage
-        } else if direction_in {
-            3 // IN data stage
-        } else {
-            2 // OUT data stage
-        };
-
-        let setup_trb = Trb::setup_stage(setup, transfer_type, ring.cycle_bit());
-        ring.enqueue(setup_trb);
-
-        // Data Stage TRB (if needed)
-        if actual_data_len > 0 && data_len > 0 {
-            let data_buffer = alloc::vec![0u8; data_len];
-            let data_ptr = data_buffer.as_ptr() as u64;
-            let data_trb = Trb::data_stage(
-                data_ptr,
-                actual_data_len as u32,
-                direction_in,
-                ring.cycle_bit(),
-            );
-            ring.enqueue(data_trb);
-            core::mem::forget(data_buffer);
-        }
-
-        // Status Stage TRB
-        let status_dir = if actual_data_len == 0 {
-            true
-        } else {
-            !direction_in
-        };
-        let status_trb = Trb::status_stage(status_dir, ring.cycle_bit());
-        ring.enqueue(status_trb);
-
-        drop(transfer_rings);
-
-        // Ring doorbell
-        self.controller.ring_doorbell(self.slot_id.as_u8(), dci);
-
-        Ok(dci)
-    }
-
-    /// Bulk転送を開始
-    fn start_bulk_transfer(
-        &self,
-        endpoint: EndpointAddress,
-        buffer_len: usize,
-        is_in: bool,
-        data: Option<&[u8]>,
-    ) -> UsbResult<u8> {
-        let ep_num = endpoint.number();
-        let dci = (ep_num * 2) + if is_in { 1 } else { 0 };
-
-        let mut transfer_rings = self.controller.transfer_rings.lock();
-        let ring = transfer_rings
-            .get_mut(self.slot_id.as_usize())
-            .and_then(|slots| slots.get_mut(dci as usize))
-            .and_then(|opt| opt.as_mut())
-            .ok_or(UsbError::NoResources)?;
-
-        // Allocate buffer
-        let mut buffer = alloc::vec![0u8; buffer_len];
-        if let Some(src_data) = data {
-            buffer[..src_data.len().min(buffer_len)]
-                .copy_from_slice(&src_data[..src_data.len().min(buffer_len)]);
-        }
-        let data_ptr = buffer.as_ptr() as u64;
-
-        // Create Normal TRB
-        let trb = Trb::normal(data_ptr, buffer_len as u32, ring.cycle_bit());
-        ring.enqueue(trb);
-
-        // Keep buffer alive until transfer completes
-        core::mem::forget(buffer);
-
-        drop(transfer_rings);
-
-        // Ring doorbell
-        self.controller.ring_doorbell(self.slot_id.as_u8(), dci);
-
-        Ok(dci)
-    }
-
-    /// Isochronous転送を開始
-    ///
-    /// # Arguments
-    /// * `endpoint` - エンドポイントアドレス
-    /// * `buffer_len` - バッファ長
-    /// * `is_in` - IN方向か
-    /// * `data` - OUTの場合の送信データ
-    /// * `frame_id` - フレームID（Noneで即時開始）
-    fn start_isoch_transfer(
-        &self,
-        endpoint: EndpointAddress,
-        buffer_len: usize,
-        is_in: bool,
-        data: Option<&[u8]>,
-        frame_id: Option<u16>,
-    ) -> UsbResult<u8> {
-        let ep_num = endpoint.number();
-        let dci = (ep_num * 2) + if is_in { 1 } else { 0 };
-
-        let mut transfer_rings = self.controller.transfer_rings.lock();
-        let ring = transfer_rings
-            .get_mut(self.slot_id.as_usize())
-            .and_then(|slots| slots.get_mut(dci as usize))
-            .and_then(|opt| opt.as_mut())
-            .ok_or(UsbError::NoResources)?;
-
-        // Allocate buffer
-        let mut buffer = alloc::vec![0u8; buffer_len];
-        if let Some(src_data) = data {
-            buffer[..src_data.len().min(buffer_len)]
-                .copy_from_slice(&src_data[..src_data.len().min(buffer_len)]);
-        }
-        let data_ptr = buffer.as_ptr() as u64;
-
-        // Create Isochronous TRB
-        let trb = if let Some(fid) = frame_id {
-            // Scheduled transfer at specific frame
-            Trb::isoch(
-                data_ptr,
-                buffer_len as u32,
-                fid,
-                false, // SIA = false (use frame_id)
-                true,  // IOC = true
-                0,     // TBC
-                0,     // TLBPC
-                ring.cycle_bit(),
-            )
-        } else {
-            // Start ASAP
-            Trb::isoch_asap(data_ptr, buffer_len as u32, true, ring.cycle_bit())
-        };
-        ring.enqueue(trb);
-
-        // Keep buffer alive until transfer completes
-        core::mem::forget(buffer);
-
-        drop(transfer_rings);
-
-        // Ring doorbell
-        self.controller.ring_doorbell(self.slot_id.as_u8(), dci);
-
-        Ok(dci)
-    }
-
-    /// Isochronous IN転送
+    /// Performs an isochronous IN transfer; the controller owns data RAM until
+    /// its final event, even if this Future is dropped while waiting.
     pub fn isoch_in(
         &self,
         endpoint: EndpointAddress,
         buffer_len: usize,
-    ) -> core::pin::Pin<
-        alloc::boxed::Box<dyn core::future::Future<Output = UsbResult<usize>> + Send + '_>,
-    > {
-        let controller = alloc::sync::Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        let start_result = self.start_isoch_transfer(endpoint, buffer_len, true, None, None);
-
-        alloc::boxed::Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: buffer_len,
-                started: false,
-            }
-            .await
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
+        Box::pin(async move {
+            let dci = transfer_dci(endpoint, true)?;
+            let result = self
+                .controller
+                .submit_transfer(
+                    self.slot_id,
+                    dci,
+                    TransferKind::Isochronous,
+                    buffer_len,
+                    true,
+                    None,
+                )?
+                .await?;
+            self.controller.finish_transfer_buffer(result, None)
         })
     }
 
-    /// Isochronous OUT転送
-    pub fn isoch_out(
-        &self,
+    pub fn isoch_out<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        data: &[u8],
-    ) -> core::pin::Pin<
-        alloc::boxed::Box<dyn core::future::Future<Output = UsbResult<usize>> + Send + '_>,
-    > {
-        let data_copy = data.to_vec();
-        let len = data_copy.len();
-        let controller = alloc::sync::Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        let start_result = self.start_isoch_transfer(endpoint, len, false, Some(&data_copy), None);
-
-        alloc::boxed::Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: len,
-                started: false,
-            }
-            .await
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
+        Box::pin(async move {
+            let dci = transfer_dci(endpoint, false)?;
+            let result = self
+                .controller
+                .submit_transfer(
+                    self.slot_id,
+                    dci,
+                    TransferKind::Isochronous,
+                    data.len(),
+                    false,
+                    Some(data),
+                )?
+                .await?;
+            self.controller.finish_transfer_buffer(result, None)
         })
     }
 }
 
-// ============================================================================
-// Transfer Futures
-// ============================================================================
-
-/// コントロール転送 Future
-struct ControlTransferFuture {
-    controller: Arc<XhciController>,
-    slot_id: SlotId,
-    endpoint_id: u8,
-    expected_len: usize,
-    started: bool,
-}
-
-impl Future for ControlTransferFuture {
-    type Output = UsbResult<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // イベントを処理
-        self.controller.process_events();
-
-        // 完了を確認
-        if let Some(result) = self
-            .controller
-            .check_transfer_completion(self.slot_id, self.endpoint_id)
-        {
-            // 完了コードを確認
-            match result.completion_code {
-                CompletionCode::Success | CompletionCode::ShortPacket => {
-                    let transferred = self
-                        .expected_len
-                        .saturating_sub(result.transferred as usize);
-                    return Poll::Ready(Ok(transferred));
-                }
-                CompletionCode::StallError => {
-                    return Poll::Ready(Err(UsbError::Stalled));
-                }
-                cc => {
-                    return Poll::Ready(Err(UsbError::TransferError(
-                        crate::TransferStatus::Error(cc as u8),
-                    )));
-                }
-            }
-        }
-
-        // まだ完了していない場合、Wakerを登録
-        if !self.started {
-            self.controller.register_transfer_wait(
-                self.slot_id,
-                self.endpoint_id,
-                cx.waker().clone(),
-            );
-            self.started = true;
-        }
-
-        Poll::Pending
+fn transfer_dci(endpoint: EndpointAddress, direction_in: bool) -> UsbResult<u8> {
+    if endpoint.number() == 0 || endpoint.is_in() != direction_in {
+        return Err(UsbError::InvalidParameter);
     }
-}
-
-impl Drop for ControlTransferFuture {
-    fn drop(&mut self) {
-        // キャンセル時に待機をクリーンアップ
-        self.controller
-            .cancel_transfer_wait(self.slot_id, self.endpoint_id);
-    }
-}
-
-/// Bulk/Interrupt転送 Future
-struct BulkTransferFuture {
-    controller: Arc<XhciController>,
-    slot_id: SlotId,
-    endpoint_id: u8,
-    expected_len: usize,
-    started: bool,
-}
-
-impl Future for BulkTransferFuture {
-    type Output = UsbResult<usize>;
-
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        // イベントを処理
-        self.controller.process_events();
-
-        // 完了を確認
-        if let Some(result) = self
-            .controller
-            .check_transfer_completion(self.slot_id, self.endpoint_id)
-        {
-            match result.completion_code {
-                CompletionCode::Success | CompletionCode::ShortPacket => {
-                    let transferred = self
-                        .expected_len
-                        .saturating_sub(result.transferred as usize);
-                    return Poll::Ready(Ok(transferred));
-                }
-                CompletionCode::StallError => {
-                    return Poll::Ready(Err(UsbError::Stalled));
-                }
-                cc => {
-                    return Poll::Ready(Err(UsbError::TransferError(
-                        crate::TransferStatus::Error(cc as u8),
-                    )));
-                }
-            }
-        }
-
-        // Wakerを登録
-        if !self.started {
-            self.controller.register_transfer_wait(
-                self.slot_id,
-                self.endpoint_id,
-                cx.waker().clone(),
-            );
-            self.started = true;
-        }
-
-        Poll::Pending
-    }
-}
-
-impl Drop for BulkTransferFuture {
-    fn drop(&mut self) {
-        self.controller
-            .cancel_transfer_wait(self.slot_id, self.endpoint_id);
-    }
+    Ok(endpoint.number() * 2 + u8::from(direction_in))
 }
 
 // ============================================================================
@@ -437,137 +144,97 @@ impl UsbDevice for XhciDevice {
         self.speed
     }
 
-    fn control_transfer(
-        &self,
+    fn control_transfer<'a>(
+        &'a self,
         setup: &SetupPacket,
-        data: Option<&mut [u8]>,
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        let setup_copy = *setup;
-        let data_len = data.as_ref().map(|d| d.len()).unwrap_or(0);
-        let controller = Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        // 転送を開始
-        let start_result = self.start_control_transfer(&setup_copy, data_len);
-
+        data: Option<&'a mut [u8]>,
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
+        let setup = *setup;
         Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            // 真の非同期 Future を作成
-            ControlTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: data_len,
-                started: false,
+            let length = usize::from(setup.w_length);
+            if data.as_ref().map_or(0, |bytes| bytes.len()) < length {
+                return Err(UsbError::BufferSize);
             }
-            .await
+            let direction_in = setup.bm_request_type & 0x80 != 0;
+            let source = if direction_in {
+                None
+            } else {
+                data.as_deref().map(|bytes| &bytes[..length])
+            };
+            let result = self
+                .controller
+                .submit_transfer(
+                    self.slot_id,
+                    1,
+                    TransferKind::Control(setup),
+                    length,
+                    direction_in,
+                    source,
+                )?
+                .await?;
+            self.controller
+                .finish_transfer_buffer(result, if direction_in { data } else { None })
         })
     }
 
-    fn bulk_in(
-        &self,
+    fn bulk_in<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        buffer: &mut [u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        let len = buffer.len();
-        let controller = Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        // 転送を開始
-        let start_result = self.start_bulk_transfer(endpoint, len, true, None);
-
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
         Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: len,
-                started: false,
-            }
-            .await
+            let dci = transfer_dci(endpoint, true)?;
+            let result = self
+                .controller
+                .submit_transfer(
+                    self.slot_id,
+                    dci,
+                    TransferKind::Normal,
+                    buffer.len(),
+                    true,
+                    None,
+                )?
+                .await?;
+            self.controller.finish_transfer_buffer(result, Some(buffer))
         })
     }
 
-    fn bulk_out(
-        &self,
+    fn bulk_out<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        data: &[u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        let data_copy = data.to_vec();
-        let len = data_copy.len();
-        let controller = Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        // 転送を開始（データをコピー済み）
-        let start_result = self.start_bulk_transfer(endpoint, len, false, Some(&data_copy));
-
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
         Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: len,
-                started: false,
-            }
-            .await
+            let dci = transfer_dci(endpoint, false)?;
+            let result = self
+                .controller
+                .submit_transfer(
+                    self.slot_id,
+                    dci,
+                    TransferKind::Normal,
+                    data.len(),
+                    false,
+                    Some(data),
+                )?
+                .await?;
+            self.controller.finish_transfer_buffer(result, None)
         })
     }
 
-    fn interrupt_in(
-        &self,
+    fn interrupt_in<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        buffer: &mut [u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        // Interrupt転送はBulkと同じメカニズム
-        let len = buffer.len();
-        let controller = Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        let start_result = self.start_bulk_transfer(endpoint, len, true, None);
-
-        Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: len,
-                started: false,
-            }
-            .await
-        })
+        buffer: &'a mut [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
+        self.bulk_in(endpoint, buffer)
     }
 
-    fn interrupt_out(
-        &self,
+    fn interrupt_out<'a>(
+        &'a self,
         endpoint: EndpointAddress,
-        data: &[u8],
-    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + '_>> {
-        let data_copy = data.to_vec();
-        let len = data_copy.len();
-        let controller = Arc::clone(&self.controller);
-        let slot_id = self.slot_id;
-
-        let start_result = self.start_bulk_transfer(endpoint, len, false, Some(&data_copy));
-
-        Box::pin(async move {
-            let endpoint_id = start_result?;
-
-            BulkTransferFuture {
-                controller,
-                slot_id,
-                endpoint_id,
-                expected_len: len,
-                started: false,
-            }
-            .await
-        })
+        data: &'a [u8],
+    ) -> Pin<Box<dyn Future<Output = UsbResult<usize>> + Send + 'a>> {
+        self.bulk_out(endpoint, data)
     }
 
     fn suspend(&self) -> Pin<Box<dyn Future<Output = UsbResult<()>> + Send + '_>> {

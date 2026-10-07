@@ -144,11 +144,10 @@ impl EventHandler {
             .pending_commands
             .iter()
             .position(|c| c.trb_address == trb_address)
+            && self.pending_commands[pos].result.is_some()
         {
-            if self.pending_commands[pos].result.is_some() {
-                let cmd = self.pending_commands.remove(pos);
-                return cmd.result;
-            }
+            let cmd = self.pending_commands.remove(pos);
+            return cmd.result;
         }
         None
     }
