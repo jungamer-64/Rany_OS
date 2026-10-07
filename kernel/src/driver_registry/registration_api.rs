@@ -222,7 +222,9 @@ impl Driver for AbiDriver {
         };
 
         self.ctx.irq = irq;
-        handle_irq(&mut self.ctx as *mut _)
+        // SAFETY: the relay task exclusively borrows this loaded instance and
+        // initialized context; its image owner retains the callback's code.
+        unsafe { handle_irq(&mut self.ctx as *mut _) }
     }
 
     fn has_irq_handler(&self) -> bool {

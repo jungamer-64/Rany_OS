@@ -5,7 +5,7 @@
 //! survives a callback, and no driver future is polled under the host lock.
 
 use super::{AbiError, DriverContext};
-use crate::driver::AsyncDriver;
+use crate::driver::{AsyncDriver, DriverIrqSource};
 use crate::error::{KapiError, KapiResult};
 use crate::resource::task::{SpawnError, TaskId, TaskOptions};
 use alloc::boxed::Box;
@@ -23,13 +23,20 @@ enum Operation {
 }
 
 enum State<T> {
-    Idle(T),
-    Running(Operation),
+    Idle {
+        driver: T,
+        irq: Option<Arc<dyn DriverIrqSource>>,
+    },
+    Running {
+        operation: Operation,
+        irq: Option<Arc<dyn DriverIrqSource>>,
+    },
     Completed {
         operation: Operation,
         driver: T,
         context: DriverContext,
         result: KapiResult<()>,
+        irq: Option<Arc<dyn DriverIrqSource>>,
     },
     Closed,
 }
@@ -57,13 +64,17 @@ impl<T: AsyncDriver> OperationOwner<T> {
 
     fn publish(&mut self, result: KapiResult<()>) {
         if let Some(driver) = self.driver.take() {
+            let irq = T::IRQ_SOURCE.and_then(|acquire| acquire(&driver));
             let mut state = self.host.state.lock();
-            assert!(matches!(*state, State::Running(operation) if operation == self.operation));
+            assert!(
+                matches!(*state, State::Running { operation, .. } if operation == self.operation)
+            );
             *state = State::Completed {
                 operation: self.operation,
                 driver,
                 context: self.context,
                 result,
+                irq,
             };
         }
     }
@@ -112,7 +123,7 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
         let owner = {
             let mut state = self.state.lock();
             match &*state {
-                State::Running(_) => return AbiError::DeviceBusy,
+                State::Running { .. } => return AbiError::DeviceBusy,
                 State::Completed {
                     operation: completed,
                     ..
@@ -122,11 +133,12 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
                 State::Closed => return AbiError::NotInitialized,
                 _ => {}
             }
-            match core::mem::replace(&mut *state, State::Running(operation)) {
+            match core::mem::replace(&mut *state, State::Closed) {
                 State::Completed {
                     driver,
                     context: completed,
                     result,
+                    irq,
                     ..
                 } => {
                     let identity = context.driver_data;
@@ -137,16 +149,19 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
                         drop(state);
                         drop(driver);
                     } else {
-                        *state = State::Idle(driver);
+                        *state = State::Idle { driver, irq };
                     }
                     return result.err().map_or(AbiError::Success, AbiError::from);
                 }
-                State::Idle(driver) => OperationOwner {
-                    host: Arc::clone(self),
-                    driver: Some(driver),
-                    context: *context,
-                    operation,
-                },
+                State::Idle { driver, irq } => {
+                    *state = State::Running { operation, irq };
+                    OperationOwner {
+                        host: Arc::clone(self),
+                        driver: Some(driver),
+                        context: *context,
+                        operation,
+                    }
+                }
                 _ => {
                     unreachable!("running and closed states are rejected before ownership transfer")
                 }
@@ -168,13 +183,14 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
                 let State::Completed {
                     driver,
                     operation: completed,
+                    irq,
                     ..
                 } = completed
                 else {
                     unreachable!("rejected future synchronously returns its driver");
                 };
                 assert!(completed == operation);
-                *state = State::Idle(driver);
+                *state = State::Idle { driver, irq };
                 admission_error(cause)
             }
         }
@@ -194,8 +210,10 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
         // SAFETY: initialization and exclusive access are the callback contract.
         let context = unsafe { context.as_mut() };
         if context.driver_data == 0 {
+            let driver = constructor();
+            let irq = T::IRQ_SOURCE.and_then(|acquire| acquire(&driver));
             let host = match Arc::try_new(Self {
-                state: Mutex::new(State::Idle(constructor())),
+                state: Mutex::new(State::Idle { driver, irq }),
             }) {
                 Ok(host) => host,
                 Err(_) => return AbiError::OutOfMemory as i32,
@@ -231,6 +249,45 @@ impl<T: AsyncDriver> AsyncDriverHost<T> {
     pub unsafe fn remove(context: *mut DriverContext) -> i32 {
         // SAFETY: forwarded exclusive context and retained owner contract.
         unsafe { Self::dispatch_pointer(context, Operation::Remove) }
+    }
+
+    /// Invoke only the retained IRQ resource, including while the lifecycle
+    /// task owns the mutable driver. No operation Future is polled here.
+    ///
+    /// # Safety
+    /// The caller retains the initialized ABI context, original host reference
+    /// and callback code for the call, excluding concurrent context mutation or
+    /// acknowledged removal. Invocation runs on a relay task, never in ISR.
+    pub unsafe fn handle_irq(context: *mut DriverContext) -> bool {
+        let Some(context) = core::ptr::NonNull::new(context).filter(|p| p.is_aligned()) else {
+            return false;
+        };
+        // SAFETY: the caller retains initialized context storage through this
+        // synchronous borrow and excludes mutation/removal for its duration.
+        let context = unsafe { context.as_ref() };
+        if context.driver_data == 0 {
+            return false;
+        }
+        let pointer = core::ptr::with_exposed_provenance::<Self>(context.driver_data as usize);
+        // SAFETY: this exact host reference remains owned by the ABI context.
+        let host = unsafe { &*pointer };
+        host.relay_irq(context.irq)
+    }
+
+    fn relay_irq(&self, vector: u32) -> bool {
+        let source = {
+            let state = self.state.lock();
+            match &*state {
+                State::Idle { irq, .. }
+                | State::Running { irq, .. }
+                | State::Completed { irq, .. } => irq.clone(),
+                State::Closed => None,
+            }
+        };
+        // The resource clone outlives its unpublication. Queue/device shutdown
+        // must serialize against this source's own access boundary. Neither
+        // the host lock nor the operation's driver borrow survives this call.
+        source.is_some_and(|source| source.handle_irq(vector))
     }
 
     unsafe fn dispatch_pointer(context: *mut DriverContext, operation: Operation) -> i32 {
@@ -304,6 +361,11 @@ macro_rules! export_async_driver {
                 // SAFETY: the driver ABI retains the context's host reference.
                 unsafe { AsyncDriverHost::<$driver>::remove(context) }
             }
+            unsafe extern "C" fn irq(context: *mut DriverContext) -> bool {
+                // SAFETY: the relay owns the live context/instance/code through
+                // this call; the host lends only its retained IRQ resource.
+                unsafe { AsyncDriverHost::<$driver>::handle_irq(context) }
+            }
             extern "C" fn name() -> *const u8 {
                 ($name)().as_ptr()
             }
@@ -328,7 +390,10 @@ macro_rules! export_async_driver {
                     driver_type: kind,
                     version,
                     request_capabilities: None,
-                    handle_irq: None,
+                    handle_irq: match <$driver as $crate::driver::AsyncDriver>::IRQ_SOURCE {
+                        Some(_) => Some(irq),
+                        None => None,
+                    },
                 },
             );
             &VTABLE
@@ -355,10 +420,24 @@ mod tests {
         probe_irq: AtomicUsize,
         allow_probe: AtomicBool,
         drops: AtomicUsize,
+        irq_calls: AtomicUsize,
     }
 
     struct Driver {
         observations: Arc<Observations>,
+    }
+
+    impl DriverIrqSource for Observations {
+        fn handle_irq(&self, vector: u32) -> bool {
+            self.irq_calls.fetch_add(1, Ordering::Relaxed);
+            self.probe_irq.store(vector as usize, Ordering::Relaxed);
+            self.allow_probe.store(true, Ordering::Release);
+            true
+        }
+    }
+
+    fn irq_source(driver: &Driver) -> Option<Arc<dyn DriverIrqSource>> {
+        Some(Arc::clone(&driver.observations) as Arc<dyn DriverIrqSource>)
     }
 
     impl Drop for Driver {
@@ -368,6 +447,7 @@ mod tests {
     }
 
     impl AsyncDriver for Driver {
+        const IRQ_SOURCE: Option<crate::driver::DriverIrqSourceAcquire<Self>> = Some(irq_source);
         fn name(&self) -> &str {
             "owned-lifecycle"
         }
@@ -405,10 +485,12 @@ mod tests {
     }
 
     fn host(observations: &Arc<Observations>) -> Arc<AsyncDriverHost<Driver>> {
+        let driver = Driver {
+            observations: Arc::clone(observations),
+        };
+        let irq = irq_source(&driver);
         Arc::new(AsyncDriverHost {
-            state: Mutex::new(State::Idle(Driver {
-                observations: Arc::clone(observations),
-            })),
+            state: Mutex::new(State::Idle { driver, irq }),
         })
     }
 
@@ -451,6 +533,64 @@ mod tests {
         assert_eq!(context.irq, 7);
         assert_eq!(observations.probe_calls.load(Ordering::Relaxed), 1);
         assert_eq!(observations.drops.load(Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn irq_resource_progresses_while_lifecycle_owns_the_driver_and_ends_on_remove() {
+        let observations = Arc::new(Observations::default());
+        let host = host(&observations);
+        let mut context = DriverContext::new();
+        let context_owner = Arc::into_raw(Arc::clone(&host));
+        context.driver_data = context_owner.expose_provenance() as u64;
+        context.irq = 41;
+        let mut admitted = None;
+        assert_eq!(
+            host.request(&mut context, Operation::Probe, |future| {
+                admitted = Some(future);
+                Ok(TaskId::from_raw(15))
+            }),
+            AbiError::DeviceBusy
+        );
+        let mut future = admitted.unwrap();
+        let mut cx = Context::from_waker(Waker::noop());
+        assert!(future.as_mut().poll(&mut cx).is_pending());
+        assert!(!observations.allow_probe.load(Ordering::Acquire));
+        // SAFETY: the context owns exactly this live host reference and the
+        // test retains its code/storage for the exclusive relay callback borrow.
+        assert!(unsafe { AsyncDriverHost::<Driver>::handle_irq(&mut context) });
+        assert_eq!(observations.irq_calls.load(Ordering::Relaxed), 1);
+        assert!(future.as_mut().poll(&mut cx).is_ready());
+        drop(future);
+        assert_eq!(
+            host.request(&mut context, Operation::Probe, |_| {
+                panic!("probe completion must be collected without repolling the driver")
+            }),
+            AbiError::Success
+        );
+        let mut admitted = None;
+        assert_eq!(
+            host.request(&mut context, Operation::Remove, |future| {
+                admitted = Some(future);
+                Ok(TaskId::from_raw(16))
+            }),
+            AbiError::DeviceBusy
+        );
+        let mut future = admitted.unwrap();
+        assert!(future.as_mut().poll(&mut cx).is_ready());
+        drop(future);
+        assert_eq!(
+            host.request(&mut context, Operation::Remove, |_| {
+                panic!("remove acknowledgement cannot admit another operation")
+            }),
+            AbiError::Success
+        );
+        assert!(!host.relay_irq(41));
+        assert_eq!(observations.irq_calls.load(Ordering::Relaxed), 1);
+        assert_eq!(observations.drops.load(Ordering::Relaxed), 1);
+        context.driver_data = 0;
+        // SAFETY: request collected removal above; this releases exactly the
+        // context's original Arc reference, normally consumed by dispatch.
+        unsafe { drop(Arc::from_raw(context_owner)) };
     }
 
     #[test]
@@ -523,7 +663,7 @@ mod tests {
             }),
             AbiError::OutOfMemory
         );
-        assert!(matches!(*host.state.lock(), State::Idle(_)));
+        assert!(matches!(*host.state.lock(), State::Idle { .. }));
         assert_eq!(observations.probe_calls.load(Ordering::Relaxed), 0);
         assert_eq!(observations.drops.load(Ordering::Relaxed), 0);
     }

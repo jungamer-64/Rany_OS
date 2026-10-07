@@ -18,6 +18,7 @@
 use crate::abi::driver::DriverContext;
 use crate::error::KapiResult;
 use crate::provider::ProviderDescriptorV1;
+use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
 
@@ -183,6 +184,18 @@ pub trait Driver: Send {
 // Async Driver Trait
 // ============================================================================
 
+/// Retained IRQ responsibility independent of the lifecycle's mutable driver
+/// borrow. Relay calls run on ordinary tasks and must finish a bounded batch.
+/// Shared resources remain owned until stop has ended both DMA and callbacks.
+/// Stop serializes against source access. A relay holding an unpublished
+/// source must observe stopped state before touching retired device resources.
+pub trait DriverIrqSource: Send + Sync {
+    fn handle_irq(&self, vector: u32) -> bool;
+}
+
+/// Acquire an existing IRQ resource from a driver at a lifecycle boundary.
+pub type DriverIrqSourceAcquire<T> = fn(&T) -> Option<Arc<dyn DriverIrqSource>>;
+
 /// 非同期ドライバ（セル）のためのトレイト
 ///
 /// `Driver`トレイトの非同期版であり、`async/await`構文を利用して
@@ -198,6 +211,14 @@ pub trait Driver: Send {
 /// all device access and deferred callbacks have ended; an incomplete operation
 /// returns `Busy` and retains its resources for an explicit retry.
 pub trait AsyncDriver: Send + 'static {
+    /// Acquire this type's optional IRQ resource at a lifecycle boundary.
+    /// The source owns the resources it accesses and may be called while the
+    /// driver instance is mutably borrowed by an operation Future. Returning
+    /// None means that those resources are not yet published or are stopped.
+    /// Acquisition clones an existing owner; resource admission belongs to the
+    /// lifecycle operation and cannot fail silently at this boundary.
+    const IRQ_SOURCE: Option<DriverIrqSourceAcquire<Self>> = None;
+
     /// ドライバ名
     fn name(&self) -> &str;
 
