@@ -41,14 +41,15 @@ fn base_config(profile: &str) -> RunConfig {
     };
     cfg.timeout_secs = env_u64("QEMU_TEST_TIMEOUT_SECS", default_timeout);
     cfg.memory_mb = env_u64("QEMU_TEST_MEMORY_MB", 2048);
-    let (default_smp, default_max_cpus) = match profile {
-        "cpu-hotplug" => (1, 2),
-        "cpu-hotplug-sparse" => (1, 256),
-        _ => (4, 4),
-    };
-    cfg.smp = env_u16("QEMU_TEST_SMP", default_smp);
-    cfg.max_cpus = env_u16("QEMU_TEST_MAX_CPUS", default_max_cpus);
-    cfg.cpu = std::env::var("QEMU_TEST_CPU").unwrap_or(cfg.cpu);
+    // These profiles require a particular firmware topology to exercise their
+    // contract. Generic tier settings apply to the remaining profiles.
+    if !matches!(profile, "mm" | "cpu-hotplug" | "cpu-hotplug-sparse") {
+        cfg.smp = env_u16("QEMU_TEST_SMP", 4);
+        cfg.max_cpus = env_u16("QEMU_TEST_MAX_CPUS", 4);
+    }
+    if profile != "cpu-hotplug-sparse" {
+        cfg.cpu = std::env::var("QEMU_TEST_CPU").unwrap_or(cfg.cpu);
+    }
     cfg.case_filter = std::env::var("QEMU_TEST_CASE_FILTER").ok();
     cfg
 }

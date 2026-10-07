@@ -391,13 +391,6 @@ fn kernel_cmdline(config: &RunConfig) -> String {
         format!("run_integration={}", config.profile),
         String::from("shell=off"),
     ];
-    if !matches!(
-        config.profile.as_str(),
-        "boot-smoke" | "network" | "mm" | "scheduler"
-    ) && cpu_hotplug_mode(&config.profile).is_none()
-    {
-        parts.push(String::from("qemu_no_if=1"));
-    }
     if config.profile == "step9-heavy" {
         parts.push(String::from("kgdb=on"));
         parts.push(String::from("kgdb_transport=both"));
@@ -519,9 +512,7 @@ fn ensure_runtime_boot_artifact_assets(root: &Path) -> Result<(), BuildError> {
     Ok(())
 }
 
-fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
-    let disk_path = boot_root.join("storage.img");
-
+fn build_storage_test_disk(disk_path: &Path) -> Result<(), BuildError> {
     if let Some(parent) = disk_path.parent() {
         std::fs::create_dir_all(parent).map_err(|source| BuildError::Io {
             step: "create storage test disk directory",
@@ -550,11 +541,11 @@ fn build_storage_test_disk(boot_root: &Path) -> Result<PathBuf, BuildError> {
     bs[510] = 0x55;
     bs[511] = 0xAA;
 
-    std::fs::write(&disk_path, image).map_err(|source| BuildError::Io {
+    std::fs::write(disk_path, image).map_err(|source| BuildError::Io {
         step: "write storage test disk image",
         source,
     })?;
-    Ok(disk_path)
+    Ok(())
 }
 
 /// # Errors
@@ -1307,10 +1298,14 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
     let ovmf_vars_arg = format!("if=pflash,format=raw,file={}", vars_copy_path.display());
     let fat_arg = format!("format=raw,file=fat:rw:{}", image.boot_root.display());
     let storage_disk_path = if profile_needs_storage_disk(&config.profile) {
-        Some(
-            build_storage_test_disk(&image.boot_root)
-                .map_err(|err| RunError::Build(Box::new(err)))?,
-        )
+        let virtio_disk = image.boot_root.join("storage.img");
+        let nvme_disk = image.boot_root.join("nvme-storage.img");
+        // Each controller owns a separate image; completion and data visibility
+        // are observed through its real driver and IOMMU path.
+        for disk in [&virtio_disk, &nvme_disk] {
+            build_storage_test_disk(disk).map_err(|err| RunError::Build(Box::new(err)))?;
+        }
+        Some((virtio_disk, nvme_disk))
     } else {
         None
     };
@@ -1373,7 +1368,7 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
             .arg(format!("tcp:{address},server=on,wait=off"));
     }
 
-    if let Some(storage_disk) = &storage_disk_path {
+    if let Some((storage_disk, nvme_disk)) = &storage_disk_path {
         qemu_cmd
             .arg("-drive")
             .arg(format!(
@@ -1381,7 +1376,14 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
                 storage_disk.display()
             ))
             .arg("-device")
-            .arg("virtio-blk-pci,drive=storage0");
+            .arg("virtio-blk-pci,drive=storage0,iommu_platform=on,disable-legacy=on")
+            .arg("-drive")
+            .arg(format!(
+                "file={},if=none,id=nvme-storage0,format=raw",
+                nvme_disk.display()
+            ))
+            .arg("-device")
+            .arg("nvme,drive=nvme-storage0,serial=RANY-STORAGE-0");
     }
 
     if config.profile == "driver_domain" {
@@ -1506,12 +1508,19 @@ mod tests {
     }
 
     #[test]
-    fn driver_domain_cmdline_keeps_qemu_no_if() {
-        let cfg = RunConfig::for_profile("driver_domain");
-        let cmdline = kernel_cmdline(&cfg);
-
-        assert!(cmdline.contains("run_integration=driver_domain"));
-        assert!(cmdline.contains("qemu_no_if=1"));
+    fn asynchronous_driver_profiles_allow_timer_delivery() {
+        for profile in [
+            "storage",
+            "driver_domain",
+            "iommu",
+            "nightly-required",
+            "step9-heavy",
+        ] {
+            let cfg = RunConfig::for_profile(profile);
+            let cmdline = kernel_cmdline(&cfg);
+            assert!(cmdline.contains(&format!("run_integration={profile}")));
+            assert!(!cmdline.contains("qemu_no_if=1"));
+        }
     }
 
     #[test]
