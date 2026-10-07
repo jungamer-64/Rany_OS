@@ -273,10 +273,19 @@ pub fn handle_fault(
                 crate::io::log::early_print("[DCF] handle_fault: rollback ok\n");
                 return Ok(FaultAction::RolledBack);
             }
-            Err(e) => {
-                crate::io::log::early_print("[DCF] handle_fault: rollback err\n");
-                log::warn!("[DriverDomain] Validation rollback failed: {}\n", e);
-                return Ok(FaultAction::RollbackFailed(e));
+            Err(cause) => {
+                let retained = match &cause {
+                    DriverDomainError::LifecycleInProgress { .. } => true,
+                    DriverDomainError::LiveUpdate(cause) => cause.is_waiting(),
+                    _ => false,
+                };
+                if retained {
+                    // Health publication already requested rollback. The update
+                    // and service host retain its callback and completion owner.
+                    return Ok(FaultAction::RollbackPending(cause));
+                }
+                log::warn!("[DriverDomain] Validation rollback failed: {cause}");
+                return Ok(FaultAction::RollbackFailed(cause));
             }
         }
     }
@@ -569,6 +578,8 @@ pub enum FaultAction {
     RestartScheduled { not_before: RestartDeadline },
     /// 検証中アップデートをロールバックした
     RolledBack,
+    /// Rollback was requested; active calls or code leases retain completion.
+    RollbackPending(DriverDomainError),
     /// 検証中アップデートのロールバックに失敗した
     RollbackFailed(DriverDomainError),
     /// 停止のまま（再起動なし）
@@ -582,6 +593,7 @@ impl core::fmt::Display for FaultAction {
                 write!(f, "Restart scheduled after {}ns", not_before.nanos)
             }
             Self::RolledBack => write!(f, "Rolled back"),
+            Self::RollbackPending(cause) => write!(f, "Rollback pending: {cause}"),
             Self::RollbackFailed(msg) => write!(f, "Rollback failed: {}", msg),
             Self::Stopped => write!(f, "Stopped (no restart)"),
         }

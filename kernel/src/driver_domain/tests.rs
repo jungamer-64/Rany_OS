@@ -948,11 +948,29 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
     poll_runtime();
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 done");
 
-    if outcome.action != super::fault::FaultAction::RolledBack {
+    if !matches!(
+        outcome.action,
+        super::fault::FaultAction::RolledBack | super::fault::FaultAction::RollbackPending(_)
+    ) {
         return Err(RuntimeCaseError::failed(format!(
-            "expected RolledBack action, got {}",
-            outcome.action
+            "expected rollback completion or an owned pending request, got {}",
+            outcome.action,
         )));
+    }
+    let deadline = crate::task::current_tick()
+        .checked_add(1_000)
+        .ok_or_else(|| RuntimeCaseError::failed("rollback observation deadline overflow"))?;
+    // LOOP_PROOF: mode=condition; reason=The rollback completion is observed through its normal lifecycle state, or the monotonic deadline fails the fixture, while timer preemption lets the service host progress.;
+    while crate::task::current_tick() < deadline {
+        let status = super::hot_swap::health_status(ctx.driver_domain_id).map_err(|cause| {
+            RuntimeCaseError::failed(format!("rollback status failed: {cause}"))
+        })?;
+        if status.hot_swap_state == HotSwapState::Idle
+            && status.loader_cell_id == Some(update.old_cell_id)
+        {
+            break;
+        }
+        core::hint::spin_loop();
     }
 
     let (restart_after, fault_after) = driver_domain_manager()

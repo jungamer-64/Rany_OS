@@ -242,7 +242,7 @@ impl core::fmt::Display for LiveUpdateError {
 }
 
 impl LiveUpdateError {
-    fn is_waiting(&self) -> bool {
+    pub(crate) fn is_waiting(&self) -> bool {
         match self {
             Self::ReclamationBusy { .. } | Self::UpdateInProgress | Self::SwitchPending { .. } => {
                 true
@@ -1113,7 +1113,7 @@ impl LiveUpdateManager {
         use crate::driver_registry::DriverError;
         use kernel_api::driver::DriverState;
         let registry = crate::driver_registry::driver_registry();
-        // LOOP_PROOF: mode=condition; reason=Every completed restoration removes one retained change; an incomplete callback returns with the transaction owned for retry.;
+        // LOOP_PROOF: mode=condition; reason=Every completed restoration removes one retained change, and an incomplete callback returns with the transaction owned for retry.;
         while let Some(change) = context.changes.last_mut() {
             match change {
                 DriverChange::AwaitingExport(handle) => {

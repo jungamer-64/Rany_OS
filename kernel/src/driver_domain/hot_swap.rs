@@ -220,7 +220,13 @@ pub fn hot_swap(
 /// LiveUpdateManagerのrollback()を使用して旧バージョンに復帰する。
 pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let manager = driver_domain_manager();
-    let _invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
+    let invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
+    rollback_owned(&invocation)
+}
+
+fn rollback_owned(invocation: &super::LifecycleCall<'_>) -> Result<(), DriverDomainError> {
+    let manager = invocation.manager;
+    let id = invocation.id;
 
     let (hot_swap_state, current_cell_id) =
         manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
@@ -284,7 +290,13 @@ pub fn rollback(id: DriverDomainId) -> Result<(), DriverDomainError> {
 /// ホットスワップをコミット（猶予期間前の明示コミット）
 pub fn commit(id: DriverDomainId) -> Result<(), DriverDomainError> {
     let manager = driver_domain_manager();
-    let _invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
+    let invocation = manager.reserve_call(id, super::LifecycleOperation::ResolveUpdate)?;
+    commit_owned(&invocation)
+}
+
+fn commit_owned(invocation: &super::LifecycleCall<'_>) -> Result<(), DriverDomainError> {
+    let manager = invocation.manager;
+    let id = invocation.id;
     let (hot_swap_state, current_cell_id) =
         manager.with_cell(id, |cell| (cell.hot_swap_state, cell.cell_id))?;
 
@@ -358,11 +370,27 @@ pub fn poll_validation_windows() {
         ) {
             continue;
         }
-        poll_one_validation(&snap);
+        // A suspended lifecycle invocation retains this admission. Health
+        // observation must not publish a verdict about its intermediate state.
+        let invocation =
+            match manager.reserve_call(snap.id, super::LifecycleOperation::ResolveUpdate) {
+                Ok(invocation) => invocation,
+                Err(
+                    DriverDomainError::LifecycleInProgress { .. } | DriverDomainError::NotFound(_),
+                ) => continue,
+                Err(cause) => {
+                    log::error!("[DriverDomain] Update observer admission failed: {cause}");
+                    continue;
+                }
+            };
+        match manager.with_cell(snap.id, |cell| cell.snapshot()) {
+            Ok(current) => poll_one_validation(&current, &invocation),
+            Err(cause) => log::error!("[DriverDomain] Update observer snapshot failed: {cause}"),
+        }
     }
 }
 
-fn poll_one_validation(snap: &DriverDomainSnapshot) {
+fn poll_one_validation(snap: &DriverDomainSnapshot, invocation: &super::LifecycleCall<'_>) {
     let Some(current_cell_id) = snap.cell_id else {
         return;
     };
@@ -388,31 +416,37 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
         if pending.phase != crate::loader::live_update::UpdatePhase::Validating {
             return;
         }
-    }
+        // カーネル観測型ヘルスチェック
+        if snap.state != DriverDomainState::Running {
+            let _ = live_update.mark_health_failure(
+                current_cell_id.as_u64(),
+                format!("DriverDomain state is {}", snap.state),
+            );
+        }
+        if snap.driver_count == 0 {
+            let _ = live_update.mark_health_failure(
+                current_cell_id.as_u64(),
+                "DriverDomain lost all registered drivers",
+            );
+        }
+        if crate::loader::with_registry(|r| r.get(current_cell_id).is_none()) {
+            let _ = live_update.mark_health_failure(
+                current_cell_id.as_u64(),
+                "Loader cell entry missing during validation",
+            );
+        }
 
-    // カーネル観測型ヘルスチェック
-    if snap.state != DriverDomainState::Running {
-        let _ = live_update.mark_health_failure(
-            current_cell_id.as_u64(),
-            format!("DriverDomain state is {}", snap.state),
-        );
-    }
-    if snap.driver_count == 0 {
-        let _ = live_update.mark_health_failure(
-            current_cell_id.as_u64(),
-            "DriverDomain lost all registered drivers",
-        );
-    }
-    if crate::loader::with_registry(|r| r.get(current_cell_id).is_none()) {
-        let _ = live_update.mark_health_failure(
-            current_cell_id.as_u64(),
-            "Loader cell entry missing during validation",
-        );
-    }
-
-    if let Some(pending) = live_update.pending_status(current_cell_id.as_u64()) {
-        driver_domain_manager()
-            .with_cell_mut(snap.id, |cell| {
+        // Fault reports can seal the window while the lifecycle call remains
+        // owned. Read their publication before choosing commit or rollback.
+        let Some(pending) = live_update.pending_status(current_cell_id.as_u64()) else {
+            return;
+        };
+        if pending.phase != crate::loader::live_update::UpdatePhase::Validating {
+            return;
+        }
+        invocation
+            .manager
+            .with_cell_mut(invocation.id, |cell| {
                 cell.validation_deadline_tick = pending.deadline_tick;
                 if pending.health_failed && cell.last_health_failure.is_none() {
                     cell.last_health_failure = Some("Marked unhealthy during validation".into());
@@ -422,12 +456,12 @@ fn poll_one_validation(snap: &DriverDomainSnapshot) {
 
         let now = crate::task::current_tick();
         if pending.health_failed {
-            let _ = rollback(snap.id);
+            let _ = rollback_owned(invocation);
         } else if pending
             .deadline_tick
             .is_some_and(|deadline| now >= deadline)
         {
-            let _ = commit(snap.id);
+            let _ = commit_owned(invocation);
         }
         return;
     }
