@@ -384,7 +384,8 @@ pub mod tests {
     use super::*;
     use crate::net::runtime::default_runtime;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_new_registered_tcp_socket_registers_socket() {
         let runtime = default_runtime();
         let socket = Socket::new_registered_tcp_in(runtime, TcpSocketState::Connected);

@@ -1,6 +1,7 @@
 use super::{CachedPage, PAGE_SIZE, PageCache, PageState};
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_cached_page() {
     let page = CachedPage::new_empty(0);
     assert_eq!(page.page_num(), 0);
@@ -12,7 +13,8 @@ pub fn test_cached_page() {
     assert_eq!(page.state(), PageState::Dirty);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_page_pin() {
     let page = CachedPage::new_empty(0);
     assert!(!page.is_pinned());
@@ -24,7 +26,8 @@ pub fn test_page_pin() {
     assert!(!page.is_pinned());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_page_cache() {
     let cache = PageCache::new(64 * 1024);
 
@@ -45,7 +48,8 @@ pub fn test_page_cache() {
     assert_eq!(stats.pages, 1);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_sync_page() {
     let cache = PageCache::new(64 * 1024);
 

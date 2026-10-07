@@ -483,7 +483,7 @@ fn try_acquire_connection_slot(runtime: NetRuntimeHandle) -> Option<u32> {
 
 #[cfg(test)]
 mod tests {
-    use super::{http_config_usable, http_supervisor_backoff_ms, should_log_http_restart_warning};
+    use super::*;
 
     #[test]
     fn http_backoff_is_exponential_and_capped() {

@@ -24,13 +24,19 @@ fn test_cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
     .snapshot()
 }
 
-fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
-    crate::cpu::FirmwareCpuIdentity {
-        uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
-        apic_id: crate::cpu::ApicId::new(apic_id),
-        proximity_domain: Some(0),
-        eject: crate::cpu::CpuEjectCapability::FirmwareEject,
-    }
+fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::LocatedCpu {
+    let placement =
+        crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap();
+    crate::cpu::LocatedCpu::resolve(
+        crate::cpu::FirmwareCpuIdentity {
+            uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+            apic_id: crate::cpu::ApicId::new(apic_id),
+            proximity_domain: Some(0),
+            eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+        },
+        &placement,
+    )
+    .unwrap()
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -49,10 +55,10 @@ fn test_mempool_poisoned_alloc_fails() {
     set_panicking(false);
 
     // Allocation should fail and increment alloc_failed
-    assert_eq!(
+    assert!(matches!(
         pool.alloc_on_cpu(crate::cpu::CpuId::BOOTSTRAP),
         Err(MempoolError::LockPoisoned(MempoolLock::FreeList))
-    );
+    ));
     assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
 }
 
@@ -91,9 +97,8 @@ fn mempool_provisions_cache_for_new_possible_cpu() {
         .discover_possible(firmware_cpu(1, 1))
         .expect("possible CPU discovery");
 
-    assert_eq!(
-        pool.alloc_on_cpu(cpu_id),
-        Err(MempoolError::CpuNotProvisioned(cpu_id))
+    assert!(
+        matches!(pool.alloc_on_cpu(cpu_id), Err(MempoolError::CpuNotProvisioned(rejected)) if rejected == cpu_id)
     );
     pool.provision_possible_cpus(&cpu_runtime.snapshot())
         .expect("dynamic CPU cache provisioning");

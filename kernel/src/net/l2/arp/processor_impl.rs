@@ -295,7 +295,7 @@ mod tests {
     #[test]
     fn test_arp_probe_response_and_conflict_defense() {
         let our_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x01]);
-        let our_ip = Ipv4Address::new(192, 168, 1, 100);
+        let our_ip = Ipv4Address::new([192, 168, 1, 100]);
         let mut proc = ArpProcessor::new(our_mac, our_ip);
 
         let probe_sender_mac = MacAddress::new([0x02, 0x00, 0x00, 0x00, 0x00, 0x02]);

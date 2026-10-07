@@ -1508,7 +1508,8 @@ mod tests {
             return AbiErrorCode::InvalidParam as i32;
         }
         let submission = unsafe { &*submission };
-        let Some(_segments) = submission.regions() else {
+        // SAFETY: this ABI fixture retains the initialized segment slice through the callback.
+        let Some(_segments) = (unsafe { submission.segments() }) else {
             return AbiErrorCode::InvalidParam as i32;
         };
         AbiErrorCode::Success as i32

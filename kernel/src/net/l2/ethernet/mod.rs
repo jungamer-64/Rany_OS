@@ -765,7 +765,8 @@ pub mod tests {
     use crate::net::payload::alloc_packet_with_headroom;
     use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_mac_address() {
         let mac = MacAddress::from_octets(0x00, 0x11, 0x22, 0x33, 0x44, 0x55);
         assert!(!mac.is_broadcast());
@@ -775,7 +776,8 @@ pub mod tests {
         assert!(MacAddress::BROADCAST.is_multicast());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_ether_type() {
         assert_eq!(EtherType::from(0x0800), EtherType::Ipv4);
         assert_eq!(EtherType::from(0x0806), EtherType::Arp);
@@ -789,7 +791,8 @@ pub mod tests {
         packet
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_process_packet_returns_owned_ipv4_payload() {
         let local = MacAddress::from_octets(0x02, 0, 0, 0, 0, 1);
         let src = MacAddress::from_octets(0x02, 0, 0, 0, 0, 2);

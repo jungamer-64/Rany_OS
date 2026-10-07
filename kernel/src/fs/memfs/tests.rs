@@ -41,7 +41,8 @@ fn rejected_file_replacement_preserves_directory_entries() {
     assert!(root.lookup("directory").unwrap().lookup("kept").is_ok());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_paged_content_in_inode() {
     let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
@@ -55,7 +56,8 @@ pub fn test_paged_content_in_inode() {
     assert_eq!(&buf, b"Hello, World!");
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_large_file_paging() {
     use crate::fs::PAGE_SIZE;
 
@@ -75,7 +77,8 @@ pub fn test_large_file_paging() {
     assert_eq!(buf, data);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_cow_copy() {
     let src = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
     src.write(0, b"Original content").unwrap();
@@ -98,7 +101,8 @@ pub fn test_cow_copy() {
     assert_eq!(&buf2, b"Original content");
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_sparse_file() {
     let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
 
@@ -117,7 +121,8 @@ pub fn test_sparse_file() {
     assert_eq!(&buf2, b"sparse data");
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_truncate_releases_pages() {
     use crate::fs::PAGE_SIZE;
 
@@ -134,7 +139,8 @@ pub fn test_truncate_releases_pages() {
     assert_eq!(attr.size, PAGE_SIZE as u64);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_get_page_zero_copy() {
     let inode = MemoryInode::new_file(1, FileMode::DEFAULT_FILE);
     inode.write(0, b"Page data for test").unwrap();

@@ -1899,7 +1899,8 @@ pub mod tests {
         )
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_connection_state() {
         let state = TcpConnectionState::Closed;
         assert!(matches!(state, TcpConnectionState::Closed));
@@ -1907,7 +1908,8 @@ pub mod tests {
         assert!(matches!(state, TcpConnectionState::Established));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_closed_has_no_sequence_space() {
         let socket_id = SocketId::from_raw(1);
         let local = EndpointAddr::new([192, 168, 1, 1], 12345);
@@ -1920,7 +1922,8 @@ pub mod tests {
         assert_eq!(snapshot.rcv_nxt, 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_tcb_table_syn_sent_to_established() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
@@ -1945,14 +1948,17 @@ pub mod tests {
         ));
 
         let snapshot = table
-            .read(TEST_IF, local, remote, TcpControlBlockSnapshot::from)
+            .read(TEST_IF, local, remote, |entry| {
+                TcpControlBlockSnapshot::from(entry)
+            })
             .expect("established tcb snapshot");
         assert_eq!(snapshot.state, TcpConnectionState::Established);
         assert_eq!(snapshot.snd_una, 1001);
         assert_eq!(snapshot.rcv_nxt, 2001);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_tcb_table_syn_received_count_tracks_establish() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
@@ -1980,7 +1986,8 @@ pub mod tests {
         assert_eq!(state, TcpConnectionState::Established);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_tcb_table_rejects_invalid_transition() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
@@ -2003,7 +2010,8 @@ pub mod tests {
         assert_eq!(state, TcpConnectionState::Closed);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_tcb_table_established_close_transitions() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
@@ -2028,7 +2036,9 @@ pub mod tests {
 
         assert_eq!(table.begin_active_close(TEST_IF, local, remote), Some(9001));
         let snapshot = table
-            .read(TEST_IF, local, remote, TcpControlBlockSnapshot::from)
+            .read(TEST_IF, local, remote, |entry| {
+                TcpControlBlockSnapshot::from(entry)
+            })
             .expect("fin-wait tcb snapshot");
         assert_eq!(snapshot.state, TcpConnectionState::FinWait1);
         assert_eq!(snapshot.snd_nxt, 9002);
@@ -2046,7 +2056,8 @@ pub mod tests {
         assert_eq!(state, TcpConnectionState::Closing);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_tcb_table_separates_identical_five_tuple_by_interface() {
         let table = TcbTable::new();
         let (local, remote) = test_endpoints();
@@ -2079,7 +2090,8 @@ pub mod tests {
         assert_eq!(table.total_count.load(Ordering::Relaxed), 2);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_flags() {
         assert_eq!(tcp_flags::FIN, 0x01);
         assert_eq!(tcp_flags::SYN, 0x02);

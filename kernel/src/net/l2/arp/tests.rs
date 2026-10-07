@@ -4,7 +4,8 @@
 
 use super::*;
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_arp_cache() {
     let cache = ArpCache::new();
     let ip = Ipv4Address::from_octets(192, 168, 1, 1);
@@ -21,7 +22,8 @@ pub fn test_arp_cache() {
     assert!(cache.lookup(ip, ARP_CACHE_TIMEOUT + 200).is_none());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_arp_packet() {
     let mut buffer = [0u8; ArpPacket::SIZE];
     let packet = crate::util::get_mut_ref::<ArpPacket>(&mut buffer, 0)
@@ -40,7 +42,8 @@ pub fn test_arp_packet() {
     assert_eq!(packet.target_ip(), target_ip);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_processor_ignores_unrequested_reply() {
     // reply from 10.0.0.5 should not populate cache when we never asked
     let processor = ArpProcessor::new(

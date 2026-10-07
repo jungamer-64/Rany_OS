@@ -367,7 +367,8 @@ pub(crate) mod tests {
         writer.finish().expect("IGMP test payload is exact")
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_igmp_type_conversion() {
         assert_eq!(IgmpType::from_u8(0x11), Some(IgmpType::MembershipQuery));
         assert_eq!(IgmpType::from_u8(0x16), Some(IgmpType::V2MembershipReport));
@@ -375,7 +376,8 @@ pub(crate) mod tests {
         assert_eq!(IgmpType::from_u8(0xFF), None);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_multicast_validation() {
         let multicast = Ipv4Address::new([224, 0, 0, 1]);
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
@@ -384,7 +386,8 @@ pub(crate) mod tests {
         assert!(!unicast.is_multicast());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_join_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -406,7 +409,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_join_invalid_address() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let unicast = Ipv4Address::new([192, 168, 1, 1]);
@@ -417,7 +421,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_leave_group() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -437,7 +442,8 @@ pub(crate) mod tests {
         assert_eq!(reports[0].kind, PendingIgmpReportKind::LeaveStateChange);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_leave_nonmember() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -445,7 +451,8 @@ pub(crate) mod tests {
         assert_eq!(processor.leave_group(group), Err(IgmpError::NotMember));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_igmp_checksum() {
         // IGMP message: Query for all groups
         let message = [0x11, 0x64, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
@@ -459,7 +466,8 @@ pub(crate) mod tests {
         assert_eq!(compute_igmp_checksum(&valid_message), 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_report() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
@@ -473,7 +481,8 @@ pub(crate) mod tests {
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_leave() {
         let group = Ipv4Address::new([224, 1, 2, 3]);
         let mut buffer = [0u8; 8];
@@ -486,7 +495,8 @@ pub(crate) mod tests {
         assert_eq!(compute_igmp_checksum(&buffer), 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_multicast_ip_to_mac() {
         // 224.0.0.1 -> 01:00:5E:00:00:01
         let ip1 = Ipv4Address::new([224, 0, 0, 1]);
@@ -505,7 +515,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_process_general_query() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -534,7 +545,8 @@ pub(crate) mod tests {
         assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_report_suppression() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -565,7 +577,8 @@ pub(crate) mod tests {
         assert!(processor.pending_reports.is_empty());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_join_group_unsolicited_followup() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 10, 20, 30]);
@@ -598,7 +611,8 @@ pub(crate) mod tests {
         assert_eq!(processor.groups[0].unsolicited_reports_remaining, 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_report_minimal_layout_accepted() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);
@@ -618,7 +632,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_report_invalid_layout_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);
@@ -640,7 +655,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_query_malformed_source_length_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
 
@@ -665,7 +681,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_query_with_source_list_sets_delaying_member() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -705,7 +722,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_v3_single_record_report_checksum() {
         let mut report = [0u8; 64];
         let group = Ipv4Address::new([239, 1, 2, 3]);
@@ -730,7 +748,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_report_suppression_cancels_query_response() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -764,7 +783,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_v3_report_unknown_record_type_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);

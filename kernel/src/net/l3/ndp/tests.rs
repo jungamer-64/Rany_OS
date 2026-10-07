@@ -20,7 +20,8 @@ fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::v
     out
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_neighbor_cache_basic() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
@@ -39,7 +40,8 @@ pub fn test_neighbor_cache_basic() {
     assert!(cache.is_empty());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_neighbor_cache_update() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
@@ -57,7 +59,8 @@ pub fn test_neighbor_cache_update() {
     assert_eq!(entry.state, NeighborState::Reachable);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_neighbor_cache_expiry() {
     let mut cache = NeighborCache::new();
     let ip = Ipv6Address::LOOPBACK;
@@ -75,7 +78,8 @@ pub fn test_neighbor_cache_expiry() {
     assert!(cache.is_empty());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_parse_slla_option() {
     // Source Link-Layer Address: type=1, len=1 (8 bytes), mac=52:54:00:12:34:56
     let data = [1, 1, 0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
@@ -90,7 +94,8 @@ pub fn test_parse_slla_option() {
     }
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_parse_prefix_info_option() {
     // Prefix Information: type=3, len=4 (32 bytes)
     let mut data = [0u8; 32];
@@ -136,7 +141,8 @@ pub fn test_parse_prefix_info_option() {
     }
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_build_ns() {
     let src = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56,
@@ -162,7 +168,8 @@ pub fn test_build_ns() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_build_na() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -184,7 +191,8 @@ pub fn test_build_na() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_build_rs() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
@@ -201,14 +209,16 @@ pub fn test_build_rs() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_multicast_mac() {
     let addr = Ipv6Address::ALL_NODES_LINK_LOCAL;
     let mac = addr.multicast_mac();
     assert_eq!(mac, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_resolve_multicast() {
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let processor = NdpProcessor::new(Ipv6Address::LOOPBACK, mac);
@@ -218,7 +228,8 @@ pub fn test_resolve_multicast() {
     assert_eq!(resolved, [0x33, 0x33, 0x00, 0x00, 0x00, 0x01]);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ns_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
@@ -262,7 +273,8 @@ pub fn test_ns_processing() {
     assert_eq!(entry.state, NeighborState::Stale);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ndp_spoofing_detection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
@@ -295,7 +307,8 @@ pub fn test_ndp_spoofing_detection() {
     assert!(processor.cache().lookup(&sender_ip).is_none());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_na_multicast_target_rejection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
@@ -326,7 +339,8 @@ pub fn test_na_multicast_target_rejection() {
     assert!(processor.cache().lookup(&mcast_target).is_none());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_na_discard_unknown_target() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);
@@ -357,7 +371,8 @@ pub fn test_na_discard_unknown_target() {
     assert!(processor.cache().lookup(&target_ip).is_none());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ra_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
     let our_ip = Ipv6Address::from_eui64(&our_mac);

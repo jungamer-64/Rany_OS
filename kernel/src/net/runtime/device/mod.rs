@@ -2123,6 +2123,17 @@ pub fn enqueue_event_from_isr_in(
 
 #[cfg(test)]
 mod tests {
+    fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
+        let mut future = core::pin::pin!(future);
+        let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            core::task::Poll::Ready(value) => value,
+            core::task::Poll::Pending => {
+                panic!("completed operation unexpectedly remained pending")
+            }
+        }
+    }
+
     use super::*;
     use crate::net::runtime::context::default_runtime;
     use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
@@ -2179,7 +2190,7 @@ mod tests {
                 .lease_rx_buffer()
                 .ok_or("fake driver could not lease RX storage")?;
             let region = buffer.writable_region();
-            if packet.len() > region.writable_len() {
+            if packet.len() > region.len().get() {
                 return Err("fake RX packet exceeds writable DMA region");
             }
             // SAFETY: the RX lease grants exclusive write access to the
@@ -2187,12 +2198,12 @@ mod tests {
             unsafe {
                 core::ptr::copy_nonoverlapping(
                     packet.data().as_ptr(),
-                    region.cpu_ptr(),
+                    region.cpu_ptr().cast_mut(),
                     packet.len(),
                 );
             }
-            let received = buffer
-                .complete(meta)
+            // SAFETY: the synchronous emulated device write above has finished.
+            let received = unsafe { buffer.complete(meta) }
                 .map_err(|_| "fake RX completion layout is invalid")?;
             runtime.submit_rx(received)
         }
@@ -2742,7 +2753,7 @@ mod tests {
             completion_id,
             Ok(())
         ));
-        assert_eq!(crate::task::block_on(future), Ok(()));
+        assert_eq!(complete_immediately(future), Ok(()));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2754,7 +2765,7 @@ mod tests {
             completion_id,
             Err("submit failed")
         ));
-        assert_eq!(crate::task::block_on(future), Err("submit failed"));
+        assert_eq!(complete_immediately(future), Err("submit failed"));
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -2966,7 +2977,7 @@ mod tests {
                 .contains_key(&group_id)
         );
         assert_eq!(
-            crate::task::block_on(future),
+            complete_immediately(future),
             Err("device did not transmit packet")
         );
     }

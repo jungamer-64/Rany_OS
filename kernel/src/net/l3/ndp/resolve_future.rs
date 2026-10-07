@@ -317,7 +317,8 @@ mod tests {
         unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ndp_waiter_notify_matches_interface_scope() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_ndp_waiters_for_tests(runtime);
@@ -341,7 +342,8 @@ mod tests {
         let _ = remove_ndp_waiter(runtime, waiter_if2);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ndp_resolve_future_returns_ready_after_notification() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_ndp_waiters_for_tests(runtime);
@@ -363,7 +365,8 @@ mod tests {
         assert!(matches!(poll, Poll::Ready(Ok(mac)) if mac == resolved_mac));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn ndp_resolve_future_timeout_removes_registered_waiter() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_ndp_waiters_for_tests(runtime);

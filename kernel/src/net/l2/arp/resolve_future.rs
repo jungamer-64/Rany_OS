@@ -379,7 +379,8 @@ mod tests {
         unsafe { Waker::from_raw(RawWaker::new(core::ptr::null(), &VTABLE)) }
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn arp_waiter_notify_wakes_all_waiters_for_same_ip() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_arp_waiters_for_tests(runtime);
@@ -408,7 +409,8 @@ mod tests {
         let _ = remove_arp_waiter(runtime, waiter_b);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn arp_resolve_future_returns_ready_after_resolution_notification() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_arp_waiters_for_tests(runtime);
@@ -431,7 +433,8 @@ mod tests {
         assert!(matches!(poll, Poll::Ready(Ok(mac)) if mac == resolved_mac));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn arp_resolve_future_timeout_removes_registered_waiter() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         reset_arp_waiters_for_tests(runtime);

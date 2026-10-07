@@ -197,13 +197,15 @@ impl Default for PagedContent {
 pub mod tests {
     use super::*;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_page_constants() {
         assert_eq!(PAGE_SIZE, 4096);
         assert_eq!(1 << PAGE_SHIFT, PAGE_SIZE);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_paged_content_basic_write_read() {
         let mut content = PagedContent::new();
 
@@ -214,7 +216,8 @@ pub mod tests {
         assert_eq!(&buf, b"Hello, World!");
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_paged_content_sparse() {
         let content = PagedContent::new();
 
@@ -224,7 +227,8 @@ pub mod tests {
         assert_eq!(&buf, &[0u8; 10]);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_paged_content_cross_page_write() {
         let mut content = PagedContent::new();
 
@@ -241,7 +245,8 @@ pub mod tests {
         assert_eq!(content.page_count(), 2);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_cow_clone() {
         let mut original = PagedContent::new();
         original.write(0, b"Original");
@@ -261,7 +266,8 @@ pub mod tests {
         assert_eq!(&buf, b"Modified");
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_truncate() {
         let mut content = PagedContent::new();
         content.write(0, &[0xAA; PAGE_SIZE * 3]);
@@ -275,7 +281,8 @@ pub mod tests {
         assert_eq!(content.page_count(), 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_get_page_zero_copy() {
         let mut content = PagedContent::new();
         content.write(0, b"Test data");

@@ -127,7 +127,23 @@ mod tests {
             bind_udp_dual_stack_in(runtime_b, 80, InterfaceScope::Any, socket_b.socket_id())
                 .is_ok()
         );
-        assert!(find_udp_by_port_in(runtime_a, SocketFamily::Ipv4, 80, None).is_some());
-        assert!(find_udp_by_port_in(runtime_b, SocketFamily::Ipv4, 80, None).is_some());
+        assert!(
+            find_udp_by_port_in(
+                runtime_a,
+                SocketFamily::Ipv4,
+                80,
+                crate::net::runtime::manager::NetIfId(1)
+            )
+            .is_some()
+        );
+        assert!(
+            find_udp_by_port_in(
+                runtime_b,
+                SocketFamily::Ipv4,
+                80,
+                crate::net::runtime::manager::NetIfId(1)
+            )
+            .is_some()
+        );
     }
 }

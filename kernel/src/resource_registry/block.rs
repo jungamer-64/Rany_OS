@@ -780,11 +780,17 @@ mod tests {
         assert!(adapter.reserve().is_none());
         assert_eq!(adapter.stop(), Err(AbiErrorCode::DeviceBusy));
         assert!(matches!(
-            adapter.slots.lock().unwrap()[first],
+            adapter
+                .slots
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture slots poisoned"))[first],
             Slot::Reserved
         ));
         assert!(matches!(
-            adapter.slots.lock().unwrap()[second],
+            adapter
+                .slots
+                .lock()
+                .unwrap_or_else(|_| panic!("fixture slots poisoned"))[second],
             Slot::Reserved
         ));
     }

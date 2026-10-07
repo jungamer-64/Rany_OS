@@ -700,8 +700,19 @@ mod dma_tests {
         }
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
+        let mut future = core::pin::pin!(future);
+        let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            core::task::Poll::Ready(value) => value,
+            core::task::Poll::Pending => {
+                panic!("completed operation unexpectedly remained pending")
+            }
+        }
+    }
+
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     fn nvme_direct_handle_rejects_use_after_close() {
         let owner = DomainId::new(910);
         let handle = {
@@ -721,7 +732,7 @@ mod dma_tests {
         {
             let _owner_guard = set_current_subject(owner);
             let err =
-                crate::task::block_on(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
+                complete_immediately(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
             assert!(matches!(err, KapiError::InvalidHandle));
         }
     }
@@ -741,7 +752,7 @@ mod dma_tests {
         {
             let _caller_guard = set_current_subject(caller);
             let err =
-                crate::task::block_on(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
+                complete_immediately(KERNEL_SERVICE_HOST.nvme_flush_direct(handle)).unwrap_err();
             assert!(matches!(err, KapiError::PermissionDenied));
         }
 
@@ -821,7 +832,9 @@ mod dma_tests {
 
         {
             let _caller_guard = set_current_subject(caller);
-            let err = RRef::<u64>::recv(ChannelHandle::new(receiver_id)).unwrap_err();
+            let err = RRef::<u64>::recv(ChannelHandle::new(receiver_id))
+                .err()
+                .expect("foreign receive must be rejected");
             assert!(matches!(
                 err,
                 RRefError::Kernel(KapiError::PermissionDenied)

@@ -1218,7 +1218,17 @@ impl ShellNamespace for CellNamespace {
 mod tests {
     use super::*;
     use crate::driver_domain::lifecycle::DriverDomainConfig;
-    use futures::executor::block_on;
+
+    fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
+        let mut future = core::pin::pin!(future);
+        let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+        match future.as_mut().poll(&mut context) {
+            core::task::Poll::Ready(value) => value,
+            core::task::Poll::Pending => {
+                panic!("pure evaluation unexpectedly awaited an external event")
+            }
+        }
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -1233,7 +1243,7 @@ mod tests {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
         let args: [ExoValue<'static>; 0] = [];
-        let res = block_on(ns.call("list", &args, &caps));
+        let res = complete_immediately(ns.call("list", &args, &caps));
         match res {
             ExoValue::Error(s) => assert!(s.contains("CAP_FOWNER")),
             _ => panic!("expected permission error"),
@@ -1278,7 +1288,7 @@ mod tests {
         let ns = CellNamespace;
         let caps = CapabilitySet::empty();
         let args = [ExoValue::Int(0)];
-        let res = block_on(ns.call("wait_quiescent", &args, &caps));
+        let res = complete_immediately(ns.call("wait_quiescent", &args, &caps));
         match res {
             ExoValue::Error(s) => assert!(s.contains("Permission denied")),
             _ => panic!("expected permission error"),
@@ -1291,7 +1301,7 @@ mod tests {
         let ns = CellNamespace;
         let caps = CapabilitySet::full();
         let args = [ExoValue::Int(0), ExoValue::Int(1)];
-        let res = block_on(ns.call("wait_quiescent", &args, &caps));
+        let res = complete_immediately(ns.call("wait_quiescent", &args, &caps));
         match res {
             ExoValue::Map(m) => {
                 assert!(m.contains_key("target_epoch"));
@@ -1311,7 +1321,7 @@ mod tests {
             CellNamespace::vstr("dummy"),
             CellNamespace::vstr("/tmp/x.cell"),
         ];
-        let res = block_on(ns.call("swap", &args, &caps));
+        let res = complete_immediately(ns.call("swap", &args, &caps));
         match res {
             ExoValue::Error(s) => assert!(s.contains("CAP_SYS_MODULE")),
             _ => panic!("expected permission error"),

@@ -557,15 +557,16 @@ pub mod tests {
         let mut state = SocketState::new_tcp(TcpSocketState::Connected);
         state.send_buffer_limit = 4;
 
-        assert_eq!(
-            state.send_payload(payload_bytes(b"abcde")),
-            Err(EndpointError::BufferFull)
-        );
+        let (cause, returned) = state
+            .send_payload(payload_bytes(b"abcde"))
+            .expect_err("capacity must reject the whole payload");
+        assert_eq!(cause, EndpointError::BufferFull);
+        assert!(crate::net::payload::PayloadSpanRef::from_payload(&returned).eq_bytes(b"abcde"));
         assert_eq!(state.send_payload_bytes(), 0);
         assert!(!state.has_send_data());
 
         state.send_buffer_limit = 5;
-        assert_eq!(state.send_payload(payload_bytes(b"abcde")), Ok(()));
+        assert!(state.send_payload(payload_bytes(b"abcde")).is_ok());
         assert_eq!(state.send_payload_bytes(), 5);
     }
 
@@ -573,7 +574,7 @@ pub mod tests {
     #[cfg_attr(not(target_os = "linux"), test_case)]
     pub fn test_take_send_segment_window_splits_front_payload() {
         let mut state = SocketState::new_tcp(TcpSocketState::Connected);
-        assert_eq!(state.send_payload(payload_bytes(b"abcde")), Ok(()));
+        assert!(state.send_payload(payload_bytes(b"abcde")).is_ok());
 
         let prefix = state
             .take_send_segment_window(4)

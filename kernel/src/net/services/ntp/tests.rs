@@ -4,7 +4,8 @@
 
 use super::*;
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ntp_timestamp_to_unix() {
     // 2026-01-01 00:00:00 UTC
     // Unix: 1735689600
@@ -16,7 +17,8 @@ pub fn test_ntp_timestamp_to_unix() {
     assert_eq!(ntp.to_unix_seconds(), Some(1735689600));
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ntp_timestamp_rejects_pre_unix_epoch() {
     let before_unix_epoch = NtpTimestamp {
         seconds: 2_208_988_799u32.to_be_bytes(),
@@ -26,7 +28,8 @@ pub fn test_ntp_timestamp_rejects_pre_unix_epoch() {
     assert_eq!(before_unix_epoch.to_unix_seconds(), None);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ntp_timestamp_rejects_unsupported_era_without_anchor() {
     let era_one_low_word = NtpTimestamp {
         seconds: 1u32.to_be_bytes(),
@@ -36,7 +39,8 @@ pub fn test_ntp_timestamp_rejects_unsupported_era_without_anchor() {
     assert_eq!(era_one_low_word.to_unix_seconds(), None);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ntp_header_layout() {
     assert_eq!(NtpHeader::SIZE, 48);
     let req = NtpHeader::new_client_request();
@@ -44,7 +48,8 @@ pub fn test_ntp_header_layout() {
     assert_eq!(req.version(), 4);
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ntp_header_roundtrip_uses_fixed_wire_bytes() {
     let mut header = NtpHeader::new_client_request();
     header.stratum = 2;

@@ -95,7 +95,8 @@ mod tests {
     use crate::net::obs::trace::{NetEventKind, NetLayer};
     use crate::net::runtime::create_runtime;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn snapshot_reflects_counter_deltas_and_recent_events() {
         let runtime = create_runtime().expect("test runtime allocation");
         let before = snapshot_in(runtime);
@@ -126,7 +127,8 @@ mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn snapshot_keeps_runtime_observability_isolated() {
         let runtime_a = create_runtime().expect("runtime a allocation");
         let runtime_b = create_runtime().expect("runtime b allocation");
@@ -159,7 +161,8 @@ mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn snapshot_contains_registered_interface_entries() {
         let runtime = create_runtime().expect("test runtime allocation");
         manager::init_network_manager_in(runtime);

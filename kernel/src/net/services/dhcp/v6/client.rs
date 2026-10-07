@@ -1554,7 +1554,8 @@ pub(crate) mod tests {
     use super::*;
     use crate::net::l3::ipv6::Ipv6Address;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_solicit_min_size() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1571,7 +1572,8 @@ pub(crate) mod tests {
         assert_eq!(buf[0], DhcpV6MessageType::Solicit as u8);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_parse_reply_with_iaaddr() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1606,7 +1608,8 @@ pub(crate) mod tests {
         assert_eq!(lease.lease.addr, addr);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_request_min_size() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1642,7 +1645,8 @@ pub(crate) mod tests {
         assert!(found);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1681,7 +1685,8 @@ pub(crate) mod tests {
         assert!(client.lease().is_none());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_handle_packet_stores_server_addr_and_duid() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1750,7 +1755,8 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_advertise_triggers_request_and_requesting_state() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1794,7 +1800,8 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_requesting_retransmit_exhaustion_goes_to_init() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1812,7 +1819,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_force_renew_or_restart_paths() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1843,7 +1851,8 @@ pub(crate) mod tests {
         assert!(client.lease().is_none());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1899,7 +1908,8 @@ pub(crate) mod tests {
         assert_eq!(l.unwrap().addr, addr);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_renew_uses_known_server_address_for_dst() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1939,7 +1949,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_renew_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -1972,7 +1983,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_rebind_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -2006,7 +2018,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_build_release_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -2029,7 +2042,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_release_clears_lease_and_state() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -2069,7 +2083,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_parse_reply_with_dns_servers() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
@@ -2124,7 +2139,8 @@ pub(crate) mod tests {
     }
 
     #[cfg(test)]
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_parse_reply_with_status_code_error() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);

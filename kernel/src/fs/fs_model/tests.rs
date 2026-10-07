@@ -1,7 +1,8 @@
 #![allow(clippy::wildcard_imports)]
 use crate::fs::{FileMode, OpenFlags};
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_file_mode() {
     let mode = FileMode::DEFAULT_FILE;
     assert!(mode.owner_read());
@@ -9,7 +10,8 @@ pub fn test_file_mode() {
     assert!(!mode.owner_execute());
 }
 
-#[cfg_attr(test, test_case)]
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_open_flags() {
     let flags = OpenFlags(OpenFlags::O_RDWR | OpenFlags::O_CREAT);
     assert!(flags.can_read());

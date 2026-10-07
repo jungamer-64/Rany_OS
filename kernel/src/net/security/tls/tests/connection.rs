@@ -62,6 +62,7 @@ fn test_chained_payload(parts: &[&[u8]]) -> kernel_api::resource::net::PacketPay
         segments.extend(test_payload(part).into_segments());
     }
     crate::net::payload::packet_payload_from_segments(segments)
+        .expect("fixture owns nonempty segments")
 }
 
 fn find_extension_in_hello(hello: &[u8], ext_lo: u8) -> Option<usize> {
@@ -169,7 +170,7 @@ pub(crate) fn test_process_incoming_payload_accepts_multiple_plain_records() {
         .process_incoming_payload(test_payload(&records))
         .expect("concatenated TLS records should be processed one by one");
 
-    assert!(plaintext.is_empty());
+    assert!(plaintext.is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -185,12 +186,12 @@ pub(crate) fn test_process_incoming_payload_keeps_partial_record_buffered() {
     let pending_plaintext = conn
         .process_incoming_payload(test_payload(&first_fragment))
         .expect("partial TLS record should stay buffered");
-    assert!(pending_plaintext.is_empty());
+    assert!(pending_plaintext.is_none());
 
     let plaintext = conn
         .process_incoming_payload(test_payload(&second_fragment))
         .expect("second fragment should complete the buffered TLS record");
-    assert!(plaintext.is_empty());
+    assert!(plaintext.is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -207,7 +208,7 @@ pub(crate) fn test_process_incoming_payload_accepts_record_across_packet_segment
         .process_incoming_payload(payload)
         .expect("TLS record spanning packet segments should be processed in place");
 
-    assert!(plaintext.is_empty());
+    assert!(plaintext.is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -327,8 +328,8 @@ pub(crate) fn test_tls13_strip_content_type() {
             .map(|inner| (inner.content_type_wire(), inner.content_len())),
         Some((0x16, 0))
     );
-    assert_eq!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00])),
-        None
+    assert!(
+        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00]))
+            .is_none()
     );
 }

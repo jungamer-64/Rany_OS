@@ -1539,21 +1539,35 @@ mod tests {
             None,
         )
         .unwrap();
+        let placement =
+            crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap();
         let cpu1 = runtime
-            .discover_present(FirmwareCpuIdentity {
-                uid: Some(FirmwareCpuUid::Integer(1)),
-                apic_id: ApicId::new(1),
-                proximity_domain: Some(0),
-                eject: CpuEjectCapability::FirmwareEject,
-            })
+            .discover_present(
+                crate::cpu::LocatedCpu::resolve(
+                    FirmwareCpuIdentity {
+                        uid: Some(FirmwareCpuUid::Integer(1)),
+                        apic_id: ApicId::new(1),
+                        proximity_domain: Some(0),
+                        eject: CpuEjectCapability::FirmwareEject,
+                    },
+                    &placement,
+                )
+                .unwrap(),
+            )
             .unwrap();
         let cpu2 = runtime
-            .discover_present(FirmwareCpuIdentity {
-                uid: Some(FirmwareCpuUid::Integer(2)),
-                apic_id: ApicId::new(2),
-                proximity_domain: Some(0),
-                eject: CpuEjectCapability::FirmwareEject,
-            })
+            .discover_present(
+                crate::cpu::LocatedCpu::resolve(
+                    FirmwareCpuIdentity {
+                        uid: Some(FirmwareCpuUid::Integer(2)),
+                        apic_id: ApicId::new(2),
+                        proximity_domain: Some(0),
+                        eject: CpuEjectCapability::FirmwareEject,
+                    },
+                    &placement,
+                )
+                .unwrap(),
+            )
             .unwrap();
         assert_ne!(cpu1, cpu2);
         runtime.begin_start(cpu2).unwrap();

@@ -35,7 +35,7 @@ pub(crate) fn test_base64_decode() {
     assert!(crate::net::payload::PayloadSpanRef::from_payload(&result).eq_bytes(b"Hello"));
 
     let empty = base64_decode_payload("");
-    assert!(matches!(empty, Some(ref payload) if payload.is_empty()));
+    assert!(empty.is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

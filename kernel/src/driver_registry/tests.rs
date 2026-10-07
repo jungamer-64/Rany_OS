@@ -437,7 +437,6 @@ fn test_dispatch_irq_updates_ctx_irq_for_abi_driver() {
     DRIVER_REGISTRY.probe(handle).expect("probe failed");
     DRIVER_REGISTRY.start(handle).expect("start failed");
 
-    assert!(DRIVER_REGISTRY.has_irq_handler(handle));
     assert!(DRIVER_REGISTRY.dispatch_irq(handle, 0x88));
     assert!(IRQ_HANDLER_CALLED.load(Ordering::SeqCst));
     assert_eq!(LAST_IRQ.load(Ordering::SeqCst), 0x88);

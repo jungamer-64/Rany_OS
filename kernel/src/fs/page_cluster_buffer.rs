@@ -115,20 +115,23 @@ pub mod tests {
         ZeroCopyBufferMut,
     };
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_page_cluster_buffer_alloc_or_contig() {
         let buf = PageClusterBuffer::allocate(4096).expect("allocation failed");
         assert!(buf.as_slice().len() >= 4096);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_impl_zero_copy_traits() {
         // Compile-time trait bound test
         fn assert_traits<T: ZeroCopyBuffer + ZeroCopyBufferMut>() {}
         assert_traits::<PageClusterBuffer>();
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_page_cluster_buffer_dma_info() {
         let size = PAGE_SIZE_4K as usize;
         let backing = alloc_contiguous_frames(1).expect("physical buffer allocation");
@@ -140,7 +143,8 @@ pub mod tests {
         assert_eq!(info.len, size);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_page_cluster_buffer_physical_alloc_and_write() {
         let backing = alloc_contiguous_frames(1).expect("owned test RAM");
         let mut buffer =

@@ -431,7 +431,8 @@ impl TimeWaitTimer {
 pub mod tests {
     use super::*;
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_timeout_wheel_basic() {
         let mut wheel = TimeoutWheel::new(10);
         let id = wheel.schedule(100, TimerKind::TcpRetransmit, 0);
@@ -444,7 +445,8 @@ pub mod tests {
         assert_eq!(expired[0].kind, TimerKind::TcpRetransmit);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_timeout_wheel_cancel() {
         let mut wheel = TimeoutWheel::new(10);
         let id = wheel.schedule(100, TimerKind::NdpRetransmit, 0);
@@ -452,13 +454,15 @@ pub mod tests {
         assert_eq!(wheel.count(), 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_retransmit_timer_initial() {
         let timer = RetransmitTimer::new();
         assert_eq!(timer.rto(), 1000); // 1秒
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_retransmit_timer_update() {
         let mut timer = RetransmitTimer::new();
         // First measurement: 100ms RTT
@@ -467,7 +471,8 @@ pub mod tests {
         assert!(timer.rto() <= 60_000); // max_rto
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_retransmit_timer_backoff() {
         let mut timer = RetransmitTimer::new();
         assert_eq!(timer.rto(), 1000);
@@ -477,7 +482,8 @@ pub mod tests {
         assert_eq!(timer.rto(), 4000);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_keepalive_timer() {
         let mut ka = KeepaliveTimer::new();
         ka.enable();
@@ -493,7 +499,8 @@ pub mod tests {
         assert!(!ka.should_abort());
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_time_wait_timer() {
         let tw = TimeWaitTimer::start(1000);
         assert!(!tw.is_expired(1000));

@@ -473,8 +473,8 @@ pub mod tests {
         let fd1 = SocketId::from_raw(1);
         let fd2 = SocketId::from_raw(2);
 
-        assert!(fd1.is_valid());
-        assert!(!SocketId::INVALID.is_valid());
+        assert_eq!(fd1.raw(), 1);
+        assert_eq!(fd2.raw(), 2);
         assert!(fd1 < fd2);
     }
 
@@ -495,17 +495,20 @@ pub mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_endpoint_fd() {
         endpoint_fd_impl();
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_endpoint_addr() {
         endpoint_addr_impl();
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_network_unreachable_keeps_endpoint_cause() {
         tcp_network_unreachable_keeps_endpoint_cause_impl();
     }

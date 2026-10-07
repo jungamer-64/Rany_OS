@@ -490,7 +490,8 @@ pub mod tests {
         )
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_segment_builder() {
         // SYNセグメント構築
         let segment = build_test_segment(
@@ -517,7 +518,8 @@ pub mod tests {
         assert_eq!(flags & tcp_flags::SYN, tcp_flags::SYN);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_segment_with_data() {
         let data = alloc::vec![0x48, 0x65, 0x6C, 0x6C, 0x6F]; // "Hello"
         let segment = build_test_segment(
@@ -541,7 +543,8 @@ pub mod tests {
         );
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_segment_with_options() {
         // SYNセグメント with TCP options
         let segment = build_test_segment(
@@ -582,7 +585,8 @@ pub mod tests {
         assert_eq!(view.read_u8(31), Some(1)); // NOP
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_message_length_field_for_checksum() {
         let mut segment = build_test_segment(
             TcpSegmentBuilder::new(12345, 80)
@@ -600,7 +604,8 @@ pub mod tests {
         assert_ne!(checksum, 0);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_tcp_checksum_v6() {
         let mut segment = build_test_segment(TcpSegmentBuilder::new(1234, 80).seq(1).ack(0));
         TcpSegmentBuilder::calculate_checksum_v6(
@@ -612,7 +617,8 @@ pub mod tests {
         assert_ne!(PacketPayloadView::new(&segment).read_u16_be(16), Some(0));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_send_tcp_segment_rejects_mixed_family() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local = EndpointAddr::new([127, 0, 0, 1], 12345);
@@ -622,7 +628,8 @@ pub mod tests {
         assert!(!send_test_segment(runtime, local, remote, segment));
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_send_tcp_segment_ipv4_no_panic_when_stack_unavailable() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local = EndpointAddr::new([127, 0, 0, 1], 12346);
@@ -632,7 +639,8 @@ pub mod tests {
         let _ = send_test_segment(runtime, local, remote, segment);
     }
 
-    #[cfg_attr(test, test_case)]
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     pub fn test_send_tcp_segment_ipv6_no_panic_when_stack_unavailable() {
         let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
         let local =

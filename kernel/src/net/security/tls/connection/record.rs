@@ -999,7 +999,7 @@ mod tests {
     fn encrypted_application_records_are_processed_from_one_ingress_payload() {
         let config = super::super::TlsClientConfig::for_server_name(
             "example.com",
-            super::super::TlsTrustAnchors::empty(),
+            crate::net::security::tls::TlsTrustAnchors::empty(),
         )
         .expect("test server name fits");
         let mut conn =
@@ -1029,7 +1029,7 @@ mod tests {
     fn encrypted_records_inside_one_packet_ref_split_without_copy_fallback() {
         let config = super::super::TlsClientConfig::for_server_name(
             "example.com",
-            super::super::TlsTrustAnchors::empty(),
+            crate::net::security::tls::TlsTrustAnchors::empty(),
         )
         .expect("test server name fits");
         let mut conn =
@@ -1048,7 +1048,12 @@ mod tests {
             .process_incoming_payload(coalesced)
             .expect("same-packet records split through PacketPayload::take_front");
 
-        assert!(payload_matches(&plaintext, b"alphabeta"));
+        assert!(payload_matches(
+            plaintext
+                .as_ref()
+                .expect("application records produce plaintext"),
+            b"alphabeta"
+        ));
         assert!(matches!(conn.record.read_seq.current(), Ok(2)));
     }
 
@@ -1056,7 +1061,7 @@ mod tests {
     fn encrypted_record_body_and_tag_windows_cross_packet_segments() {
         let config = super::super::TlsClientConfig::for_server_name(
             "example.com",
-            super::super::TlsTrustAnchors::empty(),
+            crate::net::security::tls::TlsTrustAnchors::empty(),
         )
         .expect("test server name fits");
         let mut conn =
@@ -1075,7 +1080,12 @@ mod tests {
             .process_incoming_payload(fragmented)
             .expect("segmented body and tag decrypt");
 
-        assert!(payload_matches(&plaintext, b"segmented-window"));
+        assert!(payload_matches(
+            plaintext
+                .as_ref()
+                .expect("application records produce plaintext"),
+            b"segmented-window"
+        ));
         assert!(matches!(conn.record.read_seq.current(), Ok(1)));
     }
 }

@@ -531,13 +531,19 @@ mod tests {
         .snapshot()
     }
 
-    fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::FirmwareCpuIdentity {
-        crate::cpu::FirmwareCpuIdentity {
-            uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
-            apic_id: crate::cpu::ApicId::new(apic_id),
-            proximity_domain: Some(0),
-            eject: crate::cpu::CpuEjectCapability::FirmwareEject,
-        }
+    fn firmware_cpu(uid: u64, apic_id: u32) -> crate::cpu::LocatedCpu {
+        let placement =
+            crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap();
+        crate::cpu::LocatedCpu::resolve(
+            crate::cpu::FirmwareCpuIdentity {
+                uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+                apic_id: crate::cpu::ApicId::new(apic_id),
+                proximity_domain: Some(0),
+                eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+            },
+            &placement,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -607,7 +613,9 @@ mod tests {
             .cpu_resources(CpuId::BOOTSTRAP)
             .expect("runtime B bootstrap resources");
         assert!(resources_a.command_queue.send(RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::TxAvailable
+            crate::net::runtime::command::TransportCommand::TcpDataReady {
+                socket_id: crate::net::l4::types::SocketId::from_raw(1)
+            }
         )));
         assert!(resources_a.command_queue.recv().is_some());
         assert!(resources_b.command_queue.recv().is_none());
