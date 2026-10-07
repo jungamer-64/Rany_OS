@@ -15,7 +15,6 @@ exclude=(
   '-g' '!kernel/src/drivers.rs'
   '-g' '!kernel/src/drivers/time.rs'
   '-g' '!kernel/src/time/**'
-  '-g' '!kernel/src/host_support/**'
   '-g' '!kernel/src/lib.rs'
   '-g' '!kernel/src/net/drivers/mlx5_registry.rs'
   '-g' '!kernel/src/net/runtime/bridge/mlx5_bridge.rs'
