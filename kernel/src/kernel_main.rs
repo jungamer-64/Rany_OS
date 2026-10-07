@@ -264,12 +264,16 @@ fn phase_early_kernel_substrate(context: &KernelBootContext, heaps: heap::Bootst
     // 周期 tick だけを有効化して 1 tick = 1ms の前提を整える。
     // 1. メモリ管理の初期化
     info!(target: "init", "Initializing memory management");
-    if let Err(error) = heap::init(context.boot_info_view(), heaps) {
-        // Bootstrap RAM failure is terminal: no substrate exists to safely
-        // start workers or recover partially admitted allocator state.
+    let ram_admission = heap::init(context.boot_info_view(), heaps).unwrap_or_else(|error| {
+        // Partial RAM admission cannot safely restart runtime workers.
         io::log::early_print("[MEM] bootstrap initialization rejected\n");
         panic!("bootstrap heap initialization failed: {error}");
-    }
+    });
+    io::iommu::runtime::security::protect_bios_reserved_regions(
+        context.boot_info_view(),
+        ram_admission,
+    )
+    .unwrap_or_else(|error| panic!("firmware DMA protection admission failed: {error:?}"));
     info!(target: "init", "Memory management initialized");
     graphics::vga::init();
 

@@ -39,40 +39,77 @@ pub fn init() {
     log::info!("[IOMMU][SECURITY] Security subsystem initialized");
 }
 
-/// Protect BIOS/UEFI reserved memory regions from DMA access.
-pub fn protect_bios_reserved_regions(boot_info: &boot_proto::ExoBootInfoView<'_>) {
+/// Protect firmware-retained memory after RAM ownership has been admitted.
+/// Reclaimed PMM RAM and the retained bootstrap slab are excluded by their
+/// admitted ownership, independently of the firmware descriptor's type.
+///
+/// # Errors
+/// Malformed firmware geometry or unavailable RAM admission leaves the policy
+/// unpublished. The boot root must terminate before enabling device DMA.
+pub(crate) fn protect_bios_reserved_regions(
+    boot_info: &boot_proto::ExoBootInfoView<'_>,
+    admission: crate::heap::BootRamAdmission,
+) -> Result<(), crate::mm::phys::frame_allocator::FrameAllocError> {
+    use crate::mm::phys::frame_allocator::{self as pmm, FrameAllocError};
+    use x86_64::PhysAddr;
+
     let descriptors = boot_info.memory_map();
-    if descriptors.is_empty() {
-        return;
-    }
-
-    let mut protected_count = 0;
-    let mut protected_bytes = 0u64;
-
-    for desc in descriptors.iter().take(2048) {
-        let ty = desc.r#type;
-        // SECURITY: Skip only ranges that are genuinely usable RAM for general purposes.
-        // Conventional Memory (7) is free RAM.
-        // Boot Services Code/Data (3, 4) are often used for early allocations and reclaimed.
-        // EVERYTHING ELSE (including ACPI tables, NVS, and Reserved) MUST be protected.
-        if ty == 7 || ty == 3 || ty == 4 {
+    // Validate every descriptor before publishing any firmware protection.
+    let mut ranges = alloc::vec::Vec::new();
+    ranges
+        .try_reserve_exact(descriptors.len())
+        .map_err(|_| FrameAllocError::MetadataAllocation)?;
+    for desc in descriptors {
+        let size = desc
+            .page_count
+            .checked_mul(4096)
+            .ok_or(FrameAllocError::InvalidRange)?;
+        if size == 0 {
             continue;
         }
+        if desc.phys_start % 4096 != 0 {
+            return Err(FrameAllocError::Alignment);
+        }
+        let start =
+            PhysAddr::try_new(desc.phys_start).map_err(|_| FrameAllocError::InvalidRange)?;
+        let gaps = pmm::unmanaged_physical_ranges(start, size)?;
+        ranges.push(gaps);
+    }
 
-        let start = desc.phys_start;
-        let size = desc.page_count.saturating_mul(4096);
-        if size > 0 {
-            crate::security::dma::register_protected_range(start, size);
-            protected_count += 1;
-            protected_bytes = protected_bytes.saturating_add(size);
+    let reclaimed = admission.bootstrap_range();
+    let mut protected_count = 0usize;
+    let mut protected_bytes = 0u64;
+    for gaps in ranges {
+        for (start, size) in gaps {
+            let range = start.as_u64()..start.as_u64() + size;
+            for retained in subtract_range(range, reclaimed.clone())
+                .into_iter()
+                .flatten()
+            {
+                let bytes = retained.end - retained.start;
+                crate::security::dma::register_protected_range(retained.start, bytes);
+                protected_count += 1;
+                protected_bytes = protected_bytes.saturating_add(bytes);
+            }
         }
     }
+    log::info!(
+        "[IOMMU][SECURITY] Protected {} firmware-retained regions ({} KB total)",
+        protected_count,
+        protected_bytes / 1024
+    );
+    Ok(())
+}
 
-    if protected_count > 0 {
-        log::info!(
-            "[IOMMU][SECURITY] Protected {} BIOS/UEFI reserved regions ({} KB total)",
-            protected_count,
-            protected_bytes / 1024
-        );
+fn subtract_range(
+    source: core::ops::Range<u64>,
+    admitted: core::ops::Range<u64>,
+) -> [Option<core::ops::Range<u64>>; 2] {
+    if source.end <= admitted.start || admitted.end <= source.start {
+        return [Some(source), None];
     }
+    [
+        (source.start < admitted.start).then_some(source.start..admitted.start),
+        (admitted.end < source.end).then_some(admitted.end..source.end),
+    ]
 }
