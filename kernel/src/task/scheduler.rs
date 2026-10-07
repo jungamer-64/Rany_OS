@@ -553,7 +553,11 @@ impl SchedulerState {
                 let cpu = self
                     .select_target(placement, PlacementOrigin::PollBoundary(last_cpu))
                     .ok()?;
-                self.tasks.get_mut(&id)?.state = TaskRunState::Ready { cpu };
+                let entry = self.tasks.get_mut(&id)?;
+                // Sleeping grants no unlimited runtime credit. Preserve charged
+                // progress ahead of the floor and the stable task-order tie.
+                entry.virtual_runtime = entry.virtual_runtime.max(self.min_virtual_runtime);
+                entry.state = TaskRunState::Ready { cpu };
                 self.enqueue(id, cpu);
                 Some(cpu)
             }
@@ -754,10 +758,9 @@ impl SchedulerState {
                         },
                     ),
                 };
-                self.tasks.0[slot]
-                    .as_mut()
-                    .expect("quota task vanished")
-                    .state = resumed;
+                let entry = self.tasks.0[slot].as_mut().expect("quota task vanished");
+                entry.virtual_runtime = entry.virtual_runtime.max(self.min_virtual_runtime);
+                entry.state = resumed;
                 self.queues[cpu.as_usize()].insert(slot);
             }
         }
