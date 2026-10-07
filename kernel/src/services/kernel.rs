@@ -99,6 +99,14 @@ impl KernelServices for KernelServiceHost {
         crate::io::msix::disable_for_owner(owner, device_id)
     }
 
+    fn bind_irq(&self, vector: u32, cookie: u64) -> Result<(), KapiError> {
+        crate::driver_registry::bind_irq_for_current_domain(vector, cookie)
+    }
+
+    fn unbind_irq(&self, vector: u32) -> Result<(), KapiError> {
+        crate::driver_registry::unbind_irq_for_current_domain(vector)
+    }
+
     fn net_alloc_packet(
         &self,
         len: usize,

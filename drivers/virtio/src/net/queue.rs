@@ -63,6 +63,9 @@ impl NetRxQueue {
     pub const fn capacity(&self) -> u16 {
         self.ring.capacity()
     }
+    pub fn pending_count(&self) -> usize {
+        usize::from(self.ring.pending_count()) + usize::from(self.retained.is_some())
+    }
 
     /// Reserve the descriptor before transferring the CPU packet lease.
     ///

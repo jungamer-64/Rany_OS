@@ -22,7 +22,7 @@ mod retirement;
 
 const LIFECYCLE_TIMEOUT_MS: u64 = 30_000;
 
-pub(super) enum Phase {
+enum Phase {
     Resetting {
         deadline: u64,
     },
@@ -38,21 +38,21 @@ pub(super) enum Phase {
     Transitioning,
 }
 
-pub(super) enum InterruptOwner {
+enum InterruptOwner {
     None,
     Allocated(kernel_api::msix::MsixVectorInfo),
     Bound(kernel_api::msix::MsixVectorInfo),
 }
 
 #[derive(Default)]
-pub(super) struct Counters {
+struct Counters {
     tx_packets: AtomicU64,
     rx_packets: AtomicU64,
     tx_errors: AtomicU64,
     rx_errors: AtomicU64,
 }
 
-pub(super) struct Runtime {
+struct Runtime {
     device: PackedPciLocation,
     transport: VirtioPciTransport,
     phase: RwLock<Phase>,
@@ -65,7 +65,14 @@ pub(super) struct Runtime {
 
 pub(super) struct NetCell {
     runtime: Option<Arc<Runtime>>,
-    registration: Option<u64>,
+    registration: Option<Registration>,
+}
+
+enum Registration {
+    Live(u64),
+    // Publication succeeded, but startup failed and unregister has not yet
+    // acknowledged stop. This handle cannot authorize another successful start.
+    Retained(u64),
 }
 
 impl NetCell {
@@ -116,15 +123,19 @@ impl NetCell {
     }
 
     pub(super) async fn start(&mut self) -> KapiResult<()> {
-        if self.registration.is_some() {
-            return Ok(());
+        match self.registration {
+            Some(Registration::Live(_)) => return Ok(()),
+            Some(Registration::Retained(handle)) => {
+                return Err(KapiError::NetRegistrationRetained { handle });
+            }
+            None => {}
         }
         let runtime = self.runtime.as_ref().ok_or(KapiError::NotFound)?;
         let registration = callbacks::registration(runtime)?;
         match kernel_api::service::kernel::instance().register_netdev_port(&registration) {
-            Ok(handle) => self.registration = Some(handle),
+            Ok(handle) => self.registration = Some(Registration::Live(handle)),
             Err(KapiError::NetRegistrationRetained { handle }) => {
-                self.registration = Some(handle);
+                self.registration = Some(Registration::Retained(handle));
                 return Err(KapiError::NetRegistrationRetained { handle });
             }
             Err(cause) => return Err(cause),
@@ -141,7 +152,7 @@ impl NetCell {
         // LOOP_PROOF: mode=event; reason=Closed admission and each retained stop step precede a timer wait, with completion or the bounded lifecycle deadline ending the operation.;
         loop {
             let result = match self.registration {
-                Some(handle) => {
+                Some(Registration::Live(handle) | Registration::Retained(handle)) => {
                     kernel_api::service::kernel::instance().unregister_netdev_port(handle)
                 }
                 None => runtime.advance_stop(timer.current_tick_ms()),
@@ -184,11 +195,9 @@ impl DriverIrqSource for Runtime {
             return false;
         }
         let phase = self.phase.read();
-        let status = self.transport.acknowledge_interrupt();
-        if status == 0 {
-            return false;
-        }
-        self.pending_irq.fetch_or(status, Ordering::Release);
+        // PCI MSI-X does not use ISR status. This retained vector serves both
+        // queues and configuration changes; the normal callback rechecks both.
+        self.pending_irq.fetch_or(3, Ordering::Release);
         if let Phase::Live { binding, .. } = &*phase {
             // SAFETY: Live retains the runtime binding until stopped DMA and
             // packet returns are acknowledged. This read guard excludes its

@@ -26,6 +26,7 @@ struct Registers {
     features: OwnedMmioRegister<u32, ReadOnly>,
     driver_feature_select: OwnedMmioRegister<u32, ReadWrite>,
     driver_features: OwnedMmioRegister<u32, WriteOnly>,
+    configuration_vector: OwnedMmioRegister<u16, ReadWrite>,
     queues: OwnedMmioRegister<u16, ReadOnly>,
     status: OwnedMmioRegister<u8, ReadWrite>,
     generation: OwnedMmioRegister<u8, ReadOnly>,
@@ -86,6 +87,7 @@ impl VirtioPciTransport {
                 features: mapping.owned_read_only(0x04)?,
                 driver_feature_select: mapping.owned_read_write(0x08)?,
                 driver_features: mapping.owned_write_only(0x0c)?,
+                configuration_vector: mapping.owned_read_write(0x10)?,
                 queues: mapping.owned_read_only(0x12)?,
                 status: mapping.owned_read_write(0x14)?,
                 generation: mapping.owned_read_only(0x15)?,
@@ -117,6 +119,27 @@ impl VirtioPciTransport {
                 owner: apertures,
             }),
         }
+    }
+
+    /// Map configuration-change notifications to a retained MSI-X table entry,
+    /// or disable them with `Polled`. Queue interrupt policy is independent.
+    /// # Errors
+    /// Rejects the reserved MSI-X selector or a device-rejected vector.
+    pub fn configure_configuration_interrupt(
+        &self,
+        interrupt: QueueInterrupt,
+    ) -> TransportResult<()> {
+        let vector = match interrupt {
+            QueueInterrupt::Msix(vector) if vector != u16::MAX => vector,
+            QueueInterrupt::Polled => u16::MAX,
+            _ => return Err(TransportError::UnsupportedInterruptVector),
+        };
+        let mut registers = self.registers.lock();
+        registers.configuration_vector.write(vector);
+        if registers.configuration_vector.read() != vector {
+            return Err(TransportError::ConfigAccessFailed);
+        }
+        Ok(())
     }
 
     fn configuration(&self) -> TransportResult<&MappedMmio> {

@@ -106,14 +106,9 @@ pub trait KernelServices: Send + Sync {
     // Memory Management
     // ========================================================================
 
-    /// Allocate DMA-capable memory for a specific device (IOMMU-aware)
-    ///
-    /// The locator encodes PCI segment, bus, device, and function.
-    /// Implementation should use this to create IOMMU mappings if the device is protected.
-    ///
-    /// ```compile_fail
-    /// let _ = kernel_api::service::kernel::instance().alloc_dma(4096);
-    /// ```
+    /// Allocate device-scoped backing admitted through its IOMMU context.
+    /// A CPU lease is returned only after translation admission completes;
+    /// published backing remains retained during failed translation retirement.
     ///
     /// # Errors
     /// - `KapiError::OutOfMemory` if RAM or allocation metadata cannot be acquired
@@ -144,6 +139,18 @@ pub trait KernelServices: Send + Sync {
     ///
     /// Returns an error if the requested state transition is invalid or cannot be completed.
     fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()>;
+
+    /// Bind an owned MSI-X vector to the driver's ordinary-task IRQ relay.
+    /// The caller retains its IRQ source and code until unbinding and stop.
+    /// # Errors
+    /// Rejects foreign vectors, duplicate bindings or relay task admission failure.
+    fn bind_irq(&self, vector: u32, cookie: u64) -> KapiResult<()>;
+
+    /// Close relay admission for an owned vector. A relay already in flight
+    /// still retains the instance and must observe its stopped resource state.
+    /// # Errors
+    /// Rejects unknown vectors and bindings owned by another domain.
+    fn unbind_irq(&self, vector: u32) -> KapiResult<()>;
 
     /// Allocate a packet-backed network buffer owned by the kernel datapath.
     /// # Errors
@@ -1054,6 +1061,14 @@ mod standalone {
 
         fn disable_msix(&self, device_id: PackedPciLocation) -> KapiResult<()> {
             disable_msix(device_id)
+        }
+
+        fn bind_irq(&self, vector: u32, cookie: u64) -> KapiResult<()> {
+            AbiError::from_raw((super::abi().irq_bind)(vector, cookie)).into_result()
+        }
+
+        fn unbind_irq(&self, vector: u32) -> KapiResult<()> {
+            AbiError::from_raw((super::abi().irq_unbind)(vector)).into_result()
         }
 
         fn net_alloc_packet(

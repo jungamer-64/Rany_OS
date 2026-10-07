@@ -123,7 +123,7 @@ fn force_unbind_irq(vector: u8) -> Option<IrqBinding> {
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
+pub(crate) fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
     let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
     let owner = crate::task::current_subject().domain;
     let owner_info = crate::io::msix::owner_for_vector(vector).ok_or(KapiError::InvalidHandle)?;
@@ -183,12 +183,12 @@ fn bind_irq_for_current_domain(irq: u32, cookie: u64) -> KapiResult<()> {
 }
 
 #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-fn bind_irq_for_current_domain(_irq: u32, _cookie: u64) -> KapiResult<()> {
+pub(crate) fn bind_irq_for_current_domain(_irq: u32, _cookie: u64) -> KapiResult<()> {
     Err(KapiError::NotSupported)
 }
 
 #[cfg(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export"))]
-fn unbind_irq_for_current_domain(irq: u32) -> KapiResult<()> {
+pub(crate) fn unbind_irq_for_current_domain(irq: u32) -> KapiResult<()> {
     let vector = u8::try_from(irq).map_err(|_| KapiError::InvalidHandle)?;
     let owner = crate::task::current_subject().domain;
     let binding = IRQ_BINDINGS
@@ -212,7 +212,7 @@ fn unbind_irq_for_current_domain(irq: u32) -> KapiResult<()> {
 }
 
 #[cfg(not(any(not(test), feature = "full_mm_tests", feature = "qemu-test-export")))]
-fn unbind_irq_for_current_domain(_irq: u32) -> KapiResult<()> {
+pub(crate) fn unbind_irq_for_current_domain(_irq: u32) -> KapiResult<()> {
     Err(KapiError::NotSupported)
 }
 
