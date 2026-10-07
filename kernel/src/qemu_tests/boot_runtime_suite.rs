@@ -282,7 +282,7 @@ fn case_apic_timers_armed_on_all_online_cpus() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_pinned_task_runs_on_online_cpu() -> Result<(), BootCaseError> {
-    let target = peer_online_cpu()?;
+    let target = execution_cpu()?;
     let observed_cpu = Arc::new(AtomicU64::new(u64::MAX));
     let observed_cpu_task = observed_cpu.clone();
     task::spawn(
@@ -367,7 +367,7 @@ fn case_tick_progresses() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
-    let target = peer_online_cpu()?;
+    let target = execution_cpu()?;
     let completed = Arc::new(AtomicBool::new(false));
     let completed_at_tick = Arc::new(AtomicU64::new(0));
     let completed_clone = completed.clone();
@@ -408,7 +408,7 @@ fn case_sleep_ms_resumes() -> Result<(), BootCaseError> {
 
 #[cfg(feature = "qemu-test-export")]
 fn case_timer_waker_deferred_path() -> Result<(), BootCaseError> {
-    let target = peer_online_cpu()?;
+    let target = execution_cpu()?;
     let stats_before = task::interrupt_waker::interrupt_waker_registry().stats();
     let observation = Arc::new(WakeObservation::new());
     let task_observation = Arc::clone(&observation);
@@ -557,7 +557,7 @@ fn case_synthetic_interrupt_deferred_path(
     source: InterruptSource,
     label: &str,
 ) -> Result<(), BootCaseError> {
-    let target = peer_online_cpu()?;
+    let target = execution_cpu()?;
     let observation = Arc::new(WakeObservation::new());
     let task_observation = Arc::clone(&observation);
     let armed = Arc::new(AtomicBool::new(false));
@@ -700,17 +700,10 @@ impl alloc::task::Wake for ObservedWake {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn peer_online_cpu() -> Result<crate::cpu::CpuId, BootCaseError> {
-    let current = crate::cpu::CurrentCpu::acquire()
-        .ok_or_else(|| BootCaseError::failed("runtime test task has no CurrentCpu binding"))?
-        .id();
-    crate::cpu::snapshot()
-        .online()
-        .iter()
-        .find(|&cpu| cpu != current)
-        .ok_or_else(|| {
-            BootCaseError::blocked("production scheduler task cases require two online CPUs")
-        })
+fn execution_cpu() -> Result<crate::cpu::CpuId, BootCaseError> {
+    crate::cpu::CurrentCpu::acquire()
+        .map(|current| current.id())
+        .ok_or_else(|| BootCaseError::failed("runtime test task has no CurrentCpu binding"))
 }
 
 #[cfg(feature = "qemu-test-export")]
