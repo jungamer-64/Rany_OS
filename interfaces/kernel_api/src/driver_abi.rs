@@ -507,8 +507,9 @@ pub struct DriverVTable {
     /// Request capabilities needed by this driver (optional).
     pub request_capabilities: Option<extern "C" fn(caps: *mut DriverCapabilities)>,
 
-    /// Handle interrupt (optional).
-    pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
+    /// Relay-task IRQ entry. The caller retains the initialized context,
+    /// driver instance and code throughout the synchronous borrow; never ISR.
+    pub handle_irq: Option<unsafe extern "C" fn(ctx: *mut DriverContext) -> bool>,
 
     /// Export provider descriptors for this driver instance (optional).
     pub provider_descriptors: Option<ProviderDescriptorsFn>,
@@ -528,7 +529,7 @@ pub struct DriverVTableFns {
     pub driver_type: extern "C" fn() -> u32,
     pub version: extern "C" fn() -> u64,
     pub request_capabilities: Option<extern "C" fn(caps: *mut DriverCapabilities)>,
-    pub handle_irq: Option<extern "C" fn(ctx: *mut DriverContext) -> bool>,
+    pub handle_irq: Option<unsafe extern "C" fn(ctx: *mut DriverContext) -> bool>,
 }
 
 impl DriverVTable {
