@@ -11,6 +11,7 @@
 #![forbid(unsafe_code)]
 
 use crate::sync::{PoisonLock, PoisonRwLock};
+use crate::task::current_tick;
 use alloc::boxed::Box;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::sync::Arc;
@@ -108,6 +109,61 @@ pub enum DeviceId {
     RegisteredBlock { handle: u64 },
     /// カスタム
     Custom(u32),
+}
+
+impl DeviceId {
+    // The high byte identifies the locator domain. Registration identities are
+    // monotonic, never reused, and limited before publication to the low bits.
+    pub(crate) const MAX_STORAGE_REGISTRATION: u64 = (1 << 56) - 1;
+
+    pub(crate) fn storage_id(self) -> Option<u64> {
+        match self {
+            Self::Nvme {
+                controller,
+                namespace,
+            } if namespace != 0 => {
+                Some((1u64 << 56) | (u64::from(controller) << 32) | u64::from(namespace))
+            }
+            Self::Ahci { controller, port } if controller.is_canonical() && port < 32 => Some(
+                (3u64 << 56)
+                    | (u64::from(controller.segment()) << 32)
+                    | (u64::from(controller.bus()) << 24)
+                    | (u64::from(controller.device()) << 16)
+                    | (u64::from(controller.function()) << 8)
+                    | u64::from(port),
+            ),
+            Self::RegisteredBlock { handle }
+                if handle != 0 && handle <= Self::MAX_STORAGE_REGISTRATION =>
+            {
+                Some((4u64 << 56) | handle)
+            }
+            _ => None,
+        }
+    }
+
+    pub(crate) fn from_storage_id(raw: u64) -> Option<Self> {
+        let bytes = raw.to_le_bytes();
+        let device = match bytes[7] {
+            1 => Self::Nvme {
+                controller: bytes[4],
+                namespace: u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]),
+            },
+            3 => Self::Ahci {
+                controller: kernel_api::abi::driver::PackedPciLocation::new(
+                    u16::from_le_bytes([bytes[4], bytes[5]]),
+                    bytes[3],
+                    bytes[2],
+                    bytes[1],
+                ),
+                port: bytes[0],
+            },
+            4 => Self::RegisteredBlock {
+                handle: raw & Self::MAX_STORAGE_REGISTRATION,
+            },
+            _ => return None,
+        };
+        (device.storage_id() == Some(raw)).then_some(device)
+    }
 }
 
 /// Geometry validated by the device owner. This is a discovery projection,

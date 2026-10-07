@@ -9,6 +9,7 @@ use kernel_api::service::time::TimerError;
 pub(crate) enum Failure {
     Timer(TimerError),
     Iommu(IommuError),
+    ExecutionUnavailable,
     Returned,
 }
 
@@ -17,6 +18,7 @@ impl core::fmt::Display for Failure {
         match self {
             Self::Timer(cause) => write!(formatter, "timer: {cause}"),
             Self::Iommu(cause) => write!(formatter, "IOMMU: {cause:?}"),
+            Self::ExecutionUnavailable => formatter.write_str("service has no current CPU"),
             Self::Returned => formatter.write_str("service returned unexpectedly"),
         }
     }
@@ -31,6 +33,7 @@ pub(super) enum State {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Job {
     Maintenance,
+    BlockIo,
     SecurityMonitor,
     IntelCommands,
     IntelFaults,
@@ -68,6 +71,7 @@ impl KernelServiceHost {
     fn job_state(&self, job: Job) -> &crate::sync::Mutex<State> {
         match job {
             Job::Maintenance => &self.maintenance,
+            Job::BlockIo => &self.block_io,
             Job::SecurityMonitor => &self.security_monitor,
             Job::IntelCommands => &self.intel_commands,
             Job::IntelFaults => &self.intel_faults,
@@ -95,6 +99,7 @@ impl KernelServiceHost {
             async move {
                 let result = match job {
                     Job::Maintenance => self.maintain_runtime().await.map_err(Failure::Timer),
+                    Job::BlockIo => self.service_block_io().await,
                     Job::SecurityMonitor => {
                         crate::io::iommu::runtime::security::security_monitor_task()
                             .await
@@ -134,6 +139,21 @@ impl KernelServiceHost {
         Ok(())
     }
 
+    async fn service_block_io(&self) -> Result<(), Failure> {
+        let coordinator = crate::io::io_scheduler::hybrid_coordinator();
+        // LOOP_PROOF: mode=event; reason=The service host owns this worker, each bounded I/O turn waits for a timer and failure returns to the host.;
+        loop {
+            {
+                let current =
+                    crate::cpu::CurrentCpu::acquire().ok_or(Failure::ExecutionUnavailable)?;
+                coordinator.service_turn(&current);
+            }
+            kernel_api::service::time::sleep_ms(1)
+                .await
+                .map_err(Failure::Timer)?;
+        }
+    }
+
     async fn maintain_runtime(&self) -> Result<(), TimerError> {
         // LOOP_PROOF: mode=event; reason=The service host owns this worker, each iteration waits for an admitted timer and reports timer failure to that owner.;
         loop {
@@ -151,7 +171,10 @@ impl KernelServiceHost {
 /// Boot treats missing essential background admission as a terminal error.
 /// The service host retains every already admitted task if a later admission fails.
 pub(crate) fn start_runtime_maintenance() -> Result<(), ServiceTaskError> {
-    KERNEL_SERVICE_HOST.start_job(Job::Maintenance)
+    for job in [Job::Maintenance, Job::BlockIo] {
+        KERNEL_SERVICE_HOST.start_job(job)?;
+    }
+    Ok(())
 }
 
 pub(crate) fn start_security_monitor() -> Result<(), ServiceTaskError> {

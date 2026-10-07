@@ -12,7 +12,6 @@ extern crate alloc;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, Ordering};
-use x86_64::PhysAddr;
 
 /// Integration test result (different from main TestResult)
 #[derive(Debug, Clone)]
@@ -267,32 +266,57 @@ pub fn test_network() -> IntegrationTestSuite {
 // Storage Test
 // ============================================================================
 
+async fn nvme_device() -> Result<
+    (
+        crate::io::io_scheduler::DeviceId,
+        crate::io::io_scheduler::BlockGeometry,
+    ),
+    String,
+> {
+    use kernel_api::service::storage::StorageTransport;
+    let timer = kernel_api::service::time::try_instance()
+        .ok_or_else(|| String::from("time service unavailable during driver startup"))?;
+    let deadline = timer
+        .current_tick_ms()
+        .checked_add(5_000)
+        .ok_or_else(|| String::from("driver startup deadline overflow"))?;
+    // LOOP_PROOF: mode=event; reason=Each discovery attempt waits on a real timer, with publication or a retained finite startup deadline ending the wait.;
+    loop {
+        if let Some(storage) = kernel_api::service::storage::try_instance() {
+            for info in storage.devices() {
+                if info.transport != StorageTransport::Nvme {
+                    continue;
+                }
+                let device = crate::io::io_scheduler::DeviceId::from_storage_id(info.device_id)
+                    .ok_or_else(|| String::from("storage discovery published an invalid route"))?;
+                if let Some(geometry) = crate::io::io_scheduler::io_scheduler()
+                    .get_device_ops(device)
+                    .and_then(|ops| ops.block_geometry())
+                {
+                    return Ok((device, geometry));
+                }
+            }
+        }
+        if timer.current_tick_ms() >= deadline {
+            return Err(String::from(
+                "NVMe startup did not publish an admitting device",
+            ));
+        }
+        kernel_api::service::time::SleepFuture::new(timer, 1)
+            .await
+            .map_err(|cause| alloc::format!("NVMe discovery wait failed: {cause:?}"))?;
+    }
+}
+
 pub async fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
 
     suite.add_result(
         run_async_case("nvme_polling_basic", async {
-            let device = crate::io::io_scheduler::DeviceId::Nvme {
-                controller: 0,
-                namespace: 1,
-            };
-            let Some(ops) = crate::io::io_scheduler::io_scheduler().get_device_ops(device) else {
-                return Err(String::from("NVMe runtime is not published"));
-            };
-            let geometry = ops
-                .block_geometry()
-                .ok_or_else(|| String::from("NVMe runtime is not admitting block operations"))?;
+            let (device, geometry) = nvme_device().await?;
 
-            let handle = crate::fs::DirectBlockHandle::new(
-                crate::io::io_scheduler::DeviceId::Nvme {
-                    controller: 0,
-                    namespace: 1,
-                },
-                0,
-                1,
-                geometry.block_size.get(),
-            )
-            .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
+            let handle = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
+                .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
             let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
             match (handle.read_blocks(0, &mut buf)).await {
                 Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
@@ -384,27 +408,10 @@ pub async fn test_iommu() -> IntegrationTestSuite {
 
     suite.add_result(
         run_async_case("iommu_nvme_block_io_path", async {
-            let device = crate::io::io_scheduler::DeviceId::Nvme {
-                controller: 0,
-                namespace: 1,
-            };
-            let Some(ops) = crate::io::io_scheduler::io_scheduler().get_device_ops(device) else {
-                return Err(String::from("NVMe runtime is not published"));
-            };
-            let geometry = ops
-                .block_geometry()
-                .ok_or_else(|| String::from("NVMe runtime is not admitting block operations"))?;
+            let (device, geometry) = nvme_device().await?;
 
-            let handle = crate::fs::DirectBlockHandle::new(
-                crate::io::io_scheduler::DeviceId::Nvme {
-                    controller: 0,
-                    namespace: 1,
-                },
-                0,
-                1,
-                geometry.block_size.get(),
-            )
-            .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
+            let handle = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
+                .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
             let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
 
             crate::io::iommu::api::reset_map_unmap_counts();

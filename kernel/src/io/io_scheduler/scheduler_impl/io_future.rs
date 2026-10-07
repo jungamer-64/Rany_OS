@@ -63,11 +63,17 @@ impl HybridIoCoordinator {
         }
     }
 
-    pub(super) fn dispatch_pending(&self) {
+    /// A service-host turn runs on a task stack after interrupt return. It
+    /// retains each admitted device owner through dispatch and reconciliation.
+    pub(crate) fn service_turn(&self, current: &crate::cpu::CurrentCpu) {
+        self.scheduler.evaluate_modes(current_tick());
+        self.dispatch_pending(current.id());
+        self.poll_by_global_mode();
+        self.scheduler.reap_abandoned();
+    }
+
+    fn dispatch_pending(&self, cpu_id: crate::cpu::CpuId) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
-        let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
-            return;
-        };
         for _ in 0..DISPATCH_BATCH_LIMIT {
             let id = match self.scheduler.next_request() {
                 Some(id) => id,

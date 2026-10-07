@@ -31,12 +31,15 @@ fn resolve_direct_handle(
         return Err(KapiError::InvalidHandle);
     }
 
-    Ok(crate::fs::DirectBlockHandle::new(
-        entry.device_id,
+    let device = crate::io::io_scheduler::DeviceId::from_storage_id(entry.device_id)
+        .ok_or(KapiError::InvalidHandle)?;
+    crate::fs::DirectBlockHandle::new(
+        device,
         entry.start_block,
         entry.block_count,
         entry.block_size,
-    ))
+    )
+    .map_err(|_| KapiError::InvalidHandle)
 }
 
 pub(super) fn open_direct_with_token(
@@ -45,15 +48,20 @@ pub(super) fn open_direct_with_token(
     block_count: u64,
     token: Option<u64>,
 ) -> Result<DirectBlockHandle, KapiError> {
-    if block_count == 0 {
-        return Err(KapiError::IoError);
+    let device = crate::io::io_scheduler::DeviceId::from_storage_id(device_id)
+        .ok_or(KapiError::InvalidHandle)?;
+    let geometry = crate::io::io_scheduler::io_scheduler()
+        .get_device_ops(device)
+        .ok_or(KapiError::NotFound)?
+        .block_geometry()
+        .ok_or(KapiError::Busy)?;
+    let end = start_block
+        .checked_add(block_count)
+        .ok_or(KapiError::InvalidHandle)?;
+    if block_count == 0 || end > geometry.block_count.get() {
+        return Err(KapiError::InvalidHandle);
     }
-
-    let nsid = if device_id == 0 { 1 } else { device_id as u32 };
-    let block_size = crate::resource_registry::nvme::standalone_namespace_info(nsid)
-        .map(|info| info.block_size)
-        .or_else(|| crate::drivers::nvme::with_driver(|driver| driver.namespace_block_size(nsid)))
-        .unwrap_or(512);
+    let block_size = geometry.block_size.get();
 
     let caller = current_subject().domain.as_u64();
     if let Some(t) = token {
@@ -111,13 +119,17 @@ pub(super) fn read_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
     buffer: CpuDmaLease,
-) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
+) -> Pin<Box<dyn Future<Output = kernel_api::service::storage::BlockTransferOutcome> + Send>> {
     Box::pin(async move {
-        let direct = resolve_direct_handle(handle)?;
-        direct
-            .read_blocks_dma(block_offset, buffer)
-            .await
-            .map_err(|_| KapiError::IoError)
+        match resolve_direct_handle(handle) {
+            Ok(direct) => direct.read_blocks_dma(block_offset, buffer).await,
+            Err(cause) => kernel_api::service::storage::BlockTransferOutcome::Returned {
+                result: Err(kernel_api::service::storage::BlockTransferError::Admission(
+                    cause,
+                )),
+                buffer,
+            },
+        }
     })
 }
 
@@ -125,13 +137,17 @@ pub(super) fn write_blocks_dma(
     handle: DirectBlockHandle,
     block_offset: u64,
     buffer: CpuDmaLease,
-) -> Pin<Box<dyn Future<Output = KapiResult<CpuDmaLease>> + Send>> {
+) -> Pin<Box<dyn Future<Output = kernel_api::service::storage::BlockTransferOutcome> + Send>> {
     Box::pin(async move {
-        let direct = resolve_direct_handle(handle)?;
-        direct
-            .write_blocks_dma(block_offset, buffer)
-            .await
-            .map_err(|_| KapiError::IoError)
+        match resolve_direct_handle(handle) {
+            Ok(direct) => direct.write_blocks_dma(block_offset, buffer).await,
+            Err(cause) => kernel_api::service::storage::BlockTransferOutcome::Returned {
+                result: Err(kernel_api::service::storage::BlockTransferError::Admission(
+                    cause,
+                )),
+                buffer,
+            },
+        }
     })
 }
 
@@ -159,118 +175,14 @@ pub(super) fn discard_direct(
 }
 
 pub(super) fn block_size(device_id: u64) -> Option<u64> {
-    let nsid = if device_id == 0 { 1 } else { device_id as u32 };
-    crate::resource_registry::nvme::standalone_namespace_info(nsid)
-        .map(|info| info.block_size as u64)
-        .or_else(|| {
-            crate::drivers::nvme::with_driver(|driver| driver.namespace_block_size(nsid) as u64)
-        })
+    let device = crate::io::io_scheduler::DeviceId::from_storage_id(device_id)?;
+    crate::io::io_scheduler::io_scheduler()
+        .get_device_ops(device)?
+        .block_geometry()
+        .map(|geometry| u64::from(geometry.block_size.get()))
 }
 
-pub(super) fn sgl_max_entries(device_id: u64) -> Option<usize> {
-    let nsid = if device_id == 0 { 1 } else { device_id as u32 };
-    crate::resource_registry::nvme::standalone_namespace_info(nsid)
-        .map(|info| info.max_sgl_entries as usize)
-        .or_else(|| {
-            crate::drivers::nvme::global::with_driver(
-                |driver: &crate::drivers::nvme::NvmePollingDriver| driver.sgl_max_entries(),
-            )
-            .flatten()
-        })
-}
-
-pub(super) fn submit_rw(request: NvmeRwRequest, io_type: NvmeIoType) -> KapiResult<NvmeIoHandle> {
-    use crate::io::io_scheduler::{DeviceId as IoDeviceId, DmaBufHandle, IoCommand, IoPriority};
-
-    let device = IoDeviceId::Nvme {
-        controller: 0,
-        namespace: request.namespace_id,
-    };
-
-    let priority = match request.priority {
-        NvmeIoPriority::Background => IoPriority::Background,
-        NvmeIoPriority::Idle => IoPriority::Idle,
-        NvmeIoPriority::Normal => IoPriority::Normal,
-        NvmeIoPriority::High => IoPriority::High,
-        NvmeIoPriority::Realtime => IoPriority::Realtime,
-    };
-
-    let command = match io_type {
-        NvmeIoType::Read => IoCommand::BlockRead {
-            lba: request.lba,
-            blocks: request.blocks,
-            bytes: request.bytes,
-            buf: DmaBufHandle {
-                iova: request.prp1,
-                len: request.bytes,
-            },
-        },
-        NvmeIoType::Write => IoCommand::BlockWrite {
-            lba: request.lba,
-            blocks: request.blocks,
-            bytes: request.bytes,
-            buf: DmaBufHandle {
-                iova: request.prp1,
-                len: request.bytes,
-            },
-        },
-        NvmeIoType::Flush => IoCommand::Flush,
-        NvmeIoType::Discard => IoCommand::Discard {
-            lba: request.lba,
-            blocks: request.blocks as u16,
-        },
-    };
-
-    let future =
-        crate::io::io_scheduler::hybrid_coordinator().submit_io_command(device, command, priority);
-    Ok(NvmeIoHandle::new(future.request_id().0))
-}
-
-pub(super) fn wait_io(handle: NvmeIoHandle) -> Pin<Box<dyn Future<Output = NvmeIoResult> + Send>> {
-    use crate::io::io_scheduler::{IoRequestId, IoResult as SchedIoResult};
-
-    let request_id = IoRequestId(handle.request_id());
-    Box::pin(async move {
-        loop {
-            if let Some(result) = crate::io::io_scheduler::io_scheduler().take_result(request_id) {
-                return match result {
-                    SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
-                    SchedIoResult::Error(e) => match e {
-                        crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
-                        crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                        crate::io::io_scheduler::IoError::InvalidParameter => {
-                            NvmeIoResult::InvalidParameter
-                        }
-                        _ => NvmeIoResult::DeviceError,
-                    },
-                };
-            }
-            core::hint::spin_loop();
-        }
-    })
-}
-
-pub(super) fn register_completion_hook(
-    handle: NvmeIoHandle,
-    hook: Box<dyn FnOnce(NvmeIoResult) + Send>,
-) {
-    use crate::io::io_scheduler::{CompletionHook, IoRequestId, IoResult as SchedIoResult};
-
-    let request_id = IoRequestId(handle.request_id());
-    let wrapper: CompletionHook = Box::new(move |result: SchedIoResult| {
-        let converted = match result {
-            SchedIoResult::Success(bytes) => NvmeIoResult::Success(bytes),
-            SchedIoResult::Error(e) => match e {
-                crate::io::io_scheduler::IoError::Timeout => NvmeIoResult::Timeout,
-                crate::io::io_scheduler::IoError::Cancelled => NvmeIoResult::Cancelled,
-                crate::io::io_scheduler::IoError::InvalidParameter => {
-                    NvmeIoResult::InvalidParameter
-                }
-                _ => NvmeIoResult::DeviceError,
-            },
-        };
-        hook(converted);
-    });
-
-    crate::io::io_scheduler::io_scheduler().register_completion_hook(request_id, wrapper);
+pub(super) fn sgl_max_entries(_device_id: u64) -> Option<usize> {
+    // This device path describes transfers with PRPs, without an SGL grant.
+    None
 }

@@ -384,3 +384,55 @@ fn cancelling_and_dispatching_on_different_threads_has_one_winner() {
         );
     }
 }
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn storage_routes_preserve_registration_and_transport_coordinates() {
+    use kernel_api::abi::driver::PackedPciLocation;
+    for (route, encoded) in [
+        (
+            DeviceId::Nvme {
+                controller: 255,
+                namespace: u32::MAX,
+            },
+            0x0100_00ff_ffff_ffff,
+        ),
+        (
+            DeviceId::Ahci {
+                controller: PackedPciLocation::new(0x1234, 0x56, 0x1b, 7),
+                port: 31,
+            },
+            0x0300_1234_561b_071f,
+        ),
+        (
+            DeviceId::RegisteredBlock { handle: 1 },
+            0x0400_0000_0000_0001,
+        ),
+        (
+            DeviceId::RegisteredBlock {
+                handle: DeviceId::MAX_STORAGE_REGISTRATION,
+            },
+            0x04ff_ffff_ffff_ffff,
+        ),
+    ] {
+        assert_eq!(route.storage_id(), Some(encoded));
+        assert_eq!(DeviceId::from_storage_id(encoded), Some(route));
+    }
+    for invalid in [
+        0,
+        0x0100_0000_0000_0000,
+        0x0100_0100_0000_0001,
+        0x0300_0000_0020_0000,
+        0x0300_0000_0000_0020,
+        0x0400_0000_0000_0000,
+    ] {
+        assert_eq!(DeviceId::from_storage_id(invalid), None);
+    }
+    assert_eq!(
+        DeviceId::RegisteredBlock {
+            handle: DeviceId::MAX_STORAGE_REGISTRATION + 1,
+        }
+        .storage_id(),
+        None
+    );
+}

@@ -157,7 +157,7 @@ impl BlockBridgeRegistry {
         let handle = self
             .next_handle
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |handle| {
-                handle.checked_add(1)
+                (handle < IoDeviceId::MAX_STORAGE_REGISTRATION).then_some(handle + 1)
             })
             .map_err(|_| AbiErrorCode::ResourceExhausted)?;
         let scheduler_device = IoDeviceId::RegisteredBlock { handle };
@@ -278,7 +278,12 @@ impl BlockBridgeRegistry {
             .unwrap_or_else(|e| e.into_inner())
             .values()
             .map(|entry| StorageDeviceInfo {
-                device_id: entry.info.device_id,
+                // Only the kernel registration identifies this queue owner. The
+                // driver's PCI location is metadata, not an I/O routing key.
+                device_id: entry
+                    .scheduler_device
+                    .storage_id()
+                    .expect("registration admission bounds the published storage identity"),
                 namespace_id: entry.info.namespace_id,
                 block_size: entry.info.block_size,
                 max_transfer_blocks: entry.info.max_transfer_blocks,
