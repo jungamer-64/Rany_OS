@@ -337,11 +337,7 @@ pub trait ApicServices: Send + Sync {
 
 #[inline]
 pub fn try_acpi() -> Option<&'static dyn AcpiServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().platform_acpi()
+    kernel::try_instance()?.platform_acpi()
 }
 
 #[inline]
@@ -354,11 +350,7 @@ pub fn acpi() -> &'static dyn AcpiServices {
 
 #[inline]
 pub fn try_pci() -> Option<&'static dyn PciServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().platform_pci()
+    kernel::try_instance()?.platform_pci()
 }
 
 #[inline]
@@ -371,11 +363,7 @@ pub fn pci() -> &'static dyn PciServices {
 
 #[inline]
 pub fn try_apic() -> Option<&'static dyn ApicServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().platform_apic()
+    kernel::try_instance()?.platform_apic()
 }
 
 #[inline]

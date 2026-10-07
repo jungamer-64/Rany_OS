@@ -25,11 +25,7 @@ pub trait SerialServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn SerialServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().serial()
+    kernel::try_instance()?.serial()
 }
 
 #[inline]

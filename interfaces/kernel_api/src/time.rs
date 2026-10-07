@@ -351,11 +351,7 @@ pub fn sleep_ms(duration_ms: u64) -> SleepFuture {
 /// Access the registered time service if the kernel installed one.
 #[inline]
 pub fn try_instance() -> Option<&'static dyn TimeService> {
-    if !crate::service::kernel::is_installed() {
-        return None;
-    }
-
-    crate::service::kernel::instance().time_service()
+    crate::service::kernel::try_instance()?.time_service()
 }
 
 /// Access the registered time service.

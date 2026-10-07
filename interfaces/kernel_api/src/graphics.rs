@@ -4,10 +4,7 @@
 
 extern crate alloc;
 
-use crate::{
-    gui::{FramebufferInfo, PixelFormat},
-    service::kernel,
-};
+use crate::gui::{FramebufferInfo, PixelFormat};
 use alloc::vec::Vec;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -26,7 +23,6 @@ pub trait GraphicsServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn GraphicsServices> {
-    let _ = kernel::is_installed();
     None
 }
 

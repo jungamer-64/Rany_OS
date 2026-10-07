@@ -29,11 +29,7 @@ pub trait InputServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn InputServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().input()
+    kernel::try_instance()?.input()
 }
 
 #[inline]

@@ -602,11 +602,7 @@ pub trait NetDeviceServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn NetDeviceServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().netdev()
+    kernel::try_instance()?.netdev()
 }
 
 #[inline]

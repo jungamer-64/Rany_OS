@@ -71,11 +71,7 @@ pub trait StorageServices: Send + Sync {
 
 #[inline]
 pub fn try_instance() -> Option<&'static dyn StorageServices> {
-    if !kernel::is_installed() {
-        return None;
-    }
-
-    kernel::instance().storage()
+    kernel::try_instance()?.storage()
 }
 
 #[inline]

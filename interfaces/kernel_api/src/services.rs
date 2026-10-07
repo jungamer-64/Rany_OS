@@ -514,23 +514,29 @@ pub unsafe fn install(services: &'static dyn KernelServices) {
     KERNEL.call_once(|| services);
 }
 
-/// Get the registered kernel services
-///
-/// # Panics
-/// Panics if called before `install`
+/// Resolve the service boundary published for this runtime. A loaded cell uses
+/// its kernel ABI provider even though it owns no local kernel registration.
 #[inline]
-pub fn instance() -> &'static dyn KernelServices {
+pub fn try_instance() -> Option<&'static dyn KernelServices> {
     if let Some(services) = KERNEL.get() {
-        return *services;
+        return Some(*services);
     }
 
     #[cfg(feature = "cell_runtime")]
     {
-        standalone::instance()
+        Some(standalone::instance())
     }
 
     #[cfg(not(feature = "cell_runtime"))]
-    panic!("Kernel not initialized! Call install() first.")
+    None
+}
+
+/// # Panics
+///
+/// Panics before the native kernel publishes its service boundary.
+#[inline]
+pub fn instance() -> &'static dyn KernelServices {
+    try_instance().expect("Kernel services unavailable")
 }
 
 // ============================================================================
