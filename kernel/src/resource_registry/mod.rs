@@ -430,6 +430,31 @@ enum NetPacketMappingError {
     Iommu(crate::io::iommu::types::IommuError),
 }
 impl NetPacketMappingError {
+    fn abi_status(&self) -> AbiErrorCode {
+        use crate::io::iommu::types::IommuError;
+        match self {
+            Self::InvalidRange => AbiErrorCode::InvalidParam,
+            Self::MetadataAllocation => AbiErrorCode::OutOfMemory,
+            Self::TranslationIncomplete => AbiErrorCode::DeviceBusy,
+            Self::BackingConflict => AbiErrorCode::InvalidAddress,
+            Self::Iommu(IommuError::NotInitialized | IommuError::NotPresent) => {
+                AbiErrorCode::NotInitialized
+            }
+            Self::Iommu(IommuError::OutOfMemory | IommuError::MetadataAllocation) => {
+                AbiErrorCode::OutOfMemory
+            }
+            Self::Iommu(
+                IommuError::OutOfIova | IommuError::GenerationExhausted | IommuError::InUse,
+            ) => AbiErrorCode::DeviceBusy,
+            Self::Iommu(
+                IommuError::InvalidAddress
+                | IommuError::InvalidAlignment
+                | IommuError::InvalidPermissions,
+            ) => AbiErrorCode::InvalidParam,
+            Self::Iommu(_) => AbiErrorCode::IoError,
+        }
+    }
+
     fn as_str(&self) -> &'static str {
         match self {
             Self::InvalidRange => "network DMA range is invalid",
@@ -465,7 +490,9 @@ impl NetPacketDmaMappings {
             return Err(NetPacketMappingError::InvalidRange);
         }
         if !crate::io::iommu::api::is_iommu_enabled() {
-            return Ok(physical);
+            return Err(NetPacketMappingError::Iommu(
+                crate::io::iommu::types::IommuError::NotInitialized,
+            ));
         }
         let mut pages = self.pages.lock().unwrap_or_else(|error| error.into_inner());
         if let Some(page) = pages.iter().find(|page| {
@@ -685,7 +712,7 @@ extern "C" fn runtime_lease_rx_buffer(runtime_cookie: u64, out_lease: *mut AbiRx
         let writable = buffer.writable_region();
         let device_addr = match state.dma_mappings.map_region(writable) {
             Ok(device_addr) => device_addr,
-            Err(_) => return AbiErrorCode::IoError as i32,
+            Err(cause) => return cause.abi_status() as i32,
         };
         let region = AbiRxWritableRegion {
             cpu_ptr: writable.cpu_ptr().cast_mut(),
@@ -1386,6 +1413,51 @@ mod tests {
     use crate::domain::DomainId;
     use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    #[test]
+    fn packet_dma_admission_preserves_abi_failure_semantics() {
+        use crate::io::iommu::types::IommuError;
+        for (cause, expected) in [
+            (
+                NetPacketMappingError::Iommu(IommuError::NotInitialized),
+                AbiErrorCode::NotInitialized,
+            ),
+            (
+                NetPacketMappingError::Iommu(IommuError::NotPresent),
+                AbiErrorCode::NotInitialized,
+            ),
+            (
+                NetPacketMappingError::MetadataAllocation,
+                AbiErrorCode::OutOfMemory,
+            ),
+            (
+                NetPacketMappingError::Iommu(IommuError::OutOfMemory),
+                AbiErrorCode::OutOfMemory,
+            ),
+            (
+                NetPacketMappingError::Iommu(IommuError::OutOfIova),
+                AbiErrorCode::DeviceBusy,
+            ),
+            (
+                NetPacketMappingError::TranslationIncomplete,
+                AbiErrorCode::DeviceBusy,
+            ),
+            (
+                NetPacketMappingError::BackingConflict,
+                AbiErrorCode::InvalidAddress,
+            ),
+            (
+                NetPacketMappingError::InvalidRange,
+                AbiErrorCode::InvalidParam,
+            ),
+            (
+                NetPacketMappingError::Iommu(IommuError::HardwareError),
+                AbiErrorCode::IoError,
+            ),
+        ] {
+            assert_eq!(cause.abi_status(), expected);
+        }
+    }
+
     unsafe extern "C" fn test_block_submit(
         _opaque: u64,
         _input: *const kernel_api::abi::driver::AbiBlockSubmission,
@@ -1473,7 +1545,7 @@ mod tests {
         AbiNetPortInfo {
             port_id: 0x9000 + port_index as u64,
             queue_pairs: 1,
-            reserved_queue: 0,
+            max_tx_segments: 1,
             mtu: 1500,
             flags: 0,
             mac: [0x02, 0, 0, 0, 0, port_index as u8],
