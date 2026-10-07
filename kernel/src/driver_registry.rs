@@ -1708,7 +1708,34 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     reserved: [0; 2],
     enable_msix_raw: Some(kernel_abi_enable_msix_raw),
     disable_msix_raw: Some(kernel_abi_disable_msix_raw),
+    balloon_page_reserve: kernel_abi_balloon_page_reserve,
+    balloon_page_command: crate::resource_registry::balloon::command,
 };
+
+/// # Safety
+/// Output is exclusively writable and aligned for this synchronous publication.
+unsafe extern "C" fn kernel_abi_balloon_page_reserve(
+    device: u64,
+    out: *mut kernel_api::balloon::AbiBalloonPage,
+) -> i32 {
+    use kernel_api::balloon::{AbiBalloonPage, BalloonPageError};
+    let Some(out) = NonNull::new(out).filter(|pointer| pointer.is_aligned()) else {
+        return BalloonPageError::MalformedAbi as i32;
+    };
+    // SAFETY: the caller retains a live aligned output through this invocation.
+    unsafe { out.as_ptr().write(AbiBalloonPage::default()) };
+    match kernel_api::service::kernel::instance()
+        .reserve_balloon_page(PackedPciLocation::from_raw(device))
+    {
+        Ok(page) => {
+            // SAFETY: output remains uniquely borrowed; publication transfers
+            // this reservation once and no fallible operation follows it.
+            unsafe { out.as_ptr().write(page.into_abi()) };
+            0
+        }
+        Err(cause) => cause as i32,
+    }
+}
 
 /// The importer retains both allocations and originating code throughout the
 /// call. A valid input capsule is consumed even when options are rejected.

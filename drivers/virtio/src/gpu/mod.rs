@@ -4,7 +4,6 @@
 
 pub mod defs;
 mod device;
-mod memory;
 mod protocol;
 mod queue;
 pub use device::*;

@@ -37,6 +37,7 @@ use x86_64::PhysAddr;
 
 const STORAGE_FLAG_ACTIVE: u32 = 1 << 0;
 
+pub(crate) mod balloon;
 mod block;
 use block::BlockDeviceAdapter;
 
@@ -1348,6 +1349,7 @@ pub(crate) fn cleanup_owner_domain(
             retained_block_devices: 0,
             completed_dma_leases: 0,
             retained_dma_leases: dma::owner_lease_count(owner),
+            retained_balloon_pages: balloon::owner_count(owner),
             cause: failure.cause,
         }
     })?;
@@ -1359,6 +1361,7 @@ pub(crate) fn cleanup_owner_domain(
             retained_block_devices: failure.retained,
             completed_dma_leases: 0,
             retained_dma_leases: dma::owner_lease_count(owner),
+            retained_balloon_pages: balloon::owner_count(owner),
             cause: failure
                 .cause
                 .into_result()
@@ -1368,7 +1371,8 @@ pub(crate) fn cleanup_owner_domain(
     })?;
     let dma = dma::cleanup_owner(owner);
     let retained_dma_leases = dma::owner_lease_count(owner);
-    if retained_dma_leases != 0 {
+    let retained_balloon_pages = balloon::owner_count(owner);
+    if retained_dma_leases != 0 || retained_balloon_pages != 0 {
         return Err(
             crate::domain::DomainLifecycleError::ResourceCleanupIncomplete {
                 completed_net_ports: net_ports,
@@ -1377,6 +1381,7 @@ pub(crate) fn cleanup_owner_domain(
                 retained_block_devices: 0,
                 completed_dma_leases: dma.released_handles,
                 retained_dma_leases,
+                retained_balloon_pages,
                 cause: kernel_api::error::KapiError::Busy,
             },
         );

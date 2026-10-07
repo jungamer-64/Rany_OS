@@ -3,6 +3,8 @@
 //! All metadata and doorbell validation precedes shared activation. Activation
 //! disables CPU references before queue registers can expose the allocation.
 use hal::mmio::OwnedMmioRegister;
+mod allocation;
+pub(crate) use allocation::{SharedAllocation, dma_error};
 
 use hal::WriteOnly;
 use kernel_api::dma::{

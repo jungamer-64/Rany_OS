@@ -124,6 +124,17 @@ pub trait KernelServices: Send + Sync {
         device_id: PackedPciLocation,
     ) -> KapiResult<CpuDmaLease>;
 
+    /// Reserve an exclusive host physical page for a bound balloon function.
+    /// The page has no CPU access API and remains outside allocator reuse until
+    /// explicit unaccepted return, acknowledged deflation or device reset.
+    /// # Errors
+    /// Distinguishes finite reservation exhaustion, memory quota, physical RAM,
+    /// address geometry, authorization and owner admission failures.
+    fn reserve_balloon_page(
+        &self,
+        device: PackedPciLocation,
+    ) -> Result<crate::balloon::ReservedBalloonPage, crate::balloon::BalloonPageError>;
+
     /// Enable MSI-X for a PCI device and return the configured table slots.
     /// # Errors
     ///
@@ -1049,6 +1060,26 @@ mod standalone {
             device_id: PackedPciLocation,
         ) -> KapiResult<CpuDmaLease> {
             alloc_dma_for_device(request, device_id)
+        }
+
+        fn reserve_balloon_page(
+            &self,
+            device: PackedPciLocation,
+        ) -> Result<crate::balloon::ReservedBalloonPage, crate::balloon::BalloonPageError> {
+            use crate::balloon::{AbiBalloonPage, BalloonPageError, ReservedBalloonPage};
+            let api = super::abi();
+            if (api.abi_size as usize) < core::mem::size_of::<KernelApiV4>() {
+                return Err(BalloonPageError::MalformedAbi);
+            }
+            let mut raw = AbiBalloonPage::default();
+            // SAFETY: output is uniquely borrowed, initialized and aligned for
+            // the permanent provider's synchronous allocation publication.
+            BalloonPageError::from_status(unsafe {
+                (api.balloon_page_reserve)(device.raw(), &mut raw)
+            })?;
+            // SAFETY: successful publication issued a unique retained page for
+            // this bound function; kernel callback code outlives the reservation.
+            unsafe { ReservedBalloonPage::from_allocator(raw, device, api.balloon_page_command) }
         }
 
         fn enable_msix(

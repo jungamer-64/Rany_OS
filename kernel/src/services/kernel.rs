@@ -92,6 +92,19 @@ impl KernelServices for KernelServiceHost {
         crate::io::msix::enable_for_owner(current_subject().domain, device_id, requested_count)
     }
 
+    fn reserve_balloon_page(
+        &self,
+        device: PackedPciLocation,
+    ) -> Result<kernel_api::balloon::ReservedBalloonPage, kernel_api::balloon::BalloonPageError>
+    {
+        if device.is_null() || !device.is_canonical() {
+            return Err(kernel_api::balloon::BalloonPageError::DeviceMismatch);
+        }
+        super::device_registration::authorize_pci_device_for_current_subject(device)
+            .map_err(|_| kernel_api::balloon::BalloonPageError::NotAuthorized)?;
+        crate::resource_registry::balloon::reserve(current_subject().domain, device)
+    }
+
     fn disable_msix(&self, device_id: PackedPciLocation) -> Result<(), KapiError> {
         let owner = current_subject().domain;
         let vectors = crate::io::msix::owned_vectors(owner, device_id)?;

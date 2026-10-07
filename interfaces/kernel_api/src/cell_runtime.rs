@@ -231,7 +231,7 @@ macro_rules! register_cell_runtime {
 
         #[cfg(target_os = "none")]
         #[panic_handler]
-        fn _cell_panic_handler(info: &core::panic::PanicInfo) -> ! {
+        fn _cell_panic_handler(info: &::core::panic::PanicInfo) -> ! {
             // Format panic message (limited, no_std)
             match info.location() {
                 Some(loc) => $crate::cell_runtime::log_panic(loc.file(), loc.line()),

@@ -3,7 +3,6 @@
 //! response-read failure. Stop retires protocol RAM before ring RAM.
 #![deny(unsafe_code)]
 
-use super::memory::{SharedAllocation, dma_error};
 use super::protocol::{
     self, DISPLAY_BYTES, REQUEST_BYTES, Reply, ReplyError, Response, WireCommand,
 };
@@ -12,6 +11,7 @@ use crate::core::{
     QueueSegment, QueueSubmitCause, QueueSubmitOutcome, RetiredVirtQueue, SplitVirtQueue,
 };
 use crate::queue_memory::{QueueInterrupt, QueuePrepareError, SplitQueueLayout};
+use crate::queue_memory::{SharedAllocation, dma_error};
 use crate::transport::VirtioTransport;
 use kernel_api::dma::*;
 use kernel_api::{KapiError, KapiResult};
@@ -272,6 +272,34 @@ fn deliver_reply(
     Ok(Some(reply))
 }
 
+fn segment(
+    address: DmaDeviceAddress,
+    offset: usize,
+    bytes: usize,
+    writable: bool,
+) -> KapiResult<QueueSegment> {
+    QueueSegment::new(
+        address
+            .checked_add(offset)
+            .ok_or(KapiError::InvalidAddress)?,
+        DmaByteCount::new(bytes).ok_or(KapiError::InvalidSize)?,
+        writable,
+    )
+    .map_err(|_| KapiError::InvalidSize)
+}
+fn failed_preparation(failure: QueueBuildError) -> Ring {
+    match failure {
+        QueueBuildError::DescriptorLimit { memory }
+        | QueueBuildError::MetadataAllocation { memory }
+        | QueueBuildError::Memory(
+            QueuePrepareError::InvalidMemory { memory } | QueuePrepareError::Cpu { memory, .. },
+        ) => Ring::Cpu(memory),
+        QueueBuildError::Memory(QueuePrepareError::Prepared { memory, .. }) => {
+            Ring::FailedPreparation(memory)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,32 +359,5 @@ mod tests {
             Err(PollError::Response(ReplyError::Protocol))
         ));
         assert_eq!(completion.as_ref().unwrap().owner.fence, 7);
-    }
-}
-fn segment(
-    address: DmaDeviceAddress,
-    offset: usize,
-    bytes: usize,
-    writable: bool,
-) -> KapiResult<QueueSegment> {
-    QueueSegment::new(
-        address
-            .checked_add(offset)
-            .ok_or(KapiError::InvalidAddress)?,
-        DmaByteCount::new(bytes).ok_or(KapiError::InvalidSize)?,
-        writable,
-    )
-    .map_err(|_| KapiError::InvalidSize)
-}
-fn failed_preparation(failure: QueueBuildError) -> Ring {
-    match failure {
-        QueueBuildError::DescriptorLimit { memory }
-        | QueueBuildError::MetadataAllocation { memory }
-        | QueueBuildError::Memory(
-            QueuePrepareError::InvalidMemory { memory } | QueuePrepareError::Cpu { memory, .. },
-        ) => Ring::Cpu(memory),
-        QueueBuildError::Memory(QueuePrepareError::Prepared { memory, .. }) => {
-            Ring::FailedPreparation(memory)
-        }
     }
 }

@@ -4,12 +4,12 @@
 #![deny(unsafe_code)]
 
 use super::defs::{DisplayInfo, GpuCmd, PixelFormat, Rect};
-use super::memory::{SharedAllocation, dma_error};
 use super::protocol::{GpuDeviceError, Reply, ReplyError, Response, WireCommand};
 use super::queue::{CommandQueue, PollError};
 use crate::core::QueueSubmitOutcome;
 use crate::defs::{VirtioDeviceType, common_features, status};
 use crate::queue_memory::QueueInterrupt;
+use crate::queue_memory::{SharedAllocation, dma_error};
 use crate::transport::{PciTransportDiscoveryError, VirtioPciTransport, VirtioTransport};
 use core::num::NonZeroU32;
 use core::sync::atomic::{AtomicU64, Ordering};

@@ -182,6 +182,7 @@ pub enum DomainLifecycleError {
         retained_block_devices: usize,
         completed_dma_leases: usize,
         retained_dma_leases: usize,
+        retained_balloon_pages: usize,
         cause: crate::error::KapiError,
     },
 }
@@ -215,10 +216,11 @@ impl core::fmt::Display for DomainLifecycleError {
                 retained_block_devices,
                 completed_dma_leases,
                 retained_dma_leases,
+                retained_balloon_pages,
                 cause,
             } => write!(
                 formatter,
-                "domain cleanup incomplete: net ports {completed_net_ports} released/{retained_net_ports} retained; block devices {completed_block_devices} released/{retained_block_devices} retained; DMA leases {completed_dma_leases} released/{retained_dma_leases} retained: {cause}"
+                "domain cleanup incomplete: net ports {completed_net_ports} released/{retained_net_ports} retained; block devices {completed_block_devices} released/{retained_block_devices} retained; DMA leases {completed_dma_leases} released/{retained_dma_leases} retained; balloon pages {retained_balloon_pages} retained: {cause}"
             ),
         }
     }

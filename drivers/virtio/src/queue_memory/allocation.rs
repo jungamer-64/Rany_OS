@@ -19,14 +19,14 @@ enum Stage {
     Transitioning,
 }
 
-pub(super) struct SharedAllocation {
+pub(crate) struct SharedAllocation {
     identity: DmaQueueIdentity,
     request: DmaAllocationRequest,
     stage: Stage,
 }
 
 impl SharedAllocation {
-    pub(super) fn new(identity: DmaQueueIdentity, bytes: usize) -> KapiResult<Self> {
+    pub(crate) fn new(identity: DmaQueueIdentity, bytes: usize) -> KapiResult<Self> {
         let request = DmaAllocationRequest::new(bytes, DmaDirection::Bidirectional)
             .ok_or(KapiError::InvalidSize)?;
         Ok(Self {
@@ -36,7 +36,7 @@ impl SharedAllocation {
         })
     }
 
-    pub(super) fn advance_boot(&mut self) -> KapiResult<bool> {
+    pub(crate) fn advance_boot(&mut self) -> KapiResult<bool> {
         let stage = core::mem::replace(&mut self.stage, Stage::Transitioning);
         let (next, result) = match stage {
             Stage::Planned => match kernel_api::service::kernel::instance()
@@ -89,13 +89,13 @@ impl SharedAllocation {
         result
     }
 
-    pub(super) fn address(&self) -> KapiResult<DmaDeviceAddress> {
+    pub(crate) fn address(&self) -> KapiResult<DmaDeviceAddress> {
         match self.stage {
             Stage::Active { address, .. } => Ok(address),
             _ => Err(KapiError::Busy),
         }
     }
-    pub(super) fn memory(&mut self) -> Result<&mut SharedDmaLease, DmaLeaseError> {
+    pub(crate) fn memory(&mut self) -> Result<&mut SharedDmaLease, DmaLeaseError> {
         match &mut self.stage {
             Stage::Active { memory, .. } => Ok(memory),
             _ => Err(DmaLeaseError::InvalidState),
@@ -110,7 +110,7 @@ impl SharedAllocation {
         unsafe_code,
         reason = "the device owner alone proves that its exact allocation has no remaining hardware access"
     )]
-    pub(super) unsafe fn advance_retirement(&mut self) -> KapiResult<bool> {
+    pub(crate) unsafe fn advance_retirement(&mut self) -> KapiResult<bool> {
         let stage = core::mem::replace(&mut self.stage, Stage::Transitioning);
         let (next, result) = match stage {
             Stage::Planned => (Stage::Closed, Ok(true)),
@@ -161,7 +161,7 @@ impl SharedAllocation {
     }
 }
 
-pub(super) fn dma_error(cause: DmaLeaseError) -> KapiError {
+pub(crate) fn dma_error(cause: DmaLeaseError) -> KapiError {
     match cause {
         DmaLeaseError::InvalidRange => KapiError::InvalidSize,
         DmaLeaseError::InvalidAlignment => KapiError::InvalidAlignment,

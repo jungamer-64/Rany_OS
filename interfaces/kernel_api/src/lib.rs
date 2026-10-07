@@ -13,6 +13,7 @@
 
 extern crate alloc;
 
+pub mod balloon;
 pub mod block_io;
 pub mod dma;
 
@@ -260,7 +261,7 @@ pub mod __type_id {
     );
     pub const KERNEL_API_INTERFACE: DependencySpec = dependency(
         "KernelApiInterface",
-        fnv1a_hash(b"KernelApiInterface:v9:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet+mmio_grant"),
+        fnv1a_hash(b"KernelApiInterface:v9:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet+mmio_grant+balloon_page_lease"),
         1,
         0,
         0,

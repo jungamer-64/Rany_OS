@@ -248,7 +248,26 @@ pub static __exorust_kernel_api_v4: KernelApiV4 = KernelApiV4 {
     reserved: [0; 2],
     enable_msix_raw: None,
     disable_msix_raw: None,
+    balloon_page_reserve: rejected_balloon_page_reserve,
+    balloon_page_command: rejected_balloon_page_command,
 };
+
+#[cfg(test)]
+unsafe extern "C" fn rejected_balloon_page_reserve(
+    _device: u64,
+    _out: *mut kernel_api::balloon::AbiBalloonPage,
+) -> i32 {
+    kernel_api::balloon::BalloonPageError::Unavailable as i32
+}
+#[cfg(test)]
+unsafe extern "C" fn rejected_balloon_page_command(
+    _lease: u64,
+    _command: u8,
+    _device: u64,
+    _generation: u64,
+) -> i32 {
+    kernel_api::balloon::BalloonPageError::Unavailable as i32
+}
 
 #[cfg(test)]
 unsafe extern "C" fn rejected_pci_read(_device: u64, _out: *mut u8) -> i32 {

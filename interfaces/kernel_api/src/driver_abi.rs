@@ -1656,6 +1656,13 @@ pub struct KernelApiV4 {
         ) -> i32,
     >,
     pub disable_msix_raw: Option<extern "C" fn(device_id: u64) -> i32>,
+    /// A successful call publishes one retained physical page reservation into
+    /// aligned writable output. Failure transfers no reservation.
+    pub balloon_page_reserve:
+        unsafe extern "C" fn(device: u64, out: *mut crate::balloon::AbiBalloonPage) -> i32,
+    /// Completion/reset transitions require the lease witness's exact hardware
+    /// evidence. Release failure leaves the reservation unchanged and retained.
+    pub balloon_page_command: crate::balloon::BalloonPageCommandFn,
 }
 
 /// Driver export header for `DRIVER_EXPORTS`.

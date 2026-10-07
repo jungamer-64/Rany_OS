@@ -611,7 +611,7 @@ mod tests {
             self.retry_calls.fetch_add(1, Ordering::Relaxed);
             if self
                 .fail_retries
-                .fetch_update(Ordering::AcqRel, Ordering::Acquire, |count| {
+                .try_update(Ordering::AcqRel, Ordering::Acquire, |count| {
                     count.checked_sub(1)
                 })
                 .is_ok()
