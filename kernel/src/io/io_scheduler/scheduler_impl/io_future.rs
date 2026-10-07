@@ -63,17 +63,6 @@ impl HybridIoCoordinator {
         }
     }
 
-    pub fn tick<F>(&self, process_interrupts: F)
-    where
-        F: FnOnce(),
-    {
-        process_interrupts();
-        self.scheduler.evaluate_modes(current_tick());
-        self.dispatch_pending();
-        self.poll_by_global_mode();
-        self.scheduler.reap_abandoned();
-    }
-
     pub(super) fn dispatch_pending(&self) {
         const DISPATCH_BATCH_LIMIT: usize = 64;
         let Some(cpu_id) = crate::cpu::CurrentCpu::acquire().map(|current| current.id()) else {
