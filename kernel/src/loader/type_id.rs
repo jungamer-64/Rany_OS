@@ -578,14 +578,25 @@ pub fn verify_cell_dependencies(deps: &CellDependencies) -> Result<(), TypeIdErr
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
     let mut registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    registry.reserve(5);
-
-    // 標準カーネルインターフェースを登録
-    registry.register::<MemoryAllocatorInterface>();
-    registry.register::<TaskSchedulerInterface>();
-    registry.register::<IpcInterface>();
-    registry.register::<KernelApiInterface>();
-    registry.register::<DriverExportsInterface>();
+    use kernel_api::__type_id::{
+        DRIVER_EXPORTS_INTERFACE, IPC_INTERFACE, KERNEL_API_INTERFACE, MEMORY_ALLOCATOR_INTERFACE,
+        TASK_SCHEDULER_INTERFACE,
+    };
+    let interfaces = [
+        MEMORY_ALLOCATOR_INTERFACE,
+        TASK_SCHEDULER_INTERFACE,
+        IPC_INTERFACE,
+        KERNEL_API_INTERFACE,
+        DRIVER_EXPORTS_INTERFACE,
+    ];
+    registry.reserve(interfaces.len());
+    for interface in interfaces {
+        registry.register_manual(
+            Cow::Borrowed(interface.name),
+            interface.hash,
+            SemVer::new(interface.major, interface.minor, interface.patch),
+        );
+    }
 
     log::info!("[TypeID] Registered {} kernel interfaces\n", registry.len());
 }

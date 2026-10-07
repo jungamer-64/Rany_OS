@@ -3,24 +3,29 @@ use std::env;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
-fn main() {
-    // Track the ABI backing implementation used by `abi::driver`.
-    println!("cargo:rerun-if-changed=src/driver_abi.rs");
-    println!("cargo:rerun-if-changed=src/driver_abi/async_driver.rs");
-    println!("cargo:rerun-if-changed=src/driver_abi/task.rs");
-    println!("cargo:rerun-if-changed=src/driver_abi/time.rs");
 
+#[path = "build/abi_hash.rs"]
+mod abi_hash;
+use abi_hash::calculate_abi_hash;
+fn main() {
+    println!("cargo:rerun-if-changed=build/abi_hash.rs");
+    println!("cargo:rerun-if-changed=src/driver_abi/async_driver.rs");
     let manifest_dir = env::var("CARGO_MANIFEST_DIR").unwrap();
-    let abi_path = Path::new(&manifest_dir).join("src/driver_abi.rs");
-    let mut content = fs::read_to_string(&abi_path).expect("Failed to read driver_abi.rs");
-    content.push_str(
-        &fs::read_to_string(Path::new(&manifest_dir).join("src/driver_abi/task.rs"))
-            .expect("Failed to read task ABI declarations"),
-    );
-    content.push_str(
-        &fs::read_to_string(Path::new(&manifest_dir).join("src/driver_abi/time.rs"))
-            .expect("Failed to read timer ABI declarations"),
-    );
+    let mut content = String::new();
+    for input in [
+        "src/driver_abi.rs",
+        "src/driver_abi/task.rs",
+        "src/driver_abi/time.rs",
+        "src/driver_abi/block.rs",
+        "src/balloon.rs",
+    ] {
+        println!("cargo:rerun-if-changed={input}");
+        content.push_str(
+            &fs::read_to_string(Path::new(&manifest_dir).join(input))
+                .unwrap_or_else(|error| panic!("cannot read ABI input {input}: {error}")),
+        );
+        content.push('\n');
+    }
 
     // Extract struct definitions to hash
     // We want to detect changes in DriverContext or DriverVTable layout
@@ -52,7 +57,7 @@ fn main() {
         compiler.status.success(),
         "compiler ABI identification failed"
     );
-    let mut runtime = Fnv1aHasher::new();
+    let mut runtime = abi_hash::Fnv1aHasher::new();
     runtime.write(&compiler.stdout);
     // Kernel and cell images use separately named target specifications. Their
     // names do not determine Rust value layout; hash the representation inputs.
@@ -83,189 +88,4 @@ fn main() {
     )
     .expect("Failed to write task notification ABI identity");
     println!("cargo:rerun-if-changed=build.rs");
-}
-
-fn calculate_abi_hash(content: &str) -> u64 {
-    let mut hasher = Fnv1aHasher::new();
-
-    // Hash only source-level ABI declarations so the value stays stable across
-    // kernel and standalone cell builds. Mixing in the rustc version caused the
-    // same source tree to emit different DRIVER_TYPE_HASH values when cached
-    // artifacts were produced by different compiler revisions, which broke
-    // dynamic Cell loading even though the repr(C) layouts were unchanged.
-    //
-    // 1. Hash `#[repr(...)]` attributes only for ABI-critical declarations.
-    // This avoids unrelated repr additions from changing DRIVER_TYPE_HASH.
-    for line in repr_lines_for_decls(
-        content,
-        &[
-            "pub struct DriverContext",
-            "pub struct DriverVTable",
-            "pub struct DriverCapabilities",
-            "pub struct AbiDmaAllocation",
-            "pub enum AbiDmaOperation",
-            "pub enum AbiDmaStatus",
-            "pub struct AbiDmaRequest",
-            "pub struct AbiDmaResponse",
-            "pub struct AbiRxWritableRegion",
-            "pub struct AbiRxLease",
-            "pub struct AbiTxDeviceOutcome",
-            "pub struct AbiNetRxFrameLayout",
-            "pub struct AbiNetRxMeta",
-            "pub struct AbiNetTxSegment",
-            "pub struct AbiNetTxSubmission",
-            "pub struct AbiNetPortRuntime",
-            "pub struct AbiNetPortRegistration",
-            "pub struct KernelApiV4",
-            "pub struct AbiTaskWaker",
-            "pub struct AbiTaskFuture",
-            "pub struct AbiTaskOptions",
-            "pub struct AbiTaskSpawnResult",
-            "pub struct AbiTimerSchedule",
-            "pub struct AbiTimerRegistration",
-            "pub struct AbiTimerAdmission",
-            "pub struct AbiTimeSnapshot",
-            "pub struct AbiTimerStatistics",
-            "pub struct DriverExportsV1",
-            "pub enum AbiDriverType",
-            "pub enum AbiError",
-        ],
-    ) {
-        hasher.write(line.as_bytes());
-    }
-
-    // 2. Extract and hash specific ABI types
-    extract_and_hash_decl(content, "pub struct DriverContext", &mut hasher);
-    extract_and_hash_decl(content, "pub struct DriverVTable", &mut hasher);
-    extract_and_hash_decl(content, "pub struct DriverCapabilities", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiDmaAllocation", &mut hasher);
-    extract_and_hash_decl(content, "pub enum AbiDmaOperation", &mut hasher);
-    extract_and_hash_decl(content, "pub enum AbiDmaStatus", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiDmaRequest", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiDmaResponse", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiRxWritableRegion", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiRxLease", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTxDeviceOutcome", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetRxFrameLayout", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetRxMeta", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetTxSegment", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetTxSubmission", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetPortRuntime", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiNetPortRegistration", &mut hasher);
-    extract_and_hash_decl(content, "pub struct KernelApiV4", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTaskWaker", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTaskFuture", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTaskOptions", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTaskSpawnResult", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTimerSchedule", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTimerRegistration", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTimerAdmission", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTimeSnapshot", &mut hasher);
-    extract_and_hash_decl(content, "pub struct AbiTimerStatistics", &mut hasher);
-    extract_and_hash_decl(content, "pub struct DriverExportsV1", &mut hasher);
-    extract_and_hash_decl(content, "pub enum AbiDriverType", &mut hasher);
-    extract_and_hash_decl(content, "pub enum AbiError", &mut hasher);
-
-    hasher.finish()
-}
-
-fn extract_and_hash_decl(content: &str, decl_start: &str, hasher: &mut Fnv1aHasher) {
-    if let Some(start_idx) = content.find(decl_start) {
-        let rest = &content[start_idx..];
-        let mut depth = 0;
-        let mut check = false;
-
-        let mut buffer = String::new();
-
-        for line in rest.lines() {
-            // Strip comments
-            let line_content = line.find("//").map_or(line, |idx| &line[..idx]);
-
-            // Count braces in the effective content
-            for c in line_content.chars() {
-                match c {
-                    '{' => {
-                        depth += 1;
-                        check = true;
-                    }
-                    '}' => {
-                        depth -= 1;
-                    }
-                    _ => {}
-                }
-            }
-
-            // Normalize: remove all whitespace for the hash
-            let normalized: String = line_content
-                .chars()
-                .filter(|c| !c.is_whitespace())
-                .collect();
-            buffer.push_str(&normalized);
-
-            // If we have entered the block and returned to depth 0, we can stop
-            if check && depth == 0 {
-                break;
-            }
-        }
-
-        hasher.write(buffer.as_bytes());
-    }
-}
-
-fn repr_lines_for_decls(content: &str, decls: &[&str]) -> Vec<String> {
-    let lines: Vec<&str> = content.lines().collect();
-    let mut repr_lines = Vec::new();
-
-    for (idx, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        if !trimmed.starts_with("#[repr") {
-            continue;
-        }
-
-        // Scan forward to the next non-empty, non-comment, non-attribute line.
-        let mut j = idx + 1;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while j < lines.len() {
-            let next = lines[j].trim();
-            if next.is_empty() || next.starts_with("//") {
-                j += 1;
-                continue;
-            }
-            if next.starts_with('#') {
-                j += 1;
-                continue;
-            }
-
-            if decls.iter().any(|decl| next.starts_with(decl)) {
-                repr_lines.push(trimmed.to_string());
-            }
-            break;
-        }
-    }
-
-    repr_lines
-}
-
-// Simple FNV-1a 64-bit hash implementation
-struct Fnv1aHasher {
-    state: u64,
-}
-
-impl Fnv1aHasher {
-    const fn new() -> Self {
-        Self {
-            state: 0xcbf2_9ce4_8422_2325,
-        }
-    }
-
-    fn write(&mut self, bytes: &[u8]) {
-        for &b in bytes {
-            self.state ^= u64::from(b);
-            self.state = self.state.wrapping_mul(0x0100_0000_01b3);
-        }
-    }
-
-    const fn finish(&self) -> u64 {
-        self.state
-    }
 }

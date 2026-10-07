@@ -238,37 +238,39 @@ pub mod __type_id {
         }
     }
 
+    // Dependency names select the interface; the tracked foreign declarations
+    // supply the protocol fingerprint for both cell emission and kernel admission.
     pub const MEMORY_ALLOCATOR_INTERFACE: DependencySpec = dependency(
         "MemoryAllocatorInterface",
-        fnv1a_hash(b"MemoryAllocatorInterface:v1:alloc(Layout)->*mut u8,dealloc(*mut u8,Layout)"),
+        fnv1a_hash(b"MemoryAllocatorInterface") ^ crate::abi::driver::DRIVER_TYPE_HASH,
         1,
         0,
         0,
     );
     pub const TASK_SCHEDULER_INTERFACE: DependencySpec = dependency(
         "TaskSchedulerInterface",
-        fnv1a_hash(b"TaskSchedulerInterface:v1:spawn(Future)->TaskId,yield_now(),sleep(Duration)"),
+        fnv1a_hash(b"TaskSchedulerInterface") ^ crate::abi::driver::DRIVER_TYPE_HASH,
         1,
         0,
         0,
     );
     pub const IPC_INTERFACE: DependencySpec = dependency(
         "IpcInterface",
-        fnv1a_hash(b"IpcInterface:v1:send(RRef<T>),recv()->RRef<T>,create_channel()->ChannelPair"),
+        fnv1a_hash(b"IpcInterface") ^ crate::abi::driver::DRIVER_TYPE_HASH,
         1,
         0,
         0,
     );
     pub const KERNEL_API_INTERFACE: DependencySpec = dependency(
         "KernelApiInterface",
-        fnv1a_hash(b"KernelApiInterface:v9:KernelApiV4+exchange_heap+ipc_raw+domain_id+net_packet+mmio_grant+balloon_page_lease"),
+        fnv1a_hash(b"KernelApiInterface") ^ crate::abi::driver::DRIVER_TYPE_HASH,
         1,
         0,
         0,
     );
     pub const DRIVER_EXPORTS_INTERFACE: DependencySpec = dependency(
         "DriverExportsInterface",
-        fnv1a_hash(b"DriverExportsInterface:v2:DriverExportsV1+state_hooks"),
+        fnv1a_hash(b"DriverExportsInterface") ^ crate::abi::driver::DRIVER_TYPE_HASH,
         1,
         0,
         0,
