@@ -20,10 +20,8 @@ pub struct VirtioInputEvent {
     pub value: u32,
 }
 
-
 mod device;
 pub use device::*;
 mod queue;
 #[cfg(test)]
 mod tests;
-

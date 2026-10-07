@@ -252,7 +252,14 @@ impl<T> SplitVirtQueue<T> {
             .memory
             .memory
             .window(self.memory.layout.available_offset(), 2)?;
-        available.write_u16(0, u16::from(!enabled))
+        available.write_u16(0, u16::from(!enabled))?;
+        if enabled {
+            // The policy store must reach device-visible RAM before the caller
+            // reloads the used index. A release fence alone does not order a
+            // store followed by a load when closing the interrupt/idle race.
+            fence(Ordering::SeqCst);
+        }
+        Ok(())
     }
 
     /// Publish one chain after storage is reserved and its DMA owner is activated.
