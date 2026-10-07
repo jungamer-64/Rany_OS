@@ -1051,7 +1051,10 @@ mod tests {
             ApStartupSignal::ApicIdentityMismatch,
             ApStartupSignal::TimerFailed,
             ApStartupSignal::LocalApicInvalidMmioBase,
+            ApStartupSignal::MissingXstate,
+            ApStartupSignal::MissingCachePolicy,
         ] {
+            assert_eq!(ApStartupSignal::from_raw(signal as u8), Some(signal));
             assert!(signal.failure().is_some());
             assert!(signal.stage().is_none());
         }
@@ -1060,7 +1063,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn startup_signal_decoder_rejects_unknown_values() {
-        assert!(ApStartupSignal::from_raw(21).is_none());
+        assert!(ApStartupSignal::from_raw(23).is_none());
         assert!(ApStartupSignal::from_raw(u8::MAX).is_none());
     }
 

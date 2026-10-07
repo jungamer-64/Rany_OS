@@ -13,6 +13,36 @@ fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
     }
 }
 
+// These finite scripts only suspend at their explicitly self-woken loop yields.
+// A pending external event or a script exceeding the fixture budget is a failure.
+fn complete_self_woken<F: core::future::Future>(future: F) -> F::Output {
+    use alloc::sync::Arc;
+    use core::sync::atomic::{AtomicBool, Ordering};
+    struct Notification(AtomicBool);
+    impl alloc::task::Wake for Notification {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+        fn wake_by_ref(self: &Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+    let notification = Arc::new(Notification(AtomicBool::new(false)));
+    let waker = core::task::Waker::from(notification.clone());
+    let mut context = core::task::Context::from_waker(&waker);
+    let mut future = core::pin::pin!(future);
+    for _ in 0..8 {
+        match future.as_mut().poll(&mut context) {
+            core::task::Poll::Ready(value) => return value,
+            core::task::Poll::Pending => assert!(
+                notification.0.swap(false, Ordering::AcqRel),
+                "script awaited an external event instead of yielding"
+            ),
+        }
+    }
+    panic!("finite script exceeded its poll budget")
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_block_scoping() {
@@ -38,7 +68,7 @@ fn test_if_expression_evaluation() {
 fn test_for_expression_evaluation() {
     let mut shell = ExoShell::new();
     let expr = parse_expression("for i in [1,2,3] { i }").unwrap();
-    let val = complete_immediately(shell.evaluate_expr(&expr));
+    let val = complete_self_woken(shell.evaluate_expr(&expr));
     assert_eq!(val, ExoValue::Int(3));
     assert!(shell.env.get("i").is_none());
 }
@@ -56,7 +86,7 @@ fn test_else_if_chain() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_break_in_loop() {
     let mut shell = ExoShell::new();
-    let val = complete_immediately(shell.eval("for i in [1,2,3] { if i == 2 { break } i }"));
+    let val = complete_self_woken(shell.eval("for i in [1,2,3] { if i == 2 { break } i }"));
     assert_eq!(val, ExoValue::Int(1));
 }
 
@@ -64,7 +94,7 @@ fn test_break_in_loop() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_continue_in_loop() {
     let mut shell = ExoShell::new();
-    let val = complete_immediately(shell.eval("for i in [1,2,3] { if i == 2 { continue } i }"));
+    let val = complete_self_woken(shell.eval("for i in [1,2,3] { if i == 2 { continue } i }"));
     assert_eq!(val, ExoValue::Int(3));
 }
 
@@ -212,6 +242,7 @@ fn test_domain_list_requires_cap_sys_ptrace() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_info_allows_self_without_cap_sys_ptrace() {
+    crate::domain::init();
     let mut shell = ExoShell::with_capabilities(CapabilitySet::empty());
     let self_id = crate::shell::runtime::current_domain_id();
     let cmd = alloc::format!("domain.info({})", self_id);
