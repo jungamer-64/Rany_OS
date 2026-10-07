@@ -103,7 +103,8 @@ jobs:
           RUST_TEST_THREADS: 1
           QEMU_TEST_ACCEL: tcg
           QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
-          QEMU_TEST_MEMORY_MB: 512
+          # Capacity admission exercises all guarded task stacks plus boot and driver resources.
+          QEMU_TEST_MEMORY_MB: 2048
           QEMU_TEST_SMP: 1
           QEMU_TEST_TIMEOUT_SECS: 240
         run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
