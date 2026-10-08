@@ -42,7 +42,7 @@ pub(crate) async fn maintain_grants() -> Result<(), kernel_api::service::time::T
     let grants = manager();
     // LOOP_PROOF: mode=event; reason=Grant maintenance waits on an admitted timer after each pass and returns timer failure to the service host.;
     loop {
-        grants.expire_grants();
+        grants.expire_grants_at(crate::task::current_tick());
         grants.reclaim_revoked_now();
         kernel_api::service::time::sleep_ms(CAPABILITY_EXPIRY_INTERVAL_MS).await?;
     }

@@ -369,8 +369,6 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
 }
 
 /// Spawn a new domain and apply requested capability grants atomically.
-///
-/// This is the Domain/Cell equivalent of the legacy `spawn_with_caps`.
 pub fn spawn_domain_with_caps(
     name: String,
     requested: &[RequestedCap],
@@ -404,7 +402,6 @@ pub fn spawn_domain_with_caps(
         ) {
             Ok(token_id) => {
                 created_tokens.push(token_id);
-                let _ = cap_mgr.increment_in_flight(token_id);
             }
             Err(_) => {
                 for token_id in created_tokens.iter().copied() {

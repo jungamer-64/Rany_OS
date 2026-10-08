@@ -6,7 +6,7 @@
 
 ExoRust のケイパビリティモデルは「最小権限（least privilege）」と「言語ベース分離」を実践するための基盤です。ExoShell からは権限の付与・剥奪・委譲・監査を行い、危険 API には必ず Capability チェックを通します。
 
-目的: 安全で実用的な `cap.grant` / `cap.revoke` / `cap.list` と、シェル側での限定的な委譲（子シェル生成）を MVP として実装します。
+権限の付与・撤回・観測と、親の許可範囲内での委譲を扱います。
 
 ---
 
@@ -24,9 +24,9 @@ ExoRust のケイパビリティモデルは「最小権限（least privilege）
   - 呼び出し元が `CAP_SYS_ADMIN` を持つ
   - 呼び出し元の `permitted` が付与しようとする capability の subset を含む
 
-- `revoke` の方針（合意）:
+- `revoke` の方針:
   - デフォルト: 新しい操作は即時拒否（effective/permitted を取り除く）
-  - 既存の in-flight 操作は EBR（Epoch-based Reclamation）により安全にドレインされることを期待する。MVP では即時拒否と監査ログ、回収確認 API を提供します。
+  - admission 済みの操作は grant lease を保持する。撤回や期限切れで新規利用を止めても、既存の所有者が返却するまで grant 記録を回収しない。
 
 - 委譲（delegation）は明示的で、デフォルトは False。TTL（expires）による一時付与をサポート。もし `delegatable=true` の場合、受け取ったドメインは自身の `permitted` 範囲のサブセットをさらに他に付与できます（ただし、親よりも強い権限に昇格できません）。
 
@@ -34,22 +34,21 @@ ExoRust のケイパビリティモデルは「最小権限（least privilege）
 
 ## API：カーネル（CapabilityManager）
 
-（MVP 実装）
-
 - `grant_capability_with_opts(caller_domain: u64, target_domain: u64, cap: Capability, expires: Option<u64>, delegatable: bool) -> Result<token_id: u64, CapabilityError>`
   - 返り値はトークン ID。トークンは監査・後続 revoke に使える。
   - 実行: `target.permitted |= cap; target.effective |= cap;` を行い、トークンテーブルに登録。
 
 - revoke_grant(caller_domain: u64, token_id: u64, force: bool) -> Result<(), CapabilityError>
-  - `force = false`: 新規操作は即時拒否（drop_permanently を行う）。in-flight の扱いは EBR によって安全にドレインされることを期待。
-  - `force = true`: 強制撤回（将来的にはより強い介入を行うオプション）。
+  - 成功は新規操作の拒否を意味し、保持中の操作の終了を意味しない。
+  - `force = false`: grant 記録は回収処理まで保持する。
+  - `force = true`: 利用 lease がなければその場で回収する。保持中の lease は撤回済み記録とともに残す。
 
 - `list_grants(caller_domain: u64, target_domain: u64) -> Vec<GrantToken>`
   - `caller_domain == target_domain` の self 参照は常に許可。
   - `caller_domain != target_domain` の cross-domain 参照は `CAP_FOWNER` 必須。
   - 権限不足時は空配列を返す（非破壊挙動）。
 
-- expire_tokens() (内部): 現在時刻を基に期限切れトークンを削除し、対応 capability を剥奪。
+- 期限切れは新規 admission を拒否する。保守処理は対応 capability を剥奪し、保持中の操作がある記録を撤回済みとして残す。
 
 - Audit: grant / revoke / failed attempts は監査ログへ出力される。
 
@@ -125,18 +124,7 @@ MVP では `shell.spawn()` により**限定的な子シェル表現 (ShellProxy
 ### task.*
 
 - `task.stats()` / `task.fuel()` / `task.preemption()` → `CAP_SYS_ADMIN` 必須
-- `task.tick()` / `task.yield()` → capability 不要（運用互換のため）
-
----
-
-## 受け入れ基準（MVP）
-
-1. `cap.grant` が操作可能（`expires`, `delegatable` オプションを受け付ける）
-2. Manager 側にトークン登録（ID 返却）と `revoke_grant` が存在する
-3. `cap.tokens()` でドメインのトークンが列挙できる
-4. `shell.spawn()` で `ShellProxy` が作成でき、`with_cap`/`revoke` でプロキシの CapabilitySet を調整できる
-5. `process::spawn_with_caps` で指定した CapabilitySet を新規プロセスへ適用できる（親の許可範囲を超えられない）
-6. 基本的なユニットテストと監査ログ出力が追加される
+- `task.tick()` / `task.yield()` → capability 不要
 
 ---
 
@@ -174,23 +162,13 @@ KAPI 設計時に権限漏れを起こさないよう、危険操作は次の最
 
 ---
 
-## 実装ノート / 次フェーズ
+## 操作と資源の grant ownership
 
-- EBR を用いた in-flight drain の自動可視化（`cap.reclamation_status(token_id)` など）を追加
-- `short-lived tokens` を発行する一時トークン API（`issue_temp_token(duration)`）
-- process::spawn_with_caps によって作成されたトークンは、その子プロセスのライフタイム中に **in-flight** としてカウントされます。子プロセスの終了（reap）の際に in-flight カウントは減少し、これにより `revoke` の直後でも in-flight カウントが 0 になるまで `reclaim` が保留されることが保証されます（例: `spawn_with_caps(...)` 内で `increment_in_flight(token)` を呼び、プロセス回収時に `decrement_in_flight(token)` を呼ぶ）。
-- ネットワークのバインドのような長期保持リソースもトークンと紐付けられます（例: `net.bind(port, token_id)`）。この場合、`bind(..., token)` は内部で `increment_in_flight(token)` を呼び、`unbind(...)` やソケットのクローズ時に `decrement_in_flight(token)` を呼び戻します。
-- NVMe のダイレクトブロックハンドルもトークンと紐付け可能です（例: `nvme.open_direct_with_token(device, start, count, token)`）。`open` は `increment_in_flight(token)` を呼び、`close`（`nvme.close_direct(handle)`）は `decrement_in_flight(token)` を呼び戻します。
-- デバイスファイルハンドル（例: `/dev/null` 等）もトークンと紐付け可能です（例: `DevFileHandle::open_with_token("null", Some(token_id))`）。`open_with_token` は `increment_in_flight(token)` を呼び、`Drop` 時に `decrement_in_flight(token)` を呼び戻します。
-- ファイルのオープン（ファイルハンドル）もトークンと紐付け可能です（例: `fs.open_with_token(path, mode, Some(token_id))`）。`open_with_token` は `increment_in_flight(token)` を呼び、`fs_close`（`fs.close(handle)`）は `decrement_in_flight(token)` を呼び戻します。
-- 共有メモリのアタッチもトークンと紐付け可能です（例: `shm_manager().attach_with_token(id, size, permissions, Some(token_id))`）。attach 時に `increment_in_flight(token)`、detach またはハンドル破棄時に `decrement_in_flight(token)` を呼び戻します。
-- ドメイン観測 API（`domain.info(id)` など）で他ドメイン情報へアクセスする操作は `CAP_SYS_PTRACE`（または同等トークン）で保護します。読み取りハンドル生成時に `increment_in_flight(token)`、解放時に `decrement_in_flight(token)` を適用します。
-- ドメイン資源一覧（ハンドル列挙、実行イメージ参照など）への他ドメインアクセスは `CAP_FOWNER` を要求します。権限は API 呼び出し時に検証し、参照ライフタイム全体でトークン in-flight を追跡します。
-- GUI 統合: grant/revoke の結果を ExoGUI で可視化
+grant の発行は利用 lease を作らない。操作の admission で、対象 domain・必要 capability・期限・撤回状態の検証と利用の保持を同じ境界で行う。lease は操作から公開する資源へ移し、admission 後の失敗では未公開 owner が返却する。
 
----
+UDP の bind、ファイル open、NVMe direct block open は、供給された token の lease を保持する。UDP は非特権ポートでも token の対象を検証する。close と owner cleanup は登録を取り外してから共有ロックの外で lease を返す。
 
-追記: 具体的な関数シグネチャとテスト骨子はリポジトリ内に追加します（`libs/security`, `kernel/src/security/capability.rs`, `kernel/src/shell/runtime.rs`）。
+撤回・期限切れ・中断は lease の返却ではない。`reclaim_token` は保持中の利用がある間 `ReclamationBusy` を返し、保守処理は返却後の撤回済み記録を回収する。強制撤回も保持中の操作や資源を破棄しない。
 
 ## 関連文書
 

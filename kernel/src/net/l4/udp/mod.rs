@@ -437,11 +437,41 @@ fn socket_error_to_network(err: EndpointError) -> NetworkError {
     }
 }
 
+/// Grant admission precedes socket publication and retains its authority until
+/// close. A supplied token is scoped to the caller even for unprivileged ports.
+fn acquire_udp_bind_grant(
+    manager: &crate::security::capability::CapabilityManager,
+    caller: crate::domain::DomainId,
+    port: u16,
+    token: Option<u64>,
+) -> Result<Option<crate::security::capability::TokenUse<'_>>, NetworkError> {
+    use crate::security::capability::{CAP_NET_BIND, CapabilityError};
+    if let Some(token) = token {
+        return manager
+            .retain_token(caller.as_u64(), token, CAP_NET_BIND)
+            .map(Some)
+            .map_err(|error| match error {
+                CapabilityError::ReclamationBusy => NetworkError::ResourceExhausted,
+                CapabilityError::NotPermitted
+                | CapabilityError::CapabilityRequired
+                | CapabilityError::InvalidCapability => NetworkError::PermissionDenied,
+            });
+    }
+    if port == 0
+        || port >= 1024
+        || caller == crate::domain::DomainId::KERNEL
+        || manager.has_capability(caller.as_u64(), CAP_NET_BIND)
+    {
+        return Ok(None);
+    }
+    Err(NetworkError::PermissionDenied)
+}
+
 fn configure_udp_socket(
     socket: &Socket,
     scope: InterfaceScope,
     port: u16,
-    token: Option<u64>,
+    mut grant: Option<crate::security::capability::TokenUse<'static>>,
 ) -> Result<(), NetworkError> {
     socket
         .with_inner_mut(|inner| {
@@ -451,7 +481,7 @@ fn configure_udp_socket(
                 return Err(NetworkError::InvalidAddress);
             };
             udp.ttl = 64;
-            udp.token = token;
+            udp.grant = grant.take();
             Ok(())
         })
         .unwrap_or(Err(NetworkError::Unknown))
@@ -484,7 +514,12 @@ impl UdpEndpoint {
         port: u16,
         token: Option<u64>,
     ) -> Result<Self, NetworkError> {
-        validate_udp_bind_permission(port, token)?;
+        let grant = acquire_udp_bind_grant(
+            crate::security::capability::manager(),
+            crate::task::current_subject().domain,
+            port,
+            token,
+        )?;
 
         let local_port = if port == 0 {
             allocate_udp_ephemeral_port_in(runtime).ok_or(NetworkError::PortInUse)?
@@ -492,17 +527,9 @@ impl UdpEndpoint {
             port
         };
 
-        if let Some(token) = token {
-            crate::security::capability::manager()
-                .increment_in_flight(token)
-                .map_err(|_| NetworkError::PermissionDenied)?;
-        }
-
         let socket = Socket::new_udp_in(runtime);
-        if let Err(error) = configure_udp_socket(&socket, scope, local_port, token) {
-            if let Some(token) = token {
-                let _ = crate::security::capability::manager().decrement_in_flight(token);
-            }
+        if let Err(error) = configure_udp_socket(&socket, scope, local_port, grant) {
+            let _ = unregister_socket_in(runtime, socket.socket_id());
             return Err(error);
         }
 
@@ -692,5 +719,103 @@ impl UdpStats {
             self.rx_dropped.load(Ordering::Relaxed),
             self.checksum_errors.load(Ordering::Relaxed),
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::DomainId;
+    use crate::security::capability::{
+        CAP_NET_BIND, CAP_NET_RAW, CapabilityError, CapabilityManager, CapabilitySet,
+        ReclamationStatus,
+    };
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn bind_admission_obeys_port_and_caller_scope() {
+        let manager = CapabilityManager::new();
+        let caller = DomainId::new(101);
+        assert!(matches!(
+            acquire_udp_bind_grant(&manager, caller, 1023, None),
+            Err(NetworkError::PermissionDenied)
+        ));
+        assert!(
+            acquire_udp_bind_grant(&manager, caller, 1024, None)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            acquire_udp_bind_grant(&manager, caller, 0, None)
+                .unwrap()
+                .is_none()
+        );
+        manager.set_capabilities(100, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let token = manager
+            .grant_capability_with_opts(100, caller.as_u64(), CAP_NET_BIND, None, false)
+            .unwrap();
+        let grant = acquire_udp_bind_grant(&manager, caller, 1023, Some(token)).unwrap();
+        assert_eq!(manager.in_flight_count(token), 1);
+        assert!(matches!(
+            acquire_udp_bind_grant(&manager, DomainId::new(102), 1024, Some(token)),
+            Err(NetworkError::PermissionDenied)
+        ));
+        assert_eq!(manager.in_flight_count(token), 1);
+        drop(grant);
+        assert_eq!(manager.in_flight_count(token), 0);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn forced_revocation_retains_admitted_bind_until_retirement() {
+        let manager = CapabilityManager::new();
+        manager.set_capabilities(100, CapabilitySet::with_permitted(CAP_NET_BIND));
+        let caller = DomainId::new(101);
+        let token = manager
+            .grant_capability_with_opts(100, caller.as_u64(), CAP_NET_BIND, None, false)
+            .unwrap();
+        let grant = acquire_udp_bind_grant(&manager, caller, 80, Some(token)).unwrap();
+        manager.revoke_grant(100, token, true).unwrap();
+        assert!(matches!(
+            manager.reclamation_status(token),
+            Some(ReclamationStatus::Revoked { .. })
+        ));
+        assert_eq!(
+            manager.reclaim_token(token),
+            Err(CapabilityError::ReclamationBusy)
+        );
+        assert!(matches!(
+            acquire_udp_bind_grant(&manager, caller, 80, Some(token)),
+            Err(NetworkError::PermissionDenied)
+        ));
+        drop(grant);
+        assert_eq!(manager.reclaim_token(token), Ok(()));
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn bind_admission_rejects_wrong_capability_and_expiry() {
+        let manager = CapabilityManager::new();
+        manager.set_capabilities(
+            100,
+            CapabilitySet::with_permitted(CAP_NET_BIND | CAP_NET_RAW),
+        );
+        let caller = DomainId::new(101);
+        let wrong_cap = manager
+            .grant_capability_with_opts(100, caller.as_u64(), CAP_NET_RAW, None, false)
+            .unwrap();
+        assert!(matches!(
+            acquire_udp_bind_grant(&manager, caller, 80, Some(wrong_cap)),
+            Err(NetworkError::PermissionDenied)
+        ));
+        assert_eq!(manager.in_flight_count(wrong_cap), 0);
+        let expired = manager
+            .grant_capability_with_opts(100, caller.as_u64(), CAP_NET_BIND, Some(0), false)
+            .unwrap();
+        assert!(matches!(
+            acquire_udp_bind_grant(&manager, caller, 80, Some(expired)),
+            Err(NetworkError::PermissionDenied)
+        ));
+        assert_eq!(manager.in_flight_count(expired), 0);
     }
 }

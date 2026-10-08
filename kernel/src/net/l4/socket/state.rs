@@ -217,7 +217,7 @@ pub(crate) struct UdpSocketEntry {
     pub state: UdpSocketState,
     pub pending_packets: VecDeque<(NetIfId, EndpointAddr, u8, PacketPayload)>,
     pub ttl: u8,
-    pub token: Option<crate::security::capability::TokenUse<'static>>,
+    pub grant: Option<crate::security::capability::TokenUse<'static>>,
 }
 
 impl UdpSocketEntry {
@@ -226,7 +226,7 @@ impl UdpSocketEntry {
             state,
             pending_packets: VecDeque::with_capacity(16),
             ttl: 64,
-            token: None,
+            grant: None,
         }
     }
 }

@@ -122,7 +122,7 @@ impl CapabilityManager {
         delegatable: bool,
     ) -> Result<u64, CapabilityError> {
         // Clean up expired tokens first
-        self.expire_grants();
+        self.expire_grants_at(crate::task::current_tick());
 
         if !self.check_caller_allowed(caller_domain, cap) {
             return Err(CapabilityError::NotPermitted);
@@ -187,7 +187,7 @@ impl CapabilityManager {
         force: bool,
     ) -> Result<(), CapabilityError> {
         // Clean expired first
-        self.expire_grants();
+        self.expire_grants_at(crate::task::current_tick());
 
         // Find token
         let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
@@ -200,12 +200,9 @@ impl CapabilityManager {
             }
 
             // Acquire 'now'
-            #[cfg(not(test))]
             let now = crate::task::current_tick();
-            #[cfg(test)]
-            let now = 0u64;
 
-            if force {
+            if force && self.in_flight_count(token_id) == 0 {
                 // Remove immediately
                 let token = grants.remove(pos);
                 drop(grants);
@@ -228,7 +225,7 @@ impl CapabilityManager {
 
                 Ok(())
             } else {
-                // Mark as revoked; keep token record for reclamation visibility
+                // Revocation never consumes a retained operation's grant.
                 grants[pos].revoked = true;
                 grants[pos].revoked_at = Some(now);
                 let token = grants[pos].clone();
@@ -262,7 +259,7 @@ impl CapabilityManager {
     /// - Self lookup (`caller_domain == target_domain`) is always allowed.
     /// - Cross-domain lookup requires `CAP_FOWNER`.
     pub fn list_grants(&self, caller_domain: u64, target_domain: u64) -> Vec<GrantToken> {
-        self.expire_grants();
+        self.expire_grants_at(crate::task::current_tick());
         if caller_domain != target_domain && !self.has_capability(caller_domain, CAP_FOWNER) {
             return Vec::new();
         }
@@ -274,13 +271,9 @@ impl CapabilityManager {
             .collect()
     }
 
-    /// Expire grants whose expiry <= current tick
-    pub(super) fn expire_grants(&self) {
-        #[cfg(not(test))]
-        let now = crate::task::current_tick();
-        #[cfg(test)]
-        let now = 0u64;
-
+    /// Apply one maintenance observation. Retained operations keep their grant
+    /// record after expiry closes new admission; reclamation consumes it later.
+    pub(super) fn expire_grants_at(&self, now: u64) {
         let mut expired: Vec<GrantToken> = Vec::new();
         {
             let mut grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
@@ -288,7 +281,14 @@ impl CapabilityManager {
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while i < grants.len() {
                 if let Some(e) = grants[i].expires {
-                    if e <= now {
+                    if e <= now && !grants[i].revoked {
+                        if self.in_flight_count(grants[i].id) != 0 {
+                            grants[i].revoked = true;
+                            grants[i].revoked_at = Some(now);
+                            expired.push(grants[i].clone());
+                            i += 1;
+                            continue;
+                        }
                         expired.push(grants.remove(i));
                         continue;
                     }
@@ -495,25 +495,5 @@ impl CapabilityManager {
                 );
             }
         }
-    }
-
-    /// Validate if a token is valid for a given capability
-    pub fn validate_token(&self, _pid: u64, token_id: u64, required_cap: Capability) -> bool {
-        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(token) = grants.iter().find(|t| t.id == token_id) {
-            if token.cap == required_cap && !token.revoked {
-                if let Some(exp) = token.expires {
-                    #[cfg(not(test))]
-                    let now = crate::task::current_tick();
-                    #[cfg(test)]
-                    let now = 0;
-                    if now >= exp {
-                        return false;
-                    }
-                }
-                return true;
-            }
-        }
-        false
     }
 }

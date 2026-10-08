@@ -456,7 +456,7 @@ impl SocketRegistry {
             .remove(socket_id);
         if let Some(record) = removed.as_ref() {
             let socket = Socket::from_registered(socket_id, record.runtime);
-            let state = record.state.lock().unwrap_or_else(|e| e.into_inner());
+            let mut state = record.state.lock().unwrap_or_else(|e| e.into_inner());
             if state.is_tcp() {
                 self.tcp_ports
                     .write()
@@ -467,17 +467,15 @@ impl SocketRegistry {
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove_socket(socket_id);
-                drop(state);
-                let mut state = record.state.lock().unwrap_or_else(|e| e.into_inner());
-                if let Some(token) = state.udp_mut().and_then(|udp| udp.token.take()) {
-                    let _ = crate::security::capability::manager().decrement_in_flight(token);
-                }
             } else if state.is_raw() {
                 self.raw_scopes
                     .write()
                     .unwrap_or_else(|e| e.into_inner())
                     .remove_socket(socket_id);
             }
+            let grant = state.udp_mut().and_then(|udp| udp.grant.take());
+            drop(state);
+            drop(grant);
             return Some(socket);
         }
         None

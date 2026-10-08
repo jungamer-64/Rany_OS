@@ -119,12 +119,11 @@ fn test_expire_grants() {
 
     manager.set_capabilities(caller, CapabilitySet::with_permitted(CAP_NET_BIND));
 
-    // Grant with expiry equal to 0 -- in tests 'now' is defined as 0, so this should expire immediately
     let _token = manager
         .grant_capability_with_opts(caller, target, CAP_NET_BIND, Some(0), false)
         .unwrap();
     // Immediately expire internal list
-    manager.expire_grants();
+    manager.expire_grants_at(crate::task::current_tick());
 
     // Capability should be removed
     assert!(!manager.has_capability(target, CAP_NET_BIND));
@@ -145,7 +144,7 @@ fn test_expire_grants_wrapper() {
             .unwrap();
         assert!(manager().has_capability(target, CAP_NET_BIND));
 
-        manager().expire_grants();
+        manager().expire_grants_at(crate::task::current_tick());
 
         assert!(!manager().has_capability(target, CAP_NET_BIND));
         assert!(manager().list_grants(target, target).is_empty());
@@ -208,8 +207,7 @@ fn test_in_flight_blocks_reclaim() {
         .grant_capability_with_opts(caller, target, CAP_NET_BIND, None, false)
         .unwrap();
 
-    // Simulate an in-flight user
-    assert!(manager.increment_in_flight(token).is_ok());
+    let retained = manager.retain_token(target, token, CAP_NET_BIND).unwrap();
 
     // Revoke (mark revoked)
     assert!(manager.revoke_grant(caller, token, false).is_ok());
@@ -226,12 +224,42 @@ fn test_in_flight_blocks_reclaim() {
         other => panic!("Expected ReclamationBusy, got {:?}", other),
     }
 
-    // release in-flight
-    assert!(manager.decrement_in_flight(token).is_ok());
+    drop(retained);
 
     // now reclaim
     manager.reclaim_revoked_now();
     assert!(manager.list_grants(target, target).is_empty());
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn expiry_retains_admitted_operation_until_retirement() {
+    let manager = fresh_manager();
+    manager.set_capabilities(100, CapabilitySet::with_permitted(CAP_NET_BIND));
+    let expiry = crate::task::current_tick().checked_add(1000).unwrap();
+    let token = manager
+        .grant_capability_with_opts(100, 101, CAP_NET_BIND, Some(expiry), false)
+        .unwrap();
+    let retained = manager.retain_token(101, token, CAP_NET_BIND).unwrap();
+    manager.expire_grants_at(expiry - 1);
+    assert_eq!(
+        manager.reclamation_status(token),
+        Some(ReclamationStatus::Active)
+    );
+    manager.expire_grants_at(expiry);
+    assert_eq!(
+        manager.reclamation_status(token),
+        Some(ReclamationStatus::Revoked { revoked_at: expiry })
+    );
+    assert!(!manager.has_capability(101, CAP_NET_BIND));
+    assert!(manager.retain_token(101, token, CAP_NET_BIND).is_err());
+    assert_eq!(
+        manager.reclaim_token(token),
+        Err(CapabilityError::ReclamationBusy)
+    );
+    drop(retained);
+    manager.reclaim_revoked_now();
+    assert_eq!(manager.reclamation_status(token), None);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
