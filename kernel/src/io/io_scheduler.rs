@@ -759,8 +759,8 @@ pub struct IoScheduler {
     /// Completions whose future was dropped. This is an explicit owner so a
     /// returned DMA lease is never discarded by cancellation bookkeeping.
     abandoned_completions: PoisonLock<Vec<IoCompletion>>,
-    /// Explicit failed finalization owner; never reaped without reconciliation.
-    failed_closes: PoisonLock<Vec<kernel_api::dma::DmaCloseError>>,
+    /// Failed finalizations retained until a service turn completes retirement.
+    failed_closes: PoisonLock<VecDeque<kernel_api::dma::DmaCloseError>>,
     /// シャットダウンフラグ
     shutdown: AtomicBool,
 }

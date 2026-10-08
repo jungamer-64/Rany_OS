@@ -24,7 +24,7 @@ impl IoScheduler {
             device_ops: PoisonRwLock::new(BTreeMap::new()),
             stats: IoSchedulerStats::new(),
             abandoned_completions: PoisonLock::new(Vec::new()),
-            failed_closes: PoisonLock::new(Vec::new()),
+            failed_closes: PoisonLock::new(VecDeque::new()),
             shutdown: AtomicBool::new(false),
         }
     }
@@ -483,15 +483,33 @@ impl IoScheduler {
                 self.failed_closes
                     .lock()
                     .unwrap_or_else(|error| error.into_inner())
-                    .push(failure);
+                    .push_back(failure);
                 Err(cause)
             }
         }
     }
 
-    /// Attempt fallible finalization outside the request lock. Failed unmaps
-    /// remain owned here until the device-reset reconciliation owner claims them.
+    /// Resume failed retirement outside request and retention locks, then close
+    /// abandoned completions. Each retained lease is attempted at most once per
+    /// turn; repeated failure preserves its allocation and completed unmap steps.
     pub fn reap_abandoned(&self) {
+        const RETIREMENT_BATCH_LIMIT: usize = 64;
+        let retiring: [Option<kernel_api::dma::DmaCloseError>; RETIREMENT_BATCH_LIMIT] = {
+            let mut retained = self
+                .failed_closes
+                .lock()
+                .unwrap_or_else(|error| error.into_inner());
+            core::array::from_fn(|_| retained.pop_front())
+        };
+        for failure in retiring.into_iter().flatten() {
+            let (_, lease) = failure.into_parts();
+            if let Err(failure) = lease.retry_close() {
+                self.failed_closes
+                    .lock()
+                    .unwrap_or_else(|error| error.into_inner())
+                    .push_back(failure);
+            }
+        }
         let completions = core::mem::take(
             &mut *self
                 .abandoned_completions

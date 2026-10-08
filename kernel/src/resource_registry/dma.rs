@@ -1041,3 +1041,172 @@ pub(crate) fn cleanup_owner(owner: DomainId) -> DmaCleanupStats {
     }
     stats
 }
+
+#[cfg(test)]
+mod retirement_tests {
+    use super::*;
+    use core::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
+    use kernel_api::dma::{DmaQuiesceWitness, DmaResetWitness};
+
+    static NEXT_LEASE: AtomicU32 = AtomicU32::new(1);
+
+    struct RetirementLease {
+        id: DmaLeaseId,
+        failed: AtomicBool,
+        released: AtomicBool,
+        attempts: AtomicUsize,
+        abandoned: AtomicUsize,
+    }
+
+    // SAFETY: this private authority admits only CPU-owned close and failed
+    // retirement. It publishes no DMA descriptor, never arms hardware, and
+    // rejects byte access and all transfer transitions. Failed retirement
+    // preserves the same owner; successful retirement consumes it once.
+    unsafe impl DmaLeaseAuthority for RetirementLease {
+        fn lease_id(&self) -> DmaLeaseId {
+            self.id
+        }
+        fn device_address(&self) -> DmaDeviceAddress {
+            DmaDeviceAddress::from_abi(0x1000)
+        }
+        fn byte_count(&self) -> DmaByteCount {
+            DmaByteCount::new(1).unwrap()
+        }
+        fn direction(&self) -> DmaDirection {
+            DmaDirection::FromDevice
+        }
+        fn with_cpu_bytes(&self, _: &mut dyn FnMut(&[u8])) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn with_cpu_bytes_mut(&self, _: &mut dyn FnMut(&mut [u8])) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn prepare(&self, _: DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn prepared_queue(&self) -> Result<DmaQueueIdentity, DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn abort_prepared(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn arm(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn complete(&self, _: DmaCompletionWitness) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn return_to_cpu(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn mark_outcome_unknown(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn revoke_after_reset(&self, _: DmaResetWitness) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn reconcile(&self, _: DmaReconcileWitness) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn close(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::IommuFailure)
+        }
+        fn prepare_shared(&self, _: DmaQueueIdentity) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn activate_shared(&self) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn read_shared_word(&self, _: usize, _: DmaAccessWidth) -> Result<u64, DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn write_shared_word(
+            &self,
+            _: usize,
+            _: DmaAccessWidth,
+            _: u64,
+        ) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn quiesce_shared(&self, _: DmaQuiesceWitness) -> Result<(), DmaLeaseError> {
+            Err(DmaLeaseError::InvalidState)
+        }
+        fn retry_close(&self) -> Result<(), DmaLeaseError> {
+            self.attempts.fetch_add(1, Ordering::Relaxed);
+            if self.failed.load(Ordering::Acquire) {
+                return Err(DmaLeaseError::IommuFailure);
+            }
+            assert!(!self.released.swap(true, Ordering::AcqRel));
+            Ok(())
+        }
+        fn abandon(&self, _: DmaLeaseState) {
+            self.abandoned.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    fn retained_lease(scheduler: &crate::io::io_scheduler::IoScheduler) -> Arc<RetirementLease> {
+        let owner = Arc::new(RetirementLease {
+            id: DmaLeaseId::from_parts(NEXT_LEASE.fetch_add(1, Ordering::Relaxed), 1).unwrap(),
+            failed: AtomicBool::new(true),
+            released: AtomicBool::new(false),
+            attempts: AtomicUsize::new(0),
+            abandoned: AtomicUsize::new(0),
+        });
+        let authority: Arc<dyn DmaLeaseAuthority> = owner.clone();
+        assert_eq!(
+            scheduler.finalize_transfer(CpuDmaLease::from_authority(authority)),
+            Err(DmaLeaseError::IommuFailure)
+        );
+        owner
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn failed_retirement_keeps_owner_until_a_later_service_turn() {
+        let scheduler = crate::io::io_scheduler::IoScheduler::new();
+        let owner = retained_lease(&scheduler);
+        scheduler.reap_abandoned();
+        assert_eq!(owner.attempts.load(Ordering::Relaxed), 1);
+        assert!(!owner.released.load(Ordering::Acquire));
+        assert_eq!(owner.abandoned.load(Ordering::Relaxed), 0);
+        owner.failed.store(false, Ordering::Release);
+        scheduler.reap_abandoned();
+        scheduler.reap_abandoned();
+        assert_eq!(owner.attempts.load(Ordering::Relaxed), 2);
+        assert!(owner.released.load(Ordering::Acquire));
+        assert_eq!(owner.abandoned.load(Ordering::Relaxed), 0);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn failed_retirement_batches_allow_following_owners_to_progress() {
+        let scheduler = crate::io::io_scheduler::IoScheduler::new();
+        let owners: Vec<_> = (0..65).map(|_| retained_lease(&scheduler)).collect();
+        owners[64].failed.store(false, Ordering::Release);
+        scheduler.reap_abandoned();
+        assert_eq!(
+            owners
+                .iter()
+                .map(|owner| owner.attempts.load(Ordering::Relaxed))
+                .sum::<usize>(),
+            64
+        );
+        scheduler.reap_abandoned();
+        assert!(owners[64].released.load(Ordering::Acquire));
+        assert_eq!(owners[64].attempts.load(Ordering::Relaxed), 1);
+        assert!(
+            owners[..64]
+                .iter()
+                .all(|owner| owner.abandoned.load(Ordering::Relaxed) == 0)
+        );
+        for owner in &owners {
+            owner.failed.store(false, Ordering::Release);
+        }
+        scheduler.reap_abandoned();
+        assert!(
+            owners
+                .iter()
+                .all(|owner| owner.released.load(Ordering::Acquire))
+        );
+    }
+}
