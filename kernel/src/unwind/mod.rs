@@ -56,11 +56,6 @@ pub use reader::MemoryReader;
 pub use registers::DwarfRegister;
 
 // Drop guard関連のエクスポート（gimli feature有効時）
-#[cfg(feature = "gimli_unwind")]
-pub use gimli_unwinder::{
-    DomainLockInfo, DomainUnwinder, DropGuard, register_domain_lock, register_drop_guard,
-    unregister_domain_lock, unregister_drop_guard,
-};
 
 // catch_panic機構のエクスポート
 // 設計書 8.1/8.2: ドメイン境界でのパニック捕捉
