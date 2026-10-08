@@ -40,8 +40,8 @@ rustflags = [
     "link-arg=-Map=kernel-test.map",
 ]
 
-# Kernel execution does not preserve SIMD state for SHA-2 backends.
-# Apply this dependency configuration to host tests and every kernel target.
+# Keep SHA-2 within the kernel target's declared instruction set.
+# Apply the same dependency configuration to host tests and kernel builds.
 [target.'cfg(all())']
 rustflags = [
     # Reproducible builds: normalize local workspace path.
