@@ -2,7 +2,7 @@
 //!
 //! Remote CPUs receive a monotonically increasing generation through their
 //! CPU-local atomic mailbox. Remote invalidation intentionally flushes the
-//! complete local TLB: this makes concurrent requests naturally coalesce and
+//! complete local TLB, including global mappings: requests naturally coalesce and
 //! avoids a global payload lock in interrupt context.
 
 use core::arch::asm;
@@ -189,14 +189,21 @@ unsafe fn flush_page_local(address: VirtAddr) {
 
 #[inline]
 unsafe fn flush_all_local() {
-    // Changing CR4.PGE invalidates all PCIDs and GLOBAL entries. Exclude local
-    // interrupts so no handler observes the temporary control-register value.
     x86_64::instructions::interrupts::without_interrupts(|| unsafe {
-        let cr4: u64;
-        asm!("mov {}, cr4", out(reg) cr4, options(nomem, nostack, preserves_flags));
-        let toggled = cr4 ^ (1 << 7);
-        asm!("mov cr4, {}", in(reg) toggled, options(nostack, preserves_flags));
-        asm!("mov cr4, {}", in(reg) cr4, options(nostack, preserves_flags));
+        // Changing CR4.PGE invalidates global entries and paging-structure
+        // caches for every PCID (Intel SDM volume 3A, section 5.10.4). Toggle
+        // the bit even when it was initially clear, then restore the CPU's
+        // policy before interrupts can observe the temporary value.
+        asm!(
+            "mov {original}, cr4",
+            "mov {scratch}, {original}",
+            "xor {scratch}, 128",
+            "mov cr4, {scratch}",
+            "mov cr4, {original}",
+            original = out(reg) _,
+            scratch = out(reg) _,
+            options(nostack)
+        );
     });
     LOCAL_FULL_FLUSHES.fetch_add(1, Ordering::Relaxed);
 }
@@ -247,11 +254,19 @@ mod tests {
             None,
         )
         .unwrap();
-        let firmware = |uid, apic| crate::cpu::FirmwareCpuIdentity {
-            uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
-            apic_id: crate::cpu::ApicId::new(apic),
-            proximity_domain: Some(0),
-            eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+        let placement =
+            crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10)).unwrap();
+        let firmware = |uid, apic| {
+            crate::cpu::LocatedCpu::resolve(
+                crate::cpu::FirmwareCpuIdentity {
+                    uid: Some(crate::cpu::FirmwareCpuUid::Integer(uid)),
+                    apic_id: crate::cpu::ApicId::new(apic),
+                    proximity_domain: Some(0),
+                    eject: crate::cpu::CpuEjectCapability::FirmwareEject,
+                },
+                &placement,
+            )
+            .unwrap()
         };
         let cpu1 = runtime.discover_present(firmware(1, 1)).unwrap();
         let cpu2 = runtime.discover_present(firmware(2, 2)).unwrap();
