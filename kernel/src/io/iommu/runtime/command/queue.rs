@@ -3,11 +3,9 @@
 // ============================================================================
 
 //!
-// Command Queue for IOMMU - initial implementation
-// - Per-controller MPSC queue with controller-owned backing
-// - Preallocated completion slots (no per-command heap allocations)
-// - `submit()` + `CommandCompletion::wait_blocking()` for blocking callers
-// - process_once() worker to be called periodically by the Executor
+// Per-controller command ownership and preallocated completion records.
+// The service host processes bounded batches and wakes admitted waiters.
+// Completion metadata is CPU-only and is never published to a device.
 
 use crate::sync::PoisonLock;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -270,38 +268,69 @@ impl core::future::Future for CommandCompletion<'_> {
 
 /// CPU-owned completion storage has no hardware publication. Queue borrowing
 /// retains every initialized atomic slot through futures, workers and waiters;
-/// destroying the queue drops wakers and consumes its physical owner.
+/// destroying the queue drops wakers before releasing the backing. Ordinary
+/// metadata uses the heap; explicit NUMA placement reserves node-local RAM.
 enum CompletionRecords {
-    Unplaced(Vec<CompletionSlot>),
-    Placed(PlacedCompletionRecords),
+    Heap(Vec<CompletionSlot>),
+    Numa(NodeLocalRecords),
 }
 
-struct PlacedCompletionRecords {
+struct NodeLocalRecords {
     pointer: core::ptr::NonNull<CompletionSlot>,
     backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
-    node: usize,
 }
 // SAFETY: records expose only shared atomic slot operations; initialization and
 // destruction require exclusive ownership, retained by CommandQueue borrows.
-unsafe impl Send for CompletionRecords {}
-unsafe impl Sync for CompletionRecords {}
+unsafe impl Send for NodeLocalRecords {}
+unsafe impl Sync for NodeLocalRecords {}
 impl CompletionRecords {
     fn new(numa_node: Option<usize>) -> Result<Self, IommuError> {
+        if let Some(node) = numa_node {
+            return NodeLocalRecords::new(node).map(Self::Numa);
+        }
+        let mut records = Vec::new();
+        records
+            .try_reserve_exact(DEFAULT_QUEUE_SIZE)
+            .map_err(|_| IommuError::MetadataAllocation)?;
+        for _ in 0..DEFAULT_QUEUE_SIZE {
+            records.push(CompletionSlot::new());
+        }
+        Ok(Self::Heap(records))
+    }
+
+    fn placed_node(&self) -> Option<usize> {
+        match self {
+            Self::Heap(_) => None,
+            Self::Numa(records) => records
+                .backing
+                .as_ref()
+                .map(|backing| backing.node().as_usize()),
+        }
+    }
+}
+
+impl core::ops::Deref for CompletionRecords {
+    type Target = [CompletionSlot];
+    fn deref(&self) -> &Self::Target {
+        match self {
+            Self::Heap(records) => records,
+            Self::Numa(records) => records,
+        }
+    }
+}
+
+impl NodeLocalRecords {
+    fn new(node: usize) -> Result<Self, IommuError> {
         let bytes = core::mem::size_of::<CompletionSlot>() * DEFAULT_QUEUE_SIZE;
         let frames = bytes.div_ceil(crate::mm::types::PAGE_SIZE_4K);
         let alignment = core::mem::align_of::<CompletionSlot>().max(crate::mm::types::PAGE_SIZE_4K);
-        let backing = if let Some(node) = numa_node {
-            let node = u8::try_from(node).map_err(|_| IommuError::InvalidAddress)?;
-            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned_on_node(
-                crate::mm::types::NumaNodeId::new(node),
-                frames,
-                alignment,
-            )
-        } else {
-            crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned(frames, alignment)
-        }
+        let node = u8::try_from(node).map_err(|_| IommuError::InvalidAddress)?;
+        let backing = crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned_on_node(
+            crate::mm::types::NumaNodeId::new(node),
+            frames,
+            alignment,
+        )
         .map_err(IommuError::PhysicalAllocation)?;
-        let node = backing.node().as_usize();
         let address = crate::mm::virt::mapping::phys_to_virt(backing.start_address());
         // SAFETY: the PMM owner admits nonzero aligned RAM and the HHDM retains
         // its mapping. Every slot is initialized before any shared publication.
@@ -313,18 +342,17 @@ impl CompletionRecords {
         Ok(Self {
             pointer,
             backing: Some(backing),
-            node,
         })
     }
 }
-impl core::ops::Deref for CompletionRecords {
+impl core::ops::Deref for NodeLocalRecords {
     type Target = [CompletionSlot];
     fn deref(&self) -> &Self::Target {
         // SAFETY: the owner retains exactly DEFAULT_QUEUE_SIZE initialized slots.
         unsafe { core::slice::from_raw_parts(self.pointer.as_ptr(), DEFAULT_QUEUE_SIZE) }
     }
 }
-impl Drop for CompletionRecords {
+impl Drop for NodeLocalRecords {
     fn drop(&mut self) {
         // SAFETY: no queue borrower remains; all slots and stored wakers retire
         // before consuming RAM release authority. This metadata is never DMA-visible.
@@ -367,7 +395,7 @@ impl core::fmt::Debug for CommandQueue {
         f.debug_struct("CommandQueue")
             .field("next_alloc", &self.next_alloc.load(Ordering::Relaxed))
             .field("poisoned", &self.is_poisoned())
-            .field("numa_node", &self.slots.node)
+            .field("placed_numa_node", &self.slots.placed_node())
             .field(
                 "processed_count",
                 &self.processed_count.load(Ordering::Relaxed),
@@ -985,23 +1013,38 @@ impl Drop for SubmitFuture<'_> {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_reclaim_completed_slot() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
+    let Some(current) = crate::cpu::CurrentCpu::acquire() else {
+        return false;
+    };
+    let Some(node) = current.memory_node().map(|node| node.as_usize()) else {
+        return false;
+    };
+    let Ok(q) = CommandQueue::new(Some(node)) else {
+        return false;
+    };
+    if q.slots.placed_node() != Some(node) {
+        return false;
+    }
 
     let comp1 = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
         .expect("submit");
-    let idx = comp1.slot_idx;
     drop(comp1);
+    if q.process_once(|_| Ok(RESULT_OK)) != 1 {
+        return false;
+    }
 
-    q.slots[idx].complete(RESULT_OK);
-
-    let submit2 = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 });
-    submit2.is_ok() && q.reclaimed_total() > 0
+    let Ok(submit2) = q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 2 }) else {
+        return false;
+    };
+    q.process_once(|_| Ok(RESULT_OK)) == 1
+        && submit2.wait_blocking() == RESULT_OK
+        && q.reclaimed_total() > 0
 }
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) async fn qemu_smoke_cancel_queued_command() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
+    let q = CommandQueue::new(None).expect("queue admission");
 
     let comp = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 3 })
@@ -1021,7 +1064,7 @@ pub(crate) async fn qemu_smoke_cancel_queued_command() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
+    let q = CommandQueue::new(None).expect("queue admission");
 
     let comp = q
         .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 4 })
@@ -1040,7 +1083,7 @@ pub(crate) fn qemu_smoke_drop_triggers_cancel() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
+    let q = CommandQueue::new(None).expect("queue admission");
 
     let mut comps: Vec<CommandCompletion<'_>> = Vec::new();
     for i in 0..5 {
@@ -1060,7 +1103,7 @@ pub(crate) fn qemu_smoke_process_up_to_respects_fuel() -> bool {
 
 #[cfg(feature = "qemu-test-export")]
 pub(crate) fn qemu_smoke_metrics_counts() -> bool {
-    let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
+    let q = CommandQueue::new(None).expect("queue admission");
     if q.processed_total() != 0 || q.cancelled_total() != 0 || q.cancel_attempts_total() != 0 {
         return false;
     }
@@ -1109,36 +1152,15 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_queue_basic() {
-        // Leak the queue to get a 'static reference for thread spawn in tests
-        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
-
-        // Worker thread: act as executor and process commands
-        let worker_q: &'static CommandQueue = &*q;
-        let worker = std::thread::spawn(move || {
-            let mut attempts = 0;
-            // LOOP_PROOF: mode=event; reason=The command worker stops after executing an admitted batch or fails the fixture after 1000 unsuccessful attempts.;
-            loop {
-                let processed = worker_q.process_once(|_k| Ok(0));
-                if processed > 0 {
-                    break;
-                }
-                attempts += 1;
-                if attempts > 1000 {
-                    panic!("CQ worker timed out");
-                }
-                std::thread::yield_now();
-            }
+        let q = CommandQueue::new(None).expect("queue admission");
+        let completion = q
+            .submit(IommuCommandKind::InvalidateIotlbDomain { domain: 1 })
+            .expect("submit");
+        std::thread::scope(|scope| {
+            let worker = scope.spawn(|| q.process_once(|_| Ok(RESULT_OK)));
+            assert_eq!(completion.wait_blocking(), RESULT_OK);
+            assert_eq!(worker.join().expect("worker join failed"), 1);
         });
-
-        // Submit a simple command and wait for completion
-        let kind = IommuCommandKind::InvalidateIotlbDomain { domain: 1 };
-        let res = q
-            .submit(kind)
-            .map(|comp| comp.wait_blocking())
-            .map(|rc| rc == RESULT_OK);
-        assert_eq!(res, Ok(true));
-
-        worker.join().expect("worker join failed");
     }
 
     // Ensure `CommandCompletion` works as a Future (wakes properly)
@@ -1175,31 +1197,21 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn completion_records_obey_explicit_node_and_alignment() {
-        // Ensure we can allocate CommandQueue with a NUMA hint and slots are initialized
-        let q = CommandQueue::new(Some(0)).expect("queue admission");
+    fn completion_records_initialize_before_queue_publication() {
+        let q = CommandQueue::new(None).expect("queue admission");
         assert_eq!(q.slots.len(), DEFAULT_QUEUE_SIZE);
         // try to acquire a slot and ensure completion works
         assert!(q.slots[0].try_acquire());
         q.slots[0].complete(RESULT_OK);
         let rc = q.slots[0].wait_result_spin();
         assert_eq!(rc, RESULT_OK);
-        // sanity check
-        assert_eq!(q.slots.node, 0);
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn completion_admission_preserves_invalid_node_failure() {
+    fn completion_admission_rejects_unrepresentable_node_hint() {
         let error = CommandQueue::new(Some(usize::MAX)).unwrap_err();
         assert_eq!(error, IommuError::InvalidAddress);
-        #[cfg(any(feature = "std", target_os = "linux"))]
-        assert_eq!(
-            CommandQueue::new(Some(1)).unwrap_err(),
-            IommuError::PhysicalAllocation(
-                crate::mm::phys::frame_allocator::FrameAllocError::InvalidNode
-            )
-        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

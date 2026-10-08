@@ -405,6 +405,19 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_command_completion_retirement", || {
+        if crate::io::iommu::runtime::command::queue::qemu_smoke_reclaim_completed_slot() {
+            Ok(String::from(
+                "Node-local completion storage retired through its command consumer",
+            ))
+        } else {
+            Err(String::from(
+                "Node-local command completion retirement failed",
+            ))
+        }
+    }));
+
     suite.add_result(run_async_case("iommu_dma_map_basic", async {
         use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
         use crate::io::iommu::types::DeviceId;
