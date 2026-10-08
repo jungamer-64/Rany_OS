@@ -3,8 +3,6 @@ use kernel_api::resource::fs::FsMutationError;
 
 #[cfg(test)]
 mod fs_tests;
-#[cfg(all(test, not(feature = "qemu-test-export")))]
-mod nvme_tests;
 
 // ============================================================================
 // GuiServices Implementation

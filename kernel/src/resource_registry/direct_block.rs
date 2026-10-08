@@ -3,14 +3,14 @@ use core::sync::atomic::{AtomicU64, Ordering};
 
 use crate::sync::PoisonLock;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug)]
 pub(crate) struct NvmeOpenEntry {
     pub(crate) device_id: u64,
     pub(crate) start_block: u64,
     pub(crate) block_count: u64,
     pub(crate) block_size: u32,
     pub(crate) owner: u64,
-    pub(crate) token: Option<u64>,
+    pub(crate) token: Option<crate::security::capability::TokenUse<'static>>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,27 +32,12 @@ impl NvmeDirectRegistry {
         }
     }
 
-    fn register(
-        &self,
-        device_id: u64,
-        start_block: u64,
-        block_count: u64,
-        block_size: u32,
-        owner: u64,
-        token: Option<u64>,
-    ) -> u64 {
+    fn register(&self, entry: NvmeOpenEntry) -> u64 {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
-        self.opens.lock().unwrap_or_else(|e| e.into_inner()).insert(
-            id,
-            NvmeOpenEntry {
-                device_id,
-                start_block,
-                block_count,
-                block_size,
-                owner,
-                token,
-            },
-        );
+        self.opens
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .insert(id, entry);
         id
     }
 
@@ -87,22 +72,8 @@ impl NvmeDirectRegistry {
 
 static NVME_DIRECT_REGISTRY: NvmeDirectRegistry = NvmeDirectRegistry::new();
 
-pub(crate) fn register_open(
-    device_id: u64,
-    start_block: u64,
-    block_count: u64,
-    block_size: u32,
-    owner: u64,
-    token: Option<u64>,
-) -> u64 {
-    NVME_DIRECT_REGISTRY.register(
-        device_id,
-        start_block,
-        block_count,
-        block_size,
-        owner,
-        token,
-    )
+pub(crate) fn register_open(entry: NvmeOpenEntry) -> u64 {
+    NVME_DIRECT_REGISTRY.register(entry)
 }
 
 pub(crate) fn lookup_open_owned(id: u64, caller: u64) -> Result<NvmeOpenEntry, NvmeOpenError> {
