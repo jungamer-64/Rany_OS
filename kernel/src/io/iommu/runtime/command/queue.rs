@@ -20,7 +20,6 @@ use core::sync::atomic::{AtomicBool, AtomicI32, AtomicU8, AtomicUsize, Ordering}
 use core::task::{Context, Poll};
 
 use alloc::boxed::Box;
-#[cfg(any(test, feature = "qemu-test-export"))]
 use alloc::vec::Vec;
 
 use crate::io::iommu::types::IommuError;
@@ -272,7 +271,12 @@ impl core::future::Future for CommandCompletion<'_> {
 /// CPU-owned completion storage has no hardware publication. Queue borrowing
 /// retains every initialized atomic slot through futures, workers and waiters;
 /// destroying the queue drops wakers and consumes its physical owner.
-struct CompletionRecords {
+enum CompletionRecords {
+    Unplaced(Vec<CompletionSlot>),
+    Placed(PlacedCompletionRecords),
+}
+
+struct PlacedCompletionRecords {
     pointer: core::ptr::NonNull<CompletionSlot>,
     backing: Option<crate::mm::phys::frame_allocator::PhysicalAllocation>,
     node: usize,
