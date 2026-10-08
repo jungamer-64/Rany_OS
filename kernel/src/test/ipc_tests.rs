@@ -176,7 +176,7 @@ pub fn test_exchange_heap() -> TestResult {
 /// Test domain lifecycle
 pub fn test_domain_lifecycle() -> TestResult {
     use crate::domain::lifecycle::terminate_domain;
-    use crate::domain::{DomainState, create_domain, set_domain_state, with_domain};
+    use crate::domain::{DomainState, create_domain, start_domain, get_domain_state};
 
     // ドメインを作成
     let domain_id = match create_domain("test_lifecycle".into()) {
@@ -185,16 +185,16 @@ pub fn test_domain_lifecycle() -> TestResult {
     };
 
     // Initial state should be Initializing
-    let state = with_domain(domain_id, |d| d.state);
+    let state = get_domain_state(domain_id);
     if state != Some(DomainState::Initializing) {
         return TestResult::Failed(String::from("Initial state should be Initializing"));
     }
 
     // Transition to Running
-    if let Err(error) = set_domain_state(domain_id, DomainState::Running) {
-        return TestResult::Failed(alloc::format!("State admission failed: {error}"));
+    if start_domain(domain_id).is_err() {
+        return TestResult::Failed(String::from("Failed to start domain"));
     }
-    let state = with_domain(domain_id, |d| d.state);
+    let state = get_domain_state(domain_id);
     if state != Some(DomainState::Running) {
         return TestResult::Failed(String::from("State should be Running"));
     }
@@ -204,7 +204,7 @@ pub fn test_domain_lifecycle() -> TestResult {
         return TestResult::Failed(String::from("Failed to terminate domain"));
     }
 
-    let state = with_domain(domain_id, |d| d.state);
+    let state = get_domain_state(domain_id);
     if state != Some(DomainState::Terminated) {
         return TestResult::Failed(String::from("State should be Terminated"));
     }

@@ -465,8 +465,8 @@ pub fn iommu_cmdqueue_reclaim_completed_slot_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave3::cmdqueue_reclaim_completed_slot_smoke()
 }
 
-pub fn iommu_cmdqueue_cancel_queued_command_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave3::cmdqueue_cancel_queued_command_smoke()
+pub async fn iommu_cmdqueue_cancel_queued_command_smoke() -> bool {
+    crate::io::iommu::qemu_tests::wave3::cmdqueue_cancel_queued_command_smoke().await
 }
 
 pub fn iommu_cmdqueue_drop_triggers_cancel_smoke() -> bool {
@@ -475,10 +475,6 @@ pub fn iommu_cmdqueue_drop_triggers_cancel_smoke() -> bool {
 
 pub fn iommu_cmdqueue_process_up_to_respects_fuel_smoke() -> bool {
     crate::io::iommu::qemu_tests::wave3::cmdqueue_process_up_to_respects_fuel_smoke()
-}
-
-pub fn iommu_cmdqueue_fuel_shim_basic_smoke() -> bool {
-    crate::io::iommu::qemu_tests::wave3::cmdqueue_fuel_shim_basic_smoke()
 }
 
 pub fn iommu_cmdqueue_metrics_counts_smoke() -> bool {

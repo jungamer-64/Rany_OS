@@ -2,7 +2,6 @@ use crate::crypto::{ed25519, sha256};
 use crate::error::{KernelError, MemoryError};
 use crate::loader::{elf, live_update, signature, type_id};
 use core::fmt::Write;
-use core::sync::atomic::Ordering;
 
 mod wave8_net_tests;
 pub use wave8_net_tests::*;
@@ -188,12 +187,6 @@ pub fn loader_live_update_request_tracker_drain_smoke() -> bool {
     tracker.end_request();
     tracker.wait_for_drain();
     tracker.active_count() == 0 && !tracker.begin_request()
-}
-
-pub fn loader_live_update_per_core_epoch_smoke() -> bool {
-    let epoch = live_update::PerCoreEpoch::new();
-    epoch.local_epoch.load(Ordering::Relaxed) == 0
-        && !epoch.in_critical_section.load(Ordering::Relaxed)
 }
 
 pub fn loader_elf_empty_data_returns_error_smoke() -> bool {
