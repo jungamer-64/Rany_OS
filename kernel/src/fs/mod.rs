@@ -48,18 +48,7 @@ pub use async_memfs::{
     touch_file_async,
     write_file_content_async,
 };
-pub use async_ops::{
-    // 非同期ファイル操作
-    AsyncFile,
-    AsyncIoRequest,
-    // I/Oスケジューラ
-    AsyncIoScheduler,
-    AsyncIoType,
-    // ダイレクトブロックアクセス
-    DirectBlockHandle,
-    IoSchedulerStats,
-    async_io_scheduler,
-};
+pub use async_ops::DirectBlockHandle;
 pub use block::*;
 pub use cache::{CacheStats, CachedPage, PageCache, init_page_cache, page_cache};
 pub use fs_model::{

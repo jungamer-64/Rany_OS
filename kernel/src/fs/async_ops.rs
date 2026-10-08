@@ -3,7 +3,7 @@
 // 設計書 6.3: ストレージと非同期ファイルシステム
 // ============================================================================
 //!
-//! Async file operations and capability-owned direct block transfers.
+//! Checked block extents and capability-owned direct block transfers.
 //!
 //! Awaiting a transfer owns its scheduler completion consumer. Cancellation
 //! removes an undispatched command or leaves accepted DMA with the device;
@@ -16,7 +16,7 @@ use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, IoCommand, IoCompletion, IoError, IoPriority, hybrid_coordinator,
     io_scheduler,
 };
-use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest, DmaDirection};
+use kernel_api::dma::CpuDmaLease;
 use kernel_api::service::storage::{BlockTransferOutcome, BlockTransferRetention};
 
 mod block;

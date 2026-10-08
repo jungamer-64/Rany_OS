@@ -17,10 +17,6 @@ macro_rules! run_case {
     }};
 }
 
-pub fn async_ops_async_file_seek_smoke() -> bool {
-    run_case!(async_ops::tests::test_async_file_seek)
-}
-
 pub fn async_ops_direct_block_handle_smoke() -> bool {
     run_case!(async_ops::tests::test_direct_block_handle)
 }

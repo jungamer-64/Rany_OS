@@ -1,7 +1,3 @@
-pub fn storage_fs_async_ops_async_file_seek_smoke() -> bool {
-    crate::fs::qemu_tests::async_ops_async_file_seek_smoke()
-}
-
 pub fn storage_fs_async_ops_direct_block_handle_smoke() -> bool {
     crate::fs::qemu_tests::async_ops_direct_block_handle_smoke()
 }

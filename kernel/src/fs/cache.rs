@@ -19,13 +19,13 @@
 //! - O(N) の LRU スキャンを O(1) に改善
 //! - Index-based Doubly Linked List による効率的な LRU 管理
 
+use crate::sync::{Mutex, RwLock};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
 
 use super::fs_model::InodeNum;
 
@@ -637,7 +637,7 @@ impl PageCache {
 // Global Cache Instance
 // ============================================================================
 
-static PAGE_CACHE: spin::Once<PageCache> = spin::Once::new();
+static PAGE_CACHE: crate::sync::InitOnce<PageCache> = crate::sync::InitOnce::new();
 
 /// Initialize the global page cache
 pub fn init_page_cache(limit: usize) {

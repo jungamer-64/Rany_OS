@@ -308,6 +308,44 @@ async fn nvme_device() -> Result<
     }
 }
 
+async fn read_nvme_block(
+    device: crate::io::io_scheduler::DeviceId,
+    geometry: crate::io::io_scheduler::BlockGeometry,
+) -> Result<usize, String> {
+    use kernel_api::dma::{DmaAllocationRequest, DmaDirection};
+    use kernel_api::service::storage::BlockTransferOutcome;
+    let scheduler = crate::io::io_scheduler::io_scheduler();
+    let target = scheduler
+        .get_device_ops(device)
+        .ok_or_else(|| String::from("NVMe device owner is unavailable"))?;
+    let bytes = geometry.block_size.get() as usize;
+    let request = DmaAllocationRequest::new(bytes, DmaDirection::FromDevice)
+        .ok_or_else(|| String::from("invalid NVMe block geometry"))?;
+    let extent = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
+        .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
+    let buffer = target
+        .allocate_transfer(request)
+        .map_err(|cause| alloc::format!("NVMe transfer allocation failed: {cause:?}"))?;
+    match extent.read_blocks_dma(0, buffer).await {
+        BlockTransferOutcome::Returned { result, buffer } => {
+            let closed = scheduler.finalize_transfer(buffer);
+            let transferred =
+                result.map_err(|cause| alloc::format!("NVMe read failed: {cause:?}"))?;
+            closed
+                .map_err(|cause| alloc::format!("NVMe transfer retirement retained: {cause:?}"))?;
+            if transferred != bytes {
+                return Err(alloc::format!(
+                    "NVMe read size mismatch: expected {bytes}, got {transferred}"
+                ));
+            }
+            Ok(transferred)
+        }
+        BlockTransferOutcome::Retained { cause, reason } => Err(alloc::format!(
+            "NVMe owner retains the transfer: {cause:?}: {reason:?}"
+        )),
+    }
+}
+
 pub async fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
 
@@ -315,14 +353,8 @@ pub async fn test_storage() -> IntegrationTestSuite {
         run_async_case("nvme_polling_basic", async {
             let (device, geometry) = nvme_device().await?;
 
-            let handle = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
-                .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
-            let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
-            match (handle.read_blocks(0, &mut buf)).await {
-                Ok(n) if n == buf.len() => Ok(String::from("NVMe read ok")),
-                Ok(n) => Err(alloc::format!("NVMe read size mismatch: {}", n)),
-                Err(e) => Err(alloc::format!("NVMe read failed: {:?}", e)),
-            }
+            read_nvme_block(device, geometry).await?;
+            Ok(String::from("NVMe read ok"))
         })
         .await,
     );
@@ -410,22 +442,8 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         run_async_case("iommu_nvme_block_io_path", async {
             let (device, geometry) = nvme_device().await?;
 
-            let handle = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
-                .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
-            let mut buf = alloc::vec![0u8; geometry.block_size.get() as usize];
-
             crate::io::iommu::api::reset_map_unmap_counts();
-            match (handle.read_blocks(0, &mut buf)).await {
-                Ok(n) if n == buf.len() => {}
-                Ok(n) => {
-                    return Err(alloc::format!(
-                        "NVMe direct block read size mismatch: expected {}, got {}",
-                        buf.len(),
-                        n
-                    ));
-                }
-                Err(e) => return Err(alloc::format!("NVMe direct block read failed: {:?}", e)),
-            }
+            read_nvme_block(device, geometry).await?;
 
             if !crate::io::iommu::api::is_iommu_enabled() {
                 Err(String::from(
