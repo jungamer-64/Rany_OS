@@ -4,7 +4,6 @@
 
 use arrayvec::ArrayVec;
 
-use crate::net::payload::PayloadSpanRef;
 
 const OID_SHA256_WITH_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B];
 const OID_SHA384_WITH_RSA: &[u8] = &[0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0C];
@@ -62,17 +61,17 @@ pub struct ExtendedKeyUsage {
 
 #[derive(Debug)]
 pub struct X509Certificate<'a> {
-    pub raw_tbs: PayloadSpanRef<'a>,
+    pub raw_tbs: CertificateSpan<'a>,
     pub signature_algorithm: SignatureAlgorithmId,
-    pub issuer_raw: PayloadSpanRef<'a>,
-    pub subject_raw: PayloadSpanRef<'a>,
+    pub issuer_raw: CertificateSpan<'a>,
+    pub subject_raw: CertificateSpan<'a>,
     pub subject_public_key_info: SubjectPublicKeyInfo,
-    pub signature_value: PayloadSpanRef<'a>,
+    pub signature_value: CertificateSpan<'a>,
     pub not_before: u64,
     pub not_after: u64,
     pub is_ca: bool,
     pub path_len_constraint: Option<u32>,
-    pub san_raw: Option<PayloadSpanRef<'a>>,
+    pub san_raw: Option<CertificateSpan<'a>>,
     pub key_usage: Option<KeyUsage>,
     pub extended_key_usage: Option<ExtendedKeyUsage>,
 }
@@ -80,7 +79,7 @@ pub struct X509Certificate<'a> {
 pub struct TlsServerVerificationContext<'a> {
     pub now_unix: u64,
     pub server_name: &'a str,
-    pub trusted_roots: &'a [PayloadSpanRef<'a>],
+    pub trusted_roots: &'a [CertificateSpan<'a>],
 }
 
 #[derive(Debug, PartialEq, Eq)]

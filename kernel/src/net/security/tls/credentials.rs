@@ -11,38 +11,14 @@ use kernel_api::resource::net::PacketPayload;
 /// 証明書
 #[derive(Debug)]
 pub struct Certificate {
-    pub der: PacketPayload,
+    material: CertificateStorage,
 }
 
 impl Certificate {
     pub fn from_der_payload(der: PacketPayload) -> Self {
-        Self { der }
-    }
-
-    pub fn from_der_bytes(der: &[u8]) -> Option<Self> {
-        Some(Self::from_der_payload(store_tls_bytes(der)?))
-    }
-
-    pub fn from_pem(pem: &str) -> Option<Self> {
-        let mut in_cert = false;
-        let mut encoded = String::new();
-
-        for line in pem.lines() {
-            if line.contains("BEGIN CERTIFICATE") {
-                in_cert = true;
-            } else if line.contains("END CERTIFICATE") {
-                break;
-            } else if in_cert {
-                for c in line.trim().chars() {
-                    if c == '=' {
-                        break;
-                    }
-                    encoded.push(c);
-                }
-            }
+        Self {
+            material: CertificateStorage::Packet(der),
         }
-
-        Some(Self::from_der_payload(base64_decode_payload(&encoded)?))
     }
 
     pub(crate) fn der_span(&self) -> PayloadSpanRef<'_> {
@@ -169,6 +145,3 @@ fn store_tls_key_material(parts: &[&[u8]]) -> Option<PacketPayload> {
     PacketPayload::try_single(packet).ok()
 }
 
-fn store_tls_bytes(data: &[u8]) -> Option<PacketPayload> {
-    store_tls_key_material(&[data])
-}
