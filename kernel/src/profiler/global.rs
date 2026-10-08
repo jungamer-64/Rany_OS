@@ -4,7 +4,7 @@ use super::*;
 // グローバルインスタンス
 // =============================================================================
 
-pub(crate) static PROFILER: spin::Once<Profiler> = spin::Once::new();
+pub(crate) static PROFILER: crate::sync::InitOnce<Profiler> = crate::sync::InitOnce::new();
 
 // Allocator-boundary telemetry must not initialize the profiler, allocate, or
 // capture a stack: those operations can themselves enter the allocator.

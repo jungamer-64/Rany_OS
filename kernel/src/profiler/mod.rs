@@ -17,12 +17,12 @@
 //! ## 設計方針
 //! CPUプロファイリングは本モジュールの `CpuProfiler` に一元化。
 //! `diag/` の旧 `CpuProfiler` は削除済み。
+use crate::sync::{Mutex, RwLock};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
 
 use crate::cpu::{CpuId, CurrentCpu};
 use crate::task::TaskId;
@@ -113,33 +113,45 @@ impl CallStack {
         }
     }
 
+    /// Samples the current task's frame-pointer chain within its retained
+    /// stack. Scheduler/bootstrap execution has no task stack and yields no
+    /// frames; an absent or invalid chain also terminates the sample.
     pub fn capture() -> Self {
         let mut stack = Self::new();
         stack.timestamp = rdtsc();
-
-        // スタックウォーク（x86_64）
+        let Some(current) = CurrentCpu::acquire() else {
+            return stack;
+        };
+        let Some(bounds) = crate::task::context::task_stack_bounds(&current) else {
+            return stack;
+        };
+        let mut fp: u64;
+        // SAFETY: reading this CPU's frame-pointer register has no side effect.
         unsafe {
-            let mut fp: u64;
-            core::arch::asm!("mov {}, rbp", out(reg) fp);
-
-            for _ in 0..MAX_STACK_DEPTH {
-                if fp == 0 || fp & 0x7 != 0 {
-                    break;
-                }
-
-                // 戻りアドレスはフレームポインタ + 8
-                let ret_addr = crate::io::mmio::mmio_read_u64((fp + 8) as usize);
-                let prev_fp = crate::io::mmio::mmio_read_u64(fp as usize);
-
-                if ret_addr == 0 {
-                    break;
-                }
-
-                stack.frames.push(StackFrame::new(ret_addr, 0, fp));
-                fp = prev_fp;
-            }
+            core::arch::asm!("mov {}, rbp", out(reg) fp, options(nomem, nostack, preserves_flags));
         }
-
+        for _ in 0..MAX_STACK_DEPTH {
+            if fp & 7 != 0 || fp < bounds.start || fp > bounds.end.saturating_sub(16) {
+                break;
+            }
+            // SAFETY: both naturally aligned words lie in the current task's
+            // retained stack. The task cannot complete or migrate while this
+            // synchronous sample runs, even when its poll is interrupted.
+            let (prev_fp, ret_addr) = unsafe {
+                (
+                    core::ptr::read(fp as *const u64),
+                    core::ptr::read((fp + 8) as *const u64),
+                )
+            };
+            if ret_addr == 0 {
+                break;
+            }
+            stack.frames.push(StackFrame::new(ret_addr, 0, fp));
+            if prev_fp <= fp {
+                break;
+            }
+            fp = prev_fp;
+        }
         stack
     }
 
