@@ -1,5 +1,23 @@
 use super::*;
 
+fn cpu_snapshot() -> Result<alloc::sync::Arc<crate::cpu::CpuSnapshot>, InterruptError> {
+    let placement = crate::mm::numa::placement::NumaPlacement::try_new(&[], &[], |_, _| Some(10))
+        .expect("valid single-node placement");
+    let located = crate::cpu::LocatedCpu::resolve(
+        crate::cpu::FirmwareCpuIdentity {
+            uid: None,
+            apic_id: crate::cpu::ApicId::new(0),
+            proximity_domain: None,
+            eject: crate::cpu::CpuEjectCapability::Fixed,
+        },
+        &placement,
+    )
+    .expect("bootstrap CPU placement");
+    let runtime =
+        crate::cpu::CpuRuntime::bootstrap(located, None).expect("bootstrap CPU resources");
+    Ok(runtime.snapshot())
+}
+
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_msi_allocation() {
@@ -10,6 +28,7 @@ fn test_msi_allocation() {
         0x0100, // BDF
         "test_device".into(),
         crate::cpu::CpuId::BOOTSTRAP,
+        cpu_snapshot,
     );
 
     assert!(result.is_ok());
@@ -29,6 +48,7 @@ fn test_gsi_allocation() {
         "keyboard".into(),
         TriggerMode::Edge,
         Polarity::ActiveHigh,
+        cpu_snapshot,
     );
 
     assert!(result.is_ok());
@@ -40,7 +60,13 @@ fn a_gsi_cannot_be_granted_to_two_route_owners() {
     let manager = InterruptManager::new();
     manager.init();
     let first = manager
-        .allocate_gsi_vector(9, "first".into(), TriggerMode::Level, Polarity::ActiveLow)
+        .allocate_gsi_vector(
+            9,
+            "first".into(),
+            TriggerMode::Level,
+            Polarity::ActiveLow,
+            cpu_snapshot,
+        )
         .unwrap();
 
     assert!(matches!(
@@ -49,6 +75,7 @@ fn a_gsi_cannot_be_granted_to_two_route_owners() {
             "second".into(),
             TriggerMode::Level,
             Polarity::ActiveLow,
+            cpu_snapshot,
         ),
         Err(InterruptError::GsiInUse {
             gsi: 9,
@@ -65,7 +92,12 @@ fn test_vector_free() {
     manager.init();
 
     let alloc = manager
-        .allocate_msi_vector(0x0100, "test".into(), crate::cpu::CpuId::BOOTSTRAP)
+        .allocate_msi_vector(
+            0x0100,
+            "test".into(),
+            crate::cpu::CpuId::BOOTSTRAP,
+            cpu_snapshot,
+        )
         .unwrap();
 
     let vector = alloc.vector;
@@ -73,7 +105,12 @@ fn test_vector_free() {
 
     // 同じベクタを再割り当てできるはず
     let alloc2 = manager
-        .allocate_msi_vector(0x0200, "test2".into(), crate::cpu::CpuId::BOOTSTRAP)
+        .allocate_msi_vector(
+            0x0200,
+            "test2".into(),
+            crate::cpu::CpuId::BOOTSTRAP,
+            cpu_snapshot,
+        )
         .unwrap();
 
     // 空いているベクタが割り当てられる
@@ -147,4 +184,29 @@ fn test_waker_registry_register_count() {
 
     // We can't easily create real Wakers in tests without an executor,
     // so we just test the count functionality
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn topology_failure_leaves_vector_admission_unchanged() {
+    let manager = InterruptManager::new();
+    manager.init();
+    assert!(matches!(
+        manager.allocate_msi_vector(
+            0x0100,
+            "unavailable".into(),
+            crate::cpu::CpuId::BOOTSTRAP,
+            || Err(InterruptError::CpuTopologyUnavailable),
+        ),
+        Err(InterruptError::CpuTopologyUnavailable),
+    ));
+    let accepted = manager
+        .allocate_msi_vector(
+            0x0100,
+            "online".into(),
+            crate::cpu::CpuId::BOOTSTRAP,
+            cpu_snapshot,
+        )
+        .expect("failed admission must not consume a vector");
+    assert_eq!(accepted.vector, EXTERNAL_VECTORS_START);
 }

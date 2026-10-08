@@ -116,6 +116,7 @@ impl ConfigSpaceAccessor for LegacyConfigAccessor {
 fn map_interrupt_error(err: InterruptError) -> KapiError {
     match err {
         InterruptError::NoAvailableVector => KapiError::ResourceExhausted,
+        InterruptError::CpuTopologyUnavailable => KapiError::NotInitialized,
         InterruptError::VectorInUse
         | InterruptError::GsiInUse { .. }
         | InterruptError::HandlerInUse { .. } => KapiError::AlreadyExists,
