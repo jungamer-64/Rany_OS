@@ -1,9 +1,9 @@
+use crate::sync::InitOnce;
 use acpi_driver::{AcpiError, AcpiRuntime, HhdmAcpiMemory, TableCatalog};
-use spin::Once;
 
-static TABLE_CATALOG: Once<TableCatalog> = Once::new();
-static ACPI_RUNTIME: Once<AcpiRuntime> = Once::new();
-static NUMA_PLACEMENT: Once<crate::mm::numa::placement::NumaPlacement> = Once::new();
+static TABLE_CATALOG: InitOnce<TableCatalog> = InitOnce::new();
+static ACPI_RUNTIME: InitOnce<AcpiRuntime> = InitOnce::new();
+static NUMA_PLACEMENT: InitOnce<crate::mm::numa::placement::NumaPlacement> = InitOnce::new();
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FirmwarePlacementError {

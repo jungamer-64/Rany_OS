@@ -24,11 +24,11 @@
 //!       ├── app1
 //!       └── app2
 //! ```
+use crate::sync::RwLock;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU8, AtomicU64, Ordering};
-use spin::RwLock;
 
 use crate::mm::types::FrameIndex;
 use crate::mm::types::PAGE_SIZE_4K;

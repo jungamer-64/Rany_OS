@@ -1,5 +1,5 @@
+use crate::sync::{Mutex, RwLock};
 use core::sync::atomic::{AtomicUsize, Ordering};
-use spin::{Mutex, RwLock};
 use x86_64::PhysAddr;
 
 pub const CACHELINE_BYTES: usize = 64;
