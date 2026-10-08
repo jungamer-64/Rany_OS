@@ -582,8 +582,13 @@ async fn execute_method(
                 environment,
                 Some(&service.registers),
             )
-            .map_err(map_aml_error)?
-        {
+            .map_err(|cause| {
+                let mut failure = map_aml_error(cause);
+                if failure.object.is_none() {
+                    failure.object = Some(Arc::from(method.as_str()));
+                }
+                failure
+            })? {
             VmProgress::Complete(value) => return Ok(value),
             VmProgress::Yielded => crate::task::yield_now().await,
             VmProgress::Notify { object, value } => {
@@ -751,6 +756,26 @@ async fn reconcile_namespace(
     notifications: &mut VecDeque<CpuFirmwareEvent>,
 ) -> Result<(), FirmwareError> {
     let bindings = service.runtime.cpu_devices().map_err(map_aml_error)?;
+    reconcile_cpus(service, &bindings, environment, notifications).await
+}
+
+async fn reconcile_subtree(
+    service: &FirmwareService,
+    root: &AmlPath,
+    environment: &mut VmEnvironment,
+    notifications: &mut VecDeque<CpuFirmwareEvent>,
+) -> Result<(), FirmwareError> {
+    let mut bindings = service.runtime.cpu_devices().map_err(map_aml_error)?;
+    bindings.retain(|binding| binding.path.is_within(root));
+    reconcile_cpus(service, &bindings, environment, notifications).await
+}
+
+async fn reconcile_cpus(
+    service: &FirmwareService,
+    bindings: &[CpuNamespaceBinding],
+    environment: &mut VmEnvironment,
+    notifications: &mut VecDeque<CpuFirmwareEvent>,
+) -> Result<(), FirmwareError> {
     let static_cpus = service
         .runtime
         .catalog()
@@ -770,7 +795,7 @@ async fn reconcile_namespace(
     })?;
     let mut online_after_provision = Vec::new();
 
-    for binding in &bindings {
+    for binding in bindings {
         let cpu = evaluate_cpu(
             service,
             binding,
@@ -835,8 +860,24 @@ async fn drain_notifications(
             )
         })?;
         match event {
-            CpuFirmwareEvent::RescanContainer { .. } | CpuFirmwareEvent::CheckDevice { .. } => {
-                reconcile_namespace(service, environment, notifications).await?;
+            CpuFirmwareEvent::RescanContainer { object } => {
+                reconcile_subtree(service, &object, environment, notifications).await?;
+            }
+            CpuFirmwareEvent::CheckDevice { object } => {
+                if let Some(binding) = service.runtime.cpu_device(&object).map_err(map_aml_error)? {
+                    // ACPI permits optimizing Device Check for a known CPU leaf;
+                    // siblings are independent physical generations.
+                    reconcile_cpus(
+                        service,
+                        core::slice::from_ref(&binding),
+                        environment,
+                        notifications,
+                    )
+                    .await?;
+                } else {
+                    reconcile_subtree(service, &object.parent(), environment, notifications)
+                        .await?;
+                }
             }
             CpuFirmwareEvent::EjectRequest { object } => {
                 eject_cpu(service, &object, environment, notifications).await?;
@@ -852,10 +893,10 @@ async fn eject_cpu(
     environment: &mut VmEnvironment,
     notifications: &mut VecDeque<CpuFirmwareEvent>,
 ) -> Result<(), FirmwareError> {
-    let bindings = service.runtime.cpu_devices().map_err(map_aml_error)?;
-    let binding = bindings
-        .iter()
-        .find(|binding| binding.path == *object)
+    let binding = service
+        .runtime
+        .cpu_device(object)
+        .map_err(map_aml_error)?
         .ok_or_else(|| {
             firmware_error(
                 FirmwareErrorKind::Namespace,
@@ -863,6 +904,7 @@ async fn eject_cpu(
                 "eject Notify target is not a CPU namespace object",
             )
         })?;
+    let binding = &binding;
     let static_cpus = service
         .runtime
         .catalog()

@@ -151,7 +151,7 @@ impl From<u64> for NotifyCode {
             0x00 => Self::BusCheck,
             0x01 => Self::DeviceCheck,
             0x03 => Self::EjectRequest,
-            0x05 => Self::DeviceCheckLight,
+            0x04 => Self::DeviceCheckLight,
             value => Self::Other(value),
         }
     }
@@ -167,10 +167,10 @@ pub enum CpuFirmwareEvent {
 impl CpuFirmwareEvent {
     pub(crate) fn from_notify(object: AmlPath, value: u64) -> Option<Self> {
         match NotifyCode::from(value) {
-            NotifyCode::BusCheck => Some(Self::RescanContainer { object }),
-            NotifyCode::DeviceCheck | NotifyCode::DeviceCheckLight => {
-                Some(Self::CheckDevice { object })
+            NotifyCode::BusCheck | NotifyCode::DeviceCheckLight => {
+                Some(Self::RescanContainer { object })
             }
+            NotifyCode::DeviceCheck => Some(Self::CheckDevice { object }),
             NotifyCode::EjectRequest => Some(Self::EjectRequest { object }),
             NotifyCode::Other(_) => None,
         }
@@ -202,6 +202,23 @@ mod tests {
         fn unmask(&self, number: GpeNumber) {
             self.unmasked.fetch_or(1 << number.get(), Ordering::Relaxed);
         }
+    }
+
+    #[test]
+    fn standard_cpu_notifications_preserve_their_reenumeration_scope() {
+        let object = AmlPath::new(alloc::sync::Arc::<str>::from("\\CPU2")).unwrap();
+        assert_eq!(NotifyCode::from(4), NotifyCode::DeviceCheckLight);
+        assert_eq!(
+            CpuFirmwareEvent::from_notify(object.clone(), 4),
+            Some(CpuFirmwareEvent::RescanContainer {
+                object: object.clone()
+            })
+        );
+        assert_eq!(
+            CpuFirmwareEvent::from_notify(object.clone(), 1),
+            Some(CpuFirmwareEvent::CheckDevice { object })
+        );
+        assert_eq!(NotifyCode::from(5), NotifyCode::Other(5));
     }
 
     #[test]

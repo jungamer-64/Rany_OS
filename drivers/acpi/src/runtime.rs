@@ -105,12 +105,27 @@ impl AcpiRuntime {
             ),
         })?;
         let mut devices = Vec::new();
-        for (path, object) in namespace.iter() {
-            if is_cpu_device(namespace, path, object)? {
-                devices.push(bind_cpu_device(namespace, path)?);
+        for (path, _) in namespace.iter() {
+            if let Some(binding) = resolve_cpu_binding(namespace, path)? {
+                devices.push(binding);
             }
         }
         Ok(devices)
+    }
+
+    /// Resolves a CPU's bindings without enumerating unrelated devices.
+    ///
+    /// # Errors
+    /// Returns the retained namespace failure or malformed CPU property error.
+    pub fn cpu_device(&self, path: &AmlPath) -> Result<Option<CpuNamespaceBinding>, AmlError> {
+        let namespace = self.namespace.as_ref().ok_or_else(|| match &self.state {
+            AcpiRuntimeState::StaticTablesOnly { aml_error } => aml_error.clone(),
+            AcpiRuntimeState::NamespaceReady => AmlError::new(
+                AmlErrorKind::MissingObject,
+                "ACPI namespace was not published",
+            ),
+        })?;
+        resolve_cpu_binding(namespace, path)
     }
 
     /// Resolves the AML event method for one GPE number.
@@ -193,6 +208,20 @@ fn is_cpu_device(
         namespace.get(&hid_path),
         Some(AmlObject::Value(AmlValue::String(hid))) if hid.as_ref() == "ACPI0007"
     ))
+}
+
+fn resolve_cpu_binding(
+    namespace: &AmlNamespace,
+    path: &AmlPath,
+) -> Result<Option<CpuNamespaceBinding>, AmlError> {
+    let Some(object) = namespace.get(path) else {
+        return Ok(None);
+    };
+    if is_cpu_device(namespace, path, object)? {
+        bind_cpu_device(namespace, path).map(Some)
+    } else {
+        Ok(None)
+    }
 }
 
 fn bind_cpu_device(
@@ -430,7 +459,7 @@ mod tests {
             )
             .unwrap();
 
-        let binding = bind_cpu_device(&namespace, &cpu).unwrap();
+        let binding = resolve_cpu_binding(&namespace, &cpu).unwrap().unwrap();
         assert_eq!(binding.status, Some(NamespaceBinding::Method(sta)));
     }
 
@@ -456,7 +485,7 @@ mod tests {
             )
             .unwrap();
 
-        let binding = bind_cpu_device(&namespace, &cpu).unwrap();
+        let binding = resolve_cpu_binding(&namespace, &cpu).unwrap().unwrap();
         assert_eq!(binding.eject_method, None);
         assert_eq!(binding.ost_method, Some(ost));
     }
@@ -473,7 +502,55 @@ mod tests {
             .insert(uid, AmlObject::Value(AmlValue::Buffer(Arc::from([1]))))
             .unwrap();
 
-        assert!(!is_cpu_device(&namespace, &device, namespace.get(&device).unwrap()).unwrap());
+        assert_eq!(resolve_cpu_binding(&namespace, &device).unwrap(), None);
+    }
+
+    #[test]
+    fn cpu_lookup_does_not_bind_unrelated_malformed_cpu_properties() {
+        let cpu = AmlPath::new(Arc::<str>::from("\\CPU2")).unwrap();
+        let unrelated = AmlPath::new(Arc::<str>::from("\\CPU3")).unwrap();
+        let mut namespace = AmlNamespace::default();
+        for path in [&cpu, &unrelated] {
+            namespace
+                .insert(path.clone(), AmlObject::Device(AmlDevice))
+                .unwrap();
+            namespace
+                .insert(
+                    path.child("_HID").unwrap(),
+                    AmlObject::Value(AmlValue::String(Arc::from("ACPI0007"))),
+                )
+                .unwrap();
+        }
+        namespace
+            .insert(
+                unrelated.child("_STA").unwrap(),
+                AmlObject::Device(AmlDevice),
+            )
+            .unwrap();
+        assert_eq!(
+            resolve_cpu_binding(&namespace, &cpu).unwrap().unwrap().path,
+            cpu
+        );
+        assert_eq!(
+            resolve_cpu_binding(&namespace, &unrelated)
+                .unwrap_err()
+                .kind,
+            AmlErrorKind::InvalidObjectType
+        );
+    }
+
+    #[test]
+    fn namespace_subtrees_use_complete_name_segments() {
+        let root = AmlPath::new(Arc::<str>::from("\\CPUS.C040")).unwrap();
+        assert!(root.is_within(&root));
+        assert!(root.child("CPU_").unwrap().is_within(&root));
+        assert!(root.is_within(&AmlPath::root()));
+        assert!(!root.is_within(&root.child("CPU_").unwrap()));
+        assert!(
+            !AmlPath::new(Arc::<str>::from("\\CPUS.C041"))
+                .unwrap()
+                .is_within(&root)
+        );
     }
 
     #[test]

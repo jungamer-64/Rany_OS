@@ -969,10 +969,13 @@ impl CpuHotplugRun {
                 let cpu = self.added_cpu()?.clone();
                 let deadline = qmp_operation_deadline(run_deadline);
                 self.client.request_cpu_delete(&cpu, deadline)?;
-                expect_cpu_deleted(
+                if cpu_delete_progress(
                     self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
                     "CPU hotplug lifecycle delete",
-                )?;
+                )? == CpuDeleteProgress::Busy
+                {
+                    return Ok(());
+                }
                 eprintln!("QMP observed DEVICE_DELETED for '{}'", cpu.device_id);
                 self.phase = CpuHotplugRunPhase::Complete;
             }
@@ -1007,10 +1010,13 @@ impl CpuHotplugRun {
                 let cpu = self.added_cpu()?.clone();
                 let deadline = qmp_operation_deadline(run_deadline);
                 self.client.request_cpu_delete(&cpu, deadline)?;
-                expect_cpu_deleted(
+                if cpu_delete_progress(
                     self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
                     "sparse CPU retry delete",
-                )?;
+                )? == CpuDeleteProgress::Busy
+                {
+                    return Ok(());
+                }
                 eprintln!("QMP deleted sparse CPU device '{}'", cpu.device_id);
                 self.phase = CpuHotplugRunPhase::SparseAwaitingReadd;
             }
@@ -1032,10 +1038,13 @@ impl CpuHotplugRun {
                 let cpu = self.added_cpu()?.clone();
                 let deadline = qmp_operation_deadline(run_deadline);
                 self.client.request_cpu_delete(&cpu, deadline)?;
-                expect_cpu_deleted(
+                if cpu_delete_progress(
                     self.client.wait_for_device_delete_outcome(&cpu, deadline)?,
                     "sparse CPU final delete",
-                )?;
+                )? == CpuDeleteProgress::Busy
+                {
+                    return Ok(());
+                }
                 eprintln!("QMP deleted re-added CPU device '{}'", cpu.device_id);
                 self.phase = CpuHotplugRunPhase::Complete;
             }
@@ -1056,12 +1065,28 @@ impl CpuHotplugRun {
     }
 }
 
-fn expect_cpu_deleted(
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CpuDeleteProgress {
+    Complete,
+    Busy,
+}
+
+fn cpu_delete_progress(
     outcome: DeviceDeleteOutcome,
     operation: &'static str,
-) -> Result<(), QmpError> {
+) -> Result<CpuDeleteProgress, QmpError> {
     match outcome {
-        DeviceDeleteOutcome::Deleted => Ok(()),
+        DeviceDeleteOutcome::Deleted => Ok(CpuDeleteProgress::Complete),
+        // An explicit Device Busy rejection completes this attempt. The next
+        // runner turn may request removal again under the same run deadline.
+        // A missing outcome or timeout does not grant that retry authority.
+        DeviceDeleteOutcome::GuestRejected {
+            acpi_status: Some(0x82),
+            ..
+        } => {
+            eprintln!("QMP {operation}: guest retained a busy CPU; awaiting a later attempt");
+            Ok(CpuDeleteProgress::Busy)
+        }
         DeviceDeleteOutcome::GuestRejected {
             device,
             path,
@@ -1570,6 +1595,25 @@ mod tests {
         assert!(!kernel_cmdline(&cfg).contains("qemu_no_if=1"));
         assert!(profile_needs_boot_artifacts("driver_domain"));
         assert!(profile_needs_boot_artifacts("pr-required"));
+    }
+
+    #[test]
+    fn cpu_delete_busy_requires_an_explicit_rejection_and_never_completes_removal() {
+        assert_eq!(
+            cpu_delete_progress(DeviceDeleteOutcome::Deleted, "delete").unwrap(),
+            CpuDeleteProgress::Complete
+        );
+        let rejected = |status| DeviceDeleteOutcome::GuestRejected {
+            device: Some(Box::from("cpu64")),
+            path: None,
+            acpi_status: status,
+        };
+        assert_eq!(
+            cpu_delete_progress(rejected(Some(0x82)), "delete").unwrap(),
+            CpuDeleteProgress::Busy
+        );
+        assert!(cpu_delete_progress(rejected(Some(0x80)), "delete").is_err());
+        assert!(cpu_delete_progress(rejected(None), "delete").is_err());
     }
 
     #[test]

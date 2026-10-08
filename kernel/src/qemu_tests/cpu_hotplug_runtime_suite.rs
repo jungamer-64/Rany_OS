@@ -101,7 +101,7 @@ async fn wait_for_hotpluggable_absent_slots(minimum: usize) -> Option<Vec<CpuId>
 }
 
 async fn wait_for_state(id: CpuId, expected: CpuSlotState) -> bool {
-    matches!(
+    let completed = matches!(
         crate::task::with_timeout(
             async move {
                 // LOOP_PROOF: mode=event; reason=The state wait yields until the slot reaches its expected publication or the enclosing timeout cancels the wait.;
@@ -116,7 +116,13 @@ async fn wait_for_state(id: CpuId, expected: CpuSlotState) -> bool {
         )
         .await,
         TimeoutResult::Completed(())
-    )
+    );
+    if !completed {
+        let snapshot = crate::cpu::snapshot();
+        log::error!(target: "init", "CPU {id} did not reach {expected:?}: slot={:?}, firmware={:?}",
+            snapshot.slot(id), snapshot.physical_hotplug());
+    }
+    completed
 }
 
 pub(crate) async fn run_cpu_hotplug_runtime_suite() -> RuntimeTestResult {

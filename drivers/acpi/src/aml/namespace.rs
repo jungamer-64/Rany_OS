@@ -30,6 +30,16 @@ impl AmlPath {
         &self.0
     }
 
+    /// Includes the subtree root itself and descendants at NameSeg boundaries.
+    pub fn is_within(&self, root: &Self) -> bool {
+        root.as_str() == "\\"
+            || self == root
+            || self
+                .as_str()
+                .strip_prefix(root.as_str())
+                .is_some_and(|suffix| suffix.starts_with('.'))
+    }
+
     /// Appends one validated NameSeg to this path.
     ///
     /// # Errors
