@@ -1196,7 +1196,6 @@ impl LiveUpdateManager {
             outcomes.drain(0..drain);
         }
     }
-
 }
 
 impl Default for LiveUpdateManager {

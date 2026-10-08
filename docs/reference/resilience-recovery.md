@@ -13,11 +13,7 @@
 
 - `Canonical requirement`:
   panic containment、guard page、`PoisonLock<T>`、double panic detection、IST を使う double fault path、watchdog / heartbeat、driver-domain restart policy。
-- `Canonical target`:
-  domain / cell checkpoint、driver-domain recovery orchestration、replication、secondary promotion、traffic reroute。
-- `Canonical target` は採択済みであり、未実装部分は `implementation pending` と明記する。
-
-## 現行実装
+## 障害と終了の contract
 
 ### 1. Domain / driver-domain fault containment
 
@@ -30,6 +26,12 @@
   - `PoisonLock<T>` による共有状態の汚染検出
   - fault history と restart policy の保持
 - `RestartPolicy::Never` / `OnPanic` / `Always` は現行の driver-domain recovery contract である。
+- 停止要求と終了完了は別の段階である。poll の中断スタックが残る場合は型付きの未完了を返し、タスク・コード・リソースの所有者を保持する。
+- ドライバの lifecycle callback は、実行権を予約してレジストリのロック外で呼ぶ。未完了の probe・start・stop・remove は同じインスタンスで継続し、再登録や完了済みの状態 import を繰り返さない。
+- 登録から開始・停止・回収までの lifecycle 呼び出しは、ドライバドメインごとの実行権を予約する。障害通知は実行権を解放しない。中断中の callback と所有リソースがあるドメインを、レジストリの観測用 handle だけで削除できない。
+- 障害通知は再起動の期限と保持中の進行状態を登録する。バックオフの経過、停止・remove の完了、新インスタンスの開始は service host が回収する。割込みの注入や通知処理内の待機で期限を進めない。
+- セル全体の初期化・終了処理は mapped cell が所有する。ドライバの remove は個々のインスタンスを終了させ、待機中の Future や中断スタックのコード参照がなくなってからセルの終了処理を開始する。終了用 Future の完了も確認してからドメインを終了済みにする。
+- live-update は切替中にも障害通知を受け付ける。すべてのドライバが開始を完了してから検証期間を開始し、commit の決定前に通知を反映する。commit 開始後の回収待ちは同じ方向で継続し、rollback へ切り替えない。
 
 ### 2. Panic / fault hardening
 
@@ -60,19 +62,6 @@
   [../../kernel/src/durability/wal/mod.rs](../../kernel/src/durability/wal/mod.rs)
 - `Canonical requirement`:
   durability 層の checkpoint / recovery。
-- `Canonical target`:
-  domain / cell 状態の checkpoint、restart 時の restore、driver-domain hot swap と連動した state import/export。
-- `implementation pending`:
-  cell 単位 checkpoint manager、checkpoint catalog、restore policy の公開面。
-
-### 5. Replication / secondary promotion
-
-- `Canonical target`:
-  stateful cell の secondary を別 core / node に持ち、primary fault 時に promotion できるようにする。
-- `implementation pending`:
-  replication manager、promotion trigger、traffic reroute orchestration。
-- replication は runtime QoS ではなく resilience policy として扱う。
-
 ## Canonical surface
 
 | Surface | Level | Notes |
@@ -81,24 +70,12 @@
 | `sys.monitor()` | Canonical requirement | domain / task / memory / network snapshot |
 | `driver.status()` / `driver.stats()` | Canonical requirement | driver-domain fault / restart 状態の観測面 |
 | `cell.epoch_status()` | Canonical requirement | live update と drain 状態の観測面 |
-| checkpoint trigger / catalog | Canonical target / implementation pending | ad hoc subsystem API に分散しない |
-| replicated secondary status / promotion | Canonical target / implementation pending | policy と telemetry を一体で扱う |
 
 ## 非目標
 
 - subsystem ごとに独自の restart policy を増やすこと
 - checkpoint / replication を quota policy の一部として扱うこと
 - fatal fault path に通常 runtime と同じ複雑性を持ち込むこと
-
-## 旧設計案からの読み替え
-
-| 旧設計案の項目 | 現行の扱い |
-| --- | --- |
-| panic containment / guard page / poisoning | Canonical requirement |
-| Double Panic / Double Fault hardening | Canonical requirement |
-| health check / heartbeat / auto-restart | Canonical requirement + Canonical target |
-| checkpoint / recovery | Canonical requirement + Canonical target |
-| replication | Canonical target / implementation pending |
 
 ## 関連文書
 

@@ -16,9 +16,6 @@ use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use once_cell::race::OnceBox;
 
-// SAS は `domain::DomainId` をそのまま使用する。
-// bench ビルドでは host_support/domain.rs の shim が入るが、
-// どの構成でも `crate::domain::DomainId` に統一して参照する。
 pub use crate::domain::DomainId;
 
 pub use heap_registry::HeapRegistry;

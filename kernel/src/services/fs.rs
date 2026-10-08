@@ -18,10 +18,12 @@ pub(super) async fn open_with_token(
             )
         })
         .transpose()
-        .map_err(|cause| FsMutationError::Filesystem(match cause {
-            crate::security::capability::CapabilityError::ReclamationBusy => KapiError::Busy,
-            _ => KapiError::PermissionDenied,
-        }))?;
+        .map_err(|cause| {
+            FsMutationError::Filesystem(match cause {
+                crate::security::capability::CapabilityError::ReclamationBusy => KapiError::Busy,
+                _ => KapiError::PermissionDenied,
+            })
+        })?;
     let path_buf = alloc::string::String::from(path);
 
     match mode {
