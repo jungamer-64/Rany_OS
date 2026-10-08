@@ -313,9 +313,15 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
 }
 
-fn run_cargo(root: &Path, step: &'static str, args: &[&str]) -> Result<(), BuildError> {
+fn run_cargo(
+    root: &Path,
+    target_dir: &Path,
+    step: &'static str,
+    args: &[&str],
+) -> Result<(), BuildError> {
     let status = Command::new("cargo")
         .current_dir(root)
+        .env("CARGO_TARGET_DIR", target_dir)
         .args(args)
         .status()
         .map_err(|source| BuildError::CargoLaunch { step, source })?;
@@ -553,8 +559,10 @@ fn build_storage_test_disk(disk_path: &Path) -> Result<(), BuildError> {
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
+    let target_dir = root.join("target");
     run_cargo(
         &root,
+        &target_dir,
         "build exoloader",
         &[
             "build",
@@ -565,8 +573,7 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
         ],
     )?;
 
-    let path = root
-        .join("target")
+    let path = target_dir
         .join("x86_64-unknown-uefi")
         .join("debug")
         .join("exoloader.efi");
@@ -586,8 +593,10 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
+    let target_dir = root.join("target");
     run_cargo(
         &root,
+        &target_dir,
         "build kernel elf",
         &[
             "build",
@@ -606,8 +615,7 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
         ],
     )?;
 
-    let path = root
-        .join("target")
+    let path = target_dir
         .join("x86_64-exorust")
         .join("debug")
         .join("exorust_kernel");
@@ -627,8 +635,10 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
 /// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
 pub fn build_signer() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
+    let target_dir = root.join("tools/signer/target");
     run_cargo(
         &root,
+        &target_dir,
         "build kernel-signer",
         &[
             "build",
@@ -638,10 +648,7 @@ pub fn build_signer() -> Result<PathBuf, BuildError> {
         ],
     )?;
 
-    let path = root
-        .join("tools")
-        .join("signer")
-        .join("target")
+    let path = target_dir
         .join("release")
         .join(format!("kernel-signer{}", std::env::consts::EXE_SUFFIX));
 
