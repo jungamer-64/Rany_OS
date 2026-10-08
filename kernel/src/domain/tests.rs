@@ -45,11 +45,9 @@ fn test_domain_poisoned_readers_return_defaults() {
 
     let id = create_domain(String::from("poison_test")).expect("create_domain failed");
 
-    // Poison the registry lock
+    let guard = REGISTRY.lock().expect("registry acquisition");
     set_panicking(true);
-    if let Ok(_g) = REGISTRY.lock() {
-        // dropping _g while panicking will mark the lock as poisoned
-    }
+    drop(guard);
     set_panicking(false);
 
     assert!(get_domain_state(id).is_none());
@@ -70,11 +68,9 @@ fn test_create_domain_poisoned_returns_error() {
     use crate::error::{DomainErrorKind, KernelError};
     use crate::sync::set_panicking;
 
-    // Poison the registry
+    let guard = REGISTRY.lock().expect("registry acquisition");
     set_panicking(true);
-    if let Ok(_g) = REGISTRY.lock() {
-        // dropping _g will poison the lock
-    }
+    drop(guard);
     set_panicking(false);
 
     let res = create_domain(String::from("poison_test2"));
@@ -91,10 +87,9 @@ fn test_reclaim_domain_resources_poisoned_no_panic() {
 
     let id = create_domain(String::from("reclaim_poison")).expect("create_domain failed");
 
+    let guard = REGISTRY.lock().expect("registry acquisition");
     set_panicking(true);
-    if let Ok(_g) = REGISTRY.lock() {
-        // drop marks as poisoned
-    }
+    drop(guard);
     set_panicking(false);
 
     assert_eq!(

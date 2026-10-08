@@ -487,7 +487,7 @@ fn dma_abi_rejects_invalid_allocation_records() {
                 &mut out,
             )
         },
-        AbiError::InvalidParam as i32
+        AbiError::InvalidSize as i32
     );
     assert_eq!(out.lease_id, 0);
     assert_eq!(out.device_address, 0);

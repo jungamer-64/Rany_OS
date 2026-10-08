@@ -785,7 +785,8 @@ mod tests {
         );
 
         let tx0 = t0.take_tx();
-        assert_eq!(tx0, vec![b'+', b'$', b'S', b'0', b'5', b'#', b'b', b'8']);
+        // No trap has been captured by this server.
+        assert_eq!(tx0, b"+$S00#b3");
 
         let tx1 = t1.take_tx();
         assert!(
