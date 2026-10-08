@@ -260,52 +260,7 @@ impl core::ops::SubAssign<usize> for FrameIndex {
 // NumaNodeId: NUMAノードIDの型安全ラッパー
 // ============================================================================
 
-/// NUMAノードID
-///
-/// 型安全性のためのNewTypeパターン。
-/// 単なる`u8`や`usize`との取り違えを防止。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-#[repr(transparent)]
-pub struct NumaNodeId(u8);
-
-impl NumaNodeId {
-    /// Bound shared by normalized placement, PMM pools, and node-local heaps.
-    pub const MAX_NODES: usize = 16;
-
-    /// ノード0（通常のデフォルトノード）
-    pub const NODE_0: Self = Self(0);
-
-    /// 新しいNumaNodeIdを作成
-    #[inline]
-    pub const fn new(id: u8) -> Self {
-        Self(id)
-    }
-
-    /// u8として取得
-    #[inline]
-    pub const fn as_u8(self) -> u8 {
-        self.0
-    }
-
-    /// usizeとして取得（配列インデックス用）
-    #[inline]
-    pub const fn as_usize(self) -> usize {
-        self.0 as usize
-    }
-
-    /// 有効なノードIDかどうかを確認
-    #[inline]
-    pub const fn is_valid(self) -> bool {
-        (self.0 as usize) < Self::MAX_NODES
-    }
-}
-
-impl From<u8> for NumaNodeId {
-    #[inline]
-    fn from(value: u8) -> Self {
-        Self::new(value)
-    }
-}
+pub use kernel_api::resource::cpu::NumaNodeId;
 
 // ============================================================================
 // Mapping/Common Address Types
@@ -388,20 +343,6 @@ impl MappingOffset {
     /// ページアライメントされているか
     pub fn is_page_aligned(&self) -> bool {
         self.0 as usize % MappingSize::PAGE_SIZE == 0
-    }
-}
-
-impl From<NumaNodeId> for u8 {
-    #[inline]
-    fn from(value: NumaNodeId) -> Self {
-        value.0
-    }
-}
-
-impl From<NumaNodeId> for usize {
-    #[inline]
-    fn from(value: NumaNodeId) -> Self {
-        value.0 as usize
     }
 }
 
