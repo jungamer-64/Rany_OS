@@ -19,23 +19,6 @@ pub use raw_parts::{RRefRawParts, RawPartsError, RawPartsFailure};
 // Heap Registry - Uses Global SAS Registry
 // ============================================================================
 
-/// 特定のドメインが所有する全オブジェクトを回収
-/// 設計書 8.1: パニック時のリソース回収
-pub fn reclaim_domain_resources(domain: DomainId) {
-    // 統合されたSAS APIを使用
-    // SAS Manager (or Registry directly) handles reclamation
-    let reclaimed_count =
-        crate::sas::reclaim_domain_resources(crate::sas::DomainId::new(domain.as_u64()));
-
-    if reclaimed_count > 0 {
-        log::info!(
-            "[RRef] Reclaimed {} objects from domain {}\n",
-            reclaimed_count,
-            domain.as_u64()
-        );
-    }
-}
-
 // ============================================================================
 // RRef - Remote Reference with Exchange Heap
 // ============================================================================

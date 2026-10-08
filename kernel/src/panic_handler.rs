@@ -344,8 +344,10 @@ fn try_handle_domain_panic(domain_id: u64, message: &str) -> bool {
         return true;
     }
 
-    // ドメインのリソースを回収
-    crate::ipc::reclaim_domain_resources(id);
+    // 終了を要求し、実行中の所有権が残る場合は保持する。
+    if let Err(error) = crate::domain::terminate_domain(id) {
+        log::warn!("Panic cleanup retains domain {id}: {error}");
+    }
 
     true
 }
@@ -480,6 +482,7 @@ pub fn setup_stack_guard(stack_bottom: usize, stack_size: usize) {
                     MapError::MappingChanged => "mapping source changed",
                     MapError::AlignmentError => "alignment error in page table",
                     MapError::ParentEntryHugePage => "parent entry is huge page",
+                    MapError::ParentPermissionDenied => "parent entry denies required permissions",
                 };
                 crate::io::log::early_print("[StackGuard] ERROR: guard page setup failed: ");
                 crate::io::log::early_print(reason);

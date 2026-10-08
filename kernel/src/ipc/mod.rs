@@ -5,4 +5,4 @@
 pub mod proxy;
 pub mod rref;
 pub use proxy::{BasicProxy, DomainProxy, ProxyError, ProxyResult};
-pub use rref::{DomainId, RRef, reclaim_domain_resources};
+pub use rref::{DomainId, RRef};
