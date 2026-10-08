@@ -396,25 +396,6 @@ impl CapabilityManager {
         }
     }
 
-    /// Increment the in-flight counter for a token
-    pub fn increment_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
-        let grants = self.grants.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(t) = grants.iter().find(|t| t.id == token_id) {
-            if t.revoked {
-                return Err(CapabilityError::InvalidCapability);
-            }
-        } else {
-            return Err(CapabilityError::InvalidCapability);
-        }
-        let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(pair) = m.iter_mut().find(|(id, _)| *id == token_id) {
-            pair.1 += 1;
-        } else {
-            m.push((token_id, 1));
-        }
-        Ok(())
-    }
-
     /// Validation and admission share the grant lock, so revocation cannot
     /// reclaim the token between those two steps. No lock crosses suspension.
     pub(crate) fn retain_token(
@@ -454,7 +435,7 @@ impl CapabilityManager {
     }
 
     /// Decrement the in-flight counter for a token
-    pub fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
+    pub(super) fn decrement_in_flight(&self, token_id: u64) -> Result<(), CapabilityError> {
         let mut m = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(pos) = m.iter().position(|(id, _)| *id == token_id) {
             if m[pos].1 == 0 {

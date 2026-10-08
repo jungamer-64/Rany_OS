@@ -437,33 +437,6 @@ fn socket_error_to_network(err: EndpointError) -> NetworkError {
     }
 }
 
-fn validate_udp_bind_permission(port: u16, token: Option<u64>) -> Result<(), NetworkError> {
-    if port == 0 || port >= 1024 {
-        return Ok(());
-    }
-
-    let subject = crate::task::current_subject();
-    let caller = subject.domain.as_u64();
-    if subject.domain == crate::domain::DomainId::KERNEL
-        || crate::security::capability::manager()
-            .has_capability(caller, crate::security::capability::CAP_NET_BIND)
-    {
-        return Ok(());
-    }
-
-    if let Some(token) = token {
-        if crate::security::capability::manager().validate_token(
-            caller,
-            token,
-            crate::security::capability::CAP_NET_BIND,
-        ) {
-            return Ok(());
-        }
-    }
-
-    Err(NetworkError::PermissionDenied)
-}
-
 fn configure_udp_socket(
     socket: &Socket,
     scope: InterfaceScope,
