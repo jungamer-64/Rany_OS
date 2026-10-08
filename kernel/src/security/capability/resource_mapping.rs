@@ -1,5 +1,4 @@
 use super::*;
-use core::sync::atomic::AtomicBool;
 
 /// Helper: Map resource string to capability bit
 pub fn resource_to_capability(resource: &str) -> Capability {
@@ -35,74 +34,6 @@ pub(crate) fn reset_for_tests() {
 pub fn init() {
     // Kernel domain gets all capabilities
     CAPABILITY_MANAGER.set_capabilities(0, CapabilitySet::full());
-
-    spawn_expiry_daemon_task();
-    spawn_reclamation_daemon_task();
-}
-
-/// Expiry daemon (runs periodically to remove expired grants)
-static CAP_EXPIRY_TASK_STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Async expiry daemon task
-pub async fn expiry_daemon_task() {
-    loop {
-        manager().expire_grants();
-        crate::task::sleep_ms(CAPABILITY_EXPIRY_INTERVAL_MS).await;
-    }
-}
-
-/// Start the expiry daemon (idempotent)
-pub fn spawn_expiry_daemon_task() {
-    if CAP_EXPIRY_TASK_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-    if let Err(error) = crate::task::spawn(expiry_daemon_task(), crate::task::TaskPlacement::Any) {
-        CAP_EXPIRY_TASK_STARTED.store(false, Ordering::Release);
-        log::error!("failed to schedule capability expiry daemon: {:?}", error);
-    }
-}
-
-/// Test / utility: expire now (public wrapper)
-pub fn expire_grants_now() {
-    manager().expire_grants();
-}
-
-/// Reclamation daemon (runs periodically to reclaim revoked tokens once drained)
-static CAP_RECLAIM_TASK_STARTED: AtomicBool = AtomicBool::new(false);
-
-/// Async reclamation daemon task
-pub async fn reclamation_daemon_task() {
-    loop {
-        manager().reclaim_revoked_now();
-        crate::task::sleep_ms(CAPABILITY_EXPIRY_INTERVAL_MS).await;
-    }
-}
-
-/// Start the reclamation daemon (idempotent)
-pub fn spawn_reclamation_daemon_task() {
-    if CAP_RECLAIM_TASK_STARTED
-        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-        .is_err()
-    {
-        return;
-    }
-    if let Err(error) =
-        crate::task::spawn(reclamation_daemon_task(), crate::task::TaskPlacement::Any)
-    {
-        CAP_RECLAIM_TASK_STARTED.store(false, Ordering::Release);
-        log::error!(
-            "failed to schedule capability reclamation daemon: {:?}",
-            error
-        );
-    }
-}
-
-/// Test / utility: reclaim now (public wrapper)
-pub fn reclaim_revoked_now() {
-    manager().reclaim_revoked_now();
 }
 
 /// Get capability name
