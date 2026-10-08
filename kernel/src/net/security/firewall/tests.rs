@@ -51,17 +51,18 @@ mod tests {
         rule.matches(IpAddress::V4(addr))
     }
 
-    /// ヘルパー: デフォルトのエンジンを作成して有効化する
+    /// Rule matching fixtures permit ingress that does not match a rule.
     fn make_engine() -> FirewallEngine {
         let mut engine = FirewallEngine::new_const();
-        engine.set_enabled(true);
+        engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Allow);
         engine
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_disabled_engine_allows_all() {
-        let engine = FirewallEngine::new_const();
+        let mut engine = FirewallEngine::new_const();
+        engine.set_enabled(false);
         assert!(!engine.enabled());
         assert_eq!(
             eval_ipv4(
@@ -79,9 +80,8 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_default_allow_policy() {
+    fn test_configured_allow_policy() {
         let engine = make_engine();
-        // ルールなし → デフォルトポリシー (Allow)
         assert_eq!(
             eval_ipv4(
                 &engine,
@@ -99,8 +99,8 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_default_deny_policy() {
-        let mut engine = make_engine();
-        engine.set_default_policy(FirewallDirection::Ingress, FirewallAction::Deny);
+        let engine = FirewallEngine::new_const();
+        assert!(engine.enabled());
         assert_eq!(
             eval_ipv4(
                 &engine,
