@@ -6,7 +6,7 @@
 //! ## IPv4アドレス型について
 //!
 //! - [`Ipv4Addr`] — 上位層（TCP/UDP/API等）向けの軽量ラッパー
-//! - [`crate::net::l3::ipv4::Ipv4Address`] — プロトコルスタック内部向けのフル機能版
+//! - `crate::net::l3::ipv4::Ipv4Address` — プロトコルスタック内部向けのフル機能版
 //!   (`is_private()`, `same_subnet()`, `apply_mask()` 等)
 //!
 //! 両者間の変換は `From`/`Into` トレイトで提供される。
@@ -96,7 +96,7 @@ impl InterfaceScope {
 
 /// 上位層向け軽量 IPv4 アドレス型
 ///
-/// プロトコルスタック内部では [`crate::net::l3::ipv4::Ipv4Address`] を使用し、
+/// プロトコルスタック内部では `crate::net::l3::ipv4::Ipv4Address` を使用し、
 /// 上位層（TCP/UDP/APIなど）ではこちらを使用する。
 /// `From<Ipv4Address>` / `Into<Ipv4Address>` による相互変換が可能。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]

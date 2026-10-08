@@ -138,7 +138,7 @@ pub fn struct_as_bytes_mut<T>(val: &mut T) -> &mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(ptr, mem::size_of::<T>()) }
 }
 
-/// Convert a NonNull<u8> pointer with an offset and length into an immutable slice.
+/// Convert a `NonNull<u8>` pointer with an offset and length into an immutable slice.
 /// This encapsulates an unsafe pointer -> slice conversion for non-owning buffers.
 pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: NonNull<u8>, offset: usize, len: usize) -> &'a [u8] {
     let base = ptr.as_ptr() as usize;
@@ -147,7 +147,7 @@ pub unsafe fn nonnull_ptr_as_slice<'a>(ptr: NonNull<u8>, offset: usize, len: usi
     unsafe { core::slice::from_raw_parts(ptr.as_ptr().add(offset), len) }
 }
 
-/// Convert a NonNull<u8> pointer with an offset and length into a mutable slice.
+/// Convert a `NonNull<u8>` pointer with an offset and length into a mutable slice.
 pub unsafe fn nonnull_ptr_as_slice_mut<'a>(
     ptr: NonNull<u8>,
     offset: usize,

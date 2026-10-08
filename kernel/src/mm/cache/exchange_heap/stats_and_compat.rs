@@ -280,7 +280,7 @@ pub fn allocate_zeroed_slice<T: Zeroable>(len: usize) -> Option<(NonNull<T>, Lay
 
 /// Exchange Heap上に未初期化スライスを割り当て
 ///
-/// MaybeUninit<T> の配列として返すことで、
+/// `MaybeUninit<T>` の配列として返すことで、
 /// 未初期化メモリへのアクセスを型レベルで防ぐ
 ///
 /// # Arguments

@@ -174,7 +174,7 @@ impl PagedContent {
         }
     }
 
-    /// 全データをVec<u8>としてコピー（互換性用）
+    /// 全データを`Vec<u8>`としてコピー（互換性用）
     pub fn to_vec(&self, size: u64) -> Vec<u8> {
         let mut result = vec![0u8; size as usize];
         self.read(0, &mut result);

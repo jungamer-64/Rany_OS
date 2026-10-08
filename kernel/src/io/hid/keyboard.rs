@@ -145,7 +145,7 @@ pub fn take_stream_with_keymap(
     PS2_KEYBOARD.take_stream_with_keymap(keymap)
 }
 
-/// Arc<dyn Keymap>を使用するキーボードストリームを取得
+/// `Arc<dyn Keymap>`を使用するキーボードストリームを取得
 ///
 /// 動的なキーマップ切り替えが必要な場合に使用。
 pub fn take_stream_with_arc_keymap(

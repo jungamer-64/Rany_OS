@@ -60,7 +60,7 @@ impl Bytes {
         }
     }
 
-    /// Arc<Vec<u8>>からBytesを作成
+    /// `Arc<Vec<u8>>`からBytesを作成
     pub fn from_arc(arc: Arc<Vec<u8>>) -> Self {
         Self { inner: arc }
     }
@@ -80,12 +80,12 @@ impl Bytes {
         &self.inner
     }
 
-    /// 内部のArc<Vec<u8>>を取得（所有権移動）
+    /// 内部の`Arc<Vec<u8>>`を取得（所有権移動）
     pub fn into_inner(self) -> Arc<Vec<u8>> {
         self.inner
     }
 
-    /// Vec<u8>にコピー（必要な場合のみ使用）
+    /// `Vec<u8>`にコピー（必要な場合のみ使用）
     pub fn to_vec(&self) -> Vec<u8> {
         self.inner.as_ref().clone()
     }

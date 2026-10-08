@@ -45,7 +45,7 @@ impl KernelBufferView {
         }
     }
 
-    /// 既存のArc<Vec<u8>>からバッファビューを作成（ゼロコピー）
+    /// 既存の`Arc<Vec<u8>>`からバッファビューを作成（ゼロコピー）
     ///
     /// ShellServices::read_file_zero_copy()との統合用。
     /// データのコピーは一切発生しない。
@@ -90,7 +90,7 @@ impl KernelBufferView {
         core::str::from_utf8(self.as_bytes()).ok()
     }
 
-    /// 所有権を持つ Vec<u8> に変換（コピーが発生）
+    /// 所有権を持つ `Vec<u8>` に変換（コピーが発生）
     ///
     /// NOTE: これはゼロコピーの利点を打ち消すため、
     /// 必要な場合のみ使用すること。
