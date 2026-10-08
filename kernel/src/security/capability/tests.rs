@@ -145,20 +145,10 @@ fn test_expire_grants_wrapper() {
             .unwrap();
         assert!(manager().has_capability(target, CAP_NET_BIND));
 
-        // Use public wrapper
-        expire_grants_now();
+        manager().expire_grants();
 
         assert!(!manager().has_capability(target, CAP_NET_BIND));
         assert!(manager().list_grants(target, target).is_empty());
-    });
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_spawn_expiry_daemon_task_idempotent() {
-    with_global_manager_test(|| {
-        spawn_expiry_daemon_task();
-        spawn_expiry_daemon_task();
     });
 }
 
@@ -270,15 +260,6 @@ fn test_list_grants_cross_domain_requires_cap_fowner() {
     let visible = manager.list_grants(observer, target);
     assert_eq!(visible.len(), 1);
     assert_eq!(visible[0].id, token);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_spawn_reclamation_daemon_task_idempotent() {
-    with_global_manager_test(|| {
-        spawn_reclamation_daemon_task();
-        spawn_reclamation_daemon_task();
-    });
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

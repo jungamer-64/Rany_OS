@@ -36,6 +36,18 @@ pub fn init() {
     CAPABILITY_MANAGER.set_capabilities(0, CapabilitySet::full());
 }
 
+/// The service host owns this image-lifetime grant maintenance operation.
+/// Timer failure returns to that owner without losing outstanding grant leases.
+pub(crate) async fn maintain_grants() -> Result<(), kernel_api::service::time::TimerError> {
+    let grants = manager();
+    // LOOP_PROOF: mode=event; reason=Grant maintenance waits on an admitted timer after each pass and returns timer failure to the service host.;
+    loop {
+        grants.expire_grants();
+        grants.reclaim_revoked_now();
+        kernel_api::service::time::sleep_ms(CAPABILITY_EXPIRY_INTERVAL_MS).await?;
+    }
+}
+
 /// Get capability name
 pub fn capability_name(cap: Capability) -> &'static str {
     match cap {

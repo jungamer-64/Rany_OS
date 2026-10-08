@@ -34,6 +34,7 @@ pub(super) enum State {
 pub(crate) enum Job {
     Maintenance,
     BlockIo,
+    CapabilityGrants,
     SecurityMonitor,
     IntelCommands,
     IntelFaults,
@@ -72,6 +73,7 @@ impl KernelServiceHost {
         match job {
             Job::Maintenance => &self.maintenance,
             Job::BlockIo => &self.block_io,
+            Job::CapabilityGrants => &self.capability_grants,
             Job::SecurityMonitor => &self.security_monitor,
             Job::IntelCommands => &self.intel_commands,
             Job::IntelFaults => &self.intel_faults,
@@ -100,6 +102,7 @@ impl KernelServiceHost {
                 let result = match job {
                     Job::Maintenance => self.maintain_runtime().await.map_err(Failure::Timer),
                     Job::BlockIo => self.service_block_io().await,
+                    Job::CapabilityGrants => crate::security::capability::maintain_grants().await.map_err(Failure::Timer),
                     Job::SecurityMonitor => {
                         crate::io::iommu::runtime::security::security_monitor_task()
                             .await
@@ -171,7 +174,7 @@ impl KernelServiceHost {
 /// Boot treats missing essential background admission as a terminal error.
 /// The service host retains every already admitted task if a later admission fails.
 pub(crate) fn start_runtime_maintenance() -> Result<(), ServiceTaskError> {
-    for job in [Job::Maintenance, Job::BlockIo] {
+    for job in [Job::Maintenance, Job::BlockIo, Job::CapabilityGrants] {
         KERNEL_SERVICE_HOST.start_job(job)?;
     }
     Ok(())
