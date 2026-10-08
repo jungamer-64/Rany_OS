@@ -878,15 +878,19 @@ fn test_map_for_device_async_and_unmap() {
     let driver = crate::io::iommu::vendors::intel::IntelIommuDriver::with_controller(Arc::clone(
         &controller,
     ));
-    let mapping = crate::task::block_on(async {
-        // SAFETY: the fixture retains this aligned DMA extent until retirement.
-        unsafe {
-            driver
-                .map_for_device_async(&device, x86_64::PhysAddr::new(0x2000), 4096)
-                .await
-        }
-        .expect("map")
+    use core::future::Future;
+    use core::task::{Context, Poll, Waker};
+    let backing = crate::mm::phys::frame_allocator::alloc_contiguous_frames(1)
+        .expect("exclusive DMA backing admission");
+    let mut context = Context::from_waker(Waker::noop());
+    // SAFETY: the exclusive RAM owner remains retained until the mapping's
+    // captured-origin retirement completes below. No device command is issued.
+    let mut admission = core::pin::pin!(unsafe {
+        driver.map_for_device_async(&device, backing.start_address(), backing.size_bytes())
     });
+    let Poll::Ready(Ok(mapping)) = admission.as_mut().poll(&mut context) else {
+        panic!("register fixture did not complete mapping admission");
+    };
     let iova = mapping.iova();
     let domain = controller.domain(domain_id).expect("domain retained");
     assert!(domain.mapping(iova).is_some());
@@ -896,8 +900,13 @@ fn test_map_for_device_async_and_unmap() {
         .lock()
         .unwrap_or_else(|p| p.into_inner())
         .remove(&device);
-    crate::task::block_on(mapping.unmap_async()).expect("owned retirement");
+    let mut retirement = core::pin::pin!(mapping.unmap_async());
+    assert!(matches!(
+        retirement.as_mut().poll(&mut context),
+        Poll::Ready(Ok(()))
+    ));
     assert!(domain.mapping(iova).is_none());
+    backing.release();
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

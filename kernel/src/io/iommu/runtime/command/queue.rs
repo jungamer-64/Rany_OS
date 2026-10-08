@@ -1081,6 +1081,17 @@ mod tests {
     extern crate alloc;
 
     #[cfg(feature = "std")]
+    #[derive(Default)]
+    struct CompletionWake(AtomicUsize);
+
+    #[cfg(feature = "std")]
+    impl std::task::Wake for CompletionWake {
+        fn wake(self: alloc::sync::Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[cfg(feature = "std")]
     fn poison_receiver_lock(q: &CommandQueue) {
         {
             let _guard = q.receiver.lock().unwrap();
@@ -1131,37 +1142,31 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cmd_completion_future() {
-        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
-        let worker_q: &'static CommandQueue = &*q;
-
-        let worker = std::thread::spawn(move || {
-            let mut attempts = 0;
-            // LOOP_PROOF: mode=event; reason=Test worker exits after first processed command or panics via attempts timeout guard.;
-            loop {
-                let processed = worker_q.process_once(|k| match k {
-                    IommuCommandKind::InvalidateIotlbDomain { domain } => {
-                        assert_eq!(*domain, 42);
-                        Ok(0)
-                    }
-                    _ => Err(()),
-                });
-                if processed > 0 {
-                    break;
-                }
-                attempts += 1;
-                if attempts > 1000 {
-                    panic!("CQ worker timed out");
-                }
-                std::thread::yield_now();
-            }
-        });
-
-        let kind = IommuCommandKind::InvalidateIotlbDomain { domain: 42 };
-        let comp = q.submit(kind).expect("submit");
-        let rc = crate::task::block_on(async { comp.await });
-        assert_eq!(rc, 0);
-
-        worker.join().expect("worker join failed");
+        use core::future::Future;
+        let q = CommandQueue::new(None).expect("queue admission");
+        let observer = alloc::sync::Arc::new(CompletionWake::default());
+        let waker = core::task::Waker::from(observer.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut completion = core::pin::pin!(
+            q.submit(IommuCommandKind::InvalidateIotlbDomain { domain: 42 })
+                .expect("submit")
+        );
+        assert_eq!(completion.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(
+            q.process_once(|kind| {
+                assert!(matches!(
+                    kind,
+                    IommuCommandKind::InvalidateIotlbDomain { domain: 42 }
+                ));
+                Ok(0)
+            }),
+            1
+        );
+        assert_eq!(observer.0.load(Ordering::Relaxed), 1);
+        assert_eq!(
+            completion.as_mut().poll(&mut context),
+            Poll::Ready(RESULT_OK)
+        );
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1247,15 +1252,17 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_detects_receiver_poison() {
+        use core::future::Future;
         let q = CommandQueue::new(None).expect("queue admission");
         poison_receiver_lock(&q);
-
-        let rc = crate::task::block_on(async {
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        let mut submission = core::pin::pin!(
             q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 0xcafe })
-                .await
-        });
-
-        assert!(rc.is_err());
+        );
+        assert!(matches!(
+            submission.as_mut().poll(&mut context),
+            Poll::Ready(Err(()))
+        ));
         assert!(q.is_poisoned());
     }
 
@@ -1263,65 +1270,45 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_wait_for_work_returns_when_queue_poisoned() {
+        use core::future::Future;
         let q = CommandQueue::new(None).expect("queue admission");
-
-        std::thread::scope(|scope| {
-            let worker_q = &q;
-            let worker = scope.spawn(move || {
-                crate::task::block_on(async {
-                    worker_q.wait_for_work().await;
-                });
-            });
-
-            std::thread::yield_now();
-            q.poison();
-
-            worker.join().expect("wait_for_work join failed");
-        });
-        assert!(q.is_poisoned());
+        let observer = alloc::sync::Arc::new(CompletionWake::default());
+        let waker = core::task::Waker::from(observer.clone());
+        let mut context = Context::from_waker(&waker);
+        let mut wait = core::pin::pin!(q.wait_for_work());
+        assert_eq!(wait.as_mut().poll(&mut context), Poll::Pending);
+        q.poison();
+        assert_eq!(observer.0.load(Ordering::Relaxed), 1);
+        assert_eq!(wait.as_mut().poll(&mut context), Poll::Ready(()));
     }
 
     #[cfg(feature = "std")]
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_submit_async_basic() {
-        let q = Box::leak(Box::new(CommandQueue::new(None).expect("queue admission")));
-        let worker_q: &'static CommandQueue = &*q;
-
-        let worker = std::thread::spawn(move || {
-            let mut attempts = 0;
-            // LOOP_PROOF: mode=event; reason=The command worker stops after executing an admitted batch or fails the fixture after 1000 unsuccessful attempts.;
-            loop {
-                let processed = worker_q.process_once(|k| match k {
-                    IommuCommandKind::InvalidateIotlbDomain { domain } => {
-                        assert_eq!(*domain, 7);
-                        Ok(0)
-                    }
-                    _ => Err(()),
-                });
-                if processed > 0 {
-                    break;
-                }
-                attempts += 1;
-                if attempts > 1000 {
-                    panic!("CQ worker timed out");
-                }
-                std::thread::yield_now();
-            }
-        });
-
-        let rc = crate::task::block_on(async {
-            let rc = {
-                let comp = q
-                    .submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 7 })
-                    .await
-                    .expect("submit_async");
-                comp.await
-            };
-            rc
-        });
-        assert_eq!(rc, 0);
-
-        worker.join().expect("worker join failed");
+        use core::future::Future;
+        let q = CommandQueue::new(None).expect("queue admission");
+        let mut context = Context::from_waker(core::task::Waker::noop());
+        let mut submission =
+            core::pin::pin!(q.submit_async(IommuCommandKind::InvalidateIotlbDomain { domain: 7 }));
+        let Poll::Ready(Ok(completion)) = submission.as_mut().poll(&mut context) else {
+            panic!("empty queue did not admit a submission");
+        };
+        let mut completion = core::pin::pin!(completion);
+        assert_eq!(completion.as_mut().poll(&mut context), Poll::Pending);
+        assert_eq!(
+            q.process_once(|kind| {
+                assert!(matches!(
+                    kind,
+                    IommuCommandKind::InvalidateIotlbDomain { domain: 7 }
+                ));
+                Ok(0)
+            }),
+            1
+        );
+        assert_eq!(
+            completion.as_mut().poll(&mut context),
+            Poll::Ready(RESULT_OK)
+        );
     }
 }
