@@ -354,14 +354,16 @@ impl InterruptManager {
     }
 
     /// MSI/MSI-X用のベクタを割り当て
-    pub fn allocate_msi_vector(
+    fn allocate_msi_vector(
         &self,
         device_bdf: u32,
         handler_name: String,
         target_cpu: crate::cpu::CpuId,
+        cpu_snapshot: impl Fn() -> alloc::sync::Arc<crate::cpu::CpuSnapshot>,
     ) -> Result<VectorAllocation, InterruptError> {
         let _route_allocation = self.route_allocation_gate.lock();
-        let target_apic_id = online_apic_id(target_cpu)?;
+        // Read current topology only after serializing against route rundown.
+        let target_apic_id = online_apic_id(&cpu_snapshot(), target_cpu)?;
         // MSI範囲から空きベクタを探す
         for vector in EXTERNAL_VECTORS_START..=EXTERNAL_VECTORS_END {
             if self.try_allocate_vector(vector) {
@@ -416,17 +418,23 @@ impl InterruptManager {
     }
 
     /// MSI-X用の複数ベクタを割り当て
-    pub fn allocate_msix_vectors(
+    fn allocate_msix_vectors(
         &self,
         device_bdf: u32,
         count: u16,
         handler_name: String,
         target_cpu: crate::cpu::CpuId,
+        cpu_snapshot: impl Fn() -> alloc::sync::Arc<crate::cpu::CpuSnapshot>,
     ) -> Result<Vec<VectorAllocation>, InterruptError> {
         let mut allocations = Vec::with_capacity(count as usize);
 
         for i in 0..count {
-            match self.allocate_msi_vector(device_bdf, handler_name.clone(), target_cpu) {
+            match self.allocate_msi_vector(
+                device_bdf,
+                handler_name.clone(),
+                target_cpu,
+                &cpu_snapshot,
+            ) {
                 Ok(alloc) => {
                     // MSI-Xとして記録
                     if let Some(allocation) = self.allocations.write().get_mut(&alloc.vector) {
@@ -451,15 +459,16 @@ impl InterruptManager {
     }
 
     /// IO-APIC (GSI) 用のベクタを割り当て
-    pub fn allocate_gsi_vector(
+    fn allocate_gsi_vector(
         &self,
         gsi: u32,
         handler_name: String,
         trigger_mode: TriggerMode,
         polarity: Polarity,
+        cpu_snapshot: impl Fn() -> alloc::sync::Arc<crate::cpu::CpuSnapshot>,
     ) -> Result<VectorAllocation, InterruptError> {
         let _route_allocation = self.route_allocation_gate.lock();
-        let target_apic_id = online_apic_id(crate::cpu::CpuId::BOOTSTRAP)?;
+        let target_apic_id = online_apic_id(&cpu_snapshot(), crate::cpu::CpuId::BOOTSTRAP)?;
         // A GSI is a device-visible route with one lifecycle owner. Returning
         // the existing vector would grant a second caller authority to free or
         // reconfigure the first caller's route.
@@ -704,8 +713,10 @@ pub fn current_apic_id() -> Result<crate::cpu::ApicId, InterruptError> {
     })
 }
 
-fn online_apic_id(cpu_id: crate::cpu::CpuId) -> Result<crate::cpu::ApicId, InterruptError> {
-    let snapshot = crate::cpu::snapshot();
+fn online_apic_id(
+    snapshot: &crate::cpu::CpuSnapshot,
+    cpu_id: crate::cpu::CpuId,
+) -> Result<crate::cpu::ApicId, InterruptError> {
     let slot = snapshot
         .slot(cpu_id)
         .ok_or(InterruptError::CpuNotOnline(cpu_id))?;
