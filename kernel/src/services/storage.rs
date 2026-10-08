@@ -64,29 +64,30 @@ pub(super) fn open_direct_with_token(
     let block_size = geometry.block_size.get();
 
     let caller = current_subject().domain.as_u64();
-    if let Some(t) = token {
-        if !crate::security::capability::manager().validate_token(
-            caller,
-            t,
-            crate::security::capability::CAP_DMA,
-        ) {
-            return Err(KapiError::PermissionDenied);
-        }
-        if crate::security::capability::manager()
-            .increment_in_flight(t)
-            .is_err()
-        {
-            return Err(KapiError::PermissionDenied);
-        }
-    }
-
+    let grant = token
+        .map(|token_id| {
+            crate::security::capability::manager().retain_token(
+                caller,
+                token_id,
+                crate::security::capability::CAP_DMA,
+            )
+        })
+        .transpose()
+        .map_err(|cause| match cause {
+            crate::security::capability::CapabilityError::ReclamationBusy => KapiError::Busy,
+            _ => KapiError::PermissionDenied,
+        })?;
     let id = crate::resource_registry::direct_block::register_open(
-        device_id,
-        start_block,
-        block_count,
-        block_size,
-        caller,
-        token,
+        crate::resource_registry::direct_block::NvmeOpenEntry {
+            view: crate::resource_registry::direct_block::NvmeOpenView {
+                device_id,
+                start_block,
+                block_count,
+                block_size,
+            },
+            owner: caller,
+            _grant: grant,
+        },
     );
     Ok(DirectBlockHandle::new_with_id(
         device_id,
@@ -106,9 +107,7 @@ pub(super) fn close_direct(handle: DirectBlockHandle) -> Result<(), KapiError> {
     let caller = current_subject().domain.as_u64();
     match crate::resource_registry::direct_block::unregister_if_owner_or_admin(id, caller) {
         Ok(entry) => {
-            if let Some(t) = entry.token {
-                let _ = crate::security::capability::manager().decrement_in_flight(t);
-            }
+            drop(entry);
             Ok(())
         }
         Err(err) => Err(map_open_error(err)),
