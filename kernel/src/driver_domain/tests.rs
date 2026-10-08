@@ -1129,12 +1129,6 @@ fn ensure_running_idle(id: DriverDomainId) -> Result<(), RuntimeCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn poll_runtime() {
-    crate::loader::live_update::poll_pending_updates();
-    super::hot_swap::poll_validation_windows();
-}
-
-#[cfg(feature = "qemu-test-export")]
 fn read_fixture_cell(path: &str) -> Result<Vec<u8>, RuntimeCaseError> {
     match crate::fs::read_file_content(path, "/") {
         Ok(data) => Ok(data),
@@ -1170,58 +1164,6 @@ fn maybe_inject_test_tick(stagnant_loops: usize) {
         crate::task::handle_timer_interrupt();
         crate::task::process_pending_timer_wakers();
     }
-}
-
-#[cfg(feature = "qemu-test-export")]
-fn wait_for_tick_progress(delta: u64, max_stagnant_loops: usize) -> bool {
-    let start = crate::task::current_tick();
-    let mut last_tick = start;
-    let mut stagnant = 0usize;
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::task::current_tick().saturating_sub(start) < delta {
-        poll_runtime();
-        let now = crate::task::current_tick();
-        if now > last_tick {
-            last_tick = now;
-            stagnant = 0;
-        } else {
-            stagnant = stagnant.saturating_add(1);
-            maybe_inject_test_tick(stagnant);
-        }
-
-        if stagnant >= max_stagnant_loops {
-            return false;
-        }
-        core::hint::spin_loop();
-    }
-
-    true
-}
-
-#[cfg(feature = "qemu-test-export")]
-fn wait_for_tick(target: u64, max_stagnant_loops: usize) -> bool {
-    let mut last_tick = crate::task::current_tick();
-    let mut stagnant = 0usize;
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while crate::task::current_tick() < target {
-        poll_runtime();
-        let now = crate::task::current_tick();
-        if now > last_tick {
-            last_tick = now;
-            stagnant = 0;
-        } else {
-            stagnant = stagnant.saturating_add(1);
-            maybe_inject_test_tick(stagnant);
-        }
-
-        if stagnant >= max_stagnant_loops {
-            return false;
-        }
-        core::hint::spin_loop();
-    }
-    true
 }
 
 #[cfg(feature = "qemu-test-export")]
