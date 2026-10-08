@@ -8,8 +8,9 @@ use crate::drivers::nvme::{
     ControllerDisablePoll, ControllerDisabled, ControllerDisabling, ControllerEnableError,
     ControllerEnablePoll, ControllerEnabling, IdentifyNamespaceError, IdentifyNamespacePoll,
     IdentifyNamespaceRequest, IdentifySubmitError, IoQueueCreatePoll, IoQueueCreation,
-    IoQueueProvisioner, NvmeAdminController, QueueBudgetError, QueueBudgetPoll, QueueBudgetRequest,
-    QueueCreateError, QueueMemory,
+    IoQueueProvisioner, NvmeAdminController, NvmeRuntime, NvmeRuntimeRundown, PreparedNvmeRuntime,
+    PublishedNvmeRuntime, QueueBudgetError, QueueBudgetPoll, QueueBudgetRequest, QueueCreateError,
+    QueueMemory, RuntimeCreateError, RuntimePublishError, RuntimeRundownPoll,
 };
 use kernel_api::KapiError;
 use kernel_api::abi::driver::PackedPciLocation;
@@ -17,10 +18,6 @@ use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest, DmaCloseError, DmaDirec
 use kernel_api::service::platform::{self, Bar, PciDeviceInfo, PciServices};
 
 use crate::integration::{IntegrationError, SystemIntegration};
-use crate::io::nvme::{
-    NvmeRuntime, NvmeRuntimeRundown, PreparedNvmeRuntime, PublishedNvmeRuntime, RuntimeCreateError,
-    RuntimePublishError, RuntimeRundownPoll,
-};
 
 const INITIAL_CONTROLLER_GENERATION: u64 = 1;
 const NAMESPACE_ONE: u32 = 1;

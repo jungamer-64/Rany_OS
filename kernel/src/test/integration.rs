@@ -329,7 +329,7 @@ async fn read_nvme_block(
         .current_tick_ms()
         .checked_add(5_000)
         .ok_or_else(|| String::from("DMA admission deadline overflow"))?;
-    // LOOP_PROOF: mode=event; reason=Only an unpublished Busy allocation is retried after a real timer wait; success, other failures and the fixed admission deadline end the loop.;
+    // LOOP_PROOF: mode=event; reason=Only an unpublished Busy allocation is retried after a real timer wait, and success, other failures and the fixed admission deadline end the loop.;
     let buffer = loop {
         match target.allocate_transfer(request) {
             Ok(buffer) => break buffer,

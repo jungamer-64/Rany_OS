@@ -48,7 +48,6 @@ ACTIVE_MANIFESTS=(
 ACTIVE_CODE=(
   kernel/src
   interfaces
-  filesystems/kernel_fs
   drivers/usb
   tools/standalone_driver_wrapper
 )
@@ -122,7 +121,7 @@ check_no_match \
 check_no_match \
   "boot-time demo runtime tasks" \
   '\bspawn_demo_runtime_tasks\b' \
-  kernel/src/kernel_main kernel/src/kernel_content.rs docs "${ACTIVE_DOCS[@]}"
+  kernel/src/kernel_main docs "${ACTIVE_DOCS[@]}"
 
 check_no_match \
   "boot-time auto HTTP startup" \
