@@ -319,6 +319,7 @@ checksum = "877a4ace8713b0bcf2a4e7eec82529c029f1d0619886d18145fea96c3ffe5c0f"
 name = "exorust_sync"
 version = "0.1.0"
 dependencies = [
+ "hal",
  "spin",
 ]
 
@@ -409,6 +410,7 @@ dependencies = [
 name = "hid_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "kernel_api",
  "log",
@@ -428,6 +430,7 @@ dependencies = [
 name = "ide_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "log",
  "spin",
@@ -463,8 +466,9 @@ dependencies = [
 name = "kernel_api"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
+ "hal",
  "log",
- "spin",
 ]
 
 [[package]]
@@ -498,6 +502,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "mlx5_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "kernel_api",
  "log",
@@ -622,6 +627,7 @@ dependencies = [
  "boot_proto",
  "criterion",
  "ed25519-compact",
+ "exorust_sync",
  "gimli",
  "graphic_types",
  "hal",
@@ -717,6 +723,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 name = "security"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "log",
  "spin",
 ]
@@ -861,6 +868,7 @@ checksum = "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954"
 name = "usb_driver"
 version = "0.1.0"
 dependencies = [
+ "exorust_sync",
  "hal",
  "hid_driver",
  "kernel_api",
