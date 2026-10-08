@@ -121,7 +121,10 @@ unsafe extern "C" fn bind(opaque: u64, _if_id: u16) -> i32 {
     let Some(runtime) = (unsafe { runtime(opaque) }) else {
         return AbiError::InvalidParam as i32;
     };
-    if matches!(*runtime.phase.read(), Phase::Live { .. }) {
+    if matches!(
+        *runtime.phase.read(),
+        Phase::Configured(_) | Phase::Live { .. }
+    ) {
         AbiError::Success as i32
     } else {
         AbiError::DeviceBusy as i32

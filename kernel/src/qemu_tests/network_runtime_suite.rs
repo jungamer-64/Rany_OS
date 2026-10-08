@@ -78,64 +78,95 @@ fn build_virtio_arp_probe(mac: [u8; 6]) -> Option<PacketPayload> {
 }
 
 async fn run_virtio_dma_roundtrip() -> bool {
+    use crate::task::{TimeoutResult, with_timeout};
     let runtime = crate::net::runtime::default_runtime();
-    let mut selected = None;
-    for _ in 0..500 {
-        selected = crate::net::runtime::device::list_port_infos_in(runtime)
-            .into_iter()
-            .find(|info| info.driver_name == "virtio-net" && info.if_id.is_some());
-        if selected.is_some() {
-            break;
+    let discovery = async {
+        // LOOP_PROOF: mode=event; reason=Port discovery waits on a real timer between publication observations, under the enclosing startup deadline.;
+        loop {
+            if let Some(info) = crate::net::runtime::device::list_port_infos_in(runtime)
+                .into_iter()
+                .find(|info| {
+                    info.driver_name == "virtio-net"
+                        && info.if_id.is_some_and(|id| {
+                            crate::net::runtime::manager::is_interface_operational_in(
+                                runtime,
+                                crate::net::runtime::manager::NetIfId(id),
+                            )
+                        })
+                })
+            {
+                return Ok::<_, kernel_api::service::time::TimerError>(info);
+            }
+            crate::task::sleep_ms(10).await?;
         }
-        crate::task::yield_now().await;
-    }
-    let Some(info) = selected else {
-        return false;
+    };
+    let info = match with_timeout(discovery, 30_000).await {
+        TimeoutResult::Completed(Ok(info)) => info,
+        cause => {
+            info!("[kernel-test][net] VirtIO port discovery failed: {cause:?}");
+            return false;
+        }
     };
     let Some(if_id) = info.if_id.map(crate::net::runtime::manager::NetIfId) else {
         return false;
     };
     if info.max_tx_segments.get() <= 1 {
+        info!("[kernel-test][net] VirtIO port has no scatter/gather admission");
         return false;
     }
     let Some(before) = crate::net::runtime::device::port_stats_in(runtime, info.port_id) else {
         return false;
     };
     let Some(payload) = build_virtio_arp_probe(*info.mac.as_bytes()) else {
+        info!("[kernel-test][net] VirtIO probe packet allocation failed");
         return false;
     };
-    let pool_while_owned = crate::net::datapath::mempool::net_mempool()
-        .map(crate::net::datapath::mempool::Mempool::stats);
-    if crate::net::runtime::device::transmit_packet_in(
+    let (completion_id, completion) =
+        crate::net::runtime::device::register_tx_completion_in(runtime);
+    if crate::net::runtime::device::transmit_packet_observed_in(
         runtime,
         if_id,
         payload,
         NetTxMeta::default(),
+        Some(completion_id),
     )
     .is_err()
     {
+        info!("[kernel-test][net] VirtIO probe TX admission rejected");
         return false;
     }
-
-    for _ in 0..500 {
-        crate::task::yield_now().await;
-        let Some(after) = crate::net::runtime::device::port_stats_in(runtime, info.port_id) else {
+    // The normal completion owner observes the hardware used entry and returns
+    // this packet's ownership before notifying its registered observer.
+    match with_timeout(completion, 10_000).await {
+        TimeoutResult::Completed(Ok(())) => {}
+        cause => {
+            info!(
+                "[kernel-test][net] VirtIO TX completion failed: {cause:?}; before={before:?} after={:?}",
+                crate::net::runtime::device::port_stats_in(runtime, info.port_id)
+            );
             return false;
-        };
-        let recycled = match (
-            pool_while_owned,
-            crate::net::datapath::mempool::net_mempool()
-                .map(crate::net::datapath::mempool::Mempool::stats),
-        ) {
-            (Some(before), Some(after)) => after.free_count > before.free_count,
-            _ => false,
-        };
-        if after.tx_packets > before.tx_packets && after.rx_packets > before.rx_packets && recycled
-        {
-            return true;
         }
     }
-    false
+    let received = async {
+        // LOOP_PROOF: mode=event; reason=The receive observation waits on a real timer until the selected port reports the response or the enclosing deadline ends the operation.;
+        loop {
+            let Some(after) = crate::net::runtime::device::port_stats_in(runtime, info.port_id)
+            else {
+                return Ok::<_, kernel_api::service::time::TimerError>(false);
+            };
+            if after.tx_packets > before.tx_packets && after.rx_packets > before.rx_packets {
+                return Ok(true);
+            }
+            crate::task::sleep_ms(10).await?;
+        }
+    };
+    match with_timeout(received, 10_000).await {
+        TimeoutResult::Completed(Ok(true)) => true,
+        cause => {
+            info!("[kernel-test][net] VirtIO response failed: {cause:?}");
+            false
+        }
+    }
 }
 
 pub async fn run_network_runtime_suite(case_filter: Option<&str>) -> NetworkRuntimeSuiteSummary {

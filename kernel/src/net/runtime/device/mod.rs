@@ -1909,6 +1909,21 @@ pub fn register_port_in(
         guard.handles.insert(if_id, handle);
     }
 
+    // Seed link state before start can report a fresher hardware observation.
+    // Start callbacks own subsequent updates, including synchronous link-up.
+    let initial_link_state = if info.flags & NETDEV_FLAG_LINK_UP != 0 {
+        manager::LinkState::Up
+    } else {
+        manager::LinkState::Down
+    };
+    if manager::set_interface_link_state_in(runtime, if_id, initial_link_state).is_err() {
+        return Err(finish_failed_registration(
+            runtime,
+            if_id,
+            "failed to publish initial network link state",
+        ));
+    }
+
     if let Some(start_result) =
         with_port_handle_in(runtime, if_id, |handle| handle.driver.start(runtime_handle))
     {
@@ -1920,19 +1935,6 @@ pub fn register_port_in(
             runtime,
             if_id,
             "device handle missing after registration",
-        ));
-    }
-
-    let initial_link_state = if info.flags & NETDEV_FLAG_LINK_UP != 0 {
-        manager::LinkState::Up
-    } else {
-        manager::LinkState::Down
-    };
-    if manager::set_interface_link_state_in(runtime, if_id, initial_link_state).is_err() {
-        return Err(finish_failed_registration(
-            runtime,
-            if_id,
-            "failed to publish initial network link state",
         ));
     }
 

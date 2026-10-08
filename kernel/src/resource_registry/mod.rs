@@ -1207,10 +1207,11 @@ impl NetdevBridgeRegistry {
         let name = leak_driver_name(&registration.info);
         let adapter: Box<dyn NetDevicePort> = Box::new(
             NetdevPortAdapter::new(owner, registration, name, dma_device).map_err(|cause| {
-                match cause {
-                    AbiErrorCode::OutOfMemory => kernel_api::error::KapiError::OutOfMemory,
-                    _ => kernel_api::error::KapiError::IoError,
-                }
+                log::error!("network callback admission for {owner} failed: {cause:?}");
+                cause
+                    .into_result()
+                    .err()
+                    .unwrap_or(kernel_api::error::KapiError::IoError)
             })?,
         );
         let info = adapter.info();
@@ -1222,9 +1223,10 @@ impl NetdevBridgeRegistry {
         let (if_id, failed) = match outcome {
             Ok(if_id) => (if_id, false),
             Err(
-                net_device_runtime::NetPortRegistrationError::NotPublished(_)
-                | net_device_runtime::NetPortRegistrationError::Released(_),
+                cause @ (net_device_runtime::NetPortRegistrationError::NotPublished(_)
+                | net_device_runtime::NetPortRegistrationError::Released(_)),
             ) => {
+                log::error!("network port admission for {owner} failed: {cause:?}");
                 return Err(kernel_api::error::KapiError::IoError);
             }
             Err(net_device_runtime::NetPortRegistrationError::Retained { if_id, .. }) => {
