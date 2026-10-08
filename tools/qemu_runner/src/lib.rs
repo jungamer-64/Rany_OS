@@ -411,7 +411,7 @@ fn kernel_cmdline(config: &RunConfig) -> String {
 fn profile_needs_storage_disk(profile: &str) -> bool {
     matches!(
         profile,
-        "storage" | "pr-required" | "nightly-required" | "step9-heavy"
+        "storage" | "iommu" | "pr-required" | "nightly-required" | "step9-heavy"
     )
 }
 
