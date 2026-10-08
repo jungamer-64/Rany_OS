@@ -177,7 +177,7 @@ pub(super) fn initialize() -> Result<(), SpawnError> {
 
 /// Starts or resumes an application CPU and publishes it for task placement.
 ///
-/// InitOnce submitted, cancellation of the returned future does not cancel the
+/// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
@@ -193,7 +193,7 @@ pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
 
 /// Removes an application CPU from task placement and parks it.
 ///
-/// InitOnce submitted, cancellation of the returned future does not cancel the
+/// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
 pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
@@ -209,7 +209,7 @@ pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
 
 /// Quiesces a CPU and grants exclusive authority for its firmware eject.
 ///
-/// InitOnce submitted, cancellation cannot cancel the drain. If the returned
+/// Once submitted, cancellation cannot cancel the drain. If the returned
 /// authority is subsequently abandoned, the lifecycle worker records a typed
 /// firmware failure and restores the slot to `PresentOffline`.
 pub(crate) async fn prepare_eject(id: CpuId) -> Result<CpuEjectAuthority, CpuTransitionError> {

@@ -144,9 +144,35 @@ pub(crate) async fn run_cpu_hotplug_runtime_suite() -> RuntimeTestResult {
         return RuntimeTestResult::fail("firmware-added CPU did not become online");
     }
 
-    if let Err(error) = crate::cpu::offline(cpu).await {
-        log::error!(target: "init", "logical CPU offline failed for {cpu}: {error:?}");
-        return RuntimeTestResult::fail("logical CPU offline failed");
+    let offlined = crate::task::with_timeout(
+        async {
+            // LOOP_PROOF: mode=event; reason=Only a currently executing poll is retried after a timer wait, with other blockers returned and the enclosing deadline bounding the wait.;
+            loop {
+                match crate::cpu::offline(cpu).await {
+                    Err(crate::cpu::CpuTransitionError::Busy { blockers })
+                        if !blockers.is_empty()
+                            && blockers.iter().all(|blocker| {
+                                matches!(blocker, CpuBlocker::ActivePoll { .. })
+                            }) =>
+                    {
+                        if let Err(cause) = crate::task::sleep_ms(1).await {
+                            log::error!(target: "init", "CPU offline retry timer failed: {cause}");
+                            return false;
+                        }
+                    }
+                    Ok(()) => return true,
+                    Err(error) => {
+                        log::error!(target: "init", "logical CPU offline failed for {cpu}: {error:?}");
+                        return false;
+                    }
+                }
+            }
+        },
+        FIRMWARE_EVENT_TIMEOUT_MS,
+    )
+    .await;
+    if !matches!(offlined, TimeoutResult::Completed(true)) {
+        return RuntimeTestResult::fail("logical CPU offline did not complete");
     }
     let offline = crate::cpu::snapshot();
     if offline.online().contains(cpu)
