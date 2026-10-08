@@ -4,39 +4,6 @@
 
 use super::*;
 
-#[cfg(test)]
-use core::sync::atomic::{AtomicU8, Ordering as AtomicOrdering};
-
-#[cfg(test)]
-const TRY_NEW_FAIL_NONE: u8 = 0;
-#[cfg(test)]
-const TRY_NEW_FAIL_ALLOC: u8 = 1;
-#[cfg(test)]
-const TRY_NEW_FAIL_PHYS: u8 = 2;
-#[cfg(test)]
-static TRY_NEW_FAIL_MODE: AtomicU8 = AtomicU8::new(TRY_NEW_FAIL_NONE);
-
-#[cfg(test)]
-struct TryNewFailGuard {
-    previous: u8,
-}
-
-#[cfg(test)]
-impl TryNewFailGuard {
-    fn set(mode: u8) -> Self {
-        Self {
-            previous: TRY_NEW_FAIL_MODE.swap(mode, AtomicOrdering::SeqCst),
-        }
-    }
-}
-
-#[cfg(test)]
-impl Drop for TryNewFailGuard {
-    fn drop(&mut self) {
-        TRY_NEW_FAIL_MODE.store(self.previous, AtomicOrdering::SeqCst);
-    }
-}
-
 unsafe impl Send for IommuDomain {}
 unsafe impl Sync for IommuDomain {}
 
@@ -64,16 +31,7 @@ impl IommuDomain {
         pte_format: PteFormat,
     ) -> Result<Self, IommuError> {
         let pt_levels = pt_levels.clamp(MIN_PT_LEVELS, MAX_PT_LEVELS);
-        #[cfg(test)]
-        if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_ALLOC {
-            return Err(IommuError::OutOfMemory);
-        }
         let root = page_table_pool.acquire(numa_node)?;
-        #[cfg(test)]
-        if TRY_NEW_FAIL_MODE.load(AtomicOrdering::SeqCst) == TRY_NEW_FAIL_PHYS {
-            page_table_pool.release(root);
-            return Err(IommuError::HardwareError);
-        }
         let page_table = root.ptr().as_ptr();
         let root_phys = root.phys();
 
