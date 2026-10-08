@@ -15,8 +15,8 @@ extern crate alloc;
 
 use alloc::string::String;
 use alloc::vec::Vec;
+use exorust_sync::Mutex;
 use hal::IoPortRange;
-use spin::Mutex;
 
 // ============================================================================
 // IDE Constants

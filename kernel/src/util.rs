@@ -4,12 +4,12 @@
 // Utility helpers used across kernel modules for safe-ish byte-slice <-> struct conversions.
 // These functions centralize unsafe operations, reduce duplication, and perform boundary
 // and alignment checks where possible.
+use crate::sync::InitOnce;
 use alloc::alloc::alloc_zeroed;
 use core::mem;
 use core::ptr::NonNull;
-use spin::Once;
 
-static BOOT_CMDLINE: Once<Option<&'static str>> = Once::new();
+static BOOT_CMDLINE: InitOnce<Option<&'static str>> = InitOnce::new();
 
 pub fn set_boot_cmdline(cmdline: Option<&'static str>) {
     let _ = BOOT_CMDLINE.call_once(|| cmdline);

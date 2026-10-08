@@ -9,6 +9,7 @@ const APIC_X2_ENABLE: u64 = 1 << 10;
 const APIC_BASE_MASK: u64 = 0xffff_f000;
 const X2APIC_MSR_BASE: u32 = 0x800;
 const DELIVERY_STATUS: u32 = 1 << 12;
+const DELIVERY_NMI: u32 = 0b100 << 8;
 const DELIVERY_INIT: u32 = 0b101 << 8;
 const DELIVERY_STARTUP: u32 = 0b110 << 8;
 const LEVEL_ASSERT: u32 = 1 << 14;
@@ -200,24 +201,33 @@ impl XApic {
     }
 
     fn write_icr(&self, destination: ApicDestination, command: u32) -> Result<(), LocalApicError> {
-        self.write(Register::IcrHigh, Self::destination_high(destination)?);
-        self.write(Register::IcrLow, command);
-        self.wait_for_delivery(destination)
+        let high = Self::destination_high(destination)?;
+        // Both halves describe one CPU-local publication. Masking interrupts
+        // prevents an ISR or a preempted task from replacing ICR_HIGH before
+        // ICR_LOW accepts this command.
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            self.write(Register::IcrHigh, high);
+            self.write(Register::IcrLow, command);
+            self.wait_for_delivery(destination)
+        })
     }
 
     fn write_shorthand_icr(&self, command: u32) -> Result<(), LocalApicError> {
-        self.write(Register::IcrHigh, 0);
-        self.write(Register::IcrLow, command);
-        if spin_until(
-            || self.read(Register::IcrLow) & DELIVERY_STATUS == 0,
-            DELIVERY_WAIT_SPINS,
-        ) {
-            Ok(())
-        } else {
-            Err(LocalApicError::DeliveryTimedOut {
-                target: ApicDeliveryTarget::AllExcludingSelf,
-            })
-        }
+        // Serialize both ICR halves against local interrupt/task reentry.
+        x86_64::instructions::interrupts::without_interrupts(|| {
+            self.write(Register::IcrHigh, 0);
+            self.write(Register::IcrLow, command);
+            if spin_until(
+                || self.read(Register::IcrLow) & DELIVERY_STATUS == 0,
+                DELIVERY_WAIT_SPINS,
+            ) {
+                Ok(())
+            } else {
+                Err(LocalApicError::DeliveryTimedOut {
+                    target: ApicDeliveryTarget::AllExcludingSelf,
+                })
+            }
+        })
     }
 }
 
@@ -438,6 +448,19 @@ impl LocalApic {
     /// timeout.
     pub fn broadcast_excluding_self(&self, vector: u8) -> Result<(), LocalApicError> {
         let command = DESTINATION_ALL_EXCLUDING_SELF | u32::from(vector);
+        match self.backend {
+            Backend::XApic(ref backend) => backend.write_shorthand_icr(command),
+            Backend::X2Apic(ref backend) => backend.write_shorthand_icr(command),
+        }
+    }
+
+    /// Delivers an edge-triggered NMI to all other processors, using the
+    /// selected xAPIC or x2APIC interrupt command register backend.
+    ///
+    /// # Errors
+    /// Returns a delivery timeout while preserving the selected APIC mode.
+    pub fn broadcast_nmi_excluding_self(&self) -> Result<(), LocalApicError> {
+        let command = DESTINATION_ALL_EXCLUDING_SELF | DELIVERY_NMI;
         match self.backend {
             Backend::XApic(ref backend) => backend.write_shorthand_icr(command),
             Backend::X2Apic(ref backend) => backend.write_shorthand_icr(command),

@@ -307,7 +307,8 @@ impl ThermalManager {
 // グローバルインスタンス
 // =============================================================================
 
-pub(crate) static THERMAL_MANAGER: spin::Once<ThermalManager> = spin::Once::new();
+pub(crate) static THERMAL_MANAGER: crate::sync::InitOnce<ThermalManager> =
+    crate::sync::InitOnce::new();
 
 pub fn thermal_manager() -> &'static ThermalManager {
     THERMAL_MANAGER.call_once(ThermalManager::new)

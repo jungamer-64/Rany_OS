@@ -24,7 +24,7 @@ pub use sdk::{now, now_nanos, print, sleep, yield_now};
 
 // Re-export kernel_api types for convenience
 pub use kernel_api::capability::{
-    DmaCapability, DomainCapabilities, FsCapability, IoCapability, IpcCapability, MemoryCapability,
+    DmaCapability, DomainCapabilities, FsCapability, IoPortRange, IpcCapability, MemoryCapability,
     NetCapability, TaskCapability,
 };
 pub use kernel_api::{KapiError, KapiResult};

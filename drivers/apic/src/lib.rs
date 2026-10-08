@@ -12,9 +12,9 @@ pub use local::{
     LocalApicError, X2Apic, XApic,
 };
 
-use spin::Once;
+use exorust_sync::InitOnce;
 
-static LOCAL_APIC: Once<Result<LocalApic, LocalApicError>> = Once::new();
+static LOCAL_APIC: InitOnce<Result<LocalApic, LocalApicError>> = InitOnce::new();
 
 /// Returns the typed local APIC backend selected during BSP initialization.
 ///

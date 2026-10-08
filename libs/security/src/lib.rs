@@ -16,7 +16,7 @@ use alloc::vec::Vec;
 
 use core::fmt;
 use core::sync::atomic::{AtomicU64, Ordering};
-use spin::Mutex;
+use exorust_sync::Mutex;
 
 pub type Capability = u64;
 

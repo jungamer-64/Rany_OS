@@ -17,12 +17,12 @@
 //! | [`profiler`](crate::profiler) | サンプリングベースCPU/メモリ/I/Oプロファイリング |
 //! | [`monitor`](crate::monitor) | システムスナップショット、ダッシュボード |
 //! | **`watchdog`** | ハング検出、デッドロック検出、自動回復 |
+use crate::sync::{Mutex, RwLock};
 use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use spin::{Mutex, RwLock};
 
 // =============================================================================
 // 定数
@@ -622,7 +622,7 @@ impl WatchdogManager {
         self.software.heartbeat(id, now);
     }
 
-    /// 定期チェック（タイマー割り込みから呼ぶ）
+    /// Ordinary-context maintenance: checks may allocate and invoke device operations.
     pub fn periodic_check(&self, now: u64) {
         // ハードウェアウォッチドッグをキック
         if self.use_hardware.load(Ordering::Relaxed) {
@@ -655,7 +655,9 @@ impl WatchdogManager {
                 self.system_reset();
             }
             TimeoutAction::Nmi => {
-                self.send_nmi();
+                if let Err(cause) = self.send_nmi() {
+                    log::error!("Watchdog NMI delivery failed for {name}: {cause}");
+                }
             }
             TimeoutAction::Custom => {
                 // カスタムハンドラを呼び出し
@@ -684,10 +686,8 @@ impl WatchdogManager {
         }
     }
 
-    fn send_nmi(&self) {
-        // ローカルAPICでNMIを送信
-        // APIC ICR Low (0xFEE00300) にNMIを書き込み
-        crate::io::mmio::mmio_write_u32(0xFEE00300usize, 0x000C4500);
+    fn send_nmi(&self) -> Result<(), crate::drivers::apic::LocalApicError> {
+        crate::drivers::apic::local_apic()?.broadcast_nmi_excluding_self()
     }
 
     /// ソフトウェアウォッチドッグを取得
@@ -705,7 +705,7 @@ impl WatchdogManager {
 // グローバルインスタンス
 // =============================================================================
 
-static WATCHDOG_MANAGER: spin::Once<WatchdogManager> = spin::Once::new();
+static WATCHDOG_MANAGER: crate::sync::InitOnce<WatchdogManager> = crate::sync::InitOnce::new();
 
 pub fn watchdog_manager() -> &'static WatchdogManager {
     WATCHDOG_MANAGER.call_once(WatchdogManager::new)

@@ -5,8 +5,8 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
+use exorust_sync::InitOnce;
 use exorust_sync::{IrqPoisonLock, IrqPoisonLockGuard};
-use spin::Once;
 
 use crate::ApicDestination;
 
@@ -406,7 +406,7 @@ impl IoApicSet {
     }
 }
 
-static IO_APICS: Once<IrqPoisonLock<IoApicSet>> = Once::new();
+static IO_APICS: InitOnce<IrqPoisonLock<IoApicSet>> = InitOnce::new();
 
 /// Installs the immutable I/O APIC controller topology.
 ///
