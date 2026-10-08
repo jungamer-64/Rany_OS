@@ -156,6 +156,15 @@ impl PciServices for BuiltinPciProvider {
     }
 
     fn set_memory_space(&self, bdf: BdfAddress, enabled: bool) -> kernel_api::KapiResult<()> {
+        if !enabled
+            && pci_driver::resource::is_retained(pci_driver::BdfAddress::new(
+                bdf.bus(),
+                bdf.device(),
+                bdf.function(),
+            ))
+        {
+            return Err(kernel_api::KapiError::Busy);
+        }
         update_command_bit(
             bdf,
             crate::drivers::pci::command_bits::MEMORY_SPACE,
