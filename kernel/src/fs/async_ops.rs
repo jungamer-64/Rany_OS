@@ -11,13 +11,7 @@
 
 #![forbid(unsafe_code)]
 
-use crate::sync::Mutex;
-use core::sync::atomic::{AtomicU64, Ordering};
-
-use super::cache::{PAGE_SIZE as CACHE_PAGE_SIZE, page_cache};
-use super::fs_model::{
-    FileAttr, FsError, FsResult, SeekFrom, read_inode_by_number, write_inode_by_number,
-};
+use super::fs_model::{FsError, FsResult};
 use crate::io::io_scheduler::{
     DeviceId as IoDeviceId, IoCommand, IoCompletion, IoError, IoPriority, hybrid_coordinator,
     io_scheduler,
@@ -26,11 +20,8 @@ use kernel_api::dma::{CpuDmaLease, DmaAllocationRequest, DmaDirection};
 use kernel_api::service::storage::{BlockTransferOutcome, BlockTransferRetention};
 
 mod block;
-mod file;
-mod page_cache;
 
 pub use block::DirectBlockHandle;
-pub use file::AsyncFile;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests;
