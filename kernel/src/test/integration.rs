@@ -323,9 +323,24 @@ async fn read_nvme_block(
         .ok_or_else(|| String::from("invalid NVMe block geometry"))?;
     let extent = crate::fs::DirectBlockHandle::new(device, 0, 1, geometry.block_size.get())
         .map_err(|cause| alloc::format!("invalid NVMe extent: {cause:?}"))?;
-    let buffer = target
-        .allocate_transfer(request)
-        .map_err(|cause| alloc::format!("NVMe transfer allocation failed: {cause:?}"))?;
+    let timer = kernel_api::service::time::try_instance()
+        .ok_or_else(|| String::from("time service unavailable during DMA admission"))?;
+    let deadline = timer
+        .current_tick_ms()
+        .checked_add(5_000)
+        .ok_or_else(|| String::from("DMA admission deadline overflow"))?;
+    // LOOP_PROOF: mode=event; reason=Only an unpublished Busy allocation is retried after a real timer wait; success, other failures and the fixed admission deadline end the loop.;
+    let buffer = loop {
+        match target.allocate_transfer(request) {
+            Ok(buffer) => break buffer,
+            Err(crate::io::io_scheduler::IoError::Busy) if timer.current_tick_ms() < deadline => {
+                kernel_api::service::time::SleepFuture::new(timer, 1)
+                    .await
+                    .map_err(|cause| alloc::format!("DMA admission wait failed: {cause:?}"))?;
+            }
+            Err(cause) => return Err(alloc::format!("NVMe transfer allocation failed: {cause:?}")),
+        }
+    };
     match extent.read_blocks_dma(0, buffer).await {
         BlockTransferOutcome::Returned { result, buffer } => {
             let closed = scheduler.finalize_transfer(buffer);
