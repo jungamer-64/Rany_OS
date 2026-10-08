@@ -27,6 +27,7 @@ pub(super) fn endpoint_addr_from_kapi(
 pub(super) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> KapiError {
     match error {
         crate::net::l4::EndpointError::Timeout => KapiError::Timeout,
+        crate::net::l4::EndpointError::Timer(cause) => KapiError::Timer(cause),
         crate::net::l4::EndpointError::PortInUse | crate::net::l4::EndpointError::AddressInUse => {
             KapiError::ResourceExhausted
         }
@@ -39,6 +40,7 @@ pub(super) fn endpoint_error_to_kapi(error: crate::net::l4::EndpointError) -> Ka
 pub(super) fn tcp_error_to_kapi(error: crate::net::l4::tcp::TcpError) -> KapiError {
     match error {
         crate::net::l4::tcp::TcpError::Timeout => KapiError::Timeout,
+        crate::net::l4::tcp::TcpError::Timer(cause) => KapiError::Timer(cause),
         crate::net::l4::tcp::TcpError::AddressInUse | crate::net::l4::tcp::TcpError::BufferFull => {
             KapiError::ResourceExhausted
         }

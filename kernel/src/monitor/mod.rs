@@ -367,7 +367,11 @@ pub async fn monitor_loop() {
         let snap = snapshot();
         print_status_line(&snap);
 
-        crate::task::sleep_ms(REFRESH_RATE_MS).await;
+        if let Err(cause) = crate::task::sleep_ms(REFRESH_RATE_MS).await {
+            log::error!("monitor timer failed: {cause}");
+            stop();
+            break;
+        }
     }
 
     log::info!("[MONITOR] Monitor loop stopped\n");
