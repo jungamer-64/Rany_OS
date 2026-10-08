@@ -64,6 +64,7 @@ enum RuntimeTestBody {
     IommuIntegration,
     NetworkRuntime,
     NetworkBenchmark,
+    DriverDomainRuntime,
     CpuHotplugLifecycle,
     CpuHotplugSparse,
     SchedulerPreemption,
@@ -235,11 +236,11 @@ async fn network_benchmark_suite() -> RuntimeTestResult {
     }
 }
 
-fn driver_domain_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
+async fn driver_domain_runtime_suite(case_filter: Option<&str>) -> RuntimeTestResult {
     #[cfg(feature = "qemu-test-export")]
     {
         let summary =
-            crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite(case_filter);
+            crate::driver_domain::qemu_tests::run_driver_domain_runtime_suite(case_filter).await;
         if summary.failed > 0 {
             return RuntimeTestResult::fail("driver_domain runtime failures");
         }
@@ -379,7 +380,7 @@ static CASES: &[RuntimeTestCase] = &[
     },
     RuntimeTestCase {
         id: "driver_domain.runtime_suite",
-        body: RuntimeTestBody::Sync(driver_domain_runtime_suite),
+        body: RuntimeTestBody::DriverDomainRuntime,
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::DriverDomain,
     },
@@ -502,6 +503,9 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
             RuntimeTestBody::IommuIntegration => iommu_integration_suite(nested_case_filter).await,
             RuntimeTestBody::NetworkRuntime => network_runtime_suite(nested_case_filter).await,
             RuntimeTestBody::NetworkBenchmark => network_benchmark_suite().await,
+            RuntimeTestBody::DriverDomainRuntime => {
+                driver_domain_runtime_suite(nested_case_filter).await
+            }
             RuntimeTestBody::CpuHotplugLifecycle => cpu_hotplug_runtime_suite().await,
             RuntimeTestBody::CpuHotplugSparse => cpu_hotplug_sparse_runtime_suite().await,
             RuntimeTestBody::SchedulerPreemption => {
@@ -846,7 +850,9 @@ async fn scheduler_preemption_case(probe: SchedulerProbe) -> RuntimeTestResult {
         let _ = crate::domain::terminate_domain(domain);
         return RuntimeTestResult::fail("cannot create nested owner domain");
     };
-    let avx = matches!(crate::cpu::xstate::configuration(),
+    let xstate = crate::cpu::xstate::configuration();
+    log::info!(target: "init", "[kernel-test] poll preemption state={xstate:?}");
+    let avx = matches!(xstate,
         crate::cpu::xstate::XStateConfiguration::Xsave { mask, .. } if mask & 4 != 0);
     let before = crate::task::scheduler_snapshot().expect("scheduler must be installed");
     if crate::task::spawn_in_domain(

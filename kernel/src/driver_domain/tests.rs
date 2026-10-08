@@ -371,7 +371,7 @@ fn case_matches_filter(case_filter: Option<&str>, name: &str) -> bool {
 }
 
 #[cfg(feature = "qemu-test-export")]
-pub fn run_driver_domain_runtime_suite(
+pub async fn run_driver_domain_runtime_suite(
     case_filter: Option<&str>,
 ) -> DriverDomainRuntimeSuiteSummary {
     let mut summary = DriverDomainRuntimeSuiteSummary::new();
@@ -411,7 +411,7 @@ pub fn run_driver_domain_runtime_suite(
         return summary;
     }
 
-    let mut ctx = match preflight() {
+    let mut ctx = match preflight().await {
         Ok(ctx) => {
             summary.passed += 1;
             log_case("preflight", "pass", "");
@@ -458,38 +458,46 @@ pub fn run_driver_domain_runtime_suite(
         run_case(
             &mut summary,
             "update_validating",
-            case_update_to_validating(&mut ctx),
+            case_update_to_validating(&mut ctx).await,
         );
     }
     if case_matches_filter(case_filter, "manual_rollback") {
         run_case(
             &mut summary,
             "manual_rollback",
-            case_manual_rollback(&mut ctx),
+            case_manual_rollback(&mut ctx).await,
         );
     }
     if case_matches_filter(case_filter, "manual_commit") {
-        run_case(&mut summary, "manual_commit", case_manual_commit(&mut ctx));
+        run_case(
+            &mut summary,
+            "manual_commit",
+            case_manual_commit(&mut ctx).await,
+        );
     }
     if case_matches_filter(case_filter, "auto_commit") {
-        run_case(&mut summary, "auto_commit", case_auto_commit(&mut ctx));
+        run_case(
+            &mut summary,
+            "auto_commit",
+            case_auto_commit(&mut ctx).await,
+        );
     }
     if case_matches_filter(case_filter, "auto_rollback_panic") {
         run_case(
             &mut summary,
             "auto_rollback_panic",
-            case_auto_rollback_panic(&mut ctx),
+            case_auto_rollback_panic(&mut ctx).await,
         );
     }
     if case_matches_filter(case_filter, "idle_restart_panic") {
         run_case(
             &mut summary,
             "idle_restart_panic",
-            case_idle_restart_panic(&mut ctx),
+            case_idle_restart_panic(&mut ctx).await,
         );
     }
     if case_matches_filter(case_filter, "unload") {
-        run_case(&mut summary, "unload", case_unload(&mut ctx));
+        run_case(&mut summary, "unload", case_unload(&mut ctx).await);
     }
 
     crate::loader::elf::set_aslr_enabled(old_aslr);
@@ -498,7 +506,7 @@ pub fn run_driver_domain_runtime_suite(
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
+async fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     runtime_log_line("[driver-cell-runtime] preflight: begin");
     let manager = driver_domain_manager();
     let running_cells = manager.cells_by_state(DriverDomainState::Running);
@@ -561,12 +569,10 @@ fn preflight() -> Result<RuntimeContext, RuntimeCaseError> {
     );
     runtime_log_line("[driver-cell-runtime] preflight: fixtures loaded");
 
-    runtime_log_line("[driver-cell-runtime] preflight: wait_for_tick_progress");
-    if !wait_for_tick_progress(5, 300_000) {
-        return Err(RuntimeCaseError::blocked(
-            "timer tick did not advance (try removing qemu_no_if=1)",
-        ));
-    }
+    runtime_log_line("[driver-cell-runtime] preflight: wait for timer");
+    crate::task::sleep_ms(5)
+        .await
+        .map_err(|cause| RuntimeCaseError::blocked(format!("timer admission failed: {cause}")))?;
     runtime_log_line("[driver-cell-runtime] preflight: tick progressed");
 
     Ok(RuntimeContext {
@@ -768,11 +774,11 @@ fn case_loader_rejects_too_new_kernel_api(ctx: &RuntimeContext) -> Result<(), Ru
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_domain_id)?;
     let result = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
-    poll_runtime();
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Validating).await?;
 
     let health = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
@@ -797,7 +803,7 @@ fn case_update_to_validating(ctx: &mut RuntimeContext) -> Result<(), RuntimeCase
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     let before = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
     if before.hot_swap_state != HotSwapState::Validating {
@@ -810,9 +816,8 @@ fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError
         .ok_or_else(|| RuntimeCaseError::failed("current loader CellId missing"))?
         .as_u64();
 
-    super::hot_swap::rollback(ctx.driver_domain_id)
-        .map_err(|e| RuntimeCaseError::failed(format!("rollback failed: {}", e)))?;
-    poll_runtime();
+    retry_lifecycle(|| super::hot_swap::rollback(ctx.driver_domain_id)).await?;
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Idle).await?;
 
     let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
@@ -841,15 +846,14 @@ fn case_manual_rollback(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_domain_id)?;
     let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
-    poll_runtime();
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Validating).await?;
 
-    super::hot_swap::commit(ctx.driver_domain_id)
-        .map_err(|e| RuntimeCaseError::failed(format!("commit failed: {}", e)))?;
-    poll_runtime();
+    retry_lifecycle(|| super::hot_swap::commit(ctx.driver_domain_id)).await?;
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Idle).await?;
 
     let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
@@ -874,11 +878,11 @@ fn case_manual_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> 
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_domain_id)?;
     let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v1_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v1) failed: {}", e)))?;
-    poll_runtime();
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Validating).await?;
 
     let validating = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
@@ -886,12 +890,8 @@ fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
         .validation_deadline_tick
         .ok_or_else(|| RuntimeCaseError::failed("missing validation deadline for auto-commit"))?;
 
-    if !wait_for_tick(deadline.saturating_add(5), 1_000_000) {
-        return Err(RuntimeCaseError::blocked(
-            "timer did not reach auto-commit deadline",
-        ));
-    }
-    poll_runtime();
+    wait_for_tick(deadline.saturating_add(5)).await?;
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Idle).await?;
 
     let after = super::hot_swap::health_status(ctx.driver_domain_id)
         .map_err(|e| RuntimeCaseError::failed(format!("health_status failed: {}", e)))?;
@@ -916,15 +916,13 @@ fn case_auto_commit(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_domain_id)?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap begin");
     let update = super::hot_swap::hot_swap(ctx.driver_domain_id, &ctx.v2_cell)
         .map_err(|e| RuntimeCaseError::failed(format!("hot_swap(v2) failed: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: hot_swap done");
-    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime begin");
-    poll_runtime();
-    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime done");
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Validating).await?;
 
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: read stats begin");
     let (restart_before, fault_before) = driver_domain_manager()
@@ -941,9 +939,6 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
     )
     .map_err(|e| RuntimeCaseError::failed(format!("inject_test_fault panic failed: {}", e)))?;
     runtime_log_line("[driver-cell-runtime] auto_rollback_panic: inject panic done");
-    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 begin");
-    poll_runtime();
-    runtime_log_line("[driver-cell-runtime] auto_rollback_panic: poll_runtime2 done");
 
     if !matches!(
         outcome.action,
@@ -954,21 +949,7 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
             outcome.action,
         )));
     }
-    let deadline = crate::task::current_tick()
-        .checked_add(1_000)
-        .ok_or_else(|| RuntimeCaseError::failed("rollback observation deadline overflow"))?;
-    // LOOP_PROOF: mode=condition; reason=The rollback completion is observed through its normal lifecycle state, or the monotonic deadline fails the fixture, while timer preemption lets the service host progress.;
-    while crate::task::current_tick() < deadline {
-        let status = super::hot_swap::health_status(ctx.driver_domain_id).map_err(|cause| {
-            RuntimeCaseError::failed(format!("rollback status failed: {cause}"))
-        })?;
-        if status.hot_swap_state == HotSwapState::Idle
-            && status.loader_cell_id == Some(update.old_cell_id)
-        {
-            break;
-        }
-        core::hint::spin_loop();
-    }
+    wait_for_update_state(ctx.driver_domain_id, HotSwapState::Idle).await?;
 
     let (restart_after, fault_after) = driver_domain_manager()
         .with_cell(ctx.driver_domain_id, |cell| {
@@ -1014,7 +995,7 @@ fn case_auto_rollback_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseE
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+async fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
     ensure_running_idle(ctx.driver_domain_id)?;
     let restart_before = driver_domain_manager()
         .with_cell(ctx.driver_domain_id, |cell| cell.stats.restart_count)
@@ -1034,24 +1015,26 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
             outcome.action
         )));
     }
-    let deadline = crate::time::best_effort_time_nanos().saturating_add(2_000_000_000);
-    // LOOP_PROOF: mode=bounded; reason=The real two-second deadline and finite iteration limit bound recovery observation without injecting timer interrupts.;
-    for _ in 0..10_000_000 {
-        super::fault::progress_restarts();
-        if driver_domain_manager()
-            .with_cell(ctx.driver_domain_id, |cell| cell.state)
-            .map_err(|error| {
-                RuntimeCaseError::failed(format!("restart owner unavailable: {error}"))
-            })?
-            == DriverDomainState::Running
-        {
-            break;
-        }
-        if crate::time::best_effort_time_nanos() >= deadline {
-            break;
-        }
-        core::hint::spin_loop();
-    }
+    observe_runtime(
+        async {
+            // LOOP_PROOF: mode=event; reason=Restart observation awaits a timer until the service host publishes Running or the enclosing deadline ends the wait.;
+            loop {
+                let (count, state) = driver_domain_manager()
+                    .with_cell(ctx.driver_domain_id, |cell| {
+                        (cell.stats.restart_count, cell.state)
+                    })
+                    .map_err(|cause| {
+                        RuntimeCaseError::failed(format!("restart status failed: {cause}"))
+                    })?;
+                if state == DriverDomainState::Running && count > restart_before {
+                    return Ok(());
+                }
+                wait_runtime_turn().await?;
+            }
+        },
+        30_000,
+    )
+    .await?;
 
     let (restart_after, state_after, hot_swap_after) = driver_domain_manager()
         .with_cell(ctx.driver_domain_id, |cell| {
@@ -1083,10 +1066,8 @@ fn case_idle_restart_panic(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseEr
 }
 
 #[cfg(feature = "qemu-test-export")]
-fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
-    super::lifecycle::unload(ctx.driver_domain_id)
-        .map_err(|e| RuntimeCaseError::failed(format!("unload failed after restart: {}", e)))?;
-    poll_runtime();
+async fn case_unload(ctx: &mut RuntimeContext) -> Result<(), RuntimeCaseError> {
+    retry_lifecycle(|| super::lifecycle::unload(ctx.driver_domain_id)).await?;
 
     match driver_domain_manager().with_cell(ctx.driver_domain_id, |_| ()) {
         Err(DriverDomainError::NotFound(_)) => {}
@@ -1215,4 +1196,104 @@ fn log_summary(summary: &DriverDomainRuntimeSuiteSummary) {
 fn runtime_log_line(line: &str) {
     crate::io::log::early_print(line);
     crate::io::log::early_print("\n");
+}
+
+#[cfg(feature = "qemu-test-export")]
+async fn wait_runtime_turn() -> Result<(), RuntimeCaseError> {
+    crate::task::sleep_ms(1)
+        .await
+        .map_err(|cause| RuntimeCaseError::blocked(format!("runtime timer unavailable: {cause}")))
+}
+
+#[cfg(feature = "qemu-test-export")]
+async fn observe_runtime<T>(
+    observation: impl core::future::Future<Output = Result<T, RuntimeCaseError>>,
+    timeout_ms: u64,
+) -> Result<T, RuntimeCaseError> {
+    match crate::task::with_timeout(observation, timeout_ms).await {
+        crate::task::TimeoutResult::Completed(result) => result,
+        crate::task::TimeoutResult::TimedOut => Err(RuntimeCaseError::failed(
+            "runtime lifecycle observation timed out",
+        )),
+        crate::task::TimeoutResult::TimerFailed(cause) => Err(RuntimeCaseError::blocked(format!(
+            "runtime deadline unavailable: {cause}"
+        ))),
+    }
+}
+
+#[cfg(feature = "qemu-test-export")]
+async fn wait_for_update_state(
+    id: DriverDomainId,
+    expected: HotSwapState,
+) -> Result<(), RuntimeCaseError> {
+    observe_runtime(
+        async {
+            // LOOP_PROOF: mode=event; reason=The fixture observes the service-owned update state between timer waits until the requested state or the enclosing deadline.;
+            loop {
+                let status = super::hot_swap::health_status(id).map_err(|cause| {
+                    RuntimeCaseError::failed(format!("update status failed: {cause}"))
+                })?;
+                if status.hot_swap_state == expected {
+                    return Ok(());
+                }
+                wait_runtime_turn().await?;
+            }
+        },
+        30_000,
+    )
+    .await
+}
+
+#[cfg(feature = "qemu-test-export")]
+async fn wait_for_tick(target: u64) -> Result<(), RuntimeCaseError> {
+    let timeout_ms = target
+        .saturating_sub(crate::task::current_tick())
+        .checked_add(30_000)
+        .ok_or_else(|| RuntimeCaseError::failed("validation observation budget overflow"))?;
+    observe_runtime(
+        async {
+            // LOOP_PROOF: mode=event; reason=The real clock is observed between admitted timer waits until its target or the enclosing deadline.;
+            loop {
+                if crate::task::current_tick() >= target {
+                    return Ok(());
+                }
+                wait_runtime_turn().await?;
+            }
+        },
+        timeout_ms,
+    )
+    .await
+}
+
+#[cfg(feature = "qemu-test-export")]
+async fn retry_lifecycle<T>(
+    mut operation: impl FnMut() -> Result<T, DriverDomainError>,
+) -> Result<T, RuntimeCaseError> {
+    observe_runtime(
+        async {
+            // LOOP_PROOF: mode=event; reason=An owned incomplete lifecycle is retried after timer suspension, with success or terminal errors returned before the enclosing deadline.;
+            loop {
+                match operation() {
+                    Ok(value) => return Ok(value),
+                    Err(
+                        DriverDomainError::LifecycleInProgress { .. }
+                        | DriverDomainError::OwnerRetained { .. }
+                        | DriverDomainError::StartupPending { .. },
+                    ) => {}
+                    Err(DriverDomainError::LiveUpdate(cause)) if cause.is_waiting() => {}
+                    Err(DriverDomainError::DriverOperation(
+                        crate::driver_registry::DriverError::Busy { .. },
+                    )) => {}
+                    Err(cause) => {
+                        return Err(RuntimeCaseError::failed(format!(
+                            "lifecycle failed: {cause}"
+                        )));
+                    }
+                }
+                wait_runtime_turn().await?;
+            }
+        },
+        30_000,
+    )
+    .await
 }
