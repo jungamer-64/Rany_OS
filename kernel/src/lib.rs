@@ -27,7 +27,7 @@
 #![feature(abi_x86_interrupt)]
 #![feature(ptr_metadata)]
 #![feature(format_args_nl)]
-#![feature(allocator_api)]
+#![feature(allocator_ext)]
 extern crate alloc;
 
 // Interrupt helper macro moved to a shared module so it's visible in both the
@@ -286,44 +286,55 @@ pub enum QemuExitCode {
     Failed = 0x11,
 }
 
+/// Publishes the terminal result to the configured QEMU debug-exit device.
 pub fn exit_qemu(code: QemuExitCode) -> ! {
-    unsafe {
-        core::arch::asm!(
-            "out dx, eax",
-            in("dx") 0xf4u16,
-            in("eax") code as u32,
-            options(nomem, nostack, preserves_flags)
-        );
+    static DEBUG_EXIT: exorust_sync::Mutex<hal::IoPortRange> = exorust_sync::Mutex::new(
+        // SAFETY: the QEMU machine profile dedicates ports 0xf4..0xf8 to
+        // debug-exit. This is the sole owner, serialized by this lock.
+        unsafe {
+            match hal::IoPortRange::from_raw_parts(0xf4, 4) {
+                Ok(ports) => ports,
+                Err(_) => panic!("invalid fixed QEMU debug-exit range"),
+            }
+        },
+    );
+    DEBUG_EXIT
+        .lock()
+        .first::<u32>()
+        .expect("four-byte debug-exit range")
+        .write(code as u32);
+    // LOOP_PROOF: mode=halt; reason=The terminal QEMU result has been published and execution must not continue if the exit device is unavailable.;
+    loop {
+        x86_64::instructions::hlt();
     }
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {}
 }
 
 // Native and QEMU verification compile the same ownership and execution
 // mechanisms. Platform admission determines whether hardware can be used.
-#[cfg(feature = "qemu-test-export")]
-pub mod qemu_tests;
 mod async_boot_runtime_snapshot;
 #[cfg(feature = "qemu-test-export")]
+pub mod qemu_tests;
+#[cfg(feature = "qemu-test-export")]
 pub(crate) fn async_boot_stage_runtime_snapshot()
-    -> async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
+-> async_boot_runtime_snapshot::AsyncBootStageRuntimeSnapshot {
     async_boot_runtime_snapshot::async_boot_stage_runtime_snapshot()
 }
 pub use hal;
-pub mod graphics;
 pub mod boot;
-pub mod fs;
-pub mod durability;
-pub mod debug;
 pub mod collections;
 pub mod console;
 pub mod cpu;
 pub mod crypto;
+pub mod debug;
 pub mod diag;
 pub mod domain;
 pub mod driver_domain;
+pub mod driver_registry;
 pub mod drivers;
+pub mod durability;
 pub mod error;
+pub mod fs;
+pub mod graphics;
 pub mod heap;
 pub mod integration;
 pub mod interrupts;
@@ -338,6 +349,7 @@ pub mod platform;
 pub mod power;
 pub mod profiler;
 pub mod provider_registry;
+pub mod resource_registry;
 pub mod sas;
 pub mod security;
 pub(crate) mod services;
@@ -351,5 +363,3 @@ pub mod time;
 pub mod unwind;
 pub mod util;
 pub mod watchdog;
-pub mod driver_registry;
-pub mod resource_registry;
