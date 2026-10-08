@@ -8,9 +8,9 @@
 //! never be allowed to access through DMA. Protection is page-granular because
 //! IOMMU mappings cannot safely expose only part of a protected page.
 
+use crate::sync::RwLock;
 use alloc::collections::BTreeMap;
 use core::mem;
-use spin::RwLock;
 
 const PAGE_SIZE: u64 = 4096;
 const PAGE_MASK: u64 = PAGE_SIZE - 1;
@@ -43,6 +43,7 @@ impl ProtectionRegistry {
         self.split_at(end);
 
         let mut cursor = start;
+        // LOOP_PROOF: mode=condition; reason=Registration advances the cursor to each existing or newly inserted nonempty span's end until the requested address range is covered.;
         while cursor < end {
             if let Some(span) = self.spans.get_mut(&cursor) {
                 span.registrations = span
@@ -76,6 +77,7 @@ impl ProtectionRegistry {
         self.split_at(end);
 
         let mut cursor = start;
+        // LOOP_PROOF: mode=condition; reason=Unregistration advances the cursor past each nonempty stored span and stops when no span remains in the finite address range.;
         while cursor < end {
             let Some((&span_start, &span)) = self.spans.range(cursor..end).next() else {
                 break;

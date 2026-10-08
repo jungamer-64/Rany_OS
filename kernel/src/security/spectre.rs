@@ -455,7 +455,8 @@ fn write_msr(msr: u32, value: u64) {
 }
 
 /// グローバルなSpectre緩和マネージャ
-static SPECTRE_MANAGER: spin::Once<SpectreMitigationManager> = spin::Once::new();
+static SPECTRE_MANAGER: crate::sync::InitOnce<SpectreMitigationManager> =
+    crate::sync::InitOnce::new();
 
 /// Spectre緩和を初期化
 pub fn init() {

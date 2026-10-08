@@ -56,15 +56,6 @@ pub struct NetCapability {
 unsafe impl Send for NetCapability {}
 unsafe impl Sync for NetCapability {}
 
-/// I/Oポートアクセス権限
-#[derive(Debug)]
-pub struct IoCapability {
-    _private: (),
-}
-
-unsafe impl Send for IoCapability {}
-unsafe impl Sync for IoCapability {}
-
 /// 割り込み登録権限
 #[derive(Debug)]
 pub struct InterruptCapability {
@@ -121,7 +112,7 @@ unsafe impl Sync for TaskCapability {}
 pub struct DomainCapabilities {
     pub memory: Option<MemoryCapability>,
     pub net: Option<NetCapability>,
-    pub io: Option<IoCapability>,
+    pub io: Option<hal::IoPortRange>,
     pub interrupt: Option<InterruptCapability>,
     pub dma: Option<DmaCapability>,
     pub fs: Option<FsCapability>,
@@ -153,11 +144,6 @@ impl DomainCapabilities {
     #[inline]
     pub fn require_net(&self) -> &NetCapability {
         self.net.as_ref().expect("Network capability required")
-    }
-
-    #[inline]
-    pub fn require_io(&self) -> &IoCapability {
-        self.io.as_ref().expect("I/O capability required")
     }
 
     #[inline]
@@ -279,21 +265,6 @@ pub fn allocate_dma_buffer<'cap>(
     Ok(DmaBuffer::new(cap, phys_addr, size))
 }
 
-/// I/Oポートアクセス（権限トークンが必要）
-#[inline]
-pub fn port_read_u8(_cap: &IoCapability, port: u16) -> u8 {
-    use hal::port_io::IoPort;
-    let mut p: IoPort<u8> = IoPort::new(port);
-    p.read()
-}
-
-#[inline]
-pub fn port_write_u8(_cap: &IoCapability, port: u16, value: u8) {
-    use hal::port_io::IoPort;
-    let mut p: IoPort<u8> = IoPort::new(port);
-    p.write(value);
-}
-
 // ============================================================================
 // Domain Entry Point with Capabilities
 // ============================================================================
@@ -303,32 +274,6 @@ pub fn port_write_u8(_cap: &IoCapability, port: u16, value: u8) {
 /// ドメインコードは、カーネルから渡される権限セットのみを使用可能。
 /// 権限の追加取得や偽造は型システムにより禁止される。
 pub type DomainEntryFn = fn(caps: DomainCapabilities);
-
-/// ドライバドメインのエントリポイント例
-///
-/// ```rust
-/// fn driver_entry(caps: DomainCapabilities) {
-///     // I/O権限を要求（なければパニック）
-///     let io = caps.require_io();
-///     
-///     // 権限を使用してデバイスにアクセス
-///     let status = port_read_u8(io, 0x1F7);
-///     
-///     // ネットワーク権限がないためコンパイルエラー
-///     // let net = caps.require_net(); // パニック！
-/// }
-/// ```
-pub fn example_driver_entry(caps: DomainCapabilities) {
-    // I/O権限を取得
-    if let Some(io) = &caps.io {
-        let _ = port_read_u8(io, 0x1F7);
-    }
-
-    // DMA権限を取得
-    if let Some(dma) = &caps.dma {
-        let _ = allocate_dma_buffer(dma, 4096);
-    }
-}
 
 // ============================================================================
 // MAC Replacement: Compile-Time Security Labels

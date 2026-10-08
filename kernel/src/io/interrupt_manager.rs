@@ -12,13 +12,13 @@
 //! - 割り込みルーティングの一元管理
 //! - アフィニティ設定のサポート
 use crate::sync::IrqMutex;
+use crate::sync::{Mutex, RwLock};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
 use once_cell::race::OnceBox;
-use spin::{Mutex, RwLock};
 use x86_64::structures::idt::InterruptStackFrame;
 
 // ============================================================================
@@ -513,6 +513,7 @@ impl InterruptManager {
         let (bitmap, bit) = self.vector_to_bitmap(vector);
         let mask = 1u64 << bit;
 
+        // LOOP_PROOF: mode=event; reason=Vector reservation returns when its CAS succeeds or another owner has already reserved the bit, retrying only concurrent bitmap changes.;
         loop {
             let current = bitmap.load(Ordering::Acquire);
             if (current & mask) != 0 {

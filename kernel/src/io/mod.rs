@@ -40,18 +40,11 @@ pub use hal::mmio;
 pub use hal::port_io;
 
 // ============================================================================
-// Module Aliases (for compatibility)
-// ============================================================================
-
-// `io::keyboard` alias removed. Use `io::hid::keyboard`.
-
-// ============================================================================
 // Commonly Used DMA Types
 // ============================================================================
 
 pub use dma::{
-    CACHE_LINE_SIZE, CacheMode, DmaDirection, cache_line_size, flush_cache_range,
-    invalidate_cache_range, writeback_cache_range,
+    CACHE_LINE_SIZE, CacheMode, flush_cache_range, invalidate_cache_range, writeback_cache_range,
 };
 
 // ============================================================================

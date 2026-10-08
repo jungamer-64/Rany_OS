@@ -295,8 +295,6 @@ fn free_vectors(vectors: &[u8]) {
     for &vector in vectors {
         interrupt_manager::unregister_handler(vector);
         interrupt_manager::unregister_waker(vector);
-        crate::task::interrupt_waker::interrupt_waker_registry()
-            .unregister(crate::task::interrupt_waker::InterruptSource::Irq(vector));
         interrupt_manager::free_vector(vector);
     }
 }

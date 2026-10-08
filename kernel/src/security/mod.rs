@@ -629,11 +629,15 @@ pub fn init() {
     ) {
         Ok(true) => {
             log::info!("[SECURITY] IOMMU notifier registered");
-            crate::io::iommu::api::spawn_security_monitor_task();
+            crate::services::start_security_monitor().unwrap_or_else(|cause| {
+                panic!("essential IOMMU security monitor admission failed: {cause}")
+            });
         }
         Ok(false) => {
             log::info!("[SECURITY] IOMMU notifier already registered");
-            crate::io::iommu::api::spawn_security_monitor_task();
+            crate::services::start_security_monitor().unwrap_or_else(|cause| {
+                panic!("essential IOMMU security monitor admission failed: {cause}")
+            });
         }
         Err(err) => log::warn!("[SECURITY] IOMMU notifier registration failed: {:?}", err),
     }

@@ -9,7 +9,7 @@ fn test_msi_allocation() {
     let result = manager.allocate_msi_vector(
         0x0100, // BDF
         "test_device".into(),
-        Some(0),
+        crate::cpu::CpuId::BOOTSTRAP,
     );
 
     assert!(result.is_ok());
@@ -65,7 +65,7 @@ fn test_vector_free() {
     manager.init();
 
     let alloc = manager
-        .allocate_msi_vector(0x0100, "test".into(), None)
+        .allocate_msi_vector(0x0100, "test".into(), crate::cpu::CpuId::BOOTSTRAP)
         .unwrap();
 
     let vector = alloc.vector;
@@ -73,7 +73,7 @@ fn test_vector_free() {
 
     // 同じベクタを再割り当てできるはず
     let alloc2 = manager
-        .allocate_msi_vector(0x0200, "test2".into(), None)
+        .allocate_msi_vector(0x0200, "test2".into(), crate::cpu::CpuId::BOOTSTRAP)
         .unwrap();
 
     // 空いているベクタが割り当てられる
