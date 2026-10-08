@@ -59,18 +59,15 @@ impl BuddyHeapAllocator {
         }
         let heap_start = memory.start();
         let heap_size = memory.size();
-        crate::io::log::early_print("[BUD] init\n");
         self.heap_start = heap_start;
         self.heap_size = heap_size;
         self.backing = Some(memory);
 
-        crate::io::log::early_print("[BUD] clear\n");
         // 全てのフリーリストをクリア
         for list in self.free_lists.iter_mut() {
             *list = None;
         }
 
-        crate::io::log::early_print("[BUD] loop\n");
         // ヒープ全体を適切なオーダーのブロックとして登録
         // 各オーダーのブロックは自身のサイズでアラインされている必要がある
         let mut current = heap_start;
@@ -95,14 +92,12 @@ impl BuddyHeapAllocator {
             }
 
             if current + block_size <= end {
-                crate::io::log::early_print("[BUD] add\n");
                 self.add_to_free_list(current, order);
                 current += block_size;
             } else {
                 break;
             }
         }
-        crate::io::log::early_print("[BUD] done\n");
         Ok(())
     }
 
@@ -274,8 +269,6 @@ impl BuddyHeapAllocator {
 
     pub(super) fn allocate(&mut self, layout: Layout) -> *mut u8 {
         if self.backing.is_none() {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] allocate: not initialized\n");
             return null_mut();
         }
 
@@ -289,8 +282,6 @@ impl BuddyHeapAllocator {
         let order = Self::layout_order(layout);
 
         if order > Self::MAX_ORDER {
-            #[cfg(debug_assertions)]
-            crate::io::log::early_print("[HEAP] allocate: order too large\n");
             return null_mut();
         }
 
@@ -306,8 +297,6 @@ impl BuddyHeapAllocator {
             }
         }
 
-        #[cfg(debug_assertions)]
-        crate::io::log::early_print("[HEAP] allocate: out of memory\n");
         null_mut()
     }
 
