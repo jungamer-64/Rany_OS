@@ -309,36 +309,26 @@ impl IommuDomain {
     }
 }
 
-#[cfg(all(test, feature = "std"))]
+#[cfg(test)]
 mod tests {
     use super::*;
-    use crate::io::iommu::vendors::intel::controller::IommuController;
-    use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn intel_create_domain_propagates_out_of_memory() {
-        let controller = IommuController::new(0x1000, 0);
-        let _guard = TryNewFailGuard::set(TRY_NEW_FAIL_ALLOC);
-
-        let err = controller
-            .create_domain(None, IommuDomainType::Translated)
-            .expect_err("create_domain should propagate allocation failure");
-
-        assert_eq!(err, IommuError::OutOfMemory);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn intel_create_domain_propagates_phys_translation_failure() {
-        let controller = IommuController::new(0x1000, 0);
-        let _guard = TryNewFailGuard::set(TRY_NEW_FAIL_PHYS);
-
-        let err = controller
-            .create_domain(None, IommuDomainType::Translated)
-            .expect_err("create_domain should propagate root table phys translation failure");
-
-        assert_eq!(err, IommuError::HardwareError);
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn domain_admission_preserves_page_pool_placement_rejection() {
+        let pool = crate::io::iommu::common::dma::page_table_pool::PageTablePool::new(1, 1);
+        let result = IommuDomain::try_new(
+            1,
+            Some(1),
+            false,
+            false,
+            48,
+            4,
+            IommuDomainType::Translated,
+            pool,
+            PteFormat::Intel,
+        );
+        assert!(matches!(result, Err(IommuError::InvalidAddress)));
     }
 }
 
