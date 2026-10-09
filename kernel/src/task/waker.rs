@@ -40,27 +40,6 @@ pub(super) struct WakeLease {
 }
 
 impl WakeLease {
-    pub(super) fn activate(slot: usize) -> Self {
-        assert!(slot < SCHEDULER_CONFIG.max_tasks);
-        let state = &WAKE_SLOTS[slot].0;
-        // LOOP_PROOF: mode=event; reason=CAS retries until ownership changes or the atomic wake transition commits.;
-        loop {
-            let previous = state.load(Ordering::Acquire);
-            assert!(previous & ACTIVE == 0, "wake slot activated twice");
-            let generation = (previous >> GENERATION_SHIFT)
-                .checked_add(1)
-                .filter(|&value| value <= MAX_GENERATION)
-                .expect("wake generation exhausted");
-            let next = (generation << GENERATION_SHIFT) | ACTIVE;
-            if state
-                .compare_exchange(previous, next, Ordering::AcqRel, Ordering::Acquire)
-                .is_ok()
-            {
-                return Self { slot, generation };
-            }
-        }
-    }
-
     pub(super) fn waker(&self) -> Waker {
         let token = ((self.generation as usize) << SLOT_BITS) | self.slot;
         let raw = RawWaker::new(token as *const (), &VTABLE);
