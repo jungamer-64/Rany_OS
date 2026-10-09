@@ -16,7 +16,6 @@ pub mod environ;
 pub(crate) mod execution;
 pub mod fuel;
 pub mod interrupt_waker;
-pub mod io;
 mod scheduler;
 mod stack;
 pub mod timeout;
