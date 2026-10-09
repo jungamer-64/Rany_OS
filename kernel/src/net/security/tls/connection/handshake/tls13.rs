@@ -193,7 +193,8 @@ impl TlsConnectionCore {
     pub(super) fn tls13_extract_cert_chain<'a>(
         &self,
         data: PayloadSpanRef<'a>,
-    ) -> TlsResult<ArrayVec<PayloadSpanRef<'a>, TLS_CERT_CHAIN_CAPACITY>> {
+    ) -> TlsResult<ArrayVec<crate::net::security::x509::CertificateSpan<'a>, TLS_CERT_CHAIN_CAPACITY>>
+    {
         if data.is_empty() {
             return Err(TlsError::DecodeError);
         }
@@ -209,7 +210,10 @@ impl TlsConnectionCore {
             return Err(TlsError::DecodeError);
         }
 
-        let mut certs = ArrayVec::<PayloadSpanRef<'a>, TLS_CERT_CHAIN_CAPACITY>::new();
+        let mut certs = ArrayVec::<
+            crate::net::security::x509::CertificateSpan<'a>,
+            TLS_CERT_CHAIN_CAPACITY,
+        >::new();
         // LOOP_PROOF: mode=bounded; reason=Each certificate consumes its three-byte length and two-byte extension header, bounded by cert_list_end and the certificate chain capacity.;
         while offset < cert_list_end {
             if offset + 3 > cert_list_end {
@@ -224,7 +228,8 @@ impl TlsConnectionCore {
             certs
                 .try_push(
                     data.subspan(offset, cert_len)
-                        .ok_or(TlsError::DecodeError)?,
+                        .ok_or(TlsError::DecodeError)?
+                        .into(),
                 )
                 .map_err(|_| TlsError::CertificateError)?;
             offset = cert_end;
@@ -247,7 +252,10 @@ impl TlsConnectionCore {
             return Err(TlsError::CertificateError);
         }
 
-        let mut ca_certs = ArrayVec::<PayloadSpanRef<'_>, TLS_CA_CERTS_CAPACITY>::new();
+        let mut ca_certs = ArrayVec::<
+            crate::net::security::x509::CertificateSpan<'_>,
+            TLS_CA_CERTS_CAPACITY,
+        >::new();
         for cert in self.config.trust_anchors.iter() {
             ca_certs
                 .try_push(cert.der_span())

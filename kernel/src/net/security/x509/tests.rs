@@ -4,19 +4,15 @@
 
 use super::*;
 
-fn der_payload(data: &[u8]) -> kernel_api::resource::net::PacketPayload {
-    let mut packet = crate::net::payload::alloc_packet_with_headroom(data.len(), 0)
-        .expect("test payload allocation succeeds");
-    packet.data_mut().copy_from_slice(data);
-    kernel_api::resource::net::PacketPayload::try_single(packet)
-        .expect("DER test packet is non-empty")
+fn der_bytes(data: &[u8]) -> alloc::vec::Vec<u8> {
+    data.to_vec()
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_cursor_basic_tlv() {
-    let payload = der_payload(&[0x02, 0x01, 0x2A]);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let payload = der_bytes(&[0x02, 0x01, 0x2A]);
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
     let tlv = cursor.read_tlv().expect("read integer TLV");
 
     assert_eq!(tlv.tag, 0x02);
@@ -31,8 +27,8 @@ fn test_der_cursor_long_length_sequence() {
     data[0] = 0x30;
     data[1] = 0x81;
     data[2] = 0x80;
-    let payload = der_payload(&data);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let payload = der_bytes(&data);
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
     let seq = cursor.read_sequence().expect("read sequence");
 
     assert_eq!(seq.value.total_len(), 128);
@@ -41,8 +37,8 @@ fn test_der_cursor_long_length_sequence() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_cursor_nested_sequence() {
-    let payload = der_payload(&[0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02]);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let payload = der_bytes(&[0x30, 0x06, 0x02, 0x01, 0x01, 0x02, 0x01, 0x02]);
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
     let content = cursor.read_sequence().expect("read sequence").value;
     let mut inner = StrictDerCursor::new(content);
 
@@ -64,8 +60,8 @@ fn test_der_cursor_nested_sequence() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_cursor_bitstring_strips_unused_count() {
-    let payload = der_payload(&[0x03, 0x03, 0x00, 0xAA, 0xBB]);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let payload = der_bytes(&[0x03, 0x03, 0x00, 0xAA, 0xBB]);
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
 
     assert!(
         cursor
@@ -78,23 +74,23 @@ fn test_der_cursor_bitstring_strips_unused_count() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_cursor_rejects_invalid_input() {
-    let empty = der_payload(&[]);
+    let empty = der_bytes(&[]);
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&empty))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&empty))
             .read_tlv()
             .is_none()
     );
 
-    let overlong = der_payload(&[0x30, 0xFF]);
+    let overlong = der_bytes(&[0x30, 0xFF]);
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&overlong))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&overlong))
             .read_sequence()
             .is_none()
     );
 
-    let not_sequence = der_payload(&[0x02, 0x01, 0x00]);
+    let not_sequence = der_bytes(&[0x02, 0x01, 0x00]);
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&not_sequence))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&not_sequence))
             .read_sequence()
             .is_none()
     );
@@ -103,22 +99,22 @@ fn test_der_cursor_rejects_invalid_input() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_der_cursor_rejects_non_canonical_lengths_and_high_tag_number() {
-    let overlong_short = der_payload(&[0x02, 0x81, 0x7F]);
-    let leading_zero_length = der_payload(&[0x30, 0x82, 0x00, 0x80]);
-    let high_tag_number = der_payload(&[0x1F, 0x01, 0x00]);
+    let overlong_short = der_bytes(&[0x02, 0x81, 0x7F]);
+    let leading_zero_length = der_bytes(&[0x30, 0x82, 0x00, 0x80]);
+    let high_tag_number = der_bytes(&[0x1F, 0x01, 0x00]);
 
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&overlong_short))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&overlong_short))
             .read_tlv()
             .is_none()
     );
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&leading_zero_length))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&leading_zero_length))
             .read_tlv()
             .is_none()
     );
     assert!(
-        StrictDerCursor::new(PayloadSpanRef::from_payload(&high_tag_number))
+        StrictDerCursor::new(CertificateSpan::from_bytes(&high_tag_number))
             .read_tlv()
             .is_none()
     );
@@ -126,25 +122,33 @@ fn test_der_cursor_rejects_non_canonical_lengths_and_high_tag_number() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_der_time_rejects_trailing_bytes_invalid_dates_and_pre_unix_dates() {
-    let utc_trailing = der_payload(b"250101000000Z0");
-    let generalized_trailing = der_payload(b"20250101000000Z0");
-    let feb_31 = der_payload(b"250231000000Z");
-    let non_leap_feb_29 = der_payload(b"230229000000Z");
-    let pre_unix = der_payload(b"491231235959Z");
+fn test_der_time_boundaries_and_rejection() {
+    let utc_trailing = der_bytes(b"250101000000Z0");
+    let generalized_trailing = der_bytes(b"20250101000000Z0");
+    let feb_31 = der_bytes(b"250231000000Z");
+    let non_leap_feb_29 = der_bytes(b"230229000000Z");
+    let pre_unix = der_bytes(b"691231235959Z");
 
-    assert!(parse_time_value(0x17, PayloadSpanRef::from_payload(&utc_trailing)).is_none());
-    assert!(parse_time_value(0x18, PayloadSpanRef::from_payload(&generalized_trailing)).is_none());
-    assert!(parse_time_value(0x17, PayloadSpanRef::from_payload(&feb_31)).is_none());
-    assert!(parse_time_value(0x17, PayloadSpanRef::from_payload(&non_leap_feb_29)).is_none());
-    assert!(parse_time_value(0x17, PayloadSpanRef::from_payload(&pre_unix)).is_none());
+    assert!(parse_time_value(0x17, CertificateSpan::from_bytes(&utc_trailing)).is_none());
+    assert!(parse_time_value(0x18, CertificateSpan::from_bytes(&generalized_trailing)).is_none());
+    assert!(parse_time_value(0x17, CertificateSpan::from_bytes(&feb_31)).is_none());
+    assert!(parse_time_value(0x17, CertificateSpan::from_bytes(&non_leap_feb_29)).is_none());
+    assert!(parse_time_value(0x17, CertificateSpan::from_bytes(&pre_unix)).is_none());
+    assert_eq!(
+        parse_time_value(0x17, CertificateSpan::from_bytes(b"491231235959Z")),
+        Some(2_524_607_999)
+    );
+    assert_eq!(
+        parse_time_value(0x17, CertificateSpan::from_bytes(b"700101000000Z")),
+        Some(0)
+    );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_certificate_basic_fields() {
-    let payload = test_cert_payload();
-    let cert = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+    let payload = TEST_CERT_DER;
+    let cert = X509Parser::parse_certificate(CertificateSpan::from_bytes(&payload))
         .expect("parse test cert");
 
     assert_eq!(
@@ -159,8 +163,8 @@ fn test_parse_x509_certificate_basic_fields() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_certificate_extracts_owned_rsa_spki() {
-    let payload = test_cert_payload();
-    let cert = X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload))
+    let payload = TEST_CERT_DER;
+    let cert = X509Parser::parse_certificate(CertificateSpan::from_bytes(&payload))
         .expect("parse test cert");
 
     match cert.subject_public_key_info {
@@ -176,20 +180,20 @@ fn test_parse_x509_certificate_extracts_owned_rsa_spki() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_signature_algorithm_oid_mapping_is_span_backed() {
-    let sha256 = der_payload(OID_SHA256_WITH_RSA);
-    let ecdsa = der_payload(OID_ECDSA_WITH_SHA384);
-    let unknown = der_payload(&[0x01, 0x02, 0x03]);
+    let sha256 = der_bytes(OID_SHA256_WITH_RSA);
+    let ecdsa = der_bytes(OID_ECDSA_WITH_SHA384);
+    let unknown = der_bytes(&[0x01, 0x02, 0x03]);
 
     assert_eq!(
-        parse_signature_algorithm_id(PayloadSpanRef::from_payload(&sha256)),
+        parse_signature_algorithm_id(CertificateSpan::from_bytes(&sha256)),
         SignatureAlgorithmId::Sha256WithRsa
     );
     assert_eq!(
-        parse_signature_algorithm_id(PayloadSpanRef::from_payload(&ecdsa)),
+        parse_signature_algorithm_id(CertificateSpan::from_bytes(&ecdsa)),
         SignatureAlgorithmId::EcdsaWithSha384
     );
     assert_eq!(
-        parse_signature_algorithm_id(PayloadSpanRef::from_payload(&unknown)),
+        parse_signature_algorithm_id(CertificateSpan::from_bytes(&unknown)),
         SignatureAlgorithmId::Unknown
     );
 }
@@ -197,19 +201,19 @@ fn test_signature_algorithm_oid_mapping_is_span_backed() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_signature_algorithm_rejects_unsupported_parameters() {
-    let rsa_bad_null = der_payload(&[
+    let rsa_bad_null = der_bytes(&[
         0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0B, 0x05, 0x01, 0x00,
     ]);
-    let ecdsa_with_null = der_payload(&[
+    let ecdsa_with_null = der_bytes(&[
         0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02, 0x05, 0x00,
     ]);
-    let rsa_pss = der_payload(&[
+    let rsa_pss = der_bytes(&[
         0x06, 0x09, 0x2A, 0x86, 0x48, 0x86, 0xF7, 0x0D, 0x01, 0x01, 0x0A,
     ]);
 
-    assert!(parse_signature_algorithm(PayloadSpanRef::from_payload(&rsa_bad_null)).is_none());
-    assert!(parse_signature_algorithm(PayloadSpanRef::from_payload(&ecdsa_with_null)).is_none());
-    assert!(parse_signature_algorithm(PayloadSpanRef::from_payload(&rsa_pss)).is_none());
+    assert!(parse_signature_algorithm(CertificateSpan::from_bytes(&rsa_bad_null)).is_none());
+    assert!(parse_signature_algorithm(CertificateSpan::from_bytes(&ecdsa_with_null)).is_none());
+    assert!(parse_signature_algorithm(CertificateSpan::from_bytes(&rsa_pss)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -228,20 +232,20 @@ fn test_parse_x509_certificate_rejects_signature_algorithm_mismatch() {
     }
     assert_eq!(seen, 2);
 
-    let payload = der_payload(&der);
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+    let payload = der_bytes(&der);
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&payload)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_x509_certificate_rejects_invalid_input() {
-    let empty = der_payload(&[]);
-    let not_sequence = der_payload(&[0x02, 0x01, 0x00]);
-    let truncated = der_payload(&[0x30, 0x03, 0x02, 0x01]);
+    let empty = der_bytes(&[]);
+    let not_sequence = der_bytes(&[0x02, 0x01, 0x00]);
+    let truncated = der_bytes(&[0x30, 0x03, 0x02, 0x01]);
 
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&empty)).is_none());
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&not_sequence)).is_none());
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&truncated)).is_none());
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&empty)).is_none());
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&not_sequence)).is_none());
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&truncated)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -249,9 +253,9 @@ fn test_parse_x509_certificate_rejects_invalid_input() {
 fn test_parse_x509_certificate_rejects_outer_trailing_bytes() {
     let mut der = [0u8; TEST_CERT_DER.len() + 1];
     der[..TEST_CERT_DER.len()].copy_from_slice(&TEST_CERT_DER);
-    let payload = der_payload(&der);
+    let payload = der_bytes(&der);
 
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&payload)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -259,19 +263,19 @@ fn test_parse_x509_certificate_rejects_outer_trailing_bytes() {
 fn test_parse_x509_certificate_rejects_malformed_validity() {
     let mut der = TEST_CERT_DER;
     der[47] = 0x13;
-    let payload = der_payload(&der);
+    let payload = der_bytes(&der);
 
-    assert!(X509Parser::parse_certificate(PayloadSpanRef::from_payload(&payload)).is_none());
+    assert!(X509Parser::parse_certificate(CertificateSpan::from_bytes(&payload)).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_extensions_rejects_unsupported_critical_extension() {
-    let payload = der_payload(&[
+    let payload = der_bytes(&[
         0xA3, 0x0E, 0x30, 0x0C, 0x30, 0x0A, 0x06, 0x03, 0x2A, 0x03, 0x04, 0x01, 0x01, 0xFF, 0x04,
         0x00,
     ]);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
 
     assert!(parse_extensions(&mut cursor).is_none());
 }
@@ -279,10 +283,10 @@ fn test_parse_extensions_rejects_unsupported_critical_extension() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_parse_extensions_rejects_name_constraints() {
-    let payload = der_payload(&[
+    let payload = der_bytes(&[
         0xA3, 0x0B, 0x30, 0x09, 0x30, 0x07, 0x06, 0x03, 0x55, 0x1D, 0x1E, 0x04, 0x00,
     ]);
-    let mut cursor = StrictDerCursor::new(PayloadSpanRef::from_payload(&payload));
+    let mut cursor = StrictDerCursor::new(CertificateSpan::from_bytes(&payload));
 
     assert!(parse_extensions(&mut cursor).is_none());
 }
@@ -290,18 +294,18 @@ fn test_parse_extensions_rejects_name_constraints() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_key_usage_and_eku_parse_required_bits() {
-    let key_usage = der_payload(&[0x03, 0x02, 0x00, 0xA4]);
-    let parsed = parse_key_usage(PayloadSpanRef::from_payload(&key_usage)).expect("key usage");
+    let key_usage = der_bytes(&[0x03, 0x02, 0x00, 0xA4]);
+    let parsed = parse_key_usage(CertificateSpan::from_bytes(&key_usage)).expect("key usage");
 
     assert!(parsed.digital_signature);
     assert!(parsed.key_encipherment);
     assert!(parsed.key_cert_sign);
 
-    let eku = der_payload(&[
+    let eku = der_bytes(&[
         0x30, 0x0A, 0x06, 0x08, 0x2B, 0x06, 0x01, 0x05, 0x05, 0x07, 0x03, 0x01,
     ]);
     assert!(
-        parse_extended_key_usage(PayloadSpanRef::from_payload(&eku))
+        parse_extended_key_usage(CertificateSpan::from_bytes(&eku))
             .expect("extended key usage")
             .server_auth
     );
@@ -310,25 +314,25 @@ fn test_key_usage_and_eku_parse_required_bits() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_san_dns_and_ip_matching() {
-    let dns = der_payload(&[
+    let dns = der_bytes(&[
         0x30, 0x0D, 0x82, 0x0B, b'E', b'X', b'A', b'M', b'P', b'L', b'E', b'.', b'C', b'O', b'M',
     ]);
-    let ip = der_payload(&[0x30, 0x06, 0x87, 0x04, 127, 0, 0, 1]);
+    let ip = der_bytes(&[0x30, 0x06, 0x87, 0x04, 127, 0, 0, 1]);
 
     assert!(match_hostname_in_san(
-        PayloadSpanRef::from_payload(&dns),
+        CertificateSpan::from_bytes(&dns),
         "example.com"
     ));
     assert!(!match_hostname_in_san(
-        PayloadSpanRef::from_payload(&dns),
+        CertificateSpan::from_bytes(&dns),
         "other.example.com"
     ));
     assert!(match_hostname_in_san(
-        PayloadSpanRef::from_payload(&ip),
+        CertificateSpan::from_bytes(&ip),
         "127.0.0.1"
     ));
     assert!(!match_hostname_in_san(
-        PayloadSpanRef::from_payload(&ip),
+        CertificateSpan::from_bytes(&ip),
         "127.0.0.2"
     ));
 }
@@ -336,10 +340,10 @@ fn test_san_dns_and_ip_matching() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_chain_link_rejects_ca_path_len_violation() {
-    let name = der_payload(&[0x30, 0x00]);
-    let sig = der_payload(&[]);
-    let span = PayloadSpanRef::from_payload(&name);
-    let sig_span = PayloadSpanRef::from_payload(&sig);
+    let name = der_bytes(&[0x30, 0x00]);
+    let sig = der_bytes(&[]);
+    let span = CertificateSpan::from_bytes(&name);
+    let sig_span = CertificateSpan::from_bytes(&sig);
     let intermediate = X509Certificate {
         raw_tbs: span,
         signature_algorithm: SignatureAlgorithmId::Sha256WithRsa,
@@ -381,8 +385,8 @@ fn test_chain_link_rejects_ca_path_len_violation() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_requires_trust_anchor() {
-    let payload = test_cert_payload();
-    let chain = [PayloadSpanRef::from_payload(&payload)];
+    let payload = TEST_CERT_DER;
+    let chain = [CertificateSpan::from_bytes(&payload)];
     let cert = X509Parser::parse_certificate(chain[0]).expect("test certificate parses");
     let context = TlsServerVerificationContext {
         now_unix: cert.not_before,
@@ -400,8 +404,8 @@ fn test_validate_certificate_chain_requires_trust_anchor() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_validate_certificate_chain_accepts_trusted_anchor() {
-    let payload = test_cert_payload();
-    let span = PayloadSpanRef::from_payload(&payload);
+    let payload = TEST_CERT_DER;
+    let span = CertificateSpan::from_bytes(&payload);
     let chain = [span];
     let trusted = [span];
     let cert = X509Parser::parse_certificate(span).expect("test certificate parses");
@@ -438,8 +442,8 @@ fn test_validate_certificate_chain_accepts_trusted_anchor() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_tls13_server_auth_rejects_leaf_without_digital_signature_key_usage() {
-    let payload = test_cert_payload();
-    let span = PayloadSpanRef::from_payload(&payload);
+    let payload = TEST_CERT_DER;
+    let span = CertificateSpan::from_bytes(&payload);
     let mut leaf = X509Parser::parse_certificate(span).expect("test certificate parses");
     leaf.key_usage = Some(KeyUsage {
         digital_signature: false,

@@ -2,16 +2,30 @@
 // kernel/src/net/security/tls/credentials.rs - TLS credential and key material types
 // ============================================================================
 
-use crate::net::payload::PayloadSpanRef;
+use crate::net::security::x509::CertificateSpan;
 use alloc::string::String;
 use alloc::vec::Vec;
 use arrayvec::ArrayVec;
 use kernel_api::resource::net::PacketPayload;
 
-/// 証明書
+/// Immutable encoded material keeps configured bytes or received packets alive
+/// through every parsed borrow. Certificate policy establishes validity/trust.
 #[derive(Debug)]
 pub struct Certificate {
     material: CertificateStorage,
+}
+
+#[derive(Debug)]
+enum CertificateStorage {
+    Bytes(Vec<u8>),
+    Packet(PacketPayload),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CertificateDataError {
+    Empty,
+    InvalidEncoding,
+    MetadataAllocation,
 }
 
 impl Certificate {
@@ -21,13 +35,67 @@ impl Certificate {
         }
     }
 
-    pub(crate) fn der_span(&self) -> PayloadSpanRef<'_> {
-        PayloadSpanRef::from_payload(&self.der)
+    /// Retains configured bytes in CPU-owned storage.
+    /// DER validity and trust are established by the certificate policy.
+    ///
+    /// # Errors
+    /// Rejects empty material or metadata allocation failure before publishing
+    /// a certificate; the caller retains its input on both outcomes.
+    pub fn from_der_bytes(der: &[u8]) -> Result<Self, CertificateDataError> {
+        if der.is_empty() {
+            return Err(CertificateDataError::Empty);
+        }
+        let mut bytes = Vec::new();
+        bytes
+            .try_reserve_exact(der.len())
+            .map_err(|_| CertificateDataError::MetadataAllocation)?;
+        bytes.extend_from_slice(der);
+        Ok(Self {
+            material: CertificateStorage::Bytes(bytes),
+        })
+    }
+
+    /// # Errors
+    /// Rejects empty decoded material, invalid base64 digits, or metadata
+    /// allocation failure. Rejection leaves the caller's PEM storage intact.
+    pub fn from_pem(pem: &str) -> Result<Self, CertificateDataError> {
+        let mut in_cert = false;
+        let mut encoded = String::new();
+        encoded
+            .try_reserve(pem.len())
+            .map_err(|_| CertificateDataError::MetadataAllocation)?;
+        for line in pem.lines() {
+            if line.contains("BEGIN CERTIFICATE") {
+                in_cert = true;
+            } else if line.contains("END CERTIFICATE") {
+                break;
+            } else if in_cert {
+                for c in line.trim().chars() {
+                    if c == '=' {
+                        break;
+                    }
+                    encoded.push(c);
+                }
+            }
+        }
+        Ok(Self {
+            material: CertificateStorage::Bytes(base64_decode_bytes(&encoded)?),
+        })
+    }
+
+    pub(crate) fn der_span(&self) -> CertificateSpan<'_> {
+        match &self.material {
+            CertificateStorage::Bytes(bytes) => CertificateSpan::from_bytes(bytes),
+            CertificateStorage::Packet(payload) => CertificateSpan::from_payload(payload),
+        }
     }
 }
 
-pub(crate) fn base64_decode_payload(input: &str) -> Option<PacketPayload> {
+pub(crate) fn base64_decode_bytes(input: &str) -> Result<Vec<u8>, CertificateDataError> {
     let mut decoded = Vec::new();
+    decoded
+        .try_reserve(input.len())
+        .map_err(|_| CertificateDataError::MetadataAllocation)?;
     let mut chunk = [0u8; 3];
     let mut chunk_len = 0usize;
     let mut buf = 0u32;
@@ -38,7 +106,7 @@ pub(crate) fn base64_decode_payload(input: &str) -> Option<PacketPayload> {
             break;
         }
 
-        let value = base64_value(c)? as u32;
+        let value = base64_value(c).ok_or(CertificateDataError::InvalidEncoding)? as u32;
         buf = (buf << 6) | value;
         bits += 6;
 
@@ -58,7 +126,10 @@ pub(crate) fn base64_decode_payload(input: &str) -> Option<PacketPayload> {
         decoded.extend_from_slice(&chunk[..chunk_len]);
     }
 
-    store_tls_bytes(&decoded)
+    if decoded.is_empty() {
+        return Err(CertificateDataError::Empty);
+    }
+    Ok(decoded)
 }
 
 fn base64_value(c: char) -> Option<u8> {
@@ -144,4 +215,3 @@ fn store_tls_key_material(parts: &[&[u8]]) -> Option<PacketPayload> {
     }
     PacketPayload::try_single(packet).ok()
 }
-

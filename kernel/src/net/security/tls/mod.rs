@@ -30,7 +30,7 @@ pub use config::{TlsClientConfig, TlsClientConfigError, TlsServerName, TlsTrustA
 pub use connection::{
     KeyUpdateAction, TlsEstablishedSession, TlsHandshake, TlsHandshakeStep, TlsInboundPlaintext,
 };
-pub use credentials::Certificate;
+pub use credentials::{Certificate, CertificateDataError};
 pub use error::{TlsError, TlsResult};
 pub use protocol::{CipherSuite, TlsVersion};
 

@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/qemu_tests/protocol.rs - TLS 1.3 protocol smokes
 // ============================================================================
 
-use super::super::credentials::base64_decode_payload;
+use super::super::credentials::base64_decode_bytes;
 use super::super::{CipherSuite, TlsClientConfig, TlsTrustAnchors, TlsVersion};
 
 pub fn wave8_tls_cipher_suite_helpers_smoke() -> bool {
@@ -19,14 +19,10 @@ pub fn wave8_tls_cipher_suite_helpers_smoke() -> bool {
 }
 
 pub fn wave8_tls_base64_decode_smoke() -> bool {
-    let result = base64_decode_payload("SGVsbG8=");
-    let empty = base64_decode_payload("");
-    let hello_ok = if let Some(payload) = result {
-        crate::net::payload::PayloadSpanRef::from_payload(&payload).eq_bytes(b"Hello")
-    } else {
-        false
-    };
-    hello_ok && empty.is_none()
+    let result = base64_decode_bytes("SGVsbG8=");
+    let empty = base64_decode_bytes("");
+    result.is_ok_and(|bytes| bytes == b"Hello")
+        && empty == Err(super::super::CertificateDataError::Empty)
 }
 
 pub fn wave8_tls_tls_version_smoke() -> bool {
