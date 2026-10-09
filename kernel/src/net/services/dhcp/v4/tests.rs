@@ -110,8 +110,7 @@ pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
     assert_eq!(&buf[108..236], &[0xCC; 128]);
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
@@ -153,8 +152,7 @@ pub fn test_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip() {
     assert!(!dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
@@ -191,8 +189,7 @@ pub fn test_build_request_requesting_includes_serverid_and_requestedip() {
     assert!(dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_discover_reuse_xid_on_retransmit() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
@@ -244,8 +241,7 @@ pub fn test_build_discover_state_lock_poison_returns_err() {
     assert!(client.build_discover(&mut buf, 100).is_err());
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_process_response_chaddr_mismatch() {
     use crate::net::l2::ethernet::MacAddress;
 
@@ -284,8 +280,7 @@ pub fn test_process_response_chaddr_mismatch() {
     assert!(client.process_response(&buf, 100).is_err());
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_process_response_offer_missing_serverid_returns_err() {
     use crate::net::l2::ethernet::MacAddress;
 
@@ -319,8 +314,7 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
     assert!(client.process_response(&buf, 200).is_err());
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_process_response_ack_requesting_mismatch() {
     use crate::net::l2::ethernet::MacAddress;
 
@@ -379,8 +373,7 @@ pub fn test_process_response_ack_requesting_mismatch() {
     assert!(client.process_response(&buf, 400).is_err());
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_process_response_ack_renewal_success() {
     use crate::net::l2::ethernet::MacAddress;
 
@@ -446,8 +439,7 @@ pub fn test_process_response_ack_renewal_success() {
     }
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_decline_and_build_release_contents() {
     use crate::net::l2::ethernet::MacAddress;
 
@@ -527,8 +519,7 @@ pub fn test_build_decline_and_build_release_contents() {
     );
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_release_clears_lease_and_sets_last_released() {
     use crate::net::l2::ethernet::MacAddress;
 
