@@ -19,6 +19,7 @@ use crate::domain::DomainId;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
+use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "quota/memory.rs"]
@@ -59,7 +60,7 @@ pub struct CpuQuota {
     /// 単位時間あたりの最大CPU時間（ナノ秒）
     pub limit_per_period_ns: u64,
     /// 計測期間（ナノ秒、通常100ms = 100_000_000）
-    pub period_ns: u64,
+    period_ns: NonZeroU64,
     /// 現在の期間での累計使用時間
     period: PoisonLock<CpuQuotaPeriod>,
 }
@@ -100,35 +101,6 @@ impl CpuQuota {
             None
         }
     }
-    /// 新しいCPUクォータを作成
-    ///
-    /// # Arguments
-    /// * `limit_percent` - CPU使用率の上限（0-100）
-    /// * `period_ms` - 計測期間（ミリ秒）
-    ///
-    /// # Panics
-    /// Panics if a configuration has no period, exceeds 100%, or its
-    /// millisecond period cannot be represented in nanoseconds.
-    pub fn new(limit_percent: u64, period_ms: u64) -> Self {
-        assert!(limit_percent <= 100);
-        let period_ns = period_ms
-            .checked_mul(1_000_000)
-            .filter(|period| *period != 0)
-            .expect("quota period must be a positive nanosecond duration");
-        let limit_per_period_ns =
-            ((u128::from(period_ns) * u128::from(limit_percent)) / 100) as u64;
-
-        Self {
-            limit_per_period_ns,
-            period_ns,
-            period: PoisonLock::new(CpuQuotaPeriod {
-                used_ns: 0,
-                start_ns: 0,
-                exceeded: false,
-            }),
-        }
-    }
-
     /// 無制限のCPUクォータ
     pub fn unlimited() -> Self {
         Self {
@@ -377,12 +349,6 @@ impl DomainQuota {
     /// 違反カウントを取得
     pub fn violation_count(&self) -> u64 {
         self.violation_count.load(Ordering::Relaxed)
-    }
-
-    /// クォータビルダー
-    pub fn with_cpu_limit(mut self, limit_percent: u64, period_ms: u64) -> Self {
-        self.cpu = CpuQuota::new(limit_percent, period_ms);
-        self
     }
 
     pub fn with_memory_limit_bytes(mut self, limit_bytes: u64) -> Self {
