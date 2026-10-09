@@ -371,8 +371,8 @@ struct SchedulerState {
 
 impl SchedulerState {
     fn from_snapshot(snapshot: &crate::cpu::CpuSnapshot) -> Self {
-        let present = snapshot.present().clone();
-        let online = snapshot.online().clone();
+        let present = *snapshot.present();
+        let online = *snapshot.online();
         Self {
             present,
             online,
@@ -876,13 +876,13 @@ impl SchedulerState {
     }
 
     fn add_online_cpu(&mut self, cpu: CpuId, snapshot: &crate::cpu::CpuSnapshot) {
-        self.present = snapshot.present().clone();
-        self.online = snapshot.online().clone();
+        self.present = *snapshot.present();
+        self.online = *snapshot.online();
         assert!(self.queues[cpu.as_usize()].is_empty());
     }
 
     fn prepare_online_cpu(&mut self, cpu: CpuId, snapshot: &crate::cpu::CpuSnapshot) {
-        self.present = snapshot.present().clone();
+        self.present = *snapshot.present();
         assert!(self.queues[cpu.as_usize()].is_empty());
     }
 
@@ -1216,9 +1216,13 @@ pub(super) extern "sysv64" fn task_entry(task: *const ()) -> ! {
 
 static TASK_RUNTIME: InitOnce<TaskRuntime> = InitOnce::new();
 
+/// # Errors
+/// Returns `SchedulerUnavailable` until bootstrap CPU topology is installed.
 pub fn initialize_scheduler() -> Result<(), SpawnError> {
     if TASK_RUNTIME.get().is_none() {
-        let snapshot = crate::cpu::snapshot();
+        let snapshot = crate::cpu::try_runtime()
+            .ok_or(SpawnError::SchedulerUnavailable)?
+            .snapshot();
         TASK_RUNTIME.call_once(|| TaskRuntime::new(&snapshot));
     }
     Ok(())
@@ -1228,6 +1232,10 @@ fn runtime() -> Result<&'static TaskRuntime, SpawnError> {
     TASK_RUNTIME.get().ok_or(SpawnError::SchedulerUnavailable)
 }
 
+/// # Errors
+/// Rejects unavailable execution/domain admission, exhausted task resources,
+/// stack mapping failures, and placement without an eligible online CPU.
+/// Failure publishes no task and releases prepared resources.
 pub fn spawn(
     future: impl Future<Output = ()> + Send + 'static,
     options: TaskOptions,
@@ -1525,6 +1533,16 @@ fn idle_once(cpu: CpuId, observed_wake_revision: u64) {
 mod tests {
     use super::*;
     use crate::cpu::{ApicId, CpuEjectCapability, FirmwareCpuIdentity, FirmwareCpuUid};
+
+    #[cfg(all(test, any(feature = "std", target_os = "linux")))]
+    #[test]
+    fn startup_requires_installed_cpu_topology() {
+        assert_eq!(
+            initialize_scheduler(),
+            Err(SpawnError::SchedulerUnavailable)
+        );
+        assert!(scheduler_snapshot().is_none());
+    }
 
     fn sparse_runtime() -> crate::cpu::CpuRuntime {
         let runtime = crate::cpu::CpuRuntime::bootstrap(

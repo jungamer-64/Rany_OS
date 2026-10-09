@@ -54,7 +54,7 @@ pub(crate) const INTERRUPTED_RSP_OFFSET: usize =
     core::mem::offset_of!(TaskContext, interrupted_rsp);
 pub(crate) const XSTATE_OFFSET: usize = core::mem::offset_of!(TaskContext, xstate);
 
-const _: () = assert!(XSTATE_OFFSET % 64 == 0);
+const _: () = assert!(XSTATE_OFFSET.is_multiple_of(64));
 
 // The return value is 0 for completed poll, 1 for timer suspension, and 2
 // for Pending. Both entry functions return with local interrupts disabled.

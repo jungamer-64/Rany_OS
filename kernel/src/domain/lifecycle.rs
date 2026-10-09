@@ -16,7 +16,7 @@
 //! - `restart_domain()` — 本モジュール固有（再起動ロジック）
 //! - `add_domain_dependency()` — 本モジュール固有（依存関係グラフ操作）
 //!
-use crate::domain::{DomainId, DomainState, with_domain, with_domain_mut};
+use crate::domain::{DomainId, with_domain, with_domain_mut};
 use alloc::string::String;
 
 /// ドメイン操作のエラー
@@ -92,7 +92,7 @@ pub fn add_domain_dependency(dependent: DomainId, dependency: DomainId) -> Resul
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::create_domain;
+    use crate::domain::{DomainState, create_domain};
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

@@ -19,7 +19,7 @@ use crate::domain::DomainId;
 use crate::sync::PoisonLock;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 #[path = "quota/memory.rs"]
 mod memory;
@@ -29,22 +29,17 @@ pub(crate) use memory::{MemoryBinding, MemoryCredit};
 /// ドメイン優先度
 ///
 /// OOMキラーおよびスケジューリング優先度に影響します。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum DomainPriority {
     /// 最低優先度 - OOMキラーの最初の対象
     Low = 0,
     /// 通常優先度
+    #[default]
     Normal = 1,
     /// 高優先度
     High = 2,
     /// クリティカル - OOMキラー対象外、カーネルコア用
     Critical = 3,
-}
-
-impl Default for DomainPriority {
-    fn default() -> Self {
-        Self::Normal
-    }
 }
 
 impl DomainPriority {

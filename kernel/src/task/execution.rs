@@ -16,6 +16,9 @@ pub struct Subject {
 impl Subject {
     /// Resolve the task's security subject at execution admission. Missing or
     /// terminated owners never inherit the kernel's credentials/capabilities.
+    ///
+    /// # Errors
+    /// Rejects unknown or terminated domains and an unavailable domain registry.
     pub fn for_task(domain: DomainId, task: TaskId) -> Result<Self, DomainSecurityLookupError> {
         let security = crate::domain::domain_security_handle(domain)?;
         Ok(Self {
@@ -85,6 +88,9 @@ impl ExecutionContext {
         }
     }
 
+    /// # Errors
+    /// Preserves security lookup failure separately from quota admission failure.
+    /// Neither failure installs an execution or retains a memory binding.
     pub fn for_task(task: TaskId, domain: DomainId) -> Result<Self, ExecutionAdmissionError> {
         let subject = Subject::for_task(domain, task).map_err(ExecutionAdmissionError::Security)?;
         let memory = if domain == DomainId::KERNEL {
@@ -102,6 +108,9 @@ impl ExecutionContext {
         })
     }
 
+    /// # Errors
+    /// Rejects an unavailable quota registry, an unregistered or retired account,
+    /// or exhausted binding capacity without installing the supplied subject.
     pub fn from_subject(subject: Subject) -> Result<Self, QuotaError> {
         let memory = crate::domain::quota::quota_manager().bind_memory(subject.domain)?;
         Ok(Self {

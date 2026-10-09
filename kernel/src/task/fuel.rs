@@ -2,17 +2,10 @@
 // kernel/src/task/fuel.rs - Fuel-Based Execution for Starvation Prevention
 // ============================================================================
 //!
-//! # Fuel-Based Execution for Starvation Prevention
-//!
-//! This module implements a "fuel" mechanism to limit the execution time of
-//! cooperative tasks (futures). This prevents a single task from monopolizing
-//! the CPU by forcing it to yield after consuming its budget.
-//!
-//! ## Concept
-//! - **Fuel**: A unit of execution budget (arbitrary scale, e.g., 1 fuel ~ 100-1000 cycles).
-//! - **Injector**: The executor injects fuel into the task context before polling.
-//! - **Consumption**: The task consumes fuel during loops or heavy operations.
-//! - **Yielding**: When fuel is exhausted, the task yields (returns `Poll::Pending`).
+//! Cooperative work budget for an active poll. Only the scheduler refills it
+//! when starting a poll; timer suspension preserves the remaining budget.
+//! Exhaustion requests a cooperative yield. Execution outside a task poll is
+//! unmanaged, which is distinct from an active poll with no fuel remaining.
 //!
 /// Fuel manager
 pub struct Fuel;
@@ -147,6 +140,9 @@ macro_rules! ffi_call_sync {
 /// FFI呼び出しをラップする関数（戻り値がResult型の場合）
 ///
 /// エラー時にも燃料を消費したことを記録する。
+///
+/// # Errors
+/// Returns the closure's error unchanged; fuel consumption is not rolled back.
 #[inline]
 pub fn ffi_call_result<T, E, F>(cost: u64, f: F) -> Result<T, E>
 where
@@ -170,6 +166,10 @@ impl core::fmt::Display for FuelExhausted {
 }
 
 /// 燃料が十分にあるかチェックし、不足時はエラーを返す
+///
+/// # Errors
+/// Returns `FuelExhausted` without consuming fuel when an active poll lacks the
+/// requested budget. Unmanaged execution is admitted without a fuel charge.
 #[inline]
 pub fn require_fuel(cost: u64) -> Result<(), FuelExhausted> {
     if !Fuel::is_active() || Fuel::remaining() >= cost {
@@ -177,17 +177,5 @@ pub fn require_fuel(cost: u64) -> Result<(), FuelExhausted> {
         Ok(())
     } else {
         Err(FuelExhausted)
-    }
-}
-
-/// 重いループ内での燃料チェック用ヘルパー
-///
-/// 指定回数ごとに燃料をチェックし、不足時はtrueを返す（yieldすべき）
-#[inline]
-pub fn should_yield_every(iteration: usize, check_interval: usize, cost_per_check: u64) -> bool {
-    if iteration % check_interval == 0 {
-        !Fuel::consume(cost_per_check)
-    } else {
-        false
     }
 }

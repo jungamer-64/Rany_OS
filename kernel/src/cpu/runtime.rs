@@ -8,7 +8,7 @@ use crate::sync::PoisonLock;
 
 use super::{
     ApicId, CpuFailureReason, CpuId, CpuRole, CpuSet, CpuSlot, CpuSlotState, CpuStateTransition,
-    CpuStateTransitionError, CpuTopologyIssue, FirmwareCpuIdentity, LocatedCpu, MAX_POSSIBLE_CPUS,
+    CpuStateTransitionError, CpuTopologyIssue, LocatedCpu, MAX_POSSIBLE_CPUS,
     PhysicalHotplugStatus,
 };
 
@@ -542,7 +542,7 @@ pub fn snapshot() -> Arc<CpuSnapshot> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cpu::{CpuEjectCapability, FirmwareCpuUid};
+    use crate::cpu::{CpuEjectCapability, FirmwareCpuIdentity, FirmwareCpuUid};
 
     fn firmware(uid: u64, apic: u32) -> LocatedCpu {
         let placement =
