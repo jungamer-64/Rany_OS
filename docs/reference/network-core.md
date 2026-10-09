@@ -118,6 +118,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 ### 4.3 Validation boundary
 
 - ownership state、RX frame publication、TCP reassembly/retransmit、driver completion は unit / integration test で検証する。
+- ホスト側では CPU のみで成立する protocol logic を検証し、packet-backed ingress は network full-boot profile の実行資源で検証する。
 - QEMU の VirtIO case は RX posting、TX used-ring completion、buffer recycle を含む integration boundary であり、実 NIC throughput の証拠ではない。
 - `>= 10Gbps` は実 NIC と明示した workload で測定するまで達成済みと扱わない。
 

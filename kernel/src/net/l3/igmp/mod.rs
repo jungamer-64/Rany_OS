@@ -354,10 +354,14 @@ pub fn multicast_ip_to_mac(ip: Ipv4Address) -> MacAddress {
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub(crate) mod tests {
     use super::*;
+    #[cfg(feature = "qemu-test-export")]
     use crate::net::payload::GeneratedPacketWriter;
+    #[cfg(feature = "qemu-test-export")]
     use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+    #[cfg(feature = "qemu-test-export")]
     use kernel_api::resource::net::PacketPayload;
 
+    #[cfg(feature = "qemu-test-export")]
     fn test_payload(data: &[u8]) -> PacketPayload {
         let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
             .expect("IGMP test payload allocation");
@@ -515,8 +519,7 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg(feature = "qemu-test-export")]
     pub fn test_process_general_query() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -543,10 +546,11 @@ pub(crate) mod tests {
 
         // Group should be in DelayingMember state
         assert_eq!(processor.groups[0].state, GroupState::DelayingMember);
+        test_v3_query_malformed_source_length_rejected();
+        test_v3_query_with_source_list_sets_delaying_member();
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg(feature = "qemu-test-export")]
     pub fn test_report_suppression() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
@@ -575,6 +579,7 @@ pub(crate) mod tests {
 
         // Pending report should be removed
         assert!(processor.pending_reports.is_empty());
+        test_v3_report_suppression_cancels_query_response();
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -611,8 +616,7 @@ pub(crate) mod tests {
         assert_eq!(processor.groups[0].unsolicited_reports_remaining, 0);
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg(feature = "qemu-test-export")]
     pub fn test_v3_report_minimal_layout_accepted() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);
@@ -632,8 +636,7 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg(feature = "qemu-test-export")]
     pub fn test_v3_report_invalid_layout_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);
@@ -652,12 +655,11 @@ pub(crate) mod tests {
             processor.process_payload(&test_payload(&report), src),
             IgmpResult::InvalidPacket
         );
+        test_v3_report_unknown_record_type_rejected();
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_v3_query_malformed_source_length_rejected() {
+    #[cfg(feature = "qemu-test-export")]
+    fn test_v3_query_malformed_source_length_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
 
         // v3 Query header(12 bytes) claims 1 source, but source bytes are missing.
@@ -680,10 +682,8 @@ pub(crate) mod tests {
         );
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_v3_query_with_source_list_sets_delaying_member() {
+    #[cfg(feature = "qemu-test-export")]
+    fn test_v3_query_with_source_list_sets_delaying_member() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
 
@@ -747,10 +747,8 @@ pub(crate) mod tests {
         assert_eq!(compute_igmp_checksum(&report[..len]), 0);
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_v3_report_suppression_cancels_query_response() {
+    #[cfg(feature = "qemu-test-export")]
+    fn test_v3_report_suppression_cancels_query_response() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let group = Ipv4Address::new([224, 1, 2, 3]);
         processor.join_group(group).unwrap();
@@ -782,10 +780,8 @@ pub(crate) mod tests {
         assert!(processor.pending_reports.is_empty());
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_v3_report_unknown_record_type_rejected() {
+    #[cfg(feature = "qemu-test-export")]
+    fn test_v3_report_unknown_record_type_rejected() {
         let mut processor = IgmpProcessor::new(Ipv4Address::new([192, 168, 1, 100]));
         let src = Ipv4Address::new([192, 168, 1, 1]);
 
