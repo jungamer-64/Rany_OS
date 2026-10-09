@@ -416,9 +416,13 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_poisoned_register_skips() {
         use crate::sync::set_panicking;
+        let guard = DOMAIN_ALLOCATIONS
+            .lock()
+            .unwrap_or_else(|_| panic!("ownership ledger acquisition"));
         set_panicking(true);
-        register_allocation(DomainId::new(1), 0x1234, 512);
+        drop(guard);
         set_panicking(false);
+        register_allocation(DomainId::new(1), 0x1234, 512);
         assert_eq!(get_domain_allocations(DomainId::new(1)).len(), 0);
     }
 
@@ -426,9 +430,13 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_poisoned_getters_return_defaults() {
         use crate::sync::set_panicking;
+        let guard = DOMAIN_ALLOCATIONS
+            .lock()
+            .unwrap_or_else(|_| panic!("ownership ledger acquisition"));
         set_panicking(true);
+        drop(guard);
+        set_panicking(false);
         assert!(get_domain_memory_summary().is_empty());
         assert_eq!(get_largest_domain(), None);
-        set_panicking(false);
     }
 }

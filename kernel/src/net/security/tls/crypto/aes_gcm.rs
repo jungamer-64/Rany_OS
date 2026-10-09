@@ -422,7 +422,7 @@ mod tests {
         // PT:  00000000000000000000000000000000 (16 bytes)
         // AAD: (empty)
         // CT:  0388dace60b6a392f328c2b971b2fe78
-        // Tag: ab6e47d42cec13bdf53a67b21251b397
+        // Tag: ab6e47d42cec13bdf53a67b21257bddf
 
         let key = [0u8; 16];
         let nonce = [0u8; 12];
@@ -436,8 +436,8 @@ mod tests {
             0xfe, 0x78,
         ];
         let expected_tag = [
-            0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd, 0xf5, 0x3a, 0x67, 0xb2, 0x12, 0x51,
-            0xb3, 0x97,
+            0xab, 0x6e, 0x47, 0xd4, 0x2c, 0xec, 0x13, 0xbd, 0xf5, 0x3a, 0x67, 0xb2, 0x12, 0x57,
+            0xbd, 0xdf,
         ];
 
         assert_eq!(ct, expected_ct);

@@ -505,7 +505,7 @@ pub mod tests {
         let tw = TimeWaitTimer::start(1000);
         assert!(!tw.is_expired(1000));
         assert!(!tw.is_expired(60_000));
-        // After 2 MSL (120 seconds)
-        assert!(tw.is_expired(121_001));
+        assert!(!tw.is_expired(240_999));
+        assert!(tw.is_expired(241_000));
     }
 }

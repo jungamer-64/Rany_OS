@@ -326,17 +326,17 @@ mod tests {
         // Send 10 packets (14600 bytes) -> snd_nxt = 15600
         cc.on_send(10 * mss);
 
-        // 1st dup ACK (ack=1001 > recover=1000, covers more than recover: 1001-1 >= 1000)
-        let act1 = cc.on_ack(0, true, 1001, 15600);
+        // ACK - 1 must exceed the recovery sequence for a new loss episode.
+        let act1 = cc.on_ack(0, true, 1002, 15600);
         assert_eq!(act1, CongestionAction::None);
         assert_eq!(cc.state, CongestionState::SlowStart);
 
         // 2nd dup ACK
-        let act2 = cc.on_ack(0, true, 1001, 15600);
+        let act2 = cc.on_ack(0, true, 1002, 15600);
         assert_eq!(act2, CongestionAction::None);
 
         // 3rd dup ACK -> triggers Fast Retransmit & enters Fast Recovery
-        let act3 = cc.on_ack(0, true, 1001, 15600);
+        let act3 = cc.on_ack(0, true, 1002, 15600);
         assert_eq!(act3, CongestionAction::FastRetransmit);
         assert_eq!(cc.state, CongestionState::FastRecovery);
 
