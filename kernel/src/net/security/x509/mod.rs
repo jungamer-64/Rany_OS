@@ -1075,6 +1075,9 @@ pub mod qemu_tests {
     }
 
     pub fn x509_parse_self_signed_smoke() -> bool {
+        if !x509_der_parse_sequence_smoke() {
+            return false;
+        }
         let payload = test_cert_payload();
         let Some(cert) = X509Parser::parse_certificate(CertificateSpan::from_payload(&payload))
         else {

@@ -198,20 +198,3 @@ impl ServerPublicKey {
         }
     }
 }
-
-fn store_tls_key_material(parts: &[&[u8]]) -> Option<PacketPayload> {
-    let total_len = parts
-        .iter()
-        .try_fold(0usize, |acc, part| acc.checked_add(part.len()))?;
-    if total_len == 0 {
-        return None;
-    }
-    let mut packet = crate::net::payload::alloc_packet_with_headroom(total_len, 0)?;
-    let mut offset = 0usize;
-    for part in parts {
-        let end = offset.checked_add(part.len())?;
-        packet.data_mut()[offset..end].copy_from_slice(part);
-        offset = end;
-    }
-    PacketPayload::try_single(packet).ok()
-}
