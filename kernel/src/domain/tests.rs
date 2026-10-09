@@ -101,14 +101,46 @@ fn test_reclaim_domain_resources_poisoned_no_panic() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn cpu_quota_waits_until_the_next_serialized_period() {
-    let quota = crate::domain::quota::CpuQuota::new(20, 100);
+    let quota =
+        crate::domain::quota::CpuQuota::new(20, core::time::Duration::from_millis(100)).unwrap();
     assert_eq!(quota.wait_deadline(0), None);
     assert!(quota.consume(20_000_001, 30_000_000));
     assert_eq!(quota.wait_deadline(99_999_999), Some(100_000_000));
     assert_eq!(quota.wait_deadline(100_000_000), None);
     assert!(!quota.consume(1, 100_000_001));
-    let zero = crate::domain::quota::CpuQuota::new(0, 100);
+    let zero =
+        crate::domain::quota::CpuQuota::new(0, core::time::Duration::from_millis(100)).unwrap();
     assert_eq!(zero.wait_deadline(0), Some(100_000_000));
+}
+
+#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+fn invalid_resource_policy_preserves_published_limits() {
+    let id = create_domain("resource-policy".into()).unwrap();
+    let before = with_domain(id, |domain| {
+        (
+            domain.cpu_limit_percent,
+            domain.memory_limit_bytes,
+            domain.io_bandwidth_limit,
+        )
+    })
+    .unwrap();
+    assert_eq!(
+        set_domain_resource_limits(id, 101, 512, 1024),
+        Err(DomainPolicyError::Quota(
+            QuotaError::CpuPercentageOutOfRange { requested: 101 }
+        ))
+    );
+    assert_eq!(
+        with_domain(id, |domain| {
+            (
+                domain.cpu_limit_percent,
+                domain.memory_limit_bytes,
+                domain.io_bandwidth_limit,
+            )
+        }),
+        Some(before)
+    );
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

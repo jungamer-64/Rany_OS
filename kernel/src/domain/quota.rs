@@ -21,6 +21,7 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::num::NonZeroU64;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 
 #[path = "quota/memory.rs"]
 mod memory;
@@ -57,37 +58,77 @@ impl DomainPriority {
 /// CPU時間クォータ（ナノ秒単位）
 #[derive(Debug)]
 pub struct CpuQuota {
-    /// 単位時間あたりの最大CPU時間（ナノ秒）
-    pub limit_per_period_ns: u64,
-    /// 計測期間（ナノ秒、通常100ms = 100_000_000）
+    budget: CpuBudget,
     period_ns: NonZeroU64,
     /// 現在の期間での累計使用時間
     period: PoisonLock<CpuQuotaPeriod>,
 }
 
 #[derive(Debug)]
+enum CpuBudget {
+    Limited(u64),
+    Unlimited,
+}
+
+impl CpuBudget {
+    fn exceeded(&self, used_ns: u64) -> bool {
+        matches!(self, Self::Limited(limit) if used_ns >= *limit)
+    }
+}
+
+const DEFAULT_CPU_PERIOD_NS: NonZeroU64 =
+    NonZeroU64::new(100_000_000).expect("constant CPU quota period is nonzero");
+
+#[derive(Debug)]
 struct CpuQuotaPeriod {
     used_ns: u64,
     start_ns: u64,
-    exceeded: bool,
 }
 
 impl CpuQuotaPeriod {
-    fn advance(&mut self, now_ns: u64, period_ns: u64) {
+    fn advance(&mut self, now_ns: u64, period_ns: NonZeroU64) {
         let aligned_start = now_ns - now_ns % period_ns;
         if aligned_start > self.start_ns {
             self.start_ns = aligned_start;
             self.used_ns = 0;
-            self.exceeded = false;
         }
     }
 }
 
 impl CpuQuota {
+    /// # Errors
+    /// Rejects percentages above 100, a zero period, or a duration whose
+    /// nanoseconds exceed `u64`. A zero percentage is a valid exhausted budget.
+    /// The limited budget is rounded down to a whole nanosecond.
+    pub fn new(limit_percent: u64, period: Duration) -> Result<Self, QuotaError> {
+        if limit_percent > 100 {
+            return Err(QuotaError::CpuPercentageOutOfRange {
+                requested: limit_percent,
+            });
+        }
+        let period_ns =
+            u64::try_from(period.as_nanos()).map_err(|_| QuotaError::CpuPeriodOverflow)?;
+        let period_ns = NonZeroU64::new(period_ns).ok_or(QuotaError::CpuPeriodZero)?;
+        let limit = u64::try_from(u128::from(period_ns.get()) * u128::from(limit_percent) / 100)
+            .map_err(|_| QuotaError::AccountingOverflow)?;
+        Ok(Self::from_budget(CpuBudget::Limited(limit), period_ns))
+    }
+
+    fn from_budget(budget: CpuBudget, period_ns: NonZeroU64) -> Self {
+        Self {
+            budget,
+            period_ns,
+            period: PoisonLock::new(CpuQuotaPeriod {
+                used_ns: 0,
+                start_ns: 0,
+            }),
+        }
+    }
+
     /// Admission and period rollover share the same lock as charging. A
     /// deadline is returned only while this domain must wait for its period.
     pub fn wait_deadline(&self, now_ns: u64) -> Option<u64> {
-        if self.limit_per_period_ns == u64::MAX {
+        if matches!(self.budget, CpuBudget::Unlimited) {
             return None;
         }
         let mut period = self
@@ -95,23 +136,15 @@ impl CpuQuota {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         period.advance(now_ns, self.period_ns);
-        if period.used_ns >= self.limit_per_period_ns {
-            Some(period.start_ns.saturating_add(self.period_ns))
+        if self.budget.exceeded(period.used_ns) {
+            Some(period.start_ns.saturating_add(self.period_ns.get()))
         } else {
             None
         }
     }
     /// 無制限のCPUクォータ
     pub fn unlimited() -> Self {
-        Self {
-            limit_per_period_ns: u64::MAX,
-            period_ns: 100_000_000, // 100ms
-            period: PoisonLock::new(CpuQuotaPeriod {
-                used_ns: 0,
-                start_ns: 0,
-                exceeded: false,
-            }),
-        }
+        Self::from_budget(CpuBudget::Unlimited, DEFAULT_CPU_PERIOD_NS)
     }
 
     /// CPU時間を消費
@@ -133,17 +166,16 @@ impl CpuQuota {
         let fragment_start = current_time_ns.saturating_sub(elapsed_ns);
         let charged = current_time_ns.saturating_sub(fragment_start.max(period.start_ns));
         period.used_ns = period.used_ns.saturating_add(charged);
-        period.exceeded =
-            self.limit_per_period_ns != u64::MAX && period.used_ns >= self.limit_per_period_ns;
-        period.exceeded
+        self.budget.exceeded(period.used_ns)
     }
 
     /// クォータ超過しているかチェック
     pub fn is_exceeded(&self) -> bool {
-        self.period
+        let period = self
+            .period
             .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .exceeded
+            .unwrap_or_else(|error| error.into_inner());
+        self.budget.exceeded(period.used_ns)
     }
 
     /// 使用率を取得（0.0-1.0）
@@ -153,10 +185,10 @@ impl CpuQuota {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .used_ns;
-        if self.limit_per_period_ns == 0 {
-            return 0.0;
+        match self.budget {
+            CpuBudget::Limited(0) | CpuBudget::Unlimited => 0.0,
+            CpuBudget::Limited(limit) => (used as f64) / (limit as f64),
         }
-        (used as f64) / (self.limit_per_period_ns as f64)
     }
 
     /// リセット
@@ -166,7 +198,6 @@ impl CpuQuota {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         period.used_ns = 0;
-        period.exceeded = false;
     }
 }
 
@@ -243,8 +274,8 @@ impl IoQuota {
     /// * `bytes` - 転送バイト数
     /// * `current_time_ns` - 現在時刻（ナノ秒）
     ///
-    /// # Returns
-    /// 許可される場合 `Ok(())`、制限超過の場合 `Err(QuotaError)`
+    /// # Errors
+    /// Rejects a transfer exceeding the available tokens without debiting them.
     pub fn try_io(&self, bytes: u64, current_time_ns: u64) -> Result<(), QuotaError> {
         // 無制限の場合は即座に許可
         if self.rate_bytes_per_sec == u64::MAX {
@@ -320,10 +351,13 @@ impl DomainQuota {
         Self {
             domain_id,
             priority,
-            cpu: CpuQuota::new(100, 100), // デフォルト: 100ms期間で100%
+            cpu: CpuQuota::from_budget(
+                CpuBudget::Limited(DEFAULT_CPU_PERIOD_NS.get()),
+                DEFAULT_CPU_PERIOD_NS,
+            ),
             memory: MemoryQuota::from_bytes(256 * 1024 * 1024), // デフォルト: 256MB
-            network_io: IoQuota::new(100, 10), // デフォルト: 100MB/s, 10MBバースト
-            storage_io: IoQuota::new(50, 5), // デフォルト: 50MB/s, 5MBバースト
+            network_io: IoQuota::new(100, 10),                  // デフォルト: 100MB/s, 10MBバースト
+            storage_io: IoQuota::new(50, 5),                    // デフォルト: 50MB/s, 5MBバースト
             violation_count: AtomicU64::new(0),
         }
     }
@@ -349,6 +383,11 @@ impl DomainQuota {
     /// 違反カウントを取得
     pub fn violation_count(&self) -> u64 {
         self.violation_count.load(Ordering::Relaxed)
+    }
+
+    pub fn with_cpu_limit(mut self, cpu: CpuQuota) -> Self {
+        self.cpu = cpu;
+        self
     }
 
     pub fn with_memory_limit_bytes(mut self, limit_bytes: u64) -> Self {
@@ -395,6 +434,12 @@ struct RegisteredQuota {
     memory: Box<MemoryAccount>,
 }
 
+impl Default for QuotaManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl QuotaManager {
     pub const fn new() -> Self {
         Self {
@@ -405,6 +450,11 @@ impl QuotaManager {
     /// Publish policy without resetting usage. A retired account with outstanding
     /// bindings or credits cannot be reused, even for the same domain identity.
     /// Metadata is prepared outside the lock, because its allocation may enter OOM.
+    ///
+    /// # Errors
+    /// Rejects a changed live CPU period, retained retirement, unavailable
+    /// registry, metadata exhaustion, size overflow, or concurrent growth beyond
+    /// the prepared capacity. Rejection preserves the existing account and policy.
     pub fn register(&self, quota: DomainQuota) -> Result<(), QuotaError> {
         let needed = {
             let mut quotas = self
@@ -416,8 +466,7 @@ impl QuotaManager {
                 .find(|q| q.policy.domain_id == quota.domain_id)
             {
                 if entry.memory.is_open() {
-                    entry.update(quota);
-                    return Ok(());
+                    return entry.update(quota);
                 }
                 if !entry.memory.can_reclaim() {
                     return Err(QuotaError::Retired {
@@ -450,8 +499,7 @@ impl QuotaManager {
         {
             let entry = &mut quotas[index];
             if entry.memory.is_open() {
-                entry.update(quota);
-                return Ok(());
+                return entry.update(quota);
             }
             if !entry.memory.can_reclaim() {
                 return Err(QuotaError::Retired {
@@ -527,8 +575,7 @@ impl QuotaManager {
                 domain_id: policy.domain_id,
             });
         }
-        entry.update(policy);
-        Ok(())
+        entry.update(policy)
     }
 
     /// Binding is acquired on execution entry, outside the allocator hot path.
@@ -621,6 +668,10 @@ impl QuotaManager {
     }
 
     /// I/O操作を試行
+    ///
+    /// # Errors
+    /// Rejects an unavailable registry, a domain without an open account, or a
+    /// transfer exceeding the network token budget.
     pub fn try_network_io(
         &self,
         domain_id: DomainId,
@@ -640,6 +691,9 @@ impl QuotaManager {
             .try_io(bytes, current_time_ns)
     }
 
+    /// # Errors
+    /// Rejects an unavailable registry, a domain without an open account, or a
+    /// transfer exceeding the storage token budget.
     pub fn try_storage_io(
         &self,
         domain_id: DomainId,
@@ -693,9 +747,14 @@ impl QuotaManager {
 }
 
 impl RegisteredQuota {
-    fn update(&mut self, policy: DomainQuota) {
+    fn update(&mut self, policy: DomainQuota) -> Result<(), QuotaError> {
         // CPU and I/O accounting also survives a policy-only update.
-        assert_eq!(self.policy.cpu.period_ns, policy.cpu.period_ns);
+        if self.policy.cpu.period_ns != policy.cpu.period_ns {
+            return Err(QuotaError::CpuPeriodChanged {
+                current_ns: self.policy.cpu.period_ns.get(),
+                requested_ns: policy.cpu.period_ns.get(),
+            });
+        }
         let previous = self
             .policy
             .cpu
@@ -709,8 +768,6 @@ impl RegisteredQuota {
             .unwrap_or_else(|error| error.into_inner());
         replacement.used_ns = previous.used_ns;
         replacement.start_ns = previous.start_ns;
-        replacement.exceeded = policy.cpu.limit_per_period_ns != u64::MAX
-            && previous.used_ns >= policy.cpu.limit_per_period_ns;
         drop(replacement);
         drop(previous);
         policy.network_io.tokens.store(
@@ -746,6 +803,7 @@ impl RegisteredQuota {
             .store(self.policy.violation_count(), Ordering::Relaxed);
         self.memory.set_limit(policy.memory.limit_bytes);
         self.policy = policy;
+        Ok(())
     }
 }
 
@@ -787,6 +845,9 @@ pub fn quota_manager() -> &'static QuotaManager {
 }
 
 /// クォータシステムの初期化
+///
+/// # Panics
+/// Kernel startup cannot proceed if its quota metadata cannot be published.
 pub fn init() {
     // カーネルドメインを登録
     QUOTA_MANAGER
@@ -805,8 +866,85 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn cpu_configuration_rejects_invalid_units_and_percentage() {
+        assert_eq!(
+            CpuQuota::new(101, Duration::from_millis(100)).unwrap_err(),
+            QuotaError::CpuPercentageOutOfRange { requested: 101 }
+        );
+        assert_eq!(
+            CpuQuota::new(100, Duration::ZERO).unwrap_err(),
+            QuotaError::CpuPeriodZero
+        );
+        assert_eq!(
+            CpuQuota::new(100, Duration::from_secs(u64::MAX)).unwrap_err(),
+            QuotaError::CpuPeriodOverflow
+        );
+        let rounded = CpuQuota::new(99, Duration::from_nanos(1)).unwrap();
+        assert!(rounded.is_exceeded());
+        assert_eq!(rounded.wait_deadline(0), Some(1));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn maximum_finite_cpu_budget_remains_limited() {
+        let finite = CpuQuota::new(100, Duration::from_nanos(u64::MAX)).unwrap();
+        assert!(!finite.consume(u64::MAX - 1, u64::MAX - 1));
+        assert!(finite.consume(1, u64::MAX - 1));
+        assert_eq!(finite.wait_deadline(u64::MAX - 1), Some(u64::MAX));
+        let unlimited = CpuQuota::unlimited();
+        assert!(!unlimited.consume(u64::MAX, u64::MAX - 1));
+        assert_eq!(unlimited.wait_deadline(u64::MAX - 1), None);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn rejected_period_change_retains_charges_and_entire_policy() {
+        let manager = QuotaManager::new();
+        let id = DomainId::new(80);
+        manager
+            .register(
+                DomainQuota::new(id, DomainPriority::Normal)
+                    .with_cpu_limit(CpuQuota::new(10, Duration::from_millis(100)).unwrap())
+                    .with_memory_limit_bytes(1024),
+            )
+            .unwrap();
+        let binding = manager.bind_memory(id).unwrap();
+        let credit = binding.reserve(512).unwrap();
+        assert!(manager.consume_cpu_time(id, 10_000_000, 20_000_000));
+        assert_eq!(
+            manager.register(
+                DomainQuota::new(id, DomainPriority::Critical)
+                    .with_cpu_limit(CpuQuota::new(50, Duration::from_millis(50)).unwrap())
+                    .with_memory_limit_bytes(1),
+            ),
+            Err(QuotaError::CpuPeriodChanged {
+                current_ns: 100_000_000,
+                requested_ns: 50_000_000,
+            })
+        );
+        let stats = manager.get_stats(id).unwrap();
+        assert_eq!(stats.priority, DomainPriority::Normal);
+        assert_eq!(stats.memory_limit, 1024);
+        assert_eq!(stats.memory_used, 512);
+        assert_eq!(stats.cpu_usage_ratio, 1.0);
+        assert_eq!(manager.cpu_wait_deadline(id, 20_000_000), Some(100_000_000));
+        manager
+            .update_policy(
+                DomainQuota::new(id, DomainPriority::High)
+                    .with_cpu_limit(CpuQuota::new(20, Duration::from_millis(100)).unwrap())
+                    .with_memory_limit_bytes(1024),
+            )
+            .unwrap();
+        assert!(!manager.consume_cpu_time(id, 9_000_000, 29_000_000));
+        assert!(manager.consume_cpu_time(id, 1_000_000, 30_000_000));
+        assert_eq!(manager.cpu_wait_deadline(id, 30_000_000), Some(100_000_000));
+        drop(credit);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_quota_counts_fragments_and_reopens_after_the_period() {
-        let quota = CpuQuota::new(10, 100);
+        let quota = CpuQuota::new(10, Duration::from_millis(100)).unwrap();
         assert!(!quota.consume(4_000_000, 4_000_000));
         // Waiting for the next fragment consumes no CPU quota.
         assert_eq!(quota.wait_deadline(80_000_000), None);
@@ -819,7 +957,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn cpu_quota_serializes_late_smp_charges_without_rewinding_the_period() {
-        let quota = CpuQuota::new(10, 100);
+        let quota = CpuQuota::new(10, Duration::from_millis(100)).unwrap();
         // CPU A returns across the period boundary: only [100ms, 105ms)
         // belongs to the current window.
         assert!(!quota.consume(10_000_000, 105_000_000));
@@ -835,7 +973,7 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_cpu_quota() {
-        let quota = CpuQuota::new(50, 100); // 50%, 100ms period
+        let quota = CpuQuota::new(50, Duration::from_millis(100)).unwrap();
 
         // 50%使用は許可
         assert!(quota.consume(50_000_000, 50_000_000));

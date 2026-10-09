@@ -88,8 +88,20 @@ impl core::fmt::Display for CodeFinalizationError {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum QuotaError {
+    CpuPercentageOutOfRange {
+        requested: u64,
+    },
+    CpuPeriodZero,
+    CpuPeriodOverflow,
+    /// A live account retains the time window of its existing charges.
+    CpuPeriodChanged {
+        current_ns: u64,
+        requested_ns: u64,
+    },
     /// CPU時間超過
-    CpuTimeExceeded { domain_id: DomainId },
+    CpuTimeExceeded {
+        domain_id: DomainId,
+    },
     /// メモリ超過
     MemoryExceeded {
         requested: u64,
@@ -97,13 +109,20 @@ pub enum QuotaError {
         limit: u64,
     },
     /// I/O帯域超過
-    IoBandwidthExceeded { requested: u64, available: u64 },
+    IoBandwidthExceeded {
+        requested: u64,
+        available: u64,
+    },
     /// 割り当て競合（再試行が必要）
     AllocationRace,
     /// No account exists for this non-kernel domain.
-    Unregistered { domain_id: DomainId },
+    Unregistered {
+        domain_id: DomainId,
+    },
     /// The account has stopped admitting execution and allocations.
-    Retired { domain_id: DomainId },
+    Retired {
+        domain_id: DomainId,
+    },
     /// Fallible allocation of registry storage or an account failed.
     MetadataAllocationFailed,
     /// The registry is poisoned and cannot safely publish policy.
@@ -117,6 +136,20 @@ pub enum QuotaError {
 impl core::fmt::Display for QuotaError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            QuotaError::CpuPercentageOutOfRange { requested } => {
+                write!(f, "CPU quota percentage {requested} exceeds 100")
+            }
+            QuotaError::CpuPeriodZero => f.write_str("CPU quota period must be nonzero"),
+            QuotaError::CpuPeriodOverflow => {
+                f.write_str("CPU quota period cannot be represented in nanoseconds")
+            }
+            QuotaError::CpuPeriodChanged {
+                current_ns,
+                requested_ns,
+            } => write!(
+                f,
+                "CPU quota period cannot change from {current_ns}ns to {requested_ns}ns while the account is live"
+            ),
             QuotaError::CpuTimeExceeded { domain_id } => {
                 write!(f, "CPU quota exceeded for domain {}", domain_id)
             }

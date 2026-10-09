@@ -4,7 +4,9 @@ use super::{
     DomainSnapshot, DomainState, DomainStopOutcome, RequestedCap,
     api::reclaim_domain_resources,
     kernel_security_handle,
-    quota::{DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager},
+    quota::{
+        CpuQuota, DomainPriority, DomainQuota, IoQuota, MemoryQuota, QuotaError, quota_manager,
+    },
 };
 use crate::error::{DomainErrorKind, KernelError};
 use crate::security::CapabilitySet;
@@ -13,6 +15,7 @@ use alloc::string::String;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU64, Ordering};
+use core::time::Duration;
 
 // ============================================================================
 // ドメイン構造体
@@ -200,12 +203,15 @@ pub(crate) fn domain_quota_policy(
     cpu_limit_percent: u64,
     memory_limit_bytes: u64,
     io_bandwidth_limit: u64,
-) -> DomainQuota {
+) -> Result<DomainQuota, QuotaError> {
     if id == DomainId::KERNEL {
-        return DomainQuota::kernel();
+        return Ok(DomainQuota::kernel());
     }
 
-    let mut quota = DomainQuota::new(id, priority).with_cpu_limit(cpu_limit_percent.min(100), 100);
+    let mut quota = DomainQuota::new(id, priority).with_cpu_limit(CpuQuota::new(
+        cpu_limit_percent,
+        Duration::from_millis(100),
+    )?);
 
     quota.memory = if memory_limit_bytes == 0 || memory_limit_bytes == u64::MAX {
         MemoryQuota::unlimited()
@@ -222,7 +228,7 @@ pub(crate) fn domain_quota_policy(
         quota.storage_io = IoQuota::new(mbps, mbps);
     }
 
-    quota
+    Ok(quota)
 }
 
 fn unregister_domain_quota(id: DomainId) {
@@ -290,15 +296,6 @@ pub fn init() {
         .expect("kernel domain metadata required at startup");
     kernel.state = DomainState::Running;
     registry.domains.push(kernel);
-    quota_manager()
-        .register(domain_quota_policy(
-            DomainId::KERNEL,
-            DomainPriority::Critical,
-            100,
-            u64::MAX,
-            u64::MAX,
-        ))
-        .expect("kernel quota policy required at startup");
 }
 
 /// Prepare security/account metadata outside the registries, then publish the
@@ -322,23 +319,21 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
         .try_reserve_exact(needed)
         .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?;
     let domain = Domain::new(id, name)?;
-    quota_manager()
-        .register(domain_quota_policy(
-            id,
-            domain.priority,
-            domain.cpu_limit_percent,
-            domain.memory_limit_bytes,
-            domain.io_bandwidth_limit,
-        ))
-        .map_err(|error| match error {
-            QuotaError::MetadataAllocationFailed => {
-                KernelError::Memory(crate::error::MemoryError::OutOfMemory)
-            }
-            QuotaError::RegistryUnavailable => {
-                KernelError::Domain(DomainErrorKind::RegistryPoisoned)
-            }
-            error => KernelError::Domain(DomainErrorKind::Policy(DomainPolicyError::Quota(error))),
-        })?;
+    domain_quota_policy(
+        id,
+        domain.priority,
+        domain.cpu_limit_percent,
+        domain.memory_limit_bytes,
+        domain.io_bandwidth_limit,
+    )
+    .and_then(|quota| quota_manager().register(quota))
+    .map_err(|error| match error {
+        QuotaError::MetadataAllocationFailed => {
+            KernelError::Memory(crate::error::MemoryError::OutOfMemory)
+        }
+        QuotaError::RegistryUnavailable => KernelError::Domain(DomainErrorKind::RegistryPoisoned),
+        error => KernelError::Domain(DomainErrorKind::Policy(DomainPolicyError::Quota(error))),
+    })?;
     let result = {
         match REGISTRY.lock() {
             Ok(mut registry) => {
@@ -664,14 +659,16 @@ pub fn set_domain_priority(
     match REGISTRY.lock() {
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                let quota = domain_quota_policy(
+                    id,
+                    priority,
+                    domain.cpu_limit_percent,
+                    domain.memory_limit_bytes,
+                    domain.io_bandwidth_limit,
+                )
+                .map_err(DomainPolicyError::Quota)?;
                 quota_manager()
-                    .update_policy(domain_quota_policy(
-                        id,
-                        priority,
-                        domain.cpu_limit_percent,
-                        domain.memory_limit_bytes,
-                        domain.io_bandwidth_limit,
-                    ))
+                    .update_policy(quota)
                     .map_err(DomainPolicyError::Quota)?;
                 domain.set_priority(priority);
                 Ok(())
@@ -696,14 +693,16 @@ pub fn set_domain_resource_limits(
     match REGISTRY.lock() {
         Ok(mut guard) => {
             if let Some(domain) = guard.domains.iter_mut().find(|d| d.id == id) {
+                let quota = domain_quota_policy(
+                    id,
+                    domain.priority,
+                    cpu_limit_percent,
+                    memory_limit_bytes,
+                    io_bandwidth_limit,
+                )
+                .map_err(DomainPolicyError::Quota)?;
                 quota_manager()
-                    .update_policy(domain_quota_policy(
-                        id,
-                        domain.priority,
-                        cpu_limit_percent,
-                        memory_limit_bytes,
-                        io_bandwidth_limit,
-                    ))
+                    .update_policy(quota)
                     .map_err(DomainPolicyError::Quota)?;
                 domain.set_resource_limits(
                     cpu_limit_percent,
