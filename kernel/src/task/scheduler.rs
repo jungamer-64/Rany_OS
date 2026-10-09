@@ -16,7 +16,7 @@ use crate::sync::PoisonLock;
 
 use super::context::TaskContext;
 use super::stack::{StackError, TaskStack};
-use super::waker::{WakeLease, wake_revision};
+use super::waker::{AssignedTaskId, WakeLease, wake_revision};
 use super::{ExecutionContext, TaskId};
 
 pub use kernel_api::resource::task::{
@@ -915,6 +915,7 @@ impl PollBudget {
 
 pub(crate) struct TaskRuntime {
     state: PoisonLock<SchedulerState>,
+    last_task_identity: AtomicU64,
     poll_count: AtomicU64,
     forced_switches: AtomicU64,
     runtime_ns: AtomicU64,
@@ -924,6 +925,7 @@ impl TaskRuntime {
     fn new(snapshot: &crate::cpu::CpuSnapshot) -> Self {
         Self {
             state: PoisonLock::new(SchedulerState::from_snapshot(snapshot)),
+            last_task_identity: AtomicU64::new(0),
             poll_count: AtomicU64::new(0),
             forced_switches: AtomicU64::new(0),
             runtime_ns: AtomicU64::new(0),
@@ -1051,14 +1053,9 @@ impl TaskRuntime {
         .ok_or(SpawnError::DomainUnavailable(domain))?;
         let future = TaskFuture::prepare(future, domain, code_lease, finalization)?;
         let stack = TaskStack::allocate()?;
-        let wake = WakeLease::activate(stack.slot());
-        static NEXT_ID: AtomicU64 = AtomicU64::new(1);
-        let raw_id = NEXT_ID
-            .try_update(Ordering::Relaxed, Ordering::Relaxed, |value| {
-                value.checked_add(1)
-            })
-            .map_err(|_| SpawnError::TaskIdentityExhausted)?;
-        let id = TaskId::from_raw(raw_id);
+        let identity = AssignedTaskId::reserve(&self.last_task_identity)?;
+        let id = identity.observed();
+        let wake = WakeLease::activate(stack.slot(), identity);
         let record = Arc::try_new(TaskRecord {
             id,
             domain,
