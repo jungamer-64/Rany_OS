@@ -32,11 +32,3 @@ pub fn yield_now() -> YieldNow {
         state: YieldState::Initial,
     }
 }
-
-pub async fn yield_point() {
-    yield_now().await;
-}
-
-pub async fn yield_point_with_quota_check() {
-    yield_now().await;
-}

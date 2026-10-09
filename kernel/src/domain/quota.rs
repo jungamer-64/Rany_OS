@@ -178,7 +178,8 @@ impl CpuQuota {
         self.budget.exceeded(period.used_ns)
     }
 
-    /// 使用率を取得（0.0-1.0）
+    /// Charged CPU time divided by the finite window budget. A charged fragment
+    /// can raise the ratio above one; zero and unlimited budgets report zero.
     pub fn usage_ratio(&self) -> f64 {
         let used = self
             .period

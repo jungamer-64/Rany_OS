@@ -49,7 +49,7 @@ pub(crate) use scheduler::{
     prepare_cpu_offline, prepare_cpu_online, publish_cpu_online, quiesce_current_cpu_deferred_work,
     retire_domain_tasks, run_until_parked, spawn_in_domain,
 };
-pub use yielding::{YieldNow, yield_now, yield_point, yield_point_with_quota_check};
+pub use yielding::{YieldNow, yield_now};
 
 // Deadline composition remains inside the owning task.
 pub use timeout::{TimeoutFuture, TimeoutResult, with_timeout};
