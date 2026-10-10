@@ -1153,13 +1153,6 @@ impl NetworkStack {
         }
     }
 
-    /// Get statistics
-    pub fn stats(&self) -> &NetworkStats {
-        self.primary_interface_state()
-            .map(|(_, state)| &state.stats)
-            .expect("network stack stats requested without registered interface state")
-    }
-
     /// Apply a DHCPv6-obtained global IPv6 address to the stack
     pub fn apply_ipv6_global_address_on(
         &mut self,
