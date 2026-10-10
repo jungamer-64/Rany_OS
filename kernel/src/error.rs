@@ -365,21 +365,6 @@ impl From<GeneralError> for KernelError {
 
 // ===== 既存エラー型からの変換 =====
 
-// domain::lifecycle::DomainError からの変換
-impl From<crate::domain::lifecycle::DomainError> for KernelError {
-    fn from(e: crate::domain::lifecycle::DomainError) -> Self {
-        use crate::domain::lifecycle::DomainError as DE;
-        KernelError::Domain(match e {
-            DE::NotFound => DomainErrorKind::NotFound,
-            DE::AlreadyStopped => DomainErrorKind::NotRunning,
-            DE::DependencyError(_) => DomainErrorKind::LifecycleError,
-            DE::Panicked(_) => DomainErrorKind::LifecycleError,
-            DE::Policy(error) => DomainErrorKind::Policy(error),
-            DE::Lifecycle(cause) => DomainErrorKind::Lifecycle(cause),
-        })
-    }
-}
-
 // sas::SasError からの変換
 impl From<crate::sas::SasError> for KernelError {
     fn from(e: crate::sas::SasError) -> Self {

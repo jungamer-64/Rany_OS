@@ -40,9 +40,7 @@ pub struct Domain {
 
     // 依存関係
     /// このドメインが依存するドメイン
-    pub dependencies: Vec<DomainId>,
-    /// このドメインに依存するドメイン
-    pub dependents: Vec<DomainId>,
+    dependencies: Arc<[DomainId]>,
 
     // リソース追跡
     /// 所有するRRefの数
@@ -95,7 +93,6 @@ impl Domain {
                 .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?,
             generation: None,
             dependencies: Vec::new(),
-            dependents: Vec::new(),
             rref_count: 0,
             allocated_memory: 0,
             runtime_ticks: 0,
@@ -114,30 +111,6 @@ impl Domain {
     /// 実行可能かどうか
     pub fn is_runnable(&self) -> bool {
         self.state.is_runnable()
-    }
-
-    /// 依存関係を追加
-    pub fn add_dependency(&mut self, dep: DomainId) {
-        if !self.dependencies.contains(&dep) {
-            self.dependencies.push(dep);
-        }
-    }
-
-    /// 被依存関係を追加（他のドメインがこのドメインに依存）
-    pub fn add_dependent(&mut self, dep_id: DomainId) {
-        if !self.dependents.contains(&dep_id) {
-            self.dependents.push(dep_id);
-        }
-    }
-
-    /// 依存関係を削除
-    pub fn remove_dependency(&mut self, dep: DomainId) {
-        self.dependencies.retain(|&id| id != dep);
-    }
-
-    /// 被依存関係を削除
-    pub fn remove_dependent(&mut self, dep_id: DomainId) {
-        self.dependents.retain(|&id| id != dep_id);
     }
 
     /// RRef数をインクリメント

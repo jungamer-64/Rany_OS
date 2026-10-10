@@ -1,7 +1,6 @@
 //! Canonical domain namespace.
 
 pub mod api;
-pub mod lifecycle;
 pub mod policy;
 pub mod quota;
 pub mod registry;

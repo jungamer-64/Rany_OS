@@ -199,3 +199,93 @@ fn test_reclaim_domain_resources_also_reclaims_dma_handles() {
     );
     assert_eq!(DMA_DROP_COUNTER.load(Ordering::SeqCst), 1);
 }
+
+#[cfg(test)]
+mod lifecycle_contract_tests {
+    use super::*;
+    use crate::domain::{DomainState, create_domain};
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_domain_lifecycle() {
+        // ドメイン作成
+        let id = crate::domain::create_domain("test_domain".into()).expect("create_domain failed");
+
+        // 状態確認
+        let state = with_domain(id, |d| d.state);
+        assert_eq!(state, Some(DomainState::Initializing));
+
+        // 状態変更
+        crate::domain::start_domain(id).expect("initializing domain starts");
+        let state = with_domain(id, |d| d.state);
+        assert_eq!(state, Some(DomainState::Running));
+
+        // 終了
+        let result = crate::domain::terminate_domain(id);
+        assert!(result.is_ok());
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn completed_stop_preserves_memory_account_and_reclaimed_domain_cannot_restart() {
+        let id = create_domain("retained_restart".into()).unwrap();
+        let binding = crate::domain::quota_manager().bind_memory(id).unwrap();
+        let credit = binding.reserve(123).unwrap();
+        assert_eq!(
+            crate::domain::stop_domain(id).unwrap(),
+            crate::domain::DomainStopOutcome::Complete
+        );
+        restart_domain(id).unwrap();
+        assert_eq!(
+            crate::domain::quota_manager()
+                .get_stats(id)
+                .unwrap()
+                .memory_used,
+            123
+        );
+        crate::domain::terminate_domain(id).unwrap();
+        assert!(matches!(
+            restart_domain(id),
+            Err(DomainError::Lifecycle(
+                crate::domain::DomainLifecycleError::InvalidState(DomainState::Terminated)
+            ))
+        ));
+        assert!(matches!(
+            binding.reserve(1),
+            Err(crate::domain::QuotaError::Retired { .. })
+        ));
+        drop(credit);
+        drop(binding);
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn rejected_policy_update_preserves_domain_metadata() {
+        let id = create_domain("policy_failure".into()).unwrap();
+        crate::domain::set_domain_resource_limits(id, 100, 513, 0).unwrap();
+        let binding = crate::domain::quota_manager().bind_memory(id).unwrap();
+        let credit = binding.reserve(512).unwrap();
+        crate::domain::terminate_domain(id).unwrap();
+        assert!(matches!(
+            crate::domain::set_domain_resource_limits(id, 50, 19, 0),
+            Err(crate::domain::DomainPolicyError::Quota(
+                crate::domain::quota::QuotaError::Retired { .. }
+            ))
+        ));
+        assert_eq!(
+            crate::domain::get_domain_snapshot(id)
+                .unwrap()
+                .memory_limit_bytes,
+            513
+        );
+        assert_eq!(
+            crate::domain::quota_manager()
+                .get_stats(id)
+                .unwrap()
+                .memory_used,
+            512
+        );
+        drop(credit);
+        drop(binding);
+    }
+}
