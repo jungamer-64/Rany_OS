@@ -106,7 +106,7 @@ impl NetworkStack {
             dst_port,
             0,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         }
 
@@ -206,7 +206,7 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         let Ok((config, src_ip)) = self.resolve_ipv4_egress_on(if_id, None) else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         };
 
@@ -232,7 +232,7 @@ impl NetworkStack {
         ttl: u8,
     ) -> bool {
         let Ok((config, resolved_src)) = self.resolve_ipv4_egress_on(if_id, Some(src_ip)) else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         };
 

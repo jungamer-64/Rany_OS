@@ -616,6 +616,34 @@ fn configure_test_address(
     crate::net::runtime::manager::set_interface_config_in(runtime, if_id, config).ok()
 }
 
+fn verify_unavailable_egress_rejection(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    core_stack: &mut crate::net::runtime::stack::NetworkStack,
+) -> Option<()> {
+    use crate::net::l3::ipv6::Ipv6Address;
+    use crate::net::l4::udp::UdpPorts;
+    let unavailable = NetIfId(u16::MAX);
+    let payload = PacketPayload::try_single(allocate_frame(runtime, 8)?).ok()?;
+    (!core_stack.send_udp_raw_payload_on_auto_ttl(
+        unavailable,
+        Ipv4Address::LOOPBACK,
+        UdpPorts::new(40_000, 40_001),
+        payload,
+        64,
+    ))
+    .then_some(())?;
+    let payload = PacketPayload::try_single(allocate_frame(runtime, 8)?).ok()?;
+    (core_stack.send_udp_v6_payload_on_with_ttl(
+        unavailable,
+        Ipv6Address::LOOPBACK,
+        Ipv6Address::LOOPBACK,
+        UdpPorts::new(40_000, 40_001),
+        payload,
+        64,
+    ) == Err(crate::net::types::NetworkError::NetworkUnreachable))
+    .then_some(())
+}
+
 fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let runtime = create_runtime().ok()?;
     crate::net::security::firewall::set_default_policy_in(
@@ -625,7 +653,14 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     )
     .ok()?;
     log::info!(target: "qemu::net", "fake-port case runtime allocated");
-    let _ = crate::net::datapath::mempool::init_net_mempool(128);
+    crate::net::datapath::mempool::init_net_mempool_in(runtime, 128).ok()?;
+    let mut pending_stack = crate::net::runtime::stack::NetworkStack::new_in(runtime);
+    pending_stack
+        .primary_interface_state()
+        .is_none()
+        .then_some(())?;
+    verify_unavailable_egress_rejection(runtime, &mut pending_stack)?;
+    log::info!(target: "qemu::net", "egress rejection before topology publication verified");
     let mac_a = [0x02, 0, 0, 0, 1, 1];
     let mac_b = [0x02, 0, 0, 0, 1, 2];
     let source_mac = [0x02, 0, 0, 0, 2, 1];
@@ -648,13 +683,44 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     process_runtime_commands(runtime, &handler, &online, |_, _, _| {})?;
     for cpu_id in &online {
         let stack_lock = crate::net::runtime::stack::stack_for_cpu_in(runtime, cpu_id).ok()?;
-        let stack_guard = stack_lock.lock().ok()?;
-        let core_stack = stack_guard.as_ref()?;
+        let mut stack_guard = stack_lock.lock().ok()?;
+        let core_stack = stack_guard.as_mut()?;
         core_stack.interface_config(if_a)?;
         core_stack.interface_config(if_b)?;
         (core_stack.primary_interface_state()?.0 == if_a).then_some(())?;
+        let primary_before = core_stack
+            .interface_stats(if_a)?
+            .rx_dropped
+            .load(Ordering::Relaxed);
+        let secondary_before = core_stack
+            .interface_stats(if_b)?
+            .rx_dropped
+            .load(Ordering::Relaxed);
+        verify_unavailable_egress_rejection(runtime, core_stack)?;
+        let payload = PacketPayload::try_single(allocate_frame(runtime, 8)?).ok()?;
+        (!core_stack.send_udp_raw_payload_on_with_src_ttl(
+            if_b,
+            remote_ip,
+            local_ip,
+            crate::net::l4::udp::UdpPorts::new(40_000, 40_001),
+            payload,
+            64,
+        ))
+        .then_some(())?;
+        (core_stack
+            .interface_stats(if_a)?
+            .rx_dropped
+            .load(Ordering::Relaxed)
+            == primary_before)
+            .then_some(())?;
+        (core_stack
+            .interface_stats(if_b)?
+            .rx_dropped
+            .load(Ordering::Relaxed)
+            == secondary_before + 1)
+            .then_some(())?;
     }
-    log::info!(target: "qemu::net", "all stacks reconciled to initial topology");
+    log::info!(target: "qemu::net", "all stacks reconciled to initial topology; interface-scoped rejection counters verified");
 
     let socket_a = Socket::new_udp_in(runtime);
     let socket_b = Socket::new_udp_in(runtime);

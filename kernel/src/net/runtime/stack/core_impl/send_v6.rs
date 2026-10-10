@@ -243,7 +243,7 @@ impl NetworkStack {
         let Some(icmpv6_msg) =
             Icmpv6Builder::build_echo_reply(&src, &dst, identifier, sequence, echo_data)
         else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return;
         };
 
@@ -303,7 +303,7 @@ impl NetworkStack {
             code,
             original_packet,
         ) else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         };
         self.send_ipv6_icmpv6_payload_on(if_id, &our_addr, &dst_v6, icmp_msg);
@@ -329,7 +329,7 @@ impl NetworkStack {
     ) {
         let Ok((config, resolved_src)) = self.resolve_ipv6_egress_on(if_id, Some(*src), *dst)
         else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return;
         };
         let current_time = self.current_time.load(Ordering::Relaxed);
@@ -347,7 +347,7 @@ impl NetworkStack {
             }) {
                 Some(Ok(mac)) => MacAddress::new(mac),
                 Some(Err(_)) if !queued => {
-                    self.stats().record_dropped();
+                    self.record_dropped_on(if_id);
                     return;
                 }
                 Some(Err((ns_if_id, our_ll, ns_msg))) => {
@@ -389,7 +389,7 @@ impl NetworkStack {
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     let Ok(payload) = icmpv6_payload.try_prepend(packet) else {
-                        self.stats().record_dropped();
+                        self.record_dropped_on(if_id);
                         return;
                     };
                     let _ = self.transmit_packet_on(if_id, payload);
@@ -452,7 +452,7 @@ impl NetworkStack {
                 drop(frame);
                 if set_packet_visible_len(&mut packet, frame_len).is_ok() {
                     let Ok(payload) = icmpv6_payload.try_prepend(packet) else {
-                        self.stats().record_dropped();
+                        self.record_dropped_on(if_id);
                         return;
                     };
                     // This generated control response is best-effort and has
@@ -497,7 +497,7 @@ impl NetworkStack {
         let (config, resolved_src) = self
             .resolve_ipv6_egress_on(if_id, Some(src_ip), dst)
             .map_err(|error| {
-                self.stats().record_dropped();
+                self.record_dropped_on(if_id);
                 error
             })?;
 
@@ -510,7 +510,7 @@ impl NetworkStack {
             ports.destination(),
             0,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 
@@ -611,7 +611,7 @@ impl NetworkStack {
         let (config, resolved_src) = self
             .resolve_ipv6_egress_on(if_id, Some(src_ip), dst)
             .map_err(|error| {
-                self.stats().record_dropped();
+                self.record_dropped_on(if_id);
                 error
             })?;
         let Some(header) = tcp_segment_view.read_array::<14>(0) else {
@@ -629,7 +629,7 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return Err(crate::net::types::NetworkError::PermissionDenied);
         }
 

@@ -281,7 +281,7 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return Err(crate::net::types::NetworkPayloadError::new(
                 crate::net::types::NetworkError::PermissionDenied,
                 payload,
@@ -470,7 +470,7 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return Err(crate::net::types::NetworkPayloadError::new(
                 crate::net::types::NetworkError::PermissionDenied,
                 payload,
@@ -586,6 +586,8 @@ impl NetworkStack {
         }
     }
 
+    /// A CPU stack can lag topology publication during startup or removal.
+    /// Rejection remains valid without a local counter for the selected interface.
     fn record_dropped_on(&self, if_id: NetIfId) {
         if let Some(stats) = self.interface_stats(if_id) {
             stats.record_dropped();
@@ -964,12 +966,12 @@ impl NetworkStack {
             dst_port,
             tcp_flags,
         ) {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         }
 
         let Ok((config, resolved_src)) = self.resolve_ipv4_egress_on(if_id, Some(src_ip)) else {
-            self.stats().record_dropped();
+            self.record_dropped_on(if_id);
             return false;
         };
 
