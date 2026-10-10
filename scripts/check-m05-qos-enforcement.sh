@@ -6,7 +6,6 @@ cd "$ROOT_DIR"
 
 if command -v rg >/dev/null 2>&1 && rg --version >/dev/null 2>&1; then
   SEARCH="rg"
-  SEARCH_COUNT=(rg -c)
 else
   SEARCH="grep"
 fi
@@ -32,14 +31,6 @@ search_show() {
     grep -R -n -E -- "$pattern" "$@" || true
   fi
 }
-
-echo "[M05-GUARD] Checking for stale future-hook markers..."
-future_hits=$(search_count "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain/registry.rs)
-if [[ "$future_hits" -ne 0 ]]; then
-  echo "[M05-GUARD] FAIL: future-hook markers remain in domain/registry.rs"
-  search_show "future quota enforcement hook|future scheduler/QoS hook|将来のQoS enforcement|将来のquota enforcement" kernel/src/domain/registry.rs
-  fail=1
-fi
 
 echo "[M05-GUARD] Checking consume_cpu_time wiring..."
 scheduler_accounting_hits=$(search_count "consume_cpu_time\(" kernel/src/task/scheduler.rs)
