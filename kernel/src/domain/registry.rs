@@ -1,7 +1,7 @@
 //! Domain registry and lifecycle internals.
 use super::{
     DomainId, DomainLifecycleError, DomainPolicyError, DomainSecurity, DomainSecurityLookupError,
-    DomainSnapshot, DomainState, DomainStopOutcome, RequestedCap,
+    DomainSnapshot, DomainState, DomainStopOutcome,
     api::reclaim_domain_resources,
     kernel_security_handle,
     quota::{
@@ -496,60 +496,6 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     }
     drop(prepared);
     result
-}
-
-/// Spawn a new domain and apply requested capability grants atomically.
-pub fn spawn_domain_with_caps(
-    name: String,
-    requested: &[RequestedCap],
-) -> Result<(DomainId, Vec<u64>), KernelError> {
-    let parent = crate::task::current_subject().domain.as_u64();
-    let cap_mgr = crate::security::capability::manager();
-
-    for req in requested {
-        let allowed = cap_mgr.has_capability(parent, crate::security::capability::CAP_SYS_ADMIN)
-            || cap_mgr.get_capabilities(parent).is_permitted(req.cap)
-            || cap_mgr
-                .list_grants(parent, parent)
-                .iter()
-                .any(|t| t.cap == req.cap && t.delegatable);
-        if !allowed {
-            return Err(KernelError::Domain(DomainErrorKind::OwnershipViolation));
-        }
-    }
-
-    let domain_id = create_domain(name)?;
-    start_domain(domain_id).map_err(|_| KernelError::Domain(DomainErrorKind::LifecycleError))?;
-
-    let mut created_tokens: Vec<u64> = Vec::new();
-    for req in requested {
-        match cap_mgr.grant_capability_with_opts(
-            parent,
-            domain_id.as_u64(),
-            req.cap,
-            req.expires,
-            req.delegatable,
-        ) {
-            Ok(token_id) => {
-                created_tokens.push(token_id);
-            }
-            Err(_) => {
-                for token_id in created_tokens.iter().copied() {
-                    let _ = cap_mgr.revoke_grant(parent, token_id, true);
-                }
-                if let Err(error) = terminate_domain(domain_id) {
-                    log::error!(
-                        "[DOMAIN] Failed grant rollback retained domain {}: {}",
-                        domain_id,
-                        error
-                    );
-                }
-                return Err(KernelError::Domain(DomainErrorKind::LifecycleError));
-            }
-        }
-    }
-
-    Ok((domain_id, created_tokens))
 }
 
 /// Observe immutable security metadata for a live domain. This snapshot grants

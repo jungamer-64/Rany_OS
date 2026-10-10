@@ -271,13 +271,6 @@ pub(crate) fn kernel_security_handle() -> Arc<DomainSecurity> {
         .clone()
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct RequestedCap {
-    pub cap: u64,
-    pub expires: Option<u64>,
-    pub delegatable: bool,
-}
-
 #[derive(Debug, Clone)]
 pub struct DomainSnapshot {
     pub id: DomainId,

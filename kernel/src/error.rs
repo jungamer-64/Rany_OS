@@ -66,8 +66,6 @@ pub enum DomainErrorKind {
     OwnershipViolation,
     /// 無効な状態遷移
     InvalidStateTransition,
-    /// ライフサイクルエラー
-    LifecycleError,
     /// The lifecycle owner retains its typed incomplete or rejected outcome.
     Lifecycle(crate::domain::DomainLifecycleError),
     /// レジストリがいっぱい
@@ -232,7 +230,6 @@ impl fmt::Display for DomainErrorKind {
             DomainErrorKind::AlreadyRunning => write!(f, "domain already running"),
             DomainErrorKind::OwnershipViolation => write!(f, "ownership violation"),
             DomainErrorKind::InvalidStateTransition => write!(f, "invalid state transition"),
-            DomainErrorKind::LifecycleError => write!(f, "lifecycle error"),
             DomainErrorKind::Lifecycle(cause) => write!(f, "lifecycle error: {cause:?}"),
             DomainErrorKind::RegistryFull => write!(f, "registry full"),
             DomainErrorKind::RegistryPoisoned => write!(f, "domain registry poisoned"),
