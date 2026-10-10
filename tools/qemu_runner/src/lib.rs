@@ -313,29 +313,6 @@ pub fn workspace_root() -> PathBuf {
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
 }
 
-fn run_cargo(
-    root: &Path,
-    target_dir: &Path,
-    step: &'static str,
-    args: &[&str],
-) -> Result<(), BuildError> {
-    let status = Command::new("cargo")
-        .current_dir(root)
-        .env("CARGO_TARGET_DIR", target_dir)
-        .args(args)
-        .status()
-        .map_err(|source| BuildError::CargoLaunch { step, source })?;
-
-    if status.success() {
-        return Ok(());
-    }
-
-    Err(BuildError::CargoFailed {
-        step,
-        exit_code: status.code().unwrap_or(-1),
-    })
-}
-
 fn run_command(
     root: &Path,
     step: &'static str,
@@ -560,10 +537,11 @@ fn build_storage_test_disk(disk_path: &Path) -> Result<(), BuildError> {
 pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("target");
-    run_cargo(
+    build_cargo_executable(
         &root,
         &target_dir,
         "build exoloader",
+        "exoloader",
         &[
             "build",
             "-p",
@@ -571,21 +549,7 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
             "--target",
             "x86_64-unknown-uefi",
         ],
-    )?;
-
-    let path = target_dir
-        .join("x86_64-unknown-uefi")
-        .join("debug")
-        .join("exoloader.efi");
-
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(BuildError::ArtifactMissing {
-            step: "build exoloader",
-            path,
-        })
-    }
+    )
 }
 
 /// # Errors
@@ -594,10 +558,11 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
 pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("target");
-    run_cargo(
+    build_cargo_executable(
         &root,
         &target_dir,
         "build kernel elf",
+        "exorust_kernel",
         &[
             "build",
             "-p",
@@ -613,21 +578,7 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
             "-Z",
             "build-std-features=compiler-builtins-mem",
         ],
-    )?;
-
-    let path = target_dir
-        .join("x86_64-exorust")
-        .join("debug")
-        .join("exorust_kernel");
-
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(BuildError::ArtifactMissing {
-            step: "build kernel elf",
-            path,
-        })
-    }
+    )
 }
 
 /// # Errors
@@ -636,30 +587,18 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
 pub fn build_signer() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("tools/signer/target");
-    run_cargo(
+    build_cargo_executable(
         &root,
         &target_dir,
         "build kernel-signer",
+        "kernel-signer",
         &[
             "build",
             "--manifest-path",
             "tools/signer/Cargo.toml",
             "--release",
         ],
-    )?;
-
-    let path = target_dir
-        .join("release")
-        .join(format!("kernel-signer{}", std::env::consts::EXE_SUFFIX));
-
-    if path.exists() {
-        Ok(path)
-    } else {
-        Err(BuildError::ArtifactMissing {
-            step: "build kernel-signer",
-            path,
-        })
-    }
+    )
 }
 
 /// # Errors
