@@ -2,57 +2,21 @@
 // kernel/src/io/iommu/runtime/security/emergency.rs
 // ============================================================================
 
-use core::sync::atomic::{AtomicU8, AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::io::iommu::types::{DeviceId, IommuError};
-
-use super::fault_storm::current_time_ms_approx;
 
 /// Maximum number of devices that can be emergency-isolated simultaneously.
 const MAX_EMERGENCY_ISOLATED: usize = 32;
 
 /// Emergency isolation slot for a device.
 struct EmergencyIsolationSlot {
-    source_id: AtomicU32,
-    status: AtomicU8,
-    isolation_tsc: AtomicU64,
+    state: AtomicU32,
 }
 
 impl EmergencyIsolationSlot {
     const fn new() -> Self {
-        Self {
-            source_id: AtomicU32::new(0),
-            status: AtomicU8::new(0),
-            isolation_tsc: AtomicU64::new(0),
-        }
-    }
-
-    fn try_claim(&self, source_id: u16) -> bool {
-        if self
-            .status
-            .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Relaxed)
-            .is_ok()
-        {
-            self.source_id.store(source_id as u32, Ordering::Release);
-            self.isolation_tsc
-                .store(current_time_ms_approx(), Ordering::Release);
-            true
-        } else {
-            false
-        }
-    }
-
-    fn mark_fully_isolated(&self) {
-        self.status.store(2, Ordering::Release);
-    }
-
-    fn matches(&self, source_id: u16) -> bool {
-        self.source_id.load(Ordering::Acquire) == source_id as u32
-            && self.status.load(Ordering::Acquire) != 0
-    }
-
-    fn status(&self) -> u8 {
-        self.status.load(Ordering::Acquire)
+        Self { state: AtomicU32::new(0) }
     }
 }
 
@@ -60,7 +24,6 @@ impl EmergencyIsolationSlot {
 pub struct EmergencyIsolationRegistry {
     slots: [EmergencyIsolationSlot; MAX_EMERGENCY_ISOLATED],
     total_isolations: AtomicU64,
-    pending_count: AtomicU32,
 }
 
 impl EmergencyIsolationRegistry {
@@ -69,7 +32,6 @@ impl EmergencyIsolationRegistry {
         Self {
             slots: [INIT; MAX_EMERGENCY_ISOLATED],
             total_isolations: AtomicU64::new(0),
-            pending_count: AtomicU32::new(0),
         }
     }
 

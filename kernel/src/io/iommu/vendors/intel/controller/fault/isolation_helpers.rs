@@ -54,13 +54,13 @@ impl IommuController {
     /// Disable the context entry for a device in hardware tables.
     ///
     /// Handles both normal and poisoned lock states.
-    /// Returns `(need_invalidation, isolated_domain_id)`.
+    /// An absent domain requires global cache invalidation, including on retry.
     pub(crate) fn disable_device_context_entry(
         &self,
         bus: u8,
         dev: u8,
         func: u8,
-    ) -> (bool, Option<u16>) {
+    ) -> Option<u16> {
         let mut hw_guard = match self.hardware.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -83,17 +83,17 @@ impl IommuController {
         hw: &mut HardwareContext,
         bus: u8,
         idx: usize,
-    ) -> (bool, Option<u16>) {
+    ) -> Option<u16> {
         if let Some(table) = hw.scalable_context_tables.get_mut(bus as usize) {
             if let Some(entry) = table.get_mut(idx) {
                 if entry.is_present() {
                     let domain_id = self.resolve_scalable_domain_id(bus, idx);
                     *entry = ScalableContextEntry::default();
-                    return (true, domain_id);
+                    return domain_id;
                 }
             }
         }
-        (false, None)
+        None
     }
 
     /// Disable a legacy-mode context entry for a device.
@@ -101,7 +101,7 @@ impl IommuController {
         hw: &mut HardwareContext,
         bus: u8,
         idx: usize,
-    ) -> (bool, Option<u16>) {
+    ) -> Option<u16> {
         if let Some(table) = hw.legacy_context_tables.get_mut(bus as usize) {
             if let Some(entry) = table.get_mut(idx) {
                 unsafe {
@@ -113,12 +113,12 @@ impl IommuController {
                         let mut new_val = val;
                         new_val.lo &= !1;
                         core::ptr::write_volatile(entry_ptr, new_val);
-                        return (true, domain_id);
+                        return domain_id;
                     }
                 }
             }
         }
-        (false, None)
+        None
     }
 
     /// Resolve domain_id for a device via PASID tables (scalable mode).
