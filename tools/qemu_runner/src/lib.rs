@@ -104,6 +104,18 @@ pub enum BuildError {
         step: &'static str,
         exit_code: i32,
     },
+    CargoMessages {
+        step: &'static str,
+        source: serde_json::Error,
+    },
+    CargoExecutableMissing {
+        step: &'static str,
+        target: &'static str,
+    },
+    CargoExecutableAmbiguous {
+        step: &'static str,
+        target: &'static str,
+    },
     CommandLaunch {
         step: &'static str,
         program: String,
@@ -132,6 +144,21 @@ impl fmt::Display for BuildError {
             }
             Self::CargoFailed { step, exit_code } => {
                 write!(f, "cargo step '{step}' failed with exit code {exit_code}")
+            }
+            Self::CargoMessages { step, source } => {
+                write!(f, "invalid Cargo messages during {step}: {source}")
+            }
+            Self::CargoExecutableMissing { step, target } => {
+                write!(
+                    f,
+                    "Cargo did not report executable '{target}' during {step}"
+                )
+            }
+            Self::CargoExecutableAmbiguous { step, target } => {
+                write!(
+                    f,
+                    "Cargo reported different executables for '{target}' during {step}"
+                )
             }
             Self::CommandLaunch {
                 step,
@@ -311,6 +338,76 @@ pub fn workspace_root() -> PathBuf {
         .join("..")
         .canonicalize()
         .unwrap_or_else(|_| manifest_dir.join("..").join(".."))
+}
+
+// Cargo's artifact message binds the selected executable to this invocation's
+// target, features and inputs, including artifacts Cargo certifies as fresh.
+// Filenames inferred from an output directory cannot establish that relation.
+fn select_cargo_executable(
+    messages: &[u8],
+    step: &'static str,
+    target: &'static str,
+) -> Result<PathBuf, BuildError> {
+    let mut executable = None;
+    for line in messages.split(|byte| *byte == b'\n') {
+        let line = line.trim_ascii();
+        // Procedural macros may also write unstructured stdout.
+        if !line.starts_with(b"{") {
+            continue;
+        }
+        let message: serde_json::Value = serde_json::from_slice(line)
+            .map_err(|source| BuildError::CargoMessages { step, source })?;
+        if message["reason"] != "compiler-artifact"
+            || message["target"]["name"] != target
+            || !message["target"]["kind"]
+                .as_array()
+                .is_some_and(|kinds| kinds.iter().any(|kind| kind == "bin"))
+        {
+            continue;
+        }
+        if let Some(path) = message["executable"]
+            .as_str()
+            .filter(|path| !path.is_empty())
+        {
+            let path = PathBuf::from(path);
+            if executable
+                .as_ref()
+                .is_some_and(|previous| previous != &path)
+            {
+                return Err(BuildError::CargoExecutableAmbiguous { step, target });
+            }
+            executable = Some(path);
+        }
+    }
+    executable.ok_or(BuildError::CargoExecutableMissing { step, target })
+}
+
+fn build_cargo_executable(
+    root: &Path,
+    target_dir: &Path,
+    step: &'static str,
+    target: &'static str,
+    args: &[&str],
+) -> Result<PathBuf, BuildError> {
+    let output = Command::new("cargo")
+        .current_dir(root)
+        .env("CARGO_TARGET_DIR", target_dir)
+        .args(args)
+        .args(["--bin", target, "--message-format=json-render-diagnostics"])
+        .stderr(Stdio::inherit())
+        .output()
+        .map_err(|source| BuildError::CargoLaunch { step, source })?;
+    if !output.status.success() {
+        return Err(BuildError::CargoFailed {
+            step,
+            exit_code: output.status.code().unwrap_or(-1),
+        });
+    }
+    let path = select_cargo_executable(&output.stdout, step, target)?;
+    if !path.is_file() {
+        return Err(BuildError::ArtifactMissing { step, path });
+    }
+    Ok(path)
 }
 
 fn run_command(
@@ -533,7 +630,8 @@ fn build_storage_test_disk(disk_path: &Path) -> Result<(), BuildError> {
 
 /// # Errors
 ///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
+/// Returns an error if Cargo fails, its artifact messages are invalid or
+/// ambiguous, or its reported firmware executable is missing.
 pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("target");
@@ -554,7 +652,8 @@ pub fn build_exoloader_efi() -> Result<PathBuf, BuildError> {
 
 /// # Errors
 ///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
+/// Returns an error if Cargo fails, its artifact messages are invalid or
+/// ambiguous, or its reported kernel executable is missing.
 pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("target");
@@ -583,7 +682,8 @@ pub fn build_kernel_elf() -> Result<PathBuf, BuildError> {
 
 /// # Errors
 ///
-/// Returns an error if the supplied configuration is invalid or the required resources cannot be acquired.
+/// Returns an error if Cargo fails, its artifact messages are invalid or
+/// ambiguous, or its reported signer executable is missing.
 pub fn build_signer() -> Result<PathBuf, BuildError> {
     let root = workspace_root();
     let target_dir = root.join("tools/signer/target");
@@ -1410,6 +1510,60 @@ pub fn run_fullboot(config: &RunConfig) -> Result<RunReport, RunError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cargo_artifact_selects_reported_executable_for_the_named_binary() {
+        let messages = br#"
+macro output
+{"reason":"compiler-artifact","target":{"name":"kernel-signer","kind":["lib"]},"executable":"wrong-library"}
+{"reason":"compiler-artifact","target":{"name":"another-bin","kind":["bin"]},"executable":"wrong-binary"}
+{"reason":"compiler-artifact","target":{"name":"kernel-signer","kind":["bin"]},"executable":"configured-output/host/release/kernel-signer","fresh":false}
+{"reason":"build-finished","success":true}
+"#;
+        assert_eq!(
+            select_cargo_executable(messages, "build signer", "kernel-signer").unwrap(),
+            PathBuf::from("configured-output/host/release/kernel-signer")
+        );
+    }
+
+    #[test]
+    fn cargo_artifact_accepts_a_fresh_binary_with_a_platform_suffix() {
+        let messages = br#"{"reason":"compiler-artifact","target":{"name":"exoloader","kind":["bin"]},"executable":"output/firmware/exoloader.efi","fresh":true}"#;
+        assert_eq!(
+            select_cargo_executable(messages, "build firmware", "exoloader").unwrap(),
+            PathBuf::from("output/firmware/exoloader.efi")
+        );
+    }
+
+    #[test]
+    fn cargo_artifact_requires_an_executable_message() {
+        for messages in [
+            &b""[..],
+            &br#"{"reason":"build-finished","success":true}"#[..],
+            &br#"{"reason":"compiler-artifact","target":{"name":"kernel-signer","kind":["bin"]},"filenames":["output/kernel-signer"],"executable":null}"#[..],
+        ] {
+            assert!(matches!(
+                select_cargo_executable(messages, "build signer", "kernel-signer"),
+                Err(BuildError::CargoExecutableMissing { target: "kernel-signer", .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn cargo_artifact_distinguishes_malformed_and_ambiguous_output() {
+        assert!(matches!(
+            select_cargo_executable(b"{invalid", "build signer", "kernel-signer"),
+            Err(BuildError::CargoMessages { .. })
+        ));
+        let messages = br#"
+{"reason":"compiler-artifact","target":{"name":"kernel-signer","kind":["bin"]},"executable":"first/kernel-signer"}
+{"reason":"compiler-artifact","target":{"name":"kernel-signer","kind":["bin"]},"executable":"second/kernel-signer"}
+"#;
+        assert!(matches!(
+            select_cargo_executable(messages, "build signer", "kernel-signer"),
+            Err(BuildError::CargoExecutableAmbiguous { .. })
+        ));
+    }
 
     #[test]
     fn mm_profile_has_balanced_firmware_numa_and_live_interrupts() {
