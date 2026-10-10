@@ -92,7 +92,8 @@ impl Domain {
             code: Arc::try_new(super::DomainCodeState::default())
                 .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?,
             generation: None,
-            dependencies: Vec::new(),
+            dependencies: Arc::try_clone_from_ref(&[] as &[DomainId])
+                .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?,
             rref_count: 0,
             allocated_memory: 0,
             runtime_ticks: 0,
@@ -237,6 +238,167 @@ impl DomainRegistry {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         DomainId::new(id)
     }
+}
+
+/// Dependency publication failure; no edge from this attempt is published.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainDependencyError {
+    RegistryPoisoned,
+    NotFound {
+        domain: DomainId,
+    },
+    Unavailable {
+        domain: DomainId,
+        state: DomainState,
+    },
+    MetadataAllocationFailed,
+    DependenciesChanged {
+        domain: DomainId,
+    },
+}
+
+impl core::fmt::Display for DomainDependencyError {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::RegistryPoisoned => formatter.write_str("domain registry poisoned"),
+            Self::NotFound { domain } => {
+                write!(formatter, "dependency endpoint {domain} not found")
+            }
+            Self::Unavailable { domain, state } => {
+                write!(formatter, "dependency endpoint {domain} is {state:?}")
+            }
+            Self::MetadataAllocationFailed => {
+                formatter.write_str("dependency metadata allocation failed")
+            }
+            Self::DependenciesChanged { domain } => {
+                write!(
+                    formatter,
+                    "dependencies of {domain} changed before publication"
+                )
+            }
+        }
+    }
+}
+
+struct PreparedDependency {
+    dependent: DomainId,
+    dependency: DomainId,
+    observed: Arc<[DomainId]>,
+    replacement: Arc<[DomainId]>,
+}
+
+impl PreparedDependency {
+    fn new(
+        dependent: DomainId,
+        dependency: DomainId,
+        observed: Arc<[DomainId]>,
+    ) -> Result<Self, DomainDependencyError> {
+        let needed = observed
+            .len()
+            .checked_add(1)
+            .ok_or(DomainDependencyError::MetadataAllocationFailed)?;
+        let mut entries = Vec::new();
+        entries
+            .try_reserve_exact(needed)
+            .map_err(|_| DomainDependencyError::MetadataAllocationFailed)?;
+        entries.extend_from_slice(&observed);
+        entries.push(dependency);
+        let replacement = Arc::try_clone_from_ref(entries.as_slice())
+            .map_err(|_| DomainDependencyError::MetadataAllocationFailed)?;
+        Ok(Self {
+            dependent,
+            dependency,
+            observed,
+            replacement,
+        })
+    }
+}
+
+impl DomainRegistry {
+    fn dependency_endpoint(&self, id: DomainId) -> Result<&Domain, DomainDependencyError> {
+        let domain = self
+            .domains
+            .iter()
+            .find(|domain| domain.id == id)
+            .ok_or(DomainDependencyError::NotFound { domain: id })?;
+        if matches!(
+            domain.state,
+            DomainState::Stopping | DomainState::Terminating | DomainState::Terminated
+        ) {
+            return Err(DomainDependencyError::Unavailable {
+                domain: id,
+                state: domain.state,
+            });
+        }
+        Ok(domain)
+    }
+
+    fn observe_dependency(
+        &self,
+        dependent: DomainId,
+        dependency: DomainId,
+    ) -> Result<Arc<[DomainId]>, DomainDependencyError> {
+        self.dependency_endpoint(dependency)?;
+        Ok(Arc::clone(
+            &self.dependency_endpoint(dependent)?.dependencies,
+        ))
+    }
+
+    fn publish_dependency(
+        &mut self,
+        prepared: &PreparedDependency,
+    ) -> Result<Option<Arc<[DomainId]>>, DomainDependencyError> {
+        self.dependency_endpoint(prepared.dependency)?;
+        self.dependency_endpoint(prepared.dependent)?;
+        let domain = self
+            .domains
+            .iter_mut()
+            .find(|domain| domain.id == prepared.dependent)
+            .ok_or(DomainDependencyError::NotFound {
+                domain: prepared.dependent,
+            })?;
+        if domain.dependencies.contains(&prepared.dependency) {
+            return Ok(None);
+        }
+        if !Arc::ptr_eq(&domain.dependencies, &prepared.observed) {
+            return Err(DomainDependencyError::DependenciesChanged {
+                domain: prepared.dependent,
+            });
+        }
+        Ok(Some(core::mem::replace(
+            &mut domain.dependencies,
+            Arc::clone(&prepared.replacement),
+        )))
+    }
+}
+
+/// Publish an edge while both endpoints still accept dependency registration.
+/// Allocation and disposal of replaced metadata occur outside the registry lock.
+///
+/// # Errors
+/// Missing or stopping/reclaimed endpoints reject the edge. Allocation failure
+/// publishes nothing. `DependenciesChanged` requires a fresh retry; another
+/// publisher may have updated the dependency set meanwhile.
+pub fn add_domain_dependency(
+    dependent: DomainId,
+    dependency: DomainId,
+) -> Result<(), DomainDependencyError> {
+    let observed = REGISTRY
+        .lock()
+        .map_err(|_| DomainDependencyError::RegistryPoisoned)?
+        .observe_dependency(dependent, dependency)?;
+    if observed.contains(&dependency) {
+        return Ok(());
+    }
+    let prepared = PreparedDependency::new(dependent, dependency, observed)?;
+    let replaced = {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| DomainDependencyError::RegistryPoisoned)?;
+        registry.publish_dependency(&prepared)?
+    };
+    drop(replaced);
+    Ok(())
 }
 
 /// グローバルなドメインレジストリ
@@ -481,7 +643,7 @@ where
 }
 
 /// Create a lightweight snapshot of a domain for external queries.
-fn to_snapshot(domain: &Domain) -> DomainSnapshot {
+fn to_snapshot(domain: &Domain, domains: &[Domain]) -> DomainSnapshot {
     DomainSnapshot {
         id: domain.id,
         name: domain.name.clone(),
@@ -493,8 +655,12 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
         runtime_ticks: domain.runtime_ticks,
         context_switches: domain.context_switches,
         created_at: domain.created_at,
-        dependencies: domain.dependencies.clone(),
-        dependents: domain.dependents.clone(),
+        dependencies: domain.dependencies.to_vec(),
+        dependents: domains
+            .iter()
+            .filter(|candidate| candidate.dependencies.contains(&domain.id))
+            .map(|candidate| candidate.id)
+            .collect(),
         numa_node: domain.numa_node,
         priority: domain.priority,
         cpu_limit_percent: domain.cpu_limit_percent,
@@ -508,7 +674,11 @@ fn to_snapshot(domain: &Domain) -> DomainSnapshot {
 /// List all domain snapshots.
 pub fn list_domain_snapshots() -> Vec<DomainSnapshot> {
     let mut snapshots = match REGISTRY.lock() {
-        Ok(guard) => guard.domains.iter().map(to_snapshot).collect(),
+        Ok(guard) => guard
+            .domains
+            .iter()
+            .map(|domain| to_snapshot(domain, &guard.domains))
+            .collect(),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (list_domain_snapshots)");
             Vec::new()
@@ -524,7 +694,11 @@ pub fn list_domain_snapshots() -> Vec<DomainSnapshot> {
 /// Get a single domain snapshot by ID.
 pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
     let mut snapshot = match REGISTRY.lock() {
-        Ok(guard) => guard.domains.iter().find(|d| d.id == id).map(to_snapshot),
+        Ok(guard) => guard
+            .domains
+            .iter()
+            .find(|d| d.id == id)
+            .map(|domain| to_snapshot(domain, &guard.domains)),
         Err(_) => {
             log::error!("[DOMAIN] Registry poisoned (get_domain_snapshot)");
             None
@@ -553,7 +727,12 @@ pub fn start_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
 }
 
 /// Clear diagnostics and reopen only a completed stop, atomically with admission.
-pub(super) fn restart_stopped_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
+/// Retained Futures and their memory account remain registered.
+///
+/// # Errors
+/// Registry failure, a missing domain, or an incomplete/reclaimed stop rejects
+/// the restart without clearing diagnostics or reopening admission.
+pub fn restart_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     let mut registry = REGISTRY
         .lock()
         .map_err(|_| DomainLifecycleError::RegistryPoisoned)?;
@@ -895,15 +1074,10 @@ pub fn terminate_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
             .iter()
             .position(|domain| domain.id == id)
             .ok_or(DomainLifecycleError::NotFound)?;
-        let (before, rest) = registry.domains.split_at_mut(index);
-        let (domain, after) = rest.split_first_mut().expect("selected existing domain");
         unregister_domain_quota(id);
-        domain.state = DomainState::Terminated;
-        if domain.dependents.contains(&id) {
-            domain.terminated_dependency = Some(id);
-        }
-        for dependent in before.iter_mut().chain(after.iter_mut()) {
-            if domain.dependents.contains(&dependent.id) {
+        registry.domains[index].state = DomainState::Terminated;
+        for dependent in &mut registry.domains {
+            if dependent.dependencies.contains(&id) {
                 dependent.terminated_dependency = Some(id);
             }
         }
@@ -994,14 +1168,151 @@ mod security_tests {
 mod termination_tests {
     use super::*;
 
+    fn dependency_registry() -> DomainRegistry {
+        let mut registry = DomainRegistry::new();
+        for id in 1..=3 {
+            registry
+                .domains
+                .push(Domain::new(DomainId::new(id), String::from("endpoint")).unwrap());
+        }
+        registry
+    }
+
+    fn prepare_dependency(registry: &DomainRegistry, source: u64) -> PreparedDependency {
+        let dependent = DomainId::new(1);
+        let dependency = DomainId::new(source);
+        PreparedDependency::new(
+            dependent,
+            dependency,
+            registry.observe_dependency(dependent, dependency).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dependency_publication_is_idempotent_and_projects_reverse_edges() {
+        let mut registry = dependency_registry();
+        let prepared = prepare_dependency(&registry, 2);
+        drop(registry.publish_dependency(&prepared).unwrap());
+        assert!(registry.publish_dependency(&prepared).unwrap().is_none());
+        let consumer = to_snapshot(&registry.domains[0], &registry.domains);
+        let source = to_snapshot(&registry.domains[1], &registry.domains);
+        assert_eq!(consumer.dependencies, [DomainId::new(2)]);
+        assert_eq!(source.dependents, [DomainId::new(1)]);
+    }
+
+    #[test]
+    fn prepared_dependency_revalidates_endpoint_admission() {
+        let mut registry = dependency_registry();
+        let prepared = prepare_dependency(&registry, 2);
+        registry.domains[1].state = DomainState::Terminated;
+        assert_eq!(
+            registry.publish_dependency(&prepared),
+            Err(DomainDependencyError::Unavailable {
+                domain: DomainId::new(2),
+                state: DomainState::Terminated,
+            })
+        );
+        assert!(registry.domains[0].dependencies.is_empty());
+        assert!(
+            to_snapshot(&registry.domains[1], &registry.domains)
+                .dependents
+                .is_empty()
+        );
+        let mut stopped_consumer = dependency_registry();
+        let prepared = prepare_dependency(&stopped_consumer, 2);
+        stopped_consumer.domains[0].state = DomainState::Stopping;
+        assert_eq!(
+            stopped_consumer.publish_dependency(&prepared),
+            Err(DomainDependencyError::Unavailable {
+                domain: DomainId::new(1),
+                state: DomainState::Stopping,
+            })
+        );
+        assert!(stopped_consumer.domains[0].dependencies.is_empty());
+    }
+
+    #[test]
+    fn competing_dependency_publications_preserve_the_committed_edge() {
+        let mut registry = dependency_registry();
+        let first = prepare_dependency(&registry, 2);
+        let stale = prepare_dependency(&registry, 3);
+        drop(registry.publish_dependency(&first).unwrap());
+        assert_eq!(
+            registry.publish_dependency(&stale),
+            Err(DomainDependencyError::DependenciesChanged {
+                domain: DomainId::new(1),
+            })
+        );
+        assert_eq!(&*registry.domains[0].dependencies, &[DomainId::new(2)]);
+        assert!(
+            to_snapshot(&registry.domains[2], &registry.domains)
+                .dependents
+                .is_empty()
+        );
+        let retry = prepare_dependency(&registry, 3);
+        drop(registry.publish_dependency(&retry).unwrap());
+        assert_eq!(
+            &*registry.domains[0].dependencies,
+            &[DomainId::new(2), DomainId::new(3)]
+        );
+    }
+
+    #[test]
+    fn dependency_registration_rejects_missing_endpoints_without_publication() {
+        let live = create_domain(String::from("dependency_missing_peer")).unwrap();
+        let missing = DomainId::new(u64::MAX);
+        for (dependent, dependency) in [(live, missing), (missing, live)] {
+            assert_eq!(
+                add_domain_dependency(dependent, dependency),
+                Err(DomainDependencyError::NotFound { domain: missing })
+            );
+        }
+        let snapshot = get_domain_snapshot(live).unwrap();
+        assert!(snapshot.dependencies.is_empty());
+        assert!(snapshot.dependents.is_empty());
+        terminate_domain(live).unwrap();
+    }
+
+    #[test]
+    fn dependency_registration_racing_termination_keeps_notification_coherent() {
+        for _ in 0..16 {
+            let source = create_domain(String::from("dependency_race_source")).unwrap();
+            let consumer = create_domain(String::from("dependency_race_consumer")).unwrap();
+            let barrier = Arc::new(std::sync::Barrier::new(2));
+            let registration_barrier = Arc::clone(&barrier);
+            let registration = std::thread::spawn(move || {
+                registration_barrier.wait();
+                add_domain_dependency(consumer, source)
+            });
+            let termination = std::thread::spawn(move || {
+                barrier.wait();
+                terminate_domain(source)
+            });
+            let registration = registration.join().unwrap();
+            termination.join().unwrap().unwrap();
+            let snapshot = get_domain_snapshot(consumer).unwrap();
+            match registration {
+                Ok(()) => assert_eq!(snapshot.terminated_dependency, Some(source)),
+                Err(DomainDependencyError::Unavailable { domain, .. }) => {
+                    assert_eq!(domain, source);
+                    assert_eq!(snapshot.terminated_dependency, None);
+                    assert!(snapshot.dependencies.is_empty());
+                }
+                cause => panic!("unexpected dependency race result: {cause:?}"),
+            }
+            terminate_domain(consumer).unwrap();
+        }
+    }
+
     #[test]
     fn termination_notifies_only_dependents_and_retains_live_return_targets() {
         let before = create_domain(String::from("dependent_before")).expect("domain admission");
         let source = create_domain(String::from("dependency")).expect("domain admission");
         let after = create_domain(String::from("dependent_after")).expect("domain admission");
         let unrelated = create_domain(String::from("unrelated")).expect("domain admission");
-        crate::domain::lifecycle::add_domain_dependency(before, source).expect("dependency");
-        crate::domain::lifecycle::add_domain_dependency(after, source).expect("dependency");
+        add_domain_dependency(before, source).expect("dependency");
+        add_domain_dependency(after, source).expect("dependency");
         let binding = quota_manager()
             .bind_memory(source)
             .expect("execution admission");
@@ -1025,10 +1336,8 @@ mod termination_tests {
             matches!(binding.reserve(1), Err(QuotaError::Retired { domain_id }) if domain_id == source)
         );
         assert!(matches!(
-            crate::domain::lifecycle::restart_domain(source),
-            Err(crate::domain::lifecycle::DomainError::Lifecycle(
-                DomainLifecycleError::InvalidState(DomainState::Terminated)
-            ))
+            restart_domain(source),
+            Err(DomainLifecycleError::InvalidState(DomainState::Terminated))
         ));
         terminate_domain(source).expect("idempotent termination");
         drop(credit);

@@ -246,8 +246,8 @@ mod lifecycle_contract_tests {
         crate::domain::terminate_domain(id).unwrap();
         assert!(matches!(
             restart_domain(id),
-            Err(DomainError::Lifecycle(
-                crate::domain::DomainLifecycleError::InvalidState(DomainState::Terminated)
+            Err(crate::domain::DomainLifecycleError::InvalidState(
+                DomainState::Terminated
             ))
         ));
         assert!(matches!(

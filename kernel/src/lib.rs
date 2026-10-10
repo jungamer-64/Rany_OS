@@ -28,6 +28,7 @@
 #![feature(ptr_metadata)]
 #![feature(format_args_nl)]
 #![feature(allocator_ext)]
+#![feature(clone_from_ref)]
 extern crate alloc;
 
 // Interrupt helper macro moved to a shared module so it's visible in both the

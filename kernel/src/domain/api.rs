@@ -3,8 +3,9 @@ use crate::domain::registry::REGISTRY;
 use core::alloc::Layout;
 
 pub use super::registry::{
-    create_domain, domain_security_handle, get_domain_numa, get_domain_snapshot, get_domain_state,
-    handle_domain_panic, init, is_domain_runnable_now, list_domain_snapshots, resume_domain,
+    DomainDependencyError, add_domain_dependency, create_domain, domain_security_handle,
+    get_domain_numa, get_domain_snapshot, get_domain_state, handle_domain_panic, init,
+    is_domain_runnable_now, list_domain_snapshots, restart_domain, resume_domain,
     set_domain_capabilities, set_domain_numa, set_domain_priority, set_domain_resource_limits,
     spawn_domain_with_caps, start_domain, stop_domain, terminate_domain, with_domain,
     with_domain_mut,

@@ -175,7 +175,7 @@ pub fn test_exchange_heap() -> TestResult {
 
 /// Test domain lifecycle
 pub fn test_domain_lifecycle() -> TestResult {
-    use crate::domain::lifecycle::terminate_domain;
+    use crate::domain::terminate_domain;
     use crate::domain::{DomainState, create_domain, start_domain, get_domain_state};
 
     // ドメインを作成
