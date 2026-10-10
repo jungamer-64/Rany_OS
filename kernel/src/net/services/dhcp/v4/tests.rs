@@ -685,16 +685,12 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
 #[cfg(feature = "qemu-test-export")]
 async fn assert_offer_probe_and_decline_flow() {
     use crate::net::l2::ethernet::MacAddress;
-    use crate::net::runtime::stack;
 
-    // Initialize global stack for ARP facilities (best-effort)
-    stack::init_in(crate::net::runtime::default_runtime()).expect("per-CPU network stack init");
+    let runtime = crate::net::runtime::default_runtime();
+    let if_id = crate::net::runtime::manager::primary_interface_in(runtime)
+        .expect("registered network interface");
 
-    let client = DhcpClient::new(
-        crate::net::runtime::default_runtime(),
-        crate::net::runtime::manager::NetIfId(1),
-        MacAddress::new([7, 7, 7, 7, 7, 7]),
-    );
+    let client = DhcpClient::new(runtime, if_id, MacAddress::new([7, 7, 7, 7, 7, 7]));
     client.xid.store(0x3333_4444, Ordering::SeqCst);
     *client.state.lock().expect("DHCP state") = DhcpState::Selecting;
 
@@ -730,20 +726,21 @@ async fn assert_offer_probe_and_decline_flow() {
     assert!(client.offered_lease.lock().unwrap().is_some());
     assert!(client.offered_probe_at.load(Ordering::SeqCst) != 0);
 
-    // Simulate ARP reply from another host for the offered IP
-    if let Ok(mut s) = stack::stack_in(crate::net::runtime::default_runtime())
-        .expect("test runtime stack")
-        .lock()
-    {
-        if let Some(ref mut st) = s.as_mut() {
-            st.arp_cache_insert_on(
-                crate::net::runtime::manager::NetIfId(1),
-                Ipv4Address::new([10, 0, 0, 9]),
-                MacAddress::from_octets(0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff),
-                200,
-            );
-        }
-    }
+    // The poll may return Pending and move CPUs before the query completes.
+    // Publish the conflict through each online CPU's normal command queue.
+    let report = crate::net::runtime::command::broadcast_command_in(runtime, || {
+        crate::net::runtime::command::RuntimeCommand::Control(
+            crate::net::runtime::command::ControlCommand::ArpInsert {
+                if_id,
+                ip: [10, 0, 0, 9],
+                mac: [0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff],
+            },
+        )
+    });
+    assert!(report.targets > 0);
+    assert_eq!(report.enqueued, report.targets);
+    assert_eq!(report.unavailable, 0);
+    assert_eq!(report.saturated, 0);
 
     // Advance time beyond PROBE_WAIT_SECS
     assert!(client.check_timeout(200, 1).await);
