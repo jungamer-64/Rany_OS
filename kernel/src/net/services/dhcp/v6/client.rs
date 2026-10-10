@@ -1549,7 +1549,7 @@ impl DhcpV6Client {
     }
 }
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(feature = "qemu-test-export")]
 pub(crate) mod tests {
     use super::*;
     use crate::net::l3::ipv6::Ipv6Address;
@@ -1573,6 +1573,8 @@ pub(crate) mod tests {
 
     #[cfg(feature = "qemu-test-export")]
     pub fn test_parse_reply_with_iaaddr() {
+        assert_parse_reply_with_dns_servers();
+        assert_parse_reply_with_status_code_error();
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         // construct a fake REPLY that contains IA_NA with IAADDR
@@ -1644,6 +1646,9 @@ pub(crate) mod tests {
 
     #[cfg(feature = "qemu-test-export")]
     pub fn test_bound_to_renewing_and_rebinding_transitions() {
+        assert_force_renew_or_restart_paths();
+        assert_build_renew_uses_correct_msg_type();
+        assert_build_rebind_uses_correct_msg_type();
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         // set lease with T1 = 1 second, T2 = 2 seconds, valid = 10 seconds
@@ -1811,10 +1816,8 @@ pub(crate) mod tests {
         assert_eq!(client.state(), DhcpV6State::Init);
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_force_renew_or_restart_paths() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_force_renew_or_restart_paths() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         let lease = DhcpV6Lease {
@@ -1846,6 +1849,8 @@ pub(crate) mod tests {
 
     #[cfg(feature = "qemu-test-export")]
     pub fn test_solicit_advertise_request_reply_complete_flow() {
+        assert_build_release_uses_correct_msg_type();
+        assert_release_clears_lease_and_state();
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
 
@@ -1939,10 +1944,8 @@ pub(crate) mod tests {
         assert_eq!(client.state(), DhcpV6State::Renewing);
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_build_renew_uses_correct_msg_type() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_build_renew_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         let lease = DhcpV6Lease {
@@ -1973,10 +1976,8 @@ pub(crate) mod tests {
         assert!(found_iaaddr, "IAADDR suboption not found in Renew");
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_build_rebind_uses_correct_msg_type() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_build_rebind_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         let lease = DhcpV6Lease {
@@ -2008,10 +2009,8 @@ pub(crate) mod tests {
         assert!(!found_server_id, "Rebind must not contain Server ID");
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_build_release_uses_correct_msg_type() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_build_release_uses_correct_msg_type() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         let lease = DhcpV6Lease {
@@ -2032,10 +2031,8 @@ pub(crate) mod tests {
         assert_eq!(buf[0], DhcpV6MessageType::Release as u8); // msg type 8
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_release_clears_lease_and_state() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_release_clears_lease_and_state() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
         let lease = DhcpV6Lease {
@@ -2073,10 +2070,8 @@ pub(crate) mod tests {
         }
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_parse_reply_with_dns_servers() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_parse_reply_with_dns_servers() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
 
@@ -2129,10 +2124,8 @@ pub(crate) mod tests {
         assert_eq!(lease.applied.dns_servers[1], dns2);
     }
 
-    #[cfg(test)]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    pub fn test_parse_reply_with_status_code_error() {
+    #[cfg(feature = "qemu-test-export")]
+    fn assert_parse_reply_with_status_code_error() {
         let mac = crate::net::l2::ethernet::MacAddress::new([0x00, 0x11, 0x22, 0x33, 0x44, 0x55]);
         let client = DhcpV6Client::new(crate::net::runtime::default_runtime(), NetIfId(1), mac);
 

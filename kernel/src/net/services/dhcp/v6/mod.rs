@@ -5,7 +5,7 @@
 mod client;
 mod types;
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(feature = "qemu-test-export")]
 pub(crate) use self::client::tests;
 
 pub use self::types::{

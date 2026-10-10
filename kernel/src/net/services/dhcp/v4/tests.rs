@@ -3,6 +3,7 @@
 // ============================================================================
 
 use super::*;
+#[cfg(test)]
 fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
     let mut future = core::pin::pin!(future);
     let mut context = core::task::Context::from_waker(core::task::Waker::noop());
@@ -441,6 +442,9 @@ pub fn test_process_response_ack_renewal_success() {
 
 #[cfg(feature = "qemu-test-export")]
 pub fn test_build_decline_and_build_release_contents() {
+    assert_build_inform_sets_ciaddr_and_message_type();
+    assert_process_response_ack_informing_accepts_zero_yiaddr();
+    assert_inform_requires_active_lease();
     use crate::net::l2::ethernet::MacAddress;
 
     let client = DhcpClient::new(
@@ -553,7 +557,11 @@ pub fn test_release_clears_lease_and_sets_last_released() {
     assert_eq!(client.last_released_ip(), Some(lease.ip_address));
 }
 
+#[cfg(feature = "qemu-test-export")]
 pub async fn test_parse_t1_t2_and_timeout_transitions() {
+    assert_drive_init_sends_discover_and_enters_selecting().await;
+    assert_force_renew_or_restart_paths();
+    assert_offer_probe_and_decline_flow().await;
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
         crate::net::runtime::manager::NetIfId(1),
@@ -674,10 +682,8 @@ pub fn test_build_lease_defaults_large_timers_without_overflow() {
     assert_eq!(lease.server_ip, Ipv4Address::new([10, 0, 0, 1]));
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_offer_probe_and_decline_flow() {
+#[cfg(feature = "qemu-test-export")]
+async fn assert_offer_probe_and_decline_flow() {
     use crate::net::l2::ethernet::MacAddress;
     use crate::net::runtime::stack;
 
@@ -690,6 +696,7 @@ pub fn test_offer_probe_and_decline_flow() {
         MacAddress::new([7, 7, 7, 7, 7, 7]),
     );
     client.xid.store(0x3333_4444, Ordering::SeqCst);
+    *client.state.lock().expect("DHCP state") = DhcpState::Selecting;
 
     // Build an OFFER packet
     let mut buf = [0u8; DhcpHeader::SIZE + 64];
@@ -739,7 +746,7 @@ pub fn test_offer_probe_and_decline_flow() {
     }
 
     // Advance time beyond PROBE_WAIT_SECS
-    let _ = complete_immediately(client.check_timeout(200, 1));
+    assert!(client.check_timeout(200, 1).await);
     // Offer should have been cleared due to conflict
     assert!(client.offered_lease.lock().unwrap().is_none());
     // Decline should have been recorded
@@ -749,24 +756,20 @@ pub fn test_offer_probe_and_decline_flow() {
     );
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_drive_init_sends_discover_and_enters_selecting() {
+#[cfg(feature = "qemu-test-export")]
+async fn assert_drive_init_sends_discover_and_enters_selecting() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
         crate::net::runtime::manager::NetIfId(1),
         crate::net::l2::ethernet::MacAddress::ZERO,
     );
     assert_eq!(client.state(), DhcpState::Init);
-    complete_immediately(client.drive(123, 1)).expect("drive failed");
+    client.drive(123, 1).await.expect("drive failed");
     assert_eq!(client.state(), DhcpState::Selecting);
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_force_renew_or_restart_paths() {
+#[cfg(feature = "qemu-test-export")]
+fn assert_force_renew_or_restart_paths() {
     let client = DhcpClient::new(
         crate::net::runtime::default_runtime(),
         crate::net::runtime::manager::NetIfId(1),
@@ -818,10 +821,8 @@ pub fn test_force_renew_or_restart_paths() {
     assert!(client.offered_lease.lock().unwrap().is_none());
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_build_inform_sets_ciaddr_and_message_type() {
+#[cfg(feature = "qemu-test-export")]
+fn assert_build_inform_sets_ciaddr_and_message_type() {
     use crate::net::l2::ethernet::MacAddress;
 
     let client = DhcpClient::new(
@@ -862,10 +863,8 @@ pub fn test_build_inform_sets_ciaddr_and_message_type() {
     assert!(!dhcp_options_contain(opts, DhcpOption::RequestedIp));
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
+#[cfg(feature = "qemu-test-export")]
+fn assert_process_response_ack_informing_accepts_zero_yiaddr() {
     use crate::net::l2::ethernet::MacAddress;
 
     let client = DhcpClient::new(
@@ -950,10 +949,8 @@ pub fn test_process_response_ack_informing_accepts_zero_yiaddr() {
     assert_eq!(client.state(), DhcpState::Bound);
 }
 
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_inform_requires_active_lease() {
+#[cfg(feature = "qemu-test-export")]
+fn assert_inform_requires_active_lease() {
     use crate::net::l2::ethernet::MacAddress;
 
     let client = DhcpClient::new(
