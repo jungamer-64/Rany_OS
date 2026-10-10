@@ -372,6 +372,11 @@ impl IntelIommuDriver {
         Err(IommuError::DomainNotFound)
     }
 
+    /// # Errors
+    ///
+    /// Returns an error when the device has no controller or cache invalidation
+    /// fails. Context entries may already be disabled on failure; mappings and
+    /// backing must remain owned until a retry confirms hardware completion.
     pub fn isolate_device(&self, device: DeviceId) -> Result<(), IommuError> {
         let registry = self.registry()?;
         let controller_idx = registry
@@ -381,22 +386,20 @@ impl IntelIommuDriver {
                 device.device,
                 device.function,
             )
-            .unwrap_or(0);
+            .ok_or(IommuError::DeviceNotFound)?;
 
         if let Some(controller) = registry.controllers.get(controller_idx) {
             // Disable context entry in hardware tables
-            let (need_invalidation, domain_id) =
+            let domain_id =
                 controller.disable_device_context_entry(device.bus, device.device, device.function);
 
-            if need_invalidation {
-                // Perform necessary invalidations (IOTLB, context cache) and notify security
-                controller.perform_isolation_invalidation(
-                    device.requester_id(),
-                    domain_id,
-                    crate::io::iommu::runtime::security::IsolationReason::PolicyViolation,
-                );
-            }
-            Ok(())
+            // An earlier attempt may have cleared Present before its cache
+            // invalidation failed. Every retry must still establish completion.
+            controller.perform_isolation_invalidation(
+                device.requester_id(),
+                domain_id,
+                crate::io::iommu::runtime::security::IsolationReason::PolicyViolation,
+            )
         } else {
             Err(IommuError::HardwareError)
         }

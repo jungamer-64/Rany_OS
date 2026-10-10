@@ -557,7 +557,12 @@ impl FaultHandler for IommuController {
         log::info!("[IOMMU] Fault Interrupts enabled (Vector: {:#x})", vector);
     }
 
-    /// Isolate a faulting device by moving it to a quarantine domain
+    /// Revoke a faulting device's cached DMA access after policy admission.
+    ///
+    /// # Errors
+    ///
+    /// Invalidation failures leave context entries disabled but retain mappings
+    /// and backing. A retry still invalidates caches before publishing isolation.
     fn isolate_faulting_device(&self, fault: FaultRecord) -> Result<(), IommuError> {
         let sid = fault.source_id();
         let bus = (sid >> 8) as u8;
@@ -578,13 +583,7 @@ impl FaultHandler for IommuController {
         );
 
         // Disable context entry in hardware tables
-        let (need_invalidation, isolated_domain_id) =
-            self.disable_device_context_entry(bus, dev, func);
-
-        if need_invalidation {
-            self.perform_isolation_invalidation(sid, isolated_domain_id, isolation_reason)?;
-        }
-
-        Ok(())
+        let isolated_domain_id = self.disable_device_context_entry(bus, dev, func);
+        self.perform_isolation_invalidation(sid, isolated_domain_id, isolation_reason)
     }
 }

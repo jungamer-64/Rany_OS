@@ -55,12 +55,7 @@ impl IommuController {
     ///
     /// Handles both normal and poisoned lock states.
     /// An absent domain requires global cache invalidation, including on retry.
-    pub(crate) fn disable_device_context_entry(
-        &self,
-        bus: u8,
-        dev: u8,
-        func: u8,
-    ) -> Option<u16> {
+    pub(crate) fn disable_device_context_entry(&self, bus: u8, dev: u8, func: u8) -> Option<u16> {
         let mut hw_guard = match self.hardware.lock() {
             Ok(guard) => guard,
             Err(poisoned) => {
@@ -134,6 +129,11 @@ impl IommuController {
     }
 
     /// Perform cache invalidation and security notification after device isolation.
+    ///
+    /// # Errors
+    ///
+    /// Returns command, completion or register invalidation errors without a
+    /// completion notification. Existing mappings and tables remain retained.
     pub(crate) fn perform_isolation_invalidation(
         &self,
         sid: u16,
