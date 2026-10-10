@@ -2,6 +2,5 @@
 // kernel/src/net/security/tls/tests/mod.rs - セキュリティ / TLS / テスト モジュール
 // ============================================================================
 
-mod connection;
 mod crypto;
 mod protocol;

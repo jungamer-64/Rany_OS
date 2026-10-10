@@ -2,7 +2,7 @@
 // kernel/src/net/security/tls/connection/record.rs - TLS 1.3 record layer
 // ============================================================================
 
-#[cfg(any(test, feature = "qemu-test-export"))]
+#[cfg(feature = "qemu-test-export")]
 use super::state::SelectedTls13Parameters;
 use super::state::{TlsHandshakeProgress, TlsRecordEpoch};
 use super::{
@@ -836,10 +836,15 @@ impl TlsConnectionCore {
 
     #[cfg(feature = "qemu-test-export")]
     pub(crate) fn tls13_coalesced_application_records_smoke() -> bool {
-        fn payload(data: &[u8]) -> Option<PacketPayload> {
-            let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)?;
-            writer.write_generated_bytes(data)?;
-            writer.finish()
+        use alloc::vec::Vec;
+
+        fn test_payload(data: &[u8]) -> PacketPayload {
+            let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
+                .expect("test payload allocation succeeds");
+            writer
+                .write_generated_bytes(data)
+                .expect("test payload write succeeds");
+            writer.finish().expect("test payload is exact")
         }
 
         fn payload_matches(payload: &PacketPayload, expected: &[u8]) -> bool {
@@ -848,7 +853,7 @@ impl TlsConnectionCore {
                 return false;
             }
 
-            let mut offset = 0usize;
+            let mut offset = 0;
             let mut matches = true;
             view.for_each_chunk(|chunk| {
                 let end = offset + chunk.len();
@@ -860,232 +865,156 @@ impl TlsConnectionCore {
             matches && offset == expected.len()
         }
 
-        let Ok(config) = crate::net::security::tls::TlsClientConfig::for_server_name(
-            "example.com",
-            crate::net::security::tls::TlsTrustAnchors::empty(),
-        ) else {
-            return false;
-        };
-        let Ok(mut conn) = Self::new(config) else {
-            return false;
-        };
-        let key = [0x11; 16];
-        let iv = [0x22; 12];
-        if Self::set_tls_bytes(&mut conn.record.read_key, &key).is_err()
-            || Self::set_tls_bytes(&mut conn.record.write_key, &key).is_err()
-            || Self::set_tls_bytes(&mut conn.record.read_iv, &iv).is_err()
-            || Self::set_tls_bytes(&mut conn.record.write_iv, &iv).is_err()
-        {
-            return false;
-        }
-        let Ok(cipher) = conn
-            .config
-            .cipher_suites
-            .negotiate_wire(crate::net::security::tls::CipherSuite::TLS_AES_128_GCM_SHA256.wire())
-        else {
-            return false;
-        };
-        conn.negotiation.progress =
-            TlsHandshakeProgress::Established(SelectedTls13Parameters::new(cipher));
-
-        let Some(alpha) = payload(b"alpha") else {
-            return false;
-        };
-        let Some(beta) = payload(b"beta") else {
-            return false;
-        };
-        let Ok(first) = conn.tls13_encrypt_application_payload(alpha) else {
-            return false;
-        };
-        let Ok(second) = conn.tls13_encrypt_application_payload(beta) else {
-            return false;
-        };
-        let Ok(first) = first.try_append(second) else {
-            return false;
-        };
-
-        let Ok(Some(plaintext)) = conn.process_incoming_payload(first) else {
-            return false;
-        };
-        payload_matches(&plaintext, b"alphabeta") && matches!(conn.record.read_seq.current(), Ok(2))
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use alloc::vec::Vec;
-
-    fn test_payload(data: &[u8]) -> PacketPayload {
-        let mut writer = GeneratedPacketWriter::new(data.len(), DEFAULT_PACKET_HEADROOM)
-            .expect("test payload allocation succeeds");
-        writer
-            .write_generated_bytes(data)
-            .expect("test payload write succeeds");
-        writer.finish().expect("test payload is exact")
-    }
-
-    fn payload_matches(payload: &PacketPayload, expected: &[u8]) -> bool {
-        let view = PacketPayloadView::new(payload);
-        if view.total_len() != expected.len() {
-            return false;
-        }
-
-        let mut offset = 0;
-        let mut matches = true;
-        view.for_each_chunk(|chunk| {
-            let end = offset + chunk.len();
-            if expected.get(offset..end) != Some(chunk) {
-                matches = false;
+        fn single_packet_payload_from_payloads(payloads: &[&PacketPayload]) -> PacketPayload {
+            let total_len = payloads.iter().map(|payload| payload.total_len()).sum();
+            let mut writer = GeneratedPacketWriter::new(total_len, DEFAULT_PACKET_HEADROOM)
+                .expect("test coalesced packet allocation succeeds");
+            for payload in payloads {
+                PacketPayloadView::new(payload).for_each_chunk(|chunk| {
+                    writer
+                        .write_generated_bytes(chunk)
+                        .expect("test coalesced packet write succeeds");
+                });
             }
-            offset = end;
-        });
-        matches && offset == expected.len()
-    }
+            writer.finish().expect("test coalesced packet is exact")
+        }
 
-    fn single_packet_payload_from_payloads(payloads: &[&PacketPayload]) -> PacketPayload {
-        let total_len = payloads.iter().map(|payload| payload.total_len()).sum();
-        let mut writer = GeneratedPacketWriter::new(total_len, DEFAULT_PACKET_HEADROOM)
-            .expect("test coalesced packet allocation succeeds");
-        for payload in payloads {
+        fn collect_payload_bytes(payload: &PacketPayload, bytes: &mut Vec<u8>) {
             PacketPayloadView::new(payload).for_each_chunk(|chunk| {
-                writer
-                    .write_generated_bytes(chunk)
-                    .expect("test coalesced packet write succeeds");
+                bytes.extend_from_slice(chunk);
             });
         }
-        writer.finish().expect("test coalesced packet is exact")
-    }
 
-    fn collect_payload_bytes(payload: &PacketPayload, bytes: &mut Vec<u8>) {
-        PacketPayloadView::new(payload).for_each_chunk(|chunk| {
-            bytes.extend_from_slice(chunk);
-        });
-    }
-
-    fn fragmented_payload_from_bytes(bytes: &[u8], cuts: &[usize]) -> PacketPayload {
-        let mut start = 0usize;
-        let mut segments = Vec::new();
-        for &cut in cuts {
-            assert!(start < cut && cut <= bytes.len());
-            segments.extend(test_payload(&bytes[start..cut]).into_segments());
-            start = cut;
+        fn fragmented_payload_from_bytes(bytes: &[u8], cuts: &[usize]) -> PacketPayload {
+            let mut start = 0usize;
+            let mut segments = Vec::new();
+            for &cut in cuts {
+                assert!(start < cut && cut <= bytes.len());
+                segments.extend(test_payload(&bytes[start..cut]).into_segments());
+                start = cut;
+            }
+            if start < bytes.len() {
+                segments.extend(test_payload(&bytes[start..]).into_segments());
+            }
+            PacketPayload::try_from_segments(segments)
+                .expect("fragmented test payload is non-empty")
         }
-        if start < bytes.len() {
-            segments.extend(test_payload(&bytes[start..]).into_segments());
+
+        fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
+            let key = [0x11; 16];
+            let iv = [0x22; 12];
+            TlsConnectionCore::set_tls_bytes(&mut conn.record.read_key, &key)
+                .expect("read key fits");
+            TlsConnectionCore::set_tls_bytes(&mut conn.record.write_key, &key)
+                .expect("write key fits");
+            TlsConnectionCore::set_tls_bytes(&mut conn.record.read_iv, &iv).expect("read iv fits");
+            TlsConnectionCore::set_tls_bytes(&mut conn.record.write_iv, &iv)
+                .expect("write iv fits");
+            let selected = SelectedTls13Parameters::new(
+                conn.config
+                    .cipher_suites
+                    .negotiate_wire(
+                        crate::net::security::tls::CipherSuite::TLS_AES_128_GCM_SHA256.wire(),
+                    )
+                    .expect("default cipher suite is offered"),
+            );
+            conn.negotiation.progress = TlsHandshakeProgress::Established(selected);
         }
-        PacketPayload::try_from_segments(segments).expect("fragmented test payload is non-empty")
-    }
 
-    fn establish_loopback_record_keys(conn: &mut TlsConnectionCore) {
-        let key = [0x11; 16];
-        let iv = [0x22; 12];
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_key, &key).expect("read key fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_key, &key).expect("write key fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.read_iv, &iv).expect("read iv fits");
-        TlsConnectionCore::set_tls_bytes(&mut conn.record.write_iv, &iv).expect("write iv fits");
-        let selected = SelectedTls13Parameters::new(
-            conn.config
-                .cipher_suites
-                .negotiate_wire(
-                    crate::net::security::tls::CipherSuite::TLS_AES_128_GCM_SHA256.wire(),
-                )
-                .expect("default cipher suite is offered"),
-        );
-        conn.negotiation.progress = TlsHandshakeProgress::Established(selected);
-    }
+        fn encrypted_application_records_are_processed_from_one_ingress_payload() {
+            let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+                "example.com",
+                crate::net::security::tls::TlsTrustAnchors::empty(),
+            )
+            .expect("test server name fits");
+            let mut conn =
+                TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+            establish_loopback_record_keys(&mut conn);
 
-    #[test]
-    fn encrypted_application_records_are_processed_from_one_ingress_payload() {
-        let config = super::super::TlsClientConfig::for_server_name(
-            "example.com",
-            crate::net::security::tls::TlsTrustAnchors::empty(),
-        )
-        .expect("test server name fits");
-        let mut conn =
-            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-        establish_loopback_record_keys(&mut conn);
+            let first = conn
+                .tls13_encrypt_application_payload(test_payload(b"alpha"))
+                .expect("first record encrypts");
+            let second = conn
+                .tls13_encrypt_application_payload(test_payload(b"beta"))
+                .expect("second record encrypts");
+            let first = first
+                .try_append(second)
+                .expect("two encrypted records form a payload");
 
-        let first = conn
-            .tls13_encrypt_application_payload(test_payload(b"alpha"))
-            .expect("first record encrypts");
-        let second = conn
-            .tls13_encrypt_application_payload(test_payload(b"beta"))
-            .expect("second record encrypts");
-        let first = first
-            .try_append(second)
-            .expect("two encrypted records form a payload");
+            let plaintext = conn
+                .process_incoming_payload(first)
+                .expect("coalesced encrypted records decrypt")
+                .expect("application records produce plaintext");
 
-        let plaintext = conn
-            .process_incoming_payload(first)
-            .expect("coalesced encrypted records decrypt")
-            .expect("application records produce plaintext");
+            assert!(payload_matches(&plaintext, b"alphabeta"));
+            assert!(matches!(conn.record.read_seq.current(), Ok(2)));
+        }
 
-        assert!(payload_matches(&plaintext, b"alphabeta"));
-        assert!(matches!(conn.record.read_seq.current(), Ok(2)));
-    }
+        fn encrypted_records_inside_one_packet_ref_split_without_copy_fallback() {
+            let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+                "example.com",
+                crate::net::security::tls::TlsTrustAnchors::empty(),
+            )
+            .expect("test server name fits");
+            let mut conn =
+                TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+            establish_loopback_record_keys(&mut conn);
 
-    #[test]
-    fn encrypted_records_inside_one_packet_ref_split_without_copy_fallback() {
-        let config = super::super::TlsClientConfig::for_server_name(
-            "example.com",
-            crate::net::security::tls::TlsTrustAnchors::empty(),
-        )
-        .expect("test server name fits");
-        let mut conn =
-            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-        establish_loopback_record_keys(&mut conn);
+            let first = conn
+                .tls13_encrypt_application_payload(test_payload(b"alpha"))
+                .expect("first record encrypts");
+            let second = conn
+                .tls13_encrypt_application_payload(test_payload(b"beta"))
+                .expect("second record encrypts");
+            let coalesced = single_packet_payload_from_payloads(&[&first, &second]);
 
-        let first = conn
-            .tls13_encrypt_application_payload(test_payload(b"alpha"))
-            .expect("first record encrypts");
-        let second = conn
-            .tls13_encrypt_application_payload(test_payload(b"beta"))
-            .expect("second record encrypts");
-        let coalesced = single_packet_payload_from_payloads(&[&first, &second]);
+            let plaintext = conn
+                .process_incoming_payload(coalesced)
+                .expect("same-packet records split through PacketPayload::take_front");
 
-        let plaintext = conn
-            .process_incoming_payload(coalesced)
-            .expect("same-packet records split through PacketPayload::take_front");
+            assert!(payload_matches(
+                plaintext
+                    .as_ref()
+                    .expect("application records produce plaintext"),
+                b"alphabeta"
+            ));
+            assert!(matches!(conn.record.read_seq.current(), Ok(2)));
+        }
 
-        assert!(payload_matches(
-            plaintext
-                .as_ref()
-                .expect("application records produce plaintext"),
-            b"alphabeta"
-        ));
-        assert!(matches!(conn.record.read_seq.current(), Ok(2)));
-    }
+        fn encrypted_record_body_and_tag_windows_cross_packet_segments() {
+            let config = crate::net::security::tls::TlsClientConfig::for_server_name(
+                "example.com",
+                crate::net::security::tls::TlsTrustAnchors::empty(),
+            )
+            .expect("test server name fits");
+            let mut conn =
+                TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
+            establish_loopback_record_keys(&mut conn);
 
-    #[test]
-    fn encrypted_record_body_and_tag_windows_cross_packet_segments() {
-        let config = super::super::TlsClientConfig::for_server_name(
-            "example.com",
-            crate::net::security::tls::TlsTrustAnchors::empty(),
-        )
-        .expect("test server name fits");
-        let mut conn =
-            TlsConnectionCore::new(config).expect("test TLS connection entropy is available");
-        establish_loopback_record_keys(&mut conn);
+            let encrypted = conn
+                .tls13_encrypt_application_payload(test_payload(b"segmented-window"))
+                .expect("record encrypts");
+            let mut bytes = Vec::new();
+            collect_payload_bytes(&encrypted, &mut bytes);
+            assert!(bytes.len() > 24);
+            let fragmented = fragmented_payload_from_bytes(&bytes, &[6, bytes.len() - 8]);
 
-        let encrypted = conn
-            .tls13_encrypt_application_payload(test_payload(b"segmented-window"))
-            .expect("record encrypts");
-        let mut bytes = Vec::new();
-        collect_payload_bytes(&encrypted, &mut bytes);
-        assert!(bytes.len() > 24);
-        let fragmented = fragmented_payload_from_bytes(&bytes, &[6, bytes.len() - 8]);
+            let plaintext = conn
+                .process_incoming_payload(fragmented)
+                .expect("segmented body and tag decrypt");
 
-        let plaintext = conn
-            .process_incoming_payload(fragmented)
-            .expect("segmented body and tag decrypt");
+            assert!(payload_matches(
+                plaintext
+                    .as_ref()
+                    .expect("application records produce plaintext"),
+                b"segmented-window"
+            ));
+            assert!(matches!(conn.record.read_seq.current(), Ok(1)));
+        }
 
-        assert!(payload_matches(
-            plaintext
-                .as_ref()
-                .expect("application records produce plaintext"),
-            b"segmented-window"
-        ));
-        assert!(matches!(conn.record.read_seq.current(), Ok(1)));
+        encrypted_application_records_are_processed_from_one_ingress_payload();
+        encrypted_records_inside_one_packet_ref_split_without_copy_fallback();
+        encrypted_record_body_and_tag_windows_cross_packet_segments();
+        true
     }
 }
