@@ -19,8 +19,6 @@ mod router;
 
 pub(crate) struct HttpRuntimeState {
     started: AtomicBool,
-    poller_signal_waker: AtomicWaker,
-    poller_signal_seq: AtomicU64,
     active_connections: AtomicU32,
     total_requests: AtomicU64,
     bytes_rx: AtomicU64,
@@ -31,8 +29,6 @@ impl HttpRuntimeState {
     pub(crate) const fn new() -> Self {
         Self {
             started: AtomicBool::new(false),
-            poller_signal_waker: AtomicWaker::new(),
-            poller_signal_seq: AtomicU64::new(1),
             active_connections: AtomicU32::new(0),
             total_requests: AtomicU64::new(0),
             bytes_rx: AtomicU64::new(0),
@@ -61,44 +57,6 @@ pub(super) const HOST_HTTP_READ_TIMEOUT_MS: u64 = 100;
 // READ_TIMEOUT_MS(100ms) * STRIDE(2) = 最長 200ms の判定遅延を許容する代わりに、
 // 高頻度 current_tick() 呼び出しを抑制する。
 pub(super) const HOST_HTTP_READ_DEADLINE_CHECK_STRIDE: usize = 2;
-
-struct HttpPollerSignalFuture {
-    runtime: NetRuntimeHandle,
-    observed_seq: u64,
-}
-
-impl Future for HttpPollerSignalFuture {
-    type Output = u64;
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let state = http_runtime_in(self.runtime);
-        let current = state.poller_signal_seq.load(Ordering::Acquire);
-        if current != self.observed_seq {
-            return Poll::Ready(current);
-        }
-
-        state.poller_signal_waker.register(cx.waker());
-
-        let current = state.poller_signal_seq.load(Ordering::Acquire);
-        if current != self.observed_seq {
-            Poll::Ready(current)
-        } else {
-            Poll::Pending
-        }
-    }
-}
-
-fn current_http_poller_signal_seq(runtime: NetRuntimeHandle) -> u64 {
-    http_runtime_in(runtime)
-        .poller_signal_seq
-        .load(Ordering::Acquire)
-}
-
-fn notify_http_poller_signal(runtime: NetRuntimeHandle) {
-    let state = http_runtime_in(runtime);
-    state.poller_signal_seq.fetch_add(1, Ordering::AcqRel);
-    state.poller_signal_waker.wake();
-}
 
 const fn host_http_idle_wait_ms(consecutive_idle: u32) -> u64 {
     let expanded = HOST_HTTP_IDLE_WAIT_BASE_MS.saturating_add(consecutive_idle);
