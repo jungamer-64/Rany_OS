@@ -17,20 +17,6 @@ pub use crate::domain::quota::DomainPriority;
 ))]
 use crate::domain::quota::quota_manager;
 
-// テストビルド用フォールバック: domain モジュールが存在しない構成向け
-#[cfg(all(
-    test,
-    not(feature = "full_mm_tests"),
-    not(feature = "qemu-test-export")
-))]
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum DomainPriority {
-    Low,
-    Normal,
-    High,
-    Critical,
-}
-
 /// OOM統計情報
 #[derive(Debug, Clone)]
 pub struct OomStats {
@@ -127,15 +113,6 @@ impl OomKiller {
         Some(freed)
     }
 
-    #[cfg(not(any(
-        not(any(test, feature = "bench")),
-        feature = "full_mm_tests",
-        feature = "qemu-test-export"
-    )))]
-    fn select_and_kill_victim(&self) -> Option<u64> {
-        None
-    }
-
     fn stats(&self) -> OomStats {
         #[cfg(any(
             not(any(test, feature = "bench")),
@@ -143,13 +120,6 @@ impl OomKiller {
             feature = "qemu-test-export"
         ))]
         let total_domains = crate::domain::list_domain_snapshots().len();
-
-        #[cfg(not(any(
-            not(any(test, feature = "bench")),
-            feature = "full_mm_tests",
-            feature = "qemu-test-export"
-        )))]
-        let total_domains = 0;
 
         OomStats {
             total_domains,
