@@ -604,13 +604,19 @@ fn udp_datagram(src_port: u16, dst_port: u16, data: &[u8]) -> Option<Vec<u8>> {
     Some(packet)
 }
 
+struct CommandDrainSummary {
+    processed: usize,
+    stopped_udp_rejections: usize,
+}
+
 fn process_runtime_commands(
     runtime: crate::net::runtime::NetRuntimeHandle,
     handler: &crate::net::runtime::command_handler::RuntimeCommandHandler,
     online: &crate::cpu::CpuSet,
     mut observe_packet: impl FnMut(crate::cpu::CpuId, NetIfId, u8),
-) -> Option<usize> {
+) -> Option<CommandDrainSummary> {
     let mut total = 0usize;
+    let mut stopped_udp_rejections = 0usize;
     for _ in 0..8 {
         let mut processed = 0usize;
         for cpu_id in online {
@@ -631,16 +637,34 @@ fn process_runtime_commands(
                     ) if packet.data().len() >= 24 => Some((*if_id, packet.data()[23])),
                     _ => None,
                 };
+                let stopped_udp_interface = match &command {
+                    crate::net::runtime::command::RuntimeCommand::Transport(
+                        crate::net::runtime::command::TransportCommand::UdpSendTo { socket_id, .. },
+                    ) => runtime.context().sockets.with_socket_state(*socket_id, |state| state.scope)
+                        .and_then(|scope| match scope {
+                            InterfaceScope::Pinned(if_id)
+                                if crate::net::runtime::manager::get_interface_in(runtime, if_id)
+                                    .ok().flatten().is_some()
+                                    && !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) => Some(if_id),
+                            _ => None,
+                        }),
+                    _ => None,
+                };
                 let result = handler.handle_event_with_stack_in(runtime, command, core_stack);
-                if !matches!(
-                    result,
-                    crate::net::runtime::command_handler::EventHandleResult::Success
-                ) {
-                    log::error!(
-                        target: "qemu::net",
-                        "runtime command failed: cpu={cpu_id} result={result:?}"
-                    );
-                    return None;
+                match result {
+                    crate::net::runtime::command_handler::EventHandleResult::Success => {}
+                    crate::net::runtime::command_handler::EventHandleResult::ProtocolError(
+                        crate::net::l4::types::EndpointError::NetworkUnreachable,
+                    ) if stopped_udp_interface.is_some() => {
+                        // Queue admission precedes link loss. The consumer must
+                        // reject the pinned egress, including DHCP work already
+                        // queued when this fixture stops its interface.
+                        stopped_udp_rejections += 1;
+                    }
+                    _ => {
+                        log::error!(target: "qemu::net", "runtime command failed: cpu={cpu_id} result={result:?}");
+                        return None;
+                    }
                 }
                 if let Some((if_id, protocol)) = observed {
                     observe_packet(cpu_id, if_id, protocol);
@@ -650,7 +674,10 @@ fn process_runtime_commands(
         }
         total = total.saturating_add(processed);
         if processed == 0 {
-            return Some(total);
+            return Some(CommandDrainSummary {
+                processed: total,
+                stopped_udp_rejections,
+            });
         }
     }
     None
@@ -874,7 +901,8 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         })?;
     log::info!(
         target: "qemu::net",
-        "fragment commands processed: total={processed_fragments} if_a={fragments_a} if_b={fragments_b} cpu={fragment_cpu:?}"
+        "fragment commands processed: total={} if_a={fragments_a} if_b={fragments_b} cpu={fragment_cpu:?}",
+        processed_fragments.processed
     );
     (fragments_a == 2 && fragments_b == 2).then_some(())?;
     let received_a = socket_a.try_recv_udp_payload();
@@ -984,7 +1012,8 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         })?;
     log::info!(
         target: "qemu::net",
-        "per-core commands processed: total={processed_per_core} udp={saw_udp:?} icmp={saw_icmp:?}"
+        "per-core commands processed: total={} udp={saw_udp:?} icmp={saw_icmp:?}",
+        processed_per_core.processed
     );
     for member_index in 0..cpu_count {
         (saw_udp[member_index] && saw_icmp[member_index]).then_some(())?;
@@ -1051,7 +1080,74 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     (tx_a_after > tx_a_before).then_some(())?;
     log::info!(target: "qemu::net", "primary reply TX verified");
 
-    state_a.update_link(false).ok()?;
+    let queued_endpoint = crate::net::l4::udp::UdpEndpoint::bind_in(
+        runtime,
+        InterfaceScope::Pinned(if_a),
+        42_426,
+        None,
+    )
+    .ok()?;
+    let mut queued_socket_id = None;
+    runtime.context().sockets.for_each(|socket| {
+        if socket
+            .local_addr()
+            .is_some_and(|addr| addr.port() == 42_426)
+        {
+            queued_socket_id = Some(socket.socket_id());
+        }
+    });
+    let queued_socket_id = queued_socket_id?;
+    let queued_payload = PacketPayload::try_single(allocate_frame(runtime, 8)?).ok()?;
+    {
+        // Preserve the order between admission and link loss on the command's
+        // owning CPU. The normal command consumer performs the later check.
+        let _preemption = hal::preemption::PreemptionGuard::enter();
+        crate::net::runtime::command::try_enqueue_command_in(
+            runtime,
+            crate::net::runtime::command::RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::UdpSendTo {
+                    socket_id: queued_socket_id,
+                    payload: queued_payload,
+                    remote: crate::net::l4::EndpointAddr::new(remote_ip.octets(), 40_000),
+                },
+            ),
+        )
+        .ok()?;
+        let current = crate::cpu::CurrentCpu::acquire()?;
+        let resources =
+            crate::net::runtime::command::command_resources_for_cpu_in(runtime, current.id())
+                .ok()?;
+        let mut admitted_send = None;
+        for _ in 0..crate::net::runtime::command::RuntimeCommandQueue::CAPACITY {
+            let command = resources.command_queue.recv()?;
+            let is_queued_send = match &command {
+                crate::net::runtime::command::RuntimeCommand::Transport(
+                    crate::net::runtime::command::TransportCommand::UdpSendTo { socket_id, .. },
+                ) => *socket_id == queued_socket_id,
+                _ => false,
+            };
+            if is_queued_send {
+                admitted_send = Some(command);
+                break;
+            }
+            let mut stack = resources.stack.lock().ok()?;
+            matches!(
+                handler.handle_event_with_stack_in(runtime, command, stack.as_mut()?),
+                crate::net::runtime::command_handler::EventHandleResult::Success
+            )
+            .then_some(())?;
+        }
+        state_a.update_link(false).ok()?;
+        let mut stack = resources.stack.lock().ok()?;
+        matches!(
+            handler.handle_event_with_stack_in(runtime, admitted_send?, stack.as_mut()?),
+            crate::net::runtime::command_handler::EventHandleResult::ProtocolError(
+                crate::net::l4::types::EndpointError::NetworkUnreachable
+            )
+        )
+        .then_some(())?;
+    }
+    log::info!(target: "qemu::net", "queued UDP egress rejection after link loss verified");
     (crate::net::runtime::manager::primary_interface_in(runtime) == Some(if_b)).then_some(())?;
     let stopped_rx_before =
         crate::net::runtime::bridge::get_stack_glue_stats_for_interface_in(runtime, if_a)
@@ -1100,7 +1196,8 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     .then_some(())?;
     log::info!(target: "qemu::net", "stopped interface RX and TX rejection verified");
 
-    process_runtime_commands(runtime, &handler, &online, |_, _, _| {})?;
+    let drained = process_runtime_commands(runtime, &handler, &online, |_, _, _| {})?;
+    log::info!(target: "qemu::net", "stopped-interface commands processed: total={} rejected_udp={}", drained.processed, drained.stopped_udp_rejections);
     for cpu_id in &online {
         let stack_lock = crate::net::runtime::stack::stack_for_cpu_in(runtime, cpu_id).ok()?;
         let mut stack_guard = stack_lock.lock().ok()?;
@@ -1146,6 +1243,10 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             .tx_packets;
     (tx_b_after > tx_b_before).then_some(())?;
     log::info!(target: "qemu::net", "secondary reply TX verified");
+
+    // Retain the endpoint through command draining; its close notification is
+    // posted when this fixture releases the socket's registration.
+    drop(queued_endpoint);
 
     crate::net::runtime::device::unregister_port_in(runtime, if_b)
         .ok()?
