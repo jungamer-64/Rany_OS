@@ -249,6 +249,10 @@ pub fn net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke() -> bool {
     crate::net::qemu_tests::igmp_v3_report_invalid_layout_rejected_smoke()
 }
 
+pub fn net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
+    crate::net::qemu_tests::tcp_ooo_permits_and_bounded_queue_smoke()
+}
+
 pub fn net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
     crate::net::qemu_tests::runtime_two_runtimes_bind_same_udp_port_independently_smoke()
 }

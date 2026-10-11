@@ -331,15 +331,6 @@ mod tests {
     use super::*;
     use alloc::boxed::Box;
     use alloc::vec::Vec;
-    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
-
-    fn test_payload(byte: u8) -> PacketPayload {
-        let mut packet =
-            crate::net::payload::alloc_packet_with_headroom(1, DEFAULT_PACKET_HEADROOM)
-                .expect("test packet allocation");
-        packet.data_mut()[0] = byte;
-        PacketPayload::try_single(packet).expect("test payload is non-empty")
-    }
 
     fn test_budget() -> &'static AtomicUsize {
         Box::leak(Box::new(AtomicUsize::new(0)))
@@ -359,72 +350,6 @@ mod tests {
         permits.truncate(GLOBAL_MAX_OOO_SEGMENTS / 2);
         assert_eq!(budget.load(Ordering::Acquire), GLOBAL_MAX_OOO_SEGMENTS / 2);
         drop(permits);
-        assert_eq!(budget.load(Ordering::Acquire), 0);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn overlap_and_clear_release_every_connection_permit() {
-        let budget = test_budget();
-        let mut queue = ConnectionOooQueue::new();
-        queue.insert(
-            100,
-            Some(test_payload(1)),
-            false,
-            try_reserve_ooo_slot(budget),
-        );
-        assert_eq!(budget.load(Ordering::Acquire), 1);
-
-        queue.insert(
-            100,
-            Some(test_payload(2)),
-            false,
-            try_reserve_ooo_slot(budget),
-        );
-        assert!(queue.is_empty());
-        assert_eq!(budget.load(Ordering::Acquire), 0);
-
-        queue.insert(
-            200,
-            Some(test_payload(3)),
-            false,
-            try_reserve_ooo_slot(budget),
-        );
-        queue.clear();
-        assert_eq!(budget.load(Ordering::Acquire), 0);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn full_connection_queue_releases_evicted_and_rejected_permits() {
-        let budget = test_budget();
-        let mut queue = ConnectionOooQueue::new();
-        for index in 0..MAX_OOO_SEGMENTS {
-            queue.insert(
-                100 + index as u32 * 2,
-                Some(test_payload(index as u8)),
-                false,
-                try_reserve_ooo_slot(budget),
-            );
-        }
-        assert_eq!(budget.load(Ordering::Acquire), MAX_OOO_SEGMENTS);
-
-        queue.insert(
-            1000,
-            Some(test_payload(0xff)),
-            false,
-            try_reserve_ooo_slot(budget),
-        );
-        assert_eq!(budget.load(Ordering::Acquire), MAX_OOO_SEGMENTS);
-
-        queue.insert(
-            50,
-            Some(test_payload(0xfe)),
-            false,
-            try_reserve_ooo_slot(budget),
-        );
-        assert_eq!(budget.load(Ordering::Acquire), MAX_OOO_SEGMENTS);
-        queue.clear();
         assert_eq!(budget.load(Ordering::Acquire), 0);
     }
 }
