@@ -108,19 +108,6 @@ impl ExecutionContext {
         })
     }
 
-    /// # Errors
-    /// Rejects an unavailable quota registry, an unregistered or retired account,
-    /// or exhausted binding capacity without installing the supplied subject.
-    pub fn from_subject(subject: Subject) -> Result<Self, QuotaError> {
-        let memory = crate::domain::quota::quota_manager().bind_memory(subject.domain)?;
-        Ok(Self {
-            subject,
-            memory,
-            cell: None,
-            finalization: None,
-        })
-    }
-
     pub(crate) fn with_cell(mut self, cell: Option<crate::loader::CellId>) -> Self {
         self.cell = cell;
         self
