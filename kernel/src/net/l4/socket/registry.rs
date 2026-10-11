@@ -19,17 +19,18 @@ const EPHEMERAL_PORT_END: u16 = 65535;
 const SOCKET_TABLE_BUCKETS: usize = 256;
 const SOCKET_TABLE_CAPACITY: usize = 4096;
 const PORT_TABLE_BUCKETS: usize = 256;
+const UDP_BINDING_CAPACITY: usize = 2048;
 const RAW_SCOPE_TABLE_BUCKETS: usize = 64;
 const RAW_SCOPE_TABLE_CAPACITY: usize = 256;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub(crate) enum SocketFamily {
+enum SocketFamily {
     Ipv4,
     Ipv6,
 }
 
 impl SocketFamily {
-    pub(crate) fn from_addr(addr: EndpointAddr) -> Self {
+    fn from_addr(addr: EndpointAddr) -> Self {
         if addr.is_ipv6() {
             Self::Ipv6
         } else {
@@ -210,17 +211,11 @@ impl PortBindingTable {
             .map(|index| self.entries[index].socket_id)
     }
 
-
-
     fn has_any_scope_port(&self, port: u16) -> bool {
         self.entries
             .iter()
             .any(|entry| entry.key.port == port && matches!(entry.key.scope, InterfaceScope::Any))
     }
-
-
-
-
 
     fn remove_socket(&mut self, socket_id: SocketId) {
         self.entries.retain(|entry| entry.socket_id != socket_id);
@@ -228,6 +223,118 @@ impl PortBindingTable {
     }
 
     fn rebuild_index(&mut self) {
+        self.buckets = [None; PORT_TABLE_BUCKETS];
+        for index in 0..self.entries.len() {
+            let bucket = Self::bucket_for(self.entries[index].key);
+            self.entries[index].next = self.buckets[bucket];
+            self.buckets[bucket] = Some(index);
+        }
+    }
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct UdpBindingKey {
+    port: u16,
+    scope: InterfaceScope,
+}
+
+#[derive(Clone, Copy)]
+struct UdpBinding {
+    key: UdpBindingKey,
+    socket_id: SocketId,
+    next: Option<usize>,
+}
+
+/// One UDP bind owns both IP families. Bucket links are rebuilt from entries
+/// after removal; they never carry an independent binding or capacity fact.
+struct UdpBindings {
+    buckets: [Option<usize>; PORT_TABLE_BUCKETS],
+    entries: Vec<UdpBinding>,
+}
+
+impl UdpBindings {
+    const fn new() -> Self {
+        Self {
+            buckets: [None; PORT_TABLE_BUCKETS],
+            entries: Vec::new(),
+        }
+    }
+
+    fn bucket_for(key: UdpBindingKey) -> usize {
+        let hash = u32::from(key.port).wrapping_mul(0x9E37_79B9) ^ scope_hash(key.scope);
+        mix_hash(hash) & (PORT_TABLE_BUCKETS - 1)
+    }
+
+    fn find(&self, key: UdpBindingKey) -> Option<SocketId> {
+        let mut next = self.buckets[Self::bucket_for(key)];
+        // LOOP_PROOF: mode=condition; reason=Each bucket link points to an earlier entry in the finite binding vector.;
+        while let Some(index) = next {
+            let entry = self.entries[index];
+            if entry.key == key {
+                return Some(entry.socket_id);
+            }
+            next = entry.next;
+        }
+        None
+    }
+
+    fn get(&self, port: u16, ingress_if_id: NetIfId) -> Option<SocketId> {
+        self.find(UdpBindingKey {
+            port,
+            scope: InterfaceScope::Pinned(ingress_if_id),
+        })
+        .or_else(|| {
+            self.find(UdpBindingKey {
+                port,
+                scope: InterfaceScope::Any,
+            })
+        })
+    }
+
+    /// All rejection and allocation failures precede publication. Inserting
+    /// one record establishes the bind for both address families together.
+    ///
+    /// # Errors
+    /// Returns PortInUse for an overlapping scope, or ResourceExhausted when
+    /// the binding budget or backing storage cannot admit one record.
+    fn bind(&mut self, port: u16, scope: InterfaceScope, socket_id: SocketId) -> SocketResult<()> {
+        if self
+            .entries
+            .iter()
+            .any(|entry| entry.key.port == port && scopes_conflict(entry.key.scope, scope))
+        {
+            return Err(EndpointError::PortInUse);
+        }
+        if self.entries.len() >= UDP_BINDING_CAPACITY {
+            return Err(EndpointError::ResourceExhausted);
+        }
+        self.entries
+            .try_reserve(1)
+            .map_err(|_| EndpointError::ResourceExhausted)?;
+        let key = UdpBindingKey { port, scope };
+        let bucket = Self::bucket_for(key);
+        let index = self.entries.len();
+        self.entries.push(UdpBinding {
+            key,
+            socket_id,
+            next: self.buckets[bucket],
+        });
+        self.buckets[bucket] = Some(index);
+        Ok(())
+    }
+
+    fn has_any_scope_port(&self, port: u16) -> bool {
+        self.entries
+            .iter()
+            .any(|entry| entry.key.port == port && entry.key.scope == InterfaceScope::Any)
+    }
+
+    fn has_port(&self, port: u16) -> bool {
+        self.entries.iter().any(|entry| entry.key.port == port)
+    }
+
+    fn remove_socket(&mut self, socket_id: SocketId) {
+        self.entries.retain(|entry| entry.socket_id != socket_id);
         self.buckets = [None; PORT_TABLE_BUCKETS];
         for index in 0..self.entries.len() {
             let bucket = Self::bucket_for(self.entries[index].key);
@@ -319,21 +426,17 @@ fn random_ephemeral_start() -> Option<u16> {
     Some(EPHEMERAL_PORT_START + (random_start % range_size))
 }
 
-fn allocate_ephemeral_port_from(
-    ports: &PoisonRwLock<PortBindingTable>,
-    next_ephemeral_port: &AtomicU32,
-) -> Option<u16> {
+/// Selects against a stable binding view; the caller retains its read guard.
+/// Selection is a candidate only, and binding still performs admission.
+fn select_ephemeral_port(start_port: u16, is_bound: impl Fn(u16) -> bool) -> Option<u16> {
     let range_size = EPHEMERAL_PORT_END - EPHEMERAL_PORT_START + 1;
-    let start_port = random_ephemeral_start()?;
-    let ports_guard = ports.read().unwrap_or_else(|e| e.into_inner());
     for offset in 0..range_size {
         let port = EPHEMERAL_PORT_START
             + ((start_port
                 .wrapping_sub(EPHEMERAL_PORT_START)
                 .wrapping_add(offset))
                 % range_size);
-        if !ports_guard.has_any_scope_port(port) {
-            next_ephemeral_port.store(port.wrapping_add(1) as u32, Ordering::Relaxed);
+        if !is_bound(port) {
             return Some(port);
         }
     }
@@ -383,7 +486,6 @@ pub(crate) struct SocketRegistry {
     udp_ports: PoisonRwLock<UdpBindings>,
     raw_scopes: PoisonRwLock<RawScopeTable>,
     next_socket_id: AtomicU32,
-    next_ephemeral_port: AtomicU32,
 }
 
 impl SocketRegistry {
@@ -394,16 +496,25 @@ impl SocketRegistry {
             udp_ports: PoisonRwLock::new(UdpBindings::new()),
             raw_scopes: PoisonRwLock::new(RawScopeTable::new()),
             next_socket_id: AtomicU32::new(1),
-            next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
         }
     }
 
     pub fn allocate_tcp_ephemeral_port(&self) -> Option<u16> {
-        allocate_ephemeral_port_from(&self.tcp_ports, &self.next_ephemeral_port)
+        let start = random_ephemeral_start()?;
+        let ports = self
+            .tcp_ports
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        select_ephemeral_port(start, |port| ports.has_any_scope_port(port))
     }
 
     pub fn allocate_udp_ephemeral_port(&self) -> Option<u16> {
-        allocate_ephemeral_port_from(&self.udp_ports, &self.next_ephemeral_port)
+        let start = random_ephemeral_start()?;
+        let ports = self
+            .udp_ports
+            .read()
+            .unwrap_or_else(|error| error.into_inner());
+        select_ephemeral_port(start, |port| ports.has_any_scope_port(port))
     }
 
     pub fn register(&self, socket: Socket, state: SocketState) {
@@ -485,7 +596,23 @@ impl SocketRegistry {
         Some(f(&mut state))
     }
 
-
+    /// A successful bind admits one record for both IP families. Rejection
+    /// preserves the previously published bindings.
+    ///
+    /// # Errors
+    /// Returns PortInUse for an overlapping scope or ResourceExhausted when
+    /// the binding budget or backing storage is unavailable.
+    pub fn bind_udp_dual_stack(
+        &self,
+        port: u16,
+        scope: InterfaceScope,
+        socket_id: SocketId,
+    ) -> SocketResult<()> {
+        self.udp_ports
+            .write()
+            .unwrap_or_else(|error| error.into_inner())
+            .bind(port, scope, socket_id)
+    }
 
     pub fn register_raw_scope(
         &self,
@@ -496,7 +623,7 @@ impl SocketRegistry {
         guard.insert(scope, socket_id)
     }
 
-    pub fn find_tcp_by_port(
+    fn find_tcp_by_port(
         &self,
         family: SocketFamily,
         port: u16,
@@ -504,8 +631,6 @@ impl SocketRegistry {
     ) -> Option<Socket> {
         find_socket_by_port(&self.tcp_ports, &self.sockets, family, port, ingress_if_id)
     }
-
-
 
     pub fn find_raw_by_scope(&self, ingress_if_id: NetIfId) -> Option<Socket> {
         let socket_id = {
@@ -522,6 +647,15 @@ impl SocketRegistry {
             .read()
             .unwrap_or_else(|e| e.into_inner())
             .has_port(port)
+    }
+
+    pub fn find_udp_by_port(&self, port: u16, ingress_if_id: NetIfId) -> Option<Socket> {
+        let socket_id = self
+            .udp_ports
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .get(port, ingress_if_id)?;
+        self.get(socket_id)
     }
 
     pub fn for_each<F>(&self, mut f: F)
@@ -556,6 +690,102 @@ impl SocketRegistry {
 impl Default for SocketRegistry {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod udp_binding_tests {
+    use super::*;
+
+    #[test]
+    fn scoped_bindings_share_a_port_without_cross_interface_lookup() {
+        let mut bindings = UdpBindings::new();
+        let first = SocketId::from_raw(1);
+        let second = SocketId::from_raw(2);
+        assert_eq!(
+            bindings.bind(80, InterfaceScope::Pinned(NetIfId(1)), first),
+            Ok(())
+        );
+        assert_eq!(
+            bindings.bind(80, InterfaceScope::Pinned(NetIfId(2)), second),
+            Ok(())
+        );
+        assert_eq!(bindings.get(80, NetIfId(1)), Some(first));
+        assert_eq!(bindings.get(80, NetIfId(2)), Some(second));
+        assert_eq!(bindings.get(80, NetIfId(3)), None);
+        assert_eq!(
+            bindings.bind(80, InterfaceScope::Any, SocketId::from_raw(3)),
+            Err(EndpointError::PortInUse)
+        );
+        bindings.remove_socket(first);
+        assert_eq!(bindings.get(80, NetIfId(1)), None);
+        assert_eq!(bindings.get(80, NetIfId(2)), Some(second));
+    }
+
+    #[test]
+    fn any_scope_binding_rejects_overlaps_and_is_removed_with_its_owner() {
+        let mut bindings = UdpBindings::new();
+        let owner = SocketId::from_raw(1);
+        assert_eq!(bindings.bind(80, InterfaceScope::Any, owner), Ok(()));
+        assert_eq!(
+            bindings.bind(81, InterfaceScope::Pinned(NetIfId(2)), owner),
+            Ok(())
+        );
+        assert_eq!(
+            bindings.bind(
+                80,
+                InterfaceScope::Pinned(NetIfId(2)),
+                SocketId::from_raw(2)
+            ),
+            Err(EndpointError::PortInUse)
+        );
+        assert_eq!(
+            bindings.bind(80, InterfaceScope::Any, SocketId::from_raw(2)),
+            Err(EndpointError::PortInUse)
+        );
+        assert_eq!(bindings.get(80, NetIfId(2)), Some(owner));
+        bindings.remove_socket(owner);
+        assert!(!bindings.has_port(80));
+        assert!(!bindings.has_port(81));
+        assert_eq!(
+            bindings.bind(
+                80,
+                InterfaceScope::Pinned(NetIfId(2)),
+                SocketId::from_raw(2)
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn binding_budget_rejects_without_progress_and_removal_returns_capacity() {
+        let mut bindings = UdpBindings::new();
+        for value in 1..=UDP_BINDING_CAPACITY {
+            let port = u16::try_from(value).expect("fixture fits the port range");
+            bindings
+                .bind(
+                    port,
+                    InterfaceScope::Any,
+                    SocketId::from_raw(u32::from(port)),
+                )
+                .expect("admit binding within budget");
+        }
+        assert_eq!(
+            bindings.bind(60_000, InterfaceScope::Any, SocketId::from_raw(60_000)),
+            Err(EndpointError::ResourceExhausted)
+        );
+        assert!(!bindings.has_port(60_000));
+        assert_eq!(bindings.get(1, NetIfId(1)), Some(SocketId::from_raw(1)));
+        bindings.remove_socket(SocketId::from_raw(1));
+        assert_eq!(
+            bindings.bind(60_000, InterfaceScope::Any, SocketId::from_raw(60_000)),
+            Ok(())
+        );
+        assert_eq!(
+            bindings.get(60_000, NetIfId(1)),
+            Some(SocketId::from_raw(60_000))
+        );
+        assert_eq!(bindings.get(2, NetIfId(1)), Some(SocketId::from_raw(2)));
     }
 }
 

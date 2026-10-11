@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::l4::socket::{SocketFamily, find_udp_by_port_in};
+use crate::net::l4::socket::find_udp_by_port_in;
 use crate::net::runtime::NetRuntimeHandle;
 
 /// UDP processor for handling UDP packets
@@ -47,13 +47,7 @@ impl UdpProcessor {
         ttl: u8,
         payload: PacketPayload,
     ) -> bool {
-        let family = if src.is_ipv6() {
-            SocketFamily::Ipv6
-        } else {
-            SocketFamily::Ipv4
-        };
-
-        let Some(endpoint) = find_udp_by_port_in(runtime, family, dst_port, if_id) else {
+        let Some(endpoint) = find_udp_by_port_in(runtime, dst_port, if_id) else {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
             return false;
         };
@@ -74,10 +68,9 @@ impl UdpProcessor {
         &self,
         runtime: NetRuntimeHandle,
         if_id: NetIfId,
-        family: SocketFamily,
         dst_port: u16,
     ) -> Option<Socket> {
-        let endpoint = find_udp_by_port_in(runtime, family, dst_port, if_id);
+        let endpoint = find_udp_by_port_in(runtime, dst_port, if_id);
         if endpoint.is_none() {
             self.stats.rx_dropped.fetch_add(1, Ordering::Relaxed);
         }
@@ -176,8 +169,7 @@ impl UdpProcessor {
             u16::from_be_bytes([header[0], header[1]]),
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let family = SocketFamily::Ipv4;
-        let Some(endpoint) = self.lookup_socket(runtime, if_id, family, dst_port) else {
+        let Some(endpoint) = self.lookup_socket(runtime, if_id, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 
@@ -273,8 +265,7 @@ impl UdpProcessor {
             u16::from_be_bytes([header[0], header[1]]),
         );
         let dst_port = u16::from_be_bytes([header[2], header[3]]);
-        let family = SocketFamily::Ipv6;
-        let Some(endpoint) = self.lookup_socket(runtime, if_id, family, dst_port) else {
+        let Some(endpoint) = self.lookup_socket(runtime, if_id, dst_port) else {
             return Err((UdpResult::NoEndpoint, packet.into_original_payload()));
         };
 

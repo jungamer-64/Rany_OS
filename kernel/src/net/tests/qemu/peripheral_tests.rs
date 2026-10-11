@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::net::l3::{igmp, ipv4::Ipv4Address};
-use crate::net::l4::socket::{Socket, SocketFamily, bind_udp_dual_stack_in, find_udp_by_port_in};
+use crate::net::l4::socket::{Socket, bind_udp_dual_stack_in, find_udp_by_port_in};
 use crate::net::l4::udp::{UdpProcessor, UdpResult};
 use crate::net::payload::alloc_packet_with_headroom;
 use crate::net::runtime::create_runtime;
@@ -302,10 +302,15 @@ pub fn runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
     let socket_a = Socket::new_udp_in(runtime_a);
     let socket_b = Socket::new_udp_in(runtime_b);
 
-    bind_udp_dual_stack_in(runtime_a, 80, InterfaceScope::Any, socket_a.socket_id()).is_ok()
+    socket_a.socket_id() == socket_b.socket_id()
+        && bind_udp_dual_stack_in(runtime_a, 80, InterfaceScope::Any, socket_a.socket_id()).is_ok()
         && bind_udp_dual_stack_in(runtime_b, 80, InterfaceScope::Any, socket_b.socket_id()).is_ok()
-        && find_udp_by_port_in(runtime_a, SocketFamily::Ipv4, 80, NetIfId(1)).is_some()
-        && find_udp_by_port_in(runtime_b, SocketFamily::Ipv4, 80, NetIfId(2)).is_some()
+        && find_udp_by_port_in(runtime_a, 80, NetIfId(1)).is_some_and(|found| {
+            found.socket_id() == socket_a.socket_id() && found.runtime() == runtime_a
+        })
+        && find_udp_by_port_in(runtime_b, 80, NetIfId(2)).is_some_and(|found| {
+            found.socket_id() == socket_b.socket_id() && found.runtime() == runtime_b
+        })
 }
 
 pub fn runtime_udp_concrete_ingress_interface_is_preserved_smoke() -> bool {

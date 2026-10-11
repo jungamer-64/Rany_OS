@@ -12,7 +12,7 @@ use crate::net::runtime::{NetRuntimeHandle, manager::NetIfId};
 use crate::net::types::InterfaceScope;
 
 pub(crate) use self::entry::Socket;
-pub(crate) use self::registry::{SocketFamily, SocketRegistry};
+pub(crate) use self::registry::SocketRegistry;
 pub(crate) use self::state::TcpSocketState;
 
 pub(crate) const DEFAULT_TCP_ACCEPT_BACKLOG: usize = self::state::SocketState::DEFAULT_BACKLOG;
@@ -77,6 +77,16 @@ pub(crate) fn find_raw_by_scope_in(
     })
 }
 
+pub(crate) fn find_udp_by_port_in(
+    runtime: NetRuntimeHandle,
+    port: u16,
+    ingress_if_id: NetIfId,
+) -> Option<Socket> {
+    with_socket_registry_in(runtime, |registry| {
+        registry.find_udp_by_port(port, ingress_if_id)
+    })
+}
+
 pub(crate) fn has_udp_port_in(runtime: NetRuntimeHandle, port: u16) -> bool {
     with_socket_registry_in(runtime, |registry| registry.has_udp_port(port))
 }
@@ -91,48 +101,4 @@ pub(crate) fn find_listening_tcp_socket_in(
 
 pub(crate) fn generate_socket_id_in(runtime: NetRuntimeHandle) -> Option<SocketId> {
     with_socket_registry_in(runtime, SocketRegistry::generate_socket_id)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::net::runtime::{create_runtime, default_runtime, reset_runtime_registry_for_tests};
-
-    #[test]
-    fn two_runtimes_can_bind_same_udp_port_independently() {
-        reset_runtime_registry_for_tests();
-
-        let runtime_a = default_runtime();
-        let runtime_b = create_runtime().expect("second runtime");
-        let socket_a = Socket::new_udp_in(runtime_a);
-        let socket_b = Socket::new_udp_in(runtime_b);
-
-        assert_eq!(socket_a.socket_id(), socket_b.socket_id());
-        assert!(
-            bind_udp_dual_stack_in(runtime_a, 80, InterfaceScope::Any, socket_a.socket_id())
-                .is_ok()
-        );
-        assert!(
-            bind_udp_dual_stack_in(runtime_b, 80, InterfaceScope::Any, socket_b.socket_id())
-                .is_ok()
-        );
-        assert!(
-            find_udp_by_port_in(
-                runtime_a,
-                SocketFamily::Ipv4,
-                80,
-                crate::net::runtime::manager::NetIfId(1)
-            )
-            .is_some()
-        );
-        assert!(
-            find_udp_by_port_in(
-                runtime_b,
-                SocketFamily::Ipv4,
-                80,
-                crate::net::runtime::manager::NetIfId(1)
-            )
-            .is_some()
-        );
-    }
 }
