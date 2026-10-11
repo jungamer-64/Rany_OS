@@ -242,7 +242,7 @@ fn test_domain_list_requires_cap_sys_ptrace() {
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_domain_info_allows_self_without_cap_sys_ptrace() {
-    crate::domain::init();
+    crate::domain::init().expect("kernel domain admission");
     let mut shell = ExoShell::with_capabilities(CapabilitySet::empty());
     let self_id = crate::shell::runtime::current_domain_id();
     let cmd = alloc::format!("domain.info({})", self_id);

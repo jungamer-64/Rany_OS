@@ -76,6 +76,10 @@ pub struct Domain {
 impl Domain {
     /// Prepare metadata before publication. Allocation failure publishes no
     /// domain or security handle; metadata prepared so far is dropped.
+    ///
+    /// # Errors
+    /// Fallible security, code-ownership, or dependency metadata allocation
+    /// returns `MemoryError::OutOfMemory` without registering this ID.
     pub fn new(id: DomainId, name: String) -> Result<Self, KernelError> {
         let security = if id == DomainId::KERNEL {
             kernel_security_handle()
@@ -224,6 +228,36 @@ pub(crate) struct DomainRegistry {
     pub(crate) next_id: AtomicU64,
 }
 
+/// Empty backing reserved outside the registry. Publication swaps leave it
+/// empty too, so moving existing records cannot exceed the checked capacity.
+struct DomainStorage {
+    buffer: Vec<Domain>,
+}
+
+impl DomainStorage {
+    fn for_records(count: usize) -> Result<Self, KernelError> {
+        let mut buffer = Vec::new();
+        buffer
+            .try_reserve_exact(count)
+            .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?;
+        Ok(Self { buffer })
+    }
+}
+
+/// Exclusive borrow of capacity for one allocation-free publication. No other
+/// mutation can consume the reserved slot before this borrow is committed.
+struct DomainPublication<'a> {
+    domains: &'a mut Vec<Domain>,
+}
+
+impl DomainPublication<'_> {
+    fn commit(self, domain: Domain) -> DomainId {
+        let id = domain.id;
+        self.domains.push(domain);
+        id
+    }
+}
+
 impl DomainRegistry {
     /// 新しいレジストリを作成
     const fn new() -> Self {
@@ -237,6 +271,27 @@ impl DomainRegistry {
     fn generate_id(&self) -> DomainId {
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         DomainId::new(id)
+    }
+
+    fn reserve_publication(
+        &mut self,
+        prepared: &mut DomainStorage,
+    ) -> Result<DomainPublication<'_>, KernelError> {
+        let required = self
+            .domains
+            .len()
+            .checked_add(1)
+            .ok_or(KernelError::Domain(DomainErrorKind::RegistryFull))?;
+        if self.domains.capacity() < required {
+            if prepared.buffer.capacity() < required {
+                return Err(KernelError::Domain(DomainErrorKind::RegistryFull));
+            }
+            prepared.buffer.append(&mut self.domains);
+            core::mem::swap(&mut self.domains, &mut prepared.buffer);
+        }
+        Ok(DomainPublication {
+            domains: &mut self.domains,
+        })
     }
 }
 
@@ -406,18 +461,77 @@ pub fn add_domain_dependency(
 pub(crate) static REGISTRY: PoisonLock<DomainRegistry> = PoisonLock::new(DomainRegistry::new());
 
 // ============================================================================
-// ヒープレジストリ統合
-// ============================================================================
-// 以前はここに static HEAP_REGISTRY がありましたが、
-// 拡張性のため crate::sas（Global Sharded Registry）に統合されました。
-// ============================================================================
-
-// ============================================================================
 // 公開API - ドメイン管理
 // ============================================================================
 
+/// Bootstrap owns kernel-domain publication. Preparation and rejected metadata
+/// destruction run outside the registry lock; repeated admission preserves the
+/// existing kernel record and its leases.
+///
+/// # Errors
+/// Reports unavailable registry access, exhausted domain metadata, or a reservation
+/// overtaken by concurrent publication. Failure publishes no kernel record.
+///
+/// # Panics
+/// Kernel bootstrap cannot proceed when its required quota account cannot be
+/// published by the quota subsystem.
+pub(crate) fn init() -> Result<(), KernelError> {
+    crate::domain::quota::init();
+    let needed = {
+        let registry = REGISTRY
+            .lock()
+            .map_err(|_| KernelError::Domain(DomainErrorKind::RegistryPoisoned))?;
+        if registry
+            .domains
+            .iter()
+            .any(|domain| domain.id == DomainId::KERNEL)
+        {
+            return Ok(());
+        }
+        registry
+            .domains
+            .len()
+            .checked_add(1)
+            .ok_or(KernelError::Domain(DomainErrorKind::RegistryFull))?
+    };
+    let mut prepared = DomainStorage::for_records(needed)?;
+    let mut name = String::new();
+    name.try_reserve_exact("kernel".len())
+        .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?;
+    name.push_str("kernel");
+    let mut kernel = Domain::new(DomainId::KERNEL, name)?;
+    kernel.state = DomainState::Running;
+    let result = {
+        let mut registry = REGISTRY
+            .lock()
+            .map_err(|_| KernelError::Domain(DomainErrorKind::RegistryPoisoned))?;
+        if registry
+            .domains
+            .iter()
+            .any(|domain| domain.id == DomainId::KERNEL)
+        {
+            Ok(())
+        } else {
+            match registry.reserve_publication(&mut prepared) {
+                Ok(publication) => {
+                    publication.commit(kernel);
+                    Ok(())
+                }
+                Err(error) => Err(error),
+            }
+        }
+    };
+    drop(prepared);
+    result
+}
+
 /// Prepare security/account metadata outside the registries, then publish the
 /// domain without allocation. Rejection consumes an ID but publishes no domain.
+///
+/// # Errors
+/// Distinguishes registry poison, metadata exhaustion, quota admission failure,
+/// and concurrent publication outgrowing the prepared capacity. Rejected
+/// publication withdraws the prepared quota account after unlocking.
 pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     let (id, needed) = {
         let registry = REGISTRY
@@ -432,10 +546,7 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     };
     // Metadata allocation can enter OOM/domain lookup; it must run without either
     // registry lock. The final locked publication below performs no allocation.
-    let mut prepared = Vec::new();
-    prepared
-        .try_reserve_exact(needed)
-        .map_err(|_| KernelError::Memory(crate::error::MemoryError::OutOfMemory))?;
+    let mut prepared = DomainStorage::for_records(needed)?;
     let domain = Domain::new(id, name)?;
     domain_quota_policy(
         id,
@@ -454,11 +565,10 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     })?;
     let result = {
         match REGISTRY.lock() {
-            Ok(mut registry) => {
-                registry
-                    .reserve_publication(&mut prepared)
-                    .map(|publication| publication.commit(domain))
-            }
+            Ok(mut registry) => match registry.reserve_publication(&mut prepared) {
+                Ok(publication) => Ok(publication.commit(domain)),
+                Err(error) => Err(error),
+            },
             Err(_) => Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned)),
         }
     };
@@ -473,6 +583,10 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
 
 /// Observe immutable security metadata for a live domain. This snapshot grants
 /// no quota or resource-publication admission; those owners check separately.
+///
+/// # Errors
+/// Rejects unknown or inactive domains and unavailable registry access without
+/// substituting kernel security metadata.
 pub fn domain_security_handle(
     id: DomainId,
 ) -> Result<Arc<DomainSecurity>, DomainSecurityLookupError> {
@@ -629,6 +743,10 @@ pub fn get_domain_snapshot(id: DomainId) -> Option<DomainSnapshot> {
 }
 
 /// ドメインを開始
+///
+/// # Errors
+/// Registry poison, a missing domain, or a state other than `Initializing`
+/// rejects admission without changing the domain state.
 pub fn start_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     let mut registry = REGISTRY
         .lock()
@@ -685,6 +803,10 @@ pub fn set_domain_numa(id: DomainId, node: usize) {
 /// Prepare replacement security outside the registry lock. Existing handles
 /// retain their snapshot; allocation failure or a concurrent security update
 /// publishes nothing. The caller may retry `SecurityChanged` with fresh policy.
+///
+/// # Errors
+/// Unavailable registry access, a missing domain, metadata exhaustion, or
+/// `SecurityChanged` publishes no replacement from this attempt.
 pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), DomainPolicyError> {
     let observed = {
         let guard = REGISTRY
@@ -723,6 +845,10 @@ pub fn set_domain_capabilities(id: DomainId, caps: CapabilitySet) -> Result<(), 
 }
 
 /// Set scheduling priority metadata for a domain
+///
+/// # Errors
+/// Unavailable registry access, a missing domain, or quota policy rejection
+/// leaves the priority unchanged. A successful update retains accrued usage.
 pub fn set_domain_priority(
     id: DomainId,
     priority: DomainPriority,
@@ -755,6 +881,11 @@ pub fn set_domain_priority(
 }
 
 /// Set quota metadata for a domain
+///
+/// # Errors
+/// Unavailable registry access, a missing domain, invalid limits, or quota
+/// policy rejection leaves the limits unchanged. Existing charges are retained
+/// even when a successful update lowers the limit below current usage.
 pub fn set_domain_resource_limits(
     id: DomainId,
     cpu_limit_percent: u64,
@@ -829,6 +960,11 @@ pub fn get_domain_numa(id: DomainId) -> Option<usize> {
 
 /// Requests stop before testing completion. Suspended polls retain their
 /// stack and may resume to reach a poll boundary; new polls are denied.
+///
+/// # Errors
+/// The kernel domain, registry poison, or a missing domain rejects the request.
+/// A retained execution is reported as `InProgress`, which keeps the stop
+/// request committed and requires a later completion check.
 pub fn stop_domain(id: DomainId) -> Result<DomainStopOutcome, DomainLifecycleError> {
     if id == DomainId::KERNEL {
         return Err(DomainLifecycleError::KernelDomain);
@@ -865,6 +1001,10 @@ pub fn stop_domain(id: DomainId) -> Result<DomainStopOutcome, DomainLifecycleErr
 }
 
 /// Resume a stopped or suspended domain
+///
+/// # Errors
+/// Registry poison, a missing domain, or a stop/reclamation still in progress
+/// rejects reopening admission. A terminated domain cannot be resumed.
 pub fn resume_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     match REGISTRY.lock() {
         Ok(mut registry) => {
@@ -891,7 +1031,16 @@ pub fn resume_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     }
 }
 
-/// ドメインを終了しリソースを回収
+/// Complete domain termination after retained execution and code leases drain.
+/// Success initiates resource return; outstanding memory/DMA owners may still
+/// retain their allocations until they release them.
+///
+/// # Errors
+/// Kernel-domain, missing-domain, registry, and quota admission failures can
+/// reject termination before stop is requested. `Busy`, `CodeBusy`, and
+/// `ReclamationInProgress` retain the stop request and resource ownership.
+/// Cleanup or code-finalization failure can follow task retirement; the domain
+/// remains unavailable for new polls and retains unreturned resources for retry.
 pub fn terminate_domain(id: DomainId) -> Result<(), DomainLifecycleError> {
     if id == DomainId::KERNEL {
         return Err(DomainLifecycleError::KernelDomain);
@@ -1046,6 +1195,80 @@ pub fn handle_domain_panic(id: DomainId, message: String) {
     // Retain resources until the ordinary stop/termination boundary succeeds.
     if let Err(error) = terminate_domain(id) {
         log::warn!("[DOMAIN] Panic cleanup remains incomplete for {id}: {error}");
+    }
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod publication_tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_bootstrap_publishes_one_kernel_record() {
+        std::thread::scope(|threads| {
+            for _ in 0..16 {
+                threads.spawn(|| init().expect("kernel metadata admission"));
+            }
+        });
+        init().expect("repeated bootstrap admission");
+        let snapshots = list_domain_snapshots();
+        let kernel: Vec<_> = snapshots
+            .iter()
+            .filter(|domain| domain.id == DomainId::KERNEL)
+            .collect();
+        assert_eq!(kernel.len(), 1);
+        assert_eq!(kernel[0].state, DomainState::Running);
+        assert_eq!(kernel[0].name, "kernel");
+    }
+
+    #[test]
+    fn publication_rejection_retains_existing_records() {
+        let mut registry = DomainRegistry::new();
+        let existing = Domain::new(DomainId::new(1), String::from("existing")).unwrap();
+        // Boxed-slice conversion supplies a full record array, independent of
+        // the allocator's growth strategy for a fresh Vec.
+        registry.domains = alloc::vec![existing].into_boxed_slice().into_vec();
+        let mut prepared = DomainStorage::for_records(0).unwrap();
+        assert!(matches!(
+            registry.reserve_publication(&mut prepared),
+            Err(KernelError::Domain(DomainErrorKind::RegistryFull))
+        ));
+        let snapshot = to_snapshot(&registry.domains[0], &registry.domains);
+        assert_eq!(snapshot.id, DomainId::new(1));
+        assert_eq!(snapshot.name, "existing");
+        assert_eq!(registry.domains.len(), 1);
+    }
+
+    #[test]
+    fn enlarged_publication_preserves_all_domain_records() {
+        let mut registry = DomainRegistry::new();
+        let records = [
+            (DomainId::new(0x110), "first"),
+            (DomainId::new(0x220), "second"),
+            (DomainId::new(0x330), "third"),
+        ];
+        for (index, &(id, name)) in records.iter().enumerate() {
+            let count = index + 1;
+            let mut prepared = DomainStorage::for_records(count).unwrap();
+            let domain = Domain::new(id, String::from(name)).unwrap();
+            let published = registry
+                .reserve_publication(&mut prepared)
+                .unwrap()
+                .commit(domain);
+            assert_eq!(published, id);
+            let snapshots: Vec<_> = registry
+                .domains
+                .iter()
+                .map(|domain| to_snapshot(domain, &registry.domains))
+                .collect();
+            assert_eq!(snapshots.len(), count);
+            for &(prior, name) in &records[..count] {
+                assert!(
+                    snapshots
+                        .iter()
+                        .any(|domain| domain.id == prior && domain.name == name)
+                );
+            }
+        }
     }
 }
 

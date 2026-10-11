@@ -9,7 +9,7 @@ pub mod types;
 pub use api::*;
 pub use policy::DomainPolicyError;
 pub use quota::{DomainPriority, DomainQuota, QuotaError, quota_manager};
-pub(crate) use registry::with_resource_admission;
+pub(crate) use registry::{init, with_resource_admission};
 pub use types::*;
 
 #[cfg(test)]

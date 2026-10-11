@@ -53,6 +53,7 @@
 
 - OOM victim selection は quota 側の priority と使用量に基づく。
 - heap 側の OOM 実装は quota manager を authoritative source として使う。
+- kernel domain の初期化と通常 domain の登録は、metadata を registry の外で準備し、ロック内で確保せずに公開する。公開用の借用が容量を保持し、失敗時の破棄はロックの外で行う。並行する初期化も一つの kernel record と既存 lease を保持する。
 - OOM の選択・終了処理は kernel の課金先で実行し、起点 domain の quota が枯渇・終了しても bookkeeping を続けられるようにする。課金先の切替は registry lock や metadata 確保を伴わず、destructor が動く場合も起点の domain・credentials・Capability を保持する。終了開始時に新規 admission を止め、起点の実行 binding は処理が戻るまで保持する。
 - ドメイン終了は停止要求と回収完了を分ける。実行中・中断中の poll、コード lease、未完了の finalizer がある間は型付きの未完了を返して資源を保持する。回収完了と依存先通知を一度の registry publication で確定する。回収中の通知は依存先 ID を保持し、表示時に文字列化する。registry 内では quota の admission を停止するだけで metadata を破棄せず、回収処理はロックの外で行う。回収処理が戻るまで account binding を保持し、同じ domain の再 admission を拒否する。停止要求前の拒否は未進行であり、kernel 保護・対象不在・registry 不可用・quota 拒否を区別する。終了成功は、保持中の RAM や DMA quarantine の返却完了を意味しない。
 - 依存関係は各ドメインの依存先集合を正本とし、被依存先の snapshot と終了通知をそこから導出する。登録用 metadata を registry の外で準備し、公開時に両端の存続状態と観測した集合を再確認する。競合・確保失敗ではその登録を公開せず、停止・回収中のドメインへ新たな関係を追加しない。

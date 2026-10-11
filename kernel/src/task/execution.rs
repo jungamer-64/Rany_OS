@@ -255,7 +255,7 @@ mod tests {
 
     #[test]
     fn security_and_quota_admission_report_independent_rejections() {
-        crate::domain::init();
+        crate::domain::init().expect("kernel domain admission");
         let task = TaskId::from_raw(0x5345_4355);
         let missing = DomainId::new(u64::MAX);
         assert!(matches!(
