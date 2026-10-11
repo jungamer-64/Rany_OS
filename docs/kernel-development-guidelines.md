@@ -73,44 +73,33 @@ ExoRust カーネルの canonical baseline は
 
 ### ✅ DO
 
-- Future ベースのタスクを使う
-- ISR ではイベント ID だけをキューへ積み、通常コンテキストで deferred wake を行う
+- Future の poll はタスク専用スタックで実行し、scheduler は CPU 専用スタックで動作する
+- ISR では CPU ローカルな通知を記録し、通常コンテキストで deferred wake を行う
 - 公平性の下限は APIC タイマーによる強制プリエンプションで担保する
 - Fuel や静的解析は最適化として使う
 
-```rust
-fn interrupt_handler() {
-    let event_id = check_device_status();
-    EVENT_QUEUE.push(event_id);
-}
-
-fn executor_loop() {
-    while let Some(event_id) = EVENT_QUEUE.pop() {
-        wake_event(event_id);
-    }
-    poll_ready_tasks();
-}
-```
+実行・配置・budget の contract は
+[Execution Fairness Reference](reference/execution-fairness.md) を参照する。
 
 ### ❌ DON'T
 
-- ISR 内で直接 `wake()` を呼ばない
-- ISR 内で動的メモリ割り当てをしない
-- `block_on` を executor 内部で呼ばない
+- ISR 内で waker の callback、Future の poll、動的メモリ割り当て、run queue の選択を行わない
+- Future をロックしたまま poll しない
+- 中断中の poll を別 CPU へ移動したり、同じ Future を再度 poll したりしない
+- `block_on` を scheduler 内部で呼ばない
 
 ### 3.1 運用パラメータの既定化
 
-- 公平性の下限保証は APIC タイマーで担保し、executor 実装差異に依存させない。
-- APIC タイマー周期や優先度は、設定値を一箇所に集約して管理する（散在定義を禁止）。
+- quantum、poll ごとの fuel、スタック容量、タスク枠は [scheduler 設定](../kernel/src/task/config.rs) を正本とする。
 - Fuel カウンタや静的解析は性能最適化として導入し、進行保証の唯一条件にしない。
-- Fuel を無効化する構成でも、APIC タイマー下限保証が維持されることを確認する。
+- fuel 消費や yield を行わない Future でも、割込み有効かつクリティカル区間外ではタイマーによる切替を検証する。
 
 ### 3.2 ISR / deferred wake のレビュー観点
 
-- ISR 内の責務は「イベント識別」と「キュー投入」に限定する。
-- `wake()`、ロック取得、ヒープ確保を ISR から排除する。
-- deferred wake キューが飽和した場合の扱い（ドロップ/再試行/統計）を明示する。
-- レビューでは「直接 wake 経路が存在しないこと」を必須確認項目とする。
+- 割込み処理・EOI・割込みコンテキストの終了後に scheduler へ実行を退避する。
+- preemption guard の解放時には切り替えず、保留要求を次のタイマー割込みで処理する。
+- タスク単位で通知を合流し、中断中の wake と終了後の古い waker を同じ状態遷移で扱う。
+- タイマー回数と、実際に scheduler へ退避した強制切替回数を分けて観測する。
 
 ### 3.3 Runtime quota / QoS
 
@@ -122,17 +111,10 @@ fn executor_loop() {
 
 ### 3.4 NUMA locality / power
 
-- DO: executor、memory、device の locality を同一 NUMA ノード優先で設計する。
-- DO: same-node-first scheduling と task affinity mask は `Canonical target` として文書化する。
+- DO: scheduler、memory、device の locality を同一 NUMA ノード優先で設計する。
+- DO: `CpuSet` の実行許可集合と CPU / NUMA の優先指定を分離し、poll が戻った境界で同一ノードを優先して配置・stealing を行う。
 - DO: adaptive polling / interrupt switching と C-state 制御を latency floor と両立させる。
 - DON'T: cross-node migration や power policy を driver ごとの ad hoc heuristic に閉じ込めない。
-
-### 3.5 旧設計案からの読み替え
-
-- `fuel quota`、`loop-bound proof`、FFI checkpoint、APIC timeslice default は
-  [reference/execution-fairness.md](reference/execution-fairness.md)
-  に集約する。
-- baseline として必須なのは APIC タイマーによる公平性の下限保証であり、archive 由来の具体値や instrumentation 方針そのものではない。
 
 ---
 
@@ -244,6 +226,7 @@ fn call_cross_domain<R>(f: impl FnOnce() -> R) -> Result<R, DomainError> {
 ### ✅ DO
 
 - Epoch-based Reclamation と quiescent state を使って旧バージョンを回収する
+- scheduler へ制御が戻っただけで quiescent と判定せず、中断中の poll と Future が保持するコード lease が解消するまで回収を保留する
 - 持ち越し状態は `#[repr(C)]` 状態、handle、token、バージョン付きシリアライズ状態に限定する
 - 新旧バージョン間の状態移行関数を明示的に実装する
 
@@ -289,15 +272,6 @@ impl Migratable for DriverStateV2 {
 - DON'T: 内部計測 API の細部を public ABI と誤認させる文書化をしない。
 
 ---
-
-## 改訂履歴
-
-| バージョン | 日付 | 変更内容 |
-| --- | --- | --- |
-| 1.3 | 2026-04-09 | fairness / starvation の細部を reference へ分離し、旧設計案からの読み替えを追加 |
-| 1.2 | 2026-04-09 | Canonical target / requirement 語彙を導入し、durability、resilience、tracing、NUMA / power、fault hardening の baseline を更新 |
-| 1.1 | 2026-03-28 | Variant A 基準へ再編。Capability-first、live update 制約、optional hardware protection を反映 |
-| 1.0 | 2024-12-16 | 初版: MPK, Quiescent State, ABI, 燃料チェック, 署名を追加 |
 
 ## 関連文書
 
