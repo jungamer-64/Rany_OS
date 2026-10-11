@@ -24,6 +24,21 @@ use kernel_api::service::netdev::{
     TxDeviceOutcome, TxPacketSubmission,
 };
 
+pub fn ndp_build_ns_smoke() -> bool {
+    crate::net::l3::ndp::tests::test_build_ns();
+    true
+}
+
+pub fn ndp_build_na_smoke() -> bool {
+    crate::net::l3::ndp::tests::test_build_na();
+    true
+}
+
+pub fn ndp_build_rs_smoke() -> bool {
+    crate::net::l3::ndp::tests::test_build_rs();
+    true
+}
+
 fn poll_neighbor_future<F: core::future::Future + Unpin>(
     future: &mut F,
 ) -> core::task::Poll<F::Output> {

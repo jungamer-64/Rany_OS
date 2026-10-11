@@ -1,3 +1,15 @@
+pub fn net_peripheral_ndp_build_ns_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_ns_smoke()
+}
+
+pub fn net_peripheral_ndp_build_na_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_na_smoke()
+}
+
+pub fn net_peripheral_ndp_build_rs_smoke() -> bool {
+    crate::net::qemu_tests::ndp_build_rs_smoke()
+}
+
 pub fn net_peripheral_neighbor_resolution_completion_smoke() -> bool {
     crate::net::qemu_tests::neighbor_resolution_completion_smoke()
 }

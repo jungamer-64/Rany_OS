@@ -4,6 +4,14 @@
 
 use super::*;
 
+// RFC 4861 section 4.3: fe80::2 solicits fe80::5054:ff:fe12:3456 at
+// ff02::1:ff12:3456. The checksum includes that IPv6 pseudo-header.
+const RECEIVED_NS: [u8; 32] = [
+    0x87, 0x00, 0x5d, 0xdd, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56, 0x01, 0x01, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff,
+];
+
+#[cfg(feature = "qemu-test-export")]
 fn payload_bytes(payload: &kernel_api::resource::net::PacketPayload) -> alloc::vec::Vec<u8> {
     let mut out = alloc::vec![0u8; payload.total_len()];
     let view = crate::net::payload::PacketPayloadView::new(payload);
@@ -141,8 +149,7 @@ pub fn test_parse_prefix_info_option() {
     }
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_ns() {
     let src = Ipv6Address::new([
         0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0x00, 0xff, 0xfe, 0x12, 0x34, 0x56,
@@ -153,6 +160,14 @@ pub fn test_build_ns() {
 
     let msg = NdpProcessor::build_ns(&src, &dst, &target, &mac).expect("ns");
     let msg = payload_bytes(&msg);
+    assert_eq!(
+        msg.as_slice(),
+        &[
+            0x87, 0x00, 0x72, 0x20, 0x00, 0x00, 0x00, 0x00, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0x01, 0x01, 0x52, 0x54,
+            0x00, 0x12, 0x34, 0x56,
+        ]
+    );
     assert_eq!(msg.len(), 32);
     assert_eq!(msg[0], u8::from(Icmpv6Type::NeighborSolicitation));
     // Target at bytes 8-23
@@ -168,8 +183,7 @@ pub fn test_build_ns() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_na() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let dst = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -178,6 +192,14 @@ pub fn test_build_na() {
 
     let msg = NdpProcessor::build_na(&src, &dst, &target, &mac, true).expect("na");
     let msg = payload_bytes(&msg);
+    assert_eq!(
+        msg.as_slice(),
+        &[
+            0x88, 0x00, 0x93, 0x60, 0x60, 0x00, 0x00, 0x00, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0x52, 0x54,
+            0x00, 0x12, 0x34, 0x56,
+        ]
+    );
     assert_eq!(msg.len(), 32);
     assert_eq!(msg[0], u8::from(Icmpv6Type::NeighborAdvertisement));
     // Flags: Solicited + Override = 0x60
@@ -191,14 +213,20 @@ pub fn test_build_na() {
     assert_eq!(cksum, 0);
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+#[cfg(feature = "qemu-test-export")]
 pub fn test_build_rs() {
     let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
     let mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
 
     let msg = NdpProcessor::build_rs(&src, &mac).expect("rs");
     let msg = payload_bytes(&msg);
+    assert_eq!(
+        msg.as_slice(),
+        &[
+            0x85, 0x00, 0xf5, 0x70, 0x00, 0x00, 0x00, 0x00, 0x01, 0x01, 0x52, 0x54, 0x00, 0x12,
+            0x34, 0x56,
+        ]
+    );
     assert_eq!(msg.len(), 16);
     assert_eq!(msg[0], u8::from(Icmpv6Type::RouterSolicitation));
 
@@ -232,20 +260,18 @@ pub fn test_resolve_multicast() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ns_processing() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let our_ip = Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
+    ]);
     let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let dst = our_ip.solicited_node();
 
-    // Build an NS targeting our address
-    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &sender_mac).expect("ns");
-    let ns = payload_bytes(&ns);
-
     let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
-        &ns,
+        &RECEIVED_NS,
         sender_ip,
         dst,
         sender_mac,
@@ -277,7 +303,9 @@ pub fn test_ns_processing() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_ndp_spoofing_detection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let our_ip = Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
+    ]);
     let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
@@ -285,15 +313,11 @@ pub fn test_ndp_spoofing_detection() {
 
     // Attacker sends NS with SLLA option containing their MAC,
     // but the actual Ethernet source MAC is different (spoofed).
-    let slla_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let actual_eth_mac = [0xDE, 0xAD, 0xBE, 0xEF, 0xCA, 0xFE];
-
-    let ns = NdpProcessor::build_ns(&sender_ip, &dst, &our_ip, &slla_mac).expect("ns");
-    let ns = payload_bytes(&ns);
 
     let result = processor.process(
         Icmpv6Type::NeighborSolicitation,
-        &ns,
+        &RECEIVED_NS,
         sender_ip,
         dst,
         actual_eth_mac,
@@ -311,17 +335,21 @@ pub fn test_ndp_spoofing_detection() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_na_multicast_target_rejection() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let our_ip = Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
+    ]);
     let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
 
-    // Build an NA with a MULTICAST target address (invalid per RFC 4861)
+    // RFC 4861 sections 4.4 and 7.1.2 forbid a multicast Target Address.
     let mcast_target = Ipv6Address::ALL_NODES_LINK_LOCAL;
-    let na =
-        NdpProcessor::build_na(&sender_ip, &our_ip, &mcast_target, &sender_mac, true).expect("na");
-    let na = payload_bytes(&na);
+    let na = [
+        0x88, 0x00, 0x2f, 0x46, 0x60, 0x00, 0x00, 0x00, 0xff, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x01, 0xaa, 0xbb, 0xcc, 0xdd,
+        0xee, 0xff,
+    ];
 
     let result = processor.process(
         Icmpv6Type::NeighborAdvertisement,
@@ -343,17 +371,21 @@ pub fn test_na_multicast_target_rejection() {
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 pub fn test_na_discard_unknown_target() {
     let our_mac = [0x52, 0x54, 0x00, 0x12, 0x34, 0x56];
-    let our_ip = Ipv6Address::from_eui64(&our_mac);
+    let our_ip = Ipv6Address::new([
+        0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0x50, 0x54, 0, 0xff, 0xfe, 0x12, 0x34, 0x56,
+    ]);
     let mut processor = NdpProcessor::new(our_ip, our_mac);
 
     let sender_mac = [0xAA, 0xBB, 0xCC, 0xDD, 0xEE, 0xFF];
     let sender_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
     let target_ip = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3]);
 
-    // Build an NA for a target NOT in our cache
-    let na =
-        NdpProcessor::build_na(&sender_ip, &our_ip, &target_ip, &sender_mac, true).expect("na");
-    let na = payload_bytes(&na);
+    // RFC 4861 section 7.2.5 discards advertisements without a cache entry.
+    let na = [
+        0x88, 0x00, 0x2f, 0xc6, 0x60, 0x00, 0x00, 0x00, 0xfe, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03, 0x02, 0x01, 0xaa, 0xbb, 0xcc, 0xdd,
+        0xee, 0xff,
+    ];
 
     let result = processor.process(
         Icmpv6Type::NeighborAdvertisement,
