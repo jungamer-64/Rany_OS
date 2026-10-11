@@ -19,7 +19,6 @@ const EPHEMERAL_PORT_END: u16 = 65535;
 const SOCKET_TABLE_BUCKETS: usize = 256;
 const SOCKET_TABLE_CAPACITY: usize = 4096;
 const PORT_TABLE_BUCKETS: usize = 256;
-const PORT_TABLE_CAPACITY: usize = 4096;
 const RAW_SCOPE_TABLE_BUCKETS: usize = 64;
 const RAW_SCOPE_TABLE_CAPACITY: usize = 256;
 
@@ -211,13 +210,7 @@ impl PortBindingTable {
             .map(|index| self.entries[index].socket_id)
     }
 
-    fn has_conflict(&self, family: SocketFamily, port: u16, scope: InterfaceScope) -> bool {
-        self.entries.iter().any(|entry| {
-            entry.key.family == family
-                && entry.key.port == port
-                && scopes_conflict(entry.key.scope, scope)
-        })
-    }
+
 
     fn has_any_scope_port(&self, port: u16) -> bool {
         self.entries
@@ -225,28 +218,9 @@ impl PortBindingTable {
             .any(|entry| entry.key.port == port && matches!(entry.key.scope, InterfaceScope::Any))
     }
 
-    fn has_port(&self, port: u16) -> bool {
-        self.entries.iter().any(|entry| entry.key.port == port)
-    }
 
-    fn insert(&mut self, key: PortBindingKey, socket_id: SocketId) -> SocketResult<()> {
-        if let Some(index) = self.find_index(key) {
-            self.entries[index].socket_id = socket_id;
-            return Ok(());
-        }
-        if self.entries.len() >= PORT_TABLE_CAPACITY {
-            return Err(EndpointError::ResourceExhausted);
-        }
-        let bucket = Self::bucket_for(key);
-        let next = self.buckets[bucket];
-        self.entries.push(PortBindingEntry {
-            key,
-            socket_id,
-            next,
-        });
-        self.buckets[bucket] = Some(self.entries.len() - 1);
-        Ok(())
-    }
+
+
 
     fn remove_socket(&mut self, socket_id: SocketId) {
         self.entries.retain(|entry| entry.socket_id != socket_id);
@@ -406,7 +380,7 @@ impl SocketRecord {
 pub(crate) struct SocketRegistry {
     sockets: PoisonRwLock<SocketRecordTable>,
     tcp_ports: PoisonRwLock<PortBindingTable>,
-    udp_ports: PoisonRwLock<PortBindingTable>,
+    udp_ports: PoisonRwLock<UdpBindings>,
     raw_scopes: PoisonRwLock<RawScopeTable>,
     next_socket_id: AtomicU32,
     next_ephemeral_port: AtomicU32,
@@ -417,7 +391,7 @@ impl SocketRegistry {
         Self {
             sockets: PoisonRwLock::new(SocketRecordTable::new()),
             tcp_ports: PoisonRwLock::new(PortBindingTable::new()),
-            udp_ports: PoisonRwLock::new(PortBindingTable::new()),
+            udp_ports: PoisonRwLock::new(UdpBindings::new()),
             raw_scopes: PoisonRwLock::new(RawScopeTable::new()),
             next_socket_id: AtomicU32::new(1),
             next_ephemeral_port: AtomicU32::new(EPHEMERAL_PORT_START as u32),
@@ -511,24 +485,7 @@ impl SocketRegistry {
         Some(f(&mut state))
     }
 
-    pub fn bind_udp_dual_stack(
-        &self,
-        port: u16,
-        scope: InterfaceScope,
-        socket_id: SocketId,
-    ) -> SocketResult<()> {
-        let mut guard = self.udp_ports.write().unwrap_or_else(|e| e.into_inner());
-        let ipv4 = PortBindingKey::new(SocketFamily::Ipv4, port, scope);
-        let ipv6 = PortBindingKey::new(SocketFamily::Ipv6, port, scope);
-        let ipv4_conflict = guard.has_conflict(SocketFamily::Ipv4, port, scope);
-        let ipv6_conflict = guard.has_conflict(SocketFamily::Ipv6, port, scope);
-        if ipv4_conflict || ipv6_conflict {
-            return Err(EndpointError::PortInUse);
-        }
-        guard.insert(ipv4, socket_id)?;
-        guard.insert(ipv6, socket_id)?;
-        Ok(())
-    }
+
 
     pub fn register_raw_scope(
         &self,
@@ -548,14 +505,7 @@ impl SocketRegistry {
         find_socket_by_port(&self.tcp_ports, &self.sockets, family, port, ingress_if_id)
     }
 
-    pub fn find_udp_by_port(
-        &self,
-        family: SocketFamily,
-        port: u16,
-        ingress_if_id: NetIfId,
-    ) -> Option<Socket> {
-        find_socket_by_port(&self.udp_ports, &self.sockets, family, port, ingress_if_id)
-    }
+
 
     pub fn find_raw_by_scope(&self, ingress_if_id: NetIfId) -> Option<Socket> {
         let socket_id = {

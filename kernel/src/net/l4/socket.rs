@@ -68,17 +68,6 @@ pub(crate) fn register_raw_scope_in(
     })
 }
 
-pub(crate) fn find_udp_by_port_in(
-    runtime: NetRuntimeHandle,
-    family: SocketFamily,
-    port: u16,
-    ingress_if_id: NetIfId,
-) -> Option<Socket> {
-    with_socket_registry_in(runtime, |registry| {
-        registry.find_udp_by_port(family, port, ingress_if_id)
-    })
-}
-
 pub(crate) fn find_raw_by_scope_in(
     runtime: NetRuntimeHandle,
     ingress_if_id: NetIfId,
