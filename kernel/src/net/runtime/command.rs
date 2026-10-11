@@ -193,50 +193,6 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
     )
 }
 
-pub(crate) fn enqueue_tcp_send_on_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    src_ip: crate::net::l3::ipv4::Ipv4Address,
-    dst_ip: crate::net::l3::ipv4::Ipv4Address,
-    payload: PacketPayload,
-    completion_id: Option<u64>,
-) -> bool {
-    enqueue_raw_send_in(
-        runtime,
-        RawSendCommand::Ipv4 {
-            scope: InterfaceScope::Pinned(if_id),
-            dst: *dst_ip.as_bytes(),
-            transport: RawIpv4Transport::Tcp {
-                src: *src_ip.as_bytes(),
-            },
-            payload,
-            completion_id,
-        },
-    )
-}
-
-pub(crate) fn enqueue_tcp_v6_send_on_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    src_ip: crate::net::l3::ipv6::Ipv6Address,
-    dst_ip: crate::net::l3::ipv6::Ipv6Address,
-    payload: PacketPayload,
-    completion_id: Option<u64>,
-) -> bool {
-    enqueue_raw_send_in(
-        runtime,
-        RawSendCommand::Ipv6 {
-            scope: InterfaceScope::Pinned(if_id),
-            dst: dst_ip.octets(),
-            transport: RawIpv6Transport::Tcp {
-                src: src_ip.octets(),
-            },
-            payload,
-            completion_id,
-        },
-    )
-}
-
 #[derive(Debug)]
 pub(crate) enum ControlCommand {
     IcmpEchoRequest {
