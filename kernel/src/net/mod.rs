@@ -30,6 +30,7 @@ pub(crate) mod drivers;
 pub(crate) mod l2;
 pub(crate) mod l3;
 pub(crate) mod l4;
+pub(crate) mod neighbor_wait;
 pub(crate) mod payload;
 pub(crate) mod runtime;
 pub(crate) mod security;

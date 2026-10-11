@@ -6,6 +6,7 @@ use super::NetworkRuntimeCase;
 pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke()))),
     ("net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke()))),
+    ("net_peripheral_neighbor_resolution_elapsed_timeout_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_neighbor_resolution_elapsed_timeout_smoke()))),
     ("net_ecdh_group_from_named_group_p256_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_group_from_named_group_p256_smoke)),
     ("net_ecdh_group_from_named_group_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_group_from_named_group_smoke)),
     ("net_ecdh_p256_key_exchange_symmetry_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_p256_key_exchange_symmetry_smoke)),
@@ -51,6 +52,7 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_igmp_report_suppression_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_igmp_report_suppression_smoke)),
     ("net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_igmp_v3_report_invalid_layout_rejected_smoke)),
     ("net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_igmp_v3_report_minimal_layout_accepted_smoke)),
+    ("net_peripheral_neighbor_resolution_completion_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_neighbor_resolution_completion_smoke)),
     ("net_peripheral_runtime_fake_ports_smp_flow_failover_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_runtime_fake_ports_smp_flow_failover_smoke)),
     ("net_peripheral_runtime_large_packet_headroom_preserves_request_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_runtime_large_packet_headroom_preserves_request_smoke)),
     ("net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke)),

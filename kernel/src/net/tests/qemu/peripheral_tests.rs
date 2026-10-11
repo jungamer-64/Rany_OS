@@ -24,6 +24,71 @@ use kernel_api::service::netdev::{
     TxDeviceOutcome, TxPacketSubmission,
 };
 
+fn poll_neighbor_future<F: core::future::Future + Unpin>(
+    future: &mut F,
+) -> core::task::Poll<F::Output> {
+    let mut cx = core::task::Context::from_waker(core::task::Waker::noop());
+    core::pin::Pin::new(future).poll(&mut cx)
+}
+
+pub fn neighbor_resolution_completion_smoke() -> bool {
+    use crate::net::l2::arp::{ArpResolveFuture, notify_arp_resolved_in};
+    use crate::net::l3::ipv6::Ipv6Address;
+    use crate::net::l3::ndp::{NdpResolveFuture, notify_ndp_resolved_in};
+    use core::task::Poll;
+
+    let runtime = crate::net::runtime::default_runtime();
+    let if_id = NetIfId(65_001);
+    let ip4 = [198, 18, 0, 42];
+    let ip6 = [0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 42];
+    let mac = [2, 0x11, 0x22, 0x33, 0x44, 0x55];
+    let mut arp = ArpResolveFuture::new_in(runtime, if_id, Ipv4Address::new(ip4));
+    let mut ndp = NdpResolveFuture::new_on_in(runtime, if_id, Ipv6Address::new(ip6));
+    if !poll_neighbor_future(&mut arp).is_pending() || !poll_neighbor_future(&mut ndp).is_pending()
+    {
+        return false;
+    }
+    notify_arp_resolved_in(runtime, if_id, ip4, mac);
+    notify_ndp_resolved_in(runtime, if_id, ip6, mac);
+    matches!(poll_neighbor_future(&mut arp), Poll::Ready(Ok(resolved)) if *resolved.as_bytes() == mac)
+        && matches!(poll_neighbor_future(&mut ndp), Poll::Ready(Ok(resolved)) if *resolved.as_bytes() == mac)
+}
+
+pub async fn neighbor_resolution_elapsed_timeout_smoke() -> bool {
+    use crate::net::l2::arp::{ArpResolveError, ArpResolveFuture, cleanup_arp_waiters_in};
+    use crate::net::l3::ipv6::Ipv6Address;
+    use crate::net::l3::ndp::{NdpResolveError, NdpResolveFuture, cleanup_ndp_waiters_in};
+    use core::task::Poll;
+
+    let runtime = crate::net::runtime::default_runtime();
+    let if_id = NetIfId(65_002);
+    let mut arp = ArpResolveFuture::new_in(runtime, if_id, Ipv4Address::new([198, 18, 0, 43]));
+    let mut ndp = NdpResolveFuture::new_on_in(
+        runtime,
+        if_id,
+        Ipv6Address::new([0xfd, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 43]),
+    );
+    for _ in 0..100 {
+        if !poll_neighbor_future(&mut arp).is_pending()
+            || !poll_neighbor_future(&mut ndp).is_pending()
+        {
+            return false;
+        }
+    }
+    if crate::task::sleep_ms(5_020).await.is_err() {
+        return false;
+    }
+    cleanup_arp_waiters_in(runtime);
+    cleanup_ndp_waiters_in(runtime);
+    matches!(
+        poll_neighbor_future(&mut arp),
+        Poll::Ready(Err(ArpResolveError::Timeout))
+    ) && matches!(
+        poll_neighbor_future(&mut ndp),
+        Poll::Ready(Err(NdpResolveError::Timeout))
+    )
+}
+
 macro_rules! run_case {
     ($func:path) => {{
         #[cfg(all(test, feature = "qemu-test-export"))]

@@ -5,6 +5,7 @@
 use crate::cpu::CpuId;
 use crate::net::datapath::mempool::Mempool;
 use crate::net::l4::socket::SocketRegistry;
+use crate::net::neighbor_wait::NeighborWaiters;
 use crate::net::obs::NetObservability;
 use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::command::{
@@ -22,7 +23,6 @@ use crate::net::services::dhcp::DhcpRuntimeState;
 use crate::net::services::dns::DnsRuntimeState;
 use crate::net::services::http::server::HttpRuntimeState;
 use crate::net::services::mdns::MdnsRuntimeState;
-use crate::net::{l2::arp::ArpWaiterRegistry, l3::ndp::NdpWaiterRegistry};
 use crate::sync::{PoisonLock, PoisonRwLock, WakerQueue};
 use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
@@ -141,8 +141,8 @@ pub struct NetRuntimeContext {
     pub(crate) firewall: FirewallRuntimeState,
     pub(crate) icmp: IcmpRuntimeState,
     pub(crate) observability: NetObservability,
-    pub(crate) arp_waiters: ArpWaiterRegistry,
-    pub(crate) ndp_waiters: NdpWaiterRegistry,
+    pub(crate) arp_waiters: NeighborWaiters<4>,
+    pub(crate) ndp_waiters: NeighborWaiters<16>,
     pub(crate) tx_completion_next_id: AtomicU64,
     pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, TxCompletionState>>,
     pub(crate) tx_owner_group_next_id: AtomicU64,
@@ -196,8 +196,8 @@ impl NetRuntimeContext {
             firewall: FirewallRuntimeState::new(),
             icmp: IcmpRuntimeState::new(),
             observability: NetObservability::new(),
-            arp_waiters: ArpWaiterRegistry::new(),
-            ndp_waiters: NdpWaiterRegistry::new(),
+            arp_waiters: NeighborWaiters::new(),
+            ndp_waiters: NeighborWaiters::new(),
             tx_completion_next_id: AtomicU64::new(1),
             tx_completions: PoisonRwLock::new(BTreeMap::new()),
             tx_owner_group_next_id: AtomicU64::new(1),

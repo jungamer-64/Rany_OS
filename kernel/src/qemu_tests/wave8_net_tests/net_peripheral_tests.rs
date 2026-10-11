@@ -1,3 +1,11 @@
+pub fn net_peripheral_neighbor_resolution_completion_smoke() -> bool {
+    crate::net::qemu_tests::neighbor_resolution_completion_smoke()
+}
+
+pub async fn net_peripheral_neighbor_resolution_elapsed_timeout_smoke() -> bool {
+    crate::net::qemu_tests::neighbor_resolution_elapsed_timeout_smoke().await
+}
+
 pub fn net_peripheral_dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
 -> bool {
     crate::net::qemu_tests::dhcp_v4_build_request_renewal_uses_ciaddr_and_omits_serverid_requestedip_smoke()
