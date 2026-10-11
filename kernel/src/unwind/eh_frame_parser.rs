@@ -471,14 +471,37 @@ impl SafeCfiInterpreter {
 
 use crate::sync::PoisonLock;
 use alloc::string::String;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 
 pub(crate) static PANIC_CATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
 pub(crate) static PANIC_CAUGHT: AtomicBool = AtomicBool::new(false);
-pub(crate) const PANIC_MESSAGE_BUFFER_SIZE: usize = 256;
-pub(crate) static PANIC_MESSAGE_BUFFER: PoisonLock<[u8; PANIC_MESSAGE_BUFFER_SIZE]> =
-    PoisonLock::new([0u8; PANIC_MESSAGE_BUFFER_SIZE]);
-pub(crate) static PANIC_MESSAGE_LEN: AtomicUsize = AtomicUsize::new(0);
+const PANIC_MESSAGE_BUFFER_SIZE: usize = 256;
+
+/// The prefix length and its bytes are published and consumed under one guard.
+/// A failed acquisition retains the record; no allocation runs while held.
+struct CapturedPanicMessage {
+    bytes: [u8; PANIC_MESSAGE_BUFFER_SIZE],
+    len: usize,
+}
+
+impl CapturedPanicMessage {
+    const fn empty() -> Self {
+        Self {
+            bytes: [0; PANIC_MESSAGE_BUFFER_SIZE],
+            len: 0,
+        }
+    }
+
+    fn from_text(message: &str) -> Self {
+        let mut captured = Self::empty();
+        captured.len = message.len().min(PANIC_MESSAGE_BUFFER_SIZE - 1);
+        captured.bytes[..captured.len].copy_from_slice(&message.as_bytes()[..captured.len]);
+        captured
+    }
+}
+
+static PANIC_MESSAGE: PoisonLock<CapturedPanicMessage> =
+    PoisonLock::new(CapturedPanicMessage::empty());
 
 #[derive(Debug, Clone)]
 pub struct PanicPayload {
@@ -527,38 +550,80 @@ pub fn is_panic_catch_active() -> bool {
     PANIC_CATCH_ACTIVE.load(Ordering::SeqCst)
 }
 
+/// Records capture independently of best-effort diagnostic publication.
+/// Message publication never waits for a busy buffer or clears its poison.
 pub fn record_caught_panic(
     message: &str,
     file: Option<&str>,
     line: Option<u32>,
     column: Option<u32>,
 ) {
-    PANIC_CAUGHT.store(true, Ordering::SeqCst);
-    let bytes = message.as_bytes();
-    let copy_len = bytes.len().min(PANIC_MESSAGE_BUFFER_SIZE - 1);
-    if let Ok(mut guard) = PANIC_MESSAGE_BUFFER.try_lock() {
-        guard[..copy_len].copy_from_slice(&bytes[..copy_len]);
-        guard[copy_len] = 0;
-        PANIC_MESSAGE_LEN.store(copy_len, Ordering::Release);
+    let captured = CapturedPanicMessage::from_text(message);
+    if let Ok(mut guard) = PANIC_MESSAGE.try_lock() {
+        *guard = captured;
     }
+    PANIC_CAUGHT.store(true, Ordering::SeqCst);
     let _ = (file, line, column);
+}
+
+fn take_panic_message(buffer: &PoisonLock<CapturedPanicMessage>) -> String {
+    let captured = {
+        let mut guard = match buffer.try_lock() {
+            Ok(guard) => guard,
+            Err(crate::sync::poison_lock::TryLockError::Poisoned(error)) => error.into_inner(),
+            Err(crate::sync::poison_lock::TryLockError::WouldBlock) => {
+                return String::from("(panic message unavailable)");
+            }
+        };
+        core::mem::replace(&mut *guard, CapturedPanicMessage::empty())
+    };
+    String::from_utf8_lossy(&captured.bytes[..captured.len]).into_owned()
 }
 
 pub(crate) fn take_caught_panic() -> Option<PanicPayload> {
     if !PANIC_CAUGHT.swap(false, Ordering::SeqCst) {
         return None;
     }
-    let len = PANIC_MESSAGE_LEN.load(Ordering::Acquire);
-    let message = if let Ok(guard) = PANIC_MESSAGE_BUFFER.try_lock() {
-        let bytes = &guard[..len];
-        String::from_utf8_lossy(bytes).into_owned()
-    } else if let Some(e) = PANIC_MESSAGE_BUFFER.try_lock().err() {
-        // Poisoned
-        let bytes = &e.into_inner()[..len];
-        String::from_utf8_lossy(bytes).into_owned()
-    } else {
-        String::from("(panic message unavailable)")
-    };
-    PANIC_MESSAGE_LEN.store(0, Ordering::Release);
+    let message = take_panic_message(&PANIC_MESSAGE);
     Some(PanicPayload::from_message(message))
+}
+
+#[cfg(all(test, any(feature = "std", target_os = "linux")))]
+mod panic_message_tests {
+    use super::*;
+
+    #[test]
+    fn busy_capture_retains_the_record_and_allows_a_later_read() -> Result<(), &'static str> {
+        let buffer = PoisonLock::new(CapturedPanicMessage::from_text("retained panic"));
+        let held = buffer.lock().map_err(|_| "fixture unexpectedly poisoned")?;
+        assert_eq!(take_panic_message(&buffer), "(panic message unavailable)");
+        assert!(buffer.is_locked());
+        drop(held);
+        assert_eq!(take_panic_message(&buffer), "retained panic");
+        assert_eq!(take_panic_message(&buffer), "");
+        Ok(())
+    }
+
+    #[test]
+    fn capture_consumes_the_published_prefix_and_accepts_a_replacement() -> Result<(), &'static str>
+    {
+        let buffer = PoisonLock::new(CapturedPanicMessage::from_text("first"));
+        assert_eq!(take_panic_message(&buffer), "first");
+        *buffer.lock().map_err(|_| "fixture unexpectedly poisoned")? =
+            CapturedPanicMessage::from_text("second");
+        assert_eq!(take_panic_message(&buffer), "second");
+        assert_eq!(take_panic_message(&buffer), "");
+        Ok(())
+    }
+
+    #[test]
+    fn capture_keeps_its_length_within_the_retained_buffer() {
+        let text = "x".repeat(PANIC_MESSAGE_BUFFER_SIZE + 1);
+        let buffer = PoisonLock::new(CapturedPanicMessage::from_text(&text));
+        assert_eq!(
+            take_panic_message(&buffer),
+            "x".repeat(PANIC_MESSAGE_BUFFER_SIZE - 1)
+        );
+        assert_eq!(take_panic_message(&buffer), "");
+    }
 }
