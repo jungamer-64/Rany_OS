@@ -133,8 +133,7 @@ impl CpuRuntimeState {
         local.as_ref().get_ref().remote().set_numa_node(node);
         let slots = alloc::vec![bootstrap];
         let locals = alloc::vec![local];
-        let mut startup_resources = Vec::new();
-        startup_resources.push(None);
+        let startup_resources = alloc::vec![None];
         let physical_hotplug = PhysicalHotplugStatus::Initializing;
         let published = match CpuSnapshot::build(0, &slots, physical_hotplug.clone()) {
             Ok(snapshot) => Arc::new(snapshot),

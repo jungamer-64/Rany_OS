@@ -131,6 +131,9 @@ impl CpuRemoteAccess {
         }
     }
 
+    /// # Errors
+    /// Returns the unconsumed message when the bounded control mailbox is full;
+    /// failure does not publish it to the destination CPU.
     pub fn send(&self, message: CpuControlMessage) -> Result<(), CpuControlMessage> {
         self.control.try_push(message)
     }
@@ -1010,9 +1013,13 @@ impl CurrentCpu {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CurrentCpuBindError {
+    #[cfg(not(target_os = "none"))]
     UnsupportedPlatform,
+    #[cfg(target_os = "none")]
     RuntimeUnavailable,
+    #[cfg(target_os = "none")]
     UnknownCpu(CpuId),
+    #[cfg(target_os = "none")]
     BindingRejected(CpuId),
 }
 

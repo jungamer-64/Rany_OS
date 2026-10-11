@@ -53,10 +53,10 @@ impl AtomicWaker {
         self.early_notification.store(true, Ordering::Release);
         // Publication may race the first observation. Either the registering
         // task consumes the early request or this second observation does.
-        if let Some(inner) = self.inner.get() {
-            if self.early_notification.swap(false, Ordering::AcqRel) {
-                inner.value().wake();
-            }
+        if let Some(inner) = self.inner.get()
+            && self.early_notification.swap(false, Ordering::AcqRel)
+        {
+            inner.value().wake();
         }
     }
 
@@ -66,10 +66,10 @@ impl AtomicWaker {
             return;
         }
         self.early_notification.store(true, Ordering::Release);
-        if let Some(inner) = self.inner.get() {
-            if self.early_notification.swap(false, Ordering::AcqRel) {
-                self.defer(inner);
-            }
+        if let Some(inner) = self.inner.get()
+            && self.early_notification.swap(false, Ordering::AcqRel)
+        {
+            self.defer(inner);
         }
     }
 
@@ -156,10 +156,10 @@ impl WakerQueue {
             return;
         }
         self.early_notification.store(true, Ordering::Release);
-        if let Some(inner) = self.inner.get() {
-            if self.early_notification.swap(false, Ordering::AcqRel) {
-                inner.value().wake_all();
-            }
+        if let Some(inner) = self.inner.get()
+            && self.early_notification.swap(false, Ordering::AcqRel)
+        {
+            inner.value().wake_all();
         }
     }
     pub fn wake_all_from_isr(&self) {
@@ -168,10 +168,10 @@ impl WakerQueue {
             return;
         }
         self.early_notification.store(true, Ordering::Release);
-        if let Some(inner) = self.inner.get() {
-            if self.early_notification.swap(false, Ordering::AcqRel) {
-                self.defer(inner);
-            }
+        if let Some(inner) = self.inner.get()
+            && self.early_notification.swap(false, Ordering::AcqRel)
+        {
+            self.defer(inner);
         }
     }
     fn defer(&self, inner: &Arc<DeferredNotification<WakerQueueState>>) {

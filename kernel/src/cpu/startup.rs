@@ -678,7 +678,7 @@ pub(crate) fn online_cpu(id: CpuId) -> Result<(), CpuFailureReason> {
                     .err()
                     .map(map_ipi_start_error);
             wait_for_online_acknowledgement(local, resource, acknowledgement)
-                .or_else(|wait_failure| Err(ipi_failure.unwrap_or(wait_failure)))
+                .map_err(|wait_failure| ipi_failure.unwrap_or(wait_failure))
         }
         Err(_) => Err(CpuFailureReason::Startup(
             CpuStartupFailure::CpuLocalBinding,

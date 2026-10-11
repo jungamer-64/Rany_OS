@@ -179,6 +179,11 @@ pub(super) fn initialize() -> Result<(), SpawnError> {
 ///
 /// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
+///
+/// # Errors
+/// Rejects the bootstrap CPU, absent CPUs, conflicting lifecycle states, and
+/// unavailable startup resources or platform support. An unobserved startup
+/// acknowledgement returns `TimedOut`; backing remains owned by the runtime.
 pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
     submit(
@@ -195,6 +200,12 @@ pub async fn online(id: CpuId) -> Result<(), CpuTransitionError> {
 ///
 /// Once submitted, cancellation of the returned future does not cancel the
 /// lifecycle operation; the BSP-pinned worker remains its completion owner.
+///
+/// # Errors
+/// `Busy` preserves blocking tasks and their stacks. Bootstrap/absent CPUs and
+/// conflicting lifecycle states are rejected. Cache drain or park failures
+/// retain resources; a committed park request that times out remains `Draining`
+/// while the worker reconciles its eventual acknowledgement.
 pub async fn offline(id: CpuId) -> Result<(), CpuTransitionError> {
     let completion = Arc::new(TransitionCompletion::new());
     submit(
@@ -495,12 +506,14 @@ async fn try_perform_offline(
         }
     };
 
-    let local = super::runtime().cpu_local(id).ok_or_else(|| {
-        CpuTransitionError::UnsupportedTopology(CpuTopologyIssue::CpuStartupUnavailable {
-            id,
-            failure: super::CpuStartupFailure::CpuLocalBinding,
-        })
-    })?;
+    let local = super::runtime()
+        .cpu_local(id)
+        .ok_or(CpuTransitionError::UnsupportedTopology(
+            CpuTopologyIssue::CpuStartupUnavailable {
+                id,
+                failure: super::CpuStartupFailure::CpuLocalBinding,
+            },
+        ))?;
     if resuming_memory_drain
         && super::runtime()
             .startup_resource(id)
