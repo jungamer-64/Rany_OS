@@ -76,6 +76,32 @@ enum RuntimeTestBody {
     SchedulerNumaStealing,
 }
 
+fn kernel_service_ownership_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        if crate::services::qemu_tests::run_kernel_service_ownership_suite() {
+            RuntimeTestResult::pass()
+        } else {
+            RuntimeTestResult::fail("kernel service ownership")
+        }
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("kernel service ownership requires boot resources")
+}
+
+fn block_handle_ownership_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        if crate::services::qemu_tests::run_block_handle_ownership_suite() {
+            RuntimeTestResult::pass()
+        } else {
+            RuntimeTestResult::fail("block handle ownership")
+        }
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("block handle ownership requires storage resources")
+}
+
 pub struct RuntimeTestCase {
     pub id: &'static str,
     body: RuntimeTestBody,
@@ -337,6 +363,12 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Boot,
     },
     RuntimeTestCase {
+        id: "scheduler.kernel_service_ownership",
+        body: RuntimeTestBody::Sync(kernel_service_ownership_suite),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Scheduler,
+    },
+    RuntimeTestCase {
         id: "nightly.smoke_cmdline_dispatch",
         body: RuntimeTestBody::Sync(nightly_smoke_cmdline_dispatch),
         tier: RuntimeTier::NightlyRequired,
@@ -357,6 +389,12 @@ static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
         id: "storage.integration_suite",
         body: RuntimeTestBody::StorageIntegration,
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Storage,
+    },
+    RuntimeTestCase {
+        id: "storage.block_handle_ownership",
+        body: RuntimeTestBody::Sync(block_handle_ownership_suite),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Storage,
     },

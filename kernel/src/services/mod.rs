@@ -33,6 +33,8 @@ mod net;
 mod network;
 mod pci;
 mod providers;
+#[cfg(feature = "qemu-test-export")]
+pub(crate) mod qemu_tests;
 mod storage;
 mod task;
 

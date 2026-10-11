@@ -287,13 +287,9 @@ mod tests {
         let domain = crate::domain::create_domain(alloc::string::String::from("recovery_subject"))
             .expect("domain admission");
         crate::domain::set_domain_resource_limits(domain, 100, 1, 0).expect("one byte quota");
-        let subject = Subject {
-            domain,
-            task: TaskId::from_raw(0x5245_434f),
-            cred: DomainCredentials { uid: 123, gid: 456 },
-            caps: CapabilitySet::empty(),
-        };
-        let admitted = ExecutionContext::from_subject(subject).expect("execution admission");
+        let admitted = ExecutionContext::for_task(TaskId::from_raw(0x5245_434f), domain)
+            .expect("execution admission");
+        let subject = admitted.subject();
         assert!(admitted.reserve_memory(2).is_err());
         let recovery = ExecutionContext::housekeeping(Some(subject));
         assert_eq!(recovery.subject(), subject);

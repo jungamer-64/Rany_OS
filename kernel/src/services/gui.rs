@@ -1,9 +1,6 @@
 use super::*;
 use kernel_api::resource::fs::FsMutationError;
 
-#[cfg(test)]
-mod fs_tests;
-
 // ============================================================================
 // GuiServices Implementation
 // ============================================================================
