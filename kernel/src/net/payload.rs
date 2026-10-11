@@ -963,7 +963,6 @@ pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, Pa
 #[cfg(test)]
 mod tests {
     use super::*;
-    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     #[test]
     fn payload_range_checked_end_rejects_overflow() {
@@ -973,29 +972,6 @@ mod tests {
         };
 
         assert_eq!(range.checked_end_offset(), None);
-    }
-
-    #[test]
-    fn trim_ascii_whitespace_rejects_invalid_span_instead_of_widening() {
-        let payload = PacketPayload::try_single(test_packet_with_contents(b"x"))
-            .expect("test payload is non-empty");
-        let span = PayloadSpanRef {
-            payload: &payload,
-            offset: usize::MAX,
-            len: 1,
-        };
-
-        assert!(span.trim_ascii_whitespace().is_none());
-    }
-
-    #[test]
-    fn alloc_packet_with_large_headroom_preserves_requested_headroom() {
-        let requested_headroom = DEFAULT_PACKET_HEADROOM.saturating_mul(2);
-        let packet =
-            alloc_packet_with_headroom(128, requested_headroom).expect("packet allocation");
-
-        assert!(packet.headroom() >= requested_headroom);
-        assert_eq!(packet.len(), 128);
     }
 
     #[test]
@@ -1012,127 +988,5 @@ mod tests {
     fn alloc_packet_with_headroom_rejects_unaddressable_backing_before_runtime_admission() {
         assert!(alloc_packet_with_headroom(1, isize::MAX as usize).is_none());
         assert!(alloc_packet_with_headroom(1, usize::MAX).is_none());
-    }
-
-    #[test]
-    fn payload_bound_window_rejects_out_of_bounds_request() {
-        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
-            .expect("test payload is non-empty");
-
-        let bounds = OwnedPayloadBounds::checked(&payload, 4, 0).expect("empty tail bounds");
-        assert!(bounds.take_from(payload).is_some());
-        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
-            .expect("test payload is non-empty");
-        assert!(PayloadRange::checked(&payload, 5, 0).is_none());
-        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcd"))
-            .expect("test payload is non-empty");
-        assert!(PayloadRange::checked(&payload, 3, 2).is_none());
-    }
-
-    fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
-        let mut packet =
-            alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM).expect("packet");
-        packet.data_mut().copy_from_slice(bytes);
-        packet
-    }
-
-    fn assert_payload_bytes(payload: &PacketPayload, expected: &[u8]) {
-        assert!(PayloadSpanRef::from_payload(payload).eq_bytes(expected));
-    }
-
-    #[test]
-    fn packet_payload_take_front_splits_single_packet() {
-        let payload = PacketPayload::try_single(test_packet_with_contents(b"abcdef"))
-            .expect("test payload is non-empty");
-        let len = PacketByteCount::new(3).expect("non-empty prefix");
-
-        let (front, remainder) = match payload.try_take_front(len).expect("single split") {
-            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
-            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
-        };
-
-        assert_payload_bytes(&front, b"abc");
-        assert_payload_bytes(&remainder, b"def");
-    }
-
-    #[test]
-    fn packet_payload_take_front_splits_on_chain_boundary() {
-        let payload = PacketPayload::try_from_segments(alloc::vec![
-            test_packet_with_contents(b"abc"),
-            test_packet_with_contents(b"def"),
-        ])
-        .expect("test segments are non-empty");
-        let len = PacketByteCount::new(3).expect("non-empty prefix");
-
-        let (front, remainder) = match payload.try_take_front(len).expect("chain boundary split") {
-            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
-            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
-        };
-
-        assert_payload_bytes(&front, b"abc");
-        assert_payload_bytes(&remainder, b"def");
-    }
-
-    #[test]
-    fn packet_payload_take_front_splits_inside_chain_segment() {
-        let payload = PacketPayload::try_from_segments(alloc::vec![
-            test_packet_with_contents(b"abc"),
-            test_packet_with_contents(b"defgh"),
-        ])
-        .expect("test segments are non-empty");
-        let len = PacketByteCount::new(5).expect("non-empty prefix");
-
-        let (front, remainder) = match payload.try_take_front(len).expect("middle segment split") {
-            PacketPayloadFront::Prefix { front, remainder } => (front, remainder),
-            PacketPayloadFront::Whole(_) => panic!("partial split must produce prefix"),
-        };
-
-        assert_payload_bytes(&front, b"abcde");
-        assert_payload_bytes(&remainder, b"fgh");
-    }
-
-    #[test]
-    fn owned_payload_window_takes_bounds_from_same_payload() {
-        let source = PacketPayload::try_single(test_packet_with_contents(b"abcdef"))
-            .expect("test payload is non-empty");
-
-        let bounds = OwnedPayloadBounds::checked(&source, 3, 3).expect("same-payload bounds");
-        let taken = bounds
-            .take_from(source)
-            .expect("same-payload owned bounds")
-            .into_payload()
-            .expect("same-payload bounds are valid");
-
-        assert_payload_bytes(&taken, b"def");
-    }
-
-    #[test]
-    fn payload_span_mut_mutates_only_checked_range() {
-        let mut payload = PacketPayload::try_pair(
-            test_packet_with_contents(b"abcd"),
-            test_packet_with_contents(b"efgh"),
-        )
-        .expect("test segments are non-empty");
-        let bounds = MutablePayloadBounds::checked(&payload, 2, 4).expect("cross-segment bounds");
-        let mut span = bounds.open(&mut payload).expect("mutable span");
-
-        span.for_each_chunk_mut(|chunk| {
-            for byte in chunk {
-                *byte = byte.to_ascii_uppercase();
-            }
-        });
-
-        assert_payload_bytes(&payload, b"abCDEFgh");
-    }
-
-    #[test]
-    fn owned_payload_window_rejects_bounds_against_target_payload() {
-        let shorter_payload = PacketPayload::try_single(test_packet_with_contents(b"xy"))
-            .expect("test payload is non-empty");
-
-        assert!(
-            PayloadRange::checked(&shorter_payload, 3, 3).is_none(),
-            "bounds are validated against the consumed payload"
-        );
     }
 }

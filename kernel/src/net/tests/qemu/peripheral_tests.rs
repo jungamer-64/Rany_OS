@@ -24,6 +24,11 @@ use kernel_api::service::netdev::{
     TxDeviceOutcome, TxPacketSubmission,
 };
 
+pub fn ethernet_owned_ipv4_payload_smoke() -> bool {
+    crate::net::l2::ethernet::tests::test_process_packet_returns_owned_ipv4_payload();
+    true
+}
+
 pub fn ndp_build_ns_smoke() -> bool {
     crate::net::l3::ndp::tests::test_build_ns();
     true

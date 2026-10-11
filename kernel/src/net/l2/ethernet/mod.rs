@@ -762,7 +762,9 @@ pub fn strip_vlan_tag(frame: &mut [u8], frame_len: usize) -> Option<(u16, usize)
 #[cfg(any(test, feature = "qemu-test-export"))]
 pub mod tests {
     use super::*;
+    #[cfg(feature = "qemu-test-export")]
     use crate::net::payload::alloc_packet_with_headroom;
+    #[cfg(feature = "qemu-test-export")]
     use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -784,6 +786,7 @@ pub mod tests {
         assert_eq!(u16::from(EtherType::Ipv4), 0x0800);
     }
 
+    #[cfg(feature = "qemu-test-export")]
     fn test_packet_with_contents(bytes: &[u8]) -> PacketRef {
         let mut packet =
             alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM).expect("packet");
@@ -791,8 +794,7 @@ pub mod tests {
         packet
     }
 
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    #[cfg(feature = "qemu-test-export")]
     pub fn test_process_packet_returns_owned_ipv4_payload() {
         let local = MacAddress::from_octets(0x02, 0, 0, 0, 0, 1);
         let src = MacAddress::from_octets(0x02, 0, 0, 0, 0, 2);

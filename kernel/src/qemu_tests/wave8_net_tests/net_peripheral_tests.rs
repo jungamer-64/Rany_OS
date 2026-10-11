@@ -1,3 +1,51 @@
+pub fn net_peripheral_payload_trim_respects_subspan_bounds_smoke() -> bool {
+    crate::net::qemu_tests::payload_trim_respects_subspan_bounds_smoke()
+}
+
+pub fn net_peripheral_payload_bound_window_rejects_out_of_bounds_request_smoke() -> bool {
+    crate::net::qemu_tests::payload_bound_window_rejects_out_of_bounds_request_smoke()
+}
+
+pub fn net_peripheral_packet_payload_take_front_splits_single_packet_smoke() -> bool {
+    crate::net::qemu_tests::packet_payload_take_front_splits_single_packet_smoke()
+}
+
+pub fn net_peripheral_packet_payload_take_front_splits_on_chain_boundary_smoke() -> bool {
+    crate::net::qemu_tests::packet_payload_take_front_splits_on_chain_boundary_smoke()
+}
+
+pub fn net_peripheral_packet_payload_take_front_splits_inside_chain_segment_smoke() -> bool {
+    crate::net::qemu_tests::packet_payload_take_front_splits_inside_chain_segment_smoke()
+}
+
+pub fn net_peripheral_owned_payload_window_takes_bounds_from_same_payload_smoke() -> bool {
+    crate::net::qemu_tests::owned_payload_window_takes_bounds_from_same_payload_smoke()
+}
+
+pub fn net_peripheral_payload_span_mut_mutates_only_checked_range_smoke() -> bool {
+    crate::net::qemu_tests::payload_span_mut_mutates_only_checked_range_smoke()
+}
+
+pub fn net_peripheral_owned_payload_window_rejects_bounds_against_target_payload_smoke() -> bool {
+    crate::net::qemu_tests::owned_payload_window_rejects_bounds_against_target_payload_smoke()
+}
+
+pub fn net_peripheral_socket_send_payload_rejects_partial_enqueue_without_slicing_smoke() -> bool {
+    crate::net::qemu_tests::socket_send_payload_rejects_partial_enqueue_without_slicing_smoke()
+}
+
+pub fn net_peripheral_socket_take_send_segment_window_splits_front_payload_smoke() -> bool {
+    crate::net::qemu_tests::socket_take_send_segment_window_splits_front_payload_smoke()
+}
+
+pub fn net_peripheral_socket_recv_payload_limit_does_not_split_front_payload_smoke() -> bool {
+    crate::net::qemu_tests::socket_recv_payload_limit_does_not_split_front_payload_smoke()
+}
+
+pub fn net_peripheral_ethernet_owned_ipv4_payload_smoke() -> bool {
+    crate::net::qemu_tests::ethernet_owned_ipv4_payload_smoke()
+}
+
 pub fn net_peripheral_tcp_segment_builder_smoke() -> bool {
     crate::net::qemu_tests::tcp_segment_builder_smoke()
 }
