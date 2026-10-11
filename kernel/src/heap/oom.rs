@@ -4,17 +4,6 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
-pub use crate::domain::quota::DomainPriority;
-#[cfg(any(
-    not(any(test, feature = "bench")),
-    feature = "full_mm_tests",
-    feature = "qemu-test-export"
-))]
 use crate::domain::quota::quota_manager;
 
 /// OOM統計情報
@@ -26,7 +15,7 @@ pub struct OomStats {
     pub in_progress: bool,
 }
 
-pub struct OomKiller {
+struct OomKiller {
     in_progress: AtomicBool,
     kill_count: AtomicU64,
     freed_memory: AtomicU64,
@@ -73,11 +62,6 @@ impl OomKiller {
         result
     }
 
-    #[cfg(any(
-        not(any(test, feature = "bench")),
-        feature = "full_mm_tests",
-        feature = "qemu-test-export"
-    ))]
     fn select_and_kill_victim(&self) -> Option<u64> {
         let victim = quota_manager().select_oom_victim()?;
         let stats = quota_manager().get_stats(victim.domain_id)?;
@@ -114,11 +98,6 @@ impl OomKiller {
     }
 
     fn stats(&self) -> OomStats {
-        #[cfg(any(
-            not(any(test, feature = "bench")),
-            feature = "full_mm_tests",
-            feature = "qemu-test-export"
-        ))]
         let total_domains = crate::domain::list_domain_snapshots().len();
 
         OomStats {
@@ -155,7 +134,7 @@ pub fn stats() -> OomStats {
     OOM_KILLER.stats()
 }
 
-#[cfg(all(test, any(feature = "full_mm_tests", feature = "qemu-test-export")))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::domain::quota::DomainPriority;
@@ -169,6 +148,11 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_oom_killer_uses_quota_victim_selection() {
+        let killer = OomKiller {
+            in_progress: AtomicBool::new(false),
+            kill_count: AtomicU64::new(0),
+            freed_memory: AtomicU64::new(0),
+        };
         let low = create_domain(String::from("oom_quota_low")).expect("create_domain low failed");
         let normal =
             create_domain(String::from("oom_quota_normal")).expect("create_domain normal failed");
@@ -183,7 +167,7 @@ mod tests {
         let normal_binding = quota_manager()
             .bind_memory(normal)
             .expect("normal quota binding");
-        let _low_credit = low_binding
+        let low_credit = low_binding
             .reserve(1_000_000_000_000)
             .expect("charge low memory failed");
         let _normal_credit = normal_binding
@@ -198,9 +182,9 @@ mod tests {
             "quota manager should pick low domain"
         );
 
-        let before = stats();
+        let before = killer.stats();
         assert_eq!(
-            OOM_KILLER.try_free_memory(),
+            killer.try_free_memory(),
             Some(0),
             "retained credits are not freed by termination"
         );
@@ -217,12 +201,22 @@ mod tests {
                 .memory_used,
             1_000_000_000_000
         );
-        assert_eq!(stats().freed_memory, before.freed_memory);
-        assert!(
-            stats().kill_count >= before.kill_count + 1,
-            "kill count should increase after victim termination"
-        );
+        let after = killer.stats();
+        assert_eq!(after.freed_memory, before.freed_memory);
+        assert_eq!(after.kill_count, before.kill_count + 1);
+        assert!(!after.in_progress);
 
-        let _ = terminate_domain(normal);
+        drop(low_credit);
+        assert_eq!(
+            quota_manager()
+                .get_stats(low)
+                .expect("execution binding retains the retired account")
+                .memory_used,
+            0
+        );
+        drop(low_binding);
+        assert!(quota_manager().get_stats(low).is_none());
+
+        terminate_domain(normal).expect("terminate normal domain");
     }
 }
