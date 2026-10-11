@@ -826,31 +826,63 @@ impl<'a> PacketPayloadCursor<'a> {
     }
 }
 
-pub fn alloc_packet_with_headroom_in(
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    len: usize,
+/// Geometry is validated before runtime acquisition or pool admission. Its
+/// immutable fields preserve the relation between payload and backing sizes.
+struct PacketAllocationLayout {
+    payload_len: PacketByteCount,
     headroom: usize,
+    backing_len: kernel_api::dma::DmaByteCount,
+}
+
+impl PacketAllocationLayout {
+    fn new(len: usize, headroom: usize) -> Option<Self> {
+        let payload_len = PacketByteCount::new(len)?;
+        let backing_len = kernel_api::dma::DmaByteCount::new(len.checked_add(headroom)?)?;
+        Some(Self {
+            payload_len,
+            headroom,
+            backing_len,
+        })
+    }
+}
+
+fn allocate_packet_layout(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    layout: PacketAllocationLayout,
 ) -> Option<PacketRef> {
-    PacketByteCount::new(len)?;
+    let len = layout.payload_len.get();
     if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet_in(runtime) {
         let available_headroom = packet.headroom();
-        if headroom <= available_headroom && len <= packet.data_capacity() {
+        if layout.headroom <= available_headroom && len <= packet.data_capacity() {
             packet.try_resize(len).ok()?;
             return Some(packet);
         }
     }
 
-    let dma_len = len.checked_add(headroom)?;
-    let mut packet =
-        crate::net::datapath::mempool::allocate_packet_backing(dma_len, headroom).ok()?;
+    let mut packet = crate::net::datapath::mempool::allocate_packet_backing(
+        layout.backing_len.get(),
+        layout.headroom,
+    )
+    .ok()?;
     packet.try_resize(len).ok()?;
     Some(packet)
 }
 
+/// Invalid geometry is rejected before accessing this runtime's pool.
+pub fn alloc_packet_with_headroom_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    len: usize,
+    headroom: usize,
+) -> Option<PacketRef> {
+    allocate_packet_layout(runtime, PacketAllocationLayout::new(len, headroom)?)
+}
+
 /// Allocates from the process-default network runtime. Runtime-owned datapaths
 /// must use [`alloc_packet_with_headroom_in`] so pool ownership stays local.
+/// Invalid geometry returns `None` before acquiring that runtime.
 pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketRef> {
-    alloc_packet_with_headroom_in(crate::net::runtime::default_runtime(), len, headroom)
+    let layout = PacketAllocationLayout::new(len, headroom)?;
+    allocate_packet_layout(crate::net::runtime::default_runtime(), layout)
 }
 
 pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PayloadSpanRef<'_>)> {
@@ -969,6 +1001,17 @@ mod tests {
     #[test]
     fn alloc_packet_with_headroom_rejects_length_overflow() {
         assert!(alloc_packet_with_headroom(usize::MAX, 1).is_none());
+    }
+
+    #[test]
+    fn alloc_packet_with_headroom_rejects_empty_payload_before_runtime_admission() {
+        assert!(alloc_packet_with_headroom(0, 128).is_none());
+    }
+
+    #[test]
+    fn alloc_packet_with_headroom_rejects_unaddressable_backing_before_runtime_admission() {
+        assert!(alloc_packet_with_headroom(1, isize::MAX as usize).is_none());
+        assert!(alloc_packet_with_headroom(1, usize::MAX).is_none());
     }
 
     #[test]
