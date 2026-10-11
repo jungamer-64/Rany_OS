@@ -4,3 +4,5 @@
 
 mod peripheral_tests;
 pub use peripheral_tests::*;
+mod tcp_segment_tests;
+pub use tcp_segment_tests::*;

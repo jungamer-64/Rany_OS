@@ -1,3 +1,35 @@
+pub fn net_peripheral_tcp_segment_builder_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_builder_smoke()
+}
+
+pub fn net_peripheral_tcp_segment_with_data_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_with_data_smoke()
+}
+
+pub fn net_peripheral_tcp_segment_with_options_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_with_options_smoke()
+}
+
+pub fn net_peripheral_tcp_message_length_field_for_checksum_smoke() -> bool {
+    crate::net::qemu_tests::tcp_message_length_field_for_checksum_smoke()
+}
+
+pub fn net_peripheral_tcp_checksum_v6_smoke() -> bool {
+    crate::net::qemu_tests::tcp_checksum_v6_smoke()
+}
+
+pub fn net_peripheral_tcp_segment_mixed_family_rejection_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_mixed_family_rejection_smoke()
+}
+
+pub fn net_peripheral_tcp_segment_ipv4_queue_admission_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_ipv4_queue_admission_smoke()
+}
+
+pub fn net_peripheral_tcp_segment_ipv6_queue_admission_smoke() -> bool {
+    crate::net::qemu_tests::tcp_segment_ipv6_queue_admission_smoke()
+}
+
 pub fn net_peripheral_ndp_build_ns_smoke() -> bool {
     crate::net::qemu_tests::ndp_build_ns_smoke()
 }
