@@ -278,11 +278,11 @@ impl TcpSegmentBuilder {
         if payload.total_len() < 20 {
             return;
         }
-        if let Some(data) = payload.chunks_mut().next() {
-            if data.len() >= 20 {
-                data[16] = 0;
-                data[17] = 0;
-            }
+        if let Some(data) = payload.chunks_mut().next()
+            && data.len() >= 20
+        {
+            data[16] = 0;
+            data[17] = 0;
         }
         use crate::net::l3::ipv4::{IpProtocol, Ipv4Address, pseudo_header_checksum};
         let src = Ipv4Address::new(src_ip);
@@ -309,10 +309,10 @@ impl TcpSegmentBuilder {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
         let checksum = !(sum as u16);
-        if let Some(data) = payload.chunks_mut().next() {
-            if data.len() >= 20 {
-                data[16..18].copy_from_slice(&checksum.to_be_bytes());
-            }
+        if let Some(data) = payload.chunks_mut().next()
+            && data.len() >= 20
+        {
+            data[16..18].copy_from_slice(&checksum.to_be_bytes());
         }
     }
 
@@ -324,11 +324,11 @@ impl TcpSegmentBuilder {
         if payload.total_len() < 20 {
             return;
         }
-        if let Some(data) = payload.chunks_mut().next() {
-            if data.len() >= 20 {
-                data[16] = 0;
-                data[17] = 0;
-            }
+        if let Some(data) = payload.chunks_mut().next()
+            && data.len() >= 20
+        {
+            data[16] = 0;
+            data[17] = 0;
         }
         use crate::net::l3::ipv4::IpProtocol;
         use crate::net::l3::ipv6::ipv6_pseudo_header_checksum;
@@ -359,10 +359,78 @@ impl TcpSegmentBuilder {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
         let checksum = !(sum as u16);
-        if let Some(data) = payload.chunks_mut().next() {
-            if data.len() >= 20 {
-                data[16..18].copy_from_slice(&checksum.to_be_bytes());
-            }
+        if let Some(data) = payload.chunks_mut().next()
+            && data.len() >= 20
+        {
+            data[16..18].copy_from_slice(&checksum.to_be_bytes());
         }
+    }
+}
+
+/// Transfers a TCP packet to the runtime command queue. Acceptance transfers
+/// ownership to the command consumer; it does not acknowledge device transmission.
+///
+/// # Errors
+/// Returns the unchanged packet with `InvalidArgument` for mixed address families,
+/// or `ResourceExhausted` when CPU command resources cannot accept the request.
+/// A rejected request has not been published and its owner may retry it.
+///
+/// # Panics
+/// The command queue must return the original request on rejection. A different
+/// command variant indicates a violated queue ownership contract.
+#[expect(
+    clippy::result_large_err,
+    reason = "Rejection must return the inline packet owner without allocating on the exhausted command path or copying its backing"
+)]
+pub fn send_tcp_segment_payload_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    if_id: crate::net::runtime::manager::NetIfId,
+    local: EndpointAddr,
+    remote: EndpointAddr,
+    segment: PacketPayload,
+    completion_id: Option<u64>,
+) -> Result<(), (EndpointError, PacketPayload)> {
+    use crate::net::runtime::command::{
+        RawIpv4Transport, RawIpv6Transport, RawSendCommand, RuntimeCommand, TransportCommand,
+        new_detached_command_channel_in, try_enqueue_command_in,
+    };
+    use crate::net::types::InterfaceScope;
+
+    let command = if let Some((src, dst)) = endpoint_ipv4_pair(local, remote) {
+        RawSendCommand::Ipv4 {
+            scope: InterfaceScope::Pinned(if_id),
+            dst,
+            transport: RawIpv4Transport::Tcp { src },
+            payload: segment,
+            completion_id,
+        }
+    } else if endpoint_is_native_v6_pair(local, remote) {
+        RawSendCommand::Ipv6 {
+            scope: InterfaceScope::Pinned(if_id),
+            dst: remote.as_ipv6(),
+            transport: RawIpv6Transport::Tcp {
+                src: local.as_ipv6(),
+            },
+            payload: segment,
+            completion_id,
+        }
+    } else {
+        return Err((EndpointError::InvalidArgument, segment));
+    };
+    let reply = new_detached_command_channel_in(runtime);
+    match try_enqueue_command_in(
+        runtime,
+        RuntimeCommand::Transport(TransportCommand::RawSend { command, reply }),
+    ) {
+        Ok(()) => Ok(()),
+        Err(RuntimeCommand::Transport(TransportCommand::RawSend { command, .. })) => {
+            let payload = match command {
+                RawSendCommand::Ipv4 { payload, .. } | RawSendCommand::Ipv6 { payload, .. } => {
+                    payload
+                }
+            };
+            Err((EndpointError::ResourceExhausted, payload))
+        }
+        Err(_) => unreachable!("network command rejection must return the original TCP request"),
     }
 }

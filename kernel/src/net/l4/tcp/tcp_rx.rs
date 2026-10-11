@@ -220,7 +220,12 @@ fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) 
     let Ok(ack) = builder.build_checked_packet(tcb.local, tcb.remote) else {
         return;
     };
-    send_tcp_segment_payload_in(runtime, tcb.if_id, tcb.local, tcb.remote, ack);
+    // Challenge ACKs are best effort; rejection returns the unsubmitted packet.
+    if let Err((cause, _returned)) =
+        send_tcp_segment_payload_in(runtime, tcb.if_id, tcb.local, tcb.remote, ack, None)
+    {
+        log::debug!("[TCP] Challenge ACK queue rejection: {:?}", cause);
+    }
 }
 
 fn send_control_segment(
@@ -233,7 +238,11 @@ fn send_control_segment(
     let Ok(segment) = builder.build_checked_packet(local, remote) else {
         return;
     };
-    send_tcp_segment_payload_in(runtime, if_id, local, remote, segment);
+    if let Err((cause, _returned)) =
+        send_tcp_segment_payload_in(runtime, if_id, local, remote, segment, None)
+    {
+        log::debug!("[TCP] Control segment queue rejection: {:?}", cause);
+    }
 }
 
 /// TCPチェックサム検証（IPv4疑似ヘッダ込み）

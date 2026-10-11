@@ -10,3 +10,5 @@ mod payload_tests;
 pub use payload_tests::*;
 mod socket_payload_tests;
 pub use socket_payload_tests::*;
+mod tcp_retransmit_tests;
+pub use tcp_retransmit_tests::*;

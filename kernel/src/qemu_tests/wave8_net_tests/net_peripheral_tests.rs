@@ -1,3 +1,11 @@
+pub fn net_peripheral_tcp_retransmit_queue_rejection_and_return_smoke() -> bool {
+    crate::net::qemu_tests::tcp_retransmit_queue_rejection_and_return_smoke()
+}
+
+pub fn net_peripheral_tcp_retransmit_ack_before_completion_smoke() -> bool {
+    crate::net::qemu_tests::tcp_retransmit_ack_before_completion_smoke()
+}
+
 pub fn net_peripheral_payload_trim_respects_subspan_bounds_smoke() -> bool {
     crate::net::qemu_tests::payload_trim_respects_subspan_bounds_smoke()
 }

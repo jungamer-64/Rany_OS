@@ -12,7 +12,7 @@ use core::sync::atomic::Ordering;
 use kernel_api::resource::net::PacketPayload;
 use kernel_api::service::netdev::TxDeviceOutcome;
 
-use super::segment::send_tcp_segment_payload_with_completion_in;
+use super::segment::send_tcp_segment_payload_in;
 use super::tcb::TcpFlowKey;
 use super::timer_wheel::TimingWheel;
 use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_leq as seq_leq_fn};
@@ -244,16 +244,19 @@ impl RetransmitQueue {
                 return false;
             }
         };
-        seg.send_tick = current_tick;
-        seg.is_retransmit = is_retransmit;
-        send_tcp_segment_payload_with_completion_in(
-            runtime,
-            if_id,
-            local,
-            remote,
-            data,
-            Some(completion_id),
-        )
+        match send_tcp_segment_payload_in(runtime, if_id, local, remote, data, Some(completion_id))
+        {
+            Ok(()) => {
+                seg.send_tick = current_tick;
+                seg.is_retransmit = is_retransmit;
+                true
+            }
+            Err((_cause, payload)) => {
+                unregister_tcp_tx_return_target(runtime, completion_id);
+                seg.data = RetransmitPayloadState::Ready(payload);
+                false
+            }
+        }
     }
 
     /// 再送処理
@@ -713,70 +716,5 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
                 schedule_retransmit_timer(runtime, key, deadline);
             }
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
-
-    fn test_payload(bytes: &[u8]) -> PacketPayload {
-        let mut packet =
-            crate::net::payload::alloc_packet_with_headroom(bytes.len(), DEFAULT_PACKET_HEADROOM)
-                .expect("test packet allocation");
-        packet.data_mut().copy_from_slice(bytes);
-        PacketPayload::try_single(packet).expect("test payload is non-empty")
-    }
-
-    fn take_ready_payload(queue: &mut RetransmitQueue, completion_id: u64) -> PacketPayload {
-        let state = core::mem::replace(
-            &mut queue.unacked[0].data,
-            RetransmitPayloadState::InFlight {
-                completion_id,
-                acked: false,
-            },
-        );
-        match state {
-            RetransmitPayloadState::Ready(payload) => payload,
-            RetransmitPayloadState::InFlight { .. } => panic!("segment was already in flight"),
-        }
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn completion_restores_the_same_packet_backing_for_retransmission() {
-        let mut queue = RetransmitQueue::new();
-        queue.push(100, 4, test_payload(b"data"), 10);
-        let payload = take_ready_payload(&mut queue, 7);
-        let backing = payload.segments()[0].as_ptr();
-
-        queue.complete_inflight(7, payload, TxDeviceOutcome::OutcomeUnknown, 20);
-
-        let RetransmitPayloadState::Ready(payload) = &queue.unacked[0].data else {
-            panic!("completion must restore retransmittable ownership");
-        };
-        assert_eq!(payload.segments()[0].as_ptr(), backing);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn ack_before_completion_keeps_owner_until_dma_completion() {
-        let mut queue = RetransmitQueue::new();
-        queue.push(100, 4, test_payload(b"data"), 10);
-        let payload = take_ready_payload(&mut queue, 9);
-
-        assert!(queue.ack_received(104, 15));
-        assert_eq!(queue.unacked.len(), 1);
-        assert!(matches!(
-            queue.unacked[0].data,
-            RetransmitPayloadState::InFlight {
-                completion_id: 9,
-                acked: true
-            }
-        ));
-
-        queue.complete_inflight(9, payload, TxDeviceOutcome::Transmitted, 20);
-        assert!(queue.is_empty());
     }
 }

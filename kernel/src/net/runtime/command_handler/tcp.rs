@@ -359,11 +359,8 @@ impl RuntimeCommandHandler {
         }
         // Delegate to the packet-backed module-level TCP sender.
         // This centralizes IP family handling and ARP/NDP queuing logic.
-        if send_tcp_segment_payload_in(runtime, if_id, src, dst, segment) {
-            Ok(())
-        } else {
-            Err(EndpointError::ResourceExhausted)
-        }
+        send_tcp_segment_payload_in(runtime, if_id, src, dst, segment, None)
+            .map_err(|(cause, _returned)| cause)
     }
 
     /// Listenイベント処理

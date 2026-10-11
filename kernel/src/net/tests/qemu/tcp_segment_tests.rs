@@ -34,7 +34,9 @@ fn send_test_segment(
         local,
         remote,
         segment,
+        None,
     )
+    .is_ok()
 }
 
 pub fn tcp_segment_builder_smoke() -> bool {
@@ -168,7 +170,18 @@ pub fn tcp_segment_mixed_family_rejection_smoke() -> bool {
     let remote = EndpointAddr::new_v6(crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets(), 80);
     let segment = build_test_segment(TcpSegmentBuilder::new(local.port(), remote.port()).syn());
 
-    assert!(!send_test_segment(runtime, local, remote, segment));
+    let backing = segment.segments()[0].data().as_ptr();
+    let (cause, returned) = send_tcp_segment_payload_in(
+        runtime,
+        crate::net::runtime::manager::NetIfId(1),
+        local,
+        remote,
+        segment,
+        None,
+    )
+    .expect_err("mixed TCP families must preserve rejected ownership");
+    assert_eq!(cause, crate::net::l4::types::EndpointError::InvalidArgument);
+    assert_eq!(returned.segments()[0].data().as_ptr(), backing);
     let current = crate::cpu::CurrentCpu::acquire().expect("TCP rejection CPU");
     let resources =
         crate::net::runtime::command::command_resources_for_cpu_in(runtime, current.id())
