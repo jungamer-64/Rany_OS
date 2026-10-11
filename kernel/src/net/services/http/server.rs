@@ -19,6 +19,7 @@ mod router;
 
 pub(crate) struct HttpRuntimeState {
     started: AtomicBool,
+    poller_signal: HttpPollerSignal,
     active_connections: AtomicU32,
     total_requests: AtomicU64,
     bytes_rx: AtomicU64,
@@ -29,10 +30,69 @@ impl HttpRuntimeState {
     pub(crate) const fn new() -> Self {
         Self {
             started: AtomicBool::new(false),
+            poller_signal: HttpPollerSignal::new(),
             active_connections: AtomicU32::new(0),
             total_requests: AtomicU64::new(0),
             bytes_rx: AtomicU64::new(0),
             bytes_tx: AtomicU64::new(0),
+        }
+    }
+}
+
+/// Connection activity is coalesced for one poller. The sequence is published
+/// before waking, and registration is followed by a second sequence read so
+/// an early or racing notification cannot leave that poller asleep.
+struct HttpPollerSignal {
+    waker: AtomicWaker,
+    sequence: AtomicU64,
+}
+
+impl HttpPollerSignal {
+    const fn new() -> Self {
+        Self {
+            waker: AtomicWaker::new(),
+            sequence: AtomicU64::new(1),
+        }
+    }
+
+    fn sequence(&self) -> u64 {
+        self.sequence.load(Ordering::Acquire)
+    }
+
+    fn notify(&self) {
+        self.sequence.fetch_add(1, Ordering::AcqRel);
+        self.waker.wake();
+    }
+
+    fn wait(&self, observed_seq: u64) -> HttpPollerSignalFuture<'_> {
+        HttpPollerSignalFuture {
+            signal: self,
+            observed_seq,
+        }
+    }
+}
+
+struct HttpPollerSignalFuture<'a> {
+    signal: &'a HttpPollerSignal,
+    observed_seq: u64,
+}
+
+impl Future for HttpPollerSignalFuture<'_> {
+    type Output = u64;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        let current = self.signal.sequence();
+        if current != self.observed_seq {
+            return Poll::Ready(current);
+        }
+
+        self.signal.waker.register(cx.waker());
+
+        let current = self.signal.sequence();
+        if current != self.observed_seq {
+            Poll::Ready(current)
+        } else {
+            Poll::Pending
         }
     }
 }
@@ -80,19 +140,11 @@ fn enqueue_runtime_poll_events_in(runtime: NetRuntimeHandle) -> usize {
 }
 
 async fn wait_http_poller_signal_or_timeout(
-    runtime: NetRuntimeHandle,
+    signal: &HttpPollerSignal,
     observed_seq: &mut u64,
     timeout_ms: u64,
 ) -> Result<bool, kernel_api::service::time::TimerError> {
-    match task::with_timeout(
-        HttpPollerSignalFuture {
-            runtime,
-            observed_seq: *observed_seq,
-        },
-        timeout_ms,
-    )
-    .await
-    {
+    match task::with_timeout(signal.wait(*observed_seq), timeout_ms).await {
         TimeoutResult::Completed(next_seq) => {
             *observed_seq = next_seq;
             Ok(true)
@@ -178,7 +230,8 @@ async fn run_http_service_loops_in(runtime: NetRuntimeHandle) {
 /// 駆動されるため、ここでは yield / sleep でExecutorに制御を渡すのみ。
 async fn run_net_poller_in(runtime: NetRuntimeHandle) {
     let mut consecutive_idle: u32 = 0;
-    let mut observed_signal_seq = current_http_poller_signal_seq(runtime);
+    let signal = &http_runtime_in(runtime).poller_signal;
+    let mut observed_signal_seq = signal.sequence();
     // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
     loop {
         // ISR + runtime_command_task が非同期にパケット処理を行うため、
@@ -198,7 +251,7 @@ async fn run_net_poller_in(runtime: NetRuntimeHandle) {
             host_http_idle_wait_ms(consecutive_idle)
         };
 
-        match wait_http_poller_signal_or_timeout(runtime, &mut observed_signal_seq, wait_ms).await {
+        match wait_http_poller_signal_or_timeout(signal, &mut observed_signal_seq, wait_ms).await {
             Ok(true) => consecutive_idle = 0,
             Ok(false) => {}
             Err(cause) => {
@@ -396,7 +449,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                         http_runtime_in(runtime)
                             .active_connections
                             .fetch_sub(1, Ordering::AcqRel);
-                        notify_http_poller_signal(runtime);
+                        http_runtime_in(runtime).poller_signal.notify();
                     },
                     crate::task::TaskOptions::any(),
                 ) {
@@ -409,7 +462,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                     );
                 }
 
-                notify_http_poller_signal(runtime);
+                http_runtime_in(runtime).poller_signal.notify();
             }
             TimeoutResult::Completed(Err(err)) => {
                 return Err(err);
@@ -492,11 +545,77 @@ mod tests {
 
     #[test]
     fn http_poller_signal_sequence_advances_on_notify() {
-        let runtime = crate::net::runtime::default_runtime();
-        let before = current_http_poller_signal_seq(runtime);
-        notify_http_poller_signal(runtime);
-        let after = current_http_poller_signal_seq(runtime);
+        let signal = HttpPollerSignal::new();
+        let before = signal.sequence();
+        signal.notify();
+        let after = signal.sequence();
         assert!(after > before);
+    }
+
+    struct WakeCount(core::sync::atomic::AtomicUsize);
+
+    impl alloc::task::Wake for WakeCount {
+        fn wake(self: alloc::sync::Arc<Self>) {
+            self.0.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    #[test]
+    fn http_poller_observes_early_and_registered_notifications() {
+        let early = HttpPollerSignal::new();
+        let observed = early.sequence();
+        let mut wait = core::pin::pin!(early.wait(observed));
+        early.notify();
+        early.notify();
+        assert_eq!(
+            wait.as_mut()
+                .poll(&mut Context::from_waker(core::task::Waker::noop())),
+            Poll::Ready(observed + 2)
+        );
+
+        let signal = HttpPollerSignal::new();
+        let count = alloc::sync::Arc::new(WakeCount(core::sync::atomic::AtomicUsize::new(0)));
+        let waker = core::task::Waker::from(alloc::sync::Arc::clone(&count));
+        let mut context = Context::from_waker(&waker);
+        let mut wait = core::pin::pin!(signal.wait(signal.sequence()));
+        assert_eq!(wait.as_mut().poll(&mut context), Poll::Pending);
+        signal.notify();
+        assert!(count.0.load(Ordering::Relaxed) > 0);
+        assert_eq!(
+            wait.as_mut().poll(&mut context),
+            Poll::Ready(signal.sequence())
+        );
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn http_poller_registration_races_do_not_lose_notifications() {
+        for _ in 0..128 {
+            let signal = HttpPollerSignal::new();
+            let barrier = std::sync::Barrier::new(2);
+            let count = alloc::sync::Arc::new(WakeCount(core::sync::atomic::AtomicUsize::new(0)));
+            let waker = core::task::Waker::from(alloc::sync::Arc::clone(&count));
+            let mut context = Context::from_waker(&waker);
+            let observed = signal.sequence();
+            let mut wait = core::pin::pin!(signal.wait(observed));
+            let first = std::thread::scope(|threads| {
+                let notification = threads.spawn(|| {
+                    barrier.wait();
+                    signal.notify();
+                });
+                barrier.wait();
+                let first = wait.as_mut().poll(&mut context);
+                notification.join().expect("notification publisher failed");
+                first
+            });
+            match first {
+                Poll::Ready(sequence) => assert_eq!(sequence, observed + 1),
+                Poll::Pending => {
+                    assert!(count.0.load(Ordering::Relaxed) > 0);
+                    assert_eq!(wait.as_mut().poll(&mut context), Poll::Ready(observed + 1));
+                }
+            }
+        }
     }
 
     #[test]
