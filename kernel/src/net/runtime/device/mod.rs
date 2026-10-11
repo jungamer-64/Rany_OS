@@ -2449,7 +2449,6 @@ mod tests {
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn tx_queue_roundtrip_smoke() {
-        let _ = crate::net::datapath::mempool::init_net_mempool(16);
         let queue = NetTxQueue::new();
         let request = TxRequest {
             lease_id: TxLeaseId::new(1).expect("non-zero lease"),
