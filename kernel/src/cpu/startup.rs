@@ -384,12 +384,15 @@ impl CpuStartupController {
             }
             core::hint::spin_loop();
         }
+        let signal = resource.signal()?;
+        if signal == ApStartupSignal::ReadyParked {
+            return Ok(());
+        }
+        if let Some(failure) = signal.failure() {
+            return Err(failure);
+        }
         Err(CpuFailureReason::StartupAcknowledgementTimedOut {
-            stage: resource
-                .signal()
-                .ok()
-                .and_then(ApStartupSignal::stage)
-                .unwrap_or(CpuStartupStage::Preparing),
+            stage: signal.stage().unwrap_or(CpuStartupStage::Preparing),
         })
     }
 }
@@ -721,6 +724,12 @@ fn wait_for_online_acknowledgement(
         }
         core::hint::spin_loop();
     }
+    // A timer can suspend this waiter between its negative acknowledgement
+    // check and the deadline check. Observe completion again before rejecting
+    // admission; its owner has not withdrawn the Start request yet.
+    if local.remote().online_acknowledgements() != acknowledgement {
+        return Ok(());
+    }
     Err(CpuFailureReason::StartupAcknowledgementTimedOut {
         stage: resource
             .signal()
@@ -969,8 +978,9 @@ fn ap_entry(id: CpuId) -> ! {
                         crate::interrupts::enable_interrupts();
                         continue;
                     }
-                    resource.publish(ApStartupSignal::ReadyOnline);
                     current.acknowledge_online();
+                    // Acquiring ReadyOnline also observes its acknowledgement.
+                    resource.publish(ApStartupSignal::ReadyOnline);
                     fence(Ordering::SeqCst);
                     if online_commit_observed(&current, id) {
                         let _ = crate::mm::sync::tlb::exit_lazy_mode();
