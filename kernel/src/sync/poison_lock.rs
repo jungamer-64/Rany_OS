@@ -71,15 +71,6 @@ pub enum TryLockError<Guard> {
     WouldBlock,
 }
 
-impl<Guard> TryLockError<Guard> {
-    pub fn into_inner(self) -> Guard {
-        match self {
-            Self::Poisoned(e) => e.into_inner(),
-            Self::WouldBlock => panic!("try_lock would block"),
-        }
-    }
-}
-
 // ============================================================================
 // PoisonRwLock - パニック時自動毒入れRwLock
 // ============================================================================
@@ -108,6 +99,11 @@ impl<T> PoisonRwLock<T> {
 
 impl<T> PoisonRwLock<T> {
     /// 読み取りロックを取得
+    ///
+    /// # Errors
+    /// Poison returns the acquired read guard inside `PoisonError`. The lock
+    /// and CPU preemption exclusion remain held until that guard is dropped;
+    /// recovery must establish consistency before treating the data as valid.
     pub fn read(&self) -> LockResult<PoisonRwLockReadGuard<'_, T>> {
         let preemption = PreemptionGuard::enter();
         #[cfg(all(test, feature = "std"))]
@@ -138,6 +134,11 @@ impl<T> PoisonRwLock<T> {
     }
 
     /// 書き込みロックを取得
+    ///
+    /// # Errors
+    /// Poison returns exclusive recovery authority inside `PoisonError`, with
+    /// the lock and CPU preemption exclusion still held. Ordinary mutation
+    /// requires repairing the protected state first.
     pub fn write(&self) -> LockResult<PoisonRwLockWriteGuard<'_, T>> {
         let preemption = PreemptionGuard::enter();
         #[cfg(all(test, feature = "std"))]
@@ -170,6 +171,8 @@ impl<T> PoisonRwLock<T> {
     }
 
     /// 読み取りロックを試行
+    /// Contention returns `None` and releases this attempt's preemption guard.
+    /// `Some(Err(_))` retains the acquired guard for explicit poison recovery.
     pub fn try_read(&self) -> Option<LockResult<PoisonRwLockReadGuard<'_, T>>> {
         let preemption = PreemptionGuard::enter();
         self.inner.try_read().map(|guard| {
@@ -186,6 +189,8 @@ impl<T> PoisonRwLock<T> {
     }
 
     /// 書き込みロックを試行
+    /// Contention returns `None` and releases this attempt's preemption guard.
+    /// `Some(Err(_))` retains exclusive access for explicit poison recovery.
     pub fn try_write(&self) -> Option<LockResult<PoisonRwLockWriteGuard<'_, T>>> {
         let preemption = PreemptionGuard::enter();
         self.inner.try_write().map(|guard| {
@@ -324,6 +329,10 @@ impl<T> PoisonLock<T> {
     ///
     /// A poisoned lock returns the value inside [`PoisonError`] so the caller
     /// cannot silently treat a possibly interrupted transition as consistent.
+    ///
+    /// # Errors
+    /// Poison transfers the owned value through `PoisonError`; the consumed
+    /// lock cannot be reused. The receiver owns validation, repair, or disposal.
     pub fn into_inner(self) -> LockResult<T> {
         let poisoned = self.poisoned.load(Ordering::Acquire);
         let data = self.data.into_inner();
@@ -338,6 +347,11 @@ impl<T> PoisonLock<T> {
     ///
     /// ロックが毒入れされている場合は`Err(PoisonError)`を返す。
     /// 呼び出し側は`into_inner()`で回復を試みることができる。
+    ///
+    /// # Errors
+    /// Poison returns the acquired guard as recovery authority. The lock and
+    /// CPU preemption exclusion remain held until the error or extracted guard
+    /// is dropped; extraction does not establish data consistency.
     pub fn lock(&self) -> LockResult<PoisonLockGuard<'_, T>> {
         let preemption = PreemptionGuard::enter();
         // 1. スピンロックを取得（指数バックオフ付き）
@@ -386,6 +400,11 @@ impl<T> PoisonLock<T> {
     }
 
     /// ロックを試行（失敗したら即座に返る）
+    ///
+    /// # Errors
+    /// `WouldBlock` grants no access and releases this attempt's preemption
+    /// guard. `Poisoned` retains exclusive access and preemption exclusion in
+    /// its recovery guard until the receiver drops it.
     pub fn try_lock(&self) -> Result<PoisonLockGuard<'_, T>, TryLockError<PoisonLockGuard<'_, T>>> {
         let preemption = PreemptionGuard::enter();
         // try_lock は即時取得成功時のみ計測する
@@ -469,22 +488,6 @@ impl<T> PoisonLock<T> {
     /// mutable access despite the lock bit being clear.
     pub(crate) unsafe fn abandon_guard_for_terminal_panic(&self) {
         self.locked.store(false, Ordering::Release);
-    }
-
-    /// 内部データへの参照を取得（ロックなし、unsafeのみ）
-    ///
-    /// # Safety
-    /// 呼び出し側は、排他的アクセスを保証する必要がある
-    pub unsafe fn get_unchecked(&self) -> &T {
-        unsafe { &*self.data.get() }
-    }
-
-    /// 内部データへの可変参照を取得（ロックなし、unsafeのみ）
-    ///
-    /// # Safety
-    /// 呼び出し側は、排他的アクセスを保証する必要がある
-    pub unsafe fn get_unchecked_mut(&self) -> &mut T {
-        unsafe { &mut *self.data.get() }
     }
 }
 
@@ -694,6 +697,10 @@ impl<T> IrqPoisonLock<T> {
 
 impl<T: ?Sized> IrqPoisonLock<T> {
     /// ロックを取得（割り込み禁止付き）
+    ///
+    /// # Errors
+    /// Poison retains the acquired recovery guard and keeps interrupts
+    /// disabled. Dropping it unlocks before restoring the caller's IRQ state.
     pub fn lock(&self) -> LockResult<IrqPoisonLockGuard<'_, T>> {
         // 1. 割り込みを禁止
         let irq_was_enabled = super::irq_mutex::save_and_disable_interrupts();
@@ -726,6 +733,11 @@ impl<T: ?Sized> IrqPoisonLock<T> {
     /// Attempt one acquisition without waiting. Contention retains the owner
     /// and restores the caller's IRQ state. Poisoning is never cleared here;
     /// its guard is returned only as explicit recovery authority.
+    ///
+    /// # Errors
+    /// `WouldBlock` returns no guard and restores the previous IRQ state.
+    /// `Poisoned` retains the lock with interrupts disabled until the error or
+    /// extracted recovery guard is dropped.
     pub fn try_lock(
         &self,
     ) -> Result<IrqPoisonLockGuard<'_, T>, TryLockError<IrqPoisonLockGuard<'_, T>>> {
