@@ -416,23 +416,6 @@ pub(crate) static REGISTRY: PoisonLock<DomainRegistry> = PoisonLock::new(DomainR
 // 公開API - ドメイン管理
 // ============================================================================
 
-/// ドメインシステムを初期化（カーネルドメインを作成）
-pub fn init() {
-    // Ensure quota manager is initialized before any non-kernel domain is created.
-    crate::domain::quota::init();
-
-    // 初期化時は毒入れされていないはず
-    let mut registry = REGISTRY
-        .lock()
-        .expect("domain registry poisoned during init");
-
-    // カーネルドメインを作成
-    let mut kernel = Domain::new(DomainId::KERNEL, "kernel".into())
-        .expect("kernel domain metadata required at startup");
-    kernel.state = DomainState::Running;
-    registry.domains.push(kernel);
-}
-
 /// Prepare security/account metadata outside the registries, then publish the
 /// domain without allocation. Rejection consumes an ID but publishes no domain.
 pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
@@ -472,19 +455,9 @@ pub fn create_domain(name: String) -> Result<DomainId, KernelError> {
     let result = {
         match REGISTRY.lock() {
             Ok(mut registry) => {
-                let required = registry.domains.len().checked_add(1);
-                if required.is_none_or(|required| {
-                    registry.domains.capacity() < required && prepared.capacity() < required
-                }) {
-                    Err(KernelError::Domain(DomainErrorKind::RegistryFull))
-                } else {
-                    if registry.domains.len() == registry.domains.capacity() {
-                        prepared.extend(registry.domains.drain(..));
-                        core::mem::swap(&mut registry.domains, &mut prepared);
-                    }
-                    registry.domains.push(domain);
-                    Ok(id)
-                }
+                registry
+                    .reserve_publication(&mut prepared)
+                    .map(|publication| publication.commit(domain))
             }
             Err(_) => Err(KernelError::Domain(DomainErrorKind::RegistryPoisoned)),
         }
