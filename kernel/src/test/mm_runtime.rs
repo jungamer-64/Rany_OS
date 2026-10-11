@@ -20,6 +20,13 @@ pub(super) fn owned_frames(_: Option<&str>) -> RuntimeTestResult {
         let mut owners: [Option<PhysicalAllocation>; 80] = [const { None }; 80];
         for index in 0..owners.len() {
             let owner = pmm::alloc_frame().map_err(|_| "4KiB allocation failed")?;
+            let mapped = crate::mm::virt::mapping::phys_to_virt(owner.start_address());
+            if crate::mm::virt::mapping::virt_to_phys(mapped) != owner.start_address()
+                || vm::global_translate(VirtAddr::new(mapped.as_u64()))
+                    != Some(PhysAddr::new(owner.as_u64()))
+            {
+                return Err("direct-map conversion disagrees with the live page tables");
+            }
             if owners
                 .iter()
                 .flatten()
