@@ -253,6 +253,18 @@ pub fn net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
     crate::net::qemu_tests::tcp_ooo_permits_and_bounded_queue_smoke()
 }
 
+pub fn net_peripheral_snapshot_counter_deltas_and_events_smoke() -> bool {
+    crate::net::qemu_tests::snapshot_counter_deltas_and_events_smoke()
+}
+
+pub fn net_peripheral_snapshot_runtime_isolation_smoke() -> bool {
+    crate::net::qemu_tests::snapshot_runtime_isolation_smoke()
+}
+
+pub fn net_peripheral_snapshot_registered_interface_smoke() -> bool {
+    crate::net::qemu_tests::snapshot_registered_interface_smoke()
+}
+
 pub async fn net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke() -> bool {
     crate::net::qemu_tests::tcp_stateless_reset_budget_uses_system_uptime_smoke().await
 }
