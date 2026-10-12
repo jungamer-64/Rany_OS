@@ -106,3 +106,14 @@ impl Drop for PageClusterBuffer {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::PageClusterBuffer;
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn invalid_buffer_geometry_is_rejected_before_ram_admission() {
+        assert!(PageClusterBuffer::allocate(0).is_none());
+        assert!(PageClusterBuffer::allocate(usize::MAX).is_none());
+    }
+}

@@ -361,6 +361,147 @@ async fn read_nvme_block(
     }
 }
 
+#[cfg(feature = "qemu-test-export")]
+async fn page_buffer_owned_roundtrip() -> Result<String, String> {
+    use crate::fs::page_cluster_buffer::PageClusterBuffer;
+    use crate::mm::phys::frame_allocator::alloc_contiguous_frames;
+    use crate::mm::types::PAGE_SIZE_4K;
+    use alloc::{boxed::Box, vec};
+    use kernel_api::block_io::{
+        BlockDeviceInfo, BlockError, BlockResult, ZcFuture, ZeroCopyBlockDevice, ZeroCopyBuffer,
+    };
+
+    let page = PageClusterBuffer::allocate(PAGE_SIZE_4K)
+        .ok_or_else(|| String::from("page buffer allocation failed"))?;
+    assert_eq!(page.as_slice(), &[0u8; PAGE_SIZE_4K]);
+    drop(page);
+
+    let backing = alloc_contiguous_frames(1)
+        .map_err(|cause| alloc::format!("physical buffer allocation failed: {cause:?}"))?;
+    let physical = backing.as_u64();
+    let mut buffer = PageClusterBuffer::from_allocation(backing, 512)
+        .ok_or_else(|| String::from("owned buffer construction failed"))?;
+    assert_eq!(buffer.as_slice(), &[0u8; 512]);
+    let info = buffer.dma_info().expect("buffer physical geometry");
+    assert_eq!(info.phys_addr, physical);
+    assert_eq!(info.len, 512);
+    // LOOP_PROOF: mode=bounded; reason=The initialized logical buffer fixes the independent byte-pattern vector length;
+    for (index, byte) in buffer.as_mut_slice().iter_mut().enumerate() {
+        *byte = (index & 0xff) as u8;
+    }
+    assert_eq!(&buffer.as_slice()[..4], &[0, 1, 2, 3]);
+    drop(buffer);
+
+    let oversized = alloc_contiguous_frames(1)
+        .map_err(|cause| alloc::format!("rejected buffer allocation failed: {cause:?}"))?;
+    assert!(PageClusterBuffer::from_allocation(oversized, PAGE_SIZE_4K + 1).is_none());
+
+    struct MemoryBlockDevice {
+        storage: crate::sync::Mutex<Vec<u8>>,
+    }
+
+    impl ZeroCopyBlockDevice for MemoryBlockDevice {
+        type Buffer = PageClusterBuffer;
+
+        fn info(&self) -> BlockDeviceInfo {
+            BlockDeviceInfo {
+                name: "memory-block",
+                total_blocks: 2,
+                block_size: 512,
+                read_only: false,
+                max_sectors: 2,
+                num_queues: 1,
+            }
+        }
+
+        fn flush(&self) -> BlockResult<()> {
+            Ok(())
+        }
+
+        fn alloc_buffer(&self, size: usize) -> BlockResult<Self::Buffer> {
+            PageClusterBuffer::allocate(size).ok_or(BlockError::NotReady)
+        }
+
+        fn read_async(&self, block: u64, count: u32) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+            Box::pin(async move {
+                let offset = usize::try_from(block)
+                    .ok()
+                    .and_then(|block| block.checked_mul(512))
+                    .ok_or(BlockError::InvalidBlock)?;
+                let len = usize::try_from(count)
+                    .ok()
+                    .and_then(|count| count.checked_mul(512))
+                    .ok_or(BlockError::InvalidBlock)?;
+                let end = offset.checked_add(len).ok_or(BlockError::InvalidBlock)?;
+                let mut buffer = self.alloc_buffer(len)?;
+                let storage = self.storage.lock();
+                let data = storage.get(offset..end).ok_or(BlockError::InvalidBlock)?;
+                buffer.as_mut_slice().copy_from_slice(data);
+                Ok(buffer)
+            })
+        }
+
+        fn write_async(
+            &self,
+            block: u64,
+            buffer: Self::Buffer,
+        ) -> ZcFuture<'_, BlockResult<Self::Buffer>> {
+            Box::pin(async move {
+                let offset = usize::try_from(block)
+                    .ok()
+                    .and_then(|block| block.checked_mul(512))
+                    .ok_or(BlockError::InvalidBlock)?;
+                let end = offset
+                    .checked_add(buffer.len())
+                    .ok_or(BlockError::InvalidBlock)?;
+                let mut storage = self.storage.lock();
+                let data = storage
+                    .get_mut(offset..end)
+                    .ok_or(BlockError::InvalidBlock)?;
+                data.copy_from_slice(buffer.as_slice());
+                Ok(buffer)
+            })
+        }
+    }
+
+    let device = MemoryBlockDevice {
+        storage: crate::sync::Mutex::new(vec![0u8; 1024]),
+    };
+    let mut write_buffer = device
+        .alloc_buffer(512)
+        .map_err(|cause| alloc::format!("write buffer allocation failed: {cause:?}"))?;
+    write_buffer.as_mut_slice()[..4].copy_from_slice(b"Rany");
+    let write_physical = write_buffer
+        .dma_info()
+        .expect("write buffer geometry")
+        .phys_addr;
+    let write_pointer = write_buffer.as_slice().as_ptr().addr();
+    let returned = device
+        .write_async(0, write_buffer)
+        .await
+        .map_err(|cause| alloc::format!("memory block write failed: {cause:?}"))?;
+    assert_eq!(returned.as_slice().as_ptr().addr(), write_pointer);
+    assert_eq!(
+        returned
+            .dma_info()
+            .expect("returned buffer geometry")
+            .phys_addr,
+        write_physical
+    );
+    let read_buffer = device
+        .read_async(0, 1)
+        .await
+        .map_err(|cause| alloc::format!("memory block read failed: {cause:?}"))?;
+    let read_info = read_buffer.dma_info().expect("read buffer geometry");
+    assert_eq!(read_info.len, 512);
+    assert_ne!(read_info.phys_addr, write_physical);
+    assert_eq!(&read_buffer.as_slice()[..4], b"Rany");
+    assert_eq!(&read_buffer.as_slice()[4..], &[0u8; 508]);
+    Ok(String::from(
+        "owned logical block buffer roundtrip completed",
+    ))
+}
+
 pub async fn test_storage() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("Storage");
 
@@ -376,13 +517,10 @@ pub async fn test_storage() -> IntegrationTestSuite {
 
     #[cfg(feature = "qemu-test-export")]
     suite.add_result(
-        run_async_case("page_cluster_owned_roundtrip", async {
-            crate::fs::page_cluster_buffer::tests::test_page_cluster_buffer_zero_copy_roundtrip()
-                .await;
-            Ok(String::from(
-                "owned logical block buffer roundtrip completed",
-            ))
-        })
+        run_async_case(
+            "page_cluster_owned_roundtrip",
+            page_buffer_owned_roundtrip(),
+        )
         .await,
     );
 

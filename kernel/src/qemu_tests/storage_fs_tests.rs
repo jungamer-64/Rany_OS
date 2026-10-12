@@ -105,19 +105,3 @@ pub fn storage_fs_page_truncate_smoke() -> bool {
 pub fn storage_fs_page_get_page_zero_copy_smoke() -> bool {
     crate::fs::qemu_tests::page_get_page_zero_copy_smoke()
 }
-
-pub fn storage_fs_page_cluster_buffer_page_cluster_buffer_alloc_fallback_or_contig_smoke() -> bool {
-    crate::fs::qemu_tests::page_cluster_buffer_page_cluster_buffer_alloc_fallback_or_contig_smoke()
-}
-
-pub fn storage_fs_page_cluster_buffer_impl_zero_copy_traits_smoke() -> bool {
-    crate::fs::qemu_tests::page_cluster_buffer_impl_zero_copy_traits_smoke()
-}
-
-pub fn storage_fs_page_cluster_buffer_page_cluster_buffer_dma_info_smoke() -> bool {
-    crate::fs::qemu_tests::page_cluster_buffer_page_cluster_buffer_dma_info_smoke()
-}
-
-pub fn storage_fs_page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke() -> bool {
-    crate::fs::qemu_tests::page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke()
-}

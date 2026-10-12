@@ -1,5 +1,5 @@
 //! QEMU-exported Storage/FS deterministic checks.
-use super::{async_memfs, cache, memfs, page, page_cluster_buffer};
+use super::{async_memfs, cache, memfs, page};
 use super::{async_ops, fs_model};
 
 macro_rules! run_case {
@@ -123,20 +123,4 @@ pub fn page_truncate_smoke() -> bool {
 
 pub fn page_get_page_zero_copy_smoke() -> bool {
     run_case!(page::tests::test_get_page_zero_copy)
-}
-
-pub fn page_cluster_buffer_page_cluster_buffer_alloc_fallback_or_contig_smoke() -> bool {
-    run_case!(page_cluster_buffer::tests::test_page_cluster_buffer_alloc_or_contig)
-}
-
-pub fn page_cluster_buffer_impl_zero_copy_traits_smoke() -> bool {
-    run_case!(page_cluster_buffer::tests::test_impl_zero_copy_traits)
-}
-
-pub fn page_cluster_buffer_page_cluster_buffer_dma_info_smoke() -> bool {
-    run_case!(page_cluster_buffer::tests::test_page_cluster_buffer_dma_info)
-}
-
-pub fn page_cluster_buffer_page_cluster_buffer_physical_alloc_and_write_smoke() -> bool {
-    run_case!(page_cluster_buffer::tests::test_page_cluster_buffer_physical_alloc_and_write)
 }
