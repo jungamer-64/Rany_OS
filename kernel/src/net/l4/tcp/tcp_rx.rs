@@ -34,6 +34,7 @@ use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
+use crate::sync::PoisonLock;
 use kernel_api::resource::net::PacketPayload;
 
 // ============================================================================
@@ -97,9 +98,125 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockSnapshot, seq_num: u32, seg_len: 
     }
 }
 
+const RESPONSE_WINDOW_MS: u64 = 1000;
+static CHALLENGE_ACK_BUDGET: ResponseBudget = ResponseBudget::new(100);
+static CLOSED_PORT_RST_BUDGET: ResponseBudget = ResponseBudget::new(10);
+
+struct ResponseWindow {
+    started_ms: u64,
+    reserved: u32,
+}
+
+impl ResponseWindow {
+    const fn new() -> Self {
+        Self {
+            started_ms: 0,
+            reserved: 0,
+        }
+    }
+
+    fn try_reserve(&mut self, now_ms: u64, limit: u32) -> bool {
+        if now_ms.saturating_sub(self.started_ms) >= RESPONSE_WINDOW_MS {
+            self.started_ms = now_ms;
+            self.reserved = 0;
+        }
+        if self.reserved >= limit {
+            return false;
+        }
+        self.reserved += 1;
+        true
+    }
+}
+
+/// Kernel-wide control response admission uses the system uptime, independently
+/// of each runtime's transport ticks. Window renewal and reservation share one
+/// critical section. Rejected requests never increment a wrapping counter, and
+/// poisoning denies admission. A reservation remains charged if packet creation
+/// or submission subsequently fails, bounding attempted control responses too.
+struct ResponseBudget {
+    window: PoisonLock<ResponseWindow>,
+    limit: u32,
+}
+
+impl ResponseBudget {
+    const fn new(limit: u32) -> Self {
+        Self {
+            window: PoisonLock::new(ResponseWindow::new()),
+            limit,
+        }
+    }
+
+    fn try_reserve(&self, uptime_ms: impl FnOnce() -> u64) -> bool {
+        let Ok(mut window) = self.window.lock() else {
+            return false;
+        };
+        window.try_reserve(uptime_ms(), self.limit)
+    }
+}
+
+#[cfg(test)]
+mod response_budget_tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn response_budget_exhaustion_and_exact_window_boundary() {
+        let budget = ResponseBudget::new(10);
+        for _ in 0..10 {
+            assert!(budget.try_reserve(|| 0));
+        }
+        for _ in 0..5 {
+            assert!(!budget.try_reserve(|| 999));
+        }
+        assert!(budget.try_reserve(|| 1000));
+        for _ in 0..9 {
+            assert!(budget.try_reserve(|| 1999));
+        }
+        assert!(!budget.try_reserve(|| 1999));
+        assert!(!budget.try_reserve(|| 0));
+        assert!(budget.try_reserve(|| 2000));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn response_budget_zero_limit_and_terminal_timestamp() {
+        let disabled = ResponseBudget::new(0);
+        assert!(!disabled.try_reserve(|| 0));
+        assert!(!disabled.try_reserve(|| u64::MAX));
+        let budget = ResponseBudget::new(1);
+        assert!(budget.try_reserve(|| u64::MAX));
+        assert!(!budget.try_reserve(|| u64::MAX));
+    }
+
+    #[cfg(any(feature = "std", target_os = "linux"))]
+    #[test]
+    fn concurrent_window_renewal_admits_exactly_one_budget() {
+        let budget = ResponseBudget::new(10);
+        for _ in 0..10 {
+            assert!(budget.try_reserve(|| 0));
+        }
+        let barrier = std::sync::Barrier::new(4);
+        let admitted = std::thread::scope(|scope| {
+            let workers: [_; 4] = core::array::from_fn(|_| {
+                scope.spawn(|| {
+                    barrier.wait();
+                    (0..10).filter(|_| budget.try_reserve(|| 1000)).count()
+                })
+            });
+            workers
+                .into_iter()
+                .map(|worker| worker.join().expect("response reservation worker"))
+                .sum::<usize>()
+        });
+        assert_eq!(admitted, 10);
+        assert!(!budget.try_reserve(|| 1000));
+        assert!(budget.try_reserve(|| 2000));
+    }
+}
+
 /// チャレンジACK（シーケンス番号エラー時の応答）を送信
 fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) {
-    if !check_challenge_ack_rate_limit(runtime) {
+    if !CHALLENGE_ACK_BUDGET.try_reserve(crate::time::get_uptime_ms) {
         log::debug!("[TCP] Challenge ACK rate limit exceeded, dropping");
         return;
     }
@@ -1209,7 +1326,7 @@ fn send_stateless_rst(
     if (flags & tcp_flags::RST) != 0 {
         return;
     }
-    if !check_closed_port_rst_rate(runtime) {
+    if !CLOSED_PORT_RST_BUDGET.try_reserve(crate::time::get_uptime_ms) {
         return;
     }
 

@@ -7,6 +7,7 @@ pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
     ("net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke()))),
     ("net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke()))),
     ("net_peripheral_neighbor_resolution_elapsed_timeout_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_neighbor_resolution_elapsed_timeout_smoke()))),
+    ("net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke()))),
     ("net_ecdh_group_from_named_group_p256_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_group_from_named_group_p256_smoke)),
     ("net_ecdh_group_from_named_group_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_group_from_named_group_smoke)),
     ("net_ecdh_p256_key_exchange_symmetry_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_p256_key_exchange_symmetry_smoke)),

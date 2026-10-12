@@ -112,6 +112,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - runtime / device / driver の TX 境界は `PacketRef` 単体ではなく `PacketPayload` を正規送信単位として扱う。
 - TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
 - TCP retransmit は同じ packet backing を `Ready` / `InFlight` 間で移動する。ACK が DMA completion より先に到着しても completion までは owner を保持し、未送信または outcome 不明の completion は再送可能な ownership へ戻す。
+- TCP の challenge ACK と stateless RST の送信予約は kernel 全体の時間窓で制限する。共有実行資源への負荷を抑えるため、system uptime を基準に期間更新と予約を直列化し、packet の構築・送信拒否後も予約を消費済みとして扱う。
 - 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 

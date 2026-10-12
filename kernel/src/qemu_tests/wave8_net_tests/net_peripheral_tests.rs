@@ -253,6 +253,10 @@ pub fn net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
     crate::net::qemu_tests::tcp_ooo_permits_and_bounded_queue_smoke()
 }
 
+pub async fn net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke() -> bool {
+    crate::net::qemu_tests::tcp_stateless_reset_budget_uses_system_uptime_smoke().await
+}
+
 pub fn net_peripheral_runtime_two_runtimes_bind_same_udp_port_independently_smoke() -> bool {
     crate::net::qemu_tests::runtime_two_runtimes_bind_same_udp_port_independently_smoke()
 }
