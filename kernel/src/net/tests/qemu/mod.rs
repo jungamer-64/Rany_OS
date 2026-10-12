@@ -18,3 +18,5 @@ mod tcp_response_tests;
 pub use tcp_response_tests::*;
 mod snapshot_tests;
 pub use snapshot_tests::*;
+mod api_tests;
+pub use api_tests::*;

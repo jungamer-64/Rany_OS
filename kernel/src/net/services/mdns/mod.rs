@@ -966,27 +966,3 @@ pub(crate) fn enqueue_command_in(runtime: NetRuntimeHandle, command: MdnsCommand
 pub(crate) fn set_local_ip_in(runtime: NetRuntimeHandle, ip: Ipv4Address) {
     enqueue_command_in(runtime, MdnsCommand::SetLocalIp(ip));
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::net::runtime::{default_runtime, reset_runtime_registry_for_tests};
-
-    #[test]
-    fn mdns_local_ip_updates_flow_through_runtime_command_queue() {
-        reset_runtime_registry_for_tests();
-        let runtime = default_runtime();
-        init_in(runtime, String::from("ranyos"), Ipv4Address::ANY);
-
-        let Some(mut service) = take_service_for_task_in(runtime) else {
-            panic!("mDNS service should be available for task ownership");
-        };
-        assert_eq!(service.local_ip(), Ipv4Address::ANY);
-
-        let assigned = Ipv4Address::new([10, 0, 0, 42]);
-        set_local_ip_in(runtime, assigned);
-        service.drain_runtime_commands();
-
-        assert_eq!(service.local_ip(), assigned);
-    }
-}

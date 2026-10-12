@@ -265,6 +265,18 @@ pub fn net_peripheral_snapshot_registered_interface_smoke() -> bool {
     crate::net::qemu_tests::snapshot_registered_interface_smoke()
 }
 
+pub async fn net_peripheral_api_queries_complete_through_service_consumers_smoke() -> bool {
+    crate::net::qemu_tests::api_queries_complete_through_service_consumers_smoke().await
+}
+
+pub async fn net_peripheral_api_queries_preserve_runtime_ownership_smoke() -> bool {
+    crate::net::qemu_tests::api_queries_preserve_runtime_ownership_smoke().await
+}
+
+pub async fn net_peripheral_mdns_configuration_commands_preserve_service_ownership_smoke() -> bool {
+    crate::net::qemu_tests::mdns_configuration_commands_preserve_service_ownership_smoke().await
+}
+
 pub async fn net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke() -> bool {
     crate::net::qemu_tests::tcp_stateless_reset_budget_uses_system_uptime_smoke().await
 }

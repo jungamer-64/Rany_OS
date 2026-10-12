@@ -44,13 +44,6 @@ impl NetRuntimeGeneration {
     pub(crate) const fn raw(self) -> u32 {
         self.0
     }
-
-    fn next(self) -> Self {
-        match self.0.checked_add(1) {
-            Some(next) => Self(next),
-            None => Self(1),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -676,34 +669,5 @@ mod tests {
             Err(RuntimeAllocationError::IdAlreadyAllocated)
         ));
         assert_eq!(registry.runtimes.len(), 1);
-    }
-
-    #[test]
-    fn runtime_generation_changes_when_registry_epoch_advances() {
-        let cpu_snapshot = cpu_snapshot();
-        let mut registry = RuntimeRegistry::new();
-        let old = registry
-            .allocate_runtime(&cpu_snapshot)
-            .expect("old runtime")
-            .handle();
-        let old_id = old.id();
-        let old_generation = old.generation();
-
-        registry.next_id = Some(0);
-        registry.generation = registry.generation.next();
-        registry.runtimes.clear();
-        let new = registry
-            .allocate_runtime(&cpu_snapshot)
-            .expect("new runtime")
-            .handle();
-
-        assert_eq!(old_id, new.id());
-        assert_ne!(old_generation, new.generation());
-        assert!(
-            registry
-                .runtimes
-                .get(&new.id())
-                .is_some_and(|context| core::ptr::eq(*context, new.context()))
-        );
     }
 }

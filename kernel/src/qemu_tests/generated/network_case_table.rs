@@ -4,8 +4,11 @@
 use super::NetworkRuntimeCase;
 
 pub(super) static NETWORK_RUNTIME_CASES: &[(&str, NetworkRuntimeCase)] = &[
+    ("net_peripheral_api_queries_complete_through_service_consumers_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_api_queries_complete_through_service_consumers_smoke()))),
+    ("net_peripheral_api_queries_preserve_runtime_ownership_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_api_queries_preserve_runtime_ownership_smoke()))),
     ("net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_offer_probe_and_decline_flow_smoke()))),
     ("net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_dhcp_v4_parse_t1_t2_and_timeout_transitions_smoke()))),
+    ("net_peripheral_mdns_configuration_commands_preserve_service_ownership_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_mdns_configuration_commands_preserve_service_ownership_smoke()))),
     ("net_peripheral_neighbor_resolution_elapsed_timeout_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_neighbor_resolution_elapsed_timeout_smoke()))),
     ("net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke", NetworkRuntimeCase::Async(|| alloc::boxed::Box::pin(crate::qemu_tests::net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke()))),
     ("net_ecdh_group_from_named_group_p256_smoke", NetworkRuntimeCase::Sync(crate::qemu_tests::net_ecdh_group_from_named_group_p256_smoke)),
