@@ -3,9 +3,7 @@
 // ============================================================================
 
 use crate::io::iommu::common::dma::mapping_slab::MappingSlab;
-use crate::io::iommu::common::dma::page_table_pool::{
-    dec_ref, get_ref_count, inc_ref, register_page_table, unregister_page_table,
-};
+use crate::io::iommu::common::dma::page_table_pool::{dec_ref, get_ref_count, inc_ref};
 use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::{
     PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,

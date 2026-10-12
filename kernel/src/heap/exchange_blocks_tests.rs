@@ -1,6 +1,5 @@
-use super::{
-    BootstrapHeaps, CacheClass, CachedAllocation, ExchangeBlocks, ExchangeCache, HeapMemory,
-};
+use super::exchange_cache::ExchangeCache;
+use super::{BootstrapHeaps, CacheClass, CachedAllocation, ExchangeBlocks, HeapMemory};
 use core::alloc::Layout;
 
 fn owned_ram(bytes: usize) -> HeapMemory {

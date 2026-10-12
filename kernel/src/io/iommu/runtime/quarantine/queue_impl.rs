@@ -672,25 +672,17 @@ impl QuarantineQueue {
         }
     }
 
-    /// Drain pending invalidations for flush
-    ///
-    /// Round 7: Only drains Ready slots (not Reserved).
-    /// Round 8: Does NOT advance batch if Reserved slots remain.
-    ///
-    /// Requests are written into a caller-provided buffer to avoid per-flush allocations.
-
-    /// Reap completed entries after flush
+    /// Reap entries whose invalidation batch has completed.
     ///
     /// # Context
     ///
     /// Must be called from thread/executor context. This method allocates and
     /// drops RRef raw parts, so it is not ISR-safe.
     ///
-    /// Round 5 fix:
-    /// - scan → publish → unlock order (prevents poll_entry race on IOVA)
-    /// - Compute scan_threshold = max(old, completed_batch) inside lock
-    /// - Zero IOVA on collect (idempotent, prevents double free)
-    /// - Heavy operations (free_iova, drop_erased) OUTSIDE lock
+    /// Entry collection and completion publication share the queue lock so
+    /// `poll_entry` cannot reclaim an IOVA concurrently. Collection takes each
+    /// resource once; IOVA release, raw-part destruction and wake delivery run
+    /// after unlocking.
     pub fn reap_completed(
         &self,
         completed_batch: u64,

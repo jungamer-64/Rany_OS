@@ -13,7 +13,7 @@
 //! - `crate::io::*`: shared I/O runtime owned by the kernel framework
 
 pub mod ahci {
-    pub use crate::io::ahci::*;
+    pub(crate) use crate::io::ahci::*;
 }
 pub mod apic {
     pub use crate::io::apic::*;
@@ -28,7 +28,7 @@ pub mod ide {
     pub use crate::io::ide::*;
 }
 pub mod nvme {
-    pub use crate::io::nvme::*;
+    pub(crate) use crate::io::nvme::*;
     pub(crate) use nvme_driver::{
         AdminQueueInstallError, ControllerAcquire, ControllerAcquireError, ControllerDisableError,
         ControllerDisablePoll, ControllerDisabled, ControllerDisabling, ControllerEnableError,

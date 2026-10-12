@@ -4,7 +4,6 @@
 
 //! IOMMU Type Definitions
 
-use alloc::vec::Vec;
 use pci_driver::PcieError;
 
 /// IOMMU error types
