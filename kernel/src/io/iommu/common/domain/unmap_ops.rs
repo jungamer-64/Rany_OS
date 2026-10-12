@@ -87,18 +87,6 @@ impl IommuDomain {
     // DMA unmap helpers
     // =========================================================================
 
-    #[cfg(test)]
-    pub(crate) fn drop_mapping_for_test(&self, iova: u64) -> Option<DmaMapping> {
-        let mapping = self.mapping(iova)?;
-        let (start_shard, end_shard) = self.shard_range(iova, mapping.size).ok()?;
-        let mut guards = self.lock_shards(start_shard, end_shard).ok()?;
-        for guard in guards.iter_mut() {
-            guard.mappings.remove(iova);
-        }
-        self.mapped_size.fetch_sub(mapping.size, Ordering::Relaxed);
-        Some(mapping)
-    }
-
     /// Find the next child page table entry starting from `start_idx`.
     ///
     /// Returns `(child_ptr, child_level, next_idx_after_child)` or `None` if no child found.
