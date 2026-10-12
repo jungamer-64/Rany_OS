@@ -13,7 +13,7 @@
 
 // Building block: TCP RX processing helpers
 
-use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicU64, Ordering};
 
 use super::congestion::CongestionAction;
 use super::ooo_queue;
@@ -95,107 +95,6 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockSnapshot, seq_num: u32, seg_len: 
             diff_start < rcv_wnd || diff_end < rcv_wnd
         }
     }
-}
-
-/// Challenge ACK rate limiting (RFC 5961 Section 10)
-/// Recommended limit: 100 segments per second
-static CHALLENGE_ACK_LIMIT_MS: u64 = 1000; // 1 second window
-static CHALLENGE_ACK_MAX_COUNT: u32 = 100;
-static CHALLENGE_ACK_COUNT: AtomicU32 = AtomicU32::new(0);
-static CHALLENGE_ACK_LAST_RESET: AtomicU64 = AtomicU64::new(0);
-
-// ============================================================================
-// Closed-port RST rate limiting (anti-scan flood)
-// ============================================================================
-
-/// 閉ポート宛RST送信のグローバルレートリミット（1秒あたり最大数）
-/// インターネット直結環境ではスキャンパケットが大量に届くため、
-/// 状態を作らずRSTを返す場合でもイベントキュー圧迫を防止する。
-const CLOSED_PORT_RST_LIMIT_MS: u64 = 1000;
-const CLOSED_PORT_RST_MAX_COUNT: u32 = 10;
-static CLOSED_PORT_RST_COUNT: AtomicU32 = AtomicU32::new(0);
-static CLOSED_PORT_RST_LAST_RESET: AtomicU64 = AtomicU64::new(0);
-/// レート制限によりドロップされたパケット数（統計用）
-static CLOSED_PORT_RST_DROPPED: AtomicU64 = AtomicU64::new(0);
-
-/// Update closed-port RST rate statistics and check if a new RST should be sent.
-///
-/// This function implements rate limiting for stateless resets to protect
-/// the kernel event queue from exhaustion during port scans.
-/// RFC 793/9293 says a host SHOULD send a reset, but we MUST also protect
-/// system resources. When the limit is exceeded, we drop the RST and
-/// increment `CLOSED_PORT_RST_DROPPED` for telemetry.
-fn check_closed_port_rst_rate(runtime: NetRuntimeHandle) -> bool {
-    let now = tcp_table_in(runtime).get_current_tick();
-    let last_reset = CLOSED_PORT_RST_LAST_RESET.load(Ordering::Relaxed);
-
-    if now.saturating_sub(last_reset) >= CLOSED_PORT_RST_LIMIT_MS {
-        CLOSED_PORT_RST_COUNT.store(0, Ordering::Relaxed);
-        CLOSED_PORT_RST_LAST_RESET.store(now, Ordering::Relaxed);
-    }
-
-    let count = CLOSED_PORT_RST_COUNT.fetch_add(1, Ordering::Relaxed);
-    if count < CLOSED_PORT_RST_MAX_COUNT {
-        true
-    } else {
-        // exceeding the window: record for telemetry and drop to protect event queue
-        CLOSED_PORT_RST_DROPPED.fetch_add(1, Ordering::Relaxed);
-        false
-    }
-}
-
-//======================================================================
-// Unit tests
-//======================================================================
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use core::sync::atomic::Ordering;
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn rst_rate_limit_allows_until_limit_and_rejects_after_limit() {
-        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
-
-        CLOSED_PORT_RST_COUNT.store(0, Ordering::Relaxed);
-        CLOSED_PORT_RST_LAST_RESET.store(0, Ordering::Relaxed);
-        CLOSED_PORT_RST_DROPPED.store(0, Ordering::Relaxed);
-
-        for _ in 0..CLOSED_PORT_RST_MAX_COUNT {
-            assert!(check_closed_port_rst_rate(runtime));
-        }
-
-        for _ in 0..5 {
-            assert!(!check_closed_port_rst_rate(runtime));
-        }
-
-        assert_eq!(
-            CLOSED_PORT_RST_DROPPED.load(Ordering::Relaxed) as u32,
-            5,
-            "dropped count should track excess resets"
-        );
-
-        for _ in 0..=CLOSED_PORT_RST_LIMIT_MS {
-            tcp_table_in(runtime).tick(runtime);
-        }
-
-        assert!(check_closed_port_rst_rate(runtime));
-        assert_eq!(CLOSED_PORT_RST_COUNT.load(Ordering::Relaxed), 1);
-    }
-}
-
-fn check_challenge_ack_rate_limit(runtime: NetRuntimeHandle) -> bool {
-    let now = tcp_table_in(runtime).get_current_tick();
-    let last_reset = CHALLENGE_ACK_LAST_RESET.load(Ordering::Relaxed);
-
-    if now.saturating_sub(last_reset) >= CHALLENGE_ACK_LIMIT_MS {
-        CHALLENGE_ACK_COUNT.store(0, Ordering::Relaxed);
-        CHALLENGE_ACK_LAST_RESET.store(now, Ordering::Relaxed);
-    }
-
-    let count = CHALLENGE_ACK_COUNT.fetch_add(1, Ordering::Relaxed);
-    count < CHALLENGE_ACK_MAX_COUNT
 }
 
 /// チャレンジACK（シーケンス番号エラー時の応答）を送信
