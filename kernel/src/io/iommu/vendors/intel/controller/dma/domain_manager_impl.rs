@@ -5,7 +5,6 @@
 use super::*;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::vendors::intel::controller::init::CapabilityManager;
-use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 
 impl DomainManager for IommuController {
     fn create_domain(

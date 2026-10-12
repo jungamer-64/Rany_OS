@@ -13,11 +13,9 @@ use crate::io::iommu::common::domain::{
     InvalidateFlags, InvalidateRequest, IommuDomain, IommuInvalidator,
 };
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
-use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::get_iommu_registry;
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTable, ScalableContextEntry};
 
-use super::qi_ops::InvalidationOps;
 use super::{HardwareContext, IommuController};
 
 mod domain_manager_impl;

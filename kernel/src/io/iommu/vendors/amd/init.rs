@@ -242,12 +242,6 @@ pub(super) fn init_device_tables(
     Ok(tables)
 }
 
-// ---------------------------------------------------------------------------
-// Main initialization entry point
-// ---------------------------------------------------------------------------
-
-/// Initialize AMD-Vi using ACPI IVRS table at `ivrs_addr`.
-
 /// Collect AmdIommuUnit entries from parsed IVRS IVHD structures.
 fn collect_ivhd_units(
     ivrs_info: &acpi_driver::ivrs::IvrsInfo,
@@ -288,6 +282,7 @@ fn collect_ivmd_ranges(ivrs_info: &acpi_driver::ivrs::IvrsInfo) -> Vec<AmdIvmdRa
         .collect()
 }
 
+/// Initialize AMD-Vi from an ACPI IVRS table.
 pub fn init_iommu_from_ivrs(ivrs: &[u8], _config: IommuConfig) -> Result<(), IommuError> {
     // Initialize security subsystem (protected regions like APIC)
     crate::io::iommu::runtime::security::init();

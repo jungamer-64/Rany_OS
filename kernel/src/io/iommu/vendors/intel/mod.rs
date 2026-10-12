@@ -18,7 +18,6 @@ pub mod tables;
 
 use self::controller::dma::DomainManager;
 use self::controller::fault::FaultHandler;
-use self::controller::iova::IovaManager;
 use self::controller::ir::InterruptRemapper;
 use self::controller::qi_ops::InvalidationOps;
 

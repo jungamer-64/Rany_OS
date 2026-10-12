@@ -7,7 +7,7 @@ use core::mem::size_of;
 use core::ptr::NonNull;
 
 use crate::io::iommu::runtime::command::queue::IommuCommandKind;
-use crate::io::iommu::types::{DeviceId, IommuError};
+use crate::io::iommu::types::IommuError;
 
 use super::AmdIommuDriver;
 
