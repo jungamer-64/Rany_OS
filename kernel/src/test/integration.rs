@@ -534,6 +534,17 @@ pub async fn test_storage() -> IntegrationTestSuite {
 pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_mapping_overlap_ownership", || {
+        if crate::io::iommu::qemu_tests::mapping_overlap_retains_domain_ownership_smoke() {
+            Ok(String::from(
+                "Overlap preserves the original translation owner",
+            ))
+        } else {
+            Err(String::from("Mapping overlap ownership failed"))
+        }
+    }));
+
     // Test IOMMU detection
     suite.add_result(run_test("iommu_detection", || {
         if crate::io::iommu::api::is_iommu_enabled() {
