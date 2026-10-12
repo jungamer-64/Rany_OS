@@ -1089,38 +1089,6 @@ mod tests {
     }
 
     #[test]
-    fn topology_revision_changes_once_per_real_mutation() {
-        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
-        init_network_manager_in(runtime);
-
-        let initial = current_interface_topology_revision_in(runtime);
-        let if_id = register_interface_in(runtime, "if0", PrimaryPreference::Auto)
-            .expect("register interface");
-        let registered = current_interface_topology_revision_in(runtime);
-        assert_ne!(registered, initial);
-
-        set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Enabled)
-            .expect("repeat enabled state");
-        assert_eq!(current_interface_topology_revision_in(runtime), registered);
-
-        set_interface_config_in(runtime, if_id, NetworkConfig::default())
-            .expect("configure interface");
-        let configured = current_interface_topology_revision_in(runtime);
-        assert_ne!(configured, registered);
-        set_interface_config_in(runtime, if_id, NetworkConfig::default())
-            .expect("repeat configuration");
-        assert_eq!(current_interface_topology_revision_in(runtime), configured);
-
-        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise link");
-        let linked = current_interface_topology_revision_in(runtime);
-        assert_ne!(linked, configured);
-        assert_eq!(primary_interface_in(runtime), Some(if_id));
-        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("repeat link state");
-        set_primary_interface_in(runtime, if_id).expect("repeat primary");
-        assert_eq!(current_interface_topology_revision_in(runtime), linked);
-    }
-
-    #[test]
     fn primary_rejects_unknown_and_non_operational_interfaces() {
         let mut manager = NetworkManager::new();
         let if_id = manager
@@ -1170,53 +1138,5 @@ mod tests {
             .expect("lower preferred link again");
         assert_eq!(manager.primary, None);
         assert!(manager.get_interface(never).is_some());
-    }
-
-    #[test]
-    fn egress_scope_requires_an_operational_interface_or_route() {
-        let runtime = crate::net::runtime::create_runtime().expect("test runtime allocation");
-        init_network_manager_in(runtime);
-        let if_id = register_interface_in(runtime, "route-if", PrimaryPreference::Auto)
-            .expect("register route interface");
-        let destination = Ipv4Address::new([192, 0, 2, 99]);
-
-        assert_eq!(
-            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
-            Err(NetworkError::NetworkUnreachable)
-        );
-
-        let mut config = NetworkConfig::default();
-        config.ipv4.address = Ipv4Address::new([192, 0, 2, 10]);
-        config.ipv4.subnet_mask = Ipv4Address::new([255, 255, 255, 0]);
-        set_interface_config_in(runtime, if_id, config).expect("configure route interface");
-        set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise route interface");
-
-        assert_eq!(
-            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
-            Ok(if_id)
-        );
-        assert_eq!(
-            resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
-            Ok(if_id)
-        );
-        assert_eq!(
-            resolve_ipv4_interface_in(
-                runtime,
-                InterfaceScope::Any,
-                Ipv4Address::new([198, 51, 100, 1]),
-            ),
-            Err(NetworkError::NetworkUnreachable)
-        );
-
-        set_interface_link_state_in(runtime, if_id, LinkState::Down)
-            .expect("lower route interface");
-        assert_eq!(
-            resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
-            Err(NetworkError::NetworkUnreachable)
-        );
-        assert_eq!(
-            resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
-            Err(NetworkError::NetworkUnreachable)
-        );
     }
 }

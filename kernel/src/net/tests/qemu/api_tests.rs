@@ -1,3 +1,13 @@
+use crate::loader::live_update::{ExportedState, StateImportError, StateTransfer};
+use crate::net::runtime::manager::{
+    AdministrativeState, LinkState, NetIfId, PrimaryPreference,
+    current_interface_topology_revision_in, init_network_manager_in, primary_interface_in,
+    register_interface_in, resolve_ipv4_interface_in, set_interface_administrative_state_in,
+    set_interface_config_in, set_interface_link_state_in, set_primary_interface_in,
+};
+use crate::net::runtime::stack::NetworkConfig;
+use crate::net::state_transfer::NetworkCellState;
+use crate::net::types::{InterfaceScope, NetworkError};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
@@ -35,18 +45,38 @@ impl CommandRuntime {
         for resources in &self.resources {
             resources.command_queue.begin_drain();
         }
-        complete(async {
-            // LOOP_PROOF: mode=condition; reason=The condition ends when every queue is quiescent and its service receipt is returned, with timer waits and an owning deadline bounding observation.;
-            while self.resources.iter().any(|resources| {
-                !resources.command_queue.is_quiescent()
-                    || crate::services::network_consumer_active(self.runtime.id(), resources.cpu_id)
-            }) {
-                crate::task::sleep_ms(1)
-                    .await
-                    .expect("consumer drain timer");
-            }
-        })
+        let drained = with_timeout(
+            async {
+                // LOOP_PROOF: mode=condition; reason=The condition ends when every queue is quiescent and its service receipt is returned, with timer waits and an owning deadline bounding observation.;
+                while self.resources.iter().any(|resources| {
+                    !resources.command_queue.is_quiescent()
+                        || crate::services::network_consumer_active(
+                            self.runtime.id(),
+                            resources.cpu_id,
+                        )
+                }) {
+                    crate::task::sleep_ms(1)
+                        .await
+                        .expect("consumer drain timer");
+                }
+            },
+            5000,
+        )
         .await;
+        if !matches!(drained, TimeoutResult::Completed(())) {
+            for resources in &self.resources {
+                log::error!(
+                    "network fixture drain runtime={} CPU={} accepting={} quiescent={} consumer={} running={}",
+                    self.runtime.id().0,
+                    resources.cpu_id,
+                    resources.command_queue.is_accepting(),
+                    resources.command_queue.is_quiescent(),
+                    crate::services::network_consumer_active(self.runtime.id(), resources.cpu_id),
+                    crate::net::runtime::command::command_task_running(resources),
+                );
+            }
+            panic!("network consumer drain: {drained:?}");
+        }
     }
 }
 
@@ -194,5 +224,137 @@ pub async fn mdns_configuration_commands_preserve_service_ownership_smoke() -> b
     assert_eq!(other.local_ip(), Ipv4Address::ANY);
     first.drain().await;
     second.drain().await;
+    true
+}
+
+fn configure_interface(runtime: NetRuntimeHandle, name: &'static str) -> NetIfId {
+    let if_id = register_interface_in(runtime, name, PrimaryPreference::Auto)
+        .expect("register state-transfer interface");
+    set_interface_config_in(runtime, if_id, NetworkConfig::default())
+        .expect("configure state-transfer interface");
+    set_interface_link_state_in(runtime, if_id, LinkState::Up)
+        .expect("raise state-transfer interface");
+    if_id
+}
+
+pub async fn api_topology_revision_tracks_real_mutations_smoke() -> bool {
+    let owner = CommandRuntime::new();
+    let runtime = owner.runtime;
+    init_network_manager_in(runtime);
+
+    let initial = current_interface_topology_revision_in(runtime);
+    let if_id =
+        register_interface_in(runtime, "if0", PrimaryPreference::Auto).expect("register interface");
+    let registered = current_interface_topology_revision_in(runtime);
+    assert_ne!(registered, initial);
+
+    set_interface_administrative_state_in(runtime, if_id, AdministrativeState::Enabled)
+        .expect("repeat enabled state");
+    assert_eq!(current_interface_topology_revision_in(runtime), registered);
+
+    set_interface_config_in(runtime, if_id, NetworkConfig::default()).expect("configure interface");
+    let configured = current_interface_topology_revision_in(runtime);
+    assert_ne!(configured, registered);
+    set_interface_config_in(runtime, if_id, NetworkConfig::default())
+        .expect("repeat configuration");
+    assert_eq!(current_interface_topology_revision_in(runtime), configured);
+
+    set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise link");
+    let linked = current_interface_topology_revision_in(runtime);
+    assert_ne!(linked, configured);
+    assert_eq!(primary_interface_in(runtime), Some(if_id));
+    set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("repeat link state");
+    set_primary_interface_in(runtime, if_id).expect("repeat primary");
+    assert_eq!(current_interface_topology_revision_in(runtime), linked);
+
+    owner.drain().await;
+    true
+}
+
+pub async fn api_egress_scope_requires_operational_route_smoke() -> bool {
+    let owner = CommandRuntime::new();
+    let runtime = owner.runtime;
+    init_network_manager_in(runtime);
+    let if_id = register_interface_in(runtime, "route-if", PrimaryPreference::Auto)
+        .expect("register route interface");
+    let destination = Ipv4Address::new([192, 0, 2, 99]);
+
+    assert_eq!(
+        resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+        Err(NetworkError::NetworkUnreachable)
+    );
+
+    let mut config = NetworkConfig::default();
+    config.ipv4.address = Ipv4Address::new([192, 0, 2, 10]);
+    config.ipv4.subnet_mask = Ipv4Address::new([255, 255, 255, 0]);
+    set_interface_config_in(runtime, if_id, config).expect("configure route interface");
+    set_interface_link_state_in(runtime, if_id, LinkState::Up).expect("raise route interface");
+
+    assert_eq!(
+        resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+        Ok(if_id)
+    );
+    assert_eq!(
+        resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
+        Ok(if_id)
+    );
+    assert_eq!(
+        resolve_ipv4_interface_in(
+            runtime,
+            InterfaceScope::Any,
+            Ipv4Address::new([198, 51, 100, 1]),
+        ),
+        Err(NetworkError::NetworkUnreachable)
+    );
+
+    set_interface_link_state_in(runtime, if_id, LinkState::Down).expect("lower route interface");
+    assert_eq!(
+        resolve_ipv4_interface_in(runtime, InterfaceScope::Pinned(if_id), destination),
+        Err(NetworkError::NetworkUnreachable)
+    );
+    assert_eq!(
+        resolve_ipv4_interface_in(runtime, InterfaceScope::Any, destination),
+        Err(NetworkError::NetworkUnreachable)
+    );
+
+    owner.drain().await;
+    true
+}
+
+pub async fn api_state_transfer_preserves_primary_on_rejection_smoke() -> bool {
+    let source_owner = CommandRuntime::new();
+    let source = source_owner.runtime;
+    init_network_manager_in(source);
+    let _source_a = configure_interface(source, "source-a");
+    let source_b = configure_interface(source, "source-b");
+    set_primary_interface_in(source, source_b).expect("select source primary");
+    let exported = NetworkCellState::new(source)
+        .export_state()
+        .expect("export network state");
+
+    let target_owner = CommandRuntime::new();
+    let target = target_owner.runtime;
+    init_network_manager_in(target);
+    let target_a = configure_interface(target, "target-a");
+    let target_b = configure_interface(target, "target-b");
+    assert_eq!(primary_interface_in(target), Some(target_a));
+    NetworkCellState::new(target)
+        .import_state_into(&exported)
+        .expect("restore canonical primary");
+    assert_eq!(primary_interface_in(target), Some(target_b));
+
+    let invalid = ExportedState::new(
+        NetworkCellState::STATE_VERSION,
+        target.id().0 as u64,
+        alloc::vec![1, 0xff, 0xff, 0, 0, 0, 0],
+    );
+    assert_eq!(
+        NetworkCellState::new(target).import_state_into(&invalid),
+        Err(StateImportError::RestoreFailed)
+    );
+    assert_eq!(primary_interface_in(target), Some(target_b));
+
+    source_owner.drain().await;
+    target_owner.drain().await;
     true
 }

@@ -277,6 +277,18 @@ pub async fn net_peripheral_mdns_configuration_commands_preserve_service_ownersh
     crate::net::qemu_tests::mdns_configuration_commands_preserve_service_ownership_smoke().await
 }
 
+pub async fn net_peripheral_api_topology_revision_tracks_real_mutations_smoke() -> bool {
+    crate::net::qemu_tests::api_topology_revision_tracks_real_mutations_smoke().await
+}
+
+pub async fn net_peripheral_api_egress_scope_requires_operational_route_smoke() -> bool {
+    crate::net::qemu_tests::api_egress_scope_requires_operational_route_smoke().await
+}
+
+pub async fn net_peripheral_api_state_transfer_preserves_primary_on_rejection_smoke() -> bool {
+    crate::net::qemu_tests::api_state_transfer_preserves_primary_on_rejection_smoke().await
+}
+
 pub async fn net_peripheral_tcp_stateless_reset_budget_uses_system_uptime_smoke() -> bool {
     crate::net::qemu_tests::tcp_stateless_reset_budget_uses_system_uptime_smoke().await
 }
