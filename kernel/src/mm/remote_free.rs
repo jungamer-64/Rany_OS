@@ -615,6 +615,7 @@ impl<const N: usize> Default for RemoteFreeRing<N> {
 #[repr(C)]
 pub struct QuarantineEntry {
     pub addr: u64,
-    pub size_class: u8,
+    /// The complete byte extent retained by one retirement admission.
+    pub size_bytes: u64,
     pub epoch: u32,
 }
