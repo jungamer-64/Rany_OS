@@ -567,6 +567,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_page_table_recycling_ownership", || {
+        if crate::io::iommu::qemu_tests::page_table_recycling_retains_ownership_smoke() {
+            Ok(String::from(
+                "Table reuse waits for its captured retirement completion",
+            ))
+        } else {
+            Err(String::from("Page table recycling ownership failed"))
+        }
+    }));
+
     // Test IOMMU detection
     suite.add_result(run_test("iommu_detection", || {
         if crate::io::iommu::api::is_iommu_enabled() {

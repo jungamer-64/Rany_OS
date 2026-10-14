@@ -3,6 +3,14 @@ use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::types::{IommuDomainType, IommuError, PteFormat};
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned;
 use crate::mm::types::PAGE_SIZE_4K;
+mod page_table_pool;
+
+pub fn page_table_recycling_retains_ownership_smoke() -> bool {
+    page_table_pool::cached_table_is_zeroed();
+    page_table_pool::captured_retirement_excludes_later_unlinks();
+    page_table_pool::attached_rollback_retains_ram_until_completion();
+    true
+}
 
 enum OverlapLayout {
     Pages4K,

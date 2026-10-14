@@ -481,24 +481,6 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_pool_basic() {
-        let pool = PageTablePool::new(2, 4);
-
-        // Acquire should work
-        let pt = pool.acquire(Some(0)).expect("acquire failed");
-        assert!(pt.phys != 0);
-
-        // Release and re-acquire should hit cache
-        pool.release(pt);
-        let _pt2 = pool.acquire(Some(0)).expect("acquire failed");
-
-        let stats = pool.stats();
-        assert_eq!(stats.hits, 1);
-        assert_eq!(stats.misses, 1); // First acquire was a miss
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn explicit_invalid_node_does_not_fall_back() {
         let pool = PageTablePool::new(1, 4);
         assert_eq!(
@@ -506,83 +488,5 @@ mod tests {
             IommuError::InvalidAddress
         );
         assert_eq!(pool.stats().misses, 0);
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn captured_retirement_does_not_include_newer_unlinks() {
-        let pool = PageTablePool::new(1, 4);
-        let first = pool.acquire(Some(0)).unwrap();
-        let first_phys = first.phys();
-        let second = pool.acquire(Some(0)).unwrap();
-        let second_phys = second.phys();
-        publish_table(first);
-        publish_table(second);
-        let mut pending = TableRetirement::default();
-        pending.reserve(2).unwrap();
-        // SAFETY: these fixtures are never published to a hardware parent.
-        pending.push(unsafe { take_unlinked_table(first_phys) }.unwrap());
-        assert!(unsafe { take_unlinked_table(first_phys) }.is_none());
-        assert!(pending.capture());
-        pending.reserve(1).unwrap();
-        pending.push(unsafe { take_unlinked_table(second_phys) }.unwrap());
-        assert_eq!(pool.cached_count(0), 0);
-        // A failed flush keeps exactly the original cohort for its retry.
-        assert!(pending.capture());
-        assert_eq!(pending.captured.len(), 1);
-        assert_eq!(pending.queued.len(), 1);
-        // SAFETY: the fixture has no hardware users; completion covers the first capture.
-        for table in unsafe { pending.take_completed() } {
-            pool.release(unsafe { table.complete_after_invalidation() });
-        }
-        assert_eq!(pool.cached_count(0), 1);
-        assert!(pending.has_pending());
-        assert!(pending.capture());
-        for table in unsafe { pending.take_completed() } {
-            pool.release(unsafe { table.complete_after_invalidation() });
-        }
-        assert_eq!(pool.cached_count(0), 2);
-        assert!(!pending.has_pending());
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn attached_rollback_waits_for_retirement_and_reuse_is_zeroed() {
-        use crate::io::iommu::common::tables::PageTableScope;
-        use crate::io::iommu::types::PteFormat;
-        let pool = PageTablePool::new(1, 4);
-        let pending = crate::sync::PoisonLock::new(TableRetirement::default());
-        let mut parent = SlPte::new();
-        let phys;
-        {
-            let mut scope = PageTableScope::new_with_pool(pool.clone(), Some(0), &pending).unwrap();
-            phys = scope.phys();
-            // SAFETY: the parent remains exclusive on this stack through rollback;
-            // the scope owns all writable entries and is never installed in hardware.
-            unsafe {
-                scope.ptr().write(SlPte::mapping(0x123000, true, true));
-                scope.attach_to_parent(&mut parent, 0, PteFormat::Intel, 1);
-            }
-            assert!(parent.is_present());
-        }
-        assert!(!parent.is_present());
-        assert_eq!(pool.cached_count(0), 0);
-        let unrelated = pool.acquire(Some(0)).unwrap();
-        assert_ne!(unrelated.phys(), phys);
-        let completed = {
-            let mut pending = pending.lock().unwrap();
-            assert!(pending.capture());
-            // SAFETY: this retained stack parent was never reachable by hardware.
-            unsafe { pending.take_completed() }
-        };
-        for table in completed {
-            pool.release(unsafe { table.complete_after_invalidation() });
-        }
-        let reused = pool.acquire(Some(0)).unwrap();
-        assert_eq!(reused.phys(), phys);
-        for index in 0..PT_ENTRIES {
-            // SAFETY: the exclusive owner covers all 512 entries.
-            assert!(!unsafe { *reused.ptr().as_ptr().add(index) }.is_present());
-        }
     }
 }
