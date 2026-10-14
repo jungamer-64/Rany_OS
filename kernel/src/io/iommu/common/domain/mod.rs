@@ -746,10 +746,9 @@ pub struct IommuDomain {
     dma_registry: DmaResourceRegistry,
     /// Quarantined page tables waiting for IOTLB invalidation before reuse.
     ///
-    /// When a page table becomes empty during unmap, it is moved here.
-    /// The next flush() operation will return them to the page_table_pool.
-    pub(crate) pending_pt_release:
-        PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
+    /// A flush captures one cohort. Only its completed invalidation may return
+    /// those tables to the pool; later unlinks remain queued for another flush.
+    pending_pt_release: PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
     /// Global lock for page table hierarchy modifications within this domain.
     ///
     /// Prevents race conditions between concurrent map/unmap operations that

@@ -88,6 +88,9 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
         sync_ptr.as_ptr().write_volatile(0);
     }
 
+    // SAFETY: phys_base exclusively owns the zeroed command RAM at buffer_ptr.
+    // It moves into AmdCommandState and is retained through hardware shutdown;
+    // this buffer is the only software producer of commands in that RAM.
     let buffer = unsafe {
         cmd::AmdCommandBuffer::new(
             alloc::sync::Arc::clone(&unit.registers),

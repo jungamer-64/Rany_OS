@@ -141,13 +141,13 @@ impl AmdCommand {
     }
 }
 
-pub struct AmdCommandBuffer {
+pub(super) struct AmdCommandBuffer {
     pub(super) registers: alloc::sync::Arc<super::registers::AmdRegisters>,
-    pub(crate) phys_base: u64,
-    pub(crate) entries: NonNull<AmdCommand>,
-    pub(crate) entry_count: usize,
-    pub(crate) buffer_bytes: u32,
-    pub(crate) tail: u32,
+    phys_base: u64,
+    entries: NonNull<AmdCommand>,
+    entry_count: usize,
+    buffer_bytes: u32,
+    tail: u32,
 }
 
 impl core::fmt::Debug for AmdCommandBuffer {
@@ -160,11 +160,25 @@ impl core::fmt::Debug for AmdCommandBuffer {
     }
 }
 
+// SAFETY: construction retains the same command RAM and register owner through
+// every move. Neither the physical allocation nor MMIO access is CPU-affine.
 unsafe impl Send for AmdCommandBuffer {}
+// SAFETY: command writes and tail mutation require an exclusive mutable borrow.
+// Shared access observes synchronized registers; the private RAM pointer cannot
+// be replaced or dereferenced through a shared safe API.
 unsafe impl Sync for AmdCommandBuffer {}
 
 impl AmdCommandBuffer {
-    pub unsafe fn new(
+    /// # Safety
+    /// Both addresses must cover the same initialized, aligned command RAM.
+    /// The caller retains that RAM until the buffer is no longer used and the
+    /// hardware command processor has stopped. No other software producer may
+    /// write its entries; hardware reads only commands published by this buffer.
+    ///
+    /// # Errors
+    /// An empty or oversized ring returns InvalidAddress before any command or
+    /// register write. The caller's RAM remains unpublished and owned.
+    pub(super) unsafe fn new(
         registers: alloc::sync::Arc<super::registers::AmdRegisters>,
         phys_base: u64,
         virt_base: NonNull<AmdCommand>,

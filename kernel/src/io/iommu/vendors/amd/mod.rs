@@ -74,7 +74,7 @@ pub(super) fn devid_to_bdf(devid: u16) -> (u8, u8, u8) {
 pub struct AmdIommuUnit {
     pub segment: u16,
     pub base_addr: u64,
-    pub(super) registers: Arc<registers::AmdRegisters>,
+    registers: Arc<registers::AmdRegisters>,
     pub(super) pci: Arc<pci_driver::resource::FunctionResources>,
     pub flags: u8,
     pub device_id: u16,
