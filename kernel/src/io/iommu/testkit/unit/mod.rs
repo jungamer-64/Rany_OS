@@ -82,51 +82,6 @@ fn test_sl_pte() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_iommu_domain() {
-    let domain = IommuDomain::new(
-        1,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    );
-    assert_eq!(domain.id(), 1);
-
-    // Map a region
-    let result = domain.map(0x1000, 0x2000, 0x1000, true, false);
-    assert!(result.is_ok());
-
-    // Try to map overlapping region
-    let result = domain.map(0x1000, 0x3000, 0x1000, true, false);
-    assert_eq!(result, Err(IommuError::AlreadyMapped));
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_page_table_addr_returns_root_phys() {
-    let domain = IommuDomain::new(
-        10,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    );
-
-    let expected = virt_ptr_to_phys(domain.page_table as *const u8)
-        .expect("failed to translate page table virtual address");
-    assert_eq!(domain.page_table_addr(), expected);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_intel_select_agaw_prefers_highest_supported() {
     assert_eq!(IommuController::select_agaw(0b1111, 39), Ok((1, 39, 3)));
     assert_eq!(IommuController::select_agaw(0b1011, 57), Ok((3, 57, 5)));
@@ -150,32 +105,6 @@ fn test_entry_agaw_encoding_uses_selected_code() {
     let mut pasid = PasidTableEntry::default();
     pasid.set_sl_pt(0x4000, 3, 0x56);
     assert_eq!((pasid.qwords[0] >> PasidTableEntry::AW_SHIFT) & 0x7, 3);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_domain_map_unmap_4k_for_levels_2_to_5() {
-    for (levels, max_bits) in [(2u8, 30u8), (3, 39), (4, 48), (5, 57)] {
-        let domain = IommuDomain::new(
-            levels as u16,
-            None,
-            true,
-            true,
-            max_bits,
-            levels,
-            IommuDomainType::Translated,
-            PageTablePool::new(1, 32),
-            PteFormat::Intel,
-        );
-        let iova = 0x20_0000;
-        let phys = 0x40_0000;
-        domain
-            .map(iova, phys, 0x1000, true, true)
-            .expect("map failed");
-        assert!(domain.mapping(iova).is_some());
-        domain.unmap(iova).expect("unmap failed");
-        assert!(domain.mapping(iova).is_none());
-    }
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -607,63 +536,6 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
 
     let res = unsafe { ctrl.enable_queued_invalidation() };
     assert_eq!(res.err(), Some(IommuError::HardwareError));
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_domain_iova_alloc_non_identity() {
-    let ctrl = controller();
-    ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
-
-    // Create default domain 0 for mapping
-    let domain = Arc::new(IommuDomain::new(
-        0,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    ));
-    match ctrl.domains.lock() {
-        Ok(mut domains) => {
-            domains.insert(0, domain.clone());
-        }
-        Err(poisoned) => {
-            let mut domains = poisoned.into_inner();
-            domains.insert(0, domain.clone());
-        }
-    }
-
-    let size = 0x3000;
-    let phys = 0x2000_0000;
-
-    let iova = match ctrl.allocate_iova(size) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!(
-                "[IOMMU][TEST] test_domain_iova_alloc_non_identity: skipped due allocator pressure"
-            );
-            return;
-        }
-        Err(e) => panic!("allocate_iova: {:?}", e),
-    };
-
-    {
-        let domain_arc = ctrl.domain(0).expect("domain 0");
-        domain_arc
-            .map(iova, phys, size, true, true)
-            .expect("domain.map failed");
-        assert!(domain_arc.mapping(iova).is_some());
-
-        let mapping = domain_arc.unmap(iova).expect("unmap failed");
-        assert_eq!(mapping.iova, iova);
-        assert_eq!(mapping.phys, phys);
-    }
-
-    ctrl.free_iova(iova, size).expect("free failed");
 }
 
 #[cfg(feature = "std")]
@@ -1408,96 +1280,6 @@ fn test_iova_not_equal_phys() {
     );
 
     ctrl.free_iova(iova, size).expect("free failed");
-}
-
-/// Test that domains use Translated type, not PassThrough.
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_domain_type_not_passthrough() {
-    let domain = IommuDomain::new(
-        0,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated, // Must be Translated, not PassThrough
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    );
-
-    // Domain should be Translated type for proper IOMMU protection
-    match domain.domain_type() {
-        IommuDomainType::Translated => { /* OK */ }
-        IommuDomainType::Passthrough => {
-            panic!("Domain should not use PassThrough type in production");
-        }
-    }
-}
-
-/// Test that all mappings have distinct IOVA vs physical addresses.
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_mapping_iova_phys_distinct() {
-    let ctrl = controller();
-    ctrl.init_iova(0x8000_0000, 0x10000).expect("init_iova");
-
-    let domain = Arc::new(IommuDomain::new(
-        0,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    ));
-
-    match ctrl.domains.lock() {
-        Ok(mut domains) => {
-            domains.insert(0, domain.clone());
-        }
-        Err(poisoned) => {
-            let mut domains = poisoned.into_inner();
-            domains.insert(0, domain.clone());
-        }
-    }
-
-    let size = 0x1000;
-    let phys = 0x2000_0000; // Typical physical address
-    let iova = match ctrl.allocate_iova(size) {
-        Ok(v) => v,
-        Err(IommuError::OutOfMemory) | Err(IommuError::OutOfIova) => {
-            log::warn!(
-                "[IOMMU][TEST] test_mapping_iova_phys_distinct: skipped due allocator pressure"
-            );
-            return;
-        }
-        Err(e) => panic!("allocate_iova: {:?}", e),
-    };
-
-    // Map the physical address
-    domain.map(iova, phys, size, true, true).expect("map");
-
-    // Verify IOVA != phys (not identity mapped)
-    assert_ne!(
-        iova, phys,
-        "IOVA must not equal physical address (identity mapping detected)"
-    );
-
-    // Verify mapping exists with correct values
-    let mapping = domain.mapping(iova).expect("mapping should exist");
-    assert_eq!(mapping.iova, iova);
-    assert_eq!(mapping.phys, phys);
-    assert_ne!(
-        mapping.iova, mapping.phys,
-        "Mapping uses identity (IOVA == phys)"
-    );
-
-    // Cleanup
-    domain.unmap(iova).expect("unmap");
-    ctrl.free_iova(iova, size).expect("free");
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

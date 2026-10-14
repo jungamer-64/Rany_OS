@@ -93,6 +93,103 @@ pub fn mapping_overlap_retains_domain_ownership_smoke() -> bool {
     true
 }
 
+pub fn domain_depth_and_root_physical_address_smoke() -> bool {
+    for format in [PteFormat::Intel, PteFormat::Amd] {
+        for (levels, max_bits) in [(2, 30), (3, 39), (4, 48), (5, 57)] {
+            let backing = alloc_contiguous_frames_aligned(1, PAGE_SIZE_4K)
+                .expect("depth fixture RAM admission");
+            let physical = backing.as_u64();
+            let domain = IommuDomain::try_new(
+                0x8001,
+                Some(backing.node().as_usize()),
+                true,
+                true,
+                max_bits,
+                levels,
+                IommuDomainType::Translated,
+                PageTablePool::new(1, 32),
+                format,
+            )
+            .expect("depth fixture domain");
+            let root = domain.page_table_addr();
+            let root_virtual = crate::mm::virt::higher_half::VirtAddr::new(
+                x86_64::VirtAddr::from_ptr(domain.page_table).as_u64(),
+            );
+            let expected = crate::mm::virt::higher_half::global_translate(root_virtual)
+                .expect("CPU page-table translation of the retained root");
+            assert_eq!(root, expected.as_u64());
+            assert_eq!(root % PAGE_SIZE_4K as u64, 0);
+            let iova = 0x20_0000;
+            domain
+                .map(iova, physical, PAGE_SIZE_4K as u64, true, true)
+                .expect("4K mapping at admitted depth");
+            let mapping = domain.mapping(iova).expect("live depth mapping");
+            assert_eq!(mapping.phys, physical);
+            assert_eq!(mapping.size, PAGE_SIZE_4K as u64);
+            let returned = domain.unmap(iova).expect("depth mapping retirement");
+            assert_eq!(returned.phys, physical);
+            assert_eq!(domain.mapped_size(), 0);
+            // SAFETY: this unique local domain never entered a hardware context
+            // or registry. All CPU table borrows ended before consuming it.
+            unsafe { domain.retire_after_invalidation() };
+            backing.release();
+        }
+    }
+    true
+}
+
+pub fn domain_iova_allocation_retains_owned_ram_smoke() -> bool {
+    let backing =
+        alloc_contiguous_frames_aligned(3, PAGE_SIZE_4K).expect("IOVA fixture RAM admission");
+    let physical = backing.as_u64();
+    let size = backing.size_bytes();
+    let domain = IommuDomain::try_new(
+        0x8002,
+        Some(backing.node().as_usize()),
+        false,
+        false,
+        48,
+        4,
+        IommuDomainType::Translated,
+        PageTablePool::new(1, 32),
+        PteFormat::Intel,
+    )
+    .expect("IOVA fixture domain");
+    for invalid in [0, 1, u64::MAX] {
+        assert_eq!(
+            domain.allocate_iova(invalid),
+            Err(IommuError::InvalidAlignment)
+        );
+    }
+    assert_eq!(
+        domain.allocate_iova(u64::MAX & !(PAGE_SIZE_4K as u64 - 1)),
+        Err(IommuError::OutOfIova)
+    );
+    let iova = domain.allocate_iova(size).expect("domain IOVA reservation");
+    assert_ne!(iova, physical);
+    domain
+        .map(iova, physical, size, true, true)
+        .expect("owned IOVA mapping");
+    let mapping = domain.mapping(iova).expect("allocated IOVA mapping");
+    assert_eq!(mapping.iova, iova);
+    assert_eq!(mapping.phys, physical);
+    assert_eq!(mapping.size, size);
+    let returned = domain.unmap(iova).expect("allocated IOVA retirement");
+    assert_eq!(returned.iova, iova);
+    assert_eq!(returned.phys, physical);
+    assert_eq!(returned.size, size);
+    assert_eq!(domain.mapped_size(), 0);
+    domain
+        .free_iova(iova, size)
+        .expect("IOVA reservation return");
+    // SAFETY: the domain and data allocation never became hardware-visible.
+    // Consuming its unique owner retires every table before returning the
+    // retained data RAM to its captured physical allocator.
+    unsafe { domain.retire_after_invalidation() };
+    backing.release();
+    true
+}
+
 pub mod wave3 {
     pub fn cmdqueue_reclaim_completed_slot_smoke() -> bool {
         crate::io::iommu::runtime::command::queue::qemu_smoke_reclaim_completed_slot()

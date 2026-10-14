@@ -71,35 +71,6 @@ pub fn wave2_sl_pte_smoke() -> bool {
     pte.is_present() && pte.can_read() && pte.can_write() && pte.phys_addr() == 0x1000
 }
 
-pub fn wave2_iommu_domain_smoke() -> bool {
-    let domain = IommuDomain::new(
-        1,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    );
-
-    if domain.id() != 1 {
-        crate::io::log::early_print("[qemu-suite] wave2_iommu_domain: id mismatch\n");
-        return false;
-    }
-    if domain.map(0x1000, 0x2000, 0x1000, true, false).is_err() {
-        crate::io::log::early_print("[qemu-suite] wave2_iommu_domain: first map failed\n");
-        return false;
-    }
-    let overlap = domain.map(0x1000, 0x3000, 0x1000, true, false);
-    if overlap != Err(IommuError::AlreadyMapped) {
-        crate::io::log::early_print("[qemu-suite] wave2_iommu_domain: overlap result mismatch\n");
-        return false;
-    }
-    true
-}
-
 pub fn wave2_create_domain_with_numa_hint_smoke() -> bool {
     let ctrl = IommuController::new(0x0, 0);
     let id = match ctrl.create_domain(Some(2), IommuDomainType::Translated) {
@@ -485,78 +456,7 @@ pub fn wave2_page_table_scope_drop_rolls_back_parent_smoke() -> bool {
         in_expected_range && free_ok
     }
 
-    pub fn wave2_domain_type_not_passthrough_smoke() -> bool {
-        let domain = IommuDomain::new(
-            0,
-            None,
-            false,
-            false,
-            48,
-            4,
-            IommuDomainType::Translated,
-            PageTablePool::new(1, 32),
-            PteFormat::Intel,
-        );
-    }
     matches!(domain.domain_type(), IommuDomainType::Translated)
-}
-
-pub fn wave2_mapping_iova_phys_distinct_smoke() -> bool {
-    let ctrl = IommuController::new(0x0, 0);
-    if ctrl.init_iova(0x8000_0000, 0x10000).is_err() {
-        return false;
-    }
-
-    let domain = Arc::new(IommuDomain::new(
-        0,
-        None,
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    ));
-
-    match ctrl.domains.lock() {
-        Ok(mut domains) => {
-            domains.insert(0, domain.clone());
-        }
-        Err(poisoned) => {
-            let mut domains = poisoned.into_inner();
-            domains.insert(0, domain.clone());
-        }
-    }
-
-    let size = 0x1000;
-    let phys = 0x2000_0000;
-    let iova = match ctrl.allocate_iova(size) {
-        Ok(iova) => iova,
-        Err(_) => return false,
-    };
-
-    if domain.map(iova, phys, size, true, true).is_err() {
-        let _ = ctrl.free_iova(iova, size);
-        return false;
-    }
-    if iova == phys {
-        let _ = domain.unmap(iova);
-        let _ = ctrl.free_iova(iova, size);
-        return false;
-    }
-    let mapping = match domain.mapping(iova) {
-        Some(mapping) => mapping,
-        None => {
-            let _ = domain.unmap(iova);
-            let _ = ctrl.free_iova(iova, size);
-            return false;
-        }
-    };
-    let mapping_ok = mapping.iova == iova && mapping.phys == phys && mapping.iova != mapping.phys;
-    let _ = domain.unmap(iova);
-    let _ = ctrl.free_iova(iova, size);
-    mapping_ok
 }
 
 pub fn wave2_process_page_requests_poisoned_returns_empty_smoke() -> bool {

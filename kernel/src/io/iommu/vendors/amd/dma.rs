@@ -17,18 +17,18 @@ use super::AmdIommuDriver;
 // ---------------------------------------------------------------------------
 
 impl AmdIommuDriver {
-    /// Allocate an IOVA address
-    ///
-    /// The IovaAllocator is lock-free internally with per-CPU magazine caching.
+    /// Reserve a page-aligned IOVA extent, optionally constrained by a DMA mask.
     pub(super) fn allocate_iova(&self, size: u64, mask: Option<u64>) -> Result<u64, IommuError> {
         let iova = match mask {
             Some(limit) => {
                 self.iova_allocator
                     .allocate_with_limit(size, PageGranularity::Page4K, limit)
             }
-            None => self.iova_allocator.allocate(size, PageGranularity::Page4K),
+            None => self
+                .iova_allocator
+                .allocate_contiguous(size, crate::mm::types::PAGE_SIZE_4K as u64),
         };
-        iova.ok_or(IommuError::OutOfMemory)
+        iova.ok_or(IommuError::OutOfIova)
     }
 
     /// Fast path IOVA allocation (4KB pages)

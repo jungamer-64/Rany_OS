@@ -545,6 +545,28 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_domain_depth_and_root", || {
+        if crate::io::iommu::qemu_tests::domain_depth_and_root_physical_address_smoke() {
+            Ok(String::from(
+                "Owned roots and mappings agree with CPU translation",
+            ))
+        } else {
+            Err(String::from("Domain depth/root translation failed"))
+        }
+    }));
+
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_domain_iova_ownership", || {
+        if crate::io::iommu::qemu_tests::domain_iova_allocation_retains_owned_ram_smoke() {
+            Ok(String::from(
+                "Domain IOVA maps and returns the same RAM owner",
+            ))
+        } else {
+            Err(String::from("Domain IOVA ownership failed"))
+        }
+    }));
+
     // Test IOMMU detection
     suite.add_result(run_test("iommu_detection", || {
         if crate::io::iommu::api::is_iommu_enabled() {

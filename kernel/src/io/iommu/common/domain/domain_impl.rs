@@ -187,17 +187,19 @@ impl IommuDomain {
         domain
     }
 
-    /// Allocate IOVA from this domain's allocator.
+    /// Reserve a nonempty, page-aligned extent in this domain's address space.
     ///
-    /// Uses IovaAllocator with O(1) per-CPU magazine allocation.
-    /// All domains have their own IOVA allocator, eliminating lock contention.
+    /// # Errors
+    /// InvalidAlignment leaves the allocator unchanged. OutOfIova means the
+    /// entire extent could not be reserved; no prefix is published.
     #[inline]
     pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
-        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-
-        // IovaAllocator is internally lock-free for common paths
+        let page_size = crate::mm::types::PAGE_SIZE_4K as u64;
+        if size == 0 || !size.is_multiple_of(page_size) {
+            return Err(crate::io::iommu::types::IommuError::InvalidAlignment);
+        }
         self.per_domain_iova
-            .allocate(size, PageGranularity::Page4K)
+            .allocate_contiguous(size, page_size)
             .ok_or(crate::io::iommu::types::IommuError::OutOfIova)
     }
 
