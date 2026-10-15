@@ -8,7 +8,6 @@ use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::{
     PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
-use crate::io::iommu::runtime::quarantine::QuarantineQueue;
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DmaMapping, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::amd::tables::AmdPte;
@@ -705,10 +704,6 @@ pub struct IommuDomain {
     pub(crate) max_addr_bits: u8,
     /// Configured second-level page-table depth (2..=5 levels)
     pub(crate) pt_levels: u8,
-    /// Quarantine queue for zero-allocation IOTLB invalidation (Phase 5)
-    quarantine: Arc<QuarantineQueue>,
-    /// Pre-allocated contexts for zero-allocation flush (Phase 5)
-    flush_context: PoisonLock<crate::io::iommu::runtime::quarantine::FlushContext>,
     /// Phase 6: Page table recycling pool (shared with controller)
     page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
     /// PTE format (Intel or AMD)

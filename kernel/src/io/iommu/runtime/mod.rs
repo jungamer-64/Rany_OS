@@ -14,5 +14,4 @@ pub(crate) mod security;
 pub(crate) mod stats;
 
 pub(crate) mod command;
-pub(crate) mod quarantine;
 pub(crate) mod zombie;
