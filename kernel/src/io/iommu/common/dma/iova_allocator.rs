@@ -47,6 +47,9 @@ pub use crate::mm::phys::fast_allocator::PageGranularity;
 use crate::mm::phys::fast_allocator::{AddressPoolError, FastBitmapAllocator};
 use crate::mm::remote_free::{QuarantineEntry, QuarantineRing}; // Using generic QuarantineRing
 
+#[cfg(test)]
+mod tests;
+
 use crate::io::iommu::types::IommuError;
 
 /// Default capacity for quarantine ring (must be power of 2)
@@ -230,24 +233,30 @@ impl IovaAllocator {
     // Deallocation API (With Quarantine)
     // ========================================================================
 
-    /// Free a page/block with delayed reclamation (Quarantine)
+    /// Retire an entire extent through one quarantine admission.
     ///
-    /// Use this for normal IOVA unmapping. The IOVA will be added to the
-    /// current CPU's quarantine ring stamped with the current epoch.
-    pub fn free_with_granularity(
-        &self,
-        addr: u64,
-        granularity: PageGranularity,
-    ) -> Result<(), IommuError> {
+    /// # Errors
+    /// Invalid geometry or a full queue leaves the complete extent allocated
+    /// and transfers no retirement progress. Accepted extents remain allocated
+    /// until allocator-wide IOTLB and ATS invalidation covers their epoch.
+    pub fn free(&self, addr: u64, size: u64) -> Result<(), IommuError> {
+        use crate::mm::phys::fast_allocator::PAGE_SIZE_4K;
+        if !addr.is_multiple_of(PAGE_SIZE_4K) || !size.is_multiple_of(PAGE_SIZE_4K) {
+            return Err(IommuError::InvalidAlignment);
+        }
+        if size == 0
+            || addr < self.inner.base()
+            || addr
+                .checked_add(size)
+                .is_none_or(|end| end > self.inner.base() + self.inner.size())
+        {
+            return Err(IommuError::InvalidAddress);
+        }
         let epoch = self.clock.retirement_epoch();
         let entry = QuarantineEntry {
             addr,
             epoch,
-            size_class: match granularity {
-                PageGranularity::Page4K => 0,
-                PageGranularity::Page2M => 1,
-                PageGranularity::Page1G => 2,
-            },
+            size_bytes: size,
         };
 
         let current_cpu = crate::cpu::CurrentCpu::acquire().map(|current| current.id());
@@ -257,7 +266,7 @@ impl IovaAllocator {
         }) {
             let pushed = {
                 let mut ring = quarantine.lock();
-                ring.push(entry.addr, entry.size_class, entry.epoch)
+                ring.push_entry(entry)
             };
 
             if pushed {
@@ -267,9 +276,9 @@ impl IovaAllocator {
                 // Ring full: Do NOT force drain here because it bypasses IOTLB consistency (Epochs).
                 // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
                 //
-                // The rejected block remains allocated. The allocator owner
+                // The rejected extent remains allocated. The allocator owner
                 // must complete an allocator-wide IOTLB + ATS flush before
-                // retrying this block; a context or domain flush cannot drain it.
+                // retrying this extent; a context or domain flush cannot drain it.
 
                 log::warn!(
                     "[IOVA][SECURITY] Quarantine ring full for CPU {}. Rejecting free until IOTLB flush.",
@@ -278,16 +287,12 @@ impl IovaAllocator {
                 Err(IommuError::OutOfMemory)
             }
         } else {
-            self.free_via_fallback_quarantine(entry, addr)
+            self.free_via_fallback_quarantine(entry)
         }
     }
 
     /// Fallback quarantine path when per-CPU quarantine is unavailable
-    fn free_via_fallback_quarantine(
-        &self,
-        entry: QuarantineEntry,
-        addr: u64,
-    ) -> Result<(), IommuError> {
+    fn free_via_fallback_quarantine(&self, entry: QuarantineEntry) -> Result<(), IommuError> {
         let mut fb = self.fallback_quarantine.lock();
         if fb.push_entry(entry) {
             self.stats.quarantine_pushes.fetch_add(1, Ordering::Relaxed);
@@ -297,45 +302,14 @@ impl IovaAllocator {
         // Quarantine full: We MUST NOT force drain here because it bypasses IOTLB consistency (Epochs).
         // Draining without a proper IOTLB flush creates a DMA Use-After-Free window.
         //
-        // The rejected block remains allocated until its owner can complete
-        // allocator-wide IOTLB + ATS invalidation and retry this block.
+        // The rejected extent remains allocated until its owner can complete
+        // allocator-wide IOTLB + ATS invalidation and retry this extent.
 
         log::warn!(
             "[IOVA][SECURITY] Fallback quarantine full. Rejecting free of 0x{:x} until IOTLB flush.",
-            addr
+            entry.addr
         );
         Err(IommuError::OutOfMemory)
-    }
-
-    /// アドレスとサイズから最適な解放粒度とステップサイズを選択
-    fn select_free_granularity(addr: u64, size: u64) -> (PageGranularity, u64) {
-        use crate::mm::phys::fast_allocator::{PAGE_SIZE_1G, PAGE_SIZE_2M, PAGE_SIZE_4K};
-        if size >= PAGE_SIZE_1G && addr % PAGE_SIZE_1G == 0 {
-            (PageGranularity::Page1G, PAGE_SIZE_1G)
-        } else if size >= PAGE_SIZE_2M && addr % PAGE_SIZE_2M == 0 {
-            (PageGranularity::Page2M, PAGE_SIZE_2M)
-        } else {
-            (PageGranularity::Page4K, PAGE_SIZE_4K)
-        }
-    }
-
-    /// Free an IOVA range (splits into granularity blocks)
-    pub fn free(&self, mut addr: u64, mut size: u64) -> Result<(), IommuError> {
-        use crate::mm::phys::fast_allocator::PAGE_SIZE_4K;
-
-        // Ensure alignment
-        if addr % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
-            return Err(IommuError::InvalidAlignment);
-        }
-
-        // LOOP_PROOF: mode=condition; reason=Free loop decreases remaining size by step each iteration until the requested range is fully released.;
-        while size > 0 {
-            let (granularity, step) = Self::select_free_granularity(addr, size);
-            self.free_with_granularity(addr, granularity)?;
-            addr += step;
-            size -= step;
-        }
-        Ok(())
     }
 
     /// Allocate within a limit (e.g. 32-bit address space)
@@ -436,13 +410,11 @@ impl IovaAllocator {
     }
 
     fn reclaim_entry(&self, entry: QuarantineEntry) {
-        let granularity = match entry.size_class {
-            0 => PageGranularity::Page4K,
-            1 => PageGranularity::Page2M,
-            2 => PageGranularity::Page1G,
-            invalid => panic!("invalid IOVA quarantine size class {invalid}"),
-        };
-        if self.inner.free_immediate(entry.addr, granularity).is_err() {
+        if self
+            .inner
+            .free_range_immediate(entry.addr, entry.size_bytes)
+            .is_err()
+        {
             panic!(
                 "IOVA quarantine reclaimed unallocated address {:#x}",
                 entry.addr

@@ -146,7 +146,42 @@ pub fn domain_depth_and_root_physical_address_smoke() -> bool {
     true
 }
 
+fn iova_retirement_preserves_later_extents() {
+    use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
+    let _current = crate::cpu::CurrentCpu::acquire().expect("bootstrapped CPU quarantine owner");
+    let page = PAGE_SIZE_4K as u64;
+    let allocator = alloc::sync::Arc::new(
+        IovaAllocator::new(page, 5 * page).expect("local IOVA address space"),
+    );
+    let first = allocator
+        .allocate_contiguous(3 * page, page)
+        .expect("first extent");
+    let later = allocator
+        .allocate_contiguous(2 * page, page)
+        .expect("later extent");
+    allocator.free(first, 3 * page).expect("first retirement");
+    let first_flush = allocator
+        .begin_global_flush()
+        .expect("first invalidation capture");
+    allocator
+        .free(later, 2 * page)
+        .expect("retirement after capture");
+    assert!(allocator.allocate_4k().is_none());
+    // SAFETY: this private allocator was never installed in any hardware
+    // context. No IOTLB or ATS cache can contain either of its extents.
+    unsafe { first_flush.complete_after_global_invalidation() };
+    assert_eq!(allocator.allocate_contiguous(3 * page, page), Some(first));
+    assert!(allocator.allocate_4k().is_none());
+    let later_flush = allocator
+        .begin_global_flush()
+        .expect("later invalidation capture");
+    // SAFETY: the later cohort also has no hardware translation users.
+    unsafe { later_flush.complete_after_global_invalidation() };
+    assert_eq!(allocator.allocate_contiguous(2 * page, page), Some(later));
+}
+
 pub fn domain_iova_allocation_retains_owned_ram_smoke() -> bool {
+    iova_retirement_preserves_later_extents();
     let backing =
         alloc_contiguous_frames_aligned(3, PAGE_SIZE_4K).expect("IOVA fixture RAM admission");
     let physical = backing.as_u64();

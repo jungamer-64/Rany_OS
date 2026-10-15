@@ -25,15 +25,17 @@ fn test_quarantine_ring_push_drain() {
     let mut ring: QuarantineRing<8> = QuarantineRing::new();
 
     // Push entries with different epochs
-    assert!(ring.push(0x1000, 0, 1));
-    assert!(ring.push(0x2000, 0, 2));
-    assert!(ring.push(0x3000, 0, 3));
+    assert!(ring.push(0x1000, 4096, 1));
+    assert!(ring.push(0x2000, 3 * 4096, 2));
+    assert!(ring.push(0x5000, 8192, 3));
     assert_eq!(ring.len(), 3);
 
     // Drain entries older than epoch 2
     let mut out = [QuarantineEntry::empty(); 8];
     let drained = ring.drain_older_than(2, 8, &mut out);
     assert_eq!(drained, 2); // epoch 1 and 2
+    assert_eq!((out[0].addr, out[0].size_bytes), (0x1000, 4096));
+    assert_eq!((out[1].addr, out[1].size_bytes), (0x2000, 3 * 4096));
     assert_eq!(ring.len(), 1);
 
     // Remaining entry is epoch 3
@@ -45,21 +47,21 @@ fn test_quarantine_ring_push_drain() {
 fn test_quarantine_ring_full() {
     let mut ring: QuarantineRing<4> = QuarantineRing::new();
 
-    assert!(ring.push(0x1000, 0, 1));
-    assert!(ring.push(0x2000, 0, 2));
-    assert!(ring.push(0x3000, 0, 3));
-    assert!(ring.push(0x4000, 0, 4));
+    assert!(ring.push(0x1000, 4096, 1));
+    assert!(ring.push(0x2000, 4096, 2));
+    assert!(ring.push(0x3000, 4096, 3));
+    assert!(ring.push(0x4000, 4096, 4));
     assert!(ring.is_full());
 
     // Should fail when full
-    assert!(!ring.push(0x5000, 0, 5));
+    assert!(!ring.push(0x5000, 4096, 5));
 
     // Drain one
     let mut out = [QuarantineEntry::empty(); 1];
     ring.drain_older_than(1, 1, &mut out);
 
     // Now can push again
-    assert!(ring.push(0x5000, 0, 5));
+    assert!(ring.push(0x5000, 4096, 5));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -68,10 +70,10 @@ fn test_quarantine_epoch_wraparound() {
     let mut ring: QuarantineRing<8> = QuarantineRing::new();
 
     // Push entry near u32::MAX
-    ring.push(0x1000, 0, u32::MAX - 1);
-    ring.push(0x2000, 0, u32::MAX);
-    ring.push(0x3000, 0, 0); // Wrapped
-    ring.push(0x4000, 0, 1);
+    ring.push(0x1000, 4096, u32::MAX - 1);
+    ring.push(0x2000, 4096, u32::MAX);
+    ring.push(0x3000, 4096, 0); // Wrapped
+    ring.push(0x4000, 4096, 1);
 
     // Drain with completed epoch = 0 (wrapped)
     // Should drain u32::MAX - 1, u32::MAX, 0

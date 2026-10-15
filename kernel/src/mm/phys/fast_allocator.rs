@@ -193,16 +193,6 @@ impl FastBitmapAllocator {
         self.bitmap.release_range(page, count);
         Ok(())
     }
-    pub fn free_immediate(
-        &self,
-        addr: u64,
-        granularity: PageGranularity,
-    ) -> Result<(), AddressPoolError> {
-        if addr % granularity.size_bytes() != 0 {
-            return Err(AddressPoolError::Alignment);
-        }
-        self.free_range_immediate(addr, granularity.size_bytes())
-    }
 }
 
 impl TypeIdHash for FastBitmapAllocator {

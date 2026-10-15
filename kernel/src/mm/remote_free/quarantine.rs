@@ -6,17 +6,17 @@ impl QuarantineEntry {
     pub const fn empty() -> Self {
         Self {
             addr: 0,
-            size_class: 0,
+            size_bytes: 0,
             epoch: 0,
         }
     }
 
     /// Create a new quarantine entry
     #[inline]
-    pub const fn new(addr: u64, size_class: u8, epoch: u32) -> Self {
+    pub const fn new(addr: u64, size_bytes: u64, epoch: u32) -> Self {
         Self {
             addr,
-            size_class,
+            size_bytes,
             epoch,
         }
     }
@@ -24,18 +24,7 @@ impl QuarantineEntry {
     /// Check if this is an empty/invalid entry
     #[inline]
     pub const fn is_empty(&self) -> bool {
-        self.addr == 0 && self.size_class == 0
-    }
-
-    /// Get the page size for this entry's size class
-    #[inline]
-    pub const fn page_size(&self) -> u64 {
-        match self.size_class {
-            0 => PAGE_SIZE_4K as u64,
-            1 => PAGE_SIZE_2M as u64,
-            2 => PAGE_SIZE_1G as u64,
-            _ => PAGE_SIZE_4K as u64,
-        }
+        self.size_bytes == 0
     }
 }
 
@@ -110,14 +99,14 @@ impl<const N: usize> QuarantineRing<N> {
     ///
     /// Returns false if the ring is full (caller should drain first).
     #[inline]
-    pub fn push(&mut self, addr: u64, size_class: u8, epoch: u32) -> bool {
+    pub fn push(&mut self, addr: u64, size_bytes: u64, epoch: u32) -> bool {
         if self.count >= N {
             return false;
         }
 
         self.entries[self.head] = QuarantineEntry {
             addr,
-            size_class,
+            size_bytes,
             epoch,
         };
         self.head = (self.head + 1) % N;
@@ -128,7 +117,7 @@ impl<const N: usize> QuarantineRing<N> {
     /// Push a QuarantineEntry directly
     #[inline]
     pub fn push_entry(&mut self, entry: QuarantineEntry) -> bool {
-        self.push(entry.addr, entry.size_class, entry.epoch)
+        self.push(entry.addr, entry.size_bytes, entry.epoch)
     }
 
     /// Pop entries that are older than the given epoch
@@ -393,86 +382,6 @@ impl From<IovaFreeEntry> for RemoteFreeEntry {
     }
 }
 
-/// IOVA-specific quarantine entry with `iova` field name for backward compatibility
-#[derive(Clone, Copy, Debug)]
-#[repr(C)]
-pub struct IovaQuarantineEntry {
-    /// IOVA address to be freed
-    pub iova: u64,
-    /// Size class: 0 = 4KB, 1 = 2MB, 2 = 1GB
-    pub size_class: u8,
-    /// Epoch when this entry was quarantined
-    pub epoch: u32,
-}
-
-impl IovaQuarantineEntry {
-    /// Create an empty/invalid entry
-    #[inline]
-    pub const fn empty() -> Self {
-        Self {
-            iova: 0,
-            size_class: 0,
-            epoch: 0,
-        }
-    }
-
-    /// Create a new quarantine entry
-    #[inline]
-    pub const fn new(iova: u64, size_class: u8, epoch: u32) -> Self {
-        Self {
-            iova,
-            size_class,
-            epoch,
-        }
-    }
-
-    /// Check if this is an empty/invalid entry
-    #[inline]
-    pub const fn is_empty(&self) -> bool {
-        self.iova == 0 && self.size_class == 0
-    }
-
-    /// Convert from generic QuarantineEntry
-    #[inline]
-    pub const fn from_generic(entry: QuarantineEntry) -> Self {
-        Self {
-            iova: entry.addr,
-            size_class: entry.size_class,
-            epoch: entry.epoch,
-        }
-    }
-
-    /// Convert to generic QuarantineEntry
-    #[inline]
-    pub const fn to_generic(self) -> QuarantineEntry {
-        QuarantineEntry {
-            addr: self.iova,
-            size_class: self.size_class,
-            epoch: self.epoch,
-        }
-    }
-}
-
-impl Default for IovaQuarantineEntry {
-    fn default() -> Self {
-        Self::empty()
-    }
-}
-
-impl From<QuarantineEntry> for IovaQuarantineEntry {
-    #[inline]
-    fn from(entry: QuarantineEntry) -> Self {
-        Self::from_generic(entry)
-    }
-}
-
-impl From<IovaQuarantineEntry> for QuarantineEntry {
-    #[inline]
-    fn from(entry: IovaQuarantineEntry) -> Self {
-        entry.to_generic()
-    }
-}
-
 // ============================================================================
 // Type Aliases for Common Use Cases
 // ============================================================================
@@ -480,14 +389,8 @@ impl From<IovaQuarantineEntry> for QuarantineEntry {
 /// IOVA allocator remote free ring (512 entries)
 pub type IovaRemoteFreeRing = RemoteFreeRing<512>;
 
-/// IOVA allocator quarantine ring (256 entries)  
-pub type IovaQuarantineRing = QuarantineRing<256>;
-
 /// Physical frame allocator remote free ring (larger for higher throughput)
 pub type FrameRemoteFreeRing = RemoteFreeRing<1024>;
-
-/// Physical frame allocator quarantine ring
-pub type FrameQuarantineRing = QuarantineRing<512>;
 
 // ============================================================================
 // Unit Tests
