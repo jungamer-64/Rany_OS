@@ -312,20 +312,21 @@ impl IovaAllocator {
         Err(IommuError::OutOfMemory)
     }
 
-    /// Allocate within a limit (e.g. 32-bit address space)
+    /// Allocate with every byte at or below the inclusive DMA address limit.
     pub fn allocate_with_limit(
         &self,
         size: u64,
         granularity: PageGranularity,
-        limit: u64,
+        inclusive_limit: u64,
     ) -> Option<u64> {
-        // Enforce the limit before claiming occupancy. A partial page at the
-        // limit is unavailable; no speculative allocation needs to be freed.
+        // The bitmap accepts an exclusive endpoint. Its validated pool endpoint
+        // also bounds the result when the inclusive limit is u64::MAX.
+        let exclusive_limit = inclusive_limit.saturating_add(1);
         self.inner
             .allocate_contiguous_below(
                 size.max(granularity.size_bytes()),
                 granularity.size_bytes(),
-                limit,
+                exclusive_limit,
             )
             .ok()
     }
