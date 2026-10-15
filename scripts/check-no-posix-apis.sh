@@ -15,7 +15,12 @@ check_no_match() {
   shift 2
   local paths=("$@")
   local matches
-  matches="$(rg -n "$pattern" "${paths[@]}" || true)"
+  local status=0
+  matches="$(rg -n "$pattern" "${paths[@]}")" || status=$?
+  if (( status > 1 )); then
+    echo "ERROR: Could not search for ${label}." >&2
+    exit "$status"
+  fi
   if [ -n "$matches" ]; then
     echo "ERROR: Found forbidden ${label}:"
     echo "$matches"
@@ -27,17 +32,17 @@ check_no_match() {
 check_no_match "feature flag legacy-posix" '^\s*legacy-posix\s*=' kernel/Cargo.toml
 
 # 2) Removed directory-based POSIX management surfaces.
-check_no_match "procfs module usage" '\bprocfs\b' kernel/src filesystems
+check_no_match "procfs module usage" '\bprocfs\b' kernel/src
 check_no_match "proc namespace calls" '\bproc\.' kernel/src/shell/exoshell
 
 # 3) Removed POSIX compatibility entry-points in IPC + VM APIs.
-check_no_match "pipe2 API" '\bpipe2\s*\(' kernel/src/ipc filesystems
-check_no_match "mkfifo API" '\bmkfifo\s*\(' kernel/src/ipc filesystems
-check_no_match "shmget API" '\bshmget\s*\(' kernel/src/ipc filesystems
-check_no_match "shmat API" '\bshmat\s*\(' kernel/src/ipc filesystems
-check_no_match "shm_open API" '\bshm_open\s*\(' kernel/src/ipc filesystems
-check_no_match "mmap API" '\bmmap\s*\(' kernel/src/mm/virt filesystems
-check_no_match "mmap_manager API" '\bmmap_manager\s*\(' kernel/src/mm/virt filesystems
-check_no_match "Mmap* type names" '\bMmap[A-Za-z0-9_]*\b' kernel/src/mm/virt filesystems
+check_no_match "pipe2 API" '\bpipe2\s*\(' kernel/src/ipc kernel/src/fs
+check_no_match "mkfifo API" '\bmkfifo\s*\(' kernel/src/ipc kernel/src/fs
+check_no_match "shmget API" '\bshmget\s*\(' kernel/src/ipc kernel/src/fs
+check_no_match "shmat API" '\bshmat\s*\(' kernel/src/ipc kernel/src/fs
+check_no_match "shm_open API" '\bshm_open\s*\(' kernel/src/ipc kernel/src/fs
+check_no_match "mmap API" '\bmmap\s*\(' kernel/src/mm/virt kernel/src/fs
+check_no_match "mmap_manager API" '\bmmap_manager\s*\(' kernel/src/mm/virt kernel/src/fs
+check_no_match "Mmap* type names" '\bMmap[A-Za-z0-9_]*\b' kernel/src/mm/virt kernel/src/fs
 
 echo "No forbidden POSIX compatibility surfaces found."
