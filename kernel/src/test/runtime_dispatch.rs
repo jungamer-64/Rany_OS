@@ -315,6 +315,18 @@ static CASES: &[RuntimeTestCase] = &[
         group: RuntimeGroup::Memory,
     },
     RuntimeTestCase {
+        id: "mm.huge_mapping_flags",
+        body: RuntimeTestBody::Sync(super::mm_runtime::huge_mapping_flags),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.owned_mapping_replacement",
+        body: RuntimeTestBody::Sync(super::mm_runtime::owned_mapping_replacement),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
         id: "scheduler.boot_cpu_admission",
         body: RuntimeTestBody::Sync(scheduler_boot_cpu_admission),
         tier: RuntimeTier::PrRequired,
