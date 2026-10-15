@@ -31,31 +31,6 @@ impl AmdIommuDriver {
         iova.ok_or(IommuError::OutOfIova)
     }
 
-    /// Fast path IOVA allocation (4KB pages)
-    ///
-    /// IovaAllocator already provides O(1) allocation with per-CPU magazine,
-    /// so this just delegates to allocate_iova.
-    pub(super) fn allocate_iova_fast(
-        &self,
-        size: u64,
-        mask: Option<u64>,
-    ) -> Result<u64, IommuError> {
-        self.allocate_iova(size, mask)
-    }
-
-    /// Free an IOVA address
-    pub(super) fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        self.iova_allocator.free(iova, size)
-    }
-
-    /// Fast path IOVA free (4KB pages)
-    ///
-    /// IovaAllocator already provides O(1) free with per-CPU magazine,
-    /// so this just delegates to free_iova.
-    pub(super) fn free_iova_fast(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        self.free_iova(iova, size)
-    }
-
     fn prepare_device_mapping(
         self: &alloc::sync::Arc<Self>,
         device: &DeviceId,
@@ -72,7 +47,7 @@ impl AmdIommuDriver {
         self.reject_excluded_ivmd_range(*device, phys_addr.as_u64(), size)?;
         let domain = self.domain_for_id(self.domain_id_for_device(*device)?)?;
         let mask = crate::io::iommu::api::get_device_dma_mask(device);
-        let iova = self.allocate_iova_fast(size, mask)?;
+        let iova = self.allocate_iova(size, mask)?;
         let mapping = DeviceMappedRange::admitted(
             alloc::sync::Arc::clone(&domain),
             crate::io::iommu::common::dma::mapping_outcome::DmaInvalidationSource::Amd(

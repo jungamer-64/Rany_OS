@@ -7,6 +7,7 @@ mod page_table_pool;
 
 pub fn page_table_recycling_retains_ownership_smoke() -> bool {
     page_table_pool::cached_table_is_zeroed();
+    page_table_pool::committed_scope_preserves_live_child_entries();
     page_table_pool::retirement_cohort_excludes_later_unlinks();
     page_table_pool::attached_rollback_retains_ram_until_completion();
     true
@@ -146,7 +147,7 @@ pub fn domain_depth_and_root_physical_address_smoke() -> bool {
     true
 }
 
-fn iova_retirement_preserves_later_extents() {
+pub fn iova_retirement_preserves_later_extents_smoke() -> bool {
     use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
     let _current = crate::cpu::CurrentCpu::acquire().expect("bootstrapped CPU quarantine owner");
     let page = PAGE_SIZE_4K as u64;
@@ -178,58 +179,6 @@ fn iova_retirement_preserves_later_extents() {
     // SAFETY: the later cohort also has no hardware translation users.
     unsafe { later_flush.complete_after_global_invalidation() };
     assert_eq!(allocator.allocate_contiguous(2 * page, page), Some(later));
-}
-
-pub fn domain_iova_allocation_retains_owned_ram_smoke() -> bool {
-    iova_retirement_preserves_later_extents();
-    let backing =
-        alloc_contiguous_frames_aligned(3, PAGE_SIZE_4K).expect("IOVA fixture RAM admission");
-    let physical = backing.as_u64();
-    let size = backing.size_bytes();
-    let domain = IommuDomain::try_new(
-        0x8002,
-        Some(backing.node().as_usize()),
-        false,
-        false,
-        48,
-        4,
-        IommuDomainType::Translated,
-        PageTablePool::new(1, 32),
-        PteFormat::Intel,
-    )
-    .expect("IOVA fixture domain");
-    for invalid in [0, 1, u64::MAX] {
-        assert_eq!(
-            domain.allocate_iova(invalid),
-            Err(IommuError::InvalidAlignment)
-        );
-    }
-    assert_eq!(
-        domain.allocate_iova(u64::MAX & !(PAGE_SIZE_4K as u64 - 1)),
-        Err(IommuError::OutOfIova)
-    );
-    let iova = domain.allocate_iova(size).expect("domain IOVA reservation");
-    assert_ne!(iova, physical);
-    domain
-        .map(iova, physical, size, true, true)
-        .expect("owned IOVA mapping");
-    let mapping = domain.mapping(iova).expect("allocated IOVA mapping");
-    assert_eq!(mapping.iova, iova);
-    assert_eq!(mapping.phys, physical);
-    assert_eq!(mapping.size, size);
-    let returned = domain.unmap(iova).expect("allocated IOVA retirement");
-    assert_eq!(returned.iova, iova);
-    assert_eq!(returned.phys, physical);
-    assert_eq!(returned.size, size);
-    assert_eq!(domain.mapped_size(), 0);
-    domain
-        .free_iova(iova, size)
-        .expect("IOVA reservation return");
-    // SAFETY: the domain and data allocation never became hardware-visible.
-    // Consuming its unique owner retires every table before returning the
-    // retained data RAM to its captured physical allocator.
-    unsafe { domain.retire_after_invalidation() };
-    backing.release();
     true
 }
 

@@ -114,7 +114,8 @@ impl DomainManager for IommuController {
         }
 
         // Failure retains the registry's owner and every retirement cohort for
-        // retry. IOVA space is domain-owned and is destroyed with that domain.
+        // retry. Mapping owners retain their backend's IOVA allocation through
+        // completion and keep this domain busy until they return it.
         crate::io::iommu::common::domain::IommuInvalidator::invalidate(
             self,
             crate::io::iommu::common::domain::InvalidateRequest::domain(id).with_ats(),

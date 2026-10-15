@@ -8,7 +8,7 @@
 
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::common::tables::{HardwareTable, PageTableScope, SlPte, virt_ptr_to_phys};
+use crate::io::iommu::common::tables::{HardwareTable, SlPte, virt_ptr_to_phys};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
@@ -980,279 +980,6 @@ fn test_qi_metrics_pressure() {
     assert_eq!(stats.submits, safe_submissions as u64);
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_page_table_scope_commit_preserves_counts() {
-    // Verify that commit doesn't overwrite existing counts and increments parent count.
-    let pending = crate::sync::PoisonLock::new(
-        crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
-    );
-    let pool = crate::io::iommu::common::dma::page_table_pool::PageTablePool::new(1, 4);
-    let mut scope =
-        PageTableScope::new_with_pool(pool.clone(), None, &pending).expect("allocate ptable");
-    let scope_phys = scope.phys();
-    let parent_phys = 0xDEADBEEF;
-
-    crate::io::iommu::common::dma::page_table_pool::register_page_table(scope_phys);
-    for _ in 0..42 {
-        crate::io::iommu::common::dma::page_table_pool::inc_ref(scope_phys);
-    }
-    crate::io::iommu::common::dma::page_table_pool::register_page_table(parent_phys);
-
-    // Create a fake parent entry and attach
-    let mut parent_entry = SlPte::new();
-    // SAFETY: this retained stack parent is exclusively accessed and never installed in hardware.
-    unsafe {
-        scope.attach_to_parent(
-            &mut parent_entry as *mut SlPte,
-            parent_phys,
-            PteFormat::Intel,
-            1,
-        );
-    }
-
-    // Commit should not overwrite existing count for scope.phys(), but should increment parent
-    scope.commit();
-
-    assert_eq!(
-        crate::io::iommu::common::dma::page_table_pool::get_ref_count(scope_phys),
-        42
-    );
-    assert_eq!(
-        crate::io::iommu::common::dma::page_table_pool::get_ref_count(parent_phys),
-        1
-    );
-
-    crate::io::iommu::common::dma::page_table_pool::unregister_page_table(parent_phys);
-    parent_entry = SlPte::new();
-    assert!(!parent_entry.is_present());
-    // SAFETY: the only parent is cleared; this fixture never published the table to a device.
-    if let Some(table) =
-        unsafe { crate::io::iommu::common::dma::page_table_pool::take_unlinked_table(scope_phys) }
-    {
-        pool.release(unsafe { table.complete_after_invalidation() });
-    }
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_page_table_scope_drop_rolls_back_parent() {
-    // Attached rollback clears the parent and retains the allocation in quarantine.
-    let parent_phys = 0xBABA;
-    let mut parent_entry = SlPte::new();
-    {
-        let pending = crate::sync::PoisonLock::new(
-            crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
-        );
-        let pool = crate::io::iommu::common::dma::page_table_pool::PageTablePool::new(1, 4);
-        let mut scope =
-            PageTableScope::new_with_pool(pool.clone(), None, &pending).expect("allocate ptable");
-        // Attach to parent; don't commit
-        // Attach to parent; don't commit
-        // SAFETY: this retained stack parent is exclusively accessed and never installed in hardware.
-        unsafe {
-            scope.attach_to_parent(
-                &mut parent_entry as *mut SlPte,
-                parent_phys,
-                PteFormat::Intel,
-                1,
-            );
-            // At this point, parent should be present
-            assert!(unsafe { (*(&parent_entry as *const SlPte)).is_present() });
-        }
-        // After scope dropped, parent should be cleared
-        assert!(!unsafe { (*(&parent_entry as *const SlPte)).is_present() });
-    }
-
-    // ============================================================================
-    // Phase 7: Security Monitor Tests
-    // ============================================================================
-
-    /// Mock SecurityNotifier for testing (alloc-free, fixed-size ring)
-    #[derive(Debug)]
-    struct MockSecurityNotifier {
-        events:
-            crate::sync::Mutex<[Option<crate::io::iommu::runtime::security::SecurityEvent>; 16]>,
-        event_count: core::sync::atomic::AtomicUsize,
-        isolation_decision: crate::io::iommu::runtime::security::IsolationDecision,
-    }
-
-    impl MockSecurityNotifier {
-        fn new() -> Self {
-            Self {
-                events: crate::sync::Mutex::new([None; 16]),
-                event_count: core::sync::atomic::AtomicUsize::new(0),
-                isolation_decision: crate::io::iommu::runtime::security::IsolationDecision::default(
-                ),
-            }
-        }
-
-        fn with_decision(decision: crate::io::iommu::runtime::security::IsolationDecision) -> Self {
-            Self {
-                events: crate::sync::Mutex::new([None; 16]),
-                event_count: core::sync::atomic::AtomicUsize::new(0),
-                isolation_decision: decision,
-            }
-        }
-
-        fn received_count(&self) -> usize {
-            self.event_count.load(core::sync::atomic::Ordering::Relaxed)
-        }
-
-        fn last_event(&self) -> Option<crate::io::iommu::runtime::security::SecurityEvent> {
-            let count = self.received_count();
-            if count == 0 {
-                return None;
-            }
-            let idx = (count - 1) % 16;
-            *self.events.lock().get(idx).unwrap_or(&None)
-        }
-    }
-
-    impl crate::io::iommu::runtime::security::SecurityNotifier for MockSecurityNotifier {
-        fn notify(&self, event: crate::io::iommu::runtime::security::SecurityEvent) {
-            let idx = self
-                .event_count
-                .fetch_add(1, core::sync::atomic::Ordering::Relaxed)
-                % 16;
-            self.events.lock()[idx] = Some(event);
-        }
-
-        fn decide(
-            &self,
-            _fault: &crate::io::iommu::runtime::security::FaultSummary,
-        ) -> crate::io::iommu::runtime::security::IsolationDecision {
-            self.isolation_decision
-        }
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_security_notifier_registration() {
-        let ctrl = controller();
-        let notifier = Arc::new(MockSecurityNotifier::new());
-
-        // First registration should succeed
-        assert!(ctrl.set_security_notifier(notifier.clone()));
-
-        // Second registration should fail (already set)
-        let notifier2 = Arc::new(MockSecurityNotifier::new());
-        assert!(!ctrl.set_security_notifier(notifier2));
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_api_security_notifier_registration() {
-        use crate::io::iommu::runtime::registry::get_iommu_driver;
-        use crate::io::iommu::vendors::intel::controller::IommuController;
-        use crate::io::iommu::vendors::intel::registry::{get_iommu_registry, init_registry};
-
-        if get_iommu_registry().is_none() {
-            let ctrl = controller();
-            let registry = test_iommu_registry(alloc::vec![Arc::new(ctrl)]);
-            init_registry(registry);
-        }
-
-        if get_iommu_driver().is_none() {
-            crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
-        }
-
-        let notifier = Arc::new(MockSecurityNotifier::new());
-        let first = crate::io::iommu::api::set_security_notifier(notifier).expect("set notifier");
-        assert!(first);
-
-        let notifier2 = Arc::new(MockSecurityNotifier::new());
-        let second = crate::io::iommu::api::set_security_notifier(notifier2).expect("set notifier");
-        assert!(!second);
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_security_event_types_are_copy() {
-        use crate::io::iommu::runtime::security::{IsolationReason, SecurityEvent};
-
-        // Verify SecurityEvent is Copy by assignment
-        let event1 = SecurityEvent::DmaViolation {
-            source_id: 0x0108,
-            fault_address: 0x1000,
-            reason: 0x01,
-            domain_id: Some(0x10),
-        };
-        let event2 = event1; // Copy
-        match event2 {
-            SecurityEvent::DmaViolation {
-                source_id,
-                domain_id,
-                ..
-            } => {
-                assert_eq!(source_id, 0x0108);
-                assert_eq!(domain_id, Some(0x10));
-            }
-            _ => panic!("wrong event type"),
-        }
-
-        let event3 = SecurityEvent::DeviceIsolated {
-            source_id: 0x0208,
-            reason: IsolationReason::DmaFault,
-        };
-        let _event4 = event3; // Copy
-
-        let event5 = SecurityEvent::QuarantinePoisoned { domain_id: 42 };
-        let _event6 = event5; // Copy
-
-        let event7 = SecurityEvent::EventsDropped { count: 10 };
-        let _event8 = event7; // Copy
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_fault_summary_from_fault_record() {
-        use crate::io::iommu::runtime::security::FaultSummary;
-
-        // Create a mock FaultRecord
-        let record = FaultRecord {
-            lo: 0x2000,
-            hi: 0x8000_0042_0000_0108,
-        };
-
-        let summary = FaultSummary::from(&record);
-        assert_eq!(summary.source_id, 0x0108);
-        assert_eq!(summary.fault_address, 0x2000);
-        assert_eq!(summary.reason, 0x42);
-    }
-
-    #[cfg(feature = "qemu-test-export")]
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_isolation_decision_default() {
-        use crate::io::iommu::runtime::security::{IsolationDecision, IsolationReason};
-
-        let decision = IsolationDecision::default();
-        match decision {
-            IsolationDecision::Isolate(IsolationReason::DmaFault) => {}
-            _ => panic!("default should be Isolate(DmaFault)"),
-        }
-    }
-
-    // ============================================================================
-    // Identity Mapping Exclusion Tests
-    // ============================================================================
-
-    /// Test that translated-only operation remains mandatory after bypass removal.
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_identity_mapping_disabled_by_default() {
-        assert!(
-            crate::io::iommu::api::is_iommu_required(),
-            "IOMMU should remain mandatory after removing bypass APIs"
-        );
-    }
-}
-
 /// Test that IOVA allocation produces non-identity addresses.
 /// IOVA should NEVER equal physical address (except for RMRR regions).
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -1360,4 +1087,27 @@ fn test_invalidate_request_ats_flag() {
 
     let req_no_ats = InvalidateRequest::pages(1, 0x1000, 0x1000);
     assert!(!req_no_ats.flags.contains(InvalidateFlags::ATS_AWARE));
+}
+
+#[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+#[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+fn fault_summary_decodes_requester_address_and_reason() {
+    let record = FaultRecord {
+        lo: 0x2000,
+        hi: 0x8000_0042_0000_0108,
+    };
+    let summary = crate::io::iommu::runtime::security::FaultSummary::from(&record);
+    assert_eq!(summary.source_id, 0x0108);
+    assert_eq!(summary.fault_address, 0x2000);
+    assert_eq!(summary.reason, 0x42);
+}
+
+#[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+#[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+fn faults_default_to_device_isolation() {
+    use crate::io::iommu::runtime::security::{IsolationDecision, IsolationReason};
+    assert!(matches!(
+        IsolationDecision::default(),
+        IsolationDecision::Isolate(IsolationReason::DmaFault)
+    ));
 }

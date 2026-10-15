@@ -711,16 +711,8 @@ pub struct IommuDomain {
     security_notifier: InitOnce<Arc<dyn SecurityNotifier>>,
     /// Fatal error flag; once set, the domain rejects new map/unmap operations.
     poisoned: AtomicBool,
-    /// DMA Resource Registry (Phase 8: Leak Prevention)
-    ///
-    /// Tracks all active DmaHandles belonging to this domain.
-    /// Enables force-unmap on domain destruction to prevent resource leaks.
-    ///
-    /// # Usage
-    ///
-    /// - `register()`: Called when DmaHandle is created
-    /// - `unregister()`: Called when DmaHandle is unmapped
-    /// - `drain_all()`: Called on domain destruction for force-unmap
+    /// Registered mapping extents keep teardown busy until their completion
+    /// owners return them. Registry observation cannot release their backing.
     dma_registry: DmaResourceRegistry,
     /// Quarantined page tables waiting for IOTLB invalidation before reuse.
     ///

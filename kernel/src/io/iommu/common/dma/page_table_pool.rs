@@ -55,7 +55,7 @@ fn page_table_registry() -> &'static IrqMutex<BTreeMap<u64, PageTableRegistryEnt
 }
 
 /// Register a page table's metadata in the global registry
-pub(in crate::io::iommu) fn register_page_table(phys: u64) {
+fn register_page_table(phys: u64) {
     let mut registry = page_table_registry().lock();
     registry.entry(phys).or_insert(PageTableRegistryEntry {
         ref_count: 0,
@@ -70,7 +70,7 @@ pub(in crate::io::iommu) fn register_page_table(phys: u64) {
 }
 
 /// Unregister a page table's metadata from the global registry
-pub(in crate::io::iommu) fn unregister_page_table(phys: u64) {
+fn unregister_page_table(phys: u64) {
     let mut registry = page_table_registry().lock();
     assert!(
         registry
@@ -193,6 +193,18 @@ impl QuarantinedPt {
     /// Every parent reference is detached under the domain's paging lock. An
     /// allocator admission alone is insufficient to prove hardware retirement.
     pub(in crate::io::iommu) unsafe fn from_unlinked(table: PooledPt) -> Self {
+        let mut registry = page_table_registry().lock();
+        let entry = registry
+            .get_mut(&table.phys)
+            .expect("retirement retains an admitted table's metadata");
+        Self::from_detached_owner(table, entry)
+    }
+
+    fn from_detached_owner(table: PooledPt, entry: &mut PageTableRegistryEntry) -> Self {
+        assert!(entry.active.is_none(), "retired table owner was detached");
+        // No live hierarchy references these entries after detachment. Keep
+        // occupancy metadata empty when the completed owner enters the cache.
+        entry.ref_count = 0;
         Self(core::mem::ManuallyDrop::new(table))
     }
     /// # Safety
@@ -216,9 +228,6 @@ impl TableRetirement {
         DetachedTables {
             tables: core::mem::take(&mut self.queued),
         }
-    }
-    pub(in crate::io::iommu) fn has_pending(&self) -> bool {
-        !self.queued.is_empty()
     }
     pub(in crate::io::iommu) fn reserve(&mut self, count: usize) -> Result<(), IommuError> {
         self.queued
@@ -259,9 +268,12 @@ impl DetachedTables {
 /// The domain owns this table and has removed all parent references under its
 /// paging lock. The result must remain quarantined through IOTLB completion.
 pub(in crate::io::iommu) unsafe fn take_unlinked_table(phys: u64) -> Option<QuarantinedPt> {
-    let table = page_table_registry().lock().get_mut(&phys)?.active.take()?;
-    // SAFETY: caller established detachment; this transition does not reuse RAM.
-    Some(unsafe { QuarantinedPt::from_unlinked(table) })
+    let mut registry = page_table_registry().lock();
+    let entry = registry.get_mut(&phys)?;
+    let table = entry.active.take()?;
+    // Caller established detachment; this transfer keeps RAM quarantined and
+    // reuses the registry acquisition that consumed the active owner.
+    Some(QuarantinedPt::from_detached_owner(table, entry))
 }
 
 // ============================================================================

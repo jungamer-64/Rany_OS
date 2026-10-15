@@ -21,14 +21,10 @@ pub mod utils;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::future::Future;
-use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use core::task::{Context, Poll};
 use hashbrown::HashMap;
 
 use self::init::CapabilityManager;
-use self::iova::IovaManager;
 use self::ir::InterruptRemapTable;
 use self::utils::IommuUtils;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;

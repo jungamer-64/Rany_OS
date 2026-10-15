@@ -6,10 +6,13 @@
 //!
 //! This module contains QI-related methods for `IommuController` via `InvalidationOps` trait.
 
+use core::future::Future;
+use core::pin::Pin;
 use core::sync::atomic::Ordering;
+use core::task::{Context, Poll};
 
+use super::IommuController;
 use super::utils::IommuUtils;
-use super::{InvalidationWaiter, IommuController};
 use crate::io::iommu::types::IommuError;
 use crate::io::iommu::vendors::intel::qi::{InvalidationQueue, InvalidationQueueEntry};
 use crate::io::iommu::vendors::intel::registers::fsts_bits;
@@ -319,5 +322,53 @@ impl InvalidationOps for IommuController {
 
     fn wake_invalidation_waiter(&self) {
         self.pending_waiters.wake_all_from_isr();
+    }
+}
+
+pub(crate) struct InvalidationWaiter<'a> {
+    controller: &'a IommuController,
+    submit_result: Result<(), IommuError>,
+    status_virt: usize,
+    expected_data: u32,
+}
+
+impl<'a> Future for InvalidationWaiter<'a> {
+    type Output = Result<(), IommuError>;
+
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        match self.submit_result {
+            Err(e) => Poll::Ready(Err(e)),
+            Ok(()) => {
+                // Security: Check for hardware faults during poll.
+                let fsts = self.controller.registers.fault_status().read();
+                if (fsts
+                    & (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_IQE
+                        | crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ICE
+                        | crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_ITE))
+                    != 0
+                {
+                    log::error!(
+                        "[IOMMU][QI] Async wait failed: hardware fault detected in FSTS: {:#x}",
+                        fsts
+                    );
+                    return Poll::Ready(Err(IommuError::HardwareError));
+                }
+
+                // SAFETY: successful submission supplies an aligned status word
+                // retained by the borrowed controller throughout this future.
+                let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
+                if status.wrapping_sub(self.expected_data) < (1u32 << 31) {
+                    return Poll::Ready(Ok(()));
+                }
+                self.controller.pending_waiters.register(cx.waker());
+                // Double check after registration to avoid lost wakeups
+                // SAFETY: registration preserves the same retained status word.
+                let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
+                if status.wrapping_sub(self.expected_data) < (1u32 << 31) {
+                    return Poll::Ready(Ok(()));
+                }
+                Poll::Pending
+            }
+        }
     }
 }

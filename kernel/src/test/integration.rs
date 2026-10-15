@@ -557,13 +557,13 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     }));
 
     #[cfg(feature = "qemu-test-export")]
-    suite.add_result(run_test("iommu_domain_iova_ownership", || {
-        if crate::io::iommu::qemu_tests::domain_iova_allocation_retains_owned_ram_smoke() {
+    suite.add_result(run_test("iommu_iova_retirement_ownership", || {
+        if crate::io::iommu::qemu_tests::iova_retirement_preserves_later_extents_smoke() {
             Ok(String::from(
-                "Domain IOVA maps and returns the same RAM owner",
+                "Retirement returns only extents covered by completion",
             ))
         } else {
-            Err(String::from("Domain IOVA ownership failed"))
+            Err(String::from("IOVA retirement ownership failed"))
         }
     }));
 
@@ -606,9 +606,10 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         if !crate::io::iommu::api::is_iommu_enabled() {
             return Err(String::from("IOMMU must be enabled for DMA mapping verification"));
         }
-        let size = crate::mm::types::PAGE_SIZE_4K;
+        let page_size = crate::mm::types::PAGE_SIZE_4K;
+        let size = 3 * page_size;
         let allocation = crate::ipc::RRef::<[u8]>::new_slice_default_aligned(
-            crate::domain::DomainId::KERNEL, size, size,
+            crate::domain::DomainId::KERNEL, size, page_size,
         ).ok_or_else(|| String::from("owned DMA test allocation failed"))?;
         let pointer = allocation.as_ptr().addr();
         let mut backing = Some(allocation);
