@@ -42,22 +42,6 @@ impl IommuDomain {
             shards.push(PoisonLock::new(DomainShard::new()));
         }
 
-        let (default_iova_base, default_iova_size) = if cfg!(feature = "qemu-test-export") {
-            (0x1_0000_0000, 0x1000_0000)
-        } else {
-            (0x1_0000_0000, 0x8_0000_0000)
-        };
-        let per_domain_iova =
-            match crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(
-                default_iova_base,
-                default_iova_size,
-            ) {
-                Ok(allocator) => allocator,
-                Err(error) => {
-                    page_table_pool.release(root);
-                    return Err(error);
-                }
-            };
         crate::io::iommu::common::dma::page_table_pool::publish_table(root);
 
         Ok(Self {
@@ -72,15 +56,10 @@ impl IommuDomain {
             supports_1gb: supports_1gb && pt_levels >= 3,
             max_addr_bits: max_addr_bits.clamp(1, 64),
             pt_levels,
-            quarantine: QuarantineQueue::new(),
-            flush_context: PoisonLock::new(
-                crate::io::iommu::runtime::quarantine::FlushContext::new(),
-            ),
             page_table_pool,
             pte_format,
             security_notifier: crate::sync::InitOnce::new(),
             poisoned: AtomicBool::new(false),
-            per_domain_iova,
             dma_registry: DmaResourceRegistry::new(),
             pending_pt_release: PoisonLock::new(
                 crate::io::iommu::common::dma::page_table_pool::TableRetirement::default(),
@@ -112,115 +91,6 @@ impl IommuDomain {
             pte_format,
         )
         .expect("Failed to create IOMMU domain")
-    }
-
-    /// Create a new domain with per-domain IOVA allocator
-    ///
-    /// This constructor creates a domain with its own dedicated IOVA space,
-    /// eliminating lock contention with other domains.
-    ///
-    /// # Arguments
-    /// * `id` - Domain ID
-    /// * `numa_node` - Optional NUMA node affinity
-    /// * `supports_2mb` - Hardware supports 2MB super pages
-    /// * `supports_1gb` - Hardware supports 1GB super pages
-    /// * `max_addr_bits` - Maximum supported address width (bits)
-    /// * `pt_levels` - Second-level page table depth (2..=5)
-    /// * `domain_type` - Domain type (Strict, Passthrough, etc.)
-    /// * `page_table_pool` - Shared page table pool for recycling
-    /// * `pte_format` - PTE format (Intel or AMD)
-    /// * `iova_base` - Base address for this domain's IOVA space
-    /// * `iova_size` - Size of this domain's IOVA space
-    ///
-    /// # Example
-    ///
-    /// ```ignore
-    /// // Create domain with 512GB IOVA space starting at 4GB
-    /// let domain = IommuDomain::new_with_iova(
-    ///     domain_id,
-    ///     Some(numa_node),
-    ///     true, true, 48,
-    ///     IommuDomainType::Strict,
-    ///     pool.clone(),
-    ///     PteFormat::Intel,
-    ///     4 * 1024 * 1024 * 1024,       // 4GB base
-    ///     512 * 1024 * 1024 * 1024,     // 512GB size
-    /// );
-    /// ```
-    pub fn new_with_iova(
-        id: u16,
-        numa_node: Option<usize>,
-        supports_2mb: bool,
-        supports_1gb: bool,
-        max_addr_bits: u8,
-        pt_levels: u8,
-        domain_type: IommuDomainType,
-        page_table_pool: Arc<crate::io::iommu::common::dma::page_table_pool::PageTablePool>,
-        pte_format: PteFormat,
-        iova_base: u64,
-        iova_size: u64,
-    ) -> Self {
-        let mut domain = Self::new(
-            id,
-            numa_node,
-            supports_2mb,
-            supports_1gb,
-            max_addr_bits,
-            pt_levels,
-            domain_type,
-            page_table_pool,
-            pte_format,
-        );
-
-        // Override with custom IOVA range
-        domain.per_domain_iova =
-            crate::io::iommu::common::dma::iova_allocator::IovaAllocator::new(iova_base, iova_size)
-                .expect("domain construction requires a valid IOVA pool");
-
-        log::debug!(
-            "[IOMMU] Domain {} initialized with custom IOVA: base=0x{:x}, size=0x{:x}",
-            id,
-            iova_base,
-            iova_size
-        );
-
-        domain
-    }
-
-    /// Reserve a nonempty, page-aligned extent in this domain's address space.
-    ///
-    /// # Errors
-    /// InvalidAlignment leaves the allocator unchanged. OutOfIova means the
-    /// entire extent could not be reserved; no prefix is published.
-    #[inline]
-    pub fn allocate_iova(&self, size: u64) -> Result<u64, crate::io::iommu::types::IommuError> {
-        let page_size = crate::mm::types::PAGE_SIZE_4K as u64;
-        if size == 0 || !size.is_multiple_of(page_size) {
-            return Err(crate::io::iommu::types::IommuError::InvalidAlignment);
-        }
-        self.per_domain_iova
-            .allocate_contiguous(size, page_size)
-            .ok_or(crate::io::iommu::types::IommuError::OutOfIova)
-    }
-
-    /// Free IOVA back to this domain's allocator.
-    ///
-    /// Uses IovaAllocator with O(1) per-CPU magazine deallocation.
-    #[inline]
-    pub fn free_iova(
-        &self,
-        iova: u64,
-        size: u64,
-    ) -> Result<(), crate::io::iommu::types::IommuError> {
-        // IovaAllocator is internally lock-free for common paths
-        self.per_domain_iova.free(iova, size)
-    }
-
-    /// Check if this domain has a per-domain IOVA allocator.
-    /// Always returns true now that per-domain IOVA is mandatory.
-    #[inline]
-    pub fn has_per_domain_iova(&self) -> bool {
-        true
     }
 
     // ========================================================================
@@ -334,58 +204,6 @@ mod tests {
     }
 }
 
-// ============================================================================
-// Phase 7: IommuHardwareContext implementation for IommuDomain
-// ============================================================================
-
-impl crate::io::iommu::common::interface::IommuHardwareContext for IommuDomain {
-    fn allocate_iova_aligned(&self, size: u64, alignment: u64) -> Result<u64, IommuError> {
-        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-
-        // Map alignment to granularity
-        let granularity = if alignment >= 1024 * 1024 * 1024 {
-            PageGranularity::Page1G
-        } else if alignment >= 2 * 1024 * 1024 {
-            PageGranularity::Page2M
-        } else {
-            PageGranularity::Page4K
-        };
-
-        self.per_domain_iova
-            .allocate(size, granularity)
-            .ok_or(IommuError::OutOfIova)
-    }
-
-    fn allocate_iova_masked(
-        &self,
-        size: u64,
-        _alignment: u64,
-        mask: u64,
-    ) -> Result<u64, IommuError> {
-        use crate::io::iommu::common::dma::iova_allocator::PageGranularity;
-
-        self.per_domain_iova
-            .allocate_with_limit(size, PageGranularity::Page4K, mask)
-            .ok_or(IommuError::OutOfIova)
-    }
-
-    fn free_iova(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        // SECURITY: For domain-local IOVA free, we MUST NOT use immediate free
-        // if this path can be called from outside flush().
-        // However, IommuDomain mostly uses its internal QuarantineQueue for unmaps.
-        // If this is called, we default to the allocator's internal quarantine
-        // to be safe against IOTLB Use-After-Free.
-        self.per_domain_iova.free(iova, size)
-    }
-
-    fn free_iova_immediate(&self, iova: u64, size: u64) -> Result<(), IommuError> {
-        // Since caller guarantees IOTLB consistency (flush confirmed),
-        // we can safely bypass the redundant allocator quarantine.
-        // IovaAllocator::free_immediate handles the splitting of ranges.
-        self.per_domain_iova.free_immediate(iova, size)
-    }
-}
-
 impl IommuDomain {
     /// Attach a security notifier for fatal domain errors (best-effort, one-time).
     pub(crate) fn set_security_notifier(&self, notifier: Arc<dyn SecurityNotifier>) -> bool {
@@ -403,23 +221,7 @@ impl IommuDomain {
         }
     }
 
-    // ========================================================================
-    // Phase 5: Quarantine Queue Support
-    // ========================================================================
-
-    /// Get the quarantine queue for zero-allocation IOTLB invalidation
-    pub fn quarantine_queue(&self) -> Arc<QuarantineQueue> {
-        self.quarantine.clone()
-    }
-
-    /// Clear page table mapping only (without freeing IOVA)
-    ///
-    /// Used by `try_unmap_lazy()` to clear PTEs before IOTLB invalidation.
-    /// IOVA will be freed later when the invalidation batch completes.
-    ///
-    /// # Safety
-    /// The caller must ensure the IOVA range will be freed after IOTLB invalidation.
-    /// Verify domain is not poisoned, look up the mapping, and lock shards.
+    /// The returned guards protect ledger removal through the PTE commit.
     pub(super) fn verify_and_lock_for_clear(
         &self,
         iova: u64,
@@ -464,101 +266,6 @@ impl IommuDomain {
         self.dma_registry.unregister_locked(&mut registry, iova);
 
         self.mapped_size.fetch_sub(size, Ordering::Relaxed);
-
-        Ok(())
-    }
-
-    /// Flush pending IOTLB invalidations and reap completed quarantine entries
-    ///
-    /// This method:
-    /// 1. Drains pending invalidation requests from the quarantine queue
-    /// 2. Processes them through the IOMMU invalidator
-    /// 3. Increments the completed batch ID
-    /// 4. Reaps completed entries (drops abandoned, wakes waiters)
-    /// 5. Frees IOVAs for completed entries
-    ///
-    /// Call this periodically or when the quarantine queue is full.
-    ///
-    /// # Context
-    ///
-    /// Must be called from thread/executor context. This path allocates and
-    /// drops RRef raw parts via the quarantine reap.
-    pub fn flush<I: IommuInvalidator>(
-        &self,
-        invalidator: &I,
-        _context: &dyn IommuHardwareContext,
-    ) -> Result<(), IommuError> {
-        let mut fctx = self
-            .flush_context
-            .lock()
-            .map_err(|_| IommuError::Poisoned)?;
-
-        fctx.clear();
-
-        // 1. Drain pending data page invalidations from quarantine
-        let drained_batch = match self
-            .quarantine
-            .drain_pending_invalidations(&mut fctx.requests)
-        {
-            crate::io::iommu::runtime::quarantine::DrainResult::Drained { batch } => Some(batch),
-            crate::io::iommu::runtime::quarantine::DrainResult::NoWork { .. } => None,
-            crate::io::iommu::runtime::quarantine::DrainResult::NotReady { batch: _ } => {
-                // Round 9 Safety: Reserved slots pending. Skip for now.
-                return Ok(());
-            }
-            crate::io::iommu::runtime::quarantine::DrainResult::Poisoned { .. } => {
-                return Err(IommuError::Poisoned);
-            }
-        };
-
-        // Capture under paging exclusion before issuing invalidation. Failure
-        // keeps this cohort retained; newer detached tables remain queued.
-        let has_pending_pts = {
-            let _paging = self.paging_lock.lock();
-            self.pending_pt_release
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?
-                .capture()
-        };
-
-        // Skip if absolutely nothing to do
-        if drained_batch.is_none() && !has_pending_pts {
-            return Ok(());
-        }
-
-        // 3. Security: If we are releasing page tables, we MUST perform a domain-selective
-        // IOTLB invalidation to clear any cached paging-structure entries (Level 2/3/4 caches).
-        // Page-selective invalidation is NOT sufficient for clearing intermediate caches.
-        if has_pending_pts {
-            fctx.requests
-                .push(InvalidateRequest::domain(self.id).with_ats());
-        }
-
-        // 4. Process all invalidation requests in a single batch (hardware-optimized)
-        if !fctx.requests.is_empty() {
-            if let Err(err) = invalidator.process_invalidations(fctx.requests.as_slice()) {
-                return Err(err);
-            }
-        }
-
-        // 5. Reap and process completed data entries for this batch
-        if let Some(batch) = drained_batch {
-            self.quarantine.reap_completed(batch, &mut fctx, self);
-        }
-
-        // SAFETY: successful process_invalidations acknowledged this domain's
-        // paging structures and ATS after capture. New retirements stay queued.
-        let completed = unsafe {
-            self.pending_pt_release
-                .lock()
-                .map_err(|_| IommuError::Poisoned)?
-                .take_completed()
-        };
-        for table in completed {
-            // SAFETY: the captured cohort is covered by that same completion.
-            self.page_table_pool
-                .release(unsafe { table.complete_after_invalidation() });
-        }
 
         Ok(())
     }
@@ -689,16 +396,6 @@ impl IommuDomain {
             if Self::mapping_overlaps(&guard.mappings, iova, size) {
                 return Err(IommuError::AlreadyMapped);
             }
-        }
-
-        // 2. SECURITY: Check quarantine queue to prevent IOVA reuse before IOTLB invalidation
-        if self.quarantine.is_range_quarantined(iova, size) {
-            log::warn!(
-                "[IOMMU][SECURITY] Attempted to map IOVA range {:#x}-{:#x} that is still in quarantine",
-                iova,
-                iova + size
-            );
-            return Err(IommuError::AlreadyMapped);
         }
 
         Ok(())
@@ -937,23 +634,14 @@ impl IommuDomain {
     /// Context, domain paging-structure and ATS invalidations completed after
     /// removal. Dropping a domain without this proof retains its physical RAM.
     pub(in crate::io::iommu) unsafe fn retire_after_invalidation(mut self) {
-        let mut pending = self
+        let detached = self
             .pending_pt_release
             .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        // LOOP_PROOF: mode=event; reason=Unique finalization consumes the two finite cohorts and exits when no retired table remains.;
-        loop {
-            if !pending.capture() {
-                break;
-            }
-            // SAFETY: caller completed all translations before this finalization.
-            for table in unsafe { pending.take_completed() } {
-                // SAFETY: each retained owner belongs to this retired domain.
-                self.page_table_pool
-                    .release(unsafe { table.complete_after_invalidation() });
-            }
-        }
-        drop(pending);
+            .unwrap_or_else(|error| error.into_inner())
+            .take_pending();
+        // SAFETY: unique finalization follows completion for every retained
+        // table in this domain. The metadata lock is released before pool work.
+        unsafe { detached.release(&self.page_table_pool) };
         // SAFETY: all hardware users and borrowers are retired by caller.
         unsafe { self.deallocate_page_tables_iterative() };
         self.page_table = core::ptr::null_mut();

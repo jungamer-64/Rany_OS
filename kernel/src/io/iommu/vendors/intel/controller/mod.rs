@@ -34,7 +34,6 @@ use self::utils::IommuUtils;
 use crate::io::iommu::common::dma::iova_allocator::IovaAllocator;
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::HardwareTable;
 use crate::io::iommu::runtime::command::queue::CommandQueue;
 use crate::io::iommu::runtime::fault_log::FaultLog;
@@ -53,8 +52,6 @@ use crate::sync::{IrqMutex, PoisonLock, WakerQueue};
 // ============================================================================
 
 /// Hardware Tables (Root Table and Context Tables)
-mod hw_context_impl;
-pub use hw_context_impl::*;
 mod ats;
 use ats::AtsDevice;
 pub(crate) use ats::AtsEnableError;

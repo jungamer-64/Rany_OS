@@ -4,7 +4,6 @@
 
 use crate::io::iommu::common::dma::mapping_slab::MappingSlab;
 use crate::io::iommu::common::dma::page_table_pool::{dec_ref, get_ref_count, inc_ref};
-use crate::io::iommu::common::interface::IommuHardwareContext;
 use crate::io::iommu::common::tables::{
     PT_ENTRIES, PageTableScope, SlPte, phys_to_virt_usize, virt_ptr_to_phys,
 };
@@ -712,22 +711,6 @@ pub struct IommuDomain {
     security_notifier: InitOnce<Arc<dyn SecurityNotifier>>,
     /// Fatal error flag; once set, the domain rejects new map/unmap operations.
     poisoned: AtomicBool,
-    /// Per-Domain IOVA Allocator (Phase 7: Scalability Improvement)
-    ///
-    /// **Now required for all domains.** Each domain uses its own IOVA space
-    /// to eliminate lock contention between devices in different domains.
-    ///
-    /// Uses `IovaAllocator` - a bitmap-based allocator with per-CPU magazine
-    /// caching for O(1) allocation/free of common 4KB/2MB pages.
-    ///
-    /// # Benefits
-    ///
-    /// - Zero lock contention between domains (per-CPU magazines)
-    /// - O(1) allocation/free for 4KB and 2MB pages
-    /// - Full 48-bit IOVA space per domain for ASLR
-    /// - Per-domain resource accounting
-    /// - 32-bit devices don't compete for low addresses
-    per_domain_iova: crate::io::iommu::common::dma::iova_allocator::IovaAllocator,
     /// DMA Resource Registry (Phase 8: Leak Prevention)
     ///
     /// Tracks all active DmaHandles belonging to this domain.
@@ -741,8 +724,8 @@ pub struct IommuDomain {
     dma_registry: DmaResourceRegistry,
     /// Quarantined page tables waiting for IOTLB invalidation before reuse.
     ///
-    /// A flush captures one cohort. Only its completed invalidation may return
-    /// those tables to the pool; later unlinks remain queued for another flush.
+    /// Taking a cohort transfers its return rights to the invalidation owner;
+    /// later unlinks remain pending independently of that completion.
     pending_pt_release: PoisonLock<crate::io::iommu::common::dma::page_table_pool::TableRetirement>,
     /// Global lock for page table hierarchy modifications within this domain.
     ///

@@ -198,30 +198,27 @@ impl QuarantinedPt {
     /// # Safety
     /// A domain paging-structure invalidation, including ATS device translation
     /// caches, began after detachment and has completed. No parent/DMA user remains.
-    pub(in crate::io::iommu) unsafe fn complete_after_invalidation(self) -> PooledPt {
+    pub(in crate::io::iommu::common) unsafe fn complete_after_invalidation(self) -> PooledPt {
         core::mem::ManuallyDrop::into_inner(self.0)
     }
 }
 
-/// Separate queues preserve the invalidation boundary. Failure keeps the
-/// captured cohort intact for retry; later detachments stay queued for a later
-/// invalidation and cannot be reclaimed by an earlier completion.
+/// Detached tables stay domain-owned until a completion owner takes a cohort.
+/// Later detachments remain pending independently of that owner's invalidation.
 #[derive(Debug, Default)]
 pub(in crate::io::iommu) struct TableRetirement {
     queued: Vec<QuarantinedPt>,
-    captured: Vec<QuarantinedPt>,
 }
 impl TableRetirement {
     /// Transfer every detached table into one completion owner's cohort. The
     /// paging lock excludes detachment while ownership leaves this registry.
     pub(in crate::io::iommu) fn take_pending(&mut self) -> DetachedTables {
         DetachedTables {
-            queued: core::mem::take(&mut self.queued),
-            captured: core::mem::take(&mut self.captured),
+            tables: core::mem::take(&mut self.queued),
         }
     }
     pub(in crate::io::iommu) fn has_pending(&self) -> bool {
-        !self.queued.is_empty() || !self.captured.is_empty()
+        !self.queued.is_empty()
     }
     pub(in crate::io::iommu) fn reserve(&mut self, count: usize) -> Result<(), IommuError> {
         self.queued
@@ -235,38 +232,23 @@ impl TableRetirement {
         );
         self.queued.push(table);
     }
-    /// Caller holds the paging lock so no scope's rollback admission is live.
-    pub(in crate::io::iommu) fn capture(&mut self) -> bool {
-        if self.captured.is_empty() {
-            core::mem::swap(&mut self.queued, &mut self.captured);
-        }
-        !self.captured.is_empty()
-    }
-    /// # Safety
-    /// The invalidation begun after capture has completed for the owning domain,
-    /// including paging-structure caches and ATS device TLBs. No cancellation,
-    /// timeout, submission acknowledgement, or older flush is completion proof.
-    pub(in crate::io::iommu) unsafe fn take_completed(&mut self) -> Vec<QuarantinedPt> {
-        core::mem::take(&mut self.captured)
-    }
 }
 
 /// Tables detached before one range owner's hardware synchronization begins.
 /// A concurrent flush cannot release these owners, or add later detachments.
 #[derive(Debug)]
 pub(in crate::io::iommu) struct DetachedTables {
-    queued: Vec<QuarantinedPt>,
-    captured: Vec<QuarantinedPt>,
+    tables: Vec<QuarantinedPt>,
 }
 impl DetachedTables {
     pub(in crate::io::iommu) fn is_empty(&self) -> bool {
-        self.queued.is_empty() && self.captured.is_empty()
+        self.tables.is_empty()
     }
     /// # Safety
     /// The owning domain's paging-structure and ATS invalidation began after
     /// this cohort was detached and has completed, including DMA read/write drain.
     pub(in crate::io::iommu) unsafe fn release(self, pool: &PageTablePool) {
-        for table in self.queued.into_iter().chain(self.captured) {
+        for table in self.tables {
             pool.release(unsafe { table.complete_after_invalidation() });
         }
     }

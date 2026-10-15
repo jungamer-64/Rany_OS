@@ -27,7 +27,7 @@ pub(super) fn cached_table_is_zeroed() {
     assert_eq!(pool.stats().misses, 1);
 }
 
-pub(super) fn captured_retirement_excludes_later_unlinks() {
+pub(super) fn retirement_cohort_excludes_later_unlinks() {
     let pool = PageTablePool::new(1, 4);
     let first = pool.acquire(Some(0)).expect("first retirement table");
     let first_physical = first.phys();
@@ -41,35 +41,29 @@ pub(super) fn captured_retirement_excludes_later_unlinks() {
     pending.push(unsafe { take_unlinked_table(first_physical) }.expect("first owner transfer"));
     // SAFETY: the same detached address is only observed; it cannot mint an owner.
     assert!(unsafe { take_unlinked_table(first_physical) }.is_none());
-    assert!(pending.capture());
+    let first_cohort = pending.take_pending();
+    assert!(!first_cohort.is_empty());
+    assert!(!pending.has_pending());
     pending.reserve(1).expect("later retirement admission");
     // SAFETY: the second table was also never linked or hardware-visible.
     pending.push(unsafe { take_unlinked_table(second_physical) }.expect("later owner transfer"));
     assert_eq!(pool.cached_count(0), 0);
-    assert!(pending.capture());
-    // SAFETY: these unpublished roots have no translation-cache users. This
-    // completion covers only the original capture, including on retry.
-    let completed = unsafe { pending.take_completed() };
-    assert_eq!(completed.len(), 1);
-    for table in completed {
-        // SAFETY: the fixture established the original cohort's completion above.
-        let table = unsafe { table.complete_after_invalidation() };
-        assert_eq!(table.phys(), first_physical);
-        pool.release(table);
-    }
-    assert_eq!(pool.cached_count(0), 1);
+    // A failed invalidation retains first_cohort with its completion owner.
+    // A later retry can complete it without acquiring the later pending table.
     assert!(pending.has_pending());
-    assert!(pending.capture());
+    // SAFETY: these unpublished roots have no translation-cache users. This
+    // completion consumes only the original detached cohort.
+    unsafe { first_cohort.release(&pool) };
+    assert_eq!(pool.cached_count(0), 1);
+    let first_returned = pool.acquire(Some(0)).expect("first cohort's returned RAM");
+    assert_eq!(first_returned.phys(), first_physical);
+    assert!(pending.has_pending());
+    let later_cohort = pending.take_pending();
+    assert!(!later_cohort.is_empty());
     // SAFETY: the later capture also has no hardware or CPU borrowers.
-    let completed = unsafe { pending.take_completed() };
-    assert_eq!(completed.len(), 1);
-    for table in completed {
-        // SAFETY: completion was established for this later cohort, separately.
-        let table = unsafe { table.complete_after_invalidation() };
-        assert_eq!(table.phys(), second_physical);
-        pool.release(table);
-    }
-    assert_eq!(pool.cached_count(0), 2);
+    unsafe { later_cohort.release(&pool) };
+    let later_returned = pool.acquire(Some(0)).expect("later cohort's returned RAM");
+    assert_eq!(later_returned.phys(), second_physical);
     assert!(!pending.has_pending());
 }
 
@@ -99,15 +93,11 @@ pub(super) fn attached_rollback_retains_ram_until_completion() {
     assert_ne!(unrelated.phys(), physical);
     let completed = {
         let mut pending = pending.lock().expect("local retirement owner");
-        assert!(pending.capture());
-        // SAFETY: rollback detached the exclusively retained stack parent.
-        // Neither the parent nor its data RAM was ever hardware-visible.
-        unsafe { pending.take_completed() }
+        pending.take_pending()
     };
-    for table in completed {
-        // SAFETY: the captured fixture has no translation-cache users.
-        pool.release(unsafe { table.complete_after_invalidation() });
-    }
+    // SAFETY: rollback detached the exclusively retained stack parent.
+    // Neither the parent nor its data RAM was ever hardware-visible.
+    unsafe { completed.release(&pool) };
     let reused = pool
         .acquire(Some(0))
         .expect("table after rollback completion");

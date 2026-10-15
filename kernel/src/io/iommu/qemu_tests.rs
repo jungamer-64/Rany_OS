@@ -7,7 +7,7 @@ mod page_table_pool;
 
 pub fn page_table_recycling_retains_ownership_smoke() -> bool {
     page_table_pool::cached_table_is_zeroed();
-    page_table_pool::captured_retirement_excludes_later_unlinks();
+    page_table_pool::retirement_cohort_excludes_later_unlinks();
     page_table_pool::attached_rollback_retains_ram_until_completion();
     true
 }

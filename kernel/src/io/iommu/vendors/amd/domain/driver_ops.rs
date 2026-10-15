@@ -270,7 +270,6 @@ impl AmdIommuDriver {
             }
         }
 
-        info.domain.flush(self, self)?;
         crate::io::iommu::common::domain::IommuInvalidator::invalidate(
             self,
             crate::io::iommu::common::domain::InvalidateRequest::domain(domain_id).with_ats(),
