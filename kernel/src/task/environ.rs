@@ -107,6 +107,12 @@ pub struct Environment {
     max_value_size: usize,
 }
 
+impl Default for Environment {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Environment {
     pub const DEFAULT_MAX_VARS: usize = 1024;
     pub const DEFAULT_MAX_VALUE_SIZE: usize = 32 * 1024; // 32KB
@@ -150,6 +156,12 @@ impl Environment {
     }
 
     /// 環境変数を設定
+    ///
+    /// # Errors
+    /// Returns `InvalidKey` for a malformed name, `ValueTooLarge` when the
+    /// value exceeds the byte limit, or `TooManyVariables` when a new key would
+    /// exceed capacity. Failure preserves existing values; replacing a key
+    /// does not require another slot.
     pub fn set(&self, key: &str, value: &str) -> Result<(), EnvError> {
         let key = EnvKey::new(key);
         if !key.is_valid() {
@@ -183,6 +195,9 @@ impl Environment {
     }
 
     /// 環境変数を削除
+    ///
+    /// # Errors
+    /// Returns `NotFound` without changing the environment if the key is absent.
     pub fn unset(&self, key: &str) -> Result<(), EnvError> {
         let key = EnvKey::new(key);
         let mut vars = self.vars.write().unwrap_or_else(|e| e.into_inner());
@@ -219,6 +234,10 @@ impl Environment {
     }
 
     /// 文字列から環境変数を解析して設定
+    ///
+    /// # Errors
+    /// Returns `InvalidKey` when no `=` separator is present, or propagates the
+    /// admission errors from [`Self::set`]. Failure preserves the environment.
     pub fn parse_and_set(&self, s: &str) -> Result<(), EnvError> {
         if let Some((key, value)) = s.split_once('=') {
             self.set(key, value)
@@ -270,22 +289,16 @@ impl Environment {
 
                 if braced {
                     chars.next(); // '{'
-                    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                    while let Some(&c) = chars.peek() {
+                    for c in chars.by_ref() {
                         if c == '}' {
-                            chars.next();
                             break;
                         }
-                        var_name.push(chars.next().unwrap());
+                        var_name.push(c);
                     }
                 } else {
                     // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-                    while let Some(&c) = chars.peek() {
-                        if c.is_ascii_alphanumeric() || c == '_' {
-                            var_name.push(chars.next().unwrap());
-                        } else {
-                            break;
-                        }
+                    while let Some(c) = chars.next_if(|c| c.is_ascii_alphanumeric() || *c == '_') {
+                        var_name.push(c);
                     }
                 }
 
@@ -335,6 +348,10 @@ pub fn get_pwd() -> Option<EnvValue> {
 }
 
 /// PWD を設定
+///
+/// # Errors
+/// Returns `ValueTooLarge` if `path` exceeds the value limit, or
+/// `TooManyVariables` if `PWD` is absent and the kernel environment is full.
 pub fn set_pwd(path: &str) -> Result<(), EnvError> {
     KERNEL_ENV.set("PWD", path)
 }
@@ -347,6 +364,26 @@ pub fn get_term() -> Option<EnvValue> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn bounded_updates_preserve_values_when_admission_fails() {
+        let env = Environment::with_limits(1, 3);
+        assert_eq!(env.set("KEY", "abc"), Ok(()));
+        assert_eq!(env.set("KEY", "xy"), Ok(()));
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.set("OTHER", "v"), Err(EnvError::TooManyVariables));
+        assert_eq!(env.set("KEY", "long"), Err(EnvError::ValueTooLarge));
+        assert_eq!(env.set("bad-key", "v"), Err(EnvError::InvalidKey));
+        assert_eq!(env.parse_and_set("KEY"), Err(EnvError::InvalidKey));
+        assert_eq!(env.get("KEY"), Some(EnvValue::new("xy")));
+        assert_eq!(env.len(), 1);
+        assert_eq!(env.unset("OTHER"), Err(EnvError::NotFound));
+        assert_eq!(env.parse_and_set("KEY="), Ok(()));
+        assert_eq!(env.get("KEY"), Some(EnvValue::new("")));
+        assert_eq!(env.unset("KEY"), Ok(()));
+        assert!(env.is_empty());
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
