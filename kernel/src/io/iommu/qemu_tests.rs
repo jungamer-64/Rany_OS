@@ -6,8 +6,10 @@ use crate::io::iommu::vendors::amd::tables::AmdPte;
 use crate::mm::phys::frame_allocator::alloc_contiguous_frames_aligned;
 use crate::mm::types::PAGE_SIZE_4K;
 mod fault;
+mod mapped_range;
 mod page_table_pool;
 pub(crate) use fault::scalable_fault_domain_resolution;
+pub(crate) use mapped_range::masked_mapping_retirement;
 
 pub fn page_table_recycling_retains_ownership_smoke() -> bool {
     page_table_pool::cached_table_is_zeroed();

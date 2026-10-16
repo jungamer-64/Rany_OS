@@ -10,7 +10,6 @@ use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::tables::{HardwareTable, SlPte};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
-use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
@@ -20,10 +19,8 @@ use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
-use crate::io::iommu::vendors::intel::registry::{IommuRegistry, init_registry};
 use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTableEntry};
 use alloc::sync::Arc;
-use alloc::vec::Vec;
 
 #[cfg(feature = "std")]
 #[cfg(feature = "qemu-test-export")]
@@ -49,13 +46,6 @@ fn controller_with_registers(mut words: [u64; 512]) -> IommuController {
 
 fn controller() -> IommuController {
     controller_with_registers([0; 512])
-}
-
-fn test_iommu_registry(controllers: Vec<Arc<IommuController>>) -> IommuRegistry {
-    IommuRegistry {
-        controllers,
-        reserved_regions: Vec::new(),
-    }
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
@@ -396,151 +386,6 @@ fn test_map_for_device_async_and_unmap() {
     backing.release();
 }
 
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_map_for_device_respects_dma_mask() {
-    use alloc::sync::Arc as AllocArc;
-
-    let controller = if let Some(registry) = get_iommu_registry() {
-        registry
-            .controllers
-            .get(0)
-            .cloned()
-            .expect("no IOMMU controller in registry")
-    } else {
-        let ctrl = controller();
-        let arc_ctrl = AllocArc::new(ctrl);
-        let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
-        init_registry(registry);
-        arc_ctrl
-    };
-
-    if get_iommu_driver().is_none() {
-        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
-    }
-
-    let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
-    let domain_id = controller
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create domain");
-
-    let device = DeviceId::new(0, 0, 2, 0);
-    match controller.device_domains.lock() {
-        Ok(mut dmap) => {
-            dmap.insert(device, domain_id);
-        }
-        Err(_) => {
-            panic!("device_domains poisoned");
-        }
-    }
-
-    struct MaskGuard(DeviceId);
-    impl Drop for MaskGuard {
-        fn drop(&mut self) {
-            crate::io::iommu::api::clear_device_dma_mask(self.0);
-        }
-    }
-
-    crate::io::iommu::api::register_device_dma_mask(device, 0xFFFF_FFFF);
-    let _guard = MaskGuard(device);
-
-    let phys = x86_64::PhysAddr::new(0x1_0000_0000);
-    let mapped = match unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) } {
-        Ok(v) => v,
-        Err(crate::io::iommu::common::dma::mapping_outcome::DeviceMapFailure::Unpublished(
-            IommuError::NotInitialized,
-        )) => {
-            log::warn!(
-                "[IOMMU][TEST] test_map_for_device_respects_dma_mask: skipped (driver not initialized)"
-            );
-            return;
-        }
-        Err(e) => panic!("map for device with mask: {:?}", e),
-    };
-    let iova = mapped.iova();
-    assert!(iova + 0x1000 - 1 <= 0xFFFF_FFFF);
-    mapped.unmap().expect("unmap");
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_map_unmap_for_device_does_not_leak_iova() {
-    use alloc::sync::Arc as AllocArc;
-
-    let controller = if let Some(registry) = get_iommu_registry() {
-        registry
-            .controllers
-            .get(0)
-            .cloned()
-            .expect("no IOMMU controller in registry")
-    } else {
-        let ctrl = controller();
-        let arc_ctrl = AllocArc::new(ctrl);
-        let registry = test_iommu_registry(alloc::vec![arc_ctrl.clone()]);
-        init_registry(registry);
-        arc_ctrl
-    };
-
-    if get_iommu_driver().is_none() {
-        crate::io::iommu::vendors::intel::IntelIommuDriver::register_driver();
-    }
-
-    let _ = controller.init_iova(0x1000, 0x1_0000_0000 - 0x1000);
-    let domain_id = controller
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create domain");
-
-    let device = DeviceId::new(0, 0, 2, 1);
-    match controller.device_domains.lock() {
-        Ok(mut dmap) => {
-            dmap.insert(device, domain_id);
-        }
-        Err(_) => {
-            panic!("device_domains poisoned");
-        }
-    }
-
-    struct MaskGuard(DeviceId);
-    impl Drop for MaskGuard {
-        fn drop(&mut self) {
-            crate::io::iommu::api::clear_device_dma_mask(self.0);
-        }
-    }
-
-    // Keep the usable IOVA window strictly 32-bit bounded, but large enough to
-    // avoid false failures from delayed quarantine reclamation.
-    let mask_limit = 0x001F_FFFF;
-    crate::io::iommu::api::register_device_dma_mask(device, mask_limit);
-    let _guard = MaskGuard(device);
-
-    for i in 0..64u64 {
-        let phys = x86_64::PhysAddr::new(0x2000_0000 + i * 0x1000);
-        let mapped = match unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) } {
-            Ok(v) => v,
-            Err(crate::io::iommu::common::dma::mapping_outcome::DeviceMapFailure::Unpublished(
-                IommuError::OutOfMemory,
-            ))
-            | Err(crate::io::iommu::common::dma::mapping_outcome::DeviceMapFailure::Unpublished(
-                IommuError::OutOfIova,
-            )) => {
-                let _ = controller.invalidate_iotlb_global_sync();
-                match unsafe { crate::io::iommu::api::map_for_device(&device, phys, 0x1000) } {
-                    Ok(v) => v,
-                    Err(e) => panic!("map iteration {} failed after global flush: {:?}", i, e),
-                }
-            }
-            Err(e) => panic!("map iteration {} failed: {:?}", i, e),
-        };
-        let iova = mapped.iova();
-        assert!(
-            iova + 0x1000 - 1 <= mask_limit,
-            "allocated IOVA 0x{:x} exceeded mask 0x{:x}",
-            iova,
-            mask_limit
-        );
-        mapped.unmap().expect("unmap");
-    }
-}
 #[cfg(feature = "qemu-test-export")]
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]

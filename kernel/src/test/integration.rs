@@ -535,6 +535,20 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
     #[cfg(feature = "qemu-test-export")]
+    suite.add_result(
+        run_async_case("iommu_masked_mapping_retirement", async {
+            if crate::io::iommu::qemu_tests::masked_mapping_retirement().await {
+                Ok(String::from(
+                    "Masked IOVA reuse follows real translation completion",
+                ))
+            } else {
+                Err(String::from("Masked mapping retirement failed"))
+            }
+        })
+        .await,
+    );
+
+    #[cfg(feature = "qemu-test-export")]
     suite.add_result(run_test("iommu_scalable_fault_domain", || {
         if crate::io::iommu::qemu_tests::scalable_fault_domain_resolution() {
             Ok(String::from(
