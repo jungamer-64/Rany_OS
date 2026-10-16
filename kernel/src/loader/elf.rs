@@ -38,9 +38,10 @@
 //!
 use super::LoadError;
 
-mod loader_trait;
-pub use loader_trait::*;
 mod elf_loader_impl;
+#[cfg(all(test, feature = "pkey_integration_test"))]
+#[path = "elf/pkey_tests.rs"]
+mod pkey_tests;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::mm::virt::higher_half::PageFlags;
 use alloc::string::ToString;

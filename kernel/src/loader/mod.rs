@@ -18,7 +18,7 @@ pub(crate) mod cell_runtime;
 pub(crate) mod code;
 pub(crate) use cell_lookup::*;
 pub use cell_runtime::CellRuntimeError;
-pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
+pub use elf::{CellInfo, ElfLoader};
 pub use live_update::{
     CompletedUpdateOutcome, LiveUpdateError, LiveUpdateManager, LiveUpdateState,
     PendingUpdateStatus, UpdateTransition, current_epoch, live_update_manager,

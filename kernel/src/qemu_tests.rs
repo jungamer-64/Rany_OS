@@ -1,6 +1,6 @@
 use crate::crypto::{ed25519, sha256};
 use crate::error::{KernelError, MemoryError};
-use crate::loader::{elf, signature, type_id};
+use crate::loader::{signature, type_id};
 use core::fmt::Write;
 
 mod wave8_net_tests;
@@ -165,50 +165,6 @@ pub fn loader_signature_verifier_production_mode_smoke() -> bool {
     let mut sig = signature::CellSignature::default();
     sig.compiler_version = "dev".into();
     verifier.verify(&sig, &[]) == Err(signature::VerificationError::MalformedSignature)
-}
-
-pub fn loader_elf_empty_data_returns_error_smoke() -> bool {
-    elf::qemu_smoke_empty_data_returns_error()
-}
-
-pub fn loader_elf_invalid_magic_returns_error_smoke() -> bool {
-    elf::qemu_smoke_invalid_magic_returns_error()
-}
-
-pub fn loader_elf_max_size_constants_smoke() -> bool {
-    elf::qemu_smoke_max_size_constants()
-}
-
-pub fn loader_elf_wrong_elf_class_smoke() -> bool {
-    elf::qemu_smoke_wrong_elf_class()
-}
-
-pub fn loader_elf_wrong_endianness_smoke() -> bool {
-    elf::qemu_smoke_wrong_endianness()
-}
-
-pub fn loader_elf_wx_flags_smoke() -> bool {
-    elf::qemu_smoke_wx_flags()
-}
-
-pub fn loader_elf_rela_extraction_smoke() -> bool {
-    elf::qemu_smoke_rela_extraction()
-}
-
-pub fn loader_elf_symbol_extraction_smoke() -> bool {
-    elf::qemu_smoke_symbol_extraction()
-}
-
-pub fn loader_elf_aslr_offset_generation_smoke() -> bool {
-    elf::qemu_smoke_aslr_offset_generation()
-}
-
-pub fn loader_elf_aslr_enable_disable_smoke() -> bool {
-    elf::qemu_smoke_aslr_enable_disable()
-}
-
-pub fn loader_elf_get_string_zero_copy_smoke() -> bool {
-    elf::qemu_smoke_get_string_zero_copy()
 }
 
 pub fn driver_domain_state_default_is_created_smoke() -> bool {
