@@ -153,11 +153,11 @@ fn test_create_domain_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = controller();
     // Poison domains lock
+    let held = ctrl.domains.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.domains.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.domains.is_poisoned());
     assert_eq!(
         ctrl.create_domain(Some(0), IommuDomainType::Translated)
             .err(),
@@ -191,12 +191,10 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
     }
 
     // Poison the hardware lock so isolate will take the poisoned branch
+    let held = ctrl.hardware.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.hardware.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
-
     assert!(ctrl.hardware.is_poisoned());
 
     // Call isolate - it should attempt best-effort isolation and clear the Present bit
@@ -345,11 +343,11 @@ fn test_domain_map_poisoned_returns_none() {
         .expect("create_domain failed");
 
     // Poison the domains lock
+    let held = ctrl.domains.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.domains.lock() {
-        // dropping _g while panicking will mark the lock as poisoned
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.domains.is_poisoned());
 
     assert!(ctrl.domain(id).is_none());
 }
@@ -373,11 +371,11 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
     }
 
     // Poison device_domains lock
+    let held = ctrl.device_domains.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.device_domains.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.device_domains.is_poisoned());
 
     assert_eq!(
         ctrl.get_domain_for_device(device).err(),
@@ -395,11 +393,11 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
         .expect("create_domain failed");
 
     // Poison domains lock
+    let held = ctrl.domains.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.domains.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.domains.is_poisoned());
 
     assert_eq!(
         ctrl.set_domain_numa(id, Some(1)).err(),
@@ -457,11 +455,11 @@ fn test_init_iova_poisoned_proceeds_with_best_effort() {
     let ctrl = controller();
 
     // Poison the iova_allocator lock
+    let held = ctrl.iova_allocator.lock().expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.iova_allocator.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.iova_allocator.is_poisoned());
 
     // Should succeed and set the allocator via best-effort
     ctrl.init_iova(0x2000_0000, 0x10000)
@@ -484,11 +482,14 @@ fn test_enable_queued_invalidation_poisoned_returns_hw_error() {
     let ctrl = controller();
 
     // Poison invalidation_queue lock
+    let held = ctrl
+        .invalidation_queue
+        .lock()
+        .expect("unpoisoned fixture lock");
     set_panicking(true);
-    if let Ok(_g) = ctrl.invalidation_queue.lock() {
-        // drop to poison
-    }
+    drop(held);
     set_panicking(false);
+    assert!(ctrl.invalidation_queue.is_poisoned());
 
     let res = unsafe { ctrl.enable_queued_invalidation() };
     assert_eq!(res.err(), Some(IommuError::HardwareError));
