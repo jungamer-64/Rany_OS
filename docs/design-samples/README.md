@@ -20,7 +20,6 @@
 | ディレクトリ | 説明 | 主な参照先 |
 |-------------|------|------------|
 | `abi/` | ABI互換性検証関連 | Variant A/B/C |
-| `live_update/` | ライブアップデート機構 | Variant A/B/C |
 | `scheduler/` | スターベーション対策・スケジューラ | Variant A/B/C |
 | `security/` | ハードウェア支援分離・Spectre対策・署名検証 | Variant B/C |
 | `debug/` | デバッグ・プロファイリング | Variant A/B/C |
@@ -34,12 +33,6 @@
 - `hash_propagation.rs` - ハッシュ伝播アルゴリズム
 - `generic_hash.rs` - ジェネリクス型ハッシュ計算
 - `ffi_validation.rs` - FFI互換性検証
-
-### ライブアップデート (`live_update/`)
-
-- `epoch_management.rs` - Epoch-based Reclamation
-- `quiescent_state.rs` - Quiescent State Detection
-- `request_tracker.rs` - リクエスト追跡
 
 ### スケジューラ (`scheduler/`)
 

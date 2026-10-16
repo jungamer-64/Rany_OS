@@ -7,7 +7,6 @@
 > | カテゴリ | ディレクトリ | 主な内容 |
 > |---------|-------------|----------|
 > | ABI検証 | [`abi/`](../design-samples/abi/) | セルメタデータ、ハッシュ伝播、FFI検証 |
-> | ライブアップデート | [`live_update/`](../design-samples/live_update/) | Epoch管理、Quiescent State |
 > | スケジューラ | [`scheduler/`](../design-samples/scheduler/) | 燃料ベース実行、タイムスライス |
 > | セキュリティ | [`security/`](../design-samples/security/) | MPK/PKU、ドメイン遷移、署名検証 |
 > | デバッグ | [`debug/`](../design-samples/debug/) | バックトレース、プロファイラ、GDBスタブ |
@@ -181,12 +180,6 @@ RustはABI（Application Binary Interface）が安定していないため、動
 #### **3.5.3 クォーラムと一貫性：Epoch-based Reclamation**
 
 ライブアップデートにおいて「切り替えをアトミックに行う」ことの実現は、複数のCPUコアが同時に旧セルを参照している可能性があるため、自明ではありません。ExoRustでは、RCU（Read-Copy-Update）に類似した**Epoch-based Reclamation**を採用します。
-
-> 実装例:
->
-> * [epoch_management.rs](../design-samples/live_update/epoch_management.rs) - エポック管理
-> * [quiescent_state.rs](../design-samples/live_update/quiescent_state.rs) - Quiescent State Detection
-> * [request_tracker.rs](../design-samples/live_update/request_tracker.rs) - リクエスト追跡
 
 **1. エポック管理:** `GLOBAL_EPOCH` と `PerCoreEpoch` によるグローバル/ローカルエポック管理
 

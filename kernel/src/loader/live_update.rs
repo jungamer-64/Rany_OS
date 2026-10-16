@@ -64,63 +64,6 @@ pub fn epoch_stats() -> EpochStats {
 }
 
 // ============================================================================
-// Request Tracker
-// ============================================================================
-
-/// ドメインへのアクティブリクエスト数を追跡
-pub struct RequestTracker {
-    /// アクティブなリクエスト数
-    active_count: AtomicU64,
-    /// ドレイン（排出）シグナル
-    drain_signal: AtomicBool,
-}
-
-impl RequestTracker {
-    /// 新しいRequestTrackerを作成
-    pub const fn new() -> Self {
-        Self {
-            active_count: AtomicU64::new(0),
-            drain_signal: AtomicBool::new(false),
-        }
-    }
-
-    /// リクエストの開始を記録
-    ///
-    /// ドレイン中は false を返す（新規リクエスト拒否）。
-    pub fn begin_request(&self) -> bool {
-        if self.drain_signal.load(Ordering::Acquire) {
-            return false; // ドレイン中は新規リクエストを拒否
-        }
-        self.active_count.fetch_add(1, Ordering::Acquire);
-        true
-    }
-
-    /// リクエストの終了を記録
-    pub fn end_request(&self) {
-        self.active_count.fetch_sub(1, Ordering::Release);
-    }
-
-    /// アクティブリクエスト数を取得
-    pub fn active_count(&self) -> u64 {
-        self.active_count.load(Ordering::Acquire)
-    }
-
-    /// ドレインを開始し、全リクエストの完了を待機
-    pub fn wait_for_drain(&self) {
-        self.drain_signal.store(true, Ordering::Release);
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while self.active_count.load(Ordering::Acquire) > 0 {
-            core::hint::spin_loop();
-        }
-    }
-
-    /// ドレインをリセット
-    pub fn reset_drain(&self) {
-        self.drain_signal.store(false, Ordering::Release);
-    }
-}
-
-// ============================================================================
 // Live Update Protocol
 // ============================================================================
 
