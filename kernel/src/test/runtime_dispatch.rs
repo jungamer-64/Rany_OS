@@ -74,6 +74,7 @@ enum RuntimeTestBody {
     SchedulerQuotaRecovery,
     SchedulerCapacityRetirement,
     SchedulerNumaStealing,
+    HeapConcurrentReturns,
 }
 
 fn kernel_service_ownership_suite(_case_filter: Option<&str>) -> RuntimeTestResult {
@@ -337,6 +338,12 @@ static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
         id: "mm.heap_return_ownership",
         body: RuntimeTestBody::Sync(heap_return_ownership),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.concurrent_heap_returns",
+        body: RuntimeTestBody::HeapConcurrentReturns,
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Memory,
     },
@@ -606,6 +613,15 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
             }
             RuntimeTestBody::SchedulerNumaStealing => {
                 scheduler_runtime::numa_ready_stealing().await
+            }
+            RuntimeTestBody::HeapConcurrentReturns => {
+                #[cfg(feature = "qemu-test-export")]
+                {
+                    crate::heap::qemu_tests::concurrent_returns_smoke().await;
+                    RuntimeTestResult::pass()
+                }
+                #[cfg(not(feature = "qemu-test-export"))]
+                RuntimeTestResult::blocked("concurrent heap returns require boot RAM")
             }
         };
         log_case_result(case.id, result);

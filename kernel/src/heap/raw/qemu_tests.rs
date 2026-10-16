@@ -1,5 +1,8 @@
 use super::*;
 
+mod concurrent;
+pub(crate) use concurrent::concurrent_returns_smoke;
+
 pub(crate) fn return_ownership_smoke() {
     slab_pressure_reclaims_delayed_empty_pages_and_preserves_live_payload();
     buddy_return_snapshot_preserves_layout_and_cannot_retire_a_live_block();
