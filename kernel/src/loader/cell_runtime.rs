@@ -40,10 +40,9 @@ impl core::fmt::Display for CellRuntimeError {
 #[derive(Debug)]
 pub(crate) enum CellRuntime {
     Uninitialized,
-    Initializing {
-        owner: crate::domain::DomainId,
-        fini: Option<Fini>,
-    },
+    /// The invoking stack retains callback authority and a code-generation
+    /// lease. Registry lifecycle operations remain Busy until it completes.
+    Initializing,
     Active {
         owner: crate::domain::DomainId,
         fini: Option<Fini>,
