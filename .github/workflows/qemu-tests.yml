@@ -62,6 +62,12 @@ jobs:
     if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 60
+    env:
+      RUST_TEST_THREADS: 1
+      QEMU_TEST_ACCEL: tcg
+      # Capacity admission exercises all guarded task stacks plus boot and driver resources.
+      QEMU_TEST_MEMORY_MB: 2048
+      QEMU_TEST_TIMEOUT_SECS: 240
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -100,13 +106,20 @@ jobs:
 
       - name: Run full-boot PR-required tier
         env:
-          RUST_TEST_THREADS: 1
-          QEMU_TEST_ACCEL: tcg
           QEMU_TEST_CPU: qemu64,+rdtscp,+rdrand
-          # Capacity admission exercises all guarded task stacks plus boot and driver resources.
-          QEMU_TEST_MEMORY_MB: 2048
           QEMU_TEST_SMP: 1
-          QEMU_TEST_TIMEOUT_SECS: 240
+        run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
+
+      - name: Preserve FXSAVE scheduler logs
+        run: |
+          mkdir -p target/qemu-logs/scheduler-fxsave
+          cp target/qemu-logs/fullboot-scheduler__smp1.log target/qemu-logs/scheduler-fxsave/
+          cp target/qemu-logs/fullboot-scheduler__smp4.log target/qemu-logs/scheduler-fxsave/
+
+      - name: Run scheduler with XSAVE and AVX
+        env:
+          QEMU_TEST_CPU: max,+rdtscp,+rdrand
+          QEMU_TEST_PROFILE_ONLY: scheduler
         run: cargo test -p qemu-tests fullboot_pr_required -- --exact --nocapture
 
       - name: Upload full-boot logs (PR required)
