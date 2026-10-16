@@ -2,6 +2,9 @@
 // kernel/src/io/iommu/vendors/intel/qi.rs
 // ============================================================================
 
+#[cfg(feature = "qemu-test-export")]
+pub(crate) mod qemu_tests;
+
 /// Mandatory for x2APIC interrupt remapping
 #[repr(C, align(16))]
 #[derive(Clone, Copy, Debug, Default)]
@@ -305,11 +308,6 @@ impl InvalidationQueue {
         self.queue_phys
     }
 
-    #[cfg(test)]
-    pub(crate) fn queue_virtual_address(&self) -> usize {
-        self.queue_virt
-    }
-
     /// Get the status virtual address (for memory polling)
     pub(crate) fn status_virtual_address(&self) -> usize {
         self.status_virt
@@ -384,16 +382,6 @@ impl InvalidationQueue {
         self.tail = (self.tail + 1) % self.size;
     }
 
-    /// Submit a wait descriptor and return the status address and expected sequence.
-    #[cfg(test)]
-    pub fn submit_wait(&mut self) -> (usize, u32) {
-        let seq = self.next_wait_seq;
-        self.next_wait_seq = self.next_wait_seq.wrapping_add(1);
-        let entry = InvalidationQueueEntry::wait(self.status_phys, seq, false, true);
-        self.submit(entry);
-        (self.status_virt, seq)
-    }
-
     /// Build a wait descriptor without submitting it.
     ///
     /// Returns (entry, expected_seq).
@@ -405,15 +393,5 @@ impl InvalidationQueue {
             InvalidationQueueEntry::wait(self.status_phys, seq, false, true),
             seq,
         )
-    }
-
-    /// Check if a wait has completed (status address updated).
-    ///
-    /// Uses monotonic comparison to handle concurrent requests and wrap-around.
-    #[cfg(test)]
-    pub fn check_wait_complete(&self, expected: u32) -> bool {
-        let status = unsafe { core::ptr::read_volatile(self.status_virt as *const u32) };
-        // Use wrap-around safe comparison (distance in u32 space)
-        status.wrapping_sub(expected) < (1u32 << 31)
     }
 }

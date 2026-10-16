@@ -600,6 +600,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
         }
     }));
 
+    #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_queue_physical_storage", || {
+        if crate::io::iommu::vendors::intel::qi::qemu_tests::owned_physical_storage_smoke() {
+            Ok(String::from(
+                "Owned queue/status agree with CPU page-table translation",
+            ))
+        } else {
+            Err(String::from("Queue physical storage failed"))
+        }
+    }));
+
     suite.add_result(run_async_case("iommu_dma_map_basic", async {
         use crate::io::iommu::common::dma::handle::{DmaDirection, DmaHandle, MapError};
         use crate::io::iommu::types::DeviceId;

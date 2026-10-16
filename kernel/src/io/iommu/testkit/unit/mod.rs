@@ -8,7 +8,7 @@
 
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::common::tables::{HardwareTable, SlPte, virt_ptr_to_phys};
+use crate::io::iommu::common::tables::{HardwareTable, SlPte};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
 use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
@@ -20,7 +20,6 @@ use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
-use crate::io::iommu::vendors::intel::qi::InvalidationQueue;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::{IommuRegistry, init_registry};
 use crate::io::iommu::vendors::intel::tables::{
@@ -105,28 +104,6 @@ fn test_entry_agaw_encoding_uses_selected_code() {
     let mut pasid = PasidTableEntry::default();
     pasid.set_sl_pt(0x4000, 3, 0x56);
     assert_eq!((pasid.qwords[0] >> PasidTableEntry::AW_SHIFT) & 0x7, 3);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_invalidation_queue_uses_physical_addresses_for_hw() {
-    let mut queue = InvalidationQueue::new(8).expect("failed to allocate invalidation queue");
-
-    let queue_virt = queue.queue_virtual_address();
-    let expected_queue_phys = virt_ptr_to_phys(queue_virt as *const u8)
-        .expect("failed to translate queue virtual address");
-    assert_eq!(queue.base_address(), expected_queue_phys);
-    assert_eq!(queue.base_address() & 0xFFF, 0);
-
-    let status_virt = queue.status_virtual_address();
-    let expected_status_phys = virt_ptr_to_phys(status_virt as *const u8)
-        .expect("failed to translate status virtual address");
-    let (wait, expected_seq) = queue.wait_entry();
-    assert_eq!(wait.hi, expected_status_phys);
-    assert_eq!(wait.hi & 0xFFF, 0);
-    let (submitted_status, submitted_seq) = queue.submit_wait();
-    assert_eq!(submitted_status, status_virt);
-    assert_eq!(submitted_seq, expected_seq.wrapping_add(1));
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
