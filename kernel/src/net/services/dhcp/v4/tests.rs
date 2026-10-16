@@ -3,21 +3,8 @@
 // ============================================================================
 
 use super::*;
-#[cfg(test)]
-fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
-    let mut future = core::pin::pin!(future);
-    let mut context = core::task::Context::from_waker(core::task::Waker::noop());
-    match future.as_mut().poll(&mut context) {
-        core::task::Poll::Ready(value) => value,
-        core::task::Poll::Pending => {
-            panic!("pure protocol step unexpectedly awaited an external event")
-        }
-    }
-}
 
 use crate::net::l3::ipv4::Ipv4Address;
-#[cfg(test)]
-use crate::sync::set_panicking;
 #[cfg(test)]
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
@@ -48,30 +35,6 @@ fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
         i = i.saturating_add(2 + len);
     }
     false
-}
-
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_check_timeout_poisoned_state_reset_skips() {
-    let client = DhcpClient::new(
-        crate::net::runtime::default_runtime(),
-        crate::net::runtime::manager::NetIfId(1),
-        crate::net::l2::ethernet::MacAddress::ZERO,
-    );
-    {
-        let mut s = client.state.lock().unwrap();
-        *s = DhcpState::Selecting;
-    }
-    client.state_time.store(0, Ordering::SeqCst);
-    client
-        .retry_count
-        .store(DhcpClient::MAX_RETRIES - 1, Ordering::SeqCst);
-
-    set_panicking(true);
-    // Should not panic even if state lock is poisoned
-    let _ = complete_immediately(client.check_timeout(10, 1));
-    set_panicking(false);
 }
 
 #[cfg(test)]
@@ -218,28 +181,6 @@ pub fn test_build_discover_reuse_xid_on_retransmit() {
         .expect("build_discover failed");
     let xid2 = u32::from_be_bytes(buf2[4..8].try_into().unwrap());
     assert_eq!(xid2, 0x1234_5678);
-}
-
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_build_discover_state_lock_poison_returns_err() {
-    let client = DhcpClient::new(
-        crate::net::runtime::default_runtime(),
-        crate::net::runtime::manager::NetIfId(1),
-        crate::net::l2::ethernet::MacAddress::ZERO,
-    );
-
-    // Poison the state lock by dropping a guard while marked as panicking
-    {
-        let g = client.state.lock().unwrap();
-        set_panicking(true);
-        drop(g); // dropping while panicking should poison
-        set_panicking(false);
-    }
-
-    let mut buf = [0u8; DHCP_MAX_MESSAGE_SIZE];
-    assert!(client.build_discover(&mut buf, 100).is_err());
 }
 
 #[cfg(feature = "qemu-test-export")]

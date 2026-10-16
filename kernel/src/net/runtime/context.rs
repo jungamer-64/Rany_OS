@@ -670,4 +670,98 @@ mod tests {
         ));
         assert_eq!(registry.runtimes.len(), 1);
     }
+
+    fn dhcp_client() -> crate::net::services::dhcp::DhcpClient {
+        let mut registry = RuntimeRegistry::new();
+        let runtime = registry
+            .allocate_runtime(&cpu_snapshot())
+            .expect("local DHCP runtime allocation")
+            .handle();
+        crate::net::services::dhcp::DhcpClient::new(
+            runtime,
+            manager::NetIfId(1),
+            crate::net::l2::ethernet::MacAddress::ZERO,
+        )
+    }
+
+    #[test]
+    fn dhcp_discovery_rejects_poison_without_mutating_output_or_exchange() {
+        use crate::net::services::dhcp::{DHCP_MAX_MESSAGE_SIZE, DhcpState};
+        let client = dhcp_client();
+        *client.state.lock().expect("initial state") = DhcpState::Selecting;
+        client.xid.store(0x1234_5678, Ordering::SeqCst);
+        let mut buffer = [0xa5; DHCP_MAX_MESSAGE_SIZE];
+        assert!(
+            client
+                .build_discover(&mut buffer, 10)
+                .expect("healthy discovery")
+                > 0
+        );
+        assert_eq!(&buffer[4..8], &0x1234_5678u32.to_be_bytes());
+
+        let held = client.state.lock().expect("healthy state lock");
+        crate::sync::set_panicking(true);
+        drop(held);
+        crate::sync::set_panicking(false);
+        assert!(client.state.is_poisoned());
+
+        buffer.fill(0xa5);
+        let state_time = client.state_time.load(Ordering::SeqCst);
+        assert_eq!(
+            client.build_discover(&mut buffer, 100),
+            Err("State lock poisoned")
+        );
+        assert_eq!(buffer, [0xa5; DHCP_MAX_MESSAGE_SIZE]);
+        assert_eq!(client.xid.load(Ordering::SeqCst), 0x1234_5678);
+        assert_eq!(client.state_time.load(Ordering::SeqCst), state_time);
+    }
+
+    #[test]
+    fn dhcp_timeout_rejects_poison_without_consuming_a_retry() {
+        use crate::net::services::dhcp::DhcpState;
+        use core::future::Future;
+        let client = dhcp_client();
+        *client.state.lock().expect("initial state") = DhcpState::Selecting;
+        let mut context = core::task::Context::from_waker(core::task::Waker::noop());
+        {
+            let mut healthy = core::pin::pin!(client.check_timeout(10, 1));
+            assert_eq!(
+                healthy.as_mut().poll(&mut context),
+                core::task::Poll::Ready(true)
+            );
+        }
+        assert_eq!(client.retry_count.load(Ordering::SeqCst), 1);
+        client.retry_count.store(0, Ordering::SeqCst);
+
+        let held = client.state.lock().expect("healthy state lock");
+        crate::sync::set_panicking(true);
+        drop(held);
+        crate::sync::set_panicking(false);
+        assert!(client.state.is_poisoned());
+
+        let mut rejected = core::pin::pin!(client.check_timeout(10, 1));
+        assert_eq!(
+            rejected.as_mut().poll(&mut context),
+            core::task::Poll::Ready(false)
+        );
+        assert_eq!(client.retry_count.load(Ordering::SeqCst), 0);
+        assert_eq!(
+            *client
+                .state
+                .lock()
+                .expect_err("state remains poisoned")
+                .into_inner(),
+            DhcpState::Selecting,
+        );
+        assert!(
+            client
+                .runtime
+                .context()
+                .cpu_resources(CpuId::BOOTSTRAP)
+                .expect("runtime command resources")
+                .command_queue
+                .recv()
+                .is_none()
+        );
+    }
 }
