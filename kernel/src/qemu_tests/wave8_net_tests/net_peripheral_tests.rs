@@ -308,3 +308,11 @@ pub fn net_peripheral_runtime_large_packet_headroom_preserves_request_smoke() ->
 pub fn net_peripheral_runtime_fake_ports_smp_flow_failover_smoke() -> bool {
     crate::net::qemu_tests::runtime_fake_ports_smp_flow_failover_smoke()
 }
+
+pub fn net_runtime_interface_topology_smoke() -> bool {
+    crate::net::runtime::stack::qemu_tests::interface_topology()
+}
+
+pub async fn net_runtime_device_ownership_smoke() -> bool {
+    crate::net::runtime::device::qemu_tests::device_ownership().await
+}
