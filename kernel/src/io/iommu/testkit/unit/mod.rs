@@ -131,20 +131,16 @@ fn test_invalidation_queue_uses_physical_addresses_for_hw() {
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_create_domain_with_numa_hint() {
+fn domain_creation_rejects_unadmitted_numa_node_without_publication() {
     let ctrl = controller();
-    let id = ctrl
-        .create_domain(Some(2), IommuDomainType::Translated)
-        .expect("create_domain failed");
-    let domain_arc = ctrl.domain(id).expect("domain not found");
-    assert_eq!(domain_arc.id(), id);
-    assert_eq!(domain_arc.numa_node(), Some(2));
-
-    // Test controller set/get API
-    ctrl.set_domain_numa(id, Some(5))
-        .expect("set_domain_numa failed");
-    let updated = ctrl.domain(id).expect("domain not found after update");
-    assert_eq!(updated.numa_node(), Some(5usize));
+    assert_eq!(
+        ctrl.create_domain(
+            Some(crate::mm::types::NumaNodeId::MAX_NODES),
+            IommuDomainType::Translated,
+        ),
+        Err(IommuError::InvalidAddress)
+    );
+    assert!(ctrl.domains.lock().expect("domain registry").is_empty());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
