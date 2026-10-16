@@ -103,7 +103,7 @@ impl Drop for Initialization {
             let cell = registry
                 .get_mut(self.cell)
                 .expect("an initializing code lease retains its cell");
-            if matches!(cell.runtime, CellRuntime::Initializing { .. }) {
+            if matches!(cell.runtime, CellRuntime::Initializing) {
                 cell.runtime = CellRuntime::InitializationFailed {
                     owner: self.owner,
                     fini: self.fini,
@@ -142,7 +142,7 @@ pub(crate) fn initialize(
             .ok_or(CellRuntimeError::ContextUnavailable)?;
         match cell.runtime {
             CellRuntime::Uninitialized => {
-                cell.runtime = CellRuntime::Initializing { owner, fini };
+                cell.runtime = CellRuntime::Initializing;
                 Ok(InitializationAdmission::Invoke(Initialization {
                     cell: id,
                     owner,
@@ -237,7 +237,7 @@ pub(crate) fn finalize(id: CellId) -> Result<(), CodeFinalizationError> {
             });
         }
         match cell.runtime {
-            CellRuntime::Initializing { .. } | CellRuntime::InvokingFinalizer => {
+            CellRuntime::Initializing | CellRuntime::InvokingFinalizer => {
                 return Err(CodeFinalizationError::Busy);
             }
             CellRuntime::Uninitialized | CellRuntime::Finalized => {
