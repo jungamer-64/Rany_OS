@@ -330,18 +330,8 @@ fn test_domain_map_poisoned_returns_none() {
 fn test_get_domain_for_device_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = controller();
-    let id = ctrl
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create_domain failed");
-
     let device = DeviceId::new(0, 0, 1, 0);
-    // Register mapping
-    match ctrl.device_domains.lock() {
-        Ok(mut dmap) => {
-            dmap.insert(device, id);
-        }
-        Err(_) => {}
-    }
+    assert_eq!(ctrl.get_domain_for_device(device), Ok(None));
 
     // Poison device_domains lock
     let held = ctrl.device_domains.lock().expect("unpoisoned fixture lock");
@@ -361,9 +351,10 @@ fn test_get_domain_for_device_poisoned_returns_hw_error() {
 fn test_set_domain_numa_poisoned_returns_hw_error() {
     use crate::sync::set_panicking;
     let ctrl = controller();
-    let id = ctrl
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create_domain failed");
+    assert_eq!(
+        ctrl.set_domain_numa(0, Some(0)),
+        Err(IommuError::DomainNotFound)
+    );
 
     // Poison domains lock
     let held = ctrl.domains.lock().expect("unpoisoned fixture lock");
@@ -373,7 +364,7 @@ fn test_set_domain_numa_poisoned_returns_hw_error() {
     assert!(ctrl.domains.is_poisoned());
 
     assert_eq!(
-        ctrl.set_domain_numa(id, Some(1)).err(),
+        ctrl.set_domain_numa(0, Some(0)).err(),
         Some(IommuError::HardwareError)
     );
 }
