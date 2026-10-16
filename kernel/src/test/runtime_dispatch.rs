@@ -112,6 +112,16 @@ fn zeroed_refill_ownership(_case_filter: Option<&str>) -> RuntimeTestResult {
     RuntimeTestResult::blocked("zeroed refill ownership requires boot RAM")
 }
 
+fn heap_return_ownership(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        crate::heap::qemu_tests::return_ownership_smoke();
+        RuntimeTestResult::pass()
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("heap return ownership requires boot RAM")
+}
+
 pub struct RuntimeTestCase {
     pub id: &'static str,
     body: RuntimeTestBody,
@@ -321,6 +331,12 @@ static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
         id: "mm.heap_layouts",
         body: RuntimeTestBody::Sync(super::mm_runtime::heap_layouts),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.heap_return_ownership",
+        body: RuntimeTestBody::Sync(heap_return_ownership),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Memory,
     },

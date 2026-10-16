@@ -13,6 +13,8 @@ pub(crate) use exchange_cache::{CacheClass, CachedAllocation, ExchangeMagazine};
 pub(crate) use exchange_cache::{ExchangeDrainError, drain_current_cache as drain_exchange_cache};
 pub(crate) use memory::{BootstrapHeaps, HeapMemory};
 pub(crate) use raw::HeapCache;
+#[cfg(feature = "qemu-test-export")]
+pub(crate) use raw::qemu_tests;
 pub(crate) use reclaim::{LocalCacheDrainError, drain_local_caches, reclaim_local_caches};
 
 pub use allocator::{
