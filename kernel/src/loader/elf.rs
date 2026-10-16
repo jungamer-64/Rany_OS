@@ -5,6 +5,8 @@
 //!
 //! This module implements parsing and loading of ELF64 executable files for
 //! dynamically loaded kernel modules (cells).
+//! Mapping and relocation are private preparation stages of the cell loader;
+//! executable lifetime and execution admission belong to its registered cells.
 //!
 //! ## Design Reference
 //!
@@ -34,38 +36,8 @@
 //! | `R_X86_64_32` | 10 | 32-bit absolute (zero-extended) |
 //! | `R_X86_64_32S` | 11 | 32-bit absolute (sign-extended) |
 //!
-//! ## Example Usage
-//!
-//! ```ignore
-//! use kernel::loader::{ElfLoader, Loader, LoadedInfo};
-//!
-//! let elf_data: &[u8] = /* ELF binary data */;
-//! match ElfLoader::load(elf_data) {
-//!     Ok(info) => {
-//!         log::info!("Loaded at {:#x}, entry: {:#x}", info.base_address, info.entry_point);
-//!     }
-//!     Err(e) => log::error!("Load failed: {}", e),
-//! }
-//! ```
 use super::LoadError;
 
-// NOTE:
-// The kernel's `mm` and `security` modules are not always available when this
-// crate is compiled as a dependency (e.g. during workspace builds). To avoid
-// hard-to-detect cfg/build-time errors we provide small local fallbacks here
-// so the loader can still be compiled and unit-tested in isolation. When the
-// full kernel is being built these are thin no-op stand-ins; proper
-// integration with `mm::higher_half::PageFlags` and
-// `security::mpk::allocate_protection_key` should be restored when the
-// module-level visibility guarantees are made explicit.
-
-// Use real PageFlags and PKEY allocator from the kernel modules when available
-// - `PageFlags` lives in `crate::mm::virt::higher_half` and provides `set_pkey()`.
-// - `allocate_protection_key()` / `free_protection_key()` live in `crate::security::mpk`.
-// When compiling for tests or for bench builds (workspace `--all-features`) we
-// avoid pulling in the full `mm`/`security` implementations and use no-op
-// fallbacks instead. That keeps workspace test runs light and avoids needing
-// the entire kernel `mm` implementation for library-style builds.
 mod loader_trait;
 pub use loader_trait::*;
 mod elf_loader_impl;
@@ -275,19 +247,19 @@ impl Elf64Rela {
 
 /// ロードされたセルの情報
 #[derive(Debug)]
-pub struct LoadedCell {
+pub(super) struct LoadedCell {
     /// ベースアドレス
-    pub base_address: usize,
+    pub(super) base_address: usize,
     /// 合計サイズ
-    pub size: usize,
+    pub(super) size: usize,
     /// 実際にヒープへ割り当てた先頭アドレス（ASLR補正前）
-    pub allocation_base: usize,
+    pub(super) allocation_base: usize,
     /// 実際にヒープへ割り当てたサイズ（ASLRパディング込み）
-    pub allocation_size: usize,
+    pub(super) allocation_size: usize,
     /// エントリポイント（あれば）
-    pub entry_point: Option<usize>,
+    pub(super) entry_point: Option<usize>,
     /// 割り当てられた Protection Key（存在する場合）
-    pub pkey: Option<u8>,
+    pub(super) pkey: Option<u8>,
 }
 
 /// パース結果のセル情報（'a は ELF バッファのライフタイム）

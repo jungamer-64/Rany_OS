@@ -295,7 +295,7 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// セルをメモリにロード
-    pub fn load(&self, info: &CellInfo<'a>) -> Result<LoadedCell, LoadError> {
+    pub(in crate::loader) fn load(&self, info: &CellInfo<'a>) -> Result<LoadedCell, LoadError> {
         // Protection Key は page-table manager が利用可能な場合にのみ割り当てる。
         // テストビルド（libテスト）では `mm` モジュールが公開されていないため
         // PKEY の割り当てとページフラグの更新はスキップする。
@@ -600,7 +600,11 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// リロケーションを適用
-    pub fn relocate<F>(&self, loaded: &LoadedCell, resolve: F) -> Result<(), LoadError>
+    pub(in crate::loader) fn relocate<F>(
+        &self,
+        loaded: &LoadedCell,
+        resolve: F,
+    ) -> Result<(), LoadError>
     where
         F: Fn(&str) -> Option<usize>,
     {
