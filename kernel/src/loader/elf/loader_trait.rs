@@ -51,7 +51,7 @@ pub trait Loader {
     ///
     /// 成功時は`LoadedInfo`を返し、失敗時は`LoadError`を返す
     ///
-    /// # エラー
+    /// # Errors
     ///
     /// * `InvalidFormat` - ELFフォーマットが無効
     /// * `InvalidPermissions` - W^X違反

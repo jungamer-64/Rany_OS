@@ -347,20 +347,6 @@ pub struct ElfLoader<'a> {
     header: Elf64Header,
 }
 
-// ============================================================================
-// 【設計書 2.2】安全なメモリ読み取りラッパー関数
-// 生ポインタの直接操作を避け、境界チェック付きの関数を提供
-// ============================================================================
-
-/// 安全に構造体を読み取る
-///
-/// 【設計書 2.2】生ポインタ操作を避け、境界チェック付きで構造体を読み取る。
-/// 内部では unsafe を使用するが、呼び出し前に全ての境界チェックを実施。
-// Use the shared util::read_struct helper instead which centralizes
-// unsafe pointer reads and performs bounds/alignment checks.
-
-// Use util::get_slice from the top-level util module
-
 /// Validate ELF file size constraints.
 fn validate_elf_size(data: &[u8]) -> Result<(), LoadError> {
     if data.len() < mem::size_of::<Elf64Header>() {

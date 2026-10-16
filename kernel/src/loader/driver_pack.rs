@@ -98,6 +98,10 @@ impl DriverManifestV1 {
             || self.pci_prog_if != 0
     }
 
+    /// # Errors
+    /// Rejects partial device identifiers, mixing device and class selectors,
+    /// or a class selector without both class and subclass. Zeroed fields
+    /// represent the absence of a selector.
     pub fn pci_selector(&self) -> Result<Option<DriverPackPciSelector>, &'static str> {
         let has_vendor = self.pci_vendor_id != 0;
         let has_device = self.pci_device_id != 0;
@@ -160,6 +164,12 @@ pub fn is_driver_pack(data: &[u8]) -> bool {
         .unwrap_or(false)
 }
 
+/// Parses container bounds and manifest layout; signer policy is applied by
+/// [`verify_driver_pack`]. The returned sections borrow the input buffer.
+///
+/// # Errors
+/// Returns `InvalidFormat` for missing or unsupported headers, incomplete
+/// manifest data, or section extents outside the input.
 pub fn parse_driver_pack(data: &[u8]) -> Result<DriverPack<'_>, LoadError> {
     let header = validate_driver_pack_header(data)?;
     let (manifest, manifest_bytes) = parse_manifest_section(data, &header)?;
@@ -267,6 +277,12 @@ fn parse_signature_section(
     Ok(Some(sig))
 }
 
+/// An unsigned pack returns `Ok(false)`, allowing its caller to apply unsigned
+/// loading policy separately from signature verification.
+///
+/// # Errors
+/// Returns `InvalidSignature` for an unsupported signature envelope or rejection
+/// by the configured signature policy, including signer trust and content checks.
 pub fn verify_driver_pack(pack: &DriverPack<'_>) -> Result<bool, LoadError> {
     let signature = match pack.signature {
         Some(sig) => sig,
