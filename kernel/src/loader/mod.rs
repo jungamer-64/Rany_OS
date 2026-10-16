@@ -21,7 +21,7 @@ pub use cell_runtime::CellRuntimeError;
 pub use elf::{CellInfo, ElfLoader, LoadedCell, LoadedInfo, Loader};
 pub use live_update::{
     CompletedUpdateOutcome, LiveUpdateError, LiveUpdateManager, LiveUpdateState,
-    PendingUpdateStatus, RequestTracker, UpdateTransition, current_epoch, live_update_manager,
+    PendingUpdateStatus, UpdateTransition, current_epoch, live_update_manager,
     poll_pending_updates,
 };
 pub use signature::{

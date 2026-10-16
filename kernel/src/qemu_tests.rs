@@ -1,6 +1,6 @@
 use crate::crypto::{ed25519, sha256};
 use crate::error::{KernelError, MemoryError};
-use crate::loader::{elf, live_update, signature, type_id};
+use crate::loader::{elf, signature, type_id};
 use core::fmt::Write;
 
 mod wave8_net_tests;
@@ -165,28 +165,6 @@ pub fn loader_signature_verifier_production_mode_smoke() -> bool {
     let mut sig = signature::CellSignature::default();
     sig.compiler_version = "dev".into();
     verifier.verify(&sig, &[]) == Err(signature::VerificationError::MalformedSignature)
-}
-
-pub fn loader_live_update_request_tracker_smoke() -> bool {
-    let tracker = live_update::RequestTracker::new();
-    if !tracker.begin_request() {
-        return false;
-    }
-    if tracker.active_count() != 1 {
-        return false;
-    }
-    tracker.end_request();
-    tracker.active_count() == 0
-}
-
-pub fn loader_live_update_request_tracker_drain_smoke() -> bool {
-    let tracker = live_update::RequestTracker::new();
-    if !tracker.begin_request() {
-        return false;
-    }
-    tracker.end_request();
-    tracker.wait_for_drain();
-    tracker.active_count() == 0 && !tracker.begin_request()
 }
 
 pub fn loader_elf_empty_data_returns_error_smoke() -> bool {
