@@ -29,7 +29,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// # 使用例
 ///
 /// ```rust
-/// use crate::mm::atomic_utils::AtomicU8;
+/// use rany_os::mm::atomic_utils::AtomicU8;
 /// use core::sync::atomic::Ordering;
 ///
 /// let counter = AtomicU8::new(0);
@@ -215,7 +215,7 @@ impl core::fmt::Debug for AtomicU8 {
 /// # 使用例
 ///
 /// ```rust
-/// use crate::mm::atomic_utils::AtomicU16;
+/// use rany_os::mm::atomic_utils::AtomicU16;
 /// use core::sync::atomic::Ordering;
 ///
 /// let counter = AtomicU16::new(0);

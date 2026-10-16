@@ -11,15 +11,10 @@ use super::*;
 ///
 /// # 使用例
 /// ```
-/// let result = catch_panic(|| {
-///     // パニックする可能性のあるコード
-///     risky_operation()
-/// });
+/// use rany_os::unwind::catch_panic;
 ///
-/// match result {
-///     Ok(value) => println!("Success: {:?}", value),
-///     Err(payload) => println!("Caught panic: {}", payload),
-/// }
+/// let result = catch_panic(|| 6 * 7);
+/// assert_eq!(result.expect("normally returning closure"), 42);
 /// ```
 ///
 /// # 制限事項

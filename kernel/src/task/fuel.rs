@@ -64,7 +64,7 @@ macro_rules! check_fuel {
 // let result = ffi_call_sync!(1000, gimli::parse_dwarf(&data));
 //
 // // 非同期コンテキストでの使用
-// let result = ffi_call!(1000, expensive_external_call()).await;
+// let result = ffi_call!(1000, expensive_external_call());
 // ```
 
 /// 外部FFI呼び出し用の燃料コスト定数
@@ -92,6 +92,7 @@ pub mod ffi_cost {
 /// 外部クレート（gimli, hashbrown, ed25519-compact等）は内部で燃料チェックを
 /// 行わないため、呼び出し前に燃料を消費する。燃料が不足している場合は
 /// yieldしてから呼び出しを実行する。
+/// マクロ自体が必要な await を行い、呼び出し式の値をそのまま返す。
 ///
 /// # 引数
 /// - `$cost`: この呼び出しで消費する燃料量（ffi_cost定数を推奨）
@@ -99,11 +100,12 @@ pub mod ffi_cost {
 ///
 /// # 例
 /// ```
-/// // gimliでDWARFをパース
-/// let eh_frame = ffi_call!(ffi_cost::GIMLI_PARSE, gimli::EhFrame::new(&data)).await;
+/// use hashbrown::HashMap;
+/// use rany_os::{ffi_call, task::fuel::ffi_cost};
 ///
-/// // hashmapへの挿入
-/// ffi_call!(ffi_cost::HASHBROWN_OP, map.insert(key, value)).await;
+/// async fn insert(map: &mut HashMap<u64, u64>, key: u64, value: u64) -> Option<u64> {
+///     ffi_call!(ffi_cost::HASHBROWN_OP, map.insert(key, value))
+/// }
 /// ```
 #[macro_export]
 macro_rules! ffi_call {

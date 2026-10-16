@@ -16,11 +16,14 @@
 //! ## 使用例
 //!
 //! ```rust
-//! // ドメインIDを指定してアロケーション
-//! let ptr = allocate_for_domain(domain_id, layout)?;
+//! use core::ptr::NonNull;
+//! use rany_os::domain::DomainId;
+//! use rany_os::mm::numa::domain_ownership::allocate_for_domain;
 //!
-//! // ドメインクラッシュ時の一括回収
-//! let freed_bytes = reclaim_domain_allocations(domain_id);
+//! // 初期化済みの Exchange Heap に値を置き、所有ドメインを記録する。
+//! fn allocate_counter(domain_id: DomainId) -> Option<NonNull<u64>> {
+//!     allocate_for_domain(domain_id, 0_u64)
+//! }
 //! ```
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;

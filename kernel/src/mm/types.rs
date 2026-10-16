@@ -47,7 +47,7 @@ pub const HUGE_PAGE_ORDER_1GB: usize = 18;
 /// # 使用例
 ///
 /// ```rust
-/// use crate::mm::types::FrameIndex;
+/// use rany_os::mm::types::FrameIndex;
 ///
 /// let frame = FrameIndex::from_phys_addr(0x1000);
 /// assert_eq!(frame.as_usize(), 1);
@@ -124,9 +124,11 @@ impl FrameIndex {
     /// # 例
     ///
     /// ```rust
+    /// use rany_os::mm::types::FrameIndex;
+    ///
     /// let frame = FrameIndex::new(4);
     /// let buddy = frame.buddy(2); // order=2: 4ページブロック
-    /// // frame 4 の buddy は frame 0 (4 XOR 4 = 0)
+    /// assert_eq!(buddy.as_usize(), 0); // 4 XOR 4 = 0
     /// ```
     #[inline]
     pub const fn buddy(self, order: usize) -> Self {
@@ -144,6 +146,8 @@ impl FrameIndex {
     /// # 例
     ///
     /// ```rust
+    /// use rany_os::mm::types::FrameIndex;
+    ///
     /// let frame = FrameIndex::new(7);
     /// let aligned = frame.align_down(2); // order=2: 4ページ境界
     /// assert_eq!(aligned.as_usize(), 4); // 7 -> 4 に切り下げ
@@ -632,9 +636,11 @@ mod tests {
 /// # 使用例
 ///
 /// ```rust
+/// use rany_os::mm::types::FixedVec;
+///
 /// let mut vec: FixedVec<u32, 16> = FixedVec::new();
-/// vec.push(1);
-/// vec.push(2);
+/// assert!(vec.push(1));
+/// assert!(vec.push(2));
 /// assert_eq!(vec.len(), 2);
 /// assert_eq!(vec.get(0), Some(&1));
 /// ```

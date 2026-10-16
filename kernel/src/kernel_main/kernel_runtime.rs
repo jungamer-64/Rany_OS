@@ -2,7 +2,7 @@
 // kernel/src/kernel_main/kernel_runtime.rs
 // ============================================================================
 //! カーネルのランタイム機能（タスクスポーン、統計表示、シンボル登録など）
-//!! カーネルの初期化後、Executor上で動作するタスクをスポーンする関数や、システム統計を表示する関数などを定義する。
+//! CPU 専用 scheduler 上へ起動処理とサービスを通常タスクとして登録する。
 use super::*;
 use crate::{domain, heap, interrupts, io, task, unwind};
 use alloc::sync::Arc;
@@ -1264,24 +1264,30 @@ pub(crate) fn panic(info: &core::panic::PanicInfo) -> ! {
 }
 
 // ============================================================================
-// Global Allocator (Binary Only)
+// Freestanding Global Allocator
 // ============================================================================
-// Defined here to avoid conflict with the library crate `rany_os` which
-// may also define an allocator for tests.
-// Wrapper to delegate to heap::ALLOCATOR
+// Hosted consumers own their process allocator. The kernel heap requires
+// boot-initialized physical memory and privileged interrupt control.
+#[cfg(all(not(test), target_os = "none"))]
 pub(crate) struct GlobalAllocatorWrapper;
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
+// SAFETY: both operations delegate to the same boot-owned KernelHeap and
+// preserve its GlobalAlloc contract without adding another allocation source.
 unsafe impl core::alloc::GlobalAlloc for GlobalAllocatorWrapper {
     unsafe fn alloc(&self, layout: core::alloc::Layout) -> *mut u8 {
-        crate::heap::ALLOCATOR.alloc(layout)
+        // SAFETY: the global allocation request supplies a valid layout;
+        // freestanding boot owns initialization of this process allocator.
+        unsafe { crate::heap::ALLOCATOR.alloc(layout) }
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: core::alloc::Layout) {
-        crate::heap::ALLOCATOR.dealloc(ptr, layout)
+        // SAFETY: GlobalAlloc requires a live allocation from this allocator
+        // and its original layout; ownership is transferred for deallocation.
+        unsafe { crate::heap::ALLOCATOR.dealloc(ptr, layout) }
     }
 }
 
-#[cfg(not(test))]
+#[cfg(all(not(test), target_os = "none"))]
 #[global_allocator]
 pub(crate) static GLOBAL_ALLOCATOR: GlobalAllocatorWrapper = GlobalAllocatorWrapper;
 

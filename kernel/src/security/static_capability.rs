@@ -18,14 +18,12 @@
 //! ## 使用例
 //!
 //! ```rust
-//! // ネットワークアクセス権限を持つ関数
-//! fn send_packet(cap: &NetCapability, packet: &Packet) {
-//!     // capが存在する = コンパイル時に権限が検証済み
-//!     // ランタイムチェック不要
-//! }
+//! use rany_os::security::static_capability::{NetCapability, NetworkSocket};
 //!
-//! // 権限なしでは呼び出せない
-//! // send_packet(&fake_cap, &packet);  // コンパイルエラー
+//! // ハンドルの寿命は、呼び出し元から借りた権限の寿命に制約される。
+//! fn open_socket(cap: &NetCapability, id: u64) -> NetworkSocket<'_> {
+//!     NetworkSocket::new(cap, id)
+//! }
 //! ```
 use core::marker::PhantomData;
 
