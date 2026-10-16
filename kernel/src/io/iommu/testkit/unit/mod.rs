@@ -8,12 +8,11 @@
 
 use crate::io::iommu::common::dma::page_table_pool::PageTablePool;
 use crate::io::iommu::common::domain::IommuDomain;
-use crate::io::iommu::common::tables::{HardwareTable, SlPte};
+use crate::io::iommu::common::tables::SlPte;
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
-use crate::io::iommu::vendors::intel::controller::fault::FaultHandler;
 use crate::io::iommu::vendors::intel::controller::iova::IovaManager;
 use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 #[cfg(feature = "qemu-test-export")]
@@ -122,83 +121,6 @@ fn test_create_domain_poisoned_returns_hw_error() {
             .err(),
         Some(IommuError::HardwareError)
     );
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_isolate_faulting_device_poisoned_attempts_isolation() {
-    use crate::sync::set_panicking;
-    let ctrl = controller();
-
-    // Allocate a context table and mark entry 0 as Present
-    let mut table = HardwareTable::<ContextEntry>::new(256, None).expect("context table");
-    if let Some(entry) = table.get_mut(0) {
-        entry.lo = 1;
-    }
-
-    // Install table pointer for bus 0
-    {
-        match ctrl.hardware.lock() {
-            Ok(mut hw) => {
-                hw.legacy_context_tables.push(table);
-            }
-            Err(poisoned) => {
-                let mut hw = poisoned.into_inner();
-                hw.legacy_context_tables.push(table);
-            }
-        }
-    }
-
-    // Poison the hardware lock so isolate will take the poisoned branch
-    let held = ctrl.hardware.lock().expect("unpoisoned fixture lock");
-    set_panicking(true);
-    drop(held);
-    set_panicking(false);
-    assert!(ctrl.hardware.is_poisoned());
-
-    // Call isolate - it should attempt best-effort isolation and clear the Present bit
-    let fault = FaultRecord {
-        lo: 0,
-        hi: FaultRecord::FAULT,
-    };
-    let _ = ctrl.isolate_faulting_device(fault);
-
-    let present = match ctrl.hardware.lock() {
-        Ok(hw) => hw
-            .legacy_context_tables
-            .get(0)
-            .and_then(|t| t.get(0))
-            .map(|e| e.is_present())
-            .unwrap_or(false),
-        Err(poisoned) => {
-            let hw = poisoned.into_inner();
-            hw.legacy_context_tables
-                .get(0)
-                .and_then(|t| t.get(0))
-                .map(|e| e.is_present())
-                .unwrap_or(false)
-        }
-    };
-    assert!(!present);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_domain_map_poisoned_returns_none() {
-    use crate::sync::set_panicking;
-    let ctrl = controller();
-    let id = ctrl
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create_domain failed");
-
-    // Poison the domains lock
-    let held = ctrl.domains.lock().expect("unpoisoned fixture lock");
-    set_panicking(true);
-    drop(held);
-    set_panicking(false);
-    assert!(ctrl.domains.is_poisoned());
-
-    assert!(ctrl.domain(id).is_none());
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

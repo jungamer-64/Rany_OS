@@ -535,6 +535,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
     #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_poisoned_ownership", || {
+        if crate::io::iommu::qemu_tests::poisoned_ownership() {
+            Ok(String::from(
+                "Unavailable registries and revocation retain physical owners",
+            ))
+        } else {
+            Err(String::from("Poisoned IOMMU ownership failed"))
+        }
+    }));
+
+    #[cfg(feature = "qemu-test-export")]
     suite.add_result(
         run_async_case("iommu_masked_mapping_retirement", async {
             if crate::io::iommu::qemu_tests::masked_mapping_retirement().await {

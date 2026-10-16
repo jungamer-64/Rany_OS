@@ -309,3 +309,39 @@ pub mod wave3 {
         crate::io::iommu::runtime::command::queue::qemu_smoke_metrics_counts()
     }
 }
+
+pub(crate) fn poisoned_ownership() -> bool {
+    crate::sync::poison_lock::qemu_tests::retained_iommu_ownership(|controller, id| {
+        let mut hardware = core::mem::take(
+            &mut *controller
+                .hardware
+                .lock()
+                .expect_err("fixture hardware is poisoned")
+                .into_inner(),
+        );
+        let table = hardware
+            .legacy_context_tables
+            .pop()
+            .expect("retained local context");
+        assert!(hardware.legacy_context_tables.is_empty());
+        assert!(hardware.root_table.is_none());
+        assert!(hardware.scalable_context_tables.is_empty());
+        let owner = controller
+            .domains
+            .lock()
+            .err()
+            .expect("fixture registry is poisoned")
+            .into_inner()
+            .remove(&id)
+            .expect("unique local domain");
+        let domain = alloc::sync::Arc::try_unwrap(owner)
+            .unwrap_or_else(|_| panic!("local domain borrower remains"));
+        // SAFETY: the fixture controller and all of its tables were never
+        // registered, enabled or published to devices. Context ownership is
+        // removed and every CPU borrower is gone before domain root retirement.
+        unsafe {
+            table.retire_after_invalidation();
+            domain.retire_after_invalidation();
+        }
+    })
+}

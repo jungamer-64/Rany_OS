@@ -15,6 +15,8 @@ use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use super::lockfree::Backoff;
 use hal::preemption::PreemptionGuard;
+#[cfg(feature = "qemu-test-export")]
+pub(crate) mod qemu_tests;
 // use serial_driver::serial_println;
 
 // ============================================================================
