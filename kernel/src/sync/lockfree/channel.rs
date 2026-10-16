@@ -64,6 +64,13 @@ impl<T: 'static, const N: usize> BoundedChannel<T, N> {
     /// Create a new bounded channel. Allocates a `MpscRingBuffer` on the heap
     /// and leaks it to obtain a `'static` reference. This is suitable for
     /// long-lived kernel channels and avoids `Arc` overhead.
+    ///
+    /// # Panics
+    /// Panics when `N < 2`, which cannot hold both a message and an empty slot.
+    #[expect(
+        clippy::new_ret_no_self,
+        reason = "this typed factory transfers communication to its sender and receiver; a separate channel value would have no ownership role"
+    )]
     pub fn new() -> (BoundedSender<T, N>, BoundedReceiver<T, N>) {
         let boxed = Box::new(MpscRingBuffer::new());
         let inner: &'static MpscRingBuffer<T, N> = Box::leak(boxed);
@@ -84,6 +91,9 @@ pub struct BoundedSender<T: 'static, const N: usize> {
 }
 
 impl<T: 'static, const N: usize> BoundedSender<T, N> {
+    /// # Errors
+    /// Returns the unchanged value when the channel is full. A failed send
+    /// publishes nothing and may be retried.
     pub fn send(&self, value: T) -> Result<(), T> {
         self.inner.push(value)
     }
@@ -130,6 +140,9 @@ pub struct BoundedReceiverStatic<T: 'static, const N: usize> {
 }
 
 impl<T: 'static, const N: usize> BoundedSenderStatic<T, N> {
+    /// # Errors
+    /// Returns the unchanged value when the channel is full. A failed send
+    /// publishes nothing and may be retried.
     pub fn send(&self, value: T) -> Result<(), T> {
         self.inner.push(value)
     }

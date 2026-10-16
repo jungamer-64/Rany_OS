@@ -88,7 +88,10 @@ impl<T, const N: usize> SpscRingBuffer<T, N> {
     ///
     /// # Returns
     /// - `Ok(())` - 成功
-    /// - `Err(value)` - バッファが満杯で失敗（値を返却）
+    ///
+    /// # Errors
+    /// Returns the unchanged value when the ring is full. No write is published
+    /// on failure, so the producer may retry with that value.
     #[inline]
     pub fn push(&self, value: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Relaxed);

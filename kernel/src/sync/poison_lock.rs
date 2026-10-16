@@ -230,7 +230,7 @@ pub struct PoisonRwLockReadGuard<'a, T> {
 impl<T> Deref for PoisonRwLockReadGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 }
 
@@ -245,13 +245,13 @@ pub struct PoisonRwLockWriteGuard<'a, T> {
 impl<T> Deref for PoisonRwLockWriteGuard<'_, T> {
     type Target = T;
     fn deref(&self) -> &T {
-        &*self.guard
+        &self.guard
     }
 }
 
 impl<T> DerefMut for PoisonRwLockWriteGuard<'_, T> {
     fn deref_mut(&mut self) -> &mut T {
-        &mut *self.guard
+        &mut self.guard
     }
 }
 
@@ -642,7 +642,7 @@ pub fn get_lock_metrics() -> LockMetrics {
     let acq = LOCK_ACQUIRE_COUNT.load(Ordering::Relaxed);
     let cont = LOCK_CONTENTION_EVENTS.load(Ordering::Relaxed);
     let total = LOCK_TOTAL_ACQUIRE_TICKS.load(Ordering::Relaxed);
-    let avg = if acq > 0 { total / acq } else { 0 };
+    let avg = total.checked_div(acq).unwrap_or(0);
     LockMetrics {
         acquire_count: acq,
         contention_events: cont,

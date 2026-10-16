@@ -67,6 +67,10 @@ impl LockFreeIndexStack {
     }
 
     /// Create an empty stack that can store indices in range `[0, capacity)`.
+    ///
+    /// # Panics
+    /// Panics when `capacity` exceeds `u32::MAX`, whose value is reserved for
+    /// the empty-head sentinel.
     pub fn new_empty(capacity: usize) -> Self {
         assert!(
             capacity <= u32::MAX as usize,
@@ -84,6 +88,9 @@ impl LockFreeIndexStack {
     ///
     /// Elements are pushed in ascending order, so the first pop returns
     /// `capacity - 1` (LIFO).
+    ///
+    /// # Panics
+    /// Panics when `capacity` exceeds `u32::MAX`.
     pub fn new_filled(capacity: usize) -> Self {
         let stack = Self::new_empty(capacity);
         for idx in 0..capacity {
@@ -95,10 +102,12 @@ impl LockFreeIndexStack {
 
     /// Push an index onto the stack.
     ///
-    /// Returns:
+    /// # Errors
     /// - [`LockFreeIndexStackPushError::OutOfRange`] if `idx >= capacity`
     /// - [`LockFreeIndexStackPushError::AlreadyPresent`] if `idx` is already in
     ///   the stack (duplicate push)
+    ///
+    /// Either error leaves the stack unchanged; the caller retains the index.
     pub fn push(&self, idx: u32) -> Result<(), LockFreeIndexStackPushError> {
         let idx_usize = idx as usize;
         if idx_usize >= self.next.len() {

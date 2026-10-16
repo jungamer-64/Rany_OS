@@ -119,7 +119,10 @@ impl<T, const N: usize> MpmcRingBuffer<T, N> {
     ///
     /// # Returns
     /// - `Ok(())` - 成功
-    /// - `Err(value)` - バッファが満杯で失敗（値を返却）
+    ///
+    /// # Errors
+    /// Returns the unchanged value if the ring remains full through bounded
+    /// backoff. Failure publishes nothing, so the caller may retry.
     pub fn push(&self, value: T) -> Result<(), T> {
         let mut backoff = Backoff::new();
 
@@ -239,6 +242,11 @@ impl<T, const N: usize> MpmcRingBuffer<T, N> {
     }
 
     /// 非ブロッキングでプッシュを試行
+    ///
+    /// # Errors
+    /// Returns the unchanged value when full, when the next slot is unavailable,
+    /// or when a competing producer wins the reservation. Failure publishes
+    /// nothing and does not imply that the ring is full.
     #[inline]
     pub fn try_push(&self, value: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Relaxed);

@@ -30,6 +30,8 @@ unsafe impl<T: Send, const N: usize> Send for MpscRingBuffer<T, N> {}
 unsafe impl<T: Send, const N: usize> Sync for MpscRingBuffer<T, N> {}
 
 impl<T, const N: usize> MpscRingBuffer<T, N> {
+    /// # Panics
+    /// Panics when `N < 2`; one slot is reserved to distinguish full from empty.
     pub const fn new() -> Self {
         assert!(N >= 2, "Ring buffer must have at least 2 slots");
 
@@ -65,6 +67,10 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
     ///
     /// CASループでスロットを予約してから書き込む
     /// 指数バックオフを使用して競合を緩和
+    ///
+    /// # Errors
+    /// Returns the unchanged value when the ring is full. No slot is reserved
+    /// on failure, so the caller may retry with that value.
     #[inline]
     pub fn push(&self, value: T) -> Result<(), T> {
         let mut backoff = Backoff::new();
@@ -118,6 +124,11 @@ impl<T, const N: usize> MpscRingBuffer<T, N> {
     ///
     /// 既に別プロデューサーが予約中の場合は待機せず失敗する。
     /// ISR コンテキストなど、無期限にスピンできない呼び出し側向け。
+    ///
+    /// # Errors
+    /// Returns the unchanged value when full, when a prior reservation remains
+    /// unpublished, or when another producer wins the reservation. Failure
+    /// consumes no slot; retrying is permitted even when the ring is not full.
     #[inline]
     pub fn try_push(&self, value: T) -> Result<(), T> {
         let head = self.head.load(Ordering::Relaxed);
