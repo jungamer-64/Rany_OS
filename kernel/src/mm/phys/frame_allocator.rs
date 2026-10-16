@@ -13,6 +13,10 @@ use x86_64::structures::paging::{PageSize, PhysFrame};
 mod error;
 pub use error::FrameAllocError;
 
+#[cfg(feature = "qemu-test-export")]
+#[path = "frame_allocator/qemu_tests.rs"]
+pub(crate) mod qemu_tests;
+
 pub(crate) const MANAGED_PHYS_START: u64 = PAGE_SIZE_4K as u64;
 const FRAME_CACHE_CAPACITY: usize = 64;
 const FRAME_BATCH: usize = 32;
@@ -1028,136 +1032,6 @@ mod tests {
     }
     use super::*;
     use alloc::boxed::Box;
-
-    // Hosted identity/direct-map fixtures retain process-lifetime writable RAM,
-    // matching the native pool's static backing lifetime without a public hook.
-    #[cfg(any(feature = "std", target_os = "linux"))]
-    fn writable_pool<const BYTES: usize>() -> &'static NodePool {
-        #[repr(align(4096))]
-        struct Pages<const N: usize>([u8; N]);
-        assert!(BYTES != 0 && BYTES % 4096 == 0);
-        let memory = Box::leak(Box::new(Pages([0xa5; BYTES])));
-        let start =
-            crate::mm::virt::mapping::virt_to_phys(x86_64::VirtAddr::from_ptr(memory.0.as_ptr()));
-        let pmm = Box::leak(Box::new(
-            build(&[(start, BYTES as u64, NumaNodeId::NODE_0)]).unwrap(),
-        ));
-        pmm.nodes[0].as_ref().unwrap()
-    }
-
-    #[cfg(any(feature = "std", target_os = "linux"))]
-    #[test]
-    fn zeroed_partial_refill_keeps_demand_and_returns_unpublished_ram() {
-        let pool = writable_pool::<{ 3 * 4096 }>();
-        let prepared = PreparedZeroedRefill::prepare(pool, 8).unwrap();
-        assert_eq!(pool.bitmap.free_count(), 0);
-        let (demand, refill) = prepared.into_parts();
-        let address = demand.as_u64();
-        // SAFETY: the fixture's exclusive demand owner retains this mapped page.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                crate::mm::virt::mapping::phys_to_virt(demand.start_address()).as_ptr::<u8>(),
-                4096,
-            )
-        };
-        assert!(bytes.iter().all(|&byte| byte == 0));
-        // No CPU publication: migration or a nested cache borrow can reject it.
-        // Cleanup must return the other two pages while retaining this demand.
-        drop(refill);
-        assert_eq!(pool.bitmap.free_count(), 2);
-        assert_eq!(demand.as_u64(), address);
-        // SAFETY: this live demand retains its exclusively writable payload.
-        unsafe {
-            crate::mm::virt::mapping::phys_to_virt(demand.start_address())
-                .as_mut_ptr::<u8>()
-                .write_bytes(0x37, 4096);
-        }
-        demand.release();
-        assert_eq!(pool.bitmap.free_count(), 3);
-        let (demand, retry) = PreparedZeroedRefill::prepare(pool, 3).unwrap().into_parts();
-        assert_eq!(pool.bitmap.free_count(), 0);
-        for frame in core::iter::once(&demand).chain(retry.frames.iter().flatten()) {
-            // SAFETY: the refill exclusively owns every newly zeroed page.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_ptr::<u8>(),
-                    4096,
-                )
-            };
-            assert!(bytes.iter().all(|&byte| byte == 0));
-        }
-        drop(retry);
-        demand.release();
-        assert_eq!(pool.bitmap.free_count(), 3);
-    }
-
-    #[cfg(any(feature = "std", target_os = "linux"))]
-    #[test]
-    fn zeroed_refill_failure_has_no_progress_and_does_not_consume_other_owners() {
-        let pool = writable_pool::<4096>();
-        let live = pool.allocate(1, 4096).unwrap();
-        let address = live.as_u64();
-        assert!(matches!(
-            PreparedZeroedRefill::prepare(pool, 0),
-            Err(FrameAllocError::InvalidRange)
-        ));
-        assert!(matches!(
-            PreparedZeroedRefill::prepare(pool, 9),
-            Err(FrameAllocError::InvalidRange)
-        ));
-        assert!(matches!(
-            PreparedZeroedRefill::prepare(pool, 8),
-            Err(FrameAllocError::Exhausted)
-        ));
-        assert_eq!(pool.bitmap.free_count(), 0);
-        assert_eq!(live.as_u64(), address);
-        // SAFETY: failed preparation could not acquire/write this live RAM.
-        let bytes = unsafe {
-            core::slice::from_raw_parts(
-                crate::mm::virt::mapping::phys_to_virt(live.start_address()).as_ptr::<u8>(),
-                4096,
-            )
-        };
-        assert!(bytes.iter().all(|&byte| byte == 0xa5));
-        live.release();
-        assert_eq!(pool.bitmap.free_count(), 1);
-    }
-
-    #[cfg(any(feature = "std", target_os = "linux"))]
-    #[test]
-    fn zeroed_full_cache_rejects_speculation_without_losing_demand_or_exceeding_limit() {
-        let pool = writable_pool::<{ 25 * 4096 }>();
-        let mut cache = LocalFrameCache::new();
-        for _ in 0..2 {
-            let (demand, mut spare) = PreparedZeroedRefill::prepare(pool, 8).unwrap().into_parts();
-            assert!(cache.zeroed.push(demand).is_ok());
-            spare.populate(&mut cache);
-        }
-        assert_eq!(cache.zeroed.len, 16);
-        assert_eq!(pool.bitmap.free_count(), 9);
-        let (demand, mut refill) = PreparedZeroedRefill::prepare(pool, 8).unwrap().into_parts();
-        refill.populate(&mut cache);
-        assert_eq!(cache.zeroed.len, 16);
-        assert_eq!(pool.bitmap.free_count(), 1);
-        drop(refill);
-        assert_eq!(pool.bitmap.free_count(), 8);
-        for frame in cache.take_batch().into_iter().flatten() {
-            assert_ne!(frame.as_u64(), demand.as_u64());
-            // SAFETY: each removed cache entry exclusively owns a mapped page.
-            let bytes = unsafe {
-                core::slice::from_raw_parts(
-                    crate::mm::virt::mapping::phys_to_virt(frame.start_address()).as_ptr::<u8>(),
-                    4096,
-                )
-            };
-            assert!(bytes.iter().all(|&byte| byte == 0));
-            frame.release();
-        }
-        assert!(cache.is_empty());
-        assert_eq!(pool.bitmap.free_count(), 24);
-        demand.release();
-        assert_eq!(pool.bitmap.free_count(), 25);
-    }
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]

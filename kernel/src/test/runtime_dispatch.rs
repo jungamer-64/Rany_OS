@@ -102,6 +102,16 @@ fn block_handle_ownership_suite(_case_filter: Option<&str>) -> RuntimeTestResult
     RuntimeTestResult::blocked("block handle ownership requires storage resources")
 }
 
+fn zeroed_refill_ownership(_case_filter: Option<&str>) -> RuntimeTestResult {
+    #[cfg(feature = "qemu-test-export")]
+    {
+        crate::mm::phys::frame_allocator::qemu_tests::zeroed_refill_ownership_smoke();
+        RuntimeTestResult::pass()
+    }
+    #[cfg(not(feature = "qemu-test-export"))]
+    RuntimeTestResult::blocked("zeroed refill ownership requires boot RAM")
+}
+
 pub struct RuntimeTestCase {
     pub id: &'static str,
     body: RuntimeTestBody,
@@ -299,6 +309,12 @@ static CASES: &[RuntimeTestCase] = &[
     RuntimeTestCase {
         id: "mm.owned_frames",
         body: RuntimeTestBody::Sync(super::mm_runtime::owned_frames),
+        tier: RuntimeTier::PrRequired,
+        group: RuntimeGroup::Memory,
+    },
+    RuntimeTestCase {
+        id: "mm.zeroed_refill_ownership",
+        body: RuntimeTestBody::Sync(zeroed_refill_ownership),
         tier: RuntimeTier::PrRequired,
         group: RuntimeGroup::Memory,
     },
