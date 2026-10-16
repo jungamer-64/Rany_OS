@@ -535,6 +535,17 @@ pub async fn test_iommu() -> IntegrationTestSuite {
     let mut suite = IntegrationTestSuite::new("IOMMU");
 
     #[cfg(feature = "qemu-test-export")]
+    suite.add_result(run_test("iommu_scalable_fault_domain", || {
+        if crate::io::iommu::qemu_tests::scalable_fault_domain_resolution() {
+            Ok(String::from(
+                "Deferred faults resolve their retained PASID domain",
+            ))
+        } else {
+            Err(String::from("Scalable fault domain resolution failed"))
+        }
+    }));
+
+    #[cfg(feature = "qemu-test-export")]
     suite.add_result(run_test("iommu_mapping_overlap_ownership", || {
         if crate::io::iommu::qemu_tests::mapping_overlap_retains_domain_ownership_smoke() {
             Ok(String::from(

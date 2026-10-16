@@ -11,7 +11,6 @@ use crate::io::iommu::common::domain::IommuDomain;
 use crate::io::iommu::common::tables::{HardwareTable, SlPte};
 use crate::io::iommu::runtime::fault_log::FaultRecord;
 use crate::io::iommu::runtime::registry::{get_iommu_driver, get_iommu_registry};
-use crate::io::iommu::runtime::security::{SecurityEvent, SecurityNotifier};
 use crate::io::iommu::types::{DeviceId, IommuDomainType, IommuError, PteFormat};
 use crate::io::iommu::vendors::intel::controller::IommuController;
 use crate::io::iommu::vendors::intel::controller::dma::DomainManager;
@@ -22,12 +21,9 @@ use crate::io::iommu::vendors::intel::controller::qi_init::QIManager;
 use crate::io::iommu::vendors::intel::controller::qi_ops::InvalidationOps;
 use crate::io::iommu::vendors::intel::registers::ecap_bits;
 use crate::io::iommu::vendors::intel::registry::{IommuRegistry, init_registry};
-use crate::io::iommu::vendors::intel::tables::{
-    ContextEntry, PasidTableEntry, RootEntry, ScalableContextEntry,
-};
+use crate::io::iommu::vendors::intel::tables::{ContextEntry, PasidTableEntry};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 #[cfg(feature = "std")]
 #[cfg(feature = "qemu-test-export")]
@@ -194,116 +190,6 @@ fn test_isolate_faulting_device_poisoned_attempts_isolation() {
         }
     };
     assert!(!present);
-}
-
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-fn test_scalable_mode_pasid0_fault_resolution() {
-    #[derive(Debug)]
-    struct TestNotifier {
-        seen: AtomicBool,
-        domain_id: AtomicU32,
-    }
-
-    impl TestNotifier {
-        fn new() -> Self {
-            Self {
-                seen: AtomicBool::new(false),
-                domain_id: AtomicU32::new(u32::MAX),
-            }
-        }
-
-        fn seen(&self) -> bool {
-            self.seen.load(Ordering::Acquire)
-        }
-
-        fn domain_id(&self) -> u32 {
-            self.domain_id.load(Ordering::Acquire)
-        }
-    }
-
-    impl SecurityNotifier for TestNotifier {
-        fn notify(&self, event: SecurityEvent) {
-            if let SecurityEvent::DmaViolation { domain_id, .. } = event {
-                let id = domain_id.unwrap_or(u32::MAX);
-                self.domain_id.store(id, Ordering::Release);
-                self.seen.store(true, Ordering::Release);
-            }
-        }
-    }
-
-    let mut registers = [0; 512];
-    registers[0x34 / 8] =
-        (crate::io::iommu::vendors::intel::registers::fsts_bits::FSTS_PPF as u64) << 32;
-    registers[0x300 / 8] = 0xdeadb000;
-    registers[0x308 / 8] = FaultRecord::FAULT | FaultRecord::PASID_PRESENT | (5 << 32) | 8;
-    let ctrl = controller_with_registers(registers);
-    ctrl.set_scalable_mode_enabled(true);
-
-    let root_table = HardwareTable::<RootEntry>::new(256, None).expect("root table");
-    let scalable_table =
-        HardwareTable::<ScalableContextEntry>::new(256, None).expect("scalable table");
-
-    {
-        let mut hw = ctrl.hardware.lock().expect("hardware lock");
-        hw.root_table = Some(root_table);
-        hw.scalable_context_tables.push(scalable_table);
-    }
-
-    let domain_id = ctrl
-        .create_domain(None, IommuDomainType::Translated)
-        .expect("create_domain failed");
-    let device = DeviceId::new(0, 0, 1, 0);
-    ctrl.attach_device(device, domain_id)
-        .expect("attach_device failed");
-
-    let domain = ctrl.domain(domain_id).expect("domain not found");
-    domain
-        .map(0x1000, 0x2000, 0x1000, true, true)
-        .expect("map failed");
-    let mapping = domain.unmap(0x1000).expect("unmap failed");
-    assert_eq!(mapping.size, 0x1000);
-
-    {
-        let hw = ctrl.hardware.lock().expect("hardware lock");
-        let root_entry = hw
-            .root_table
-            .as_ref()
-            .and_then(|t| t.get(0))
-            .expect("root entry");
-        assert!(root_entry.is_present_low());
-        assert!(root_entry.is_present_high());
-
-        let devfn = ((device.device as usize) << 3) | (device.function as usize);
-        let ctx_entry = hw
-            .scalable_context_tables
-            .get(0)
-            .and_then(|t| t.get(devfn))
-            .expect("context entry");
-        assert!(ctx_entry.is_present());
-    }
-
-    let pasid_domain = ctrl
-        .device_pasid_tables
-        .lock()
-        .ok()
-        .and_then(|tables| tables.get(&device).and_then(|t| t.domain_id(0)));
-    assert_eq!(pasid_domain, Some(domain_id));
-
-    ctrl.device_domains
-        .lock()
-        .expect("device_domains lock")
-        .remove(&device);
-
-    let notifier = Arc::new(TestNotifier::new());
-    let notifier_dyn: Arc<dyn SecurityNotifier> = notifier.clone();
-    ctrl.set_security_notifier(notifier_dyn);
-
-    assert_eq!(ctrl.process_faults(), 1);
-    assert_eq!(ctrl.drain_deferred_faults(), 1);
-
-    assert!(notifier.seen());
-    assert_eq!(notifier.domain_id(), domain_id as u32);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

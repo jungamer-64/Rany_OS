@@ -623,7 +623,7 @@ pub fn wave3_scalable_mode_pasid0_fault_resolution_smoke() -> bool {
         let Some(root_entry) = hw_guard.root_table.as_ref().and_then(|table| table.get(0)) else {
             return false;
         };
-        if !root_entry.is_present_low() || !root_entry.is_present_high() {
+        if root_entry.lo & 1 == 0 || root_entry.hi & 1 == 0 {
             return false;
         }
 

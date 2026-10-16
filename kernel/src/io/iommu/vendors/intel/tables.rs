@@ -26,18 +26,6 @@ impl RootEntry {
         (self.lo & 1) != 0
     }
 
-    /// Check if lower context table pointer is present
-    #[cfg(test)]
-    pub fn is_present_low(&self) -> bool {
-        (self.lo & 1) != 0
-    }
-
-    /// Check if upper context table pointer is present
-    #[cfg(test)]
-    pub fn is_present_high(&self) -> bool {
-        (self.hi & 1) != 0
-    }
-
     /// Set context table pointer
     pub fn set_context_table(&mut self, addr: u64) {
         self.lo = (addr & !0xFFF) | 1; // Present bit
