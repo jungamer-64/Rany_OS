@@ -319,7 +319,10 @@ impl Mempool {
 
         if cache.is_empty() {
             let mut refilled = false;
-            if let Ok(mut global_free) = self.free_list.lock() {
+            {
+                let mut global_free = self.free_list.lock().map_err(|_| {
+                    self.record_alloc_failure(MempoolError::LockPoisoned(MempoolLock::FreeList))
+                })?;
                 if !global_free.is_empty() {
                     let count_to_refill = BATCH_SIZE.min(global_free.len());
                     for _ in 0..count_to_refill {

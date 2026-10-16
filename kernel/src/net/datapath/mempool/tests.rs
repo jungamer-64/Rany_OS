@@ -45,29 +45,25 @@ fn test_mempool_poisoned_alloc_fails() {
     let pool = Box::leak(Box::new(
         Mempool::new(1, &test_cpu_snapshot()).expect("mempool CPU resources"),
     ));
-    pool.init(1).expect("init should succeed");
-
-    // Poison the free_list by simulating a panic while holding the lock
+    assert_eq!(pool.alloc_failed.load(Ordering::Relaxed), 0);
+    let held = pool.free_list.lock().expect("unpoisoned free list");
     set_panicking(true);
-    {
-        let _guard = pool.free_list.lock().unwrap();
-    }
+    drop(held);
     set_panicking(false);
+    assert!(pool.free_list.is_poisoned());
 
     // Allocation should fail and increment alloc_failed
     assert!(matches!(
         pool.alloc_on_cpu(crate::cpu::CpuId::BOOTSTRAP),
         Err(MempoolError::LockPoisoned(MempoolLock::FreeList))
     ));
-    assert!(pool.alloc_failed.load(Ordering::Relaxed) > 0);
+    assert_eq!(pool.alloc_failed.load(Ordering::Relaxed), 1);
 }
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
 fn test_mempool_stats() {
-    let pool = Box::leak(Box::new(
-        Mempool::new(1, &test_cpu_snapshot()).expect("mempool CPU resources"),
-    ));
+    let pool = Mempool::new(1, &test_cpu_snapshot()).expect("mempool CPU resources");
     let stats = pool.stats();
     assert_eq!(stats.total_buffers, 0);
     assert_eq!(stats.free_buffers, 0);
@@ -90,18 +86,29 @@ fn mempool_provisions_cache_for_new_possible_cpu() {
         None,
     )
     .expect("bootstrap CPU topology");
-    let pool = Box::leak(Box::new(
-        Mempool::new(1, &cpu_runtime.snapshot()).expect("initial mempool CPU resources"),
-    ));
+    let pool = Mempool::new(1, &cpu_runtime.snapshot()).expect("initial mempool CPU resources");
+    let bootstrap_cache = pool
+        .local_cache(crate::cpu::CpuId::BOOTSTRAP)
+        .expect("bootstrap cache");
     let cpu_id = cpu_runtime
         .discover_possible(firmware_cpu(1, 1))
         .expect("possible CPU discovery");
 
     assert!(
-        matches!(pool.alloc_on_cpu(cpu_id), Err(MempoolError::CpuNotProvisioned(rejected)) if rejected == cpu_id)
+        matches!(pool.local_cache(cpu_id), Err(MempoolError::CpuNotProvisioned(rejected)) if rejected == cpu_id)
     );
     pool.provision_possible_cpus(&cpu_runtime.snapshot())
         .expect("dynamic CPU cache provisioning");
-    pool.init(1).expect("packet buffer initialization");
-    assert!(pool.alloc_on_cpu(cpu_id).is_ok());
+    let added_cache = pool.local_cache(cpu_id).expect("new possible CPU cache");
+    assert!(!alloc::sync::Arc::ptr_eq(&bootstrap_cache, &added_cache));
+    pool.provision_possible_cpus(&cpu_runtime.snapshot())
+        .expect("idempotent CPU provisioning");
+    assert!(alloc::sync::Arc::ptr_eq(
+        &bootstrap_cache,
+        &pool.local_cache(crate::cpu::CpuId::BOOTSTRAP).unwrap(),
+    ));
+    assert!(alloc::sync::Arc::ptr_eq(
+        &added_cache,
+        &pool.local_cache(cpu_id).unwrap(),
+    ));
 }
