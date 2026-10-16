@@ -4,6 +4,7 @@ mod concurrent;
 pub(crate) use concurrent::concurrent_returns_smoke;
 
 pub(crate) fn return_ownership_smoke() {
+    same_cpu_return_keeps_its_reservation_when_another_cpu_shares_the_slab();
     slab_pressure_reclaims_delayed_empty_pages_and_preserves_live_payload();
     buddy_return_snapshot_preserves_layout_and_cannot_retire_a_live_block();
     physical_slab_progress_counts_only_the_last_reservations_whole_page();
@@ -405,4 +406,82 @@ fn buddy_and_direct_extents_obey_actual_alignment() {
         assert!(block.pointer.as_ptr().addr().is_multiple_of(alignment));
         release(block, layout);
     }
+}
+
+fn same_cpu_return_keeps_its_reservation_when_another_cpu_shares_the_slab() {
+    let cpu = CurrentCpu::acquire().expect("slab return CPU owner");
+    drain_current_cache();
+    let node = cpu.memory_node().unwrap_or(NumaNodeId::NODE_0);
+    let layout = Layout::from_size_align(256, 64).unwrap();
+    let class = SlabClass::for_layout(layout).unwrap();
+    let other = crate::cpu::snapshot()
+        .online()
+        .iter()
+        .find(|id| *id != cpu.id())
+        .expect("slab return peer CPU");
+    if let Some(retired) = cpu.with_heap_cache(|cache| cache.bind_node(node)).flatten() {
+        retired.release();
+    }
+    let backing =
+        pmm::alloc_contiguous_frames_aligned_on_node(node, 1, PAGE).expect("fixture slab RAM");
+    let address =
+        crate::mm::virt::mapping::phys_to_virt(backing.start_address()).as_mut_ptr::<SlabPage>();
+    let pool = &NODES[node.as_usize()].slabs[class.0];
+    let mut held = pool
+        .lock()
+        .unwrap_or_else(|_| panic!("fixture slab pool poisoned"));
+    let mask = (1u64 << SlabPage::count(class)) - 1;
+    // SAFETY: one unique mapped page is initialized before its sole list
+    // publication; the guard retains metadata and excludes new claimants.
+    let page = unsafe {
+        address.write(SlabPage {
+            backing,
+            class,
+            free: AtomicU64::new(mask),
+            mask,
+            next: held.head,
+        });
+        NonNull::new_unchecked(address)
+    };
+    held.head = Some(page);
+    let remote = claim_block(page, other).expect("other CPU reservation");
+    let local = claim_block(page, cpu.id()).expect("current CPU reservation");
+    let local_pointer = local.pointer;
+    // SAFETY: the guard and both live reservations retain page occupancy.
+    let occupied_before = unsafe { page.as_ref().free.load(Ordering::Acquire) };
+    // The shared pool remains locked throughout the local return and hit.
+    // A magazine return must retain its reservation rather than publish a
+    // free bit merely because another CPU was the page's first claimant.
+    cache_or_release(local, layout);
+    // SAFETY: the guard and remote reservation still retain the page.
+    assert_eq!(
+        unsafe { page.as_ref().free.load(Ordering::Acquire) },
+        occupied_before
+    );
+    let cached = cpu
+        .with_heap_cache(|cache| cache.magazines[class.0].take())
+        .flatten()
+        .expect("same-CPU return belongs to its magazine");
+    assert_eq!(cached.pointer, local_pointer);
+    cache_or_release(remote, layout);
+    assert!(
+        cpu.with_heap_cache(|cache| cache.magazines[class.0].take())
+            .flatten()
+            .is_none()
+    );
+    // SAFETY: the pool guard and cached reservation still retain the page.
+    assert_ne!(
+        unsafe { page.as_ref().free.load(Ordering::Acquire) },
+        occupied_before
+    );
+    // Return the final reservation while the guard still excludes claimants.
+    // Physical retirement is deferred until the shared pool can be acquired.
+    assert_eq!(release(cached, layout), 0);
+    // SAFETY: this guard still retains the freshly published fixture page.
+    assert_eq!(unsafe { page.as_ref().free.load(Ordering::Acquire) }, mask);
+    drop(held);
+    // Another CPU may now claim this shared page. Its pool retains any live
+    // owner, and the fixture no longer observes its potentially retired header.
+    reclaim_slab_pool(pool);
+    drain_current_cache();
 }
