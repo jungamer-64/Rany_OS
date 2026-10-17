@@ -234,25 +234,6 @@ impl CellRegistry {
             .find_map(|(symbol, addr)| str_eq(symbol.as_str(), name).then_some(*addr))
     }
 
-    /// セルをアンロード
-    fn unload(&mut self, id: CellId) -> Option<CellEntry> {
-        if let Some(entry) = self.cells.remove(&id) {
-            let live_update_shadow_involved = entry.name.starts_with("update-")
-                || self
-                    .cells
-                    .values()
-                    .any(|cell| cell.name.starts_with("update-"));
-            if !live_update_shadow_involved {
-                for (symbol, _) in &entry.exports {
-                    self.unregister_symbol(symbol);
-                }
-            }
-            Some(entry)
-        } else {
-            None
-        }
-    }
-
     /// 名前でセルを検索
     pub fn find_by_name(&self, name: &str) -> Option<&CellEntry> {
         self.cells.values().find(|c| str_eq(c.name.as_str(), name))
