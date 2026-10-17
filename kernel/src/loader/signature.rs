@@ -357,6 +357,11 @@ impl SignatureVerifier {
     }
 
     /// 署名を検証
+    ///
+    /// # Errors
+    /// Reports malformed signatures, revoked or untrusted signers, invalid trust
+    /// chains, hash mismatches and cryptographic rejection. Development signatures
+    /// are accepted only when the verifier's development policy is enabled.
     pub fn verify(
         &mut self,
         signature: &CellSignature,
@@ -450,12 +455,18 @@ impl Default for SignatureVerifier {
 // 署名抽出
 // ============================================================================
 
+/// Extract declared signature metadata or represent a genuinely unsigned artifact
+/// for the verifier's policy decision. Parsing does not grant execution admission.
+///
+/// # Errors
+/// Rejects malformed ELF headers, ambiguous or unbacked sections and malformed
+/// signature payloads. A malformed section table never selects unsigned policy.
 pub fn extract_signature(elf_data: &[u8]) -> Result<CellSignature, LoadError> {
-    if elf_data.len() < 64 {
-        return Err(LoadError::InvalidFormat("ELF too small".into()));
-    }
-
-    if let Some(sig_data) = find_signature_section(elf_data) {
+    let loader = super::elf::ElfLoader::new(elf_data)?;
+    if let Some(sig_data) = loader
+        .section_data(SIGNATURE_SECTION_NAME)
+        .map_err(LoadError::InvalidSections)?
+    {
         parse_signature_section(sig_data)
     } else {
         log::info!("[SIGNATURE] Warning: Loading unsigned cell (dev mode)\n");
@@ -617,6 +628,11 @@ pub fn verify_signature(signature: &CellSignature, data: &[u8]) -> bool {
 }
 
 /// セルの署名を検証
+///
+/// # Errors
+/// Returns extraction errors for malformed ELF/signature metadata. Verification
+/// or signer-policy rejection is `Ok(false)`; `Ok(true)` includes unsigned
+/// artifacts accepted by an explicitly enabled development policy.
 pub fn verify_cell(elf_data: &[u8]) -> Result<bool, LoadError> {
     let signature = extract_signature(elf_data)?;
     Ok(verify_signature(&signature, elf_data))

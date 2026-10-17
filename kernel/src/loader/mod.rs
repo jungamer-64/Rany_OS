@@ -323,6 +323,7 @@ where
 pub enum LoadError {
     /// ELFフォーマットが不正
     InvalidFormat(String),
+    InvalidSections(elf::SectionError),
     /// 署名が無効
     InvalidSignature,
     /// 依存関係が解決できない
@@ -358,6 +359,7 @@ impl core::fmt::Display for LoadError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             LoadError::InvalidFormat(msg) => write!(f, "Invalid ELF format: {}", msg),
+            LoadError::InvalidSections(error) => write!(f, "Invalid ELF sections: {error}"),
             LoadError::InvalidSignature => write!(f, "Invalid or missing signature"),
             LoadError::UnresolvedDependency(sym) => write!(f, "Unresolved dependency: {}", sym),
             LoadError::OutOfMemory => write!(f, "Out of memory"),
@@ -1065,12 +1067,49 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn load_cell_rejects_missing_signature_without_mutating_registry() {
+    fn load_cell_rejects_malformed_signature_without_mutating_registry() {
         let elf = build_test_elf(Some((".exorust_sig", b"bad-signature")));
         let before = registry_snapshot();
         let err = load_cell("unsigned-cell", &elf, true)
             .expect_err("malformed signature section must be rejected before registration");
         assert!(matches!(err, LoadError::InvalidSignature));
         assert_eq!(registry_snapshot(), before);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn signature_extraction_distinguishes_absence_from_table_corruption() {
+        let mut elf = build_test_elf(None);
+        assert!(
+            signature::extract_signature(&elf)
+                .unwrap()
+                .is_dev_signature()
+        );
+        write_u64(&mut elf, 0x28, u64::MAX);
+        assert!(matches!(
+            signature::extract_signature(&elf),
+            Err(LoadError::InvalidSections(elf::SectionError::InvalidTable))
+        ));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn signature_extraction_requires_unique_file_backed_contents() {
+        let mut elf = build_test_elf(Some((".exorust_sig", b"signature")));
+        let table = u64::from_le_bytes(elf[0x28..0x30].try_into().unwrap()) as usize;
+        let signature_header = table + 128;
+        write_u32(&mut elf, signature_header + 4, 8);
+        assert!(matches!(
+            signature::extract_signature(&elf),
+            Err(LoadError::InvalidSections(elf::SectionError::NoFileData(2)))
+        ));
+        write_u32(&mut elf, signature_header + 4, 1);
+        let duplicate = elf[signature_header..signature_header + 64].to_vec();
+        elf.extend_from_slice(&duplicate);
+        write_u16(&mut elf, 0x3c, 4);
+        assert!(matches!(
+            signature::extract_signature(&elf),
+            Err(LoadError::InvalidSections(elf::SectionError::DuplicateName))
+        ));
     }
 }

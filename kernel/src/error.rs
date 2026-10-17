@@ -100,6 +100,7 @@ pub enum IpcError {
 pub enum LoaderError {
     /// 無効なELF形式
     InvalidElf,
+    InvalidSections(crate::loader::elf::SectionError),
     AbiMetadataInvalid(crate::loader::type_id::DependencyMetadataError),
     /// 署名検証失敗
     SignatureVerificationFailed,
@@ -257,6 +258,7 @@ impl fmt::Display for LoaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoaderError::InvalidElf => write!(f, "invalid ELF format"),
+            LoaderError::InvalidSections(error) => write!(f, "invalid ELF sections: {error}"),
             LoaderError::AbiMetadataInvalid(error) => write!(f, "invalid ABI metadata: {error}"),
             LoaderError::SignatureVerificationFailed => write!(f, "signature verification failed"),
             LoaderError::InvalidSignatureFormat => write!(f, "invalid signature format"),
@@ -398,6 +400,7 @@ impl From<crate::loader::LoadError> for KernelError {
         use crate::loader::LoadError as LE;
         KernelError::Loader(match e {
             LE::InvalidFormat(_) => LoaderError::InvalidElf,
+            LE::InvalidSections(error) => LoaderError::InvalidSections(error),
             LE::InvalidSignature => LoaderError::SignatureVerificationFailed,
             LE::UnresolvedDependency(_) => LoaderError::LoadFailed,
             LE::OutOfMemory => LoaderError::LoadFailed,
