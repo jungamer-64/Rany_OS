@@ -35,6 +35,7 @@ use crate::driver_registry::{
 };
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
+use alloc::collections::btree_map::Entry;
 use alloc::string::{String, ToString};
 use alloc::vec::Vec;
 use kernel_api::abi::driver::{
@@ -167,6 +168,12 @@ pub struct CellEntry {
     pub stats: ModuleStats,
 }
 
+impl Default for CellRegistry {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CellRegistry {
     pub const fn new() -> Self {
         Self {
@@ -232,6 +239,46 @@ impl CellRegistry {
         self.symbol_table
             .iter()
             .find_map(|(symbol, addr)| str_eq(symbol.as_str(), name).then_some(*addr))
+    }
+
+    /// Finalization and closed code admission are prerequisites for transferring
+    /// allocation ownership out of the registry. Every failure retains the cell.
+    fn remove_finalized(&mut self, id: CellId) -> Result<CellEntry, LoadError> {
+        let has_dependents = self
+            .cells
+            .values()
+            .any(|cell| cell.dependencies.contains(&id));
+        let Entry::Occupied(occupied) = self.cells.entry(id) else {
+            return Err(LoadError::CellNotFound);
+        };
+        let cell = occupied.get();
+        if !matches!(cell.runtime, cell_runtime::CellRuntime::Finalized) {
+            return Err(LoadError::Finalization(
+                kernel_api::resource::domain::CodeFinalizationError::Busy,
+            ));
+        }
+        cell.code
+            .close()
+            .map_err(|leases| LoadError::CodeBusy { leases })?;
+        if !cell.registered_drivers.is_empty() || has_dependents {
+            return Err(LoadError::UnresolvedDependency(
+                "Cell ownership changed during finalization".into(),
+            ));
+        }
+        // OccupiedEntry keeps the checked entry exclusively borrowed until its
+        // removal; no lookup or fallible step follows the ownership transfer.
+        let entry = occupied.remove();
+        let shadow_involved = entry.name.starts_with("update-")
+            || self
+                .cells
+                .values()
+                .any(|cell| cell.name.starts_with("update-"));
+        if !shadow_involved {
+            for (symbol, _) in &entry.exports {
+                self.unregister_symbol(symbol);
+            }
+        }
+        Ok(entry)
     }
 
     /// 名前でセルを検索
@@ -644,6 +691,11 @@ pub(crate) fn acquire_code_lease(id: CellId) -> Option<code::CodeLease> {
 
 /// Closes admission under the registry lock. Busy retains the entry, symbols,
 /// mappings and protection key; the caller may retry after existing leases end.
+///
+/// # Errors
+/// Rejects the kernel cell, unknown cells and active dependents or drivers.
+/// Finalization or code leases may keep an admitted cell busy; those failures
+/// retain its resources, and retry continues after their owners finish.
 pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
     if id == CellId::KERNEL {
         return Err(LoadError::InvalidFormat(
@@ -668,30 +720,7 @@ pub fn unload_cell(id: CellId) -> Result<(), LoadError> {
         Ok(())
     })?;
     cell_runtime::finalize(id).map_err(LoadError::Finalization)?;
-    let entry = with_registry_mut(|registry| {
-        let cell = registry.get(id).ok_or(LoadError::CellNotFound)?;
-        if !matches!(cell.runtime, cell_runtime::CellRuntime::Finalized) {
-            return Err(LoadError::Finalization(
-                kernel_api::resource::domain::CodeFinalizationError::Busy,
-            ));
-        }
-        cell.code
-            .close()
-            .map_err(|leases| LoadError::CodeBusy { leases })?;
-        // Recheck references at the actual removal publication boundary.
-        if !cell.registered_drivers.is_empty()
-            || registry
-                .all_cells()
-                .any(|cell| cell.dependencies.contains(&id))
-        {
-            return Err(LoadError::UnresolvedDependency(
-                "Cell ownership changed during finalization".into(),
-            ));
-        }
-        Ok(registry
-            .unload(id)
-            .expect("finalized cell remains registered until removal"))
-    })?;
+    let entry = with_registry_mut(|registry| registry.remove_finalized(id))?;
     let CellEntry {
         load_address,
         load_size,
