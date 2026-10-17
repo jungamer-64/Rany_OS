@@ -514,6 +514,13 @@ impl LiveUpdateManager {
     }
 
     /// ライブアップデートを実行
+    ///
+    /// # Errors
+    /// A missing target or rejected load prevents candidate publication. Failures
+    /// after preparation retain the candidate and any published driver changes
+    /// in the pending transaction; [`Self::pending_status`] reports that progress.
+    /// Maintenance or commit/rollback must finish it before another update starts.
+    /// Busy driver operations and retained code leases do not discard the candidate.
     pub fn perform_update(
         &self,
         _cell_id: u64,
@@ -821,10 +828,19 @@ impl LiveUpdateManager {
         });
     }
 
+    /// # Errors
+    /// Rejects a missing/mismatched transaction, a concurrent operation or an
+    /// commit already in progress. Driver restoration, domain stop and code
+    /// reclamation failures retain their progress; retry resumes that rollback.
     pub fn rollback_for_cell(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
         self.rollback_pending_update_for(cell_id)
     }
 
+    /// # Errors
+    /// Rejects a missing/mismatched transaction, a concurrent operation, failed
+    /// health validation or rollback already in progress. Once commit begins,
+    /// finalization and lease failures retain the retired cell until a retry can
+    /// reclaim it; they do not reopen rollback or report update completion.
     pub fn commit_for_cell(&self, cell_id: u64) -> Result<UpdateTransition, LiveUpdateError> {
         self.commit_pending_update_for(cell_id)
     }
@@ -1503,9 +1519,19 @@ pub trait StateTransfer: Sized {
     const STATE_VERSION: u32;
 
     /// 内部状態をエクスポート（シリアライズ）
+    ///
+    /// # Errors
+    /// Reports unsupported export, inconsistent source state, serialization
+    /// failure or insufficient output capacity. Failure produces no snapshot;
+    /// the caller continues to own the source instance.
     fn export_state(&self) -> Result<ExportedState, StateExportError>;
 
     /// 状態をインポート（デシリアライズ）して新インスタンスを構築
+    ///
+    /// # Errors
+    /// Implementations report unsupported import, incompatible/corrupt encoding
+    /// or restoration failure. The exported payload is consumed on every outcome,
+    /// so a retry needs another owned snapshot.
     fn import_state(state: ExportedState) -> Result<Self, StateImportError>;
 
     /// バージョン互換性をチェック
@@ -1519,6 +1545,11 @@ pub trait StateTransfer: Sized {
     }
 
     /// 状態移行を試行
+    ///
+    /// # Errors
+    /// Rejects checksum/length corruption and unsupported versions before import,
+    /// then propagates the implementation's import error. The supplied snapshot
+    /// is consumed even when validation rejects it.
     fn try_migrate(state: ExportedState) -> Result<Self, StateImportError> {
         if !state.verify() {
             return Err(StateImportError::CorruptedData);
