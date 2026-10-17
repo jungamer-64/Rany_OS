@@ -1974,9 +1974,9 @@ macro_rules! export_driver {
         $(,)? // allow optional trailing comma so doc examples can use a trailing comma
     ) => {
         $crate::declare_rany_type_id_section!(
-            $crate::__type_id::IPC_INTERFACE,
-            $crate::__type_id::KERNEL_API_INTERFACE,
-            $crate::__type_id::DRIVER_EXPORTS_INTERFACE
+            $crate::type_metadata::IPC_INTERFACE,
+            $crate::type_metadata::KERNEL_API_INTERFACE,
+            $crate::type_metadata::DRIVER_EXPORTS_INTERFACE
             $(, $($dep),*)?
         );
         $crate::export_driver!(@impl

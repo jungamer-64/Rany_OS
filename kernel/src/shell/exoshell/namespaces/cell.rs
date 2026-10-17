@@ -698,19 +698,27 @@ impl CellNamespace {
             Err(e) => return ExoValue::Error(format!("Failed to read file '{}': {}", path, e)),
         };
 
-        if content.len() < 4 || &content[..4] != b"\x7fELF" {
-            return ExoValue::Error(format!("Artifact '{}' is not a valid ELF file", path));
-        }
+        let loader = match crate::loader::ElfLoader::new(&content) {
+            Ok(loader) => loader,
+            Err(error) => {
+                return ExoValue::Error(format!("Invalid ELF artifact '{}': {}", path, error));
+            }
+        };
 
         let mut out = BTreeMap::new();
         let file_name = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
         Self::map_insert(&mut out, "path", Self::vstr(path.clone()));
         Self::map_insert(&mut out, "file_name", Self::vstr(file_name));
 
-        let Some(deps) = crate::loader::type_id::extract_type_ids(&content) else {
+        let dependencies = match crate::loader::type_id::extract_type_ids(&loader) {
+            Ok(dependencies) => dependencies,
+            Err(error) => {
+                return ExoValue::Error(format!("Invalid ABI metadata in '{}': {}", path, error));
+            }
+        };
+        let Some(deps) = dependencies else {
             Self::map_insert(&mut out, "abi_metadata_present", ExoValue::Bool(false));
             Self::map_insert(&mut out, "verify_ok", ExoValue::Bool(false));
-            Self::map_insert(&mut out, "cell_version", Self::vstr("0.0.0"));
             Self::map_insert(&mut out, "dependency_count", Self::vint_u64(0));
             Self::map_insert(&mut out, "dependencies", ExoValue::Array(Vec::new()));
             return ExoValue::Map(out);
@@ -718,8 +726,8 @@ impl CellNamespace {
 
         let mut dep_vals = Vec::new();
         let mut all_compatible = true;
-        for dep in deps.dependencies.iter() {
-            let kernel = crate::loader::type_id::get_kernel_interface(&dep.interface);
+        for dep in &deps {
+            let kernel = crate::loader::type_id::get_kernel_interface(dep.interface);
             let mut m = BTreeMap::new();
             let (
                 kernel_present,
@@ -764,7 +772,7 @@ impl CellNamespace {
             let compatible_flag = compatible.unwrap_or(false);
             all_compatible &= compatible_flag;
 
-            Self::map_insert(&mut m, "interface", Self::vstr(dep.interface.clone()));
+            Self::map_insert(&mut m, "interface", Self::vstr(dep.interface));
             Self::map_insert(
                 &mut m,
                 "required_hash_hex",
@@ -794,16 +802,7 @@ impl CellNamespace {
 
         Self::map_insert(&mut out, "abi_metadata_present", ExoValue::Bool(true));
         Self::map_insert(&mut out, "verify_ok", ExoValue::Bool(verify_ok));
-        Self::map_insert(
-            &mut out,
-            "cell_version",
-            Self::vstr(format!("{}", deps.cell_version)),
-        );
-        Self::map_insert(
-            &mut out,
-            "dependency_count",
-            Self::vint_usize(deps.dependencies.len()),
-        );
+        Self::map_insert(&mut out, "dependency_count", Self::vint_usize(deps.len()));
         Self::map_insert(&mut out, "dependencies", ExoValue::Array(dep_vals));
         ExoValue::Map(out)
     }

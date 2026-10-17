@@ -100,6 +100,7 @@ pub enum IpcError {
 pub enum LoaderError {
     /// 無効なELF形式
     InvalidElf,
+    AbiMetadataInvalid(crate::loader::type_id::DependencyMetadataError),
     /// 署名検証失敗
     SignatureVerificationFailed,
     /// 無効な署名形式
@@ -256,6 +257,7 @@ impl fmt::Display for LoaderError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             LoaderError::InvalidElf => write!(f, "invalid ELF format"),
+            LoaderError::AbiMetadataInvalid(error) => write!(f, "invalid ABI metadata: {error}"),
             LoaderError::SignatureVerificationFailed => write!(f, "signature verification failed"),
             LoaderError::InvalidSignatureFormat => write!(f, "invalid signature format"),
             LoaderError::SignatureNotFound => write!(f, "signature not found"),
@@ -402,6 +404,7 @@ impl From<crate::loader::LoadError> for KernelError {
             LE::UnsafeNotAllowed => LoaderError::LoadFailed,
             LE::AlreadyLoaded => LoaderError::LoadFailed,
             LE::AbiIncompatible(_) => LoaderError::LoadFailed,
+            LE::AbiMetadataInvalid(error) => LoaderError::AbiMetadataInvalid(error),
             LE::CellNotFound => LoaderError::LoadFailed,
             LE::RelocationFailed(_) => LoaderError::RelocationFailed,
             LE::InvalidPermissions(_) => LoaderError::InvalidSecurityLevel,

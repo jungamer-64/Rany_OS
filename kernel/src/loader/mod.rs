@@ -335,6 +335,7 @@ pub enum LoadError {
     AlreadyLoaded,
     /// 【設計書 3.4】ABI非互換
     AbiIncompatible(String),
+    AbiMetadataInvalid(type_id::DependencyMetadataError),
     /// ループ境界証明セクションが欠落
     LoopProofMissing,
     /// ループ境界証明セクションが不正
@@ -363,6 +364,7 @@ impl core::fmt::Display for LoadError {
             LoadError::UnsafeNotAllowed => write!(f, "Unsafe code not allowed for this cell"),
             LoadError::AlreadyLoaded => write!(f, "Cell already loaded"),
             LoadError::AbiIncompatible(msg) => write!(f, "ABI incompatibility: {}", msg),
+            LoadError::AbiMetadataInvalid(error) => write!(f, "Invalid ABI metadata: {error}"),
             LoadError::LoopProofMissing => {
                 write!(f, "Loop proof metadata missing (.rany_loop_proof)")
             }
@@ -462,17 +464,13 @@ pub(crate) fn load_driver_artifact_cell(
     }
 }
 
-/// Validate unsafe flags and type ID dependencies
-fn validate_cell_requirements(
-    name: &str,
-    elf_data: &[u8],
-    allow_unsafe: bool,
-    contains_unsafe: bool,
-) -> Result<(), LoadError> {
-    if !allow_unsafe && contains_unsafe {
-        return Err(LoadError::UnsafeNotAllowed);
-    }
-    if let Some(deps) = type_id::extract_type_ids(elf_data) {
+/// Validate ABI requirements and loop proof before allocating executable memory.
+fn validate_cell_requirements(name: &str, loader: &elf::ElfLoader<'_>) -> Result<(), LoadError> {
+    let dependencies = type_id::extract_type_ids(loader).map_err(|error| match error {
+        type_id::DependencyMetadataError::OutOfMemory => LoadError::OutOfMemory,
+        error => LoadError::AbiMetadataInvalid(error),
+    })?;
+    if let Some(deps) = dependencies {
         if let Err(e) = type_id::verify_cell_dependencies(&deps) {
             log::info!(
                 "[Loader] Type ID verification failed for '{}': {}\n",
@@ -481,14 +479,10 @@ fn validate_cell_requirements(
             );
             return Err(LoadError::AbiIncompatible(alloc::format!("{}", e)));
         }
-        log::info!(
-            "[Loader] Type ID verified for '{}' ({})\n",
-            name,
-            deps.cell_version
-        );
+        log::info!("[Loader] Type ID verified for '{}'\n", name);
     }
 
-    match loop_proof::verify_loop_proof_metadata(elf_data) {
+    match loop_proof::verify_loop_proof_metadata(loader) {
         Ok(meta) => {
             log::info!(
                 "[Loader] Loop proof verified for '{}' (version={}, flags={})\n",
@@ -525,9 +519,11 @@ fn load_cell_with_flags(
     signature_verified: bool,
     required_caps: u64,
 ) -> Result<CellId, LoadError> {
-    validate_cell_requirements(name, elf_data, allow_unsafe, contains_unsafe)?;
-
+    if !allow_unsafe && contains_unsafe {
+        return Err(LoadError::UnsafeNotAllowed);
+    }
     let loader = elf::ElfLoader::new(elf_data)?;
+    validate_cell_requirements(name, &loader)?;
     let cell_info = loader.parse()?;
 
     for import in &cell_info.imports {
@@ -872,6 +868,115 @@ mod tests {
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn malformed_abi_metadata_prevents_cell_admission() {
+        let elf = build_test_elf(Some((".rany_type_id", b"RTID\x01\0\0\0\x01\0\0\0")));
+        let loader = ElfLoader::new(&elf).unwrap();
+        assert!(matches!(
+            validate_cell_requirements("invalid", &loader),
+            Err(LoadError::AbiMetadataInvalid(
+                type_id::DependencyMetadataError::Truncated
+            ))
+        ));
+        let empty = build_test_elf(Some((".rany_type_id", b"RTID\x01\0\0\0\0\0\0\0")));
+        let loader = ElfLoader::new(&empty).unwrap();
+        assert!(
+            type_id::extract_type_ids(&loader)
+                .unwrap()
+                .unwrap()
+                .is_empty()
+        );
+        assert!(matches!(
+            validate_cell_requirements("empty", &loader),
+            Err(LoadError::LoopProofMissing)
+        ));
+        let absent = build_test_elf(None);
+        assert!(
+            type_id::extract_type_ids(&ElfLoader::new(&absent).unwrap())
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn metadata_section_reads_allow_unaligned_artifacts_and_byte_names() {
+        let mut elf = build_test_elf(Some((".metadata", b"payload")));
+        let table = u64::from_le_bytes(elf[0x28..0x30].try_into().unwrap()) as usize;
+        let names = u64::from_le_bytes(
+            elf[table + 64 + 0x18..table + 64 + 0x20]
+                .try_into()
+                .unwrap(),
+        ) as usize;
+        // ELF names are byte strings; an unrelated non-UTF8 name is valid.
+        elf[names + 1] = 0xff;
+        let mut unaligned = vec![0];
+        unaligned.extend_from_slice(&elf);
+        let loader = ElfLoader::new(&unaligned[1..]).unwrap();
+        assert_eq!(
+            loader.section_data(b".metadata").unwrap(),
+            Some(&b"payload"[..])
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn metadata_section_rejects_duplicate_names_and_unbacked_contents() {
+        let mut elf = build_test_elf(Some((".metadata", b"payload")));
+        let table = u64::from_le_bytes(elf[0x28..0x30].try_into().unwrap()) as usize;
+        let payload_header = table + 128;
+        write_u32(&mut elf, payload_header + 4, 8); // SHT_NOBITS has no file bytes.
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::NoFileData(2))
+        );
+        write_u32(&mut elf, payload_header + 4, 1);
+        let duplicate = elf[payload_header..payload_header + 64].to_vec();
+        elf.extend_from_slice(&duplicate);
+        write_u16(&mut elf, 0x3c, 4);
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::DuplicateName)
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn metadata_section_bounds_do_not_turn_corruption_into_absence() {
+        let original = build_test_elf(Some((".metadata", b"payload")));
+        let table = u64::from_le_bytes(original[0x28..0x30].try_into().unwrap()) as usize;
+        let mut elf = original.clone();
+        write_u64(&mut elf, 0x28, u64::MAX);
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::InvalidTable)
+        );
+        elf.copy_from_slice(&original);
+        write_u64(&mut elf, table + 128 + 0x18, u64::MAX);
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::InvalidData(2))
+        );
+        elf.copy_from_slice(&original);
+        write_u32(&mut elf, table + 128, u32::MAX);
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::InvalidName(2))
+        );
+        elf.copy_from_slice(&original);
+        let names_size = u64::from_le_bytes(
+            elf[table + 64 + 0x20..table + 64 + 0x28]
+                .try_into()
+                .unwrap(),
+        );
+        write_u64(&mut elf, table + 64 + 0x20, names_size - 1);
+        assert_eq!(
+            ElfLoader::new(&elf).unwrap().section_data(b".metadata"),
+            Err(elf::SectionError::InvalidStringTable)
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn load_driver_pack_rejects_too_new_kernel_api_version() {
         let pack = driver_pack::build_unsigned_driver_pack(
             "test_driver",
@@ -914,8 +1019,11 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn validate_requirements_rejects_missing_loop_proof_section() {
         let elf = build_test_elf(None);
-        let err = validate_cell_requirements("test-cell", &elf, true, false)
-            .expect_err("missing loop proof must be rejected");
+        let err = validate_cell_requirements(
+            "test-cell",
+            &ElfLoader::new(&elf).expect("valid ELF header"),
+        )
+        .expect_err("missing loop proof must be rejected");
         assert!(matches!(err, LoadError::LoopProofMissing));
     }
 
@@ -924,8 +1032,11 @@ mod tests {
     fn validate_requirements_rejects_invalid_loop_proof_section() {
         let bad = [b'R', b'L', b'X', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &bad)));
-        let err = validate_cell_requirements("test-cell", &elf, true, false)
-            .expect_err("invalid loop proof must be rejected");
+        let err = validate_cell_requirements(
+            "test-cell",
+            &ElfLoader::new(&elf).expect("valid ELF header"),
+        )
+        .expect_err("invalid loop proof must be rejected");
         assert!(matches!(err, LoadError::LoopProofInvalid(_)));
     }
 
@@ -934,8 +1045,11 @@ mod tests {
     fn validate_requirements_accepts_valid_loop_proof_section() {
         let good = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some((loop_proof::LOOP_PROOF_SECTION_NAME, &good)));
-        validate_cell_requirements("test-cell", &elf, true, false)
-            .expect("valid loop proof should pass");
+        validate_cell_requirements(
+            "test-cell",
+            &ElfLoader::new(&elf).expect("valid ELF header"),
+        )
+        .expect("valid loop proof should pass");
     }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]

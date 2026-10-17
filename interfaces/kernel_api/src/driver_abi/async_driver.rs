@@ -336,9 +336,9 @@ macro_rules! export_async_driver {
         version: $version:expr
     ) => {
         $crate::declare_rany_type_id_section!(
-            $crate::__type_id::IPC_INTERFACE,
-            $crate::__type_id::KERNEL_API_INTERFACE,
-            $crate::__type_id::DRIVER_EXPORTS_INTERFACE
+            $crate::type_metadata::IPC_INTERFACE,
+            $crate::type_metadata::KERNEL_API_INTERFACE,
+            $crate::type_metadata::DRIVER_EXPORTS_INTERFACE
         );
         pub fn standalone_driver_vtable() -> *const $crate::abi::driver::DriverVTable {
             use $crate::abi::driver::{

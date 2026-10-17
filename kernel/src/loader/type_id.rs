@@ -21,7 +21,7 @@
 //! 3. **不一致時の拒否**: ハッシュ値が一致しない場合、セルのロードを拒否します。
 use crate::sync::PoisonLock;
 use alloc::borrow::Cow;
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::vec::Vec;
 
 /// 型のハッシュ値（64ビット）
@@ -133,6 +133,7 @@ fn str_eq_bytewise(lhs: &str, rhs: &str) -> bool {
 /// インターフェース定義のレジストリ
 ///
 /// カーネルが提供するインターフェースのハッシュ値を管理します。
+#[derive(Default)]
 pub struct InterfaceRegistry {
     /// 登録済みインターフェース一覧（名前は一意）
     interfaces: Vec<TypeIdInfo>,
@@ -175,9 +176,9 @@ impl InterfaceRegistry {
 
     /// インターフェースのハッシュを検証
     ///
-    /// # Returns
-    /// - `Ok(())`: ハッシュが一致
-    /// - `Err(TypeIdError)`: ハッシュ不一致または未登録
+    /// # Errors
+    /// Reports an unregistered name or a provider fingerprint that differs from
+    /// the importing artifact's expected hash. Verification does not register it.
     pub fn verify(&self, name: &str, expected_hash: TypeHash) -> Result<(), TypeIdError> {
         match self
             .interfaces
@@ -203,6 +204,10 @@ impl InterfaceRegistry {
     }
 
     /// バージョン互換性も含めて検証
+    ///
+    /// # Errors
+    /// Requires both an exact fingerprint match and a provider version accepted
+    /// by [`SemVer::is_backward_compatible`]; neither check replaces the other.
     pub fn verify_with_version(
         &self,
         name: &str,
@@ -304,15 +309,120 @@ impl core::fmt::Display for TypeIdError {
     }
 }
 
-/// 依存関係エントリ
+/// An ABI requirement borrowed from an immutable artifact, not cell identity.
 #[derive(Debug, Clone)]
-pub struct DependencyEntry {
+pub struct DependencyEntry<'a> {
     /// インターフェース名
-    pub interface: String,
+    pub interface: &'a str,
     /// 要求するハッシュ値
     pub hash: TypeHash,
     /// 要求する最小バージョン
     pub min_version: SemVer,
+}
+
+/// Parsing never publishes a prefix of a malformed dependency list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DependencyMetadataError {
+    Sections(super::elf::SectionError),
+    Truncated,
+    InvalidMagic,
+    UnsupportedVersion(u32),
+    InvalidName,
+    OutOfMemory,
+}
+
+impl core::fmt::Display for DependencyMetadataError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Sections(error) => error.fmt(f),
+            Self::Truncated => f.write_str("truncated ABI dependency fragment"),
+            Self::InvalidMagic => f.write_str("invalid ABI dependency magic"),
+            Self::UnsupportedVersion(version) => {
+                write!(f, "unsupported ABI dependency format {version}")
+            }
+            Self::InvalidName => f.write_str("ABI interface name is empty or is not UTF-8"),
+            Self::OutOfMemory => f.write_str("cannot reserve ABI dependency records"),
+        }
+    }
+}
+
+/// Read every dependency fragment emitted into the ELF metadata section.
+/// `None` means only that the section is absent; an empty declared list is `Some`.
+/// Names borrow the artifact and no cell name/version is inferred from them.
+///
+/// # Errors
+/// Malformed ELF sections, unsupported/truncated records, invalid names and
+/// allocation failure are distinct from absence. No partial list escapes.
+pub fn extract_type_ids<'a>(
+    loader: &super::elf::ElfLoader<'a>,
+) -> Result<Option<Vec<DependencyEntry<'a>>>, DependencyMetadataError> {
+    loader
+        .section_data(b".rany_type_id")
+        .map_err(DependencyMetadataError::Sections)?
+        .map(parse_type_id_section)
+        .transpose()
+}
+
+fn parse_type_id_section(
+    mut data: &[u8],
+) -> Result<Vec<DependencyEntry<'_>>, DependencyMetadataError> {
+    use kernel_api::type_metadata::{
+        ENTRY_NAME_LEN, ENTRY_SIZE, FORMAT_VERSION, HEADER_SIZE, MAGIC,
+    };
+    if data.is_empty() {
+        return Err(DependencyMetadataError::Truncated);
+    }
+    let mut dependencies = Vec::new();
+    // LOOP_PROOF: mode=condition; reason=Each successful iteration consumes at least one header from the finite input slice and an empty remainder ends parsing.;
+    while !data.is_empty() {
+        let header = data
+            .get(..HEADER_SIZE)
+            .ok_or(DependencyMetadataError::Truncated)?;
+        if header[..4] != MAGIC {
+            return Err(DependencyMetadataError::InvalidMagic);
+        }
+        let version = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+        if version != FORMAT_VERSION {
+            return Err(DependencyMetadataError::UnsupportedVersion(version));
+        }
+        let count = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
+        let end = count
+            .checked_mul(ENTRY_SIZE)
+            .and_then(|bytes| HEADER_SIZE.checked_add(bytes))
+            .ok_or(DependencyMetadataError::Truncated)?;
+        let entries = data
+            .get(HEADER_SIZE..end)
+            .ok_or(DependencyMetadataError::Truncated)?;
+        dependencies
+            .try_reserve(count)
+            .map_err(|_| DependencyMetadataError::OutOfMemory)?;
+        for entry in entries.as_chunks::<ENTRY_SIZE>().0 {
+            let name = &entry[..ENTRY_NAME_LEN];
+            let end = name
+                .iter()
+                .position(|byte| *byte == 0)
+                .unwrap_or(ENTRY_NAME_LEN);
+            let interface = core::str::from_utf8(&name[..end])
+                .map_err(|_| DependencyMetadataError::InvalidName)?;
+            if interface.is_empty() {
+                return Err(DependencyMetadataError::InvalidName);
+            }
+            dependencies.push(DependencyEntry {
+                interface,
+                hash: u64::from_le_bytes([
+                    entry[64], entry[65], entry[66], entry[67], entry[68], entry[69], entry[70],
+                    entry[71],
+                ]),
+                min_version: SemVer::new(
+                    u16::from_le_bytes([entry[72], entry[73]]),
+                    u16::from_le_bytes([entry[74], entry[75]]),
+                    u16::from_le_bytes([entry[76], entry[77]]),
+                ),
+            });
+        }
+        data = &data[end..];
+    }
+    Ok(dependencies)
 }
 
 /// グローバルインターフェースレジストリ
@@ -355,12 +465,15 @@ pub fn list_kernel_interfaces() -> Vec<TypeIdInfo> {
         .clone()
 }
 
-/// セルの依存関係を検証
-pub fn verify_cell_dependencies(deps: &CellDependencies) -> Result<(), TypeIdError> {
+/// Verify all imported fingerprints and minimum versions against registered providers.
+///
+/// # Errors
+/// Returns the first missing interface, hash mismatch or incompatible version.
+pub fn verify_cell_dependencies(deps: &[DependencyEntry<'_>]) -> Result<(), TypeIdError> {
     let registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
 
-    for dep in &deps.dependencies {
-        registry.verify_with_version(&dep.interface, dep.hash, dep.min_version)?;
+    for dep in deps {
+        registry.verify_with_version(dep.interface, dep.hash, dep.min_version)?;
     }
 
     Ok(())
@@ -373,7 +486,7 @@ pub fn verify_cell_dependencies(deps: &CellDependencies) -> Result<(), TypeIdErr
 /// カーネルインターフェースの初期化
 pub fn init_kernel_interfaces() {
     let mut registry = INTERFACE_REGISTRY.lock().unwrap_or_else(|e| e.into_inner());
-    use kernel_api::__type_id::{
+    use kernel_api::type_metadata::{
         DRIVER_EXPORTS_INTERFACE, IPC_INTERFACE, KERNEL_API_INTERFACE, MEMORY_ALLOCATOR_INTERFACE,
         TASK_SCHEDULER_INTERFACE,
     };
@@ -400,6 +513,89 @@ pub fn init_kernel_interfaces() {
 mod tests {
     use super::*;
 
+    fn dependency_fragment(name: &[u8]) -> Vec<u8> {
+        // Independent wire vector: RTID v1, one 78-byte record.
+        let mut bytes = vec![0; 90];
+        bytes[..12].copy_from_slice(b"RTID\x01\0\0\0\x01\0\0\0");
+        bytes[12..12 + name.len()].copy_from_slice(name);
+        bytes[76..84].copy_from_slice(&0x0123_4567_89ab_cdefu64.to_le_bytes());
+        bytes[84..90].copy_from_slice(&[2, 0, 3, 0, 4, 0]);
+        bytes
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn dependency_fragments_preserve_every_requirement() {
+        let mut bytes = dependency_fragment(b"First");
+        bytes.extend_from_slice(b"RTID\x01\0\0\0\0\0\0\0");
+        bytes.extend_from_slice(&dependency_fragment(&[b'X'; 64]));
+        let dependencies = parse_type_id_section(&bytes).expect("complete fragments");
+        assert_eq!(dependencies.len(), 2);
+        assert_eq!(dependencies[0].interface, "First");
+        assert_eq!(dependencies[0].hash, 0x0123_4567_89ab_cdef);
+        assert_eq!(dependencies[0].min_version, SemVer::new(2, 3, 4));
+        assert_eq!(dependencies[1].interface.as_bytes(), &[b'X'; 64]);
+        assert!(
+            parse_type_id_section(b"RTID\x01\0\0\0\0\0\0\0")
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn dependency_fragments_reject_incomplete_lists_and_trailing_bytes() {
+        let bytes = dependency_fragment(b"First");
+        for size in [0, 11, 12, 89] {
+            assert_eq!(
+                parse_type_id_section(&bytes[..size]).unwrap_err(),
+                DependencyMetadataError::Truncated
+            );
+        }
+        let mut truncated = bytes.clone();
+        truncated[8..12].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            parse_type_id_section(&truncated).unwrap_err(),
+            DependencyMetadataError::Truncated
+        );
+        truncated[8..12].copy_from_slice(&u32::MAX.to_le_bytes());
+        assert_eq!(
+            parse_type_id_section(&truncated).unwrap_err(),
+            DependencyMetadataError::Truncated
+        );
+        let mut trailing = bytes;
+        trailing.extend_from_slice(b"RTID\x01\0\0\0\x01\0\0\0");
+        assert_eq!(
+            parse_type_id_section(&trailing).unwrap_err(),
+            DependencyMetadataError::Truncated
+        );
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn dependency_fragments_reject_unknown_formats_and_invalid_identity() {
+        let mut bytes = dependency_fragment(b"First");
+        bytes[0] = b'X';
+        assert_eq!(
+            parse_type_id_section(&bytes).unwrap_err(),
+            DependencyMetadataError::InvalidMagic
+        );
+        bytes[0] = b'R';
+        bytes[4..8].copy_from_slice(&2u32.to_le_bytes());
+        assert_eq!(
+            parse_type_id_section(&bytes).unwrap_err(),
+            DependencyMetadataError::UnsupportedVersion(2)
+        );
+        assert_eq!(
+            parse_type_id_section(&dependency_fragment(b"")).unwrap_err(),
+            DependencyMetadataError::InvalidName
+        );
+        assert_eq!(
+            parse_type_id_section(&dependency_fragment(&[0xff])).unwrap_err(),
+            DependencyMetadataError::InvalidName
+        );
+    }
+
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn test_get_and_list_kernel_interfaces() {
@@ -425,15 +621,11 @@ mod tests {
         let ver = SemVer::new(1, 2, 0);
         register_kernel_interface_manual(iface, hash, ver);
 
-        let deps = CellDependencies {
-            cell_name: String::from("test-cell"),
-            cell_version: SemVer::new(1, 0, 0),
-            dependencies: vec![DependencyEntry {
-                interface: String::from(iface),
-                hash,
-                min_version: SemVer::new(1, 0, 0),
-            }],
-        };
+        let deps = [DependencyEntry {
+            interface: iface,
+            hash,
+            min_version: SemVer::new(1, 0, 0),
+        }];
 
         assert!(verify_cell_dependencies(&deps).is_ok());
     }
@@ -446,15 +638,11 @@ mod tests {
         let required = 0x9999_aaaa_bbbb_cccc;
         register_kernel_interface_manual(iface, actual, SemVer::new(1, 0, 0));
 
-        let deps = CellDependencies {
-            cell_name: String::from("test-cell"),
-            cell_version: SemVer::new(1, 0, 0),
-            dependencies: vec![DependencyEntry {
-                interface: String::from(iface),
-                hash: required,
-                min_version: SemVer::new(1, 0, 0),
-            }],
-        };
+        let deps = [DependencyEntry {
+            interface: iface,
+            hash: required,
+            min_version: SemVer::new(1, 0, 0),
+        }];
 
         let err = verify_cell_dependencies(&deps).expect_err("hash mismatch must be rejected");
         assert!(matches!(err, TypeIdError::HashMismatch { .. }));

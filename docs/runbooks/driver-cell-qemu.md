@@ -75,7 +75,7 @@ Expected:
 - `driver_cell.hot_swap_state = Idle`
 - `driver_cell.loader_cell_id` and `driver_cell.domain_id` are populated
 - `cell.graph()` returns `nodes/edges/stats`
-- `cell.inspect_artifact(...)` returns ABI metadata / dependencies (or `abi_metadata_present=false`)
+- `cell.inspect_artifact(...)` reports `abi_metadata_present=false` only when the Type ID section is absent. Malformed section tables or dependency records return an error.
 
 1. ABI metadata sanity check (before swap)
 

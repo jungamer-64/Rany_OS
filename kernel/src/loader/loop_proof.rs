@@ -2,8 +2,7 @@
 // src/loader/loop_proof.rs - Loop Boundary Proof Metadata Validation
 // 設計書 4.4.2: ループ境界静的証明
 // ============================================================================
-use crate::loader::elf::{Elf64Header, Elf64SectionHeader};
-use core::str;
+use crate::loader::elf::{ElfLoader, SectionError};
 
 pub const LOOP_PROOF_SECTION_NAME: &str = ".rany_loop_proof";
 const LOOP_PROOF_MAGIC: [u8; 4] = *b"RLOP";
@@ -19,7 +18,7 @@ pub struct LoopProofMetadata {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoopProofError {
     MissingSection,
-    InvalidElf(&'static str),
+    InvalidElf(SectionError),
     InvalidSize(usize),
     InvalidMagic([u8; 4]),
     UnsupportedVersion(u32),
@@ -45,13 +44,21 @@ impl core::fmt::Display for LoopProofError {
     }
 }
 
-pub fn verify_loop_proof_metadata(elf_data: &[u8]) -> Result<LoopProofMetadata, LoopProofError> {
-    let section = find_loop_proof_section(elf_data)?;
+/// Validate proof metadata before cell execution admission.
+///
+/// # Errors
+/// Rejects missing proof, malformed ELF sections and unsupported proof formats.
+pub fn verify_loop_proof_metadata(
+    loader: &ElfLoader<'_>,
+) -> Result<LoopProofMetadata, LoopProofError> {
+    let section = loader
+        .section_data(LOOP_PROOF_SECTION_NAME.as_bytes())
+        .map_err(LoopProofError::InvalidElf)?
+        .ok_or(LoopProofError::MissingSection)?;
     parse_loop_proof_section(section)
 }
 
 fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, LoopProofError> {
-    crate::io::log::early_print("[LP] parse_loop_proof_section begin\n");
     if section_data.len() < LOOP_PROOF_SECTION_MIN_SIZE {
         return Err(LoopProofError::InvalidSize(section_data.len()));
     }
@@ -65,7 +72,6 @@ fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, Lo
     if magic != LOOP_PROOF_MAGIC {
         return Err(LoopProofError::InvalidMagic(magic));
     }
-    crate::io::log::early_print("[LP] magic ok\n");
 
     let version = u32::from_le_bytes([
         section_data[4],
@@ -76,7 +82,6 @@ fn parse_loop_proof_section(section_data: &[u8]) -> Result<LoopProofMetadata, Lo
     if version != LOOP_PROOF_VERSION {
         return Err(LoopProofError::UnsupportedVersion(version));
     }
-    crate::io::log::early_print("[LP] version ok\n");
 
     let policy_flags = u32::from_le_bytes([
         section_data[8],
@@ -183,7 +188,8 @@ mod tests {
         let valid_section = [b'R', b'L', b'O', b'P', 1, 0, 0, 0, 7, 0, 0, 0];
         let elf = build_test_elf(Some(&valid_section));
 
-        let meta = verify_loop_proof_metadata(&elf).expect("valid section");
+        let meta = verify_loop_proof_metadata(&ElfLoader::new(&elf).expect("valid ELF header"))
+            .expect("valid section");
         assert_eq!(meta.version, 1);
         assert_eq!(meta.policy_flags, 7);
     }
@@ -192,7 +198,8 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn verify_loop_proof_metadata_rejects_missing_section() {
         let elf = build_test_elf(None);
-        let err = verify_loop_proof_metadata(&elf).expect_err("missing section must fail");
+        let err = verify_loop_proof_metadata(&ElfLoader::new(&elf).expect("valid ELF header"))
+            .expect_err("missing section must fail");
         assert_eq!(err, LoopProofError::MissingSection);
     }
 
@@ -202,7 +209,8 @@ mod tests {
         let bad_magic = [b'X', b'L', b'O', b'P', 1, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some(&bad_magic));
 
-        let err = verify_loop_proof_metadata(&elf).expect_err("invalid magic must fail");
+        let err = verify_loop_proof_metadata(&ElfLoader::new(&elf).expect("valid ELF header"))
+            .expect_err("invalid magic must fail");
         assert!(matches!(err, LoopProofError::InvalidMagic(_)));
     }
 
@@ -212,7 +220,8 @@ mod tests {
         let bad_version = [b'R', b'L', b'O', b'P', 2, 0, 0, 0, 0, 0, 0, 0];
         let elf = build_test_elf(Some(&bad_version));
 
-        let err = verify_loop_proof_metadata(&elf).expect_err("unsupported version must fail");
+        let err = verify_loop_proof_metadata(&ElfLoader::new(&elf).expect("valid ELF header"))
+            .expect_err("unsupported version must fail");
         assert_eq!(err, LoopProofError::UnsupportedVersion(2));
     }
 
@@ -222,7 +231,8 @@ mod tests {
         let short = [b'R', b'L', b'O'];
         let elf = build_test_elf(Some(&short));
 
-        let err = verify_loop_proof_metadata(&elf).expect_err("short section must fail");
+        let err = verify_loop_proof_metadata(&ElfLoader::new(&elf).expect("valid ELF header"))
+            .expect_err("short section must fail");
         assert_eq!(err, LoopProofError::InvalidSize(short.len()));
     }
 }

@@ -217,10 +217,10 @@ macro_rules! register_cell_runtime {
     (dependencies: [$($dep:expr),* $(,)?] $(,)?) => {
         #[cfg(target_os = "none")]
         $crate::declare_rany_type_id_section!(
-            $crate::__type_id::MEMORY_ALLOCATOR_INTERFACE,
-            $crate::__type_id::TASK_SCHEDULER_INTERFACE,
-            $crate::__type_id::IPC_INTERFACE,
-            $crate::__type_id::KERNEL_API_INTERFACE
+            $crate::type_metadata::MEMORY_ALLOCATOR_INTERFACE,
+            $crate::type_metadata::TASK_SCHEDULER_INTERFACE,
+            $crate::type_metadata::IPC_INTERFACE,
+            $crate::type_metadata::KERNEL_API_INTERFACE
             $(, $dep)*
         );
 
