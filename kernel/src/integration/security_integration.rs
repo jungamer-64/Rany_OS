@@ -155,10 +155,9 @@ impl SecurityIntegration {
             .device_contexts
             .iter_mut()
             .find(|c| c.device_id == device_id)
+            && !context.allowed_domains.contains(&domain_id)
         {
-            if !context.allowed_domains.contains(&domain_id) {
-                context.allowed_domains.push(domain_id);
-            }
+            context.allowed_domains.push(domain_id);
         }
     }
 

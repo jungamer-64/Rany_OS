@@ -324,12 +324,11 @@ impl NetworkStack {
                     frame.set_payload_len(total_len - EthernetHeader::SIZE);
                     let frame_len = frame.as_bytes().len();
                     drop(frame);
-                    if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                        if let Ok(payload) =
+                    if set_packet_visible_len(&mut packet, frame_len).is_ok()
+                        && let Ok(payload) =
                             kernel_api::resource::net::PacketPayload::try_single(packet)
-                        {
-                            let _ = self.transmit_packet_on(if_id, payload);
-                        }
+                    {
+                        let _ = self.transmit_packet_on(if_id, payload);
                     }
                 }
             }
@@ -365,19 +364,19 @@ impl NetworkStack {
             return false;
         };
 
-        if ip.protocol() == IpProtocol::Icmp {
-            if let Some(icmp_type) = original_packet.read_u8(header_len).map(IcmpType::from) {
-                match icmp_type {
-                    // RFC 1122: MUST NOT send an ICMP error in response to another ICMP error.
-                    IcmpType::DestinationUnreachable
-                    | IcmpType::Redirect
-                    | IcmpType::TimeExceeded
-                    | IcmpType::ParameterProblem
-                    | IcmpType::SourceQuench => {
-                        return false;
-                    }
-                    _ => {}
+        if ip.protocol() == IpProtocol::Icmp
+            && let Some(icmp_type) = original_packet.read_u8(header_len).map(IcmpType::from)
+        {
+            match icmp_type {
+                // RFC 1122: MUST NOT send an ICMP error in response to another ICMP error.
+                IcmpType::DestinationUnreachable
+                | IcmpType::Redirect
+                | IcmpType::TimeExceeded
+                | IcmpType::ParameterProblem
+                | IcmpType::SourceQuench => {
+                    return false;
                 }
+                _ => {}
             }
         }
 
@@ -615,33 +614,32 @@ impl NetworkStack {
         // (e.2) An ICMPv6 redirect message.
         if let Some((final_proto, icmp_data)) =
             crate::net::payload::ipv6_transport_payload(original_packet.payload())
+            && final_proto == IpProtocol::Icmpv6
         {
-            if final_proto == IpProtocol::Icmpv6 {
-                let Some(icmp_type) = icmp_data.read_array::<1>(0).map(|bytes| bytes[0]) else {
-                    return false;
-                };
-                if icmp_type < 128 || icmp_type == 137
-                /* Redirect */
-                {
-                    return false;
-                }
+            let Some(icmp_type) = icmp_data.read_array::<1>(0).map(|bytes| bytes[0]) else {
+                return false;
+            };
+            if icmp_type < 128 || icmp_type == 137
+            /* Redirect */
+            {
+                return false;
             }
         }
 
         // (e.3, e.4, e.5) A packet destined to a multicast address (with exceptions)
-        if let Some(orig_dst) = original_packet.read_array::<16>(24).map(Ipv6Address::new) {
-            if orig_dst.is_multicast() {
-                // RFC 4443 Section 2.4(e.3) Exceptions:
-                // 1. Packet Too Big is allowed for multicast
-                let is_ptb = error_type == Icmpv6Type::PacketTooBig;
+        if let Some(orig_dst) = original_packet.read_array::<16>(24).map(Ipv6Address::new)
+            && orig_dst.is_multicast()
+        {
+            // RFC 4443 Section 2.4(e.3) Exceptions:
+            // 1. Packet Too Big is allowed for multicast
+            let is_ptb = error_type == Icmpv6Type::PacketTooBig;
 
-                // 2. Parameter Problem (Code 2: unrecognized Next Header) is allowed for multicast
-                let is_pp_unrecognized_header =
-                    error_type == Icmpv6Type::ParameterProblem && error_code == 2;
+            // 2. Parameter Problem (Code 2: unrecognized Next Header) is allowed for multicast
+            let is_pp_unrecognized_header =
+                error_type == Icmpv6Type::ParameterProblem && error_code == 2;
 
-                if !is_ptb && !is_pp_unrecognized_header {
-                    return false;
-                }
+            if !is_ptb && !is_pp_unrecognized_header {
+                return false;
             }
         }
 
@@ -890,22 +888,20 @@ impl NetworkStack {
                         let send_time = self.current_time();
                         drop(frame);
 
-                        if set_packet_visible_len(&mut packet, total_len).is_ok() {
-                            if let Ok(payload) =
+                        if set_packet_visible_len(&mut packet, total_len).is_ok()
+                            && let Ok(payload) =
                                 kernel_api::resource::net::PacketPayload::try_single(packet)
-                            {
-                                if self.transmit_packet_on(if_id, payload).is_ok() {
-                                    log::info!(
-                                        "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
-                                        target.as_bytes()[0],
-                                        target.as_bytes()[1],
-                                        target.as_bytes()[2],
-                                        target.as_bytes()[3],
-                                        sequence
-                                    );
-                                    return Ok(send_time);
-                                }
-                            }
+                            && self.transmit_packet_on(if_id, payload).is_ok()
+                        {
+                            log::info!(
+                                "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",
+                                target.as_bytes()[0],
+                                target.as_bytes()[1],
+                                target.as_bytes()[2],
+                                target.as_bytes()[3],
+                                sequence
+                            );
+                            return Ok(send_time);
                         }
                     }
                 }

@@ -100,11 +100,11 @@ pub fn inc_ref(phys: u64) -> u16 {
 /// Returns true if count reached zero (table can be reclaimed)
 pub fn dec_ref(phys: u64) -> bool {
     let mut registry = page_table_registry().lock();
-    if let Some(entry) = registry.get_mut(&phys) {
-        if entry.ref_count > 0 {
-            entry.ref_count -= 1;
-            return entry.ref_count == 0;
-        }
+    if let Some(entry) = registry.get_mut(&phys)
+        && entry.ref_count > 0
+    {
+        entry.ref_count -= 1;
+        return entry.ref_count == 0;
     }
     false
 }

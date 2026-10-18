@@ -126,10 +126,9 @@ impl RuntimeQueueState {
     fn take_faulted_route(&mut self) -> Option<PendingRoute> {
         if let RuntimeQueuePhase::Faulted(RuntimeQueueFault::RouteCollision(route)) =
             &mut self.phase
+            && let Some(route) = route.take()
         {
-            if let Some(route) = route.take() {
-                return Some(route);
-            }
+            return Some(route);
         }
         self.pending.iter_mut().find_map(Option::take)
     }

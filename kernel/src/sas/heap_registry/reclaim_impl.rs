@@ -51,10 +51,10 @@ impl HeapRegistry {
             if let Some(node) = crate::domain::get_domain_numa(owner) {
                 let mut out = alloc::vec::Vec::new();
                 for (i, n) in self.shard_nodes.iter().enumerate() {
-                    if let Some(snode) = n {
-                        if *snode == node {
-                            out.push(i);
-                        }
+                    if let Some(snode) = n
+                        && *snode == node
+                    {
+                        out.push(i);
                     }
                 }
                 return out;

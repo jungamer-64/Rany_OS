@@ -124,11 +124,11 @@ impl Compositor {
         // 適切な位置を見つける
         let mut insert_pos = self.z_order_list.len();
         for (i, &other_id) in self.z_order_list.iter().enumerate() {
-            if let Some(other) = self.windows.get(&other_id) {
-                if other.z_order() > z_order {
-                    insert_pos = i;
-                    break;
-                }
+            if let Some(other) = self.windows.get(&other_id)
+                && other.z_order() > z_order
+            {
+                insert_pos = i;
+                break;
             }
         }
 
@@ -171,11 +171,11 @@ impl Compositor {
 
             let mut insert_pos = self.z_order_list.len();
             for (i, &other_id) in self.z_order_list.iter().enumerate() {
-                if let Some(other) = self.windows.get(&other_id) {
-                    if other.z_order() > z_order {
-                        insert_pos = i;
-                        break;
-                    }
+                if let Some(other) = self.windows.get(&other_id)
+                    && other.z_order() > z_order
+                {
+                    insert_pos = i;
+                    break;
                 }
             }
 
@@ -189,10 +189,11 @@ impl Compositor {
     /// 点の下にあるウィンドウを検索（上から）
     pub fn window_at(&self, x: i32, y: i32) -> Option<CompositorWindowId> {
         for &id in self.z_order_list.iter().rev() {
-            if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() && window.contains(x, y) {
-                    return Some(id);
-                }
+            if let Some(window) = self.windows.get(&id)
+                && window.is_visible()
+                && window.contains(x, y)
+            {
+                return Some(id);
             }
         }
         None
@@ -243,10 +244,10 @@ impl Compositor {
 
         // ウィンドウをZ-order順に描画
         for &id in &self.z_order_list.clone() {
-            if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() {
-                    self.draw_window_to_back_buffer(id);
-                }
+            if let Some(window) = self.windows.get(&id)
+                && window.is_visible()
+            {
+                self.draw_window_to_back_buffer(id);
             }
         }
 
@@ -263,10 +264,11 @@ impl Compositor {
             self.draw_desktop_region(dirty.rect);
 
             for &id in &self.z_order_list.clone() {
-                if let Some(window) = self.windows.get(&id) {
-                    if window.is_visible() && window.rect().intersects(&dirty.rect) {
-                        self.draw_window_region_to_back_buffer(id, dirty.rect);
-                    }
+                if let Some(window) = self.windows.get(&id)
+                    && window.is_visible()
+                    && window.rect().intersects(&dirty.rect)
+                {
+                    self.draw_window_region_to_back_buffer(id, dirty.rect);
                 }
             }
         }

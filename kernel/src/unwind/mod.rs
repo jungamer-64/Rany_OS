@@ -460,10 +460,10 @@ fn execute_dwarf_instructions(
     let mut parser = SafeEhFrameParser::new(instructions);
     // LOOP_PROOF: mode=condition; reason=Every decoded instruction consumes an opcode within the bounded instruction slice, and a malformed or unsupported instruction returns an error.;
     while !parser.reader.is_exhausted() {
-        if let Some(target_pc) = pc_limit {
-            if interpreter.location() > target_pc {
-                break;
-            }
+        if let Some(target_pc) = pc_limit
+            && interpreter.location() > target_pc
+        {
+            break;
         }
         let instruction = parser
             .parse_instruction(data_alignment_factor)

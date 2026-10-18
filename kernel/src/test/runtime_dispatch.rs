@@ -567,10 +567,11 @@ pub async fn run(profile: &str, case_filter: Option<&str>) -> RuntimeRunSummary 
 
         let pass_filter_to_inner = case_accepts_nested_filter(profile, case.id);
 
-        if let Some(filter) = case_filter {
-            if !str_eq(case.id, filter) && (!pass_filter_to_inner || filter_names_top_level_case) {
-                continue;
-            }
+        if let Some(filter) = case_filter
+            && !str_eq(case.id, filter)
+            && (!pass_filter_to_inner || filter_names_top_level_case)
+        {
+            continue;
         }
 
         let nested_case_filter = if pass_filter_to_inner {

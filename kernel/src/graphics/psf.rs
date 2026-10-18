@@ -206,10 +206,10 @@ impl<T: AsRef<[u8]>> PsfFont<T> {
                 break;
             }
 
-            if let Ok(s) = from_utf8(&table_data[i..i + char_len]) {
-                if let Some(c) = s.chars().next() {
-                    map.insert(c, glyph_idx);
-                }
+            if let Ok(s) = from_utf8(&table_data[i..i + char_len])
+                && let Some(c) = s.chars().next()
+            {
+                map.insert(c, glyph_idx);
             }
 
             i += char_len;

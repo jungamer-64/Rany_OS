@@ -583,10 +583,10 @@ pub fn unload_all() {
     let snapshots = manager.list_snapshots();
 
     for snap in snapshots {
-        if snap.state != DriverDomainState::Unloaded {
-            if let Err(e) = unload(snap.id) {
-                log::warn!("[DriverDomain] Failed to unload {}: {}\n", snap.id, e);
-            }
+        if snap.state != DriverDomainState::Unloaded
+            && let Err(e) = unload(snap.id)
+        {
+            log::warn!("[DriverDomain] Failed to unload {}: {}\n", snap.id, e);
         }
     }
 }

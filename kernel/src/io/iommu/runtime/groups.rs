@@ -231,32 +231,32 @@ impl IommuGroupManager {
             .map_err(|_| IommuError::Poisoned)?;
 
         // 1. デバイスが既にグループに所属しているか確認
-        if let Some(group_id) = device_to_group_guard.get(&device) {
-            if let Some(group) = groups_guard.get(group_id) {
-                if group.controller_idx != controller_idx {
-                    log::error!(
-                        "[IOMMU] Group {:?} controller mismatch for device {:?}: existing={} requested={}",
-                        group_id,
-                        device,
-                        group.controller_idx,
-                        controller_idx
-                    );
-                    return Err(IommuError::HardwareError);
-                }
-                // Check if the domain type matches
-                let domain = backend.get_domain(group.domain_id)?;
-                if domain.domain_type() != domain_type {
-                    log::warn!(
-                        "[IOMMU] Domain type mismatch for group {:?} (device {:?}): existing={:?} requested={:?}",
-                        group_id,
-                        device,
-                        domain.domain_type(),
-                        domain_type
-                    );
-                    // Use existing domain type (group policy takes precedence)
-                }
-                return Ok((group.clone(), false));
+        if let Some(group_id) = device_to_group_guard.get(&device)
+            && let Some(group) = groups_guard.get(group_id)
+        {
+            if group.controller_idx != controller_idx {
+                log::error!(
+                    "[IOMMU] Group {:?} controller mismatch for device {:?}: existing={} requested={}",
+                    group_id,
+                    device,
+                    group.controller_idx,
+                    controller_idx
+                );
+                return Err(IommuError::HardwareError);
             }
+            // Check if the domain type matches
+            let domain = backend.get_domain(group.domain_id)?;
+            if domain.domain_type() != domain_type {
+                log::warn!(
+                    "[IOMMU] Domain type mismatch for group {:?} (device {:?}): existing={:?} requested={:?}",
+                    group_id,
+                    device,
+                    domain.domain_type(),
+                    domain_type
+                );
+                // Use existing domain type (group policy takes precedence)
+            }
+            return Ok((group.clone(), false));
         }
 
         // 2. PCIeトポロジーを走査してグループIDを決定

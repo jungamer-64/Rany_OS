@@ -789,10 +789,10 @@ impl DriverRegistry {
     pub fn start_all(&self) {
         let count = self.count();
         for i in 0..count {
-            if self.state(DriverHandle(i)) == Some(DriverState::Probed) {
-                if let Err(e) = self.start(DriverHandle(i)) {
-                    log::warn!("[DRIVER] Start failed for handle {}: {}", i, e);
-                }
+            if self.state(DriverHandle(i)) == Some(DriverState::Probed)
+                && let Err(e) = self.start(DriverHandle(i))
+            {
+                log::warn!("[DRIVER] Start failed for handle {}: {}", i, e);
             }
         }
     }
@@ -801,10 +801,10 @@ impl DriverRegistry {
     pub fn stop_all(&self) {
         let count = self.count();
         for i in 0..count {
-            if self.state(DriverHandle(i)) == Some(DriverState::Running) {
-                if let Err(e) = self.stop(DriverHandle(i)) {
-                    log::warn!("[DRIVER] Stop failed for handle {}: {}", i, e);
-                }
+            if self.state(DriverHandle(i)) == Some(DriverState::Running)
+                && let Err(e) = self.stop(DriverHandle(i))
+            {
+                log::warn!("[DRIVER] Stop failed for handle {}: {}", i, e);
             }
         }
     }
@@ -956,11 +956,11 @@ impl DriverReplacement {
                 registry.stop(self.handle)?;
             }
             registry.unregister(self.handle)?;
-            if let Some(code) = &candidate.code {
-                if candidate.owner != crate::domain::DomainId::KERNEL {
-                    crate::domain::registry::bind_code_generation(candidate.owner, code.cell())
-                        .map_err(|_| DriverError::ExecutionContextUnavailable)?;
-                }
+            if let Some(code) = &candidate.code
+                && candidate.owner != crate::domain::DomainId::KERNEL
+            {
+                crate::domain::registry::bind_code_generation(candidate.owner, code.cell())
+                    .map_err(|_| DriverError::ExecutionContextUnavailable)?;
             }
             let mut entries = registry.drivers.lock().map_err(|_| DriverError::Poisoned)?;
             let entry = entries

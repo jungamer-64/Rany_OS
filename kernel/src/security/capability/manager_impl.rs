@@ -280,18 +280,19 @@ impl CapabilityManager {
             let mut i = 0;
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while i < grants.len() {
-                if let Some(e) = grants[i].expires {
-                    if e <= now && !grants[i].revoked {
-                        if self.in_flight_count(grants[i].id) != 0 {
-                            grants[i].revoked = true;
-                            grants[i].revoked_at = Some(now);
-                            expired.push(grants[i].clone());
-                            i += 1;
-                            continue;
-                        }
-                        expired.push(grants.remove(i));
+                if let Some(e) = grants[i].expires
+                    && e <= now
+                    && !grants[i].revoked
+                {
+                    if self.in_flight_count(grants[i].id) != 0 {
+                        grants[i].revoked = true;
+                        grants[i].revoked_at = Some(now);
+                        expired.push(grants[i].clone());
+                        i += 1;
                         continue;
                     }
+                    expired.push(grants.remove(i));
+                    continue;
                 }
                 i += 1;
             }

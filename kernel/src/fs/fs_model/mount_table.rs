@@ -86,13 +86,12 @@ pub(crate) fn bfs_enqueue_child(
     visited: &mut hashbrown::HashSet<u64>,
     queue: &mut alloc::collections::VecDeque<Arc<dyn Inode>>,
 ) {
-    if let Ok(child) = parent.lookup(name) {
-        if let Ok(attr) = child.getattr() {
-            if !visited.contains(&attr.ino) {
-                visited.insert(attr.ino);
-                queue.push_back(child);
-            }
-        }
+    if let Ok(child) = parent.lookup(name)
+        && let Ok(attr) = child.getattr()
+        && !visited.contains(&attr.ino)
+    {
+        visited.insert(attr.ino);
+        queue.push_back(child);
     }
 }
 

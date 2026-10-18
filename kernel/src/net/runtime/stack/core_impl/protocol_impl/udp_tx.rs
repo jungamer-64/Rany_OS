@@ -72,10 +72,9 @@ impl NetworkStack {
 
         if let Ok(Some(route)) =
             crate::net::runtime::manager::lookup_ipv4_route_in(self.runtime, dst_ip)
+            && route.if_id == if_id
         {
-            if route.if_id == if_id {
-                return Some(route.gateway.unwrap_or(dst_ip));
-            }
+            return Some(route.gateway.unwrap_or(dst_ip));
         }
 
         if !config.ipv4.gateway.is_any() {

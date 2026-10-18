@@ -124,10 +124,8 @@ pub(crate) fn append_bits(buf: &mut [u8], bit_idx: &mut usize, val: u32, len: us
         let byte_pos = *bit_idx / 8;
         let bit_pos = 7 - (*bit_idx % 8);
 
-        if byte_pos < buf.len() {
-            if bit == 1 {
-                buf[byte_pos] |= 1 << bit_pos;
-            }
+        if byte_pos < buf.len() && bit == 1 {
+            buf[byte_pos] |= 1 << bit_pos;
         }
         *bit_idx += 1;
     }

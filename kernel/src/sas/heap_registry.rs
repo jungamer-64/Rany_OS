@@ -341,11 +341,11 @@ impl HeapRegistry {
         }
 
         for g in guards.iter_mut() {
-            if g.objects.remove(&address).is_some() {
-                if let Some(addrs) = g.owner_index.get_mut(&owner) {
-                    let addrs: &mut alloc::vec::Vec<usize> = addrs;
-                    addrs.retain(|a: &usize| *a != address);
-                }
+            if g.objects.remove(&address).is_some()
+                && let Some(addrs) = g.owner_index.get_mut(&owner)
+            {
+                let addrs: &mut alloc::vec::Vec<usize> = addrs;
+                addrs.retain(|a: &usize| *a != address);
             }
         }
 
@@ -434,10 +434,8 @@ impl HeapRegistry {
         // This covers most small object cases. Large buffers should be checked by base address.
 
         for (_, object) in shard.objects.range(..=address).rev().take(1) {
-            if address < object.address + object.size {
-                if object.owner == accessor {
-                    return true;
-                }
+            if address < object.address + object.size && object.owner == accessor {
+                return true;
             }
         }
 
@@ -496,11 +494,11 @@ impl HeapRegistry {
             if let Some(addresses) = guard.owner_index.get(&domain) {
                 let addrs: Vec<usize> = addresses.clone();
                 for addr in addrs {
-                    if let Some(obj) = guard.objects.get_mut(&addr) {
-                        if !obj.poisoned {
-                            obj.poisoned = true;
-                            poisoned_count += 1;
-                        }
+                    if let Some(obj) = guard.objects.get_mut(&addr)
+                        && !obj.poisoned
+                    {
+                        obj.poisoned = true;
+                        poisoned_count += 1;
                     }
                 }
             }

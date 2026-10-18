@@ -391,10 +391,10 @@ impl FirewallRule {
                 if !self.src_port.matches(src_port) || !self.dst_port.matches(dst_port) {
                     return false;
                 }
-                if self.tcp_flags_mask != 0 {
-                    if (tcp_flags & self.tcp_flags_mask) != self.tcp_flags_value {
-                        return false;
-                    }
+                if self.tcp_flags_mask != 0
+                    && (tcp_flags & self.tcp_flags_mask) != self.tcp_flags_value
+                {
+                    return false;
                 }
             }
             17 => {

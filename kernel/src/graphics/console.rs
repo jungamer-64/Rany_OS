@@ -77,10 +77,12 @@ impl TextConsole {
         cols: usize,
         rows: usize,
     ) -> Option<usize> {
-        if let Some(old_pos) = self.prev_cursor {
-            if old_pos != cursor_pos && old_pos.0 < cols && old_pos.1 < rows {
-                return Some(old_pos.1 * cols + old_pos.0);
-            }
+        if let Some(old_pos) = self.prev_cursor
+            && old_pos != cursor_pos
+            && old_pos.0 < cols
+            && old_pos.1 < rows
+        {
+            return Some(old_pos.1 * cols + old_pos.0);
         }
         None
     }

@@ -1052,41 +1052,38 @@ impl TcbTable {
             if !data.flow_control.should_send_probe(current_tick) {
                 continue;
             }
-            if let Some(socket) = lookup_socket_in(runtime, entry.socket_id) {
-                if let Some(probe_payload) = socket
+            if let Some(socket) = lookup_socket_in(runtime, entry.socket_id)
+                && let Some(probe_payload) = socket
                     .with_inner_mut(|inner| inner.take_send_segment_window(1))
                     .flatten()
-                {
-                    let seq = data.seq.snd_nxt;
-                    let mut builder = TcpSegmentBuilder::new(key.local.port(), key.remote.port())
-                        .seq(seq)
-                        .ack(data.seq.rcv_nxt)
-                        .ack_flag()
-                        .psh()
-                        .window(data.advertised_recv_window())
-                        .payload_packet(probe_payload);
-                    if data.ts_enabled {
-                        let ts_val = (current_tick / 10) as u32;
-                        builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
-                    }
-                    let Ok(segment) = builder.build_checked_packet(key.local, key.remote) else {
-                        continue;
-                    };
-                    retransmit_queue_push(
-                        runtime, key.if_id, key.local, key.remote, seq, 1, segment,
+            {
+                let seq = data.seq.snd_nxt;
+                let mut builder = TcpSegmentBuilder::new(key.local.port(), key.remote.port())
+                    .seq(seq)
+                    .ack(data.seq.rcv_nxt)
+                    .ack_flag()
+                    .psh()
+                    .window(data.advertised_recv_window())
+                    .payload_packet(probe_payload);
+                if data.ts_enabled {
+                    let ts_val = (current_tick / 10) as u32;
+                    builder = builder.nop().nop().timestamp(ts_val, data.ts_ecr);
+                }
+                let Ok(segment) = builder.build_checked_packet(key.local, key.remote) else {
+                    continue;
+                };
+                retransmit_queue_push(runtime, key.if_id, key.local, key.remote, seq, 1, segment);
+                if super::retransmit::retransmit_queue_transmit_ready(
+                    runtime, key.if_id, key.local, key.remote, seq,
+                ) {
+                    data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                    data.flow_control.on_probe_sent(current_tick);
+                } else {
+                    log::warn!(
+                        "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
+                        key.local,
+                        key.remote
                     );
-                    if super::retransmit::retransmit_queue_transmit_ready(
-                        runtime, key.if_id, key.local, key.remote, seq,
-                    ) {
-                        data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
-                        data.flow_control.on_probe_sent(current_tick);
-                    } else {
-                        log::warn!(
-                            "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
-                            key.local,
-                            key.remote
-                        );
-                    }
                 }
             }
         }
@@ -1174,10 +1171,10 @@ impl TcbTable {
         if self.total_count.load(Ordering::Relaxed) >= MAX_TCB_ENTRIES {
             return Err("TCB table full");
         }
-        if entry.is_syn_received() {
-            if self.syn_recv_count.load(Ordering::Relaxed) >= MAX_SYN_RECEIVED_ENTRIES {
-                return Err("Too many SYN-RECV connections");
-            }
+        if entry.is_syn_received()
+            && self.syn_recv_count.load(Ordering::Relaxed) >= MAX_SYN_RECEIVED_ENTRIES
+        {
+            return Err("Too many SYN-RECV connections");
         }
         let key = TcpFlowKey::new(entry.if_id, entry.local, entry.remote);
         let mut shard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
@@ -1396,11 +1393,11 @@ impl TcbTable {
             }
             data.delayed_ack_pending = data.delayed_ack_pending.saturating_add(1);
 
-            if data.ts_enabled {
-                if let Some((peer_ts_val, local_ts_val)) = timestamp_echo {
-                    data.ts_ecr = peer_ts_val;
-                    data.ts_val = local_ts_val;
-                }
+            if data.ts_enabled
+                && let Some((peer_ts_val, local_ts_val)) = timestamp_echo
+            {
+                data.ts_ecr = peer_ts_val;
+                data.ts_val = local_ts_val;
             }
             pending = Some(data.delayed_ack_pending);
         })
@@ -1809,14 +1806,14 @@ impl TcbTable {
 
     pub fn remove_by_socket_id(&self, socket_id: SocketId) -> Option<TcpControlBlock> {
         let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(storage) = guard.as_mut() {
-            if let Some(entry) = storage.remove_by_socket_id(socket_id) {
-                self.total_count.fetch_sub(1, Ordering::Relaxed);
-                if entry.is_syn_received() {
-                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                }
-                return Some(entry);
+        if let Some(storage) = guard.as_mut()
+            && let Some(entry) = storage.remove_by_socket_id(socket_id)
+        {
+            self.total_count.fetch_sub(1, Ordering::Relaxed);
+            if entry.is_syn_received() {
+                self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
             }
+            return Some(entry);
         }
         None
     }

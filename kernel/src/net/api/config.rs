@@ -84,45 +84,41 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
     let mut found_any = false;
 
     for resources in runtime.context().cpu_resources_snapshot().ok()? {
-        if let Some(stack) = current_stack {
-            if Some(resources.cpu_id) == current_cpu {
-                if let Some(stats) = stack.interface_stats(if_id) {
-                    stack_snapshot.rx_packets +=
-                        stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.tx_packets +=
-                        stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_bytes +=
-                        stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.tx_bytes +=
-                        stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_errors +=
-                        stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_dropped +=
-                        stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
-                    found_any = true;
-                }
-                continue;
+        if let Some(stack) = current_stack
+            && Some(resources.cpu_id) == current_cpu
+        {
+            if let Some(stats) = stack.interface_stats(if_id) {
+                stack_snapshot.rx_packets +=
+                    stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.tx_packets +=
+                    stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_bytes +=
+                    stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.tx_bytes +=
+                    stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_errors +=
+                    stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+                stack_snapshot.rx_dropped +=
+                    stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+                found_any = true;
             }
+            continue;
         }
 
-        if let Ok(guard) = resources.stack.lock() {
-            if let Some(stack) = guard.as_ref() {
-                if let Some(stats) = stack.interface_stats(if_id) {
-                    stack_snapshot.rx_packets +=
-                        stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.tx_packets +=
-                        stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_bytes +=
-                        stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.tx_bytes +=
-                        stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_errors +=
-                        stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
-                    stack_snapshot.rx_dropped +=
-                        stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
-                    found_any = true;
-                }
-            }
+        if let Ok(guard) = resources.stack.lock()
+            && let Some(stack) = guard.as_ref()
+            && let Some(stats) = stack.interface_stats(if_id)
+        {
+            stack_snapshot.rx_packets +=
+                stats.rx_packets.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.tx_packets +=
+                stats.tx_packets.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_bytes += stats.rx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.tx_bytes += stats.tx_bytes.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_errors += stats.rx_errors.load(core::sync::atomic::Ordering::Relaxed);
+            stack_snapshot.rx_dropped +=
+                stats.rx_dropped.load(core::sync::atomic::Ordering::Relaxed);
+            found_any = true;
         }
     }
 

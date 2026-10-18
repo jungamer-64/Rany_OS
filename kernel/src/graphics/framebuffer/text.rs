@@ -788,10 +788,10 @@ impl Framebuffer {
         let fast_mode = Self::determine_char_fast_mode(bg, is_fully_visible, no_backbuf, bpp);
 
         // Pre-fill background only when not using single-pass fast path
-        if let Some(bg_color) = bg {
-            if fast_mode == 0 {
-                self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
-            }
+        if let Some(bg_color) = bg
+            && fast_mode == 0
+        {
+            self.fill_rect(Rect::new(x, y, char_w, char_h), bg_color);
         }
 
         let mmio_written = match fast_mode {

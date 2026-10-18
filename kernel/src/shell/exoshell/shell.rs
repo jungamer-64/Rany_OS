@@ -662,12 +662,12 @@ impl ExoShell {
                 new_args.push(Expr::Literal(left_val));
                 new_args.extend(args.iter().cloned());
 
-                if let Expr::Ident(ns_name) = object.as_ref() {
-                    if self.is_namespace(ns_name) {
-                        return self
-                            .dispatch_namespace_method(ns_name, method, &new_args)
-                            .await;
-                    }
+                if let Expr::Ident(ns_name) = object.as_ref()
+                    && self.is_namespace(ns_name)
+                {
+                    return self
+                        .dispatch_namespace_method(ns_name, method, &new_args)
+                        .await;
                 }
 
                 let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;
@@ -690,10 +690,10 @@ impl ExoShell {
         depth: usize,
     ) -> ExoValue<'static> {
         // 名前空間メソッドの特別扱い
-        if let Expr::Ident(name) = object {
-            if self.is_namespace(&name) {
-                return self.dispatch_namespace_method(&name, method, args).await;
-            }
+        if let Expr::Ident(name) = object
+            && self.is_namespace(&name)
+        {
+            return self.dispatch_namespace_method(&name, method, args).await;
         }
 
         let obj = Box::pin(self.evaluate_expr_inner(object, depth + 1)).await;

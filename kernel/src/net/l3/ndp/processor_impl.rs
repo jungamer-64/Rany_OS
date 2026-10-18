@@ -344,12 +344,10 @@ impl NdpProcessor {
                     entry.state = NeighborState::Reachable;
                     entry.timestamp = current_time;
                     entry.probes_sent = 0;
-                } else if override_flag {
-                    if entry.mac != mac {
-                        entry.mac = mac;
-                        entry.state = NeighborState::Stale;
-                        entry.timestamp = current_time;
-                    }
+                } else if override_flag && entry.mac != mac {
+                    entry.mac = mac;
+                    entry.state = NeighborState::Stale;
+                    entry.timestamp = current_time;
                 }
             } else {
                 // RFC 4861 Section 7.2.5: If the Target Address is NOT in the Neighbor Cache,

@@ -45,10 +45,10 @@ impl DhcpV6Client {
     /// - 短期間の読み取りロックで初回のみアクセスし、以降はキャッシュを参照する
     fn get_link_local(&self) -> Option<Ipv6Address> {
         // キャッシュ済みの場合はスタックロック不要
-        if let Ok(guard) = self.cached_link_local.lock() {
-            if let Some(addr) = *guard {
-                return Some(addr);
-            }
+        if let Ok(guard) = self.cached_link_local.lock()
+            && let Some(addr) = *guard
+        {
+            return Some(addr);
         }
 
         // 初回のみスタックロックで取得してキャッシュ
@@ -72,10 +72,10 @@ impl DhcpV6Client {
             }
         };
 
-        if let Some(addr) = result {
-            if let Ok(mut guard) = self.cached_link_local.lock() {
-                *guard = Some(addr);
-            }
+        if let Some(addr) = result
+            && let Ok(mut guard) = self.cached_link_local.lock()
+        {
+            *guard = Some(addr);
         }
 
         result
@@ -407,10 +407,10 @@ impl DhcpV6Client {
         append_opt(buf, &mut off, 1, &self.duid)?;
 
         // Server Identifier (option 2) if we have a DUID
-        if let Ok(g) = self.server_duid.lock() {
-            if let Some(ref duid) = *g {
-                Self::append_option_payload(buf, &mut off, 2, duid)?;
-            }
+        if let Ok(g) = self.server_duid.lock()
+            && let Some(ref duid) = *g
+        {
+            Self::append_option_payload(buf, &mut off, 2, duid)?;
         }
 
         // IA_NA (option 3) without IAADDR suboption
@@ -463,10 +463,10 @@ impl DhcpV6Client {
         append_opt(buf, &mut off, 1, &self.duid)?;
 
         // Server Identifier (option 2) — RFC 8415 requires this for Renew
-        if let Ok(g) = self.server_duid.lock() {
-            if let Some(ref duid) = *g {
-                Self::append_option_payload(buf, &mut off, 2, duid)?;
-            }
+        if let Ok(g) = self.server_duid.lock()
+            && let Some(ref duid) = *g
+        {
+            Self::append_option_payload(buf, &mut off, 2, duid)?;
         }
 
         // IA_NA (option 3) with IAADDR suboption
@@ -593,10 +593,10 @@ impl DhcpV6Client {
         append_opt(buf, &mut off, 1, &self.duid)?;
 
         // Server Identifier (option 2) — RFC 8415 requires this for Release
-        if let Ok(g) = self.server_duid.lock() {
-            if let Some(ref duid) = *g {
-                Self::append_option_payload(buf, &mut off, 2, duid)?;
-            }
+        if let Ok(g) = self.server_duid.lock()
+            && let Some(ref duid) = *g
+        {
+            Self::append_option_payload(buf, &mut off, 2, duid)?;
         }
 
         // IA_NA (option 3) with IAADDR suboption
@@ -824,18 +824,18 @@ impl DhcpV6Client {
             off += len;
         }
 
-        if let Some(server_duid) = retained_server_duid {
-            if let Ok(mut g) = self.server_duid.lock() {
-                *g = Some(server_duid);
-            }
+        if let Some(server_duid) = retained_server_duid
+            && let Ok(mut g) = self.server_duid.lock()
+        {
+            *g = Some(server_duid);
         }
 
         // If a non-zero status code was found, treat as error
-        if let Some(sc) = status_code {
-            if sc != 0 {
-                log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
-                return Ok(None);
-            }
+        if let Some(sc) = status_code
+            && sc != 0
+        {
+            log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
+            return Ok(None);
         }
 
         match found_addr {
@@ -1010,11 +1010,11 @@ impl DhcpV6Client {
             }
         }
 
-        if let Some(sc) = status_code {
-            if sc != 0 {
-                log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
-                return Ok(None);
-            }
+        if let Some(sc) = status_code
+            && sc != 0
+        {
+            log::warn!("[NET] DHCPv6: Received status code {} in reply", sc);
+            return Ok(None);
         }
 
         match found_addr {
@@ -1097,32 +1097,31 @@ impl DhcpV6Client {
 
         // If this is an ADVERTISE and we're waiting for it, move to REQUESTING and send Request
         if msg_type == (DhcpV6MessageType::Advertise as u8) {
-            if let Ok(mut st) = self.state.lock() {
-                if *st == DhcpV6State::SolicitSent {
-                    // remember server address (src) and transition to Requesting
-                    if let Ok(mut sd) = self.server_addr.lock() {
-                        *sd = Some(src);
-                    }
-                    // transition to Requesting: Generate a new secure XID
-                    if !self.generate_secure_xid() {
-                        return false;
-                    }
-
-                    *st = DhcpV6State::Requesting;
-                    self.state_time.store(now, Ordering::SeqCst);
-                    self.retry_count.store(0, Ordering::SeqCst);
-
-                    // build and send REQUEST (selection) via async event queue
-                    let mut buf = [0u8; 256];
-                    if let Ok(len) = self.build_request_from_advertise(&mut buf) {
-                        if let Some(src_ip) = self.get_link_local() {
-                            if let Ok(payload) = Self::generated_message_payload(&buf[..len]) {
-                                let _ = self.enqueue_v6_send(src_ip, src, payload);
-                            }
-                        }
-                    }
-                    return true;
+            if let Ok(mut st) = self.state.lock()
+                && *st == DhcpV6State::SolicitSent
+            {
+                // remember server address (src) and transition to Requesting
+                if let Ok(mut sd) = self.server_addr.lock() {
+                    *sd = Some(src);
                 }
+                // transition to Requesting: Generate a new secure XID
+                if !self.generate_secure_xid() {
+                    return false;
+                }
+
+                *st = DhcpV6State::Requesting;
+                self.state_time.store(now, Ordering::SeqCst);
+                self.retry_count.store(0, Ordering::SeqCst);
+
+                // build and send REQUEST (selection) via async event queue
+                let mut buf = [0u8; 256];
+                if let Ok(len) = self.build_request_from_advertise(&mut buf)
+                    && let Some(src_ip) = self.get_link_local()
+                    && let Ok(payload) = Self::generated_message_payload(&buf[..len])
+                {
+                    let _ = self.enqueue_v6_send(src_ip, src, payload);
+                }
+                return true;
             }
             // ADVERTISE は OFFER に相当し、リース受理にはならない。
             // SolicitSent 以外の状態で受信した ADVERTISE は無視する。
@@ -1180,29 +1179,28 @@ impl DhcpV6Client {
         let parsed_reply = self.parse_reply_payload(payload, now);
 
         if msg_type == (DhcpV6MessageType::Advertise as u8) {
-            if let Ok(mut st) = self.state.lock() {
-                if *st == DhcpV6State::SolicitSent {
-                    if let Ok(mut sd) = self.server_addr.lock() {
-                        *sd = Some(src);
-                    }
-                    if !self.generate_secure_xid() {
-                        return false;
-                    }
-
-                    *st = DhcpV6State::Requesting;
-                    self.state_time.store(now, Ordering::SeqCst);
-                    self.retry_count.store(0, Ordering::SeqCst);
-
-                    let mut buf = [0u8; 256];
-                    if let Ok(len) = self.build_request_from_advertise(&mut buf) {
-                        if let Some(src_ip) = self.get_link_local() {
-                            if let Ok(payload) = Self::generated_message_payload(&buf[..len]) {
-                                let _ = self.enqueue_v6_send(src_ip, src, payload);
-                            }
-                        }
-                    }
-                    return true;
+            if let Ok(mut st) = self.state.lock()
+                && *st == DhcpV6State::SolicitSent
+            {
+                if let Ok(mut sd) = self.server_addr.lock() {
+                    *sd = Some(src);
                 }
+                if !self.generate_secure_xid() {
+                    return false;
+                }
+
+                *st = DhcpV6State::Requesting;
+                self.state_time.store(now, Ordering::SeqCst);
+                self.retry_count.store(0, Ordering::SeqCst);
+
+                let mut buf = [0u8; 256];
+                if let Ok(len) = self.build_request_from_advertise(&mut buf)
+                    && let Some(src_ip) = self.get_link_local()
+                    && let Ok(payload) = Self::generated_message_payload(&buf[..len])
+                {
+                    let _ = self.enqueue_v6_send(src_ip, src, payload);
+                }
+                return true;
             }
             return false;
         }
@@ -1260,14 +1258,14 @@ impl DhcpV6Client {
                     let len = self.build_solicit(&mut buf)?;
 
                     // Use link-local as source for SOLICIT (async event queue)
-                    if let Some(src) = self.get_link_local() {
-                        if Self::generated_message_payload(&buf[..len]).is_ok_and(|payload| {
+                    if let Some(src) = self.get_link_local()
+                        && Self::generated_message_payload(&buf[..len]).is_ok_and(|payload| {
                             self.enqueue_v6_send(src, all_dhcp_servers, payload)
-                        }) {
-                            *s = DhcpV6State::SolicitSent;
-                            self.state_time.store(current_tick, Ordering::SeqCst);
-                            self.retry_count.store(0, Ordering::SeqCst);
-                        }
+                        })
+                    {
+                        *s = DhcpV6State::SolicitSent;
+                        self.state_time.store(current_tick, Ordering::SeqCst);
+                        self.retry_count.store(0, Ordering::SeqCst);
                     }
                 }
                 DhcpV6State::SolicitSent => {
@@ -1295,10 +1293,10 @@ impl DhcpV6Client {
                             // retransmit SOLICIT using SAME XID
                             let mut buf = [0u8; 256];
                             let len = self.build_solicit(&mut buf)?;
-                            if let Some(src) = self.get_link_local() {
-                                if let Ok(payload) = Self::generated_message_payload(&buf[..len]) {
-                                    let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
-                                }
+                            if let Some(src) = self.get_link_local()
+                                && let Ok(payload) = Self::generated_message_payload(&buf[..len])
+                            {
+                                let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
                             }
                             self.state_time.store(current_tick, Ordering::SeqCst);
                         }
@@ -1357,19 +1355,19 @@ impl DhcpV6Client {
 
                                 // Send first RENEW immediately
                                 let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_renew(&mut buf, lease) {
-                                    if let Some(src) = self.get_link_local() {
-                                        let dst = match self.server_addr.lock() {
-                                            Ok(ref a) => {
-                                                a.as_ref().copied().unwrap_or(all_dhcp_servers)
-                                            }
-                                            Err(_) => all_dhcp_servers,
-                                        };
-                                        if let Ok(payload) =
-                                            Self::generated_message_payload(&buf[..len])
-                                        {
-                                            let _ = self.enqueue_v6_send(src, dst, payload);
+                                if let Ok(len) = self.build_renew(&mut buf, lease)
+                                    && let Some(src) = self.get_link_local()
+                                {
+                                    let dst = match self.server_addr.lock() {
+                                        Ok(ref a) => {
+                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
                                         }
+                                        Err(_) => all_dhcp_servers,
+                                    };
+                                    if let Ok(payload) =
+                                        Self::generated_message_payload(&buf[..len])
+                                    {
+                                        let _ = self.enqueue_v6_send(src, dst, payload);
                                     }
                                 }
                             }
@@ -1401,18 +1399,12 @@ impl DhcpV6Client {
 
                                 // Send first REBIND immediately
                                 let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_rebind(&mut buf, lease) {
-                                    if let Some(src) = self.get_link_local() {
-                                        if let Ok(payload) =
-                                            Self::generated_message_payload(&buf[..len])
-                                        {
-                                            let _ = self.enqueue_v6_send(
-                                                src,
-                                                all_dhcp_servers,
-                                                payload,
-                                            );
-                                        }
-                                    }
+                                if let Ok(len) = self.build_rebind(&mut buf, lease)
+                                    && let Some(src) = self.get_link_local()
+                                    && let Ok(payload) =
+                                        Self::generated_message_payload(&buf[..len])
+                                {
+                                    let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
                                 }
                                 return;
                             }
@@ -1423,19 +1415,19 @@ impl DhcpV6Client {
                                 self.retry_count.fetch_add(1, Ordering::SeqCst);
                                 // Send RENEW (msg type 5) to the original server using SAME XID
                                 let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_renew(&mut buf, lease) {
-                                    if let Some(src) = self.get_link_local() {
-                                        let dst = match self.server_addr.lock() {
-                                            Ok(ref a) => {
-                                                a.as_ref().copied().unwrap_or(all_dhcp_servers)
-                                            }
-                                            Err(_) => all_dhcp_servers,
-                                        };
-                                        if let Ok(payload) =
-                                            Self::generated_message_payload(&buf[..len])
-                                        {
-                                            let _ = self.enqueue_v6_send(src, dst, payload);
+                                if let Ok(len) = self.build_renew(&mut buf, lease)
+                                    && let Some(src) = self.get_link_local()
+                                {
+                                    let dst = match self.server_addr.lock() {
+                                        Ok(ref a) => {
+                                            a.as_ref().copied().unwrap_or(all_dhcp_servers)
                                         }
+                                        Err(_) => all_dhcp_servers,
+                                    };
+                                    if let Ok(payload) =
+                                        Self::generated_message_payload(&buf[..len])
+                                    {
+                                        let _ = self.enqueue_v6_send(src, dst, payload);
                                     }
                                 }
                                 self.state_time.store(current_tick, Ordering::SeqCst);
@@ -1478,18 +1470,12 @@ impl DhcpV6Client {
                                 self.retry_count.fetch_add(1, Ordering::SeqCst);
                                 // Send REBIND (msg type 6) to multicast using SAME XID
                                 let mut buf = [0u8; 512];
-                                if let Ok(len) = self.build_rebind(&mut buf, lease) {
-                                    if let Some(src) = self.get_link_local() {
-                                        if let Ok(payload) =
-                                            Self::generated_message_payload(&buf[..len])
-                                        {
-                                            let _ = self.enqueue_v6_send(
-                                                src,
-                                                all_dhcp_servers,
-                                                payload,
-                                            );
-                                        }
-                                    }
+                                if let Ok(len) = self.build_rebind(&mut buf, lease)
+                                    && let Some(src) = self.get_link_local()
+                                    && let Ok(payload) =
+                                        Self::generated_message_payload(&buf[..len])
+                                {
+                                    let _ = self.enqueue_v6_send(src, all_dhcp_servers, payload);
                                 }
                                 self.state_time.store(current_tick, Ordering::SeqCst);
                             }

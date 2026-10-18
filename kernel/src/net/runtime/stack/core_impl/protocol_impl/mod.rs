@@ -72,22 +72,20 @@ impl NetworkStack {
 
                 // Build IGMP leave into IPv4 payload.
                 let ip_payload = ip_pkt.payload_mut();
-                if ip_payload.len() >= 8 {
-                    if let Some(len) =
+                if ip_payload.len() >= 8
+                    && let Some(len) =
                         crate::net::l3::igmp::IgmpProcessor::build_leave(group_addr, ip_payload)
+                {
+                    let total_len = (20 + len) as u16;
+                    ip_pkt.set_total_length(total_len).update_checksum();
+                    frame.set_payload_len(total_len as usize);
+                    let frame_len = frame.as_bytes().len();
+                    drop(frame);
+                    if set_packet_visible_len(&mut packet, frame_len).is_ok()
+                        && let Ok(payload) =
+                            kernel_api::resource::net::PacketPayload::try_single(packet)
                     {
-                        let total_len = (20 + len) as u16;
-                        ip_pkt.set_total_length(total_len).update_checksum();
-                        frame.set_payload_len(total_len as usize);
-                        let frame_len = frame.as_bytes().len();
-                        drop(frame);
-                        if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                            if let Ok(payload) =
-                                kernel_api::resource::net::PacketPayload::try_single(packet)
-                            {
-                                let _ = self.transmit_packet_on(if_id, payload);
-                            }
-                        }
+                        let _ = self.transmit_packet_on(if_id, payload);
                     }
                 }
             }

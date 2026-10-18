@@ -129,19 +129,19 @@ impl IommuController {
         let ats_devices = self.ats_devices.lock().map_err(|_| IommuError::Poisoned)?;
 
         for device in ats_devices.keys() {
-            if let Some(&did) = device_domains.get(device) {
-                if did == domain_id {
-                    let source_id = device.requester_id();
-                    match (iova, am) {
-                        (Some(iova_val), Some(am_val)) => {
-                            self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val)?;
-                        }
-                        (Some(iova_val), None) => {
-                            self.qi_invalidate_device_tlb_page(source_id, iova_val)?;
-                        }
-                        _ => {
-                            self.qi_invalidate_device_tlb_all(source_id)?;
-                        }
+            if let Some(&did) = device_domains.get(device)
+                && did == domain_id
+            {
+                let source_id = device.requester_id();
+                match (iova, am) {
+                    (Some(iova_val), Some(am_val)) => {
+                        self.qi_invalidate_device_tlb_range(source_id, iova_val, am_val)?;
+                    }
+                    (Some(iova_val), None) => {
+                        self.qi_invalidate_device_tlb_page(source_id, iova_val)?;
+                    }
+                    _ => {
+                        self.qi_invalidate_device_tlb_all(source_id)?;
                     }
                 }
             }

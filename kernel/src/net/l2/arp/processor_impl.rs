@@ -138,17 +138,16 @@ impl ArpProcessor {
             // Rule 1: Always update if entry already exists (standard compliance)
             if self.cache.has_entry(sender_ip) {
                 // SECURITY: spoofing または migration の兆候として MAC 変更を記録する。
-                if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time) {
-                    if existing_mac != sender_mac {
-                        if check_arp_flap_log_rate(current_time) {
-                            log::info!(
-                                "[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)",
-                                sender_ip,
-                                existing_mac,
-                                sender_mac
-                            );
-                        }
-                    }
+                if let Some(existing_mac) = self.cache.lookup(sender_ip, current_time)
+                    && existing_mac != sender_mac
+                    && check_arp_flap_log_rate(current_time)
+                {
+                    log::info!(
+                        "[NET-ARP] MAC changed for {}: {} -> {} (updating per RFC 826)",
+                        sender_ip,
+                        existing_mac,
+                        sender_mac
+                    );
                 }
                 should_update = true;
             }

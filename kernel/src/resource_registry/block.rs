@@ -296,16 +296,16 @@ impl BlockDeviceAdapter {
                 None => IoCompletion::control(result),
             })),
             CompletionRoute::Reported => {
-                if let Some(buffer) = buffer {
-                    if let Err(error) = buffer.close() {
-                        // The authoritative registry retains its reserved unmap
-                        // retirement owner; domain cleanup observes that lease.
-                        log::warn!(
-                            "block transfer retirement remains pending: {:?}",
-                            error.cause()
-                        );
-                        drop(error);
-                    }
+                if let Some(buffer) = buffer
+                    && let Err(error) = buffer.close()
+                {
+                    // The authoritative registry retains its reserved unmap
+                    // retirement owner; domain cleanup observes that lease.
+                    log::warn!(
+                        "block transfer retirement remains pending: {:?}",
+                        error.cause()
+                    );
+                    drop(error);
                 }
                 None
             }

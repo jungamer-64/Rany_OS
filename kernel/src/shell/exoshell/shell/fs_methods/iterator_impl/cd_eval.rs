@@ -31,11 +31,11 @@ impl ExoShell {
             let ip_parts: Vec<&str> = host.split('.').collect();
             if ip_parts.len() == 4 {
                 let ip: Result<Vec<u8>, _> = ip_parts.iter().map(|p| p.parse::<u8>()).collect();
-                if let Ok(octets) = ip {
-                    if octets.len() == 4 {
-                        return NetNamespace::ping([octets[0], octets[1], octets[2], octets[3]], 4)
-                            .await;
-                    }
+                if let Ok(octets) = ip
+                    && octets.len() == 4
+                {
+                    return NetNamespace::ping([octets[0], octets[1], octets[2], octets[3]], 4)
+                        .await;
                 }
             }
             ExoValue::Error(format!("Invalid IP: {}", host))

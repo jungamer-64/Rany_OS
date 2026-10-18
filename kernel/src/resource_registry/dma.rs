@@ -676,15 +676,15 @@ impl Drop for CpuDmaBorrow<'_> {
             .expect("borrowed slot retains its generation and owner until return");
         let completion = entry.storage.return_cpu(mapping);
         drop(state);
-        if let CpuBorrowEnd::Close(mapping) = completion {
-            if let Err(error) = self.registry.finish_close(self.lease, self.owner, mapping) {
-                // The failed mapping stays registered in unmap-failed quarantine.
-                log::error!(
-                    "[DMA] deferred CPU-borrow return failed for {:?}: {:?}",
-                    self.lease,
-                    error
-                );
-            }
+        if let CpuBorrowEnd::Close(mapping) = completion
+            && let Err(error) = self.registry.finish_close(self.lease, self.owner, mapping)
+        {
+            // The failed mapping stays registered in unmap-failed quarantine.
+            log::error!(
+                "[DMA] deferred CPU-borrow return failed for {:?}: {:?}",
+                self.lease,
+                error
+            );
         }
     }
 }

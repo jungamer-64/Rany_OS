@@ -198,32 +198,32 @@ impl<T> XArray<T> {
 
     /// エントリにマークを設定
     pub fn set_mark(&mut self, index: usize, mark: XAMark) -> bool {
-        if let Some(slot) = self.get_slot_mut(index) {
-            if let XASlot::Entry { marks, .. } = slot {
-                *marks |= mark;
-                return true;
-            }
+        if let Some(slot) = self.get_slot_mut(index)
+            && let XASlot::Entry { marks, .. } = slot
+        {
+            *marks |= mark;
+            return true;
         }
         false
     }
 
     /// エントリのマークをクリア
     pub fn clear_mark(&mut self, index: usize, mark: XAMark) -> bool {
-        if let Some(slot) = self.get_slot_mut(index) {
-            if let XASlot::Entry { marks, .. } = slot {
-                *marks &= !mark;
-                return true;
-            }
+        if let Some(slot) = self.get_slot_mut(index)
+            && let XASlot::Entry { marks, .. } = slot
+        {
+            *marks &= !mark;
+            return true;
         }
         false
     }
 
     /// エントリがマークを持つか確認
     pub fn has_mark(&self, index: usize, mark: XAMark) -> bool {
-        if let Some(slot) = self.get_slot(index) {
-            if let XASlot::Entry { marks, .. } = slot {
-                return (*marks & mark) != 0;
-            }
+        if let Some(slot) = self.get_slot(index)
+            && let XASlot::Entry { marks, .. } = slot
+        {
+            return (*marks & mark) != 0;
         }
         false
     }

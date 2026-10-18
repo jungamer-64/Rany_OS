@@ -390,12 +390,11 @@ impl WindowManager {
         if !self.windows.contains_key(&id) {
             return;
         }
-        if let Some(old_focused) = self.focused {
-            if old_focused != id {
-                if let Some(window) = self.windows.get_mut(&old_focused) {
-                    window.push_event(WindowEvent::FocusLost);
-                }
-            }
+        if let Some(old_focused) = self.focused
+            && old_focused != id
+            && let Some(window) = self.windows.get_mut(&old_focused)
+        {
+            window.push_event(WindowEvent::FocusLost);
         }
         self.focused = Some(id);
         self.bring_to_front(id);
@@ -411,28 +410,29 @@ impl WindowManager {
 
     pub fn window_at(&self, x: i32, y: i32) -> Option<WindowId> {
         for &id in self.z_order_list.iter().rev() {
-            if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() && window.contains(x, y) {
-                    return Some(id);
-                }
+            if let Some(window) = self.windows.get(&id)
+                && window.is_visible()
+                && window.contains(x, y)
+            {
+                return Some(id);
             }
         }
         None
     }
 
     pub fn handle_key_down(&mut self, key: KeyCode, modifiers: Modifiers) {
-        if let Some(id) = self.focused {
-            if let Some(window) = self.windows.get_mut(&id) {
-                window.push_event(WindowEvent::KeyDown { key, modifiers });
-            }
+        if let Some(id) = self.focused
+            && let Some(window) = self.windows.get_mut(&id)
+        {
+            window.push_event(WindowEvent::KeyDown { key, modifiers });
         }
     }
 
     pub fn handle_key_up(&mut self, key: KeyCode, modifiers: Modifiers) {
-        if let Some(id) = self.focused {
-            if let Some(window) = self.windows.get_mut(&id) {
-                window.push_event(WindowEvent::KeyUp { key, modifiers });
-            }
+        if let Some(id) = self.focused
+            && let Some(window) = self.windows.get_mut(&id)
+        {
+            window.push_event(WindowEvent::KeyUp { key, modifiers });
         }
     }
 
@@ -450,10 +450,10 @@ impl WindowManager {
             fb.clear(self.desktop_color);
         }
         for &id in &self.z_order_list {
-            if let Some(window) = self.windows.get(&id) {
-                if window.is_visible() {
-                    self.draw_window(fb, window);
-                }
+            if let Some(window) = self.windows.get(&id)
+                && window.is_visible()
+            {
+                self.draw_window(fb, window);
             }
         }
     }

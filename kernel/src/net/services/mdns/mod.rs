@@ -252,13 +252,12 @@ impl MdnsService {
                     let reports = self.take_pending_reports();
                     for report in reports {
                         if report.is_response {
-                            if let Some(ip) = report.ip {
-                                if let Some(payload) =
+                            if let Some(ip) = report.ip
+                                && let Some(payload) =
                                     Self::build_response_payload(&report.name, ip, report.ttl)
-                                {
-                                    let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                    let _ = socket.send(payload, dst).await;
-                                }
+                            {
+                                let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                                let _ = socket.send(payload, dst).await;
                             }
                         } else {
                             if let Some(payload) = Self::build_query_payload(&report.name) {

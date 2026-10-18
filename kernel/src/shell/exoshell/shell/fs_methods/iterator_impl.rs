@@ -382,10 +382,10 @@ impl ExoShell {
     ) -> ExoValue<'static> {
         let field_or_closure = field_or_closure.trim();
 
-        if field_or_closure.starts_with('|') {
-            if let Some(field) = self.parse_map_closure(field_or_closure) {
-                return self.map_array_simple(list, &field);
-            }
+        if field_or_closure.starts_with('|')
+            && let Some(field) = self.parse_map_closure(field_or_closure)
+        {
+            return self.map_array_simple(list, &field);
         }
 
         self.map_array_simple(list, field_or_closure)

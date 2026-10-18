@@ -309,11 +309,11 @@ pub fn try_dispatch_direct(vector: u8) -> bool {
     };
     // try_lockを使用することで、万が一の再入時のデッドロックも回避
     // (ただしIrqMutexは割り込みを無効化するため、通常は再入しない)
-    if let Some(handlers) = registry.try_lock() {
-        if let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref()) {
-            handler();
-            return true;
-        }
+    if let Some(handlers) = registry.try_lock()
+        && let Some(ref handler) = handlers.get(vector as usize).and_then(|h| h.as_ref())
+    {
+        handler();
+        return true;
     }
     false
 }

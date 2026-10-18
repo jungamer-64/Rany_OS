@@ -337,10 +337,10 @@ impl RuntimeRegistry {
         &mut self,
         cpu_snapshot: &crate::cpu::CpuSnapshot,
     ) -> &'static NetRuntimeContext {
-        if let Some(id) = self.default {
-            if let Some(context) = self.runtimes.get(&id).copied() {
-                return context;
-            }
+        if let Some(id) = self.default
+            && let Some(context) = self.runtimes.get(&id).copied()
+        {
+            return context;
         }
 
         let context = self

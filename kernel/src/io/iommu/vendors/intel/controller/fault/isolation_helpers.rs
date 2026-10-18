@@ -79,14 +79,13 @@ impl IommuController {
         bus: u8,
         idx: usize,
     ) -> Option<u16> {
-        if let Some(table) = hw.scalable_context_tables.get_mut(bus as usize) {
-            if let Some(entry) = table.get_mut(idx) {
-                if entry.is_present() {
-                    let domain_id = self.resolve_scalable_domain_id(bus, idx);
-                    *entry = ScalableContextEntry::default();
-                    return domain_id;
-                }
-            }
+        if let Some(table) = hw.scalable_context_tables.get_mut(bus as usize)
+            && let Some(entry) = table.get_mut(idx)
+            && entry.is_present()
+        {
+            let domain_id = self.resolve_scalable_domain_id(bus, idx);
+            *entry = ScalableContextEntry::default();
+            return domain_id;
         }
         None
     }
@@ -97,19 +96,19 @@ impl IommuController {
         bus: u8,
         idx: usize,
     ) -> Option<u16> {
-        if let Some(table) = hw.legacy_context_tables.get_mut(bus as usize) {
-            if let Some(entry) = table.get_mut(idx) {
-                unsafe {
-                    let entry_ptr = entry as *mut ContextEntry;
-                    let val = core::ptr::read_volatile(entry_ptr);
-                    if val.is_present() {
-                        // Capture domain_id BEFORE clearing Present bit
-                        let domain_id = Some(val.domain_id());
-                        let mut new_val = val;
-                        new_val.lo &= !1;
-                        core::ptr::write_volatile(entry_ptr, new_val);
-                        return domain_id;
-                    }
+        if let Some(table) = hw.legacy_context_tables.get_mut(bus as usize)
+            && let Some(entry) = table.get_mut(idx)
+        {
+            unsafe {
+                let entry_ptr = entry as *mut ContextEntry;
+                let val = core::ptr::read_volatile(entry_ptr);
+                if val.is_present() {
+                    // Capture domain_id BEFORE clearing Present bit
+                    let domain_id = Some(val.domain_id());
+                    let mut new_val = val;
+                    new_val.lo &= !1;
+                    core::ptr::write_volatile(entry_ptr, new_val);
+                    return domain_id;
                 }
             }
         }

@@ -562,10 +562,10 @@ impl CommandQueue {
 
     #[inline]
     fn release_future_slot(&self, slot_idx: Option<usize>) {
-        if let Some(idx) = slot_idx {
-            if self.slots[idx].state.load(Ordering::Acquire) == 1 {
-                self.release_unsubmitted_slot(idx);
-            }
+        if let Some(idx) = slot_idx
+            && self.slots[idx].state.load(Ordering::Acquire) == 1
+        {
+            self.release_unsubmitted_slot(idx);
         }
     }
 

@@ -247,10 +247,8 @@ impl DeferredFaultQueue {
     fn push(&self, event: RawFaultEvent) {
         // Critical faults should always get a chance to bypass the normal
         // queue so we preserve at least one high-signal security event.
-        if Self::is_critical(&event) {
-            if self.critical_slot.try_push(event) {
-                return;
-            }
+        if Self::is_critical(&event) && self.critical_slot.try_push(event) {
+            return;
         }
 
         // Normal queue path

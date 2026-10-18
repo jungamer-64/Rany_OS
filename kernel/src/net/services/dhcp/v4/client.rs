@@ -1030,10 +1030,10 @@ impl DhcpClient {
     pub(super) fn validate_offer_server(&self, server_id: Ipv4Address) -> Result<(), &'static str> {
         match self.offered_lease.lock() {
             Ok(off) => {
-                if let Some(ref o) = *off {
-                    if o.server_ip != server_id {
-                        return Err("Offer server identifier does not match existing offer");
-                    }
+                if let Some(ref o) = *off
+                    && o.server_ip != server_id
+                {
+                    return Err("Offer server identifier does not match existing offer");
                 }
                 Ok(())
             }

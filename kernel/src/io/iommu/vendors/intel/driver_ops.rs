@@ -170,20 +170,20 @@ impl IntelIommuDriver {
         validate_dma_params(phys_addr, size)?;
 
         if let Some(ref controller) = self.controller {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-                if let Some(domain_arc) = controller.domain(domain_id) {
-                    return unsafe {
-                        apply_mapping_sync(
-                            controller,
-                            &domain_arc,
-                            device,
-                            phys_addr.as_u64(),
-                            size,
-                            read,
-                            write,
-                        )
-                    };
-                }
+            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
+                && let Some(domain_arc) = controller.domain(domain_id)
+            {
+                return unsafe {
+                    apply_mapping_sync(
+                        controller,
+                        &domain_arc,
+                        device,
+                        phys_addr.as_u64(),
+                        size,
+                        read,
+                        write,
+                    )
+                };
             }
             return Err(IommuError::DomainNotFound.into());
         }
@@ -194,20 +194,20 @@ impl IntelIommuDriver {
         }
 
         for controller in &registry.controllers {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-                if let Some(domain_arc) = controller.domain(domain_id) {
-                    return unsafe {
-                        apply_mapping_sync(
-                            controller,
-                            &domain_arc,
-                            device,
-                            phys_addr.as_u64(),
-                            size,
-                            read,
-                            write,
-                        )
-                    };
-                }
+            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
+                && let Some(domain_arc) = controller.domain(domain_id)
+            {
+                return unsafe {
+                    apply_mapping_sync(
+                        controller,
+                        &domain_arc,
+                        device,
+                        phys_addr.as_u64(),
+                        size,
+                        read,
+                        write,
+                    )
+                };
             }
         }
 
@@ -242,19 +242,13 @@ impl IntelIommuDriver {
         }
 
         for controller in &registry.controllers {
-            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device) {
-                if let Some(domain_arc) = controller.domain(domain_id) {
-                    return unsafe {
-                        apply_mapping_async(
-                            controller,
-                            &domain_arc,
-                            device,
-                            phys_addr.as_u64(),
-                            size,
-                        )
-                    }
-                    .await;
+            if let Ok(Some(domain_id)) = controller.get_domain_for_device(*device)
+                && let Some(domain_arc) = controller.domain(domain_id)
+            {
+                return unsafe {
+                    apply_mapping_async(controller, &domain_arc, device, phys_addr.as_u64(), size)
                 }
+                .await;
             }
         }
 

@@ -190,10 +190,10 @@ impl ConsoleManager {
     /// アクティブなコンソールに書き込む (Non-blocking)
     pub fn try_write(&self, s: &str) {
         let active = self.active.load(Ordering::Acquire) as usize;
-        if let Some(console) = self.consoles.get(active) {
-            if let Ok(mut locked_console) = console.try_lock() {
-                locked_console.write(s);
-            }
+        if let Some(console) = self.consoles.get(active)
+            && let Ok(mut locked_console) = console.try_lock()
+        {
+            locked_console.write(s);
         }
     }
 
@@ -341,12 +341,12 @@ pub fn set_driver(driver: Box<dyn ConsoleDriver>) {
 
 /// 画面を強制的にフラッシュ
 pub fn flush_screen() {
-    if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner()) {
-        if let Some(ref mut driver) = *CONSOLE_DRIVER.lock().unwrap_or_else(|e| e.into_inner()) {
-            let active = manager.active_console();
-            if let Some(console) = manager.consoles.get(active as usize) {
-                driver.flush(console.lock().unwrap_or_else(|e| e.into_inner()).buffer());
-            }
+    if let Some(ref manager) = *CONSOLE_MANAGER.lock().unwrap_or_else(|e| e.into_inner())
+        && let Some(ref mut driver) = *CONSOLE_DRIVER.lock().unwrap_or_else(|e| e.into_inner())
+    {
+        let active = manager.active_console();
+        if let Some(console) = manager.consoles.get(active as usize) {
+            driver.flush(console.lock().unwrap_or_else(|e| e.into_inner()).buffer());
         }
     }
 }
@@ -379,24 +379,22 @@ pub fn write_to(console_id: u32, s: &str) {
 
 /// コンソールに書き込む (Non-blocking / Try Lock)
 pub fn try_write(s: &str) {
-    if let Ok(guard) = CONSOLE_MANAGER.try_lock() {
-        if let Some(ref manager) = *guard {
-            manager.try_write(s);
-        }
+    if let Ok(guard) = CONSOLE_MANAGER.try_lock()
+        && let Some(ref manager) = *guard
+    {
+        manager.try_write(s);
     }
 
-    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock() {
-        if let Some(ref manager) = *manager_guard {
-            if let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
-                if let Some(ref mut driver) = *driver_guard {
-                    let active = manager.active_console();
-                    if let Some(console) = manager.consoles.get(active as usize) {
-                        if let Ok(locked_console) = console.try_lock() {
-                            driver.flush(locked_console.buffer());
-                        }
-                    }
-                }
-            }
+    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock()
+        && let Some(ref manager) = *manager_guard
+        && let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock()
+        && let Some(ref mut driver) = *driver_guard
+    {
+        let active = manager.active_console();
+        if let Some(console) = manager.consoles.get(active as usize)
+            && let Ok(locked_console) = console.try_lock()
+        {
+            driver.flush(locked_console.buffer());
         }
     }
 }
@@ -442,18 +440,16 @@ pub fn try_switch(console_id: u32) -> bool {
         return false;
     }
 
-    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock() {
-        if let Some(ref manager) = *manager_guard {
-            if let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock() {
-                if let Some(ref mut driver) = *driver_guard {
-                    let active = manager.active_console();
-                    if let Some(console) = manager.consoles.get(active as usize) {
-                        if let Ok(locked_console) = console.try_lock() {
-                            driver.flush(locked_console.buffer());
-                        }
-                    }
-                }
-            }
+    if let Ok(manager_guard) = CONSOLE_MANAGER.try_lock()
+        && let Some(ref manager) = *manager_guard
+        && let Ok(mut driver_guard) = CONSOLE_DRIVER.try_lock()
+        && let Some(ref mut driver) = *driver_guard
+    {
+        let active = manager.active_console();
+        if let Some(console) = manager.consoles.get(active as usize)
+            && let Ok(locked_console) = console.try_lock()
+        {
+            driver.flush(locked_console.buffer());
         }
     }
 

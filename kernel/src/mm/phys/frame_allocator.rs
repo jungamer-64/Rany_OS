@@ -585,29 +585,29 @@ fn cached_on_node(node: NumaNodeId) -> Result<PhysicalAllocation, FrameAllocErro
 }
 
 pub fn dealloc_frame(frame: PhysicalAllocation) {
-    if frame.page_count() == 1 {
-        if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-            let mut pending = Some(frame);
-            let mut returned = [const { None }; FRAME_BATCH];
-            cpu.with_frame_cache(|cache| {
-                if cache.pages.len == FRAME_CACHE_CAPACITY {
-                    returned = core::array::from_fn(|_| cache.pages.pop(None));
-                }
-                pending = cache
-                    .pages
-                    .push(pending.take().expect("pending frame"))
-                    .err();
-            });
-            // Shared occupancy and its counters are touched outside the CPU
-            // borrow, only when a full magazine returns its 32-page batch.
-            for frame in returned.into_iter().flatten() {
-                frame.release();
+    if frame.page_count() == 1
+        && let Some(cpu) = crate::cpu::CurrentCpu::acquire()
+    {
+        let mut pending = Some(frame);
+        let mut returned = [const { None }; FRAME_BATCH];
+        cpu.with_frame_cache(|cache| {
+            if cache.pages.len == FRAME_CACHE_CAPACITY {
+                returned = core::array::from_fn(|_| cache.pages.pop(None));
             }
-            if let Some(frame) = pending {
-                frame.release();
-            }
-            return;
+            pending = cache
+                .pages
+                .push(pending.take().expect("pending frame"))
+                .err();
+        });
+        // Shared occupancy and its counters are touched outside the CPU
+        // borrow, only when a full magazine returns its 32-page batch.
+        for frame in returned.into_iter().flatten() {
+            frame.release();
         }
+        if let Some(frame) = pending {
+            frame.release();
+        }
+        return;
     }
     frame.release();
 }

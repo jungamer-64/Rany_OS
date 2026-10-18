@@ -186,11 +186,11 @@ impl HierarchicalBitmap {
                 while candidates != 0 {
                     let detail_idx = l1_idx * BITS_PER_WORD + candidates.trailing_zeros() as usize;
                     candidates &= candidates - 1;
-                    if detail_idx < self.detail.len() {
-                        if let Some(unit_idx) = self.try_allocate_from_word(detail_idx) {
-                            self.hint.store(l2_idx, Ordering::Relaxed);
-                            return Some(unit_idx);
-                        }
+                    if detail_idx < self.detail.len()
+                        && let Some(unit_idx) = self.try_allocate_from_word(detail_idx)
+                    {
+                        self.hint.store(l2_idx, Ordering::Relaxed);
+                        return Some(unit_idx);
                     }
                 }
             }

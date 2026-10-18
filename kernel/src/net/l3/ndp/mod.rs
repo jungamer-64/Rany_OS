@@ -242,13 +242,13 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
 
         match opt_type {
             NdpOptionType::SourceLinkLayerAddress | NdpOptionType::TargetLinkLayerAddress => {
-                if opt_len >= 8 {
-                    if let Some(mac) = view.read_array::<6>(offset + 2) {
-                        options.push(NdpOption::LinkLayerAddress {
-                            option_type: opt_type,
-                            mac,
-                        });
-                    }
+                if opt_len >= 8
+                    && let Some(mac) = view.read_array::<6>(offset + 2)
+                {
+                    options.push(NdpOption::LinkLayerAddress {
+                        option_type: opt_type,
+                        mac,
+                    });
                 }
             }
             NdpOptionType::PrefixInformation => {
@@ -286,10 +286,10 @@ pub fn parse_ndp_options_view(view: &PacketPayloadView<'_>, start_offset: usize)
                 }
             }
             NdpOptionType::Mtu => {
-                if opt_len >= 8 {
-                    if let Some(mtu_bytes) = view.read_array::<4>(offset + 4) {
-                        options.push(NdpOption::Mtu(u32::from_be_bytes(mtu_bytes)));
-                    }
+                if opt_len >= 8
+                    && let Some(mtu_bytes) = view.read_array::<4>(offset + 4)
+                {
+                    options.push(NdpOption::Mtu(u32::from_be_bytes(mtu_bytes)));
                 }
             }
             NdpOptionType::RecursiveDnsServer => {

@@ -109,31 +109,30 @@ pub(crate) fn ensure_interface_runtime_in(
         }
     };
 
-    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
-        if let Err(error) = crate::task::spawn(
+    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel)
+        && let Err(error) = crate::task::spawn(
             dhcp_v4_drive_task(interface_runtime),
             crate::task::TaskOptions::any(),
-        ) {
-            interface_runtime
-                .drive_started
-                .store(false, Ordering::Release);
-            return Err(DhcpRuntimeError::Spawn(error));
-        }
+        )
+    {
+        interface_runtime
+            .drive_started
+            .store(false, Ordering::Release);
+        return Err(DhcpRuntimeError::Spawn(error));
     }
 
     if !interface_runtime
         .v6_drive_started
         .swap(true, Ordering::AcqRel)
-    {
-        if let Err(error) = crate::task::spawn(
+        && let Err(error) = crate::task::spawn(
             dhcp_v6_drive_task(interface_runtime),
             crate::task::TaskOptions::any(),
-        ) {
-            interface_runtime
-                .v6_drive_started
-                .store(false, Ordering::Release);
-            return Err(DhcpRuntimeError::Spawn(error));
-        }
+        )
+    {
+        interface_runtime
+            .v6_drive_started
+            .store(false, Ordering::Release);
+        return Err(DhcpRuntimeError::Spawn(error));
     }
 
     Ok(())
@@ -200,16 +199,16 @@ pub(crate) fn restart_interface_runtime_in(
     interface_runtime.active.store(true, Ordering::Release);
     interface_runtime.suspended.store(false, Ordering::Release);
 
-    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel) {
-        if let Err(error) = crate::task::spawn(
+    if !interface_runtime.drive_started.swap(true, Ordering::AcqRel)
+        && let Err(error) = crate::task::spawn(
             dhcp_v4_drive_task(interface_runtime),
             crate::task::TaskOptions::any(),
-        ) {
-            interface_runtime
-                .drive_started
-                .store(false, Ordering::Release);
-            return Err(DhcpRuntimeError::Spawn(error));
-        }
+        )
+    {
+        interface_runtime
+            .drive_started
+            .store(false, Ordering::Release);
+        return Err(DhcpRuntimeError::Spawn(error));
     }
 
     interface_runtime
@@ -238,16 +237,15 @@ fn ensure_v4_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRun
         .v4_dispatcher_started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
-    {
-        if let Err(error) = crate::task::spawn(
+        && let Err(error) = crate::task::spawn(
             dhcp_v4_dispatcher_task(runtime),
             crate::task::TaskOptions::any(),
-        ) {
-            runtime_state_for(runtime)
-                .v4_dispatcher_started
-                .store(false, Ordering::Release);
-            return Err(DhcpRuntimeError::Spawn(error));
-        }
+        )
+    {
+        runtime_state_for(runtime)
+            .v4_dispatcher_started
+            .store(false, Ordering::Release);
+        return Err(DhcpRuntimeError::Spawn(error));
     }
     Ok(())
 }
@@ -257,16 +255,15 @@ fn ensure_v6_dispatcher_task_in(runtime: NetRuntimeHandle) -> Result<(), DhcpRun
         .v6_dispatcher_started
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
-    {
-        if let Err(error) = crate::task::spawn(
+        && let Err(error) = crate::task::spawn(
             dhcp_v6_dispatcher_task(runtime),
             crate::task::TaskOptions::any(),
-        ) {
-            runtime_state_for(runtime)
-                .v6_dispatcher_started
-                .store(false, Ordering::Release);
-            return Err(DhcpRuntimeError::Spawn(error));
-        }
+        )
+    {
+        runtime_state_for(runtime)
+            .v6_dispatcher_started
+            .store(false, Ordering::Release);
+        return Err(DhcpRuntimeError::Spawn(error));
     }
     Ok(())
 }

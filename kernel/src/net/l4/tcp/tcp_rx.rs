@@ -523,24 +523,23 @@ fn process_parsed_tcp_segment(
                     let _ = push_to_accept_queue(runtime, local.port(), ingress_if_id, accepted);
                 }
 
-                if let Some(data_payload) = data_payload {
-                    if let Some(snapshot) =
+                if let Some(data_payload) = data_payload
+                    && let Some(snapshot) =
                         tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
                             TcpControlBlockSnapshot::from(entry)
                         })
-                    {
-                        process_tcp_with_tcb(
-                            runtime,
-                            snapshot,
-                            header.flags,
-                            header.seq_num,
-                            header.ack_num,
-                            header.window,
-                            header.urgent_ptr,
-                            options,
-                            Some(data_payload),
-                        );
-                    }
+                {
+                    process_tcp_with_tcb(
+                        runtime,
+                        snapshot,
+                        header.flags,
+                        header.seq_num,
+                        header.ack_num,
+                        header.window,
+                        header.urgent_ptr,
+                        options,
+                        Some(data_payload),
+                    );
                 }
                 return;
             }
@@ -934,36 +933,34 @@ fn handle_synchronized_segment(
         let mut parser = TcpOptionParser::new(options);
 
         // 受信SACKオプション（送信側の再送キューに反映）
-        if tcb.sack_enabled {
-            if let Some(blocks) = parser.find_sack_blocks() {
-                if !blocks.is_empty() {
-                    crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
-                        runtime, tcb.if_id, tcb.local, tcb.remote, &blocks,
-                    );
-                }
-            }
+        if tcb.sack_enabled
+            && let Some(blocks) = parser.find_sack_blocks()
+            && !blocks.is_empty()
+        {
+            crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
+                runtime, tcb.if_id, tcb.local, tcb.remote, &blocks,
+            );
         }
 
         // Timestamp (RFC 7323 Section 5.3)
-        if tcb.ts_enabled {
-            if let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps() {
-                // RFC 7323: SEG.SEQ <= last.ACK.sent < SEG.SEQ + SEG.LEN の場合に更新。
-                // last.ACK.sent はここでは tcb.rcv_nxt。
-                let seg_len_u32 = payload_len as u32
-                    + (if is_syn { 1 } else { 0 })
-                    + (if is_fin { 1 } else { 0 });
-                let is_in_window = (seq_num.wrapping_sub(tcb.rcv_nxt) as i32) <= 0
-                    && (tcb.rcv_nxt.wrapping_sub(seq_num) as i32) < seg_len_u32 as i32;
+        if tcb.ts_enabled
+            && let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps()
+        {
+            // RFC 7323: SEG.SEQ <= last.ACK.sent < SEG.SEQ + SEG.LEN の場合に更新。
+            // last.ACK.sent はここでは tcb.rcv_nxt。
+            let seg_len_u32 =
+                payload_len as u32 + (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
+            let is_in_window = (seq_num.wrapping_sub(tcb.rcv_nxt) as i32) <= 0
+                && (tcb.rcv_nxt.wrapping_sub(seq_num) as i32) < seg_len_u32 as i32;
 
-                if is_in_window || seq_num == tcb.rcv_nxt {
-                    tcp_table_in(runtime).record_timestamp_echo(
-                        tcb.if_id,
-                        tcb.local,
-                        tcb.remote,
-                        peer_ts_val,
-                        generate_tcp_timestamp_in(runtime),
-                    );
-                }
+            if is_in_window || seq_num == tcb.rcv_nxt {
+                tcp_table_in(runtime).record_timestamp_echo(
+                    tcb.if_id,
+                    tcb.local,
+                    tcb.remote,
+                    peer_ts_val,
+                    generate_tcp_timestamp_in(runtime),
+                );
             }
         }
     }

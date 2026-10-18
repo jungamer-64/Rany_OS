@@ -232,17 +232,16 @@ impl RedirectCache {
             return;
         }
 
-        if self.entries.len() >= REDIRECT_CACHE_SIZE {
-            if let Some(oldest) = self
+        if self.entries.len() >= REDIRECT_CACHE_SIZE
+            && let Some(oldest) = self
                 .entries
                 .iter()
                 .enumerate()
                 .min_by_key(|(_, e)| e.timestamp)
                 .map(|(index, _)| index)
-            {
-                self.entries.swap_remove(oldest);
-                self.rebuild_index();
-            }
+        {
+            self.entries.swap_remove(oldest);
+            self.rebuild_index();
         }
 
         let bucket = Self::bucket_for(destination);

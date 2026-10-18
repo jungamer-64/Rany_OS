@@ -517,11 +517,11 @@ fn arm_current_runtime_timer() -> Result<(), RuntimeTimerError> {
     }
     let current_cpu =
         crate::cpu::CurrentCpu::acquire().ok_or(RuntimeTimerError::CpuLocalUnavailable)?;
-    if current_cpu.arm_runtime_timer_once() {
-        if let Err(error) = crate::drivers::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1) {
-            current_cpu.disarm_runtime_timer();
-            return Err(RuntimeTimerError::LocalApic(error));
-        }
+    if current_cpu.arm_runtime_timer_once()
+        && let Err(error) = crate::drivers::apic::start_apic_timer_on_vector(APIC_TIMER_VECTOR, 1)
+    {
+        current_cpu.disarm_runtime_timer();
+        return Err(RuntimeTimerError::LocalApic(error));
     }
     Ok(())
 }

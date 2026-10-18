@@ -24,10 +24,10 @@ pub(crate) fn reserve_uefi_runtime_ranges(
         if region.phys_addr == 0 || region.page_count == 0 {
             continue;
         }
-        if let Some(size) = region.page_count.checked_mul(EFI_PAGE_SIZE) {
-            if size > 0 {
-                regions = subtract_reserved_range(regions, region.phys_addr, size);
-            }
+        if let Some(size) = region.page_count.checked_mul(EFI_PAGE_SIZE)
+            && size > 0
+        {
+            regions = subtract_reserved_range(regions, region.phys_addr, size);
         }
     }
     regions

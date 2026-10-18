@@ -145,13 +145,13 @@ pub fn setup_iommu_for_pci_device(
 
     device.iommu_domain_id = Some(domain_id);
     // ATS publication follows domain attachment and consumes the PCI resource.
-    if has_pcie_ext {
-        if let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver {
-            let registry = get_iommu_registry().expect("Intel registry must exist");
-            if let Some(controller) = registry.controllers.get(controller_idx) {
-                let ext_mgr = pcie_ext_manager().unwrap();
-                try_enable_ats(controller, ext_mgr, device, device_id);
-            }
+    if has_pcie_ext
+        && let crate::io::iommu::runtime::backend::IommuBackend::Intel(ref _intel_ctrl) = **driver
+    {
+        let registry = get_iommu_registry().expect("Intel registry must exist");
+        if let Some(controller) = registry.controllers.get(controller_idx) {
+            let ext_mgr = pcie_ext_manager().unwrap();
+            try_enable_ats(controller, ext_mgr, device, device_id);
         }
     }
     log_device_protection(device_id, &iommu_group, domain_id, newly_created);
@@ -170,28 +170,28 @@ fn try_enable_ats(
         return;
     }
 
-    if let Some(config) = pcie_ext_config() {
-        if let Ok(ats_ctrl) = AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf)) {
-            use crate::io::iommu::vendors::intel::controller::AtsEnableError;
-            match controller.enable_ats(ats_ctrl, trust_level) {
-                Ok(()) => log::info!("[IOMMU] ATS active for device {:?}", device_id),
-                Err(AtsEnableError::Rejected { cause, resource }) => {
-                    // No configuration write was issued; ATS is optional here.
-                    log::warn!(
-                        "[IOMMU] ATS admission rejected for {:?}: {:?}",
-                        resource.bdf(),
-                        cause
-                    );
-                }
-                Err(AtsEnableError::Retained { cause, device }) => {
-                    // The controller still owns this resource and includes it in
-                    // invalidation, even though enablement could not be confirmed.
-                    log::warn!(
-                        "[IOMMU] ATS outcome unknown for {:?}, resource retained: {:?}",
-                        device,
-                        cause
-                    );
-                }
+    if let Some(config) = pcie_ext_config()
+        && let Ok(ats_ctrl) = AtsController::new(config, PcieBdf::from_bdf_address(&device.bdf))
+    {
+        use crate::io::iommu::vendors::intel::controller::AtsEnableError;
+        match controller.enable_ats(ats_ctrl, trust_level) {
+            Ok(()) => log::info!("[IOMMU] ATS active for device {:?}", device_id),
+            Err(AtsEnableError::Rejected { cause, resource }) => {
+                // No configuration write was issued; ATS is optional here.
+                log::warn!(
+                    "[IOMMU] ATS admission rejected for {:?}: {:?}",
+                    resource.bdf(),
+                    cause
+                );
+            }
+            Err(AtsEnableError::Retained { cause, device }) => {
+                // The controller still owns this resource and includes it in
+                // invalidation, even though enablement could not be confirmed.
+                log::warn!(
+                    "[IOMMU] ATS outcome unknown for {:?}, resource retained: {:?}",
+                    device,
+                    cause
+                );
             }
         }
     }
@@ -217,15 +217,15 @@ fn determine_trust_level(
             let parent_bdf = pci_driver::PcieBdf::new(parent_bus, parent_dev, parent_func);
 
             // Check if this bridge/port is hot-plug capable (e.g., Thunderbolt, ExpressCard)
-            if let Ok(hp_ctrl) = HotPlugController::new(pcie_ext_manager.config(), parent_bdf) {
-                if hp_ctrl.is_hotplug_capable() {
-                    log::warn!(
-                        "[IOMMU][SECURITY] Device {:?} is behind hot-pluggable port {:?} - marking UNTRUSTED",
-                        device.bdf,
-                        parent_bdf
-                    );
-                    return DeviceTrustLevel::Untrusted;
-                }
+            if let Ok(hp_ctrl) = HotPlugController::new(pcie_ext_manager.config(), parent_bdf)
+                && hp_ctrl.is_hotplug_capable()
+            {
+                log::warn!(
+                    "[IOMMU][SECURITY] Device {:?} is behind hot-pluggable port {:?} - marking UNTRUSTED",
+                    device.bdf,
+                    parent_bdf
+                );
+                return DeviceTrustLevel::Untrusted;
             }
 
             current_bus = parent_bus;

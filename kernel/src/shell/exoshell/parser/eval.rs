@@ -72,10 +72,10 @@ fn eval_ident<'a>(name: &str, ctx: &EvalContext<'a>) -> ExoValue<'a> {
     }
 
     // 2. クロージャパラメータと一致するか
-    if let (Some(param_name), Some(param_value)) = (ctx.param_name, ctx.param_value) {
-        if name == param_name {
-            return param_value.clone();
-        }
+    if let (Some(param_name), Some(param_value)) = (ctx.param_name, ctx.param_value)
+        && name == param_name
+    {
+        return param_value.clone();
     }
 
     // 3. 暗黙のターゲットのフィールドとして検索

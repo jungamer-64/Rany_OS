@@ -209,10 +209,10 @@ impl Socket {
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
         let Some(pushed) = self.with_inner_mut(|inner| {
             let pushed = inner.push_recv_payload(payload);
-            if pushed > 0 {
-                if let Some(tcp) = inner.tcp_mut() {
-                    tcp.stats.record_rx_segment(pushed);
-                }
+            if pushed > 0
+                && let Some(tcp) = inner.tcp_mut()
+            {
+                tcp.stats.record_rx_segment(pushed);
             }
             if pushed > 0 {
                 inner.recv_waker.wake();

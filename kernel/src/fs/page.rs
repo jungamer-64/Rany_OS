@@ -166,11 +166,11 @@ impl PagedContent {
 
         // 最終ページ内の余分なバイトをゼロ埋め
         let offset_in_last_page = (size as usize) & PAGE_MASK;
-        if offset_in_last_page > 0 {
-            if let Some(page) = self.pages.get_mut(&last_page_idx) {
-                let page_mut = Arc::make_mut(page);
-                page_mut[offset_in_last_page..].fill(0);
-            }
+        if offset_in_last_page > 0
+            && let Some(page) = self.pages.get_mut(&last_page_idx)
+        {
+            let page_mut = Arc::make_mut(page);
+            page_mut[offset_in_last_page..].fill(0);
         }
     }
 

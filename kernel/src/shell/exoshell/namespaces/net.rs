@@ -418,11 +418,11 @@ impl NetNamespace {
             }
 
             // パケット間に少し待機（async sleep）
-            if seq < count {
-                if let Err(cause) = crate::task::sleep_ms(100).await {
-                    log::error!("ping interval timer failed: {cause}");
-                    break;
-                }
+            if seq < count
+                && let Err(cause) = crate::task::sleep_ms(100).await
+            {
+                log::error!("ping interval timer failed: {cause}");
+                break;
             }
         }
         ExoValue::Array(results)

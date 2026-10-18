@@ -132,10 +132,11 @@ impl ChannelRegistry {
                     }
                 }
 
-                if channel.sender_count == 0 && channel.receiver_count == 0 {
-                    if let Some(mut removed) = channels.remove(&entry.channel_id) {
-                        drained.append(&mut removed.queue);
-                    }
+                if channel.sender_count == 0
+                    && channel.receiver_count == 0
+                    && let Some(mut removed) = channels.remove(&entry.channel_id)
+                {
+                    drained.append(&mut removed.queue);
                 }
             }
         }

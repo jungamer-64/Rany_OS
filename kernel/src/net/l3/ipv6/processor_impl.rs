@@ -369,10 +369,10 @@ impl Ipv6Processor {
         }
 
         // Global address and its solicited-node multicast
-        if let Some(ref global) = self.config.global {
-            if addr == global || *addr == global.solicited_node() {
-                return true;
-            }
+        if let Some(ref global) = self.config.global
+            && (addr == global || *addr == global.solicited_node())
+        {
+            return true;
         }
 
         false

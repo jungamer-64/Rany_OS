@@ -156,13 +156,13 @@ impl NetworkStack {
         let mut ip_packet = Some(ip_packet);
         let ingress_if_id = if_id;
         let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
-        if let Some(endpoint) = raw_endpoint.as_ref() {
-            if let Some(packet) = ip_packet.take() {
-                if let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet) {
-                    let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
-                }
-                return;
+        if let Some(endpoint) = raw_endpoint.as_ref()
+            && let Some(packet) = ip_packet.take()
+        {
+            if let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet) {
+                let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
             }
+            return;
         }
 
         let Some(packet_ref) = ip_packet.take() else {
@@ -369,10 +369,10 @@ impl NetworkStack {
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
                 {
-                    if let Some(global) = config.global {
-                        if dst == global {
-                            reply_src = Some(global);
-                        }
+                    if let Some(global) = config.global
+                        && dst == global
+                    {
+                        reply_src = Some(global);
                     }
                     if reply_src.is_none() {
                         reply_src = Some(config.link_local);
@@ -433,10 +433,9 @@ impl NetworkStack {
                 if let Some(config) = self
                     .interface_config_or_runtime(ingress_if_id)
                     .and_then(|cfg| cfg.ipv6)
+                    && (quoted_src == config.link_local || config.global == Some(quoted_src))
                 {
-                    if quoted_src == config.link_local || config.global == Some(quoted_src) {
-                        is_our_packet = true;
-                    }
+                    is_our_packet = true;
                 }
 
                 if is_our_packet {
@@ -742,35 +741,34 @@ impl NetworkStack {
                                     let global_addr =
                                         Ipv6Address::from_prefix_eui64(prefix, &mac_bytes);
 
-                                    if let Some(ref mut ipv6) = state.ipv6 {
-                                        if ipv6.config().global != Some(global_addr) {
-                                            ipv6.set_global_address(global_addr);
-                                            if let Some(ref mut cfg) = state.config.ipv6 {
-                                                cfg.global = Some(global_addr);
-                                            }
-                                            log::info!(
-                                                "SLAAC: Configured interface {} global address {} from prefix {}",
-                                                if_id.0,
-                                                global_addr,
-                                                prefix
-                                            );
+                                    if let Some(ref mut ipv6) = state.ipv6
+                                        && ipv6.config().global != Some(global_addr)
+                                    {
+                                        ipv6.set_global_address(global_addr);
+                                        if let Some(ref mut cfg) = state.config.ipv6 {
+                                            cfg.global = Some(global_addr);
+                                        }
+                                        log::info!(
+                                            "SLAAC: Configured interface {} global address {} from prefix {}",
+                                            if_id.0,
+                                            global_addr,
+                                            prefix
+                                        );
 
-                                            if let Some(ref mut ndp_proc) = state.ndp {
-                                                if let NdpResult::SendNeighborSolicitation {
-                                                    src,
-                                                    dst,
-                                                    target,
-                                                } = ndp_proc.initiate_dad(&global_addr)
-                                                {
-                                                    let Some(ns_msg) = NdpProcessor::build_ns(
-                                                        &src, &dst, &target, &mac_bytes,
-                                                    ) else {
-                                                        state.stats.record_dropped();
-                                                        continue;
-                                                    };
-                                                    dad_messages.push((src, dst, ns_msg, target));
-                                                }
-                                            }
+                                        if let Some(ref mut ndp_proc) = state.ndp
+                                            && let NdpResult::SendNeighborSolicitation {
+                                                src,
+                                                dst,
+                                                target,
+                                            } = ndp_proc.initiate_dad(&global_addr)
+                                        {
+                                            let Some(ns_msg) = NdpProcessor::build_ns(
+                                                &src, &dst, &target, &mac_bytes,
+                                            ) else {
+                                                state.stats.record_dropped();
+                                                continue;
+                                            };
+                                            dad_messages.push((src, dst, ns_msg, target));
                                         }
                                     }
 
@@ -782,34 +780,33 @@ impl NetworkStack {
                                 lifetime,
                                 servers,
                             } = prefix_opt
+                                && *lifetime > 0
                             {
-                                if *lifetime > 0 {
-                                    for server in servers {
-                                        crate::net::services::dns::add_ipv6_server_in(
-                                            self.runtime,
-                                            *server,
-                                        );
-                                        log::info!(
-                                            "NDP: Added DNS server {} from RDNSS option",
-                                            server
-                                        );
-                                    }
+                                for server in servers {
+                                    crate::net::services::dns::add_ipv6_server_in(
+                                        self.runtime,
+                                        *server,
+                                    );
+                                    log::info!(
+                                        "NDP: Added DNS server {} from RDNSS option",
+                                        server
+                                    );
                                 }
                             }
                         }
 
-                        if let Some(ref mut ipv6) = state.ipv6 {
-                            if ipv6.config().gateway.is_none() {
-                                ipv6.config_mut().gateway = Some(router);
-                                if let Some(ref mut cfg) = state.config.ipv6 {
-                                    cfg.gateway = Some(router);
-                                }
-                                log::info!(
-                                    "SLAAC: Set interface {} default gateway to {}",
-                                    if_id.0,
-                                    router
-                                );
+                        if let Some(ref mut ipv6) = state.ipv6
+                            && ipv6.config().gateway.is_none()
+                        {
+                            ipv6.config_mut().gateway = Some(router);
+                            if let Some(ref mut cfg) = state.config.ipv6 {
+                                cfg.gateway = Some(router);
                             }
+                            log::info!(
+                                "SLAAC: Set interface {} default gateway to {}",
+                                if_id.0,
+                                router
+                            );
                         }
                     }
 

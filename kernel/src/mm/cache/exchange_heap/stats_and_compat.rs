@@ -65,16 +65,16 @@ impl ExchangeHeap {
         let class = CacheClass::for_layout(layout);
         let mut bound = false;
         if let Some(class) = class {
-            if let Some(cpu) = crate::cpu::CurrentCpu::acquire() {
-                if let Some((matches, block)) = cpu.with_exchange_cache(|cache| {
+            if let Some(cpu) = crate::cpu::CurrentCpu::acquire()
+                && let Some((matches, block)) = cpu.with_exchange_cache(|cache| {
                     let matches = cache.matches(backing);
                     (matches, cache.take(backing, class))
-                }) {
-                    if let Some(block) = block {
-                        return Some(block.into_pointer());
-                    }
-                    bound = matches;
+                })
+            {
+                if let Some(block) = block {
+                    return Some(block.into_pointer());
                 }
+                bound = matches;
             }
             if !bound {
                 bound = Self::bind_current(backing);
@@ -108,12 +108,12 @@ impl ExchangeHeap {
                 }
             });
         }
-        if batch.iter().any(Option::is_some) {
-            if let Ok(mut blocks) = backing.lock() {
-                for block in batch.into_iter().flatten() {
-                    // SAFETY: rejected publication preserves the unique entry.
-                    unsafe { blocks.deallocate(block.into_pointer(), layout) };
-                }
+        if batch.iter().any(Option::is_some)
+            && let Ok(mut blocks) = backing.lock()
+        {
+            for block in batch.into_iter().flatten() {
+                // SAFETY: rejected publication preserves the unique entry.
+                unsafe { blocks.deallocate(block.into_pointer(), layout) };
             }
         }
         Some(result)

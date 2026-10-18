@@ -253,26 +253,26 @@ impl Ipv6FragmentBuffer {
 
         // RFC 8200: Check for consistent total length
         if !frag.more_fragments {
-            if let Some(existing_total) = self.total_len {
-                if existing_total != end {
-                    log::warn!(
-                        "[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}",
-                        existing_total,
-                        end
-                    );
-                    return Err(Ipv6ReassemblyError::Overlap);
-                }
-            }
-            self.total_len = Some(end);
-        } else if let Some(total) = self.total_len {
-            if end > total {
+            if let Some(existing_total) = self.total_len
+                && existing_total != end
+            {
                 log::warn!(
-                    "[NET-IPV6] Fragment beyond end of datagram: {} > {}",
-                    end,
-                    total
+                    "[NET-IPV6] Inconsistent total length in fragments: expected {}, got {}",
+                    existing_total,
+                    end
                 );
                 return Err(Ipv6ReassemblyError::Overlap);
             }
+            self.total_len = Some(end);
+        } else if let Some(total) = self.total_len
+            && end > total
+        {
+            log::warn!(
+                "[NET-IPV6] Fragment beyond end of datagram: {} > {}",
+                end,
+                total
+            );
+            return Err(Ipv6ReassemblyError::Overlap);
         }
 
         // RFC 8200 overlap check: if any of the fragments overlap, discard entire datagram.
@@ -648,51 +648,45 @@ impl Ipv6FragmentReassembler {
         }
 
         for key in keys_to_remove {
-            if let Some(buffer) = self.buffers.remove(&key) {
-                if let Some(unfrag) = buffer.unfragmentable_part {
-                    let mut quoted = unfrag;
-                    if let Some(fragment_header) = buffer.first_frag_header {
-                        if let Some(mut header_writer) = GeneratedPacketWriter::new(
-                            fragment_header.len(),
-                            DEFAULT_PACKET_HEADROOM,
-                        ) {
-                            if header_writer
-                                .write_generated_bytes(&fragment_header)
-                                .is_some()
-                            {
-                                if let Some(header_payload) = header_writer.finish() {
-                                    let Ok(combined) = quoted.try_append(header_payload) else {
-                                        continue;
-                                    };
-                                    quoted = combined;
-                                }
-                            }
-                        }
-                    } else if let Some(segment) = buffer
-                        .segments
-                        .into_iter()
-                        .find(|segment| segment.offset == 0)
+            if let Some(buffer) = self.buffers.remove(&key)
+                && let Some(unfrag) = buffer.unfragmentable_part
+            {
+                let mut quoted = unfrag;
+                if let Some(fragment_header) = buffer.first_frag_header {
+                    if let Some(mut header_writer) =
+                        GeneratedPacketWriter::new(fragment_header.len(), DEFAULT_PACKET_HEADROOM)
+                        && header_writer
+                            .write_generated_bytes(&fragment_header)
+                            .is_some()
+                        && let Some(header_payload) = header_writer.finish()
                     {
-                        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-                            &segment.payload,
-                            0,
-                            8,
-                        ) else {
-                            continue;
-                        };
-                        let Some(prefix) = bounds
-                            .take_from(segment.payload)
-                            .and_then(|window| window.into_payload().ok())
-                        else {
-                            continue;
-                        };
-                        let Ok(combined) = quoted.try_append(prefix) else {
+                        let Ok(combined) = quoted.try_append(header_payload) else {
                             continue;
                         };
                         quoted = combined;
                     }
-                    expired_with_first.push((key.src, key.dst, quoted, None));
+                } else if let Some(segment) = buffer
+                    .segments
+                    .into_iter()
+                    .find(|segment| segment.offset == 0)
+                {
+                    let Some(bounds) =
+                        crate::net::payload::OwnedPayloadBounds::checked(&segment.payload, 0, 8)
+                    else {
+                        continue;
+                    };
+                    let Some(prefix) = bounds
+                        .take_from(segment.payload)
+                        .and_then(|window| window.into_payload().ok())
+                    else {
+                        continue;
+                    };
+                    let Ok(combined) = quoted.try_append(prefix) else {
+                        continue;
+                    };
+                    quoted = combined;
                 }
+                expired_with_first.push((key.src, key.dst, quoted, None));
             }
             self.stats.timeouts += 1;
         }

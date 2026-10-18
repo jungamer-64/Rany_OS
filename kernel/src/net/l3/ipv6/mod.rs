@@ -983,12 +983,11 @@ pub fn skip_extension_headers_fraginfo(raw_packet: &[u8]) -> ExtHeaderResult<'_>
                 }
 
                 // Bug 11 Fix: Process HBH and Destination Options TLVs
-                if next_header == EXT_HEADER_HOP_BY_HOP || next_header == EXT_HEADER_DESTINATION {
-                    if let Err(action) =
+                if (next_header == EXT_HEADER_HOP_BY_HOP || next_header == EXT_HEADER_DESTINATION)
+                    && let Err(action) =
                         process_extension_header_options(raw_packet, offset, ext_len)
-                    {
-                        return action;
-                    }
+                {
+                    return action;
                 }
 
                 next_header_ptr = offset;
@@ -1296,10 +1295,10 @@ impl Ipv6PmtuCache {
     }
 
     pub fn get(&mut self, dst: &Ipv6Address, current_time: u64) -> u32 {
-        if let Some(entry) = self.entries.get(dst) {
-            if !entry.is_expired(current_time) {
-                return entry.pmtu;
-            }
+        if let Some(entry) = self.entries.get(dst)
+            && !entry.is_expired(current_time)
+        {
+            return entry.pmtu;
         }
         Ipv6PmtuEntry::DEFAULT_MTU
     }

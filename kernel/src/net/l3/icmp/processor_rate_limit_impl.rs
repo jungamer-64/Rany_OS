@@ -34,10 +34,9 @@ impl IcmpProcessor {
         // We check this before taking the entry to avoid borrow checker issues.
         if !self.per_ip_rate_limits.contains_key(&ip)
             && self.per_ip_rate_limits.len() >= MAX_RATE_LIMIT_ENTRIES
+            && let Some(&first_key) = self.per_ip_rate_limits.keys().next()
         {
-            if let Some(&first_key) = self.per_ip_rate_limits.keys().next() {
-                self.per_ip_rate_limits.remove(&first_key);
-            }
+            self.per_ip_rate_limits.remove(&first_key);
         }
 
         let (last_time, tokens) = self

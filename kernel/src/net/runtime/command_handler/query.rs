@@ -49,13 +49,13 @@ impl RuntimeCommandHandler {
                     touched = true;
                 }
 
-                if err_msg.is_none() {
-                    if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
-                        if let Err(e) = client6.force_renew_or_restart(now) {
-                            err_msg = Some(alloc::string::String::from(e));
-                        } else {
-                            touched = true;
-                        }
+                if err_msg.is_none()
+                    && let Some(client6) = dhcp::primary_v6_client_in(runtime)
+                {
+                    if let Err(e) = client6.force_renew_or_restart(now) {
+                        err_msg = Some(alloc::string::String::from(e));
+                    } else {
+                        touched = true;
                     }
                 }
 

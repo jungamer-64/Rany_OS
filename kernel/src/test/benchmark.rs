@@ -331,12 +331,11 @@ fn verify_tcp_segment_vectors(runtime: NetRuntimeHandle) -> Result<(), &'static 
                 for &len in pieces {
                     let mut packet = crate::net::datapath::mempool::alloc_packet_in(runtime)
                         .ok_or("TCP vector packet allocation failed")?;
-                    if !has_headroom {
-                        if let Some(headroom) = PacketByteCount::new(packet.headroom()) {
-                            packet
-                                .try_retreat(headroom)
-                                .map_err(|_| "TCP vector headroom")?;
-                        }
+                    if !has_headroom && let Some(headroom) = PacketByteCount::new(packet.headroom())
+                    {
+                        packet
+                            .try_retreat(headroom)
+                            .map_err(|_| "TCP vector headroom")?;
                     }
                     packet
                         .try_resize(len)

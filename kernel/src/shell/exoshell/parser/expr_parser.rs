@@ -81,11 +81,11 @@ impl ExprParser {
 
     /// 特定の演算子文字列がOperatorトークンとしてあるかチェックし、あれば消費
     fn match_operator(&mut self, op: &str) -> bool {
-        if let Some(Token::Operator(s)) = self.peek() {
-            if s == op {
-                self.advance();
-                return true;
-            }
+        if let Some(Token::Operator(s)) = self.peek()
+            && s == op
+        {
+            self.advance();
+            return true;
         }
         false
     }
@@ -166,10 +166,10 @@ impl ExprParser {
                 args,
             } => {
                 // object が Ident("") の場合はグローバル関数呼び出し -> コマンド
-                if let Expr::Ident(ref s) = *object {
-                    if s.is_empty() {
-                        return Ok(Stmt::Command { name: method, args });
-                    }
+                if let Expr::Ident(ref s) = *object
+                    && s.is_empty()
+                {
+                    return Ok(Stmt::Command { name: method, args });
                 }
                 Ok(Stmt::Expr(Box::new(Expr::MethodCall {
                     object,
@@ -249,29 +249,29 @@ impl ExprParser {
         let left = self.parse_add_expr()?;
 
         // 比較演算子をチェック
-        if let Some(Token::Operator(op_str)) = self.peek().cloned() {
-            if let Some(op) = self.parse_comparison_op(&op_str) {
-                self.advance();
-                let right = self.parse_add_expr()?;
-                return Ok(Expr::Binary {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                });
-            }
+        if let Some(Token::Operator(op_str)) = self.peek().cloned()
+            && let Some(op) = self.parse_comparison_op(&op_str)
+        {
+            self.advance();
+            let right = self.parse_add_expr()?;
+            return Ok(Expr::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            });
         }
 
         // `contains`, `starts_with`, `ends_with` キーワード演算子
-        if let Some(Token::Ident(kw)) = self.peek().cloned() {
-            if let Some(op) = self.parse_keyword_op(&kw) {
-                self.advance();
-                let right = self.parse_add_expr()?;
-                return Ok(Expr::Binary {
-                    left: Box::new(left),
-                    op,
-                    right: Box::new(right),
-                });
-            }
+        if let Some(Token::Ident(kw)) = self.peek().cloned()
+            && let Some(op) = self.parse_keyword_op(&kw)
+        {
+            self.advance();
+            let right = self.parse_add_expr()?;
+            return Ok(Expr::Binary {
+                left: Box::new(left),
+                op,
+                right: Box::new(right),
+            });
         }
 
         Ok(left)

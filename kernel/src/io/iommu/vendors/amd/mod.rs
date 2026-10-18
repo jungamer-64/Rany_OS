@@ -363,19 +363,17 @@ impl AmdIommuDriver {
             notifier
         });
 
-        if set {
-            if let Some(notifier) = self.security_notifier.get() {
-                match self.domains.lock() {
-                    Ok(domains) => {
-                        for info in domains.values() {
-                            let _ = info.domain.set_security_notifier(Arc::clone(notifier));
-                        }
+        if set && let Some(notifier) = self.security_notifier.get() {
+            match self.domains.lock() {
+                Ok(domains) => {
+                    for info in domains.values() {
+                        let _ = info.domain.set_security_notifier(Arc::clone(notifier));
                     }
-                    Err(_) => {
-                        log::error!(
-                            "[IOMMU][AMD-Vi] Domains map poisoned while propagating security notifier"
-                        );
-                    }
+                }
+                Err(_) => {
+                    log::error!(
+                        "[IOMMU][AMD-Vi] Domains map poisoned while propagating security notifier"
+                    );
                 }
             }
         }

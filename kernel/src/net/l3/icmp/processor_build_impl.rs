@@ -90,10 +90,10 @@ impl IcmpProcessor {
         original_packet: PacketPayload,
     ) -> Option<PacketPayload> {
         let mut rest = [0u8; 4];
-        if code == DestUnreachCode::FragmentationNeeded {
-            if let Some(mtu) = next_hop_mtu {
-                rest[2..4].copy_from_slice(&mtu.to_be_bytes());
-            }
+        if code == DestUnreachCode::FragmentationNeeded
+            && let Some(mtu) = next_hop_mtu
+        {
+            rest[2..4].copy_from_slice(&mtu.to_be_bytes());
         }
         Self::build_error_payload(
             IcmpType::DestinationUnreachable,

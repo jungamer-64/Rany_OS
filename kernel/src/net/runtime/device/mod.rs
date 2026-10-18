@@ -1113,19 +1113,17 @@ fn runtime_update_link(
         .map_err(|_| "failed to update interface link state")?;
 
     if up {
-        if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id) {
-            if let Some(config) = iface.config {
-                if let Err(error) =
-                    crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
-                {
-                    log::warn!(
-                        target: "net::device",
-                        "DHCP runtime start failed for if{} after link-up: {}",
-                        if_id.0,
-                        error
-                    );
-                }
-            }
+        if let Ok(Some(iface)) = manager::get_interface_in(runtime, if_id)
+            && let Some(config) = iface.config
+            && let Err(error) =
+                crate::net::services::dhcp::ensure_interface_runtime_in(runtime, if_id, config)
+        {
+            log::warn!(
+                target: "net::device",
+                "DHCP runtime start failed for if{} after link-up: {}",
+                if_id.0,
+                error
+            );
         }
         if let Err(error) = crate::net::services::dhcp::restart_interface_runtime_in(runtime, if_id)
         {

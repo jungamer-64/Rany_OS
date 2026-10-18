@@ -471,10 +471,10 @@ fn parse_basic_constraints(value: CertificateSpan<'_>) -> (bool, Option<u32>) {
     };
     let mut inner = StrictDerCursor::new(seq.value);
     let mut is_ca = false;
-    if inner.peek_tag() == Some(0x01) {
-        if let Some(boolean) = inner.read_tlv() {
-            is_ca = boolean.value.byte_at(0).unwrap_or(0) != 0;
-        }
+    if inner.peek_tag() == Some(0x01)
+        && let Some(boolean) = inner.read_tlv()
+    {
+        is_ca = boolean.value.byte_at(0).unwrap_or(0) != 0;
     }
     let path_len = if inner.peek_tag() == Some(0x02) {
         let mut value = 0u32;
@@ -692,10 +692,10 @@ fn verify_chain_links(certs: &[X509Certificate<'_>]) -> Option<()> {
         if !issuer.is_ca || !span_eq(current.issuer_raw, issuer.subject_raw) {
             return None;
         }
-        if let Some(key_usage) = issuer.key_usage {
-            if !key_usage.key_cert_sign {
-                return None;
-            }
+        if let Some(key_usage) = issuer.key_usage
+            && !key_usage.key_cert_sign
+        {
+            return None;
         }
         if let Some(path_len) = issuer.path_len_constraint {
             let subordinate_ca_count =
@@ -778,15 +778,15 @@ fn verify_server_public_key(spki: SubjectPublicKeyInfo) -> Option<VerifiedServer
 }
 
 fn validate_tls13_leaf_usage(leaf: &X509Certificate<'_>) -> Option<()> {
-    if let Some(key_usage) = leaf.key_usage {
-        if !key_usage.digital_signature {
-            return None;
-        }
+    if let Some(key_usage) = leaf.key_usage
+        && !key_usage.digital_signature
+    {
+        return None;
     }
-    if let Some(eku) = leaf.extended_key_usage {
-        if !eku.server_auth {
-            return None;
-        }
+    if let Some(eku) = leaf.extended_key_usage
+        && !eku.server_auth
+    {
+        return None;
     }
     Some(())
 }
@@ -831,10 +831,11 @@ fn match_hostname_in_subject(subject_der: CertificateSpan<'_>, hostname: &str) -
             let mut attr = StrictDerCursor::new(attr.value);
             let oid = attr.read_oid();
             let value = attr.read_tlv();
-            if let (Some(oid), Some(value)) = (oid, value) {
-                if oid.eq_bytes(OID_COMMON_NAME) && match_dns_name(value.value, hostname) {
-                    return true;
-                }
+            if let (Some(oid), Some(value)) = (oid, value)
+                && oid.eq_bytes(OID_COMMON_NAME)
+                && match_dns_name(value.value, hostname)
+            {
+                return true;
             }
         }
     }
@@ -907,10 +908,10 @@ fn parse_ipv4_literal(hostname: &str) -> Option<[u8; 4]> {
 }
 
 fn match_ip_address(value: CertificateSpan<'_>, hostname: &str) -> bool {
-    if value.total_len() == 4 {
-        if let Some(ipv4) = parse_ipv4_literal(hostname) {
-            return (0..4).all(|index| value.byte_at(index) == Some(ipv4[index]));
-        }
+    if value.total_len() == 4
+        && let Some(ipv4) = parse_ipv4_literal(hostname)
+    {
+        return (0..4).all(|index| value.byte_at(index) == Some(ipv4[index]));
     }
     false
 }

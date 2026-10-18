@@ -274,24 +274,24 @@ fn snapshot_for_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> DhcpR
         out.v4_last_released = client.last_released_ip().map(|ip| *ip.as_bytes());
     }
 
-    if manager::primary_interface_in(runtime) == Some(if_id) {
-        if let Some(client6) = dhcp::primary_v6_client_in(runtime) {
-            out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
-            if let Some(lease6) = client6.lease() {
-                out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
-                out.v6_preferred_remaining = Some(lease_remaining_secs(
-                    lease6.preferred_lifetime,
-                    lease6.obtained_at,
-                    now,
-                    tick_rate,
-                ));
-                out.v6_valid_remaining = Some(lease_remaining_secs(
-                    lease6.valid_lifetime,
-                    lease6.obtained_at,
-                    now,
-                    tick_rate,
-                ));
-            }
+    if manager::primary_interface_in(runtime) == Some(if_id)
+        && let Some(client6) = dhcp::primary_v6_client_in(runtime)
+    {
+        out.v6_state = String::from(dhcp_v6_state_name(client6.state()));
+        if let Some(lease6) = client6.lease() {
+            out.v6_assigned_ip = Some(*lease6.addr.as_bytes());
+            out.v6_preferred_remaining = Some(lease_remaining_secs(
+                lease6.preferred_lifetime,
+                lease6.obtained_at,
+                now,
+                tick_rate,
+            ));
+            out.v6_valid_remaining = Some(lease_remaining_secs(
+                lease6.valid_lifetime,
+                lease6.obtained_at,
+                now,
+                tick_rate,
+            ));
         }
     }
 

@@ -157,26 +157,26 @@ impl FragmentBuffer {
 
         // SECURITY: total length の一貫性を検証する（RFC 791）。
         if !header.more_fragments() {
-            if let Some(existing_total) = self.total_len {
-                if existing_total != fragment_end {
-                    log::warn!(
-                        "[NET-IPV4] Inconsistent total length in fragments: expected {}, got {}",
-                        existing_total,
-                        fragment_end
-                    );
-                    return false;
-                }
-            }
-            self.total_len = Some(fragment_end);
-        } else if let Some(total) = self.total_len {
-            if fragment_end > total {
+            if let Some(existing_total) = self.total_len
+                && existing_total != fragment_end
+            {
                 log::warn!(
-                    "[NET-IPV4] Fragment beyond end of datagram: {} > {}",
-                    fragment_end,
-                    total
+                    "[NET-IPV4] Inconsistent total length in fragments: expected {}, got {}",
+                    existing_total,
+                    fragment_end
                 );
                 return false;
             }
+            self.total_len = Some(fragment_end);
+        } else if let Some(total) = self.total_len
+            && fragment_end > total
+        {
+            log::warn!(
+                "[NET-IPV4] Fragment beyond end of datagram: {} > {}",
+                fragment_end,
+                total
+            );
+            return false;
         }
 
         // first header storage is now handled in process_fragment for consistency
@@ -480,34 +480,32 @@ impl FragmentReassembler {
         }
 
         for key in expired_keys {
-            if let Some(buffer) = self.buffers.remove(&key) {
-                if let Some(header) = buffer.first_header {
-                    let mut quoted = header;
-                    if let Some(segment) = buffer
-                        .segments
-                        .into_iter()
-                        .find(|segment| segment.offset == 0)
-                    {
-                        let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-                            &segment.payload,
-                            0,
-                            8,
-                        ) else {
-                            continue;
-                        };
-                        let Some(prefix) = bounds
-                            .take_from(segment.payload)
-                            .and_then(|window| window.into_payload().ok())
-                        else {
-                            continue;
-                        };
-                        let Ok(combined) = quoted.try_append(prefix) else {
-                            continue;
-                        };
-                        quoted = combined;
-                    }
-                    expired_with_first.push((key.src, quoted));
+            if let Some(buffer) = self.buffers.remove(&key)
+                && let Some(header) = buffer.first_header
+            {
+                let mut quoted = header;
+                if let Some(segment) = buffer
+                    .segments
+                    .into_iter()
+                    .find(|segment| segment.offset == 0)
+                {
+                    let Some(bounds) =
+                        crate::net::payload::OwnedPayloadBounds::checked(&segment.payload, 0, 8)
+                    else {
+                        continue;
+                    };
+                    let Some(prefix) = bounds
+                        .take_from(segment.payload)
+                        .and_then(|window| window.into_payload().ok())
+                    else {
+                        continue;
+                    };
+                    let Ok(combined) = quoted.try_append(prefix) else {
+                        continue;
+                    };
+                    quoted = combined;
                 }
+                expired_with_first.push((key.src, quoted));
             }
             self.stats.timeouts += 1;
         }

@@ -364,11 +364,11 @@ impl CpuProfiler {
         let mut samples = self.samples.lock();
         if samples.len() < MAX_SAMPLES {
             // スタックのトップアドレスを集計
-            if let Some(ref stack) = sample.stack {
-                if let Some(frame) = stack.frames().first() {
-                    let mut hits = self.function_hits.write();
-                    *hits.entry(frame.instruction_pointer).or_insert(0) += 1;
-                }
+            if let Some(ref stack) = sample.stack
+                && let Some(frame) = stack.frames().first()
+            {
+                let mut hits = self.function_hits.write();
+                *hits.entry(frame.instruction_pointer).or_insert(0) += 1;
             }
 
             samples.push(sample);

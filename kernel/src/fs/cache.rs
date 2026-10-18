@@ -444,15 +444,15 @@ impl PageCache {
     pub fn mark_dirty(&self, ino: InodeNum, page_num: u64) -> bool {
         let files = self.files.read();
 
-        if let Some(file_cache) = files.get(&ino) {
-            if let Some(page) = file_cache.get_page(page_num) {
-                page.mark_dirty();
+        if let Some(file_cache) = files.get(&ino)
+            && let Some(page) = file_cache.get_page(page_num)
+        {
+            page.mark_dirty();
 
-                let mut stats = self.stats.lock();
-                stats.dirty_pages += 1;
+            let mut stats = self.stats.lock();
+            stats.dirty_pages += 1;
 
-                return true;
-            }
+            return true;
         }
 
         false
@@ -466,13 +466,13 @@ impl PageCache {
         let mut best_access_time = u64::MAX;
 
         for (ino, file_cache) in files.iter() {
-            if let Some(page_num) = file_cache.find_lru_page() {
-                if let Some(page) = file_cache.get_page(page_num) {
-                    let access_time = page.last_access();
-                    if access_time < best_access_time {
-                        best_access_time = access_time;
-                        best_page = Some((*ino, page_num, access_time));
-                    }
+            if let Some(page_num) = file_cache.find_lru_page()
+                && let Some(page) = file_cache.get_page(page_num)
+            {
+                let access_time = page.last_access();
+                if access_time < best_access_time {
+                    best_access_time = access_time;
+                    best_page = Some((*ino, page_num, access_time));
                 }
             }
         }
@@ -488,17 +488,17 @@ impl PageCache {
         // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
         while freed < needed {
             if let Some((ino, page_num)) = Self::find_lru_page_globally(&files) {
-                if let Some(file_cache) = files.get_mut(&ino) {
-                    if file_cache.remove_page(page_num).is_some() {
-                        freed += PAGE_SIZE;
-                        self.current_size
-                            .fetch_sub(PAGE_SIZE as u64, Ordering::AcqRel);
+                if let Some(file_cache) = files.get_mut(&ino)
+                    && file_cache.remove_page(page_num).is_some()
+                {
+                    freed += PAGE_SIZE;
+                    self.current_size
+                        .fetch_sub(PAGE_SIZE as u64, Ordering::AcqRel);
 
-                        let mut stats = self.stats.lock();
-                        stats.evictions += 1;
-                        stats.pages = stats.pages.saturating_sub(1);
-                        stats.bytes = self.current_size.load(Ordering::Acquire);
-                    }
+                    let mut stats = self.stats.lock();
+                    stats.evictions += 1;
+                    stats.pages = stats.pages.saturating_sub(1);
+                    stats.bytes = self.current_size.load(Ordering::Acquire);
                 }
             } else {
                 // No more pages to evict
@@ -514,21 +514,20 @@ impl PageCache {
     {
         let files = self.files.read();
 
-        if let Some(file_cache) = files.get(&ino) {
-            if let Some(page) = file_cache.get_page(page_num) {
-                if page.is_dirty() {
-                    let offset = page.page_num() * PAGE_SIZE as u64;
-                    let data = page.data_for_sync();
-                    writer(offset, &data)?;
-                    page.mark_clean();
+        if let Some(file_cache) = files.get(&ino)
+            && let Some(page) = file_cache.get_page(page_num)
+            && page.is_dirty()
+        {
+            let offset = page.page_num() * PAGE_SIZE as u64;
+            let data = page.data_for_sync();
+            writer(offset, &data)?;
+            page.mark_clean();
 
-                    let mut stats = self.stats.lock();
-                    stats.writebacks += 1;
-                    stats.dirty_pages = stats.dirty_pages.saturating_sub(1);
+            let mut stats = self.stats.lock();
+            stats.writebacks += 1;
+            stats.dirty_pages = stats.dirty_pages.saturating_sub(1);
 
-                    return Ok(true);
-                }
-            }
+            return Ok(true);
         }
 
         Ok(false)

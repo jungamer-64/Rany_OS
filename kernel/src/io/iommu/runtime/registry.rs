@@ -29,21 +29,21 @@ pub fn get_iommu_driver() -> Option<&'static Arc<IommuBackend>> {
 /// (e.g. due to spin-lock ordering issues during early boot), it falls
 /// back to querying the Intel-specific registry directly.
 pub fn is_iommu_enabled() -> bool {
-    if let Some(d) = get_iommu_driver() {
-        if d.is_enabled() {
-            return true;
-        }
+    if let Some(d) = get_iommu_driver()
+        && d.is_enabled()
+    {
+        return true;
     }
     // Fallback: check Intel registry directly (set by init_registry during
     // init_iommu_from_acpi, before the global driver pointer is published).
-    if let Some(registry) = get_iommu_registry() {
-        if !registry.controllers.is_empty() {
-            // Check if at least one controller has translation enabled
-            return registry
-                .controllers
-                .iter()
-                .any(|c| c.is_translation_enabled());
-        }
+    if let Some(registry) = get_iommu_registry()
+        && !registry.controllers.is_empty()
+    {
+        // Check if at least one controller has translation enabled
+        return registry
+            .controllers
+            .iter()
+            .any(|c| c.is_translation_enabled());
     }
     false
 }

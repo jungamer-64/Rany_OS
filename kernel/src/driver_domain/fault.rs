@@ -539,28 +539,28 @@ pub(crate) fn progress_restarts() {
         if !matches!(snapshot.state, DriverDomainState::Restarting(_)) {
             continue;
         }
-        if let Err(cause) = attempt_restart(snapshot.id) {
-            if !restart_waiting(&cause) {
-                super::stats::global_stats().on_restart_failed();
-                if let Err(observer) = manager.with_cell_mut(snapshot.id, |cell| {
-                    if matches!(
-                        cell.state,
-                        DriverDomainState::Restarting(
-                            super::RestartPhase::Removing
-                                | super::RestartPhase::Registering
-                                | super::RestartPhase::Starting
-                        )
-                    ) {
-                        cell.transition_to(DriverDomainState::Faulted);
-                    }
-                }) {
-                    log::error!("restart failure observer unavailable: {observer}");
+        if let Err(cause) = attempt_restart(snapshot.id)
+            && !restart_waiting(&cause)
+        {
+            super::stats::global_stats().on_restart_failed();
+            if let Err(observer) = manager.with_cell_mut(snapshot.id, |cell| {
+                if matches!(
+                    cell.state,
+                    DriverDomainState::Restarting(
+                        super::RestartPhase::Removing
+                            | super::RestartPhase::Registering
+                            | super::RestartPhase::Starting
+                    )
+                ) {
+                    cell.transition_to(DriverDomainState::Faulted);
                 }
-                log::error!(
-                    "driver restart {} failed with its owners retained: {cause}",
-                    snapshot.id
-                );
+            }) {
+                log::error!("restart failure observer unavailable: {observer}");
             }
+            log::error!(
+                "driver restart {} failed with its owners retained: {cause}",
+                snapshot.id
+            );
         }
     }
 }

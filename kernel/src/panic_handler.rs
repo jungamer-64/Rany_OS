@@ -204,13 +204,13 @@ fn panic_output_location(info: &PanicInfo, message_slice: &[u8]) {
 
 /// Save IOMMU DMA panic record if message is valid UTF-8 (lock-free).
 fn panic_save_iommu_record(message_slice: &[u8]) {
-    if let Ok(s) = core::str::from_utf8(message_slice) {
-        if let Some(info) = crate::io::iommu::api::write_panic_record(s) {
-            crate::io::log::early_print("[PANIC] record saved\n");
-            crate::io::log::early_print("record phys=0x");
-            crate::io::log::early_print_hex(info.phys.as_u64());
-            crate::io::log::early_print("\n");
-        }
+    if let Ok(s) = core::str::from_utf8(message_slice)
+        && let Some(info) = crate::io::iommu::api::write_panic_record(s)
+    {
+        crate::io::log::early_print("[PANIC] record saved\n");
+        crate::io::log::early_print("record phys=0x");
+        crate::io::log::early_print_hex(info.phys.as_u64());
+        crate::io::log::early_print("\n");
     }
 }
 
@@ -223,10 +223,10 @@ fn panic_notify_domain(domain_id: u64, message_slice: &[u8]) {
     crate::io::log::early_print_dec(domain_id);
     crate::io::log::early_print("\n");
 
-    if let Ok(s) = core::str::from_utf8(message_slice) {
-        if try_handle_domain_panic(domain_id, s) {
-            crate::io::log::early_print("Domain resources terminated before system halt.\n");
-        }
+    if let Ok(s) = core::str::from_utf8(message_slice)
+        && try_handle_domain_panic(domain_id, s)
+    {
+        crate::io::log::early_print("Domain resources terminated before system halt.\n");
     }
 }
 
@@ -260,13 +260,13 @@ fn panic_build_bsod(message_slice: &[u8]) -> BsodInfo<'_> {
     }
     bsod_info = bsod_info.with_error_code(first_word);
 
-    if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next()) {
-        if let Some(sym) = &first.symbol {
-            crate::io::log::early_print("[PANIC] Likely at symbol: ");
-            if let Some(name) = sym.name {
-                crate::io::log::early_print(name);
-                crate::io::log::early_print("\n");
-            }
+    if let Some(first) = bsod_info.backtrace.as_ref().and_then(|bt| bt.iter().next())
+        && let Some(sym) = &first.symbol
+    {
+        crate::io::log::early_print("[PANIC] Likely at symbol: ");
+        if let Some(name) = sym.name {
+            crate::io::log::early_print(name);
+            crate::io::log::early_print("\n");
         }
     }
 

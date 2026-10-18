@@ -175,16 +175,15 @@ pub fn _print(args: fmt::Arguments) {
     use core::fmt::Write;
 
     // VGAが利用可能な場合のみ書き込み
-    if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire) {
-        if let Some(writer) = WRITER
+    if VGA_AVAILABLE.load(core::sync::atomic::Ordering::Acquire)
+        && let Some(writer) = WRITER
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .as_mut()
-        {
-            // fmt writes into this retained device and cannot fail after admission.
-            if writer.write_fmt(args).is_err() {
-                return;
-            }
+    {
+        // fmt writes into this retained device and cannot fail after admission.
+        if writer.write_fmt(args).is_err() {
+            return;
         }
     }
     // それ以外の場合はシリアル出力を使用（io::logが処理）

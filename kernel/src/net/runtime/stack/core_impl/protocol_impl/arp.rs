@@ -82,14 +82,13 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                    if let Ok(payload) =
+                if set_packet_visible_len(&mut packet, frame_len).is_ok()
+                    && let Ok(payload) =
                         kernel_api::resource::net::PacketPayload::try_single(packet)
-                    {
-                        // Gratuitous ARP is best-effort; rejection only returns
-                        // this freshly generated frame for immediate release.
-                        drop(self.transmit_packet_on(if_id, payload));
-                    }
+                {
+                    // Gratuitous ARP is best-effort; rejection only returns
+                    // this freshly generated frame for immediate release.
+                    drop(self.transmit_packet_on(if_id, payload));
                 }
             }
         }
@@ -123,14 +122,13 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                    if let Ok(payload) =
+                if set_packet_visible_len(&mut packet, frame_len).is_ok()
+                    && let Ok(payload) =
                         kernel_api::resource::net::PacketPayload::try_single(packet)
-                    {
-                        // An ARP reply has no higher-layer retry owner; release
-                        // a rejected generated frame at this boundary.
-                        drop(self.transmit_packet_on(if_id, payload));
-                    }
+                {
+                    // An ARP reply has no higher-layer retry owner; release
+                    // a rejected generated frame at this boundary.
+                    drop(self.transmit_packet_on(if_id, payload));
                 }
             }
         }
@@ -163,12 +161,11 @@ impl NetworkStack {
             return Some(());
         };
 
-        if set_packet_visible_len(&mut packet, packet_len).is_ok() {
-            if let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet) {
-                if self.transmit_packet_on(if_id, payload).is_ok() {
-                    self.mark_arp_request_sent_on_interface(if_id, target_ip, current_time);
-                }
-            }
+        if set_packet_visible_len(&mut packet, packet_len).is_ok()
+            && let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet)
+            && self.transmit_packet_on(if_id, payload).is_ok()
+        {
+            self.mark_arp_request_sent_on_interface(if_id, target_ip, current_time);
         }
         Some(())
     }
@@ -239,17 +236,15 @@ impl NetworkStack {
                 frame.pad_to_minimum();
                 let frame_len = frame.as_bytes().len();
                 drop(frame);
-                if set_packet_visible_len(&mut packet, frame_len).is_ok() {
-                    if let Ok(payload) =
+                if set_packet_visible_len(&mut packet, frame_len).is_ok()
+                    && let Ok(payload) =
                         kernel_api::resource::net::PacketPayload::try_single(packet)
-                    {
-                        if self.transmit_packet_on(if_id, payload).is_ok() {
-                            if let Some(state) = self.interfaces.get_mut(&if_id) {
-                                state.arp.request_sent(target_ip, current_time);
-                            }
-                            log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
-                        }
+                    && self.transmit_packet_on(if_id, payload).is_ok()
+                {
+                    if let Some(state) = self.interfaces.get_mut(&if_id) {
+                        state.arp.request_sent(target_ip, current_time);
                     }
+                    log::info!("[NET-ARP] ARP probe sent for {}", target_ip);
                 }
             }
         }

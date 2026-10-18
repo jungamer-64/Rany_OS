@@ -345,16 +345,16 @@ impl Mempool {
                     let Ok(remote_lock) = self.local_cache(remote_cpu) else {
                         continue;
                     };
-                    if let Ok(mut remote_cache) = remote_lock.try_lock() {
-                        if remote_cache.len() > 1 {
-                            let steal_count = (remote_cache.len() / 2).min(BATCH_SIZE);
-                            // LOOP_PROOF: mode=bounded; reason=At most one preallocated CPU cache batch moves between locked free indexes;
-                            for _ in 0..steal_count {
-                                cache.push(remote_cache.pop().expect("bounded cache batch"));
-                            }
-                            refilled = true;
-                            break;
+                    if let Ok(mut remote_cache) = remote_lock.try_lock()
+                        && remote_cache.len() > 1
+                    {
+                        let steal_count = (remote_cache.len() / 2).min(BATCH_SIZE);
+                        // LOOP_PROOF: mode=bounded; reason=At most one preallocated CPU cache batch moves between locked free indexes;
+                        for _ in 0..steal_count {
+                            cache.push(remote_cache.pop().expect("bounded cache batch"));
                         }
+                        refilled = true;
+                        break;
                     }
                 }
                 // Pass 2: Emergency fallback — steal single buffer if any remote cache has one
@@ -366,12 +366,12 @@ impl Mempool {
                         let Ok(remote_lock) = self.local_cache(remote_cpu) else {
                             continue;
                         };
-                        if let Ok(mut remote_cache) = remote_lock.try_lock() {
-                            if let Some(buf) = remote_cache.pop() {
-                                cache.push(buf);
-                                refilled = true;
-                                break;
-                            }
+                        if let Ok(mut remote_cache) = remote_lock.try_lock()
+                            && let Some(buf) = remote_cache.pop()
+                        {
+                            cache.push(buf);
+                            refilled = true;
+                            break;
                         }
                     }
                 }
@@ -393,20 +393,20 @@ impl Mempool {
         let cache_lock = crate::cpu::CurrentCpu::acquire()
             .map(|current| current.id())
             .and_then(|cpu_id| self.local_cache(cpu_id).ok());
-        if let Some(cache_lock) = cache_lock {
-            if let Ok(mut cache) = cache_lock.lock() {
-                cache.push(buffer);
-                if cache.len() >= CPU_CACHE_CAPACITY {
-                    let count = cache.len() / 2;
-                    let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
-                    // LOOP_PROOF: mode=bounded; reason=Half of one fixed-capacity CPU cache returns to the already reserved pool free index;
-                    for _ in 0..count {
-                        global_free.push(cache.pop().expect("bounded cache return"));
-                    }
+        if let Some(cache_lock) = cache_lock
+            && let Ok(mut cache) = cache_lock.lock()
+        {
+            cache.push(buffer);
+            if cache.len() >= CPU_CACHE_CAPACITY {
+                let count = cache.len() / 2;
+                let mut global_free = self.free_list.lock().unwrap_or_else(|e| e.into_inner());
+                // LOOP_PROOF: mode=bounded; reason=Half of one fixed-capacity CPU cache returns to the already reserved pool free index;
+                for _ in 0..count {
+                    global_free.push(cache.pop().expect("bounded cache return"));
                 }
-                self.free_count.fetch_add(1, Ordering::Relaxed);
-                return;
             }
+            self.free_count.fetch_add(1, Ordering::Relaxed);
+            return;
         }
 
         self.free_list

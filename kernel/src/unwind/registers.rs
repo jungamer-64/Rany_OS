@@ -322,10 +322,10 @@ impl fmt::Debug for RegisterSet {
 
         // 未定義以外のルールのみ表示
         for i in 0..Self::MAX_REGISTERS {
-            if self.rules[i] != RegisterRule::Undefined {
-                if let Some(reg) = DwarfRegister::from_u8(i as u8) {
-                    debug.field(reg.name(), &self.rules[i]);
-                }
+            if self.rules[i] != RegisterRule::Undefined
+                && let Some(reg) = DwarfRegister::from_u8(i as u8)
+            {
+                debug.field(reg.name(), &self.rules[i]);
             }
         }
 

@@ -473,10 +473,10 @@ impl DeadlockDetector {
         }
 
         let mut locks = self.locks.write();
-        if let Some(lock) = locks.iter_mut().find(|l| l.id == lock_id) {
-            if !lock.waiters.contains(&task_id) {
-                lock.waiters.push(task_id);
-            }
+        if let Some(lock) = locks.iter_mut().find(|l| l.id == lock_id)
+            && !lock.waiters.contains(&task_id)
+        {
+            lock.waiters.push(task_id);
         }
     }
 
@@ -493,11 +493,11 @@ impl DeadlockDetector {
         for lock in locks.iter() {
             if let Some(holder) = lock.holder_task {
                 for &waiter in &lock.waiters {
-                    if let Some(cycle) = self.find_cycle(&locks, waiter, holder) {
-                        if !cycles.contains(&cycle) {
-                            cycles.push(cycle);
-                            self.deadlocks_detected.fetch_add(1, Ordering::Relaxed);
-                        }
+                    if let Some(cycle) = self.find_cycle(&locks, waiter, holder)
+                        && !cycles.contains(&cycle)
+                    {
+                        cycles.push(cycle);
+                        self.deadlocks_detected.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
@@ -532,14 +532,14 @@ impl DeadlockDetector {
 
         // currentが待っているロックを探す
         for lock in locks.iter() {
-            if lock.waiters.contains(&current) {
-                if let Some(holder) = lock.holder_task {
-                    path.push(holder);
-                    if let Some(cycle) = self.dfs(locks, holder, target, visited, path) {
-                        return Some(cycle);
-                    }
-                    path.pop();
+            if lock.waiters.contains(&current)
+                && let Some(holder) = lock.holder_task
+            {
+                path.push(holder);
+                if let Some(cycle) = self.dfs(locks, holder, target, visited, path) {
+                    return Some(cycle);
                 }
+                path.pop();
             }
         }
 

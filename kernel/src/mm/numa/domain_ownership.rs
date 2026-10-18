@@ -89,23 +89,23 @@ impl DomainAllocations {
     fn unregister(&mut self, address: usize) -> Option<(DomainId, usize)> {
         let domain_id = self.address_to_domain.remove(&address)?;
 
-        if let Some(allocs) = self.allocations.get_mut(&domain_id) {
-            if let Some(pos) = allocs.iter().position(|a| a.address == address) {
-                let info = allocs.remove(pos);
-                self.total_allocations = self.total_allocations.saturating_sub(1);
+        if let Some(allocs) = self.allocations.get_mut(&domain_id)
+            && let Some(pos) = allocs.iter().position(|a| a.address == address)
+        {
+            let info = allocs.remove(pos);
+            self.total_allocations = self.total_allocations.saturating_sub(1);
 
-                if let Some(bytes) = self.domain_bytes.get_mut(&domain_id) {
-                    *bytes = bytes.saturating_sub(info.size);
-                }
-
-                // 空になったドメインエントリを削除
-                if allocs.is_empty() {
-                    self.allocations.remove(&domain_id);
-                    self.domain_bytes.remove(&domain_id);
-                }
-
-                return Some((domain_id, info.size));
+            if let Some(bytes) = self.domain_bytes.get_mut(&domain_id) {
+                *bytes = bytes.saturating_sub(info.size);
             }
+
+            // 空になったドメインエントリを削除
+            if allocs.is_empty() {
+                self.allocations.remove(&domain_id);
+                self.domain_bytes.remove(&domain_id);
+            }
+
+            return Some((domain_id, info.size));
         }
 
         None
@@ -225,13 +225,13 @@ pub fn reclaim_domain_allocations(domain_id: DomainId) -> usize {
     for info in allocations {
         // Exchange Heap から解放
         // 注意: Layout は正確でなくてもサイズが一致していれば問題ない
-        if let Ok(layout) = Layout::from_size_align(info.size, 8) {
-            if let Some(ptr) = NonNull::new(info.address as *mut u8) {
-                unsafe {
-                    crate::mm::cache::exchange_heap::deallocate_raw(ptr, layout);
-                }
-                freed_bytes += info.size;
+        if let Ok(layout) = Layout::from_size_align(info.size, 8)
+            && let Some(ptr) = NonNull::new(info.address as *mut u8)
+        {
+            unsafe {
+                crate::mm::cache::exchange_heap::deallocate_raw(ptr, layout);
             }
+            freed_bytes += info.size;
         }
     }
 

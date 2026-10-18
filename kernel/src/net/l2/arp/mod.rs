@@ -362,13 +362,12 @@ impl ArpCache {
         };
 
         for entry in entries_guard.iter().flatten() {
-            if entry.ip == ip {
-                if entry.state == ArpEntryState::Resolved {
-                    if !entry.is_expired(current_time, ARP_CACHE_TIMEOUT) {
-                        self.stats.hits.fetch_add(1, Ordering::Relaxed);
-                        return Some(entry.mac);
-                    }
-                }
+            if entry.ip == ip
+                && entry.state == ArpEntryState::Resolved
+                && !entry.is_expired(current_time, ARP_CACHE_TIMEOUT)
+            {
+                self.stats.hits.fetch_add(1, Ordering::Relaxed);
+                return Some(entry.mac);
             }
         }
 
@@ -498,11 +497,11 @@ impl ArpCache {
         };
 
         for entry in entries.iter_mut() {
-            if let Some(e) = entry {
-                if e.ip == ip {
-                    *entry = None;
-                    return;
-                }
+            if let Some(e) = entry
+                && e.ip == ip
+            {
+                *entry = None;
+                return;
             }
         }
     }
@@ -522,11 +521,12 @@ impl ArpCache {
         };
 
         for entry in entries.iter_mut() {
-            if let Some(e) = entry {
-                if e.ip == ip && e.state == ArpEntryState::Incomplete {
-                    *entry = None;
-                    return;
-                }
+            if let Some(e) = entry
+                && e.ip == ip
+                && e.state == ArpEntryState::Incomplete
+            {
+                *entry = None;
+                return;
             }
         }
     }
@@ -576,20 +576,21 @@ impl ArpCache {
         };
 
         for entry in entries.iter_mut() {
-            if let Some(e) = entry {
-                if e.ip == ip && e.state == ArpEntryState::Incomplete {
-                    // Rate limit: check interval and max attempts
-                    if e.request_count >= ARP_MAX_REQUESTS {
-                        return false;
-                    }
-                    if current_time.saturating_sub(e.last_request_time) < ARP_REQUEST_INTERVAL {
-                        return false;
-                    }
-                    // Update rate limit state
-                    e.request_count = e.request_count.saturating_add(1);
-                    e.last_request_time = current_time;
-                    return true;
+            if let Some(e) = entry
+                && e.ip == ip
+                && e.state == ArpEntryState::Incomplete
+            {
+                // Rate limit: check interval and max attempts
+                if e.request_count >= ARP_MAX_REQUESTS {
+                    return false;
                 }
+                if current_time.saturating_sub(e.last_request_time) < ARP_REQUEST_INTERVAL {
+                    return false;
+                }
+                // Update rate limit state
+                e.request_count = e.request_count.saturating_add(1);
+                e.last_request_time = current_time;
+                return true;
             }
         }
 

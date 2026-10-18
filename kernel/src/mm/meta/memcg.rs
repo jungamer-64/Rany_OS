@@ -493,10 +493,10 @@ impl MemcgManager {
             }
 
             // 親から削除
-            if let Some(parent_id) = cg.parent_id {
-                if let Some(parent) = cgroups.get(&parent_id) {
-                    parent.remove_child(id);
-                }
+            if let Some(parent_id) = cg.parent_id
+                && let Some(parent) = cgroups.get(&parent_id)
+            {
+                parent.remove_child(id);
             }
         }
 

@@ -71,11 +71,11 @@ impl PmtuCache {
 
     /// Get PMTU for a destination
     pub fn get(&mut self, dst: Ipv4Address, current_time: u64) -> u16 {
-        if let Some(entry) = self.entries.get(&dst) {
-            if !entry.is_expired(current_time) {
-                self.stats.hits += 1;
-                return entry.pmtu;
-            }
+        if let Some(entry) = self.entries.get(&dst)
+            && !entry.is_expired(current_time)
+        {
+            self.stats.hits += 1;
+            return entry.pmtu;
         }
         self.stats.misses += 1;
         PmtuEntry::DEFAULT_MTU
@@ -105,13 +105,13 @@ impl PmtuCache {
 
     /// Probe for a larger MTU (called periodically)
     pub fn probe(&mut self, dst: Ipv4Address, current_time: u64) -> Option<u16> {
-        if let Some(entry) = self.entries.get_mut(&dst) {
-            if entry.should_probe(current_time) {
-                // Try a larger MTU
-                let probe_mtu = (entry.pmtu as u32 + 100).min(PmtuEntry::DEFAULT_MTU as u32) as u16;
-                entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS / 2;
-                return Some(probe_mtu);
-            }
+        if let Some(entry) = self.entries.get_mut(&dst)
+            && entry.should_probe(current_time)
+        {
+            // Try a larger MTU
+            let probe_mtu = (entry.pmtu as u32 + 100).min(PmtuEntry::DEFAULT_MTU as u32) as u16;
+            entry.next_probe = current_time + PmtuEntry::TIMEOUT_MS / 2;
+            return Some(probe_mtu);
         }
         None
     }

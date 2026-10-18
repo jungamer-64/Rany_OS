@@ -177,15 +177,14 @@ impl IommuDomain {
 
                     // SAFETY: caller retired the entire domain's hardware
                     // context and translations before hierarchy traversal.
-                    if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8) {
-                        if let Some(table) =
+                    if let Ok(phys) = virt_ptr_to_phys(table_ptr as *const u8)
+                        && let Some(table) =
                             crate::io::iommu::common::dma::page_table_pool::take_unlinked_table(
                                 phys,
                             )
-                        {
-                            self.page_table_pool
-                                .release(table.complete_after_invalidation());
-                        }
+                    {
+                        self.page_table_pool
+                            .release(table.complete_after_invalidation());
                     }
                     continue;
                 }

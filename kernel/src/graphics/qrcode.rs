@@ -421,14 +421,12 @@ impl QrCode {
     fn apply_mask(&mut self, mask: u8) {
         for y in 0..QR_SIZE {
             for x in 0..QR_SIZE {
-                if !self.modules[y][x].is_reserved() {
-                    if self.get_mask_bit(mask, x, y) {
-                        self.modules[y][x] = match self.modules[y][x] {
-                            Module::DataDark => Module::DataLight,
-                            Module::DataLight => Module::DataDark,
-                            _ => self.modules[y][x],
-                        };
-                    }
+                if !self.modules[y][x].is_reserved() && self.get_mask_bit(mask, x, y) {
+                    self.modules[y][x] = match self.modules[y][x] {
+                        Module::DataDark => Module::DataLight,
+                        Module::DataLight => Module::DataDark,
+                        _ => self.modules[y][x],
+                    };
                 }
             }
         }

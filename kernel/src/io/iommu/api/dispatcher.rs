@@ -35,16 +35,14 @@ pub fn process_pending_command_queues() {
     }
 
     // 2. Process active global backend (AMD queue)
-    if let Some(driver) = get_iommu_driver() {
-        if let IommuBackend::Amd(ref amd_driver) = **driver {
-            if let Some(ref cq) = amd_driver.command_queue {
-                for _ in 0..4 {
-                    let processed =
-                        cq.process_once(|kind| amd_driver.handle_command_queue_entry(kind));
-                    if processed == 0 {
-                        break;
-                    }
-                }
+    if let Some(driver) = get_iommu_driver()
+        && let IommuBackend::Amd(ref amd_driver) = **driver
+        && let Some(ref cq) = amd_driver.command_queue
+    {
+        for _ in 0..4 {
+            let processed = cq.process_once(|kind| amd_driver.handle_command_queue_entry(kind));
+            if processed == 0 {
+                break;
             }
         }
     }

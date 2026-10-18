@@ -795,14 +795,14 @@ impl DhcpClient {
     // --- check_timeout helper: handle Bound state ---
     pub(super) fn handle_bound_timeout(&self, current_tick: u64, tick_rate: u64) -> bool {
         if let Ok(guard) = self.lease.lock() {
-            if let Some(lease) = guard.as_ref() {
-                if lease.needs_renewal(current_tick, tick_rate) {
-                    self.transition_state(DhcpState::Renewing);
-                    // initialize retry counter and timestamp
-                    self.state_time.store(current_tick, Ordering::SeqCst);
-                    self.retry_count.store(0, Ordering::SeqCst);
-                    return true;
-                }
+            if let Some(lease) = guard.as_ref()
+                && lease.needs_renewal(current_tick, tick_rate)
+            {
+                self.transition_state(DhcpState::Renewing);
+                // initialize retry counter and timestamp
+                self.state_time.store(current_tick, Ordering::SeqCst);
+                self.retry_count.store(0, Ordering::SeqCst);
+                return true;
             }
         } else {
             log::error!("[NET] DHCP Lease lock poisoned (check_timeout) - skipping renewal check");
@@ -818,15 +818,14 @@ impl DhcpClient {
         elapsed_secs: u64,
     ) -> bool {
         // If T2 is reached, move to Rebinding
-        if let Ok(guard) = self.lease.lock() {
-            if let Some(lease) = guard.as_ref() {
-                if lease.needs_rebind(current_tick, tick_rate) {
-                    self.transition_state(DhcpState::Rebinding);
-                    self.state_time.store(current_tick, Ordering::SeqCst);
-                    self.retry_count.store(0, Ordering::SeqCst);
-                    return true;
-                }
-            }
+        if let Ok(guard) = self.lease.lock()
+            && let Some(lease) = guard.as_ref()
+            && lease.needs_rebind(current_tick, tick_rate)
+        {
+            self.transition_state(DhcpState::Rebinding);
+            self.state_time.store(current_tick, Ordering::SeqCst);
+            self.retry_count.store(0, Ordering::SeqCst);
+            return true;
         }
 
         // Retransmit renewal requests at retry interval
