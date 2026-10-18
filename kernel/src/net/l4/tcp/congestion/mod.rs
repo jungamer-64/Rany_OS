@@ -30,20 +30,15 @@ pub enum CongestionAction {
 }
 
 /// 輻輳制御状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CongestionState {
     /// スロースタート
+    #[default]
     SlowStart,
     /// 輻輳回避
     CongestionAvoidance,
     /// 高速回復
     FastRecovery,
-}
-
-impl Default for CongestionState {
-    fn default() -> Self {
-        CongestionState::SlowStart
-    }
 }
 
 /// 輻輳制御コントローラ (NewReno)

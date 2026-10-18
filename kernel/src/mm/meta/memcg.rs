@@ -149,7 +149,7 @@ impl Default for MemcgLimit {
 }
 
 /// OOM制御設定
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct OomControl {
     /// OOMキラーを無効化（OOM時にタスクを停止）
     pub oom_kill_disable: bool,
@@ -157,16 +157,6 @@ pub struct OomControl {
     pub oom_count: u64,
     /// 現在OOM状態か
     pub under_oom: bool,
-}
-
-impl Default for OomControl {
-    fn default() -> Self {
-        Self {
-            oom_kill_disable: false,
-            oom_count: 0,
-            under_oom: false,
-        }
-    }
 }
 
 /// Memory Cgroup

@@ -78,19 +78,15 @@ pub enum SecurityEvent {
 /// Trust level assigned to a device for ATS policy decisions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum DeviceTrustLevel {
     /// Device is untrusted (e.g., external USB, Thunderbolt).
+    #[default]
     Untrusted = 0,
     /// Device is partially trusted (internal but not verified).
     Partial = 1,
     /// Device is fully trusted (verified firmware, internal bus).
     Trusted = 2,
-}
-
-impl Default for DeviceTrustLevel {
-    fn default() -> Self {
-        Self::Untrusted
-    }
 }
 
 /// Reason for ATS state change.

@@ -102,16 +102,10 @@ unsafe impl Zeroable for ContextEntry {}
 /// Each entry is 32 bytes; the first 16 bytes hold PASID directory pointer
 /// and RID->PASID mapping, remaining 16 bytes are reserved.
 #[repr(C, align(16))]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct ScalableContextEntry {
     /// 4 QWORDs (32 bytes)
     pub qwords: [u64; 4],
-}
-
-impl Default for ScalableContextEntry {
-    fn default() -> Self {
-        Self { qwords: [0; 4] }
-    }
 }
 
 impl ScalableContextEntry {
@@ -215,16 +209,10 @@ unsafe impl Zeroable for PasidDirEntry {}
 /// Each entry in the PASID table defines the address translation
 /// for a specific PASID.
 #[repr(C, align(64))]
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct PasidTableEntry {
     /// 8 QWORDs
     pub qwords: [u64; 8],
-}
-
-impl Default for PasidTableEntry {
-    fn default() -> Self {
-        Self { qwords: [0; 8] }
-    }
 }
 
 impl PasidTableEntry {

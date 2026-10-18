@@ -14,8 +14,10 @@ extern crate alloc;
 /// Security level (hierarchical)
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[repr(u8)]
+#[derive(Default)]
 pub enum SecurityLevel {
     /// Public - lowest security
+    #[default]
     Public = 0,
     /// Internal use
     Internal = 1,
@@ -42,12 +44,6 @@ impl SecurityLevel {
     /// Check if this level dominates another
     pub fn dominates(&self, other: SecurityLevel) -> bool {
         (*self as u8) >= (other as u8)
-    }
-}
-
-impl Default for SecurityLevel {
-    fn default() -> Self {
-        SecurityLevel::Public
     }
 }
 

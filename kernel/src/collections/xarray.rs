@@ -580,17 +580,11 @@ pub struct XArrayUsize {
 }
 
 /// usize スロット（ゼロアロケーション）
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct UsizeSlot {
     /// 値（0 = 空、それ以外 = value + 1）
     value: usize,
     marks: XAMark,
-}
-
-impl Default for UsizeSlot {
-    fn default() -> Self {
-        Self { value: 0, marks: 0 }
-    }
 }
 
 impl XArrayUsize {

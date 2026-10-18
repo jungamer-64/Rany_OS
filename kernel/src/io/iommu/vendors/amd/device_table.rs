@@ -50,15 +50,9 @@ pub(super) fn apply_ivhd_flags(entry: &mut AmdDeviceTableEntry, flags: u8) {
 }
 
 #[repr(C, align(32))]
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 pub(crate) struct AmdDeviceTableEntry {
     pub(super) data: [u64; 4],
-}
-
-impl Default for AmdDeviceTableEntry {
-    fn default() -> Self {
-        Self { data: [0; 4] }
-    }
 }
 
 #[derive(Debug)]

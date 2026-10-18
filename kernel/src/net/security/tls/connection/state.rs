@@ -190,14 +190,9 @@ impl TlsSeqNo {
     }
 }
 
+#[derive(Default)]
 pub(super) struct TlsRecordIngressQueue {
     payload: Option<PacketPayload>,
-}
-
-impl Default for TlsRecordIngressQueue {
-    fn default() -> Self {
-        Self { payload: None }
-    }
 }
 
 impl TlsRecordIngressQueue {

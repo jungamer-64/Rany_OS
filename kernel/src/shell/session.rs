@@ -16,17 +16,12 @@ use crate::shell::exoshell::{ExoShell, ExoValue};
 use crate::util;
 
 /// Shell launch mode selected from kernel command line.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ShellLaunchMode {
+    #[default]
     Serial,
     Console,
     Off,
-}
-
-impl Default for ShellLaunchMode {
-    fn default() -> Self {
-        Self::Serial
-    }
 }
 
 pub fn shell_launch_mode_from_boot_policy(policy: &BootPolicy) -> ShellLaunchMode {

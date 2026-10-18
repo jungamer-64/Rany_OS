@@ -203,9 +203,10 @@ impl fmt::Display for DwarfRegister {
 /// DWARF CFI レジスタルール
 ///
 /// 各レジスタの復元方法を定義する。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum RegisterRule {
     /// 未定義（値は不明）
+    #[default]
     Undefined,
 
     /// 同一値（呼び出し元と同じ値を保持）
@@ -238,12 +239,6 @@ pub enum RegisterRule {
 
     /// アーキテクチャ固有
     Architectural,
-}
-
-impl Default for RegisterRule {
-    fn default() -> Self {
-        Self::Undefined
-    }
 }
 
 // ============================================================================

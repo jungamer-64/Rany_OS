@@ -11,11 +11,12 @@ use core::fmt;
 extern crate alloc;
 
 /// Policy action to take
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolicyAction {
     /// Allow the operation
     Allow,
     /// Deny the operation
+    #[default]
     Deny,
     /// Allow with audit logging
     AllowAudit,
@@ -35,16 +36,11 @@ impl PolicyAction {
     }
 }
 
-impl Default for PolicyAction {
-    fn default() -> Self {
-        PolicyAction::Deny
-    }
-}
-
 /// Subject type for policy matching
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum PolicySubject {
     /// Any subject
+    #[default]
     Any,
     /// Specific domain ID
     Domain(u64),
@@ -68,16 +64,11 @@ impl PolicySubject {
     }
 }
 
-impl Default for PolicySubject {
-    fn default() -> Self {
-        PolicySubject::Any
-    }
-}
-
 /// Object type for policy matching
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Default)]
 pub enum PolicyObject {
     /// Any object
+    #[default]
     Any,
     /// Specific resource ID
     Resource(u64),
@@ -123,16 +114,11 @@ impl PolicyObject {
     }
 }
 
-impl Default for PolicyObject {
-    fn default() -> Self {
-        PolicyObject::Any
-    }
-}
-
 /// Operation type for policy matching
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum PolicyOperation {
     /// Any operation
+    #[default]
     Any,
     /// Read operation
     Read,
@@ -154,12 +140,6 @@ pub enum PolicyOperation {
     IpcSend,
     /// IPC receive
     IpcReceive,
-}
-
-impl Default for PolicyOperation {
-    fn default() -> Self {
-        PolicyOperation::Any
-    }
 }
 
 /// Policy rule

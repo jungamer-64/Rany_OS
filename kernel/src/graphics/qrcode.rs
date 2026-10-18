@@ -40,7 +40,9 @@ const DATA_MODULES: usize = TOTAL_CODEWORDS * 8;
 /// Module State
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 #[repr(u8)]
+#[derive(Default)]
 enum Module {
+    #[default]
     Unset,
     /// Data module (Dark) - affected by mask
     DataDark,
@@ -50,12 +52,6 @@ enum Module {
     FuncDark,
     /// Function/Reserved module (Light) - Immutable
     FuncLight,
-}
-
-impl Default for Module {
-    fn default() -> Self {
-        Module::Unset
-    }
 }
 
 impl Module {

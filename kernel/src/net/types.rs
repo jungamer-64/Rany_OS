@@ -60,19 +60,14 @@ impl NetworkPayloadError {
 }
 
 /// Interface selection policy for socket and raw network operations.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum InterfaceScope {
     /// Allow the stack to select the egress interface using socket affinity,
     /// source address matching, and the routing table.
+    #[default]
     Any,
     /// Restrict the operation to a specific interface id.
     Pinned(NetIfId),
-}
-
-impl Default for InterfaceScope {
-    fn default() -> Self {
-        Self::Any
-    }
 }
 
 impl InterfaceScope {

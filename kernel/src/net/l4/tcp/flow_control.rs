@@ -23,20 +23,15 @@ pub const MIN_ADVERTISE_WINDOW: u32 = 536; // 1 MSS minimum
 pub const ZERO_WINDOW_PROBE_INTERVAL_MS: u64 = 500;
 
 /// フロー制御状態
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FlowControlState {
     /// 通常動作
+    #[default]
     Normal,
     /// ゼロウィンドウ状態（受信側バッファフル）
     ZeroWindow,
     /// ゼロウィンドウプローブ中
     ZeroWindowProbe,
-}
-
-impl Default for FlowControlState {
-    fn default() -> Self {
-        FlowControlState::Normal
-    }
 }
 
 /// フロー制御コントローラ
