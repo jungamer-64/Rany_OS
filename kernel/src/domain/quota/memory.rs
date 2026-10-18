@@ -57,7 +57,7 @@ impl MemoryAccount {
         // Registry serialization prevents close/removal while establishing the
         // first pin. There is no public constructor from an observed address.
         self.bindings
-            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |count| {
                 count.checked_add(1)
             })
             .map_err(|_| QuotaError::AccountingOverflow)?;
