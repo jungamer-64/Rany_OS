@@ -140,56 +140,6 @@ impl<'a> ElfLoader<'a> {
         })
     }
 
-    /// シンボルを解析
-    pub(super) fn parse_symbols(
-        &self,
-        exports: &mut Vec<(&'a str, u64)>,
-        imports: &mut Vec<&'a str>,
-    ) -> Result<(), LoadError> {
-        let mut processed_symtab = false;
-
-        // まず .symtab を優先して処理する。存在する場合は .dynsym をスキップし、
-        // 重複と追加コストを避ける（DriverCellのデバッグビルドでは .symtab が存在する）。
-        for i in 0..self.header.e_shnum {
-            let sh_offset =
-                self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
-
-            // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
-            let sh: Elf64SectionHeader = match crate::util::read_struct(self.data, sh_offset) {
-                Some(sh) => sh,
-                None => continue,
-            };
-
-            // シンボルテーブルを処理
-            if sh.sh_type == SHT_SYMTAB {
-                processed_symtab = true;
-                self.process_symbol_table(&sh, exports, imports)?;
-            }
-        }
-
-        if processed_symtab {
-            // nothing to deduplicate here anymore; symbols are unique on the fly
-            return Ok(());
-        }
-
-        // .symtab が無い最小ELF向けフォールバックとして .dynsym を処理。
-        for i in 0..self.header.e_shnum {
-            let sh_offset =
-                self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
-
-            let sh: Elf64SectionHeader = match crate::util::read_struct(self.data, sh_offset) {
-                Some(sh) => sh,
-                None => continue,
-            };
-
-            if sh.sh_type == SHT_DYNSYM {
-                self.process_symbol_table(&sh, exports, imports)?;
-            }
-        }
-
-        Ok(())
-    }
-
     /// シンボルテーブルを処理
     pub(super) fn process_symbol_table(
         &self,
@@ -255,22 +205,6 @@ impl<'a> ElfLoader<'a> {
         }
 
         Ok(())
-    }
-
-    /// 文字列テーブルを取得
-    pub(super) fn get_string_table(&self, index: usize) -> Result<&'a [u8], LoadError> {
-        let sh_offset = self.header.e_shoff as usize + (index * self.header.e_shentsize as usize);
-
-        // 【設計書 2.2】安全なラッパーを使用
-        let sh: Elf64SectionHeader = crate::util::read_struct(self.data, sh_offset)
-            .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?;
-
-        let start = sh.sh_offset as usize;
-        let size = sh.sh_size as usize;
-
-        // 【設計書 2.2】安全なスライス取得ラッパーを使用
-        crate::util::get_slice(self.data, start, size)
-            .ok_or_else(|| LoadError::InvalidFormat("String table out of bounds".into()))
     }
 
     /// 文字列テーブルから文字列を取得
@@ -600,35 +534,6 @@ impl<'a> ElfLoader<'a> {
     }
 
     /// リロケーションを適用
-    pub(in crate::loader) fn relocate<F>(
-        &self,
-        loaded: &LoadedCell,
-        resolve: F,
-    ) -> Result<(), LoadError>
-    where
-        F: Fn(&str) -> Option<usize>,
-    {
-        // セクションヘッダーを探索してリロケーションセクションを処理
-        for i in 0..self.header.e_shnum {
-            let sh_offset =
-                self.header.e_shoff as usize + (i as usize * self.header.e_shentsize as usize);
-
-            if sh_offset + mem::size_of::<Elf64SectionHeader>() > self.data.len() {
-                continue;
-            }
-
-            let sh: Elf64SectionHeader = crate::util::read_struct(self.data, sh_offset)
-                .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?;
-
-            if sh.sh_type == SHT_RELA {
-                self.apply_relocations(&sh, loaded, &resolve)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    /// リロケーションを適用
     fn apply_relocations<F>(
         &self,
         sh: &Elf64SectionHeader,
@@ -667,46 +572,6 @@ impl<'a> ElfLoader<'a> {
             )?;
         }
 
-        Ok(())
-    }
-
-    /// Process one relocation entry at index `j` within section `sh`.
-    fn process_single_relocation<F>(
-        &self,
-        sh: &Elf64SectionHeader,
-        j: usize,
-        symtab_sh: &Elf64SectionHeader,
-        strtab: &[u8],
-        symtab_count: usize,
-        loaded: &LoadedCell,
-        resolve: &F,
-        sym_value_cache: &mut Vec<Option<usize>>,
-    ) -> Result<(), LoadError>
-    where
-        F: Fn(&str) -> Option<usize>,
-    {
-        let rela_offset = sh.sh_offset as usize + j * mem::size_of::<Elf64Rela>();
-        if rela_offset + mem::size_of::<Elf64Rela>() > self.data.len() {
-            return Ok(());
-        }
-        let rela: Elf64Rela = crate::util::read_struct(self.data, rela_offset)
-            .ok_or_else(|| LoadError::InvalidFormat("Failed to read relocation".into()))?;
-
-        let sym_idx = rela.symbol() as usize;
-        if sym_idx >= symtab_count {
-            return Ok(());
-        }
-
-        let sym_value = self.resolve_symbol_cached(
-            sym_idx,
-            symtab_sh,
-            strtab,
-            loaded,
-            resolve,
-            sym_value_cache,
-        )?;
-
-        self.apply_relocation(&rela, loaded.base_address, loaded.size, sym_value)?;
         Ok(())
     }
 
@@ -775,19 +640,7 @@ impl<'a> ElfLoader<'a> {
         Ok(resolved)
     }
 
-    /// セクションヘッダーを取得
-    fn get_section_header(&self, index: usize) -> Result<Elf64SectionHeader, LoadError> {
-        let sh_offset = self.header.e_shoff as usize + (index * self.header.e_shentsize as usize);
 
-        if sh_offset + mem::size_of::<Elf64SectionHeader>() > self.data.len() {
-            return Err(LoadError::InvalidFormat(
-                "Section header out of bounds".into(),
-            ));
-        }
-
-        Ok(crate::util::read_struct(self.data, sh_offset)
-            .ok_or_else(|| LoadError::InvalidFormat("Failed to read section header".into()))?)
-    }
 }
 
 // -----------------------------------------------------------------------------
