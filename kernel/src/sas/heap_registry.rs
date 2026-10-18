@@ -167,14 +167,14 @@ impl HeapRegistry {
 
         // If the number of blocks spans all shards, return full range
         let span = end_blk.saturating_sub(start_blk).saturating_add(1);
-        if span as usize >= shard_count {
+        if span >= shard_count {
             return (0..shard_count).collect();
         }
 
         let mut shards = alloc::vec::Vec::new();
         let mut last: Option<usize> = None;
         for blk in start_blk..=end_blk {
-            let idx = (blk as usize) % shard_count;
+            let idx = blk % shard_count;
             if last != Some(idx) {
                 shards.push(idx);
                 last = Some(idx);

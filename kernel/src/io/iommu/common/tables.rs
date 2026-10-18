@@ -394,7 +394,7 @@ impl<T: Sized + Zeroable> HardwareTable<T> {
             .checked_mul(count)
             .ok_or(IommuError::InvalidAddress)?;
 
-        let page_size = crate::mm::types::PAGE_SIZE_4K as usize;
+        let page_size = crate::mm::types::PAGE_SIZE_4K;
         let alloc_bytes = bytes
             .checked_add(page_size - 1)
             .ok_or(IommuError::InvalidAddress)?

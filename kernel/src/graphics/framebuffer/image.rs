@@ -143,7 +143,7 @@ impl Framebuffer {
             4
         } else {
             self.info.format().bytes_per_pixel()
-        } as usize;
+        };
 
         let width = r_w as usize;
         let needs_swizzle = matches!(

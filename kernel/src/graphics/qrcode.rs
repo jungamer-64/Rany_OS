@@ -712,7 +712,7 @@ impl QrCode {
         fb.fill_rect(Rect::new(x, y, total_size, total_size), light_color);
 
         for row in 0..QR_SIZE {
-            let py = y + ((quiet_zone as i32 + row as i32) * module_size as i32);
+            let py = y + ((quiet_zone + row as i32) * module_size as i32);
             let mut col = 0;
             // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
             while col < QR_SIZE {
@@ -722,7 +722,7 @@ impl QrCode {
                     while col < QR_SIZE && self.modules[row][col].is_dark() {
                         col += 1;
                     }
-                    let px = x + ((quiet_zone as i32 + start as i32) * module_size as i32);
+                    let px = x + ((quiet_zone + start as i32) * module_size as i32);
                     let width = (col - start) as u32 * module_size;
                     fb.fill_rect(Rect::new(px, py, width, module_size), dark_color);
                 } else {

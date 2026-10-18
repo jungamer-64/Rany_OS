@@ -194,7 +194,7 @@ impl TextConsole {
             let h = self.font.height();
             let w = self.font.width();
             (*self.fb).fill_rect(
-                super::Rect::new(cx_px, (cy_px + h as i32 - 2).max(0), w as u32, 2),
+                super::Rect::new(cx_px, (cy_px + h as i32 - 2).max(0), w, 2),
                 Color::WHITE,
             );
         }

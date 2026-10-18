@@ -70,7 +70,7 @@ pub(crate) async fn command_queue_worker() -> Result<(), IommuError> {
 // ---------------------------------------------------------------------------
 
 pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState, IommuError> {
-    let frame_count = cmd::CMD_BUFFER_BYTES / (PAGE_SIZE_4K as usize);
+    let frame_count = cmd::CMD_BUFFER_BYTES / PAGE_SIZE_4K;
     let phys_base = alloc_contiguous_frames(frame_count).map_err(|_| IommuError::OutOfMemory)?;
     let virt_base = phys_to_virt(PhysAddr::new(phys_base.as_u64()));
     let buffer_ptr = NonNull::new(virt_base.as_u64() as *mut cmd::AmdCommand)
@@ -110,7 +110,7 @@ pub(super) fn init_command_state(unit: &AmdIommuUnit) -> Result<AmdCommandState,
     // or spoofing completion status.
     crate::io::iommu::runtime::security::register_protected_region(
         phys_base.as_u64(),
-        (frame_count * PAGE_SIZE_4K as usize) as u64,
+        (frame_count * PAGE_SIZE_4K) as u64,
         "AMD-Vi Command Buffer",
     );
     crate::io::iommu::runtime::security::register_protected_region(

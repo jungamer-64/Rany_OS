@@ -157,30 +157,18 @@ impl CellNamespace {
         stats: &crate::driver_domain::stats::DriverDomainStats,
     ) -> ExoValue<'static> {
         let mut map = BTreeMap::new();
-        Self::map_insert(
-            &mut map,
-            "start_count",
-            Self::vint_u64(stats.start_count as u64),
-        );
-        Self::map_insert(
-            &mut map,
-            "stop_count",
-            Self::vint_u64(stats.stop_count as u64),
-        );
-        Self::map_insert(
-            &mut map,
-            "fault_count",
-            Self::vint_u64(stats.fault_count as u64),
-        );
+        Self::map_insert(&mut map, "start_count", Self::vint_u64(stats.start_count));
+        Self::map_insert(&mut map, "stop_count", Self::vint_u64(stats.stop_count));
+        Self::map_insert(&mut map, "fault_count", Self::vint_u64(stats.fault_count));
         Self::map_insert(
             &mut map,
             "restart_count",
-            Self::vint_u64(stats.restart_count as u64),
+            Self::vint_u64(stats.restart_count),
         );
         Self::map_insert(
             &mut map,
             "hot_swap_count",
-            Self::vint_u64(stats.hot_swap_count as u64),
+            Self::vint_u64(stats.hot_swap_count),
         );
         ExoValue::Map(map)
     }

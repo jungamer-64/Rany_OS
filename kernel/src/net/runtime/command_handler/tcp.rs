@@ -76,8 +76,7 @@ impl RuntimeCommandHandler {
                             return None;
                         }
 
-                        let len =
-                            (pending_len as u32).min(effective_wnd).min(tcb.mss as u32) as usize;
+                        let len = (pending_len as u32).min(effective_wnd).min(tcb.mss) as usize;
                         if len == 0 {
                             return None;
                         }

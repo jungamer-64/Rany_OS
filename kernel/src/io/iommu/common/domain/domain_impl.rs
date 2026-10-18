@@ -409,7 +409,7 @@ impl IommuDomain {
             && remaining >= SIZE_1GB
             && iova % SIZE_1GB == 0
             && phys % SIZE_1GB == 0
-            && (phys as u64 & 0x3FFF_FFFF) == 0
+            && (phys & 0x3FFF_FFFF) == 0
     }
 
     /// Check whether a 2MB huge page can be used for the current mapping position.

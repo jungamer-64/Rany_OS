@@ -143,7 +143,7 @@ impl ShellNamespace for DriverNamespace {
                     let id = args
                         .first()
                         .and_then(|v| match v {
-                            ExoValue::Int(n) => Some(*n as i64),
+                            ExoValue::Int(n) => Some(*n),
                             _ => None,
                         })
                         .unwrap_or(0);

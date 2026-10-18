@@ -137,7 +137,7 @@ impl<'a, const N: usize> Write for AsyncLogWriter<'a, N> {
         let bytes = s.as_bytes();
         let written = self.buffer.push_bytes(bytes);
         if written < bytes.len() {
-            DROPPED_LOG_BYTES.fetch_add((bytes.len() - written) as usize, Ordering::Relaxed);
+            DROPPED_LOG_BYTES.fetch_add(bytes.len() - written, Ordering::Relaxed);
         }
         Ok(())
     }

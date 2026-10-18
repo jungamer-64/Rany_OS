@@ -489,7 +489,7 @@ define_interrupt!(
         early_print("Faulting Address: ");
         early_print_hex(fault_addr.as_u64());
         early_print("\nError Code: ");
-        early_print_hex(error_code.bits() as u64);
+        early_print_hex(error_code.bits());
         early_print("\nResult: ");
         early_print(match res {
             crate::mm::virt::fault_handler::FaultResult::NoVma => "No VMA found",

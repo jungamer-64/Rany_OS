@@ -159,7 +159,7 @@ impl DomainManager for IommuController {
 
         if self.is_scalable_mode_enabled() {
             self.attach_device_scalable(
-                &mut *hw_guard,
+                &mut hw_guard,
                 bus,
                 devfn,
                 domain_type,
@@ -169,7 +169,7 @@ impl DomainManager for IommuController {
             )?;
         } else {
             Self::attach_device_legacy(
-                &mut *hw_guard,
+                &mut hw_guard,
                 bus,
                 devfn,
                 domain_type,

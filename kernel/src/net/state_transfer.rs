@@ -156,6 +156,6 @@ impl StateTransfer for NetworkCellState {
     }
 
     fn cell_id(&self) -> u64 {
-        self.runtime.id().0 as u64
+        self.runtime.id().0
     }
 }

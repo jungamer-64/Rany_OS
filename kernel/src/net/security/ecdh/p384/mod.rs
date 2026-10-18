@@ -535,7 +535,7 @@ pub mod p384 {
 
                 result = result.double();
                 let added = result.add(self);
-                result = Self::ct_select(&result, &added, bit as u8);
+                result = Self::ct_select(&result, &added, bit);
             }
 
             result
@@ -681,7 +681,7 @@ pub mod p384 {
             let multiplied = scalar_mul_mod_n_384(&result, &base_copy);
 
             // if bit == 1 { result = multiplied } (定時間選択)
-            let mask = 0u8.wrapping_sub(bit as u8);
+            let mask = 0u8.wrapping_sub(bit);
             for j in 0..48 {
                 result[j] ^= (result[j] ^ multiplied[j]) & mask;
             }

@@ -2067,7 +2067,7 @@ pub(crate) fn prepare_driver_exports(
     crate::io::log::early_print(" abi_ver=");
     crate::io::log::early_print_hex(exports_ref.abi_version as u64);
     crate::io::log::early_print(" abi_size=");
-    crate::io::log::early_print_hex(exports_ref.abi_size as u64);
+    crate::io::log::early_print_hex(exports_ref.abi_size);
     crate::io::log::early_print("\n");
     crate::io::log::early_print("[DRIVER] exports entry=");
     crate::io::log::early_print_hex(exports_ref.entry as usize as u64);

@@ -954,7 +954,7 @@ impl TcbTable {
         data.extend_from_slice(&local.as_bytes());
         data.extend_from_slice(&remote.as_bytes());
         data.extend_from_slice(&client_isn.to_be_bytes());
-        data.extend_from_slice(&(time_bits_received as u32).to_be_bytes());
+        data.extend_from_slice(&time_bits_received.to_be_bytes());
 
         let hash_val = if let Ok(secret) = self.syncookie_secret.read() {
             let h = hmac_sha256(&*secret, &data);

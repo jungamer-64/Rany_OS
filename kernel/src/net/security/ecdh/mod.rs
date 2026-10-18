@@ -550,7 +550,7 @@ pub mod p256 {
 
                 result = result.double();
                 let added = result.add(self);
-                result = Self::ct_select(&result, &added, bit as u8);
+                result = Self::ct_select(&result, &added, bit);
             }
 
             result

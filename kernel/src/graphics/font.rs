@@ -211,7 +211,7 @@ impl BitmapFont {
         for (row_i, &row_byte) in glyph.iter().enumerate() {
             for bit_i in 0..8 {
                 if (row_byte >> (7 - bit_i)) & 1 == 1 {
-                    let px = x + (bit_i as i32 * scale);
+                    let px = x + (bit_i * scale);
                     let py = y + (row_i as i32 * scale);
 
                     // スケールサイズで矩形塗りつぶし

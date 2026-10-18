@@ -179,7 +179,7 @@ fn build_idt() -> InterruptDescriptorTable {
     ));
 
     // NVMe Interrupt (Direct Callback)
-    idt[crate::io::interrupt_manager::NVME_VECTOR as u8].set_handler_fn(handler_to_x86!(
+    idt[crate::io::interrupt_manager::NVME_VECTOR].set_handler_fn(handler_to_x86!(
         crate::io::interrupt_manager::nvme_entry_point
             as extern "x86-interrupt" fn(InterruptStackFrame)
     ));

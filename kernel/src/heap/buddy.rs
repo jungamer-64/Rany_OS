@@ -152,7 +152,7 @@ impl BuddyHeapAllocator {
         let old_head = self.free_lists[order].unwrap_or(0);
 
         // アドレスに次のフリーブロックへのポインタを格納
-        let ptr_addr = addr as usize;
+        let ptr_addr = addr;
 
         // SAFETY: the lock exclusively owns this free block in backing RAM.
         // Its aligned header is initialized before the head is published.
@@ -212,7 +212,7 @@ impl BuddyHeapAllocator {
         while let Some(curr_addr) = current {
             if curr_addr == addr {
                 // 見つかった - リストから削除
-                let next_ptr = curr_addr as usize;
+                let next_ptr = curr_addr;
                 // SAFETY: linked free blocks have initialized usize headers,
                 // and this allocator lock excludes simultaneous list mutation.
                 let next = unsafe { core::ptr::read(next_ptr as *const usize) };

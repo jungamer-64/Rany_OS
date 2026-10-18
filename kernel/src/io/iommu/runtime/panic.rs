@@ -205,11 +205,7 @@ pub fn write_panic_record(message: &str) -> Option<PanicDmaRecordInfo> {
                 len: copy_len as u32,
             },
         );
-        core::ptr::copy_nonoverlapping(
-            payload.as_ptr(),
-            (region.virt as *mut u8).add(header_size),
-            copy_len,
-        );
+        core::ptr::copy_nonoverlapping(payload.as_ptr(), region.virt.add(header_size), copy_len);
     }
 
     LAST_PANIC_DMA_PHYS.store(region.phys.as_u64(), Ordering::Release);

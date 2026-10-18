@@ -398,7 +398,7 @@ impl Framebuffer {
         } else {
             self.info.format()
         };
-        let bpp = format.bytes_per_pixel() as usize;
+        let bpp = format.bytes_per_pixel();
         (stride, format, bpp)
     }
 
@@ -450,7 +450,7 @@ impl Framebuffer {
 
         let char_count = text.chars().filter(|&c| c != '\n').count() as i32;
         let total_w = char_count * font.width() as i32;
-        let char_h = font.height() as u32;
+        let char_h = font.height();
 
         // Determine if we can use single-pass fg+bg rendering (no prefill needed)
         let use_single_pass = (bpp == 4 || bpp == 2 || bpp == 3) && self.back_buffer.is_none();
@@ -779,8 +779,8 @@ impl Framebuffer {
         let bpp = self.info.format().bytes_per_pixel();
 
         let char_w_i32 = font.width() as i32;
-        let char_w = font.width() as u32;
-        let char_h = font.height() as u32;
+        let char_w = font.width();
+        let char_h = font.height();
         self.mark_dirty(Rect::new(x, y, char_w, char_h));
 
         let is_fully_visible = x >= self.clip.x && (x + char_w_i32) <= self.clip.right();

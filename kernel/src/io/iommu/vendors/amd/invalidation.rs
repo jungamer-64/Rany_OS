@@ -183,7 +183,7 @@ impl AmdIommuDriver {
             Ok(guard) => guard,
             Err(_) => return Err(IommuError::Poisoned),
         };
-        f(&mut *guard)
+        f(&mut guard)
     }
 
     pub(super) async fn submit_cmd_async(
