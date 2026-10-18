@@ -89,8 +89,6 @@ pub enum IpcError {
     Timeout,
     /// 接続が切断
     Disconnected,
-    /// プロキシエラー
-    ProxyError,
     /// チャネルが閉じている
     ChannelClosed,
 }
@@ -248,7 +246,6 @@ impl fmt::Display for IpcError {
             IpcError::BufferOverflow => write!(f, "buffer overflow"),
             IpcError::Timeout => write!(f, "timeout"),
             IpcError::Disconnected => write!(f, "disconnected"),
-            IpcError::ProxyError => write!(f, "proxy error"),
             IpcError::ChannelClosed => write!(f, "channel closed"),
         }
     }
@@ -444,22 +441,6 @@ impl From<crate::ipc::rref::AccessError> for KernelError {
         KernelError::Ipc(match e {
             AE::NotOwner => IpcError::AccessDenied,
             AE::Poisoned => IpcError::Disconnected, // ポイズンされたRRefはDisconnected扱い
-        })
-    }
-}
-
-// ipc::proxy::ProxyError からの変換
-impl From<crate::ipc::proxy::ProxyError> for KernelError {
-    fn from(e: crate::ipc::proxy::ProxyError) -> Self {
-        use crate::ipc::proxy::ProxyError as PE;
-        KernelError::Ipc(match e {
-            PE::DomainPanicked(_) => IpcError::Disconnected,
-            PE::DomainUnresponsive => IpcError::Timeout,
-            PE::DomainNotFound => IpcError::InvalidReference,
-            PE::CommunicationError(_) => IpcError::ProxyError,
-            PE::PermissionDenied => IpcError::AccessDenied,
-            PE::Timeout => IpcError::Timeout,
-            PE::Other(_) => IpcError::ProxyError,
         })
     }
 }

@@ -126,29 +126,6 @@ pub fn test_cross_domain_call() -> TestResult {
     TestResult::Passed
 }
 
-/// Test proxy pattern for domain calls
-pub fn test_proxy_pattern() -> TestResult {
-    use crate::ipc::DomainId;
-    use crate::ipc::proxy::DomainProxy;
-
-    let target_domain = DomainId::new(42);
-
-    // Create proxy for target domain
-    let proxy = DomainProxy::new(target_domain);
-
-    // Verify proxy points to correct domain
-    if proxy.target() != target_domain {
-        return TestResult::Failed(String::from("Proxy target mismatch"));
-    }
-
-    // Test proxy availability check
-    if proxy.is_alive() {
-        // Domain might not actually exist, but proxy creation succeeded
-    }
-
-    TestResult::Passed
-}
-
 /// Test exchange heap concept
 pub fn test_exchange_heap() -> TestResult {
     use crate::ipc::DomainId;

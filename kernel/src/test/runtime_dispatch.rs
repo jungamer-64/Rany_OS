@@ -873,48 +873,64 @@ impl core::future::Future for NoncooperativePoll {
         self: core::pin::Pin<&mut Self>,
         cx: &mut core::task::Context<'_>,
     ) -> core::task::Poll<()> {
+        use crate::ipc::{BasicProxy, DomainProxy, ProxyError};
         use core::sync::atomic::Ordering;
-        let nested = crate::task::enter_domain(self.nested_domain).expect("nested probe admission");
-        let current = crate::cpu::CurrentCpu::acquire().expect("probe requires a bound CPU");
-        let fuel_valid = crate::task::fuel::Fuel::consume(37);
-        let fuel_before = crate::task::fuel::Fuel::remaining();
-        self.state
-            .poll_task
-            .store(crate::task::current_task_id(), Ordering::Release);
-        self.state.polls.fetch_add(1, Ordering::AcqRel);
-        *self.state.waker.lock() = Some(cx.waker().clone());
-        self.state.started.store(true, Ordering::Release);
-        if matches!(self.probe, SchedulerProbe::CriticalSection) {
-            let exclusion = hal::preemption::PreemptionGuard::enter();
-            self.state.guarded.store(true, Ordering::Release);
-            let deadline = crate::time::precise_time_nanos().saturating_add(
-                crate::task::config::SCHEDULER_CONFIG
-                    .quantum_ns
-                    .saturating_mul(3),
-            );
-            // LOOP_PROOF: mode=condition; reason=Enabled local timer interrupts advance precise_time_nanos toward deadline while switching is excluded, with an external QEMU failure timeout for a broken clock.;
-            while crate::time::precise_time_nanos() < deadline {
-                core::hint::spin_loop();
-            }
-            self.state.guarded.store(false, Ordering::Release);
-            drop(exclusion);
-        }
-        // SAFETY: the stop atomic is retained by this Future and the controller.
-        // The assembly obeys the SysV ABI and returns only after a different
-        // task on the same CPU stores stop. It contains no yield or fuel check.
-        let registers_valid =
-            unsafe { rany_scheduler_register_probe(&self.state.stop, u64::from(self.avx)) != 0 };
-        let same_cpu = current.id() == self.cpu
-            && crate::cpu::CurrentCpu::acquire().is_some_and(|cpu| cpu.id() == self.cpu);
+        let mut rejected_call_ran = false;
+        let rejection = BasicProxy::new(self.nested_domain, self.nested_domain)
+            .call(|| rejected_call_ran = true);
         self.state.valid.fetch_and(
-            registers_valid
-                && same_cpu
-                && fuel_valid
-                && crate::task::fuel::Fuel::remaining() == fuel_before
-                && crate::task::current_subject().domain == self.nested_domain,
+            matches!(rejection, Err(ProxyError::PermissionDenied)) && !rejected_call_ran,
             Ordering::AcqRel,
         );
-        drop(nested);
+        let result = BasicProxy::new(self.owner_domain, self.nested_domain).call(|| {
+            let current = crate::cpu::CurrentCpu::acquire().expect("probe requires a bound CPU");
+            let fuel_valid = crate::task::fuel::Fuel::consume(37);
+            let fuel_before = crate::task::fuel::Fuel::remaining();
+            self.state
+                .poll_task
+                .store(crate::task::current_task_id(), Ordering::Release);
+            self.state.polls.fetch_add(1, Ordering::AcqRel);
+            *self.state.waker.lock() = Some(cx.waker().clone());
+            self.state.started.store(true, Ordering::Release);
+            if matches!(self.probe, SchedulerProbe::CriticalSection) {
+                let exclusion = hal::preemption::PreemptionGuard::enter();
+                self.state.guarded.store(true, Ordering::Release);
+                let deadline = crate::time::precise_time_nanos().saturating_add(
+                    crate::task::config::SCHEDULER_CONFIG
+                        .quantum_ns
+                        .saturating_mul(3),
+                );
+                // LOOP_PROOF: mode=condition; reason=Enabled local timer interrupts advance precise_time_nanos toward deadline while switching is excluded, with an external QEMU failure timeout for a broken clock.;
+                while crate::time::precise_time_nanos() < deadline {
+                    core::hint::spin_loop();
+                }
+                self.state.guarded.store(false, Ordering::Release);
+                drop(exclusion);
+            }
+            // SAFETY: the stop atomic is retained by this Future and the controller.
+            // The assembly obeys the SysV ABI and returns only after a different
+            // task on the same CPU stores stop. It contains no yield or fuel check.
+            let registers_valid = unsafe {
+                rany_scheduler_register_probe(&self.state.stop, u64::from(self.avx)) != 0
+            };
+            let same_cpu = current.id() == self.cpu
+                && crate::cpu::CurrentCpu::acquire().is_some_and(|cpu| cpu.id() == self.cpu);
+            self.state.valid.fetch_and(
+                registers_valid
+                    && same_cpu
+                    && fuel_valid
+                    && crate::task::fuel::Fuel::remaining() == fuel_before
+                    && crate::task::current_subject().domain == self.nested_domain,
+                Ordering::AcqRel,
+            );
+        });
+        let restored = crate::task::current_subject().domain == self.owner_domain;
+        if let Err(error) = &result {
+            log::error!("scheduler nested proxy failed: {error}");
+        }
+        self.state
+            .valid
+            .fetch_and(result.is_ok() && restored, Ordering::AcqRel);
         self.state.done.store(true, Ordering::Release);
         core::task::Poll::Ready(())
     }
@@ -1072,6 +1088,23 @@ async fn scheduler_preemption_case(probe: SchedulerProbe) -> RuntimeTestResult {
                 }
             }
         }
+    }
+    use crate::ipc::DomainProxy;
+    let caller = crate::task::current_subject();
+    let fuel_before_rejection = crate::task::fuel::Fuel::remaining();
+    let mut retired_call_ran = false;
+    let rejection =
+        crate::ipc::BasicProxy::new(caller.domain, nested_domain).call(|| retired_call_ran = true);
+    if !matches!(
+        rejection,
+        Err(crate::ipc::ProxyError::Execution(
+            crate::task::ExecutionContextUnavailable::CodeUnavailable
+        ))
+    ) || retired_call_ran
+        || crate::task::current_subject() != caller
+        || crate::task::fuel::Fuel::remaining() != fuel_before_rejection
+    {
+        return RuntimeTestResult::fail("retired proxy entry ran or changed its caller context");
     }
     let after = crate::task::scheduler_snapshot().expect("scheduler must remain installed");
     if let Some(stale) = state.waker.lock().as_ref() {
