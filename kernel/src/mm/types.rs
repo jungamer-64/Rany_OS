@@ -295,7 +295,7 @@ impl MappedAddress {
 
     /// ページアライメントされているか
     pub fn is_page_aligned(&self) -> bool {
-        self.0 % MappingSize::PAGE_SIZE == 0
+        self.0.is_multiple_of(MappingSize::PAGE_SIZE)
     }
 }
 
@@ -346,7 +346,7 @@ impl MappingOffset {
 
     /// ページアライメントされているか
     pub fn is_page_aligned(&self) -> bool {
-        self.0 as usize % MappingSize::PAGE_SIZE == 0
+        (self.0 as usize).is_multiple_of(MappingSize::PAGE_SIZE)
     }
 }
 

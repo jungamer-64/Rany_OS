@@ -147,7 +147,7 @@ impl FragmentBuffer {
         }
 
         // RFC 791: 8-octet multiple check for non-last fragments
-        if header.more_fragments() && (fragment_len % 8 != 0) {
+        if header.more_fragments() && !fragment_len.is_multiple_of(8) {
             log::warn!(
                 "[NET-IPV4] Fragment length ({}) not a multiple of 8 while MF=1, dropping",
                 fragment_len

@@ -1948,7 +1948,7 @@ fn collect_provider_descriptors_from_export(
         return Vec::new();
     }
 
-    if (descriptors_ptr as usize) % core::mem::align_of::<ProviderDescriptorV1>() != 0 {
+    if !(descriptors_ptr as usize).is_multiple_of(core::mem::align_of::<ProviderDescriptorV1>()) {
         log::warn!(
             "[DRIVER] Provider descriptor slice is unaligned: ptr={:#x}",
             descriptors_ptr as usize
@@ -1990,7 +1990,7 @@ fn build_abi_driver(
     if vtable_ptr.is_null() {
         return Err(DriverError::InvalidState);
     }
-    if (vtable_ptr as usize) % core::mem::align_of::<AbiDriverVTable>() != 0 {
+    if !(vtable_ptr as usize).is_multiple_of(core::mem::align_of::<AbiDriverVTable>()) {
         log::error!(
             "[DRIVER] ABI vtable pointer is unaligned: ptr={:#x}, align={}",
             vtable_ptr as usize,
@@ -2052,7 +2052,7 @@ pub(crate) fn prepare_driver_exports(
     if exports.is_null() {
         return Err(DriverError::InvalidState);
     }
-    if (exports as usize) % core::mem::align_of::<DriverExportsV1>() != 0 {
+    if !(exports as usize).is_multiple_of(core::mem::align_of::<DriverExportsV1>()) {
         log::error!(
             "[DRIVER] DriverExports pointer is unaligned: ptr={:#x}, align={}",
             exports as usize,

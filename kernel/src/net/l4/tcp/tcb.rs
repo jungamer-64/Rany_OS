@@ -995,7 +995,7 @@ impl TcbTable {
 
     pub fn tick(&self, runtime: NetRuntimeHandle) {
         let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
-        if tick % 100 == 0 {
+        if tick.is_multiple_of(100) {
             super::retransmit::check_retransmit_timeouts(runtime);
             self.check_zero_window_probes(runtime, tick);
             self.scavenge_syn_received(tick);

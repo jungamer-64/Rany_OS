@@ -204,7 +204,7 @@ impl RangeUpdateError {
 }
 
 fn validate_range(start: VirtAddr, size: u64) -> Result<u64, MapError> {
-    if start.as_u64() % 4096 != 0 || size % 4096 != 0 {
+    if !start.as_u64().is_multiple_of(4096) || !size.is_multiple_of(4096) {
         return Err(MapError::AlignmentError);
     }
     let end = start
@@ -391,7 +391,7 @@ impl PageTableManager {
     ) -> Result<(), MapError> {
         const SIZE_2MB: u64 = PageSize::Size2MiB.as_bytes();
 
-        if virt.as_u64() % SIZE_2MB != 0 || phys.as_u64() % SIZE_2MB != 0 {
+        if !virt.as_u64().is_multiple_of(SIZE_2MB) || !phys.as_u64().is_multiple_of(SIZE_2MB) {
             return Err(MapError::AlignmentError);
         }
 
@@ -438,7 +438,7 @@ impl PageTableManager {
             return Err(MapError::UnsupportedPageSize);
         }
 
-        if virt.as_u64() % SIZE_1GB != 0 || phys.as_u64() % SIZE_1GB != 0 {
+        if !virt.as_u64().is_multiple_of(SIZE_1GB) || !phys.as_u64().is_multiple_of(SIZE_1GB) {
             return Err(MapError::AlignmentError);
         }
 
@@ -618,14 +618,14 @@ impl PageTableManager {
         const SIZE_4KB: u64 = PageSize::Size4KiB.as_bytes();
 
         if supports_1g_pages()
-            && virt % SIZE_1GB == 0
-            && phys % SIZE_1GB == 0
+            && virt.is_multiple_of(SIZE_1GB)
+            && phys.is_multiple_of(SIZE_1GB)
             && remaining >= SIZE_1GB
         {
             unsafe { self.map_1gb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
             return Ok(SIZE_1GB);
         }
-        if virt % SIZE_2MB == 0 && phys % SIZE_2MB == 0 && remaining >= SIZE_2MB {
+        if virt.is_multiple_of(SIZE_2MB) && phys.is_multiple_of(SIZE_2MB) && remaining >= SIZE_2MB {
             unsafe { self.map_2mb_page(VirtAddr::new(virt), PhysAddr::new(phys), flags)? };
             return Ok(SIZE_2MB);
         }
@@ -688,7 +688,7 @@ impl PageTableManager {
                 continue;
             };
             let step = page_size.as_bytes();
-            if cursor % step != 0 || step > end - cursor {
+            if !cursor.is_multiple_of(step) || step > end - cursor {
                 return Err(RangeUpdateError {
                     cause: MapError::AlignmentError,
                     modified_start: start,
@@ -735,7 +735,7 @@ impl PageTableManager {
             let result = match leaf {
                 None => Err(MapError::NotMapped),
                 Some((_, page_size))
-                    if cursor % page_size.as_bytes() != 0
+                    if !cursor.is_multiple_of(page_size.as_bytes())
                         || page_size.as_bytes() > end - cursor =>
                 {
                     Err(MapError::AlignmentError)

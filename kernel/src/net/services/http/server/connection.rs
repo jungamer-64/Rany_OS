@@ -85,7 +85,7 @@ fn plan_from_buffered_payload(
 }
 
 fn read_deadline_exceeded(attempt: usize, deadline_tick_ms: u64) -> Option<Option<ResponsePlan>> {
-    if attempt % super::HOST_HTTP_READ_DEADLINE_CHECK_STRIDE != 0 {
+    if !attempt.is_multiple_of(super::HOST_HTTP_READ_DEADLINE_CHECK_STRIDE) {
         return None;
     }
 

@@ -96,7 +96,7 @@ pub(crate) fn pad_qr_bitstream(bit_stream: &mut [u8], bit_idx: &mut usize) -> Op
         return None;
     }
 
-    if *bit_idx % 8 != 0 {
+    if !(*bit_idx).is_multiple_of(8) {
         let pad = 8 - (*bit_idx % 8);
         if !append_bits(bit_stream, bit_idx, 0, pad) {
             return None;

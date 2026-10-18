@@ -543,7 +543,7 @@ pub mod coalescing {
             if pages >= block_pages {
                 let block_size_bytes = block_pages * PAGE_SIZE_4K;
                 // アラインメントチェック
-                if entry.addr % (block_size_bytes as u64) == 0 {
+                if entry.addr.is_multiple_of(block_size_bytes as u64) {
                     return Some((entry.addr, order));
                 }
             }

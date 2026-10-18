@@ -101,7 +101,7 @@ impl HierarchicalBitmap {
             total_units,
             detail_words,
             free_count: AtomicUsize::new(total_units),
-            last_word_mask: if total_units % BITS_PER_WORD == 0 {
+            last_word_mask: if total_units.is_multiple_of(BITS_PER_WORD) {
                 u64::MAX
             } else {
                 (1u64 << (total_units % BITS_PER_WORD)) - 1

@@ -153,7 +153,7 @@ impl IommuDomain {
         if self.page_table_levels() < 2 {
             return Err(IommuError::NotSupported);
         }
-        if iova % SIZE_2MB != 0 || phys % SIZE_2MB != 0 {
+        if !iova.is_multiple_of(SIZE_2MB) || !phys.is_multiple_of(SIZE_2MB) {
             return Err(IommuError::InvalidAddress);
         }
 
@@ -204,7 +204,7 @@ impl IommuDomain {
         if self.page_table_levels() < 3 {
             return Err(IommuError::NotSupported);
         }
-        if iova % SIZE_1GB != 0 || phys % SIZE_1GB != 0 {
+        if !iova.is_multiple_of(SIZE_1GB) || !phys.is_multiple_of(SIZE_1GB) {
             return Err(IommuError::InvalidAddress);
         }
 

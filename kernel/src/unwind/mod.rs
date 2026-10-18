@@ -264,7 +264,7 @@ fn is_valid_stack_address(addr: usize) -> bool {
     }
 
     // アライメントチェック
-    if addr % 8 != 0 {
+    if !addr.is_multiple_of(8) {
         return false;
     }
 

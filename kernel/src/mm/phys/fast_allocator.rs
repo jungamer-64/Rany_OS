@@ -46,7 +46,7 @@ impl FastBitmapAllocator {
         if size == 0 || base.checked_add(size).is_none() {
             return Err(AddressPoolError::InvalidRange);
         }
-        if base % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
+        if !base.is_multiple_of(PAGE_SIZE_4K) || !size.is_multiple_of(PAGE_SIZE_4K) {
             return Err(AddressPoolError::Alignment);
         }
         let pages =
@@ -169,7 +169,7 @@ impl FastBitmapAllocator {
         {
             return Err(AddressPoolError::InvalidRange);
         }
-        if start % PAGE_SIZE_4K != 0 || size % PAGE_SIZE_4K != 0 {
+        if !start.is_multiple_of(PAGE_SIZE_4K) || !size.is_multiple_of(PAGE_SIZE_4K) {
             return Err(AddressPoolError::Alignment);
         }
         Ok((

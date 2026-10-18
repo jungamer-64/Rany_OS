@@ -212,7 +212,7 @@ impl Ipv6FragmentBuffer {
         let end = offset + payload_len;
 
         // RFC 8200: 8-octet multiple check for non-last fragments
-        if frag.more_fragments && (payload_len % 8 != 0) {
+        if frag.more_fragments && !payload_len.is_multiple_of(8) {
             log::warn!(
                 "[NET-IPV6] Fragment length ({}) not a multiple of 8 while M=1, dropping (RFC 8200)",
                 payload_len

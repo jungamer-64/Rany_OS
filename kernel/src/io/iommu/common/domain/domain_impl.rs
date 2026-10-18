@@ -407,8 +407,8 @@ impl IommuDomain {
         self.supports_1gb
             && self.page_table_levels() >= 3
             && remaining >= SIZE_1GB
-            && iova % SIZE_1GB == 0
-            && phys % SIZE_1GB == 0
+            && iova.is_multiple_of(SIZE_1GB)
+            && phys.is_multiple_of(SIZE_1GB)
             && (phys & 0x3FFF_FFFF) == 0
     }
 
@@ -418,8 +418,8 @@ impl IommuDomain {
         self.supports_2mb
             && self.page_table_levels() >= 2
             && remaining >= SIZE_2MB
-            && iova % SIZE_2MB == 0
-            && phys % SIZE_2MB == 0
+            && iova.is_multiple_of(SIZE_2MB)
+            && phys.is_multiple_of(SIZE_2MB)
     }
 
     /// Map a DMA region

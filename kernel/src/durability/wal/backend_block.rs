@@ -185,7 +185,8 @@ impl BlockWalStorage {
         let sector = self.block_size as usize;
         // Publication pages are isolated from committed pages. Unaligned RMW
         // could tear a preceding transaction even if its root remains valid.
-        if offset % u64::from(self.block_size) != 0 || bytes.len() % sector != 0 {
+        if !offset.is_multiple_of(u64::from(self.block_size)) || !bytes.len().is_multiple_of(sector)
+        {
             return Err(WalStorageError::InvalidRange);
         }
         let mut copied = 0;

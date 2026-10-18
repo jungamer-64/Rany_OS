@@ -121,7 +121,7 @@ impl HugeFrameCache {
     }
 
     fn insert(&mut self, frame: PhysicalAllocation) -> Result<(), PhysicalAllocation> {
-        if frame.page_count() != HUGE_PAGES || frame.as_u64() % HUGE_BYTES as u64 != 0 {
+        if frame.page_count() != HUGE_PAGES || !frame.as_u64().is_multiple_of(HUGE_BYTES as u64) {
             return Err(frame);
         }
         let Some(slot) = self.slots.iter_mut().find(|slot| slot.is_none()) else {

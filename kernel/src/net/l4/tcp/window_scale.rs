@@ -297,7 +297,8 @@ impl<'a> TcpOptionParser<'a> {
             return None;
         }
         let len = self.data[self.pos + 1] as usize;
-        if len < 10 || len > 34 || (len - 2) % 8 != 0 || self.pos + len > self.data.len() {
+        if len < 10 || len > 34 || !(len - 2).is_multiple_of(8) || self.pos + len > self.data.len()
+        {
             return None;
         }
         let num_blocks = (len - 2) / 8;

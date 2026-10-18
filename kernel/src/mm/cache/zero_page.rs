@@ -82,7 +82,7 @@ pub unsafe fn clear_page_nt(addr: *mut u8) {
 
     // 16バイトアライメントチェック
     debug_assert!(
-        addr as usize % 16 == 0,
+        (addr as usize).is_multiple_of(16),
         "Address must be 16-byte aligned for NT stores"
     );
 
@@ -318,7 +318,7 @@ pub fn choose_zero_strategy(size: usize, in_interrupt: bool) -> ZeroStrategy {
         ZeroStrategy::NonTemporal
     } else if size >= PAGE_SIZE_4K {
         ZeroStrategy::NonTemporal
-    } else if size >= 64 && size % 8 == 0 {
+    } else if size >= 64 && size.is_multiple_of(8) {
         ZeroStrategy::RepStosq
     } else {
         ZeroStrategy::Memset
@@ -602,7 +602,10 @@ pub unsafe fn clear_page_nt_prefetch(addr: *mut u8) {
     }
 
     // 16バイトアライメントチェック
-    debug_assert!(addr as usize % 16 == 0, "Address must be 16-byte aligned");
+    debug_assert!(
+        (addr as usize).is_multiple_of(16),
+        "Address must be 16-byte aligned"
+    );
 
     // プリフェッチ先行距離（キャッシュライン数）
     const PREFETCH_AHEAD: usize = 8; // 512バイト先行
@@ -762,7 +765,7 @@ pub fn choose_zero_strategy_v2(
         ZeroStrategy::NonTemporal // NT + Prefetch版を使用
     } else if size >= PAGE_SIZE_4K {
         ZeroStrategy::NonTemporal
-    } else if size >= 64 && size % 8 == 0 {
+    } else if size >= 64 && size.is_multiple_of(8) {
         ZeroStrategy::RepStosq
     } else {
         ZeroStrategy::Memset

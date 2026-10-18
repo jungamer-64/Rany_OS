@@ -74,7 +74,7 @@ pub(super) unsafe fn unmap_leaf_run(
         }
         if (2..=3).contains(&level) && entry.is_super_page(format) {
             let bytes = 1u64 << (12 + 9 * (level - 1));
-            if iova % bytes != 0 || remaining < bytes {
+            if !iova.is_multiple_of(bytes) || remaining < bytes {
                 return Err(IommuError::InvalidAlignment);
             }
             return Ok((bytes, level));

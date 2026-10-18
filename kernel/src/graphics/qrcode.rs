@@ -397,7 +397,7 @@ impl QrCode {
                 right -= 1;
             }
             let left = right - 1;
-            let upward = ((QR_SIZE - 1 - right) / 2) % 2 == 0;
+            let upward = ((QR_SIZE - 1 - right) / 2).is_multiple_of(2);
 
             for i in 0..QR_SIZE {
                 let y = if upward { QR_SIZE - 1 - i } else { i };

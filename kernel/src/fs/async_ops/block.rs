@@ -57,7 +57,7 @@ impl DirectBlockHandle {
     /// its returned completion means.
     fn span(&self, offset: u64, bytes: usize) -> FsResult<BlockSpan> {
         let size = self.block_size.get() as usize;
-        if bytes % size != 0 || offset > self.block_count {
+        if !bytes.is_multiple_of(size) || offset > self.block_count {
             return Err(FsError::InvalidArgument);
         }
         let blocks = u64::try_from(bytes / size).map_err(|_| FsError::InvalidArgument)?;

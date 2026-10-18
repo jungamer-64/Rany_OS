@@ -36,7 +36,7 @@ pub fn read_struct<T: Copy>(data: &[u8], offset: usize) -> Option<T> {
     let ptr = unsafe { data.as_ptr().add(offset) };
     let align = mem::align_of::<T>();
 
-    if (ptr as usize) % align != 0 {
+    if !(ptr as usize).is_multiple_of(align) {
         // Unaligned - copy into a local buffer
         let mut buf = mem::MaybeUninit::<T>::uninit();
         unsafe {
@@ -61,7 +61,7 @@ pub fn write_struct<T: Copy>(data: &mut [u8], offset: usize, value: T) -> Option
     let ptr = unsafe { data.as_mut_ptr().add(offset) };
     let align = mem::align_of::<T>();
 
-    if (ptr as usize) % align != 0 {
+    if !(ptr as usize).is_multiple_of(align) {
         // Unaligned - copy from value
         unsafe {
             core::ptr::copy_nonoverlapping(&value as *const T as *const u8, ptr, size);
@@ -103,7 +103,7 @@ pub fn get_mut_ref<'a, T>(data: &'a mut [u8], offset: usize) -> Option<&'a mut T
     }
     let ptr = unsafe { data.as_mut_ptr().add(offset) };
     let align = mem::align_of::<T>();
-    if (ptr as usize) % align != 0 {
+    if !(ptr as usize).is_multiple_of(align) {
         return None;
     }
     Some(unsafe { &mut *(ptr as *mut T) })
@@ -119,7 +119,7 @@ pub fn get_ref<'a, T>(data: &'a [u8], offset: usize) -> Option<&'a T> {
     }
     let ptr = unsafe { data.as_ptr().add(offset) };
     let align = mem::align_of::<T>();
-    if (ptr as usize) % align != 0 {
+    if !(ptr as usize).is_multiple_of(align) {
         return None;
     }
     Some(unsafe { &*(ptr as *const T) })
@@ -180,7 +180,7 @@ pub fn debug_check_ptr_range(addr: usize, len: usize, align: usize) {
         }
         debug_assert!(addr.checked_add(len).is_some(), "pointer range overflow");
         if align > 1 {
-            debug_assert!(addr % align == 0, "unaligned pointer");
+            debug_assert!(addr.is_multiple_of(align), "unaligned pointer");
         }
     }
 }
