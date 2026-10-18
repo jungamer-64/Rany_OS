@@ -47,6 +47,7 @@ mod pkey_tests;
 #[cfg(not(any(test, feature = "bench")))]
 use crate::mm::virt::higher_half::PageFlags;
 use alloc::string::ToString;
+#[cfg(test)]
 use alloc::vec;
 use alloc::vec::Vec;
 use core::mem;

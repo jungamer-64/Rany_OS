@@ -6,6 +6,11 @@ impl<'a> ElfLoader<'a> {
     /// 新しいELFローダーを作成
     ///
     /// 【セキュリティ】入力データの境界チェックを厳密に実行
+    ///
+    /// # Errors
+    /// Rejects oversized/truncated inputs and unsupported ELF class, byte order
+    /// or machine. Section and segment contents are validated when accessed;
+    /// creating a parser does not grant execution admission.
     pub fn new(data: &'a [u8]) -> Result<Self, LoadError> {
         validate_elf_size(data)?;
 
@@ -38,11 +43,24 @@ impl<'a> ElfLoader<'a> {
 
     /// 単一のPT_LOADセグメントを検証・解析する
     pub(super) fn validate_load_segment(
+        &self,
         ph: &Elf64ProgramHeader,
         segments: &mut Vec<SegmentInfo>,
         max_addr: &mut usize,
         alignment: &mut usize,
     ) -> Result<(), LoadError> {
+        if ph.p_filesz > ph.p_memsz {
+            return Err(LoadError::InvalidFormat(
+                "Segment file size exceeds memory size".into(),
+            ));
+        }
+        let source_end = ph
+            .p_offset
+            .checked_add(ph.p_filesz)
+            .ok_or_else(|| LoadError::InvalidFormat("Segment file range overflow".into()))?;
+        if source_end > self.data.len() as u64 {
+            return Err(LoadError::InvalidFormat("Segment data outside ELF".into()));
+        }
         // 【セキュリティ】セグメントサイズのチェック
         if ph.p_memsz as usize > MAX_SEGMENT_SIZE {
             return Err(LoadError::InvalidFormat(alloc::format!(
@@ -85,16 +103,12 @@ impl<'a> ElfLoader<'a> {
     /// 最適化:
     /// - シンボル名は `String` を割り当てずに `&str` で保持する（ゼロコピー）
     /// - セグメント/シンボルベクタに容量予約を行い再割り当てを減らす
+    ///
+    /// # Errors
+    /// Rejects invalid table extents, excessive counts, malformed segments and
+    /// writable executable mappings. Metadata allocation failure is recoverable;
+    /// no executable allocation is made and no partial `CellInfo` is returned.
     pub fn parse(&self) -> Result<CellInfo<'a>, LoadError> {
-        let mut segments = Vec::new();
-        segments.reserve(self.header.e_phnum as usize);
-
-        // ゼロコピーでシンボル名を扱うため、Stringを使わず参照を蓄える
-        let mut exports: Vec<(&'a str, u64)> = Vec::new();
-        let mut imports: Vec<&'a str> = Vec::new();
-        let mut max_addr = 0usize;
-        let mut alignment = 4096usize;
-
         // 【セキュリティ】プログラムヘッダー数のチェック
         if self.header.e_phnum as usize > MAX_SEGMENTS {
             return Err(LoadError::InvalidFormat(alloc::format!(
@@ -104,26 +118,44 @@ impl<'a> ElfLoader<'a> {
             )));
         }
 
-        // 【セキュリティ】セクションヘッダー数のチェック
-        if self.header.e_shnum as usize > MAX_SECTIONS {
-            return Err(LoadError::InvalidFormat(alloc::format!(
-                "Too many section headers: {} (max {})",
-                self.header.e_shnum,
-                MAX_SECTIONS
-            )));
-        }
-
-        // プログラムヘッダーを解析
-        for i in 0..self.header.e_phnum {
-            let ph_offset =
-                self.header.e_phoff as usize + (i as usize * self.header.e_phentsize as usize);
-
-            // 【設計書 2.2】安全なラッパーを使用
-            let ph: Elf64ProgramHeader = crate::util::read_struct(self.data, ph_offset)
-                .ok_or_else(|| LoadError::InvalidFormat("Failed to read program header".into()))?;
-
-            if ph.p_type == PT_LOAD {
-                Self::validate_load_segment(&ph, &mut segments, &mut max_addr, &mut alignment)?;
+        self.section_headers().map_err(LoadError::InvalidSections)?;
+        let mut segments = Vec::new();
+        segments
+            .try_reserve(usize::from(self.header.e_phnum))
+            .map_err(|_| LoadError::OutOfMemory)?;
+        let mut exports = Vec::new();
+        let mut imports = Vec::new();
+        let mut max_addr = 0usize;
+        let mut alignment = 4096usize;
+        if self.header.e_phnum != 0 {
+            let stride = usize::from(self.header.e_phentsize);
+            if stride < mem::size_of::<Elf64ProgramHeader>() {
+                return Err(LoadError::InvalidFormat(
+                    "Program header entry too small".into(),
+                ));
+            }
+            let start = usize::try_from(self.header.e_phoff)
+                .map_err(|_| LoadError::InvalidFormat("Program header offset overflow".into()))?;
+            if start == 0 {
+                return Err(LoadError::InvalidFormat(
+                    "Missing program header table".into(),
+                ));
+            }
+            let end = usize::from(self.header.e_phnum)
+                .checked_mul(stride)
+                .and_then(|size| start.checked_add(size))
+                .ok_or_else(|| LoadError::InvalidFormat("Program header table overflow".into()))?;
+            let table = self.data.get(start..end).ok_or_else(|| {
+                LoadError::InvalidFormat("Program header table outside ELF".into())
+            })?;
+            for slot in table.chunks_exact(stride) {
+                let ph: Elf64ProgramHeader =
+                    crate::util::read_struct(slot, 0).ok_or_else(|| {
+                        LoadError::InvalidFormat("Failed to read program header".into())
+                    })?;
+                if ph.p_type == PT_LOAD {
+                    self.validate_load_segment(&ph, &mut segments, &mut max_addr, &mut alignment)?;
+                }
             }
         }
 
@@ -140,16 +172,41 @@ impl<'a> ElfLoader<'a> {
         })
     }
 
+    fn parse_symbols(
+        &self,
+        exports: &mut Vec<(&'a str, u64)>,
+        imports: &mut Vec<&'a str>,
+    ) -> Result<(), LoadError> {
+        let headers = self.section_headers().map_err(LoadError::InvalidSections)?;
+        let mut has_static_symbols = false;
+        for index in 0..headers.len() {
+            let header = headers.get(index).map_err(LoadError::InvalidSections)?;
+            if header.sh_type == SHT_SYMTAB {
+                has_static_symbols = true;
+                self.process_symbol_table(index, &header, exports, imports)?;
+            }
+        }
+        if !has_static_symbols {
+            for index in 0..headers.len() {
+                let header = headers.get(index).map_err(LoadError::InvalidSections)?;
+                if header.sh_type == SHT_DYNSYM {
+                    self.process_symbol_table(index, &header, exports, imports)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// シンボルテーブルを処理
     pub(super) fn process_symbol_table(
         &self,
+        index: usize,
         sh: &Elf64SectionHeader,
         exports: &mut Vec<(&'a str, u64)>,
         imports: &mut Vec<&'a str>,
     ) -> Result<(), LoadError> {
-        let raw_count = sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
-        // Clamp to a reasonable maximum to avoid integer overflow or DoS loops.
-        let sym_count = core::cmp::min(raw_count, MAX_SYMBOLS);
+        let records = self.symbol_records(index, sh)?;
+        let sym_count = records.len() / mem::size_of::<Elf64Symbol>();
         let strtab = self.get_string_table(sh.sh_link as usize)?;
 
         // ある程度の容量を予約して再割り当てを減らす。
@@ -162,49 +219,80 @@ impl<'a> ElfLoader<'a> {
             return Err(LoadError::OutOfMemory);
         }
 
-        for j in 0..sym_count {
-            // debug tracing: iteration number
-
-            // compute offset with checked arithmetic to avoid overflow
-            let sym_offset = match (sh.sh_offset as usize)
-                .checked_add(j.checked_mul(mem::size_of::<Elf64Symbol>()).unwrap_or(0))
-            {
-                Some(off) => off,
-                None => return Err(LoadError::InvalidFormat("symtab offset overflow".into())),
-            };
-
-            // 【設計書 2.2】安全なラッパーを使用、エラーはスキップ
-            let sym: Elf64Symbol = match crate::util::read_struct(self.data, sym_offset) {
-                Some(sym) => sym,
-                None => continue,
-            };
+        for record in records.as_chunks::<{ mem::size_of::<Elf64Symbol>() }>().0 {
+            let sym: Elf64Symbol = crate::util::read_struct(record, 0)
+                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol record".into()))?;
 
             // グローバルシンボルのみ処理
-            if sym.binding() == STB_GLOBAL && sym.st_name != 0 {
-                if let Some(name) = self.get_string(strtab, sym.st_name as usize) {
-                    if name.is_empty() {
-                        continue;
+            if sym.binding() == STB_GLOBAL
+                && sym.st_name != 0
+                && let Some(name) = self.get_string(strtab, sym.st_name as usize)
+            {
+                if name.is_empty() {
+                    continue;
+                }
+                if sym.st_shndx == 0 {
+                    // 未定義シンボル = インポート（ゼロコピー）
+                    // avoid duplicates (linear scan, no allocations)
+                    if !imports.contains(&name) {
+                        imports.push(name);
                     }
-                    // debug resolved name
-                    {}
-                    if sym.st_shndx == 0 {
-                        // 未定義シンボル = インポート（ゼロコピー）
-                        // avoid duplicates (linear scan, no allocations)
-                        if !imports.iter().any(|&e| e == name) {
-                            imports.push(name);
-                        }
-                    } else {
-                        // 定義済みシンボル = エクスポート（ゼロコピー）
-                        // avoid duplicate exports of same name/value
-                        if !exports.iter().any(|&(n, v)| n == name && v == sym.st_value) {
-                            exports.push((name, sym.st_value));
-                        }
+                } else {
+                    // 定義済みシンボル = エクスポート（ゼロコピー）
+                    // avoid duplicate exports of same name/value
+                    if !exports.iter().any(|&(n, v)| n == name && v == sym.st_value) {
+                        exports.push((name, sym.st_value));
                     }
                 }
             }
         }
 
         Ok(())
+    }
+
+    fn symbol_records(
+        &self,
+        index: usize,
+        header: &Elf64SectionHeader,
+    ) -> Result<&'a [u8], LoadError> {
+        let size = mem::size_of::<Elf64Symbol>();
+        if !matches!(header.sh_type, SHT_SYMTAB | SHT_DYNSYM)
+            || header.sh_entsize != size as u64
+            || !header.sh_size.is_multiple_of(size as u64)
+        {
+            return Err(LoadError::InvalidFormat(
+                "Invalid symbol table layout".into(),
+            ));
+        }
+        if header.sh_size / size as u64 > MAX_SYMBOLS as u64 {
+            return Err(LoadError::InvalidFormat(
+                "Symbol table exceeds loader capacity".into(),
+            ));
+        }
+        self.section_bytes(header, index)
+            .map_err(LoadError::InvalidSections)
+    }
+
+    fn get_string_table(&self, index: usize) -> Result<&'a [u8], LoadError> {
+        let header = self
+            .section_headers()
+            .map_err(LoadError::InvalidSections)?
+            .get(index)
+            .map_err(LoadError::InvalidSections)?;
+        if header.sh_type != 3 {
+            return Err(LoadError::InvalidFormat(
+                "Symbol names must reference a string table".into(),
+            ));
+        }
+        let bytes = self
+            .section_bytes(&header, index)
+            .map_err(LoadError::InvalidSections)?;
+        if bytes.first() != Some(&0) || bytes.last() != Some(&0) {
+            return Err(LoadError::InvalidFormat(
+                "Invalid symbol string table".into(),
+            ));
+        }
+        Ok(bytes)
     }
 
     /// 文字列テーブルから文字列を取得
@@ -533,95 +621,88 @@ impl<'a> ElfLoader<'a> {
         Ok(())
     }
 
-    /// リロケーションを適用
+    pub(in crate::loader) fn relocate<F>(
+        &self,
+        loaded: &LoadedCell,
+        resolve: F,
+    ) -> Result<(), LoadError>
+    where
+        F: Fn(&str) -> Option<usize>,
+    {
+        let headers = self.section_headers().map_err(LoadError::InvalidSections)?;
+        for index in 0..headers.len() {
+            let header = headers.get(index).map_err(LoadError::InvalidSections)?;
+            if header.sh_type == SHT_RELA {
+                self.apply_relocations(index, &header, loaded, &resolve)?;
+            }
+        }
+        Ok(())
+    }
+
     fn apply_relocations<F>(
         &self,
-        sh: &Elf64SectionHeader,
+        index: usize,
+        header: &Elf64SectionHeader,
         loaded: &LoadedCell,
         resolve: &F,
     ) -> Result<(), LoadError>
     where
         F: Fn(&str) -> Option<usize>,
     {
-        let rela_count = sh.sh_size as usize / mem::size_of::<Elf64Rela>();
-
-        if rela_count > MAX_RELOCATIONS {
-            return Err(LoadError::RelocationFailed(alloc::format!(
-                "Too many relocations: {} (max {})",
-                rela_count,
-                MAX_RELOCATIONS
-            )));
+        let size = mem::size_of::<Elf64Rela>();
+        if header.sh_entsize != size as u64 || !header.sh_size.is_multiple_of(size as u64) {
+            return Err(LoadError::RelocationFailed(
+                "Invalid relocation table layout".into(),
+            ));
         }
-
-        let symtab_sh = self.get_section_header(sh.sh_link as usize)?;
-        let strtab = self.get_string_table(symtab_sh.sh_link as usize)?;
-
-        let symtab_count = symtab_sh.sh_size as usize / mem::size_of::<Elf64Symbol>();
-        let mut sym_value_cache: Vec<Option<usize>> = vec![None; symtab_count];
-
-        for j in 0..rela_count {
-            self.process_single_relocation(
-                sh,
-                j,
-                &symtab_sh,
-                strtab,
-                symtab_count,
-                loaded,
-                resolve,
-                &mut sym_value_cache,
-            )?;
+        if header.sh_size / size as u64 > MAX_RELOCATIONS as u64 {
+            return Err(LoadError::RelocationFailed(
+                "Relocation table exceeds loader capacity".into(),
+            ));
         }
-
+        let records = self
+            .section_bytes(header, index)
+            .map_err(LoadError::InvalidSections)?;
+        let symtab_index = header.sh_link as usize;
+        let symtab = self
+            .section_headers()
+            .map_err(LoadError::InvalidSections)?
+            .get(symtab_index)
+            .map_err(LoadError::InvalidSections)?;
+        let symbols = self.symbol_records(symtab_index, &symtab)?;
+        let strtab = self.get_string_table(symtab.sh_link as usize)?;
+        let symbol_count = symbols.len() / mem::size_of::<Elf64Symbol>();
+        let mut cache = Vec::new();
+        cache
+            .try_reserve_exact(symbol_count)
+            .map_err(|_| LoadError::OutOfMemory)?;
+        cache.resize(symbol_count, None);
+        for record in records.as_chunks::<{ mem::size_of::<Elf64Rela>() }>().0 {
+            let rela: Elf64Rela = crate::util::read_struct(record, 0)
+                .ok_or_else(|| LoadError::RelocationFailed("Invalid relocation record".into()))?;
+            let symbol_index = rela.symbol() as usize;
+            // STN_UNDEF supplies zero without resolving a symbol definition.
+            let value = if symbol_index == 0 {
+                0
+            } else {
+                self.resolve_symbol_cached(
+                    symbol_index,
+                    symbols,
+                    strtab,
+                    loaded,
+                    resolve,
+                    &mut cache,
+                )?
+            };
+            self.apply_relocation(&rela, loaded.base_address, loaded.size, value)?;
+        }
         Ok(())
     }
 
-    /// シンボルを読み取って解決する
-    fn read_and_resolve_symbol<F>(
-        &self,
-        sym_idx: usize,
-        symtab_sh: &Elf64SectionHeader,
-        strtab: &[u8],
-        loaded: &LoadedCell,
-        resolve: &F,
-    ) -> Result<usize, LoadError>
-    where
-        F: Fn(&str) -> Option<usize>,
-    {
-        let sym_offset = symtab_sh.sh_offset as usize + sym_idx * mem::size_of::<Elf64Symbol>();
-
-        if sym_offset + mem::size_of::<Elf64Symbol>() > self.data.len() {
-            return Err(LoadError::InvalidFormat(
-                "Symbol offset out of range".into(),
-            ));
-        }
-
-        let sym: Elf64Symbol = crate::util::read_struct(self.data, sym_offset)
-            .ok_or_else(|| LoadError::InvalidFormat("Failed to read symbol".into()))?;
-
-        if sym.st_shndx == 0 {
-            // ELF symbol index 0 (or unnamed undefined symbols) represent
-            // "no symbol" and must resolve to 0. This is common for
-            // R_X86_64_RELATIVE relocations.
-            if sym.st_name == 0 {
-                return Ok(0);
-            }
-            let name = self
-                .get_string(strtab, sym.st_name as usize)
-                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
-            if name.is_empty() {
-                return Ok(0);
-            }
-            resolve(name).ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))
-        } else {
-            Ok(loaded.base_address + sym.st_value as usize)
-        }
-    }
-
-    /// Resolve a symbol by index, caching the result for reuse.
     fn resolve_symbol_cached<F>(
         &self,
-        sym_idx: usize,
-        symtab_sh: &Elf64SectionHeader,
+        index: usize,
+        symbols: &[u8],
         strtab: &[u8],
         loaded: &LoadedCell,
         resolve: &F,
@@ -630,17 +711,39 @@ impl<'a> ElfLoader<'a> {
     where
         F: Fn(&str) -> Option<usize>,
     {
-        if let Some(val) = cache[sym_idx] {
-            return Ok(val);
+        let cached = cache.get_mut(index).ok_or_else(|| {
+            LoadError::RelocationFailed("Relocation symbol index outside table".into())
+        })?;
+        if let Some(value) = *cached {
+            return Ok(value);
         }
-
-        let resolved = self.read_and_resolve_symbol(sym_idx, symtab_sh, strtab, loaded, resolve)?;
-
-        cache[sym_idx] = Some(resolved);
-        Ok(resolved)
+        let record = symbols
+            .as_chunks::<{ mem::size_of::<Elf64Symbol>() }>()
+            .0
+            .get(index)
+            .ok_or_else(|| {
+                LoadError::RelocationFailed("Relocation symbol index outside table".into())
+            })?;
+        let sym: Elf64Symbol = crate::util::read_struct(record, 0)
+            .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol record".into()))?;
+        let value = if sym.st_shndx == 0 {
+            let name = self
+                .get_string(strtab, sym.st_name as usize)
+                .ok_or_else(|| LoadError::InvalidFormat("Invalid symbol name".into()))?;
+            if name.is_empty() {
+                0
+            } else {
+                resolve(name).ok_or_else(|| LoadError::UnresolvedDependency(name.to_string()))?
+            }
+        } else {
+            loaded
+                .base_address
+                .checked_add(sym.st_value as usize)
+                .ok_or_else(|| LoadError::RelocationFailed("Symbol address overflow".into()))?
+        };
+        *cached = Some(value);
+        Ok(value)
     }
-
-
 }
 
 // -----------------------------------------------------------------------------
@@ -648,64 +751,4 @@ impl<'a> ElfLoader<'a> {
 // -----------------------------------------------------------------------------
 
 #[cfg(test)]
-mod loader_tests {
-    use super::*;
-
-    /// Construct a loader with minimal header and empty data for testing.
-    fn dummy_loader() -> ElfLoader<'static> {
-        ElfLoader {
-            data: &[],
-            header: Elf64Header {
-                e_ident: [0; 16],
-                e_type: 0,
-                e_machine: 0,
-                e_version: 0,
-                e_entry: 0,
-                e_phoff: 0,
-                e_shoff: 0,
-                e_flags: 0,
-                e_ehsize: 0,
-                e_phentsize: 0,
-                e_phnum: 0,
-                e_shentsize: mem::size_of::<Elf64SectionHeader>() as u16,
-                e_shnum: 0,
-                e_shstrndx: 0,
-            },
-        }
-    }
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn symtab_overflow_does_not_panic() {
-        let loader = dummy_loader();
-
-        let mut exports = Vec::new();
-        let mut imports = Vec::new();
-
-        let huge_count = MAX_SYMBOLS + 100;
-        let fake_size = (huge_count as u64).saturating_mul(mem::size_of::<Elf64Symbol>() as u64);
-        let sh = Elf64SectionHeader {
-            sh_name: 0,
-            sh_type: SHT_SYMTAB,
-            sh_flags: 0,
-            sh_addr: 0,
-            sh_offset: 0,
-            sh_size: fake_size,
-            sh_link: 0,
-            sh_info: 0,
-            sh_addralign: 0,
-            sh_entsize: mem::size_of::<Elf64Symbol>() as u64,
-        };
-
-        let res = loader.process_symbol_table(&sh, &mut exports, &mut imports);
-        assert!(
-            res.is_ok()
-                || matches!(
-                    res,
-                    Err(LoadError::OutOfMemory) | Err(LoadError::InvalidFormat(_))
-                )
-        );
-        assert!(exports.is_empty());
-        assert!(imports.is_empty());
-    }
-}
+mod loader_tests;

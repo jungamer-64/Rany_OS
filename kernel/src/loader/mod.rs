@@ -415,6 +415,11 @@ impl core::fmt::Display for LoadError {
 }
 
 /// セルをロード（メインAPI）
+///
+/// # Errors
+/// Rejects signature/unsafe policy, malformed or incompatible metadata,
+/// unresolved imports and invalid image layout. Allocation or relocation errors
+/// prevent registry publication; a partially prepared image has no public CellId.
 pub fn load_cell(name: &str, elf_data: &[u8], allow_unsafe: bool) -> Result<CellId, LoadError> {
     // 1. 署名の検証
     let signature = signature::extract_signature(elf_data)?;
@@ -557,7 +562,7 @@ fn load_cell_with_flags(
     let cell_info = loader.parse()?;
 
     for import in &cell_info.imports {
-        if with_registry(|r| r.resolve_symbol(*import)).is_none() {
+        if with_registry(|r| r.resolve_symbol(import)).is_none() {
             return Err(LoadError::UnresolvedDependency((*import).to_string()));
         }
     }
