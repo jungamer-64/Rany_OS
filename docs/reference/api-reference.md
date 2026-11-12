@@ -380,7 +380,7 @@ submit_payload(payload).await?;
 - DNS は `DnsResponseView { payload, records }` を基準に、`DnsNameView` / `DnsTxtView` / `PayloadSpan` を使う packet-backed parser と cache を正規面にします。
 - IPv4 / IPv6 の timeout, unknown-protocol, fragment reassembly, quoted packet は packet-backed payload を前提に整理します。
 - IPv6 TX / fragment reassembly / quoted packet は scatter-gather と packet-backed payload を前提に整理します。
-- runtime / device / driver の TX callback も `PacketPayload` を正規送信単位とし、single-packet 専用 surface を正規面にしません。
+- runtime の device 境界は、生成 header と body（所有権を渡す `PacketPayload` または凍結した `RetainedPayload`）からなる frame を送信単位とし、driver へは DMA region の列として渡します。
 
 > [!IMPORTANT]
 > TCP を含む全経路で packet-backed payload を end-to-end に維持することは

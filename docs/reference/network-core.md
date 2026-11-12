@@ -53,7 +53,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 | packet-backed payload | packet ownership を保った送受信単位 | `PacketRef`, `PacketPayload` |
 | ownership-based buffering | queue / endpoint / protocol 層が payload 所有権を明示して受け渡す設計 | `net::l4::endpoint`, `net::datapath`, `kernel_api::resource::net` |
 | end-to-end zero-copy | driver -> protocol -> app まで packet ownership を維持する経路 | `Canonical target` |
-| adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::adaptive_polling`, runtime device control |
+| retained payload | 凍結した共有 payload。どの handle からも書き込めず、最後の handle と device region が返却されるまで内容を保つ | `RetainedPayload` |
+| adaptive polling | 低負荷では interrupt、高負荷では polling / hybrid へ切り替えるモデル | `net::datapath::optimization`, runtime device control |
 | batch processing | 複数 packet をまとめて処理する最適化 | `PacketBatch`, `BatchProcessor` |
 | scatter-gather | multi-buffer DMA / descriptor chaining による送受信 | `PacketPayload` と backing を保持する packet region による driver queue submission |
 
@@ -69,6 +70,9 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - packet の backing は最後の window が返却されるまで保持する。分割は可視領域に加えてアクセス可能な領域も分割し、resize・headroom 操作で他の window の範囲へ戻れないようにする。最後の返却は pool への再利用、または未完了の DMA を保持する退役 owner への移譲を行う。
 - `PacketRef` が安全に公開するのは初期化済みの可視領域だけとする。`data_capacity`、`headroom`、`tailroom` は別の数量であり、software growth が新たに可視化する byte は初期化してから公開する。
 - network TX の正規所有権単位は `PacketPayload` とし、byte-slice への統合を送信の前提にしない。
+- 送信後も内容を保持する必要がある payload は `RetainedPayload` に凍結する。凍結した payload は読み取り専用で、複製せずに追加の handle を保持できる。handle の分割は window だけを変える。
+- pool の RAM には packet の byte だけを置く。slot の header、参照数、回収先は通常の kernel memory に置き、IOMMU mapping を通して device から到達できないようにする。
+- pool は用途ごとに分ける。runtime は frame 用と生成 header 用の slot を持ち、RX buffer は port ごとの pool から供給する。pool は所有者の handle と貸出中の slot がなくなるまで存続する。
 
 ### 3.2 Normative: RX DMA authority と TX lease を分離する
 
@@ -76,11 +80,14 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - completion は device が書き終えた frame layout を検証して `ReceivedPacket` へ一方向に遷移する。frame length より後ろの tail は初期化済みデータとして公開しない。
 - driver の RX lease は投稿前、device 所有中、検証済み完了後を区別する。device 所有中の capsule を破棄しても packet を返却せず、framework の停止 owner が backing を保持する。CPU アクセスと返却には、対応する terminal completion または確認済みの queue 停止が必要となる。
 - ABI callback の cookie、instance、code lease は借用中および packet lease の返却完了まで保持する。停止後の返却失敗は同じ未消費 owner で再試行し、消費済みの失敗は再返却しない。
-- TX queue の受理は DMA read authority の取得を意味し、driver は buffer を参照しなくなった後に exactly-once completion を返す。拒否は buffer を一切保持していないことを意味する。descriptor visit は packet header を保持し、同期 completion による pool 再利用を visit の終了まで保留する。
-- port の mapping owner は packet window と独立に物理 backing を保持する。固定 pool は mapping を保ったまま window を再利用できる。動的 packet の header が返却されても、IOTLB の退役完了まで RAM を解放しない。translation の未完了状態は再投稿へ使わず、port の終了は owner を保持して `Busy` を返す。
-- TX lease は `Queued -> Submitting -> DeviceOwned -> Released(outcome)` の順序を持つ。同期 completion、重複 completion、reset を同じ state transition で扱い、caller 向け送信通知と DMA lease の解放を同一視しない。
-- completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別する。stop/reset で DMA authority の安全な失効を証明できない owner は再利用せず quarantine する。
-- device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP/IP はこの上限へ分割し、分割不能な RAW frame は未消費の payload owner を typed error で返す。
+- 送信単位は frame であり、生成した header packet と body からなる。body は所有権を渡す `PacketPayload` か、送信側が自分の handle を持ち続ける `RetainedPayload` である。所有権を渡す body は headroom があれば header をその場に前置する。
+- port が frame を受理すると、frame は device から見える region だけになる。所有 packet は region へ消費され、retained body は凍結済みなので、region が存在する間その byte へ書き込める CPU handle は存在しない。region は driver の exactly-once completion か port 停止の成功まで backing を pool へ返さない。送信側へ返却する owner はない。
+- 受理の成否が送信側への唯一の結果である。拒否は理由（interface 停止、port 不在、port 停止、lease 枯渇、descriptor 上限超過、lease 記憶域不足）と未変更の frame を返し、device access を一切残さない。
+- TX lease は port ごとの表が所有し、`Queued -> Submitting -> DeviceOwned -> 解放` の順序を持つ。submission 中に届いた同期 completion は `Submitting` に記録し、descriptor visit の終了時に適用する。completion はその port 自身の submit 済み lease にだけ有効で、他 port の lease、未 submit の lease、重複 completion は拒否する。
+- completion outcome は `Transmitted`、`NotTransmitted`、`OutcomeUnknown` を区別し、port ごとに計数する。port の停止は受理を閉じて未 submit の lease を解放し、driver が device access の終了を証明した後にだけ受理済みの lease を解放する。停止に失敗した port は lease を保持したまま再試行を待つ。
+- device が公開する `max_tx_segments` が descriptor fan-out の authority である。TCP は payload の segment 数をこの上限から header 用の 1 を引いた数に収める。上限を超える frame は、先頭の小さな body segment（合計 64 byte まで）を header packet の tailroom へ移して収め、それでも収まらなければ受理しない。
+- TX queue を複数持つ port は queue ごとに FIFO と worker を持つ。frame の flow hash が queue を選ぶため、同じ flow の frame と同じ datagram の fragment は submission 順を保つ。
+- port の mapping owner は packet window と独立に物理 backing を保持する。TX の mapping は device の読み取りだけを許可し、書き込みを許可するのはその port 自身の RX pool の mapping だけである。mapping は port の停止まで保持するため、device は送信した frame の backing を停止まで読み取れる。backing を保持するものが mapping だけになった場合は、mapping 表が閾値を超えた時点で退役させる。IOTLB の退役完了まで RAM を解放せず、translation の未完了状態は再投稿へ使わない。port の終了は owner を保持して `Busy` を返す。
 
 ### 3.3 Normative: adaptive polling は baseline の一部
 
@@ -110,9 +117,9 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
 - IPv4 / IPv6 の再構成では、各 fragment が受信 packet を保持する。そのため保持数を datagram あたり 64、reassembler 全体で 512 に制限し、上限を超える fragment はその datagram を破棄する。期限切れの回収は fragment の到着ではなく stack の周期処理で行い、先頭 fragment を受信済みの datagram ごとに Time Exceeded を返す。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
-- runtime / device / driver の TX 境界は `PacketRef` 単体ではなく `PacketPayload` を正規送信単位として扱う。
 - TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
-- TCP retransmit は同じ packet backing を `Ready` / `InFlight` 間で移動する。ACK が DMA completion より先に到着しても completion までは owner を保持し、未送信または outcome 不明の completion は再送可能な ownership へ戻す。
+- TCP の再送キューは segment を retained payload として ACK まで保持し、送信のたびに同じ backing の handle を渡す。キューに入った segment は sequence 空間を消費済みであり、送信が受理されなかった場合は再送タイマーが再試行する。ACK はキューの handle を直ちに解放し、device が読み取り中の backing は region が completion まで保持する。
+- socket の受信キュー（TCP、UDP、RAW）が保持する受信 payload は、segment 数を runtime 全体で 512 までとする。上限を超える payload はキューに入れない。port の RX pool は、IPv4 / IPv6 の再構成、TCP の out-of-order、socket 受信キューの各上限と、device へ投稿しておく予備を合わせた数の buffer を持ち、保持が受信を枯渇させないようにする。
 - TCP の challenge ACK と stateless RST の送信予約は kernel 全体の時間窓で制限する。共有実行資源への負荷を抑えるため、system uptime を基準に期間更新と予約を直列化し、packet の構築・送信拒否後も予約を消費済みとして扱う。
 - 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。
 - 送信窓 (SND.WND) は RFC 5961 の ACK 検証を通過したセグメントだけが、SND.WL1 / SND.WL2 より古くない場合に更新する。TS.Recent と SACK scoreboard も同じ検証の後で更新し、fast path も slow path と同じ timestamp admission を通す。

@@ -194,8 +194,9 @@ pub struct TxPacketSubmission<'a> {
 }
 impl<'a> TxPacketSubmission<'a> {
     /// # Safety
-    /// The runtime has published `lease_id` before calling the driver and keeps
-    /// every packet CPU-inaccessible until exactly-once DMA completion or proven
+    /// The runtime has published `lease_id` before calling the driver. Every
+    /// region comes from a consumed packet owner or a frozen payload, so no CPU
+    /// handle can write its bytes until exactly-once DMA completion or proven
     /// rejection. The driver may complete synchronously; regions retain backing
     /// until this descriptor visit ends. No DMA is authorized by addresses alone.
     ///
