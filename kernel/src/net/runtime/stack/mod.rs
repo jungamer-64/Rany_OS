@@ -284,8 +284,6 @@ pub struct NetworkStack {
     timeout_wheel: TimeoutWheel,
     /// Canonical device transmit boundary shared by every core-local stack.
     transmit_fn: TransmitFn,
-    /// Completion observer for the next frame, separate from DMA metadata.
-    pending_tx_completion_id: Option<u64>,
     /// Current timestamp (ticks)
     current_time: AtomicU64,
 }

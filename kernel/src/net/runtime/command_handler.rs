@@ -252,16 +252,10 @@ impl RuntimeCommandHandler {
             | query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetTcpConnections { .. },
             ) => self.handle_query_event_with_stack(runtime, query_event),
-            RuntimeCommand::Transport(
-                crate::net::runtime::command::TransportCommand::RawSend { command, reply },
-            ) => {
-                if let Some(completion_id) = command.completion_id() {
-                    let _ = crate::net::runtime::device::complete_tx_request_in(
-                        runtime,
-                        completion_id,
-                        Err("network stack unavailable"),
-                    );
-                }
+            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawSend {
+                reply,
+                ..
+            }) => {
                 crate::net::runtime::command::complete_command(
                     reply,
                     Err(EndpointError::ResourceExhausted),

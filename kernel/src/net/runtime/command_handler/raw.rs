@@ -27,40 +27,6 @@ fn finish_raw_send(
     handled
 }
 
-fn send_bool_with_tx_completion(
-    stack: &mut NetworkStack,
-    completion_id: Option<u64>,
-    send: impl FnOnce(&mut NetworkStack) -> bool,
-) -> bool {
-    match completion_id {
-        Some(completion_id) => stack.with_pending_tx_completion(completion_id, send),
-        None => send(stack),
-    }
-}
-
-fn send_result_with_tx_completion(
-    stack: &mut NetworkStack,
-    completion_id: Option<u64>,
-    send: impl FnOnce(&mut NetworkStack) -> Result<(), NetworkError>,
-) -> bool {
-    match completion_id {
-        Some(completion_id) => stack
-            .with_pending_tx_completion(completion_id, send)
-            .is_ok(),
-        None => send(stack).is_ok(),
-    }
-}
-
-fn complete_failed_tx(runtime: NetRuntimeHandle, completion_id: Option<u64>, reason: &'static str) {
-    if let Some(completion_id) = completion_id {
-        let _ = crate::net::runtime::device::complete_tx_request_in(
-            runtime,
-            completion_id,
-            Err(reason),
-        );
-    }
-}
-
 impl RuntimeCommandHandler {
     fn handle_raw_send_command(
         &self,

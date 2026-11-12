@@ -522,7 +522,6 @@ impl NetworkStack {
             reconciled_primary: None,
             timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             transmit_fn: crate::net::runtime::bridge::transmit_from_stack_in,
-            pending_tx_completion_id: None,
             current_time: AtomicU64::new(0),
         }
     }
@@ -590,17 +589,6 @@ impl NetworkStack {
         if let Some(stats) = self.interface_stats(if_id) {
             stats.record_dropped();
         }
-    }
-
-    pub fn with_pending_tx_completion<R>(
-        &mut self,
-        completion_id: u64,
-        f: impl FnOnce(&mut Self) -> R,
-    ) -> R {
-        let previous = self.pending_tx_completion_id.replace(completion_id);
-        let result = f(self);
-        self.pending_tx_completion_id = previous;
-        result
     }
 
     pub fn transmit_packet_on(

@@ -11,9 +11,7 @@ use crate::net::runtime::bridge::NetBridgeRuntimeState;
 use crate::net::runtime::command::{
     CommandAdmissionState, CommandReplyRegistry, RuntimeCommandQueue,
 };
-use crate::net::runtime::device::{
-    NetDeviceManager, TxCompletionState, TxLeaseState, TxOwnerGroupState,
-};
+use crate::net::runtime::device::NetDeviceManager;
 use crate::net::runtime::icmp::IcmpRuntimeState;
 use crate::net::runtime::manager::NetworkManager;
 use crate::net::runtime::stack::NetworkStack;
@@ -136,12 +134,6 @@ pub struct NetRuntimeContext {
     pub(crate) observability: NetObservability,
     pub(crate) arp_waiters: NeighborWaiters<4>,
     pub(crate) ndp_waiters: NeighborWaiters<16>,
-    pub(crate) tx_completion_next_id: AtomicU64,
-    pub(crate) tx_completions: PoisonRwLock<BTreeMap<u64, TxCompletionState>>,
-    pub(crate) tx_owner_group_next_id: AtomicU64,
-    pub(crate) tx_owner_groups: PoisonLock<BTreeMap<u64, TxOwnerGroupState>>,
-    pub(crate) tx_lease_next_id: AtomicU64,
-    pub(crate) tx_leases: PoisonLock<BTreeMap<kernel_api::netdev::TxLeaseId, TxLeaseState>>,
     pub(crate) packet_pool: Mempool,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
@@ -191,12 +183,6 @@ impl NetRuntimeContext {
             observability: NetObservability::new(),
             arp_waiters: NeighborWaiters::new(),
             ndp_waiters: NeighborWaiters::new(),
-            tx_completion_next_id: AtomicU64::new(1),
-            tx_completions: PoisonRwLock::new(BTreeMap::new()),
-            tx_owner_group_next_id: AtomicU64::new(1),
-            tx_owner_groups: PoisonLock::new(BTreeMap::new()),
-            tx_lease_next_id: AtomicU64::new(1),
-            tx_leases: PoisonLock::new(BTreeMap::new()),
             packet_pool,
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),

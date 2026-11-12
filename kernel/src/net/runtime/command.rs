@@ -85,23 +85,13 @@ pub(crate) enum RawSendCommand {
         dst: [u8; 4],
         transport: RawIpv4Transport,
         payload: PacketPayload,
-        completion_id: Option<u64>,
     },
     Ipv6 {
         scope: InterfaceScope,
         dst: [u8; 16],
         transport: RawIpv6Transport,
         payload: PacketPayload,
-        completion_id: Option<u64>,
     },
-}
-
-impl RawSendCommand {
-    pub(crate) const fn completion_id(&self) -> Option<u64> {
-        match self {
-            Self::Ipv4 { completion_id, .. } | Self::Ipv6 { completion_id, .. } => *completion_id,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -163,7 +153,6 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
                 ttl,
             },
             payload,
-            completion_id: None,
         },
     )
 }
@@ -188,7 +177,6 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
                 ttl,
             },
             payload,
-            completion_id: None,
         },
     )
 }

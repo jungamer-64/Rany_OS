@@ -9,8 +9,7 @@ use crate::sync::PoisonLock;
 use alloc::collections::{BTreeMap, VecDeque};
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
-use kernel_api::resource::net::PacketPayload;
-use kernel_api::service::netdev::TxDeviceOutcome;
+use kernel_api::resource::net::{PacketPayload, RetainedPayload};
 
 use super::segment::send_tcp_segment_payload_in;
 use super::tcb::TcpFlowKey;
@@ -20,12 +19,6 @@ use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::{tcp_runtime_in, tcp_table_in};
 
-#[derive(Debug)]
-pub enum RetransmitPayloadState {
-    Ready(PacketPayload),
-    InFlight { completion_id: u64, acked: bool },
-}
-
 /// 未確認セグメント（再送用）
 #[derive(Debug)]
 pub struct UnackedSegment {
@@ -33,8 +26,9 @@ pub struct UnackedSegment {
     pub seq: u32,
     /// TCP sequence space consumed by this segment body/control flags.
     pub seq_len: u32,
-    /// セグメントデータ（ヘッダ含む）
-    pub data: RetransmitPayloadState,
+    /// Segment bytes including the TCP header. Every transmission sends a
+    /// retained handle, so this owner stays here until the segment is ACKed.
+    pub data: RetainedPayload,
     /// 送信時刻（tick）
     pub send_tick: u64,
     /// 再送回数
@@ -143,7 +137,7 @@ impl RetransmitQueue {
         self.unacked.push_back(UnackedSegment {
             seq,
             seq_len,
-            data: RetransmitPayloadState::Ready(data),
+            data: data.into_retained(),
             send_tick: current_tick,
             retransmit_count: 0,
             is_retransmit: false,
@@ -164,11 +158,9 @@ impl RetransmitQueue {
             // セグメントの末尾まで確認されているか？
             if Self::seq_leq(seg_end, ack_num) {
                 acked_new_data = true;
-                if let RetransmitPayloadState::InFlight { acked, .. } = &mut seg.data {
-                    *acked = true;
+                let Some(seg) = self.unacked.pop_front() else {
                     break;
-                }
-                let seg = self.unacked.pop_front().unwrap();
+                };
                 // 再送でないセグメントのみRTTサンプルとして使用（Karnのアルゴリズム）
                 if !seg.is_retransmit {
                     let rtt = current_tick.saturating_sub(seg.send_tick);
@@ -190,7 +182,6 @@ impl RetransmitQueue {
         self.unacked
             .iter()
             .find(|seg| !seg.is_sacked)
-            .filter(|seg| matches!(seg.data, RetransmitPayloadState::Ready(_)))
             .filter(|seg| {
                 let elapsed = current_tick.saturating_sub(seg.send_tick);
                 elapsed >= self.rto_calc.get_rto()
@@ -222,41 +213,17 @@ impl RetransmitQueue {
         let Some(seg) = self.unacked.iter_mut().find(|seg| seg.seq == seq) else {
             return false;
         };
-        let (completion_id, _completion) =
-            crate::net::runtime::device::register_tx_completion_in(runtime);
-        register_tcp_tx_return_target(
-            runtime,
-            completion_id,
-            TcpFlowKey::new(if_id, local, remote),
-        );
-        let state = core::mem::replace(
-            &mut seg.data,
-            RetransmitPayloadState::InFlight {
-                completion_id,
-                acked: false,
-            },
-        );
-        let data = match state {
-            RetransmitPayloadState::Ready(data) => data,
-            other => {
-                unregister_tcp_tx_return_target(runtime, completion_id);
-                seg.data = other;
-                return false;
-            }
+        // The queue keeps its own handle; a rejected copy is simply released
+        // and the segment stays ready for the next transmission attempt.
+        let Ok(copy) = seg.data.try_retain() else {
+            return false;
         };
-        match send_tcp_segment_payload_in(runtime, if_id, local, remote, data, Some(completion_id))
-        {
-            Ok(()) => {
-                seg.send_tick = current_tick;
-                seg.is_retransmit = is_retransmit;
-                true
-            }
-            Err((_cause, payload)) => {
-                unregister_tcp_tx_return_target(runtime, completion_id);
-                seg.data = RetransmitPayloadState::Ready(payload);
-                false
-            }
+        if send_tcp_segment_payload_in(runtime, if_id, local, remote, copy).is_err() {
+            return false;
         }
+        seg.send_tick = current_tick;
+        seg.is_retransmit = is_retransmit;
+        true
     }
 
     /// 再送処理
@@ -273,7 +240,7 @@ impl RetransmitQueue {
         if let Some(seg) = self
             .unacked
             .iter_mut()
-            .find(|s| !s.is_sacked && matches!(s.data, RetransmitPayloadState::Ready(_)))
+            .find(|s| !s.is_sacked)
         {
             if seg.retransmit_count >= self.max_retries {
                 // 最大再送回数超過
@@ -319,7 +286,7 @@ impl RetransmitQueue {
         if let Some(seg) = self
             .unacked
             .iter_mut()
-            .find(|s| !s.is_sacked && matches!(s.data, RetransmitPayloadState::Ready(_)))
+            .find(|s| !s.is_sacked)
         {
             if seg.retransmit_count >= self.max_retries {
                 return RetransmitAttempt::MaxRetriesExceeded;
@@ -343,44 +310,6 @@ impl RetransmitQueue {
             };
         }
         RetransmitAttempt::NoReadySegment
-    }
-
-    fn complete_inflight(
-        &mut self,
-        completion_id: u64,
-        payload: PacketPayload,
-        _outcome: TxDeviceOutcome,
-        current_tick: u64,
-    ) {
-        let Some(index) = self.unacked.iter().position(|seg| {
-            matches!(
-                seg.data,
-                RetransmitPayloadState::InFlight {
-                    completion_id: in_flight_id,
-                    ..
-                } if in_flight_id == completion_id
-            )
-        }) else {
-            return;
-        };
-        let acked = matches!(
-            self.unacked[index].data,
-            RetransmitPayloadState::InFlight { acked: true, .. }
-        );
-        if acked {
-            let seg = self
-                .unacked
-                .remove(index)
-                .expect("in-flight segment index disappeared");
-            if !seg.is_retransmit {
-                let rtt = current_tick.saturating_sub(seg.send_tick);
-                if rtt > 0 {
-                    self.rto_calc.update(rtt);
-                }
-            }
-            return;
-        }
-        self.unacked[index].data = RetransmitPayloadState::Ready(payload);
     }
 
     /// キューが空かどうか
@@ -421,7 +350,6 @@ fn retransmit_shard_index(key: TcpFlowKey) -> usize {
 
 pub(crate) struct RetransmitRuntimeState {
     queues: [PoisonLock<BTreeMap<TcpFlowKey, RetransmitQueue>>; RETRANSMIT_SHARDS],
-    return_targets: PoisonLock<BTreeMap<u64, TcpFlowKey>>,
     timer_wheel: PoisonLock<Option<TimingWheel>>,
 }
 
@@ -429,7 +357,6 @@ impl RetransmitRuntimeState {
     pub(crate) const fn new() -> Self {
         Self {
             queues: [const { PoisonLock::new(BTreeMap::new()) }; RETRANSMIT_SHARDS],
-            return_targets: PoisonLock::new(BTreeMap::new()),
             timer_wheel: PoisonLock::new(None),
         }
     }
@@ -438,27 +365,6 @@ impl RetransmitRuntimeState {
         let mut timer_wheel = self.timer_wheel.lock().unwrap_or_else(|e| e.into_inner());
         *timer_wheel = Some(TimingWheel::new());
     }
-}
-
-fn register_tcp_tx_return_target(runtime: NetRuntimeHandle, completion_id: u64, key: TcpFlowKey) {
-    tcp_runtime_in(runtime)
-        .retransmit()
-        .return_targets
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(completion_id, key);
-}
-
-fn unregister_tcp_tx_return_target(
-    runtime: NetRuntimeHandle,
-    completion_id: u64,
-) -> Option<TcpFlowKey> {
-    tcp_runtime_in(runtime)
-        .retransmit()
-        .return_targets
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .remove(&completion_id)
 }
 
 /// タイミングホイールを初期化する
@@ -548,33 +454,6 @@ pub fn retransmit_queue_transmit_ready(
     queues
         .get_mut(&key)
         .is_some_and(|queue| queue.transmit_ready(runtime, if_id, local, remote, seq))
-}
-
-pub(crate) fn complete_tx_owner(
-    runtime: NetRuntimeHandle,
-    completion_id: u64,
-    payload: PacketPayload,
-    outcome: TxDeviceOutcome,
-) -> bool {
-    let Some(key) = unregister_tcp_tx_return_target(runtime, completion_id) else {
-        return false;
-    };
-    let idx = retransmit_shard_index(key);
-    let current_tick = tcp_table_in(runtime).current_tick.load(Ordering::Relaxed);
-    let state = tcp_runtime_in(runtime).retransmit();
-    let mut queues = state.queues[idx].lock().unwrap_or_else(|e| e.into_inner());
-    if let Some(queue) = queues.get_mut(&key) {
-        queue.complete_inflight(completion_id, payload, outcome, current_tick);
-        if queue.is_empty() {
-            queues.remove(&key);
-            cancel_retransmit_timer(runtime, key);
-        } else {
-            let deadline = current_tick + queue.get_rto();
-            schedule_retransmit_timer(runtime, key, deadline);
-        }
-        return true;
-    }
-    false
 }
 
 /// ACK受信時の再送キュー更新
