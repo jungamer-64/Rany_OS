@@ -974,6 +974,7 @@ pub fn register_port_in(
     }
     let runtime_handle = handle.runtime;
 
+    crate::net::runtime::bridge::register_stack_glue_interface_in(runtime, if_id);
     {
         let mut guard = device_manager_in(runtime)
             .write()

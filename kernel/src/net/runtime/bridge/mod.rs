@@ -16,6 +16,7 @@ use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonRwLock;
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::resource::net::PacketByteCount;
 
 extern crate alloc;
@@ -32,8 +33,33 @@ pub struct StackGlueInterfaceStats {
     pub initialized: bool,
 }
 
+/// Per-interface counters. Entries exist from port registration until the
+/// interface is removed; the datapath updates them under the shared lock.
+struct InterfaceCounters {
+    tx_packets: AtomicU64,
+    rx_packets: AtomicU64,
+}
+
+impl InterfaceCounters {
+    const fn new(tx_packets: u64, rx_packets: u64) -> Self {
+        Self {
+            tx_packets: AtomicU64::new(tx_packets),
+            rx_packets: AtomicU64::new(rx_packets),
+        }
+    }
+
+    fn snapshot(&self, if_id: NetIfId) -> StackGlueInterfaceStats {
+        StackGlueInterfaceStats {
+            if_id,
+            tx_packets: self.tx_packets.load(Ordering::Relaxed),
+            rx_packets: self.rx_packets.load(Ordering::Relaxed),
+            initialized: true,
+        }
+    }
+}
+
 pub(crate) struct NetBridgeRuntimeState {
-    if_stats: PoisonRwLock<BTreeMap<NetIfId, StackGlueInterfaceStats>>,
+    if_stats: PoisonRwLock<BTreeMap<NetIfId, InterfaceCounters>>,
 }
 
 impl NetBridgeRuntimeState {
@@ -48,48 +74,29 @@ fn runtime_state_for(runtime: NetRuntimeHandle) -> &'static NetBridgeRuntimeStat
     &runtime.context().bridge
 }
 
-fn ensure_stack_glue_if_state_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    let mut stats = runtime_state_for(runtime)
+/// Create the counters of a newly bound interface.
+pub(crate) fn register_stack_glue_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
+    runtime_state_for(runtime)
         .if_stats
         .write()
-        .unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
-        if_id,
-        tx_packets: 0,
-        rx_packets: 0,
-        initialized: false,
-    });
-    entry.initialized = true;
+        .unwrap_or_else(|e| e.into_inner())
+        .entry(if_id)
+        .or_insert(InterfaceCounters::new(0, 0));
 }
 
-fn record_stack_glue_if_tx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    let mut stats = runtime_state_for(runtime)
+fn count_interface_packet_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    counter: impl FnOnce(&InterfaceCounters) -> &AtomicU64,
+) {
+    if let Some(counters) = runtime_state_for(runtime)
         .if_stats
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
-        if_id,
-        tx_packets: 0,
-        rx_packets: 0,
-        initialized: true,
-    });
-    entry.tx_packets = entry.tx_packets.saturating_add(1);
-    entry.initialized = true;
-}
-
-fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    let mut stats = runtime_state_for(runtime)
-        .if_stats
-        .write()
-        .unwrap_or_else(|e| e.into_inner());
-    let entry = stats.entry(if_id).or_insert(StackGlueInterfaceStats {
-        if_id,
-        tx_packets: 0,
-        rx_packets: 0,
-        initialized: true,
-    });
-    entry.rx_packets = entry.rx_packets.saturating_add(1);
-    entry.initialized = true;
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(&if_id)
+    {
+        counter(counters).fetch_add(1, Ordering::Relaxed);
+    }
 }
 
 // ============================================================================
@@ -108,7 +115,7 @@ pub(crate) fn transmit_from_stack_in(
 
     match &admitted {
         Ok(()) => {
-            record_stack_glue_if_tx_in(runtime, if_id);
+            count_interface_packet_in(runtime, if_id, |counters| &counters.tx_packets);
             observability.counters().record_tx(frame_len);
             observability
                 .trace()
@@ -130,6 +137,9 @@ pub(crate) fn transmit_from_stack_in(
 // Receive Bridge
 // ============================================================================
 
+/// Deliver a received frame to the protocol runtime. `packet` exposes exactly
+/// the `header_size + payload_len` bytes the device wrote; `header_size` is a
+/// device-specific prefix that precedes the Ethernet frame.
 pub fn process_received_packet_zero_copy_for_interface_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -137,52 +147,44 @@ pub fn process_received_packet_zero_copy_for_interface_in(
     header_size: usize,
     payload_len: usize,
 ) {
+    let observability = observability_in(runtime);
     if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
-        observability_in(runtime).counters().record_drop();
+        observability.counters().record_drop();
         return;
     }
-    ensure_stack_glue_if_state_in(runtime, if_id);
-    let observability = observability_in(runtime);
+    if packet.len() != header_size.saturating_add(payload_len) {
+        observability.counters().record_drop();
+        return;
+    }
+    if let Some(header_size) = PacketByteCount::new(header_size)
+        && packet.try_advance(header_size).is_err()
+    {
+        observability.counters().record_drop();
+        return;
+    }
     observability.counters().record_rx(payload_len);
     observability
         .trace()
         .push(NetLayer::Driver, NetEventKind::Rx, "rx packet");
-    record_stack_glue_if_rx_in(runtime, if_id);
-
-    let Some(frame_len) = header_size.checked_add(payload_len) else {
-        return;
-    };
-    let Some(frame_len) = PacketByteCount::new(frame_len) else {
-        return;
-    };
-    if packet.try_resize(frame_len.get()).is_err() {
-        return;
-    }
-    if header_size > 0
-        && packet
-            .try_advance(PacketByteCount::new(header_size).expect("positive header size"))
-            .is_err()
-    {
-        return;
-    }
-
-    // NAT Inbound (omitted for brevity, assume similar fixes applied)
-    // Routing/Forwarding (omitted for brevity, assume similar fixes applied)
-
-    #[cfg(any(test, feature = "qemu-test-export"))]
-    {
-        // Example fix for FORWARD_EVENTS access
-        // let mut ev = FORWARD_EVENTS.write().unwrap_or_else(|e| e.into_inner());
-        // ev.push((route.if_id, dst));
-    }
+    count_interface_packet_in(runtime, if_id, |counters| &counters.rx_packets);
 
     compute_and_set_flow_hash(&mut packet);
-    let _ = crate::net::runtime::command::try_enqueue_command_from_isr_in(
+    if crate::net::runtime::command::try_enqueue_command_from_isr_in(
         runtime,
         crate::net::runtime::command::RuntimeCommand::Ingress(
             crate::net::runtime::command::IngressCommand::Packet { if_id, packet },
         ),
-    );
+    )
+    .is_err()
+    {
+        // The rejected command returns the packet to its pool when dropped.
+        observability.counters().record_drop();
+        observability.trace().push(
+            NetLayer::Driver,
+            NetEventKind::Error,
+            "rx command queue full",
+        );
+    }
 }
 
 fn compute_and_set_flow_hash(packet: &mut crate::net::datapath::mempool::PacketRef) {
@@ -319,7 +321,7 @@ pub fn get_stack_glue_stats_for_interface_in(
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .get(&if_id)
-        .copied()
+        .map(|counters| counters.snapshot(if_id))
 }
 
 pub fn list_stack_glue_stats_in(runtime: NetRuntimeHandle) -> Vec<StackGlueInterfaceStats> {
@@ -327,8 +329,8 @@ pub fn list_stack_glue_stats_in(runtime: NetRuntimeHandle) -> Vec<StackGlueInter
         .if_stats
         .read()
         .unwrap_or_else(|e| e.into_inner())
-        .values()
-        .copied()
+        .iter()
+        .map(|(if_id, counters)| counters.snapshot(*if_id))
         .collect()
 }
 
@@ -341,7 +343,12 @@ pub(crate) fn replace_stack_glue_interface_stats_in(
         .write()
         .unwrap_or_else(|e| e.into_inner());
     stats.clear();
-    stats.extend(restored.into_iter().map(|entry| (entry.if_id, entry)));
+    stats.extend(restored.into_iter().map(|entry| {
+        (
+            entry.if_id,
+            InterfaceCounters::new(entry.tx_packets, entry.rx_packets),
+        )
+    }));
 }
 
 pub(crate) fn remove_stack_glue_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
