@@ -1092,6 +1092,7 @@ impl NetworkStack {
         // Expire timed-out pending packets
         self.expire_arp_pending();
         self.expire_ndp_pending();
+        self.expire_fragment_reassembly(now);
 
         // Runtime-owned TCP timers/retransmits are driven from the endpoint event
         // task via the transport state's TCB table. The integrated stack keeps only generic
@@ -1198,6 +1199,31 @@ impl NetworkStack {
         let current_time = self.current_time.load(Ordering::Relaxed);
         for state in self.interfaces.values_mut() {
             state.ndp_pending_queue.expire(current_time);
+        }
+    }
+
+    /// Run the IPv4 and IPv6 reassembly timers on every interface. Datagrams
+    /// are reclaimed here even when no further fragment arrives, and each one
+    /// whose first fragment was received is reported to its source with a
+    /// Time Exceeded (fragment reassembly) message.
+    fn expire_fragment_reassembly(&mut self, now: u64) {
+        let mut expired_v4 = Vec::new();
+        let mut expired_v6 = Vec::new();
+        for (if_id, state) in self.interfaces.iter_mut() {
+            let (v4, v6) = state.expire_fragment_reassembly(now);
+            expired_v4.extend(v4.into_iter().map(|datagram| (*if_id, datagram)));
+            expired_v6.extend(v6.into_iter().map(|datagram| (*if_id, datagram)));
+        }
+        for (if_id, datagram) in expired_v4 {
+            self.send_icmp_time_exceeded_payload(
+                if_id,
+                datagram.source,
+                crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
+                datagram.quoted,
+            );
+        }
+        for (if_id, datagram) in expired_v6 {
+            self.send_icmpv6_time_exceeded_on(if_id, datagram.source, 1, datagram.quoted);
         }
     }
 

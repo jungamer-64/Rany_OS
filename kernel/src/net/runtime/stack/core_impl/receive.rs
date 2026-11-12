@@ -229,46 +229,17 @@ impl NetworkStack {
             Ipv6ProcessResult::FragmentPending => {
                 // Waiting for additional fragments.
             }
-            Ipv6ProcessResult::ReassemblyTimeout(src, _dst, unfragmentable, frag_header) => {
-                // RFC 8200: send ICMPv6 Time Exceeded (fragment reassembly timeout).
-                log::info!(
-                    "IPv6: Reassembly timeout for {} - sending ICMPv6 Time Exceeded",
-                    src
-                );
-
-                // Include fragment header in quoted payload so sender can match
-                // the Identification value.
-                let mut quoted = unfragmentable;
-                if let Some(fh) = frag_header {
-                    let Some(mut writer) = crate::net::payload::GeneratedPacketWriter::new(
-                        fh.len(),
-                        kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
-                    ) else {
-                        self.record_rx_error_on(ingress_if_id);
-                        return;
-                    };
-                    if writer.write_generated_bytes(&fh).is_none() {
-                        self.record_rx_error_on(ingress_if_id);
-                        return;
-                    }
-                    if let Some(fragment_header) = writer.finish() {
-                        let Ok(combined) = quoted.try_append(fragment_header) else {
-                            self.record_rx_error_on(ingress_if_id);
-                            return;
-                        };
-                        quoted = combined;
-                    } else {
-                        self.record_rx_error_on(ingress_if_id);
-                        return;
-                    }
-                }
-                self.send_icmpv6_time_exceeded_on(ingress_if_id, src, 1, quoted);
-            }
             Ipv6ProcessResult::ReassemblyError(err, src, _dst, quoted_packet) => match err {
                 crate::net::l3::ipv6::Ipv6ReassemblyError::Overlap => {
                     // RFC 8200 / RFC 5722: overlapping fragments are silently dropped.
                     log::warn!(
                         "IPv6: Fragment overlap from {} - discarding (RFC 8200)",
+                        src
+                    );
+                }
+                crate::net::l3::ipv6::Ipv6ReassemblyError::ResourceLimit => {
+                    log::warn!(
+                        "IPv6: Fragment budget exceeded by datagram from {} - discarding",
                         src
                     );
                 }

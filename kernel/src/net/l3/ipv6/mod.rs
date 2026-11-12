@@ -1164,6 +1164,9 @@ pub enum Ipv6ReassemblyError {
     /// Incomplete header chain in the first fragment (RFC 7112 Section 5)
     /// Discard datagram, send ICMPv6 Parameter Problem Code 0, pointer to Fragment Offset.
     IncompleteHeaderChain,
+    /// The datagram exceeded the per-datagram hole or fragment budget.
+    /// Discard datagram, no ICMP error.
+    ResourceLimit,
 }
 
 /// Result of IPv6 packet processing
@@ -1193,13 +1196,6 @@ pub enum Ipv6ProcessResult {
     Reassembled(kernel_api::resource::net::PacketPayload),
     /// Fragment received, reassembly in progress
     FragmentPending,
-    /// Reassembly timeout (src, dst, unfragmentable_part, fragment_header for ICMPv6)
-    ReassemblyTimeout(
-        Ipv6Address,
-        Ipv6Address,
-        kernel_api::resource::net::PacketPayload,
-        Option<[u8; 8]>,
-    ),
     /// Reassembly error (type, src, dst, unfragmentable_part + fragment_header)
     ReassemblyError(
         Ipv6ReassemblyError,

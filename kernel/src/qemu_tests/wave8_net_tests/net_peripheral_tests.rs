@@ -316,3 +316,23 @@ pub fn net_runtime_interface_topology_smoke() -> bool {
 pub async fn net_runtime_device_ownership_smoke() -> bool {
     crate::net::runtime::device::qemu_tests::device_ownership().await
 }
+
+pub fn net_peripheral_ipv4_fragment_count_limit_discards_datagram_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_fragment_count_limit_discards_datagram_smoke()
+}
+
+pub fn net_peripheral_ipv4_held_fragment_budget_bounds_reassembler_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_held_fragment_budget_bounds_reassembler_smoke()
+}
+
+pub fn net_peripheral_ipv4_reassembly_timer_reclaims_and_quotes_smoke() -> bool {
+    crate::net::qemu_tests::ipv4_reassembly_timer_reclaims_and_quotes_smoke()
+}
+
+pub fn net_peripheral_ipv6_fragment_count_limit_discards_datagram_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_fragment_count_limit_discards_datagram_smoke()
+}
+
+pub fn net_peripheral_ipv6_reassembly_timer_reclaims_and_quotes_smoke() -> bool {
+    crate::net::qemu_tests::ipv6_reassembly_timer_reclaims_and_quotes_smoke()
+}

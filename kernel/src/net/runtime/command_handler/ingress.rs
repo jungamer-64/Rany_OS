@@ -630,14 +630,6 @@ impl RuntimeCommandHandler {
                 );
             }
             crate::net::l3::ipv4::Ipv4ProcessResult::FragmentPending => {}
-            crate::net::l3::ipv4::Ipv4ProcessResult::ReassemblyTimeout(src, header_data) => {
-                stack.send_icmp_time_exceeded_payload(
-                    ingress_if_id,
-                    src,
-                    crate::net::l3::icmp::TimeExceededCode::FragmentReassemblyExceeded,
-                    header_data,
-                );
-            }
             crate::net::l3::ipv4::Ipv4ProcessResult::Dropped => {
                 if let Some(stats) = stack.interface_stats(ingress_if_id) {
                     stats.record_dropped();

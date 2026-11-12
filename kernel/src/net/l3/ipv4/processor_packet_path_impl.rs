@@ -118,16 +118,20 @@ impl Ipv4Processor {
             return Ipv4ProcessResult::Error;
         };
 
-        let (reassembled, expired) =
-            self.reassembler
-                .process_fragment(&header, header_packet, payload_packet, current_time);
-
-        if let Some(data) = reassembled {
-            Ipv4ProcessResult::Reassembled(data)
-        } else if let Some((src, header_data)) = expired.into_iter().next() {
-            Ipv4ProcessResult::ReassemblyTimeout(src, header_data)
-        } else {
-            Ipv4ProcessResult::FragmentPending
+        match self.reassembler.process_fragment(
+            &header,
+            header_packet,
+            payload_packet,
+            current_time,
+        ) {
+            Some(data) => Ipv4ProcessResult::Reassembled(data),
+            None => Ipv4ProcessResult::FragmentPending,
         }
+    }
+
+    /// Run the reassembly timer: discard expired datagrams and return the
+    /// ICMP Time Exceeded quotes for those whose first fragment arrived.
+    pub(crate) fn expire_reassembly(&mut self, current_time: u64) -> Vec<ExpiredDatagram> {
+        self.reassembler.expire(current_time)
     }
 }

@@ -393,6 +393,23 @@ impl InterfaceStackState {
     ) -> Ipv4ProcessResult {
         self.ipv4.process_owned_packet(packet, current_time)
     }
+
+    /// Run this interface's IPv4 and IPv6 reassembly timers.
+    pub(crate) fn expire_fragment_reassembly(
+        &mut self,
+        current_time: u64,
+    ) -> (
+        alloc::vec::Vec<crate::net::l3::ipv4::ExpiredDatagram>,
+        alloc::vec::Vec<crate::net::l3::ipv6::fragment::ExpiredIpv6Datagram>,
+    ) {
+        let expired_v4 = self.ipv4.expire_reassembly(current_time);
+        let expired_v6 = self
+            .ipv6
+            .as_mut()
+            .map(|ipv6| ipv6.expire_reassembly(current_time))
+            .unwrap_or_default();
+        (expired_v4, expired_v6)
+    }
 }
 
 /// NDP解決待ちパケットキュー

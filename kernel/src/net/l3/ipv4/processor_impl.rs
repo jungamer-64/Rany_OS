@@ -51,8 +51,6 @@ pub enum Ipv4ProcessResult {
     Reassembled(PacketPayload),
     /// Fragment received, reassembly in progress
     FragmentPending,
-    /// Reassembly timeout (source address and first fragment's header for ICMP)
-    ReassemblyTimeout(Ipv4Address, PacketPayload),
     /// Unknown protocol (RFC 792 Protocol Unreachable).
     UnknownProtocol(u8, Ipv4Address, Ipv4Address, PacketPayload),
     /// Dropped

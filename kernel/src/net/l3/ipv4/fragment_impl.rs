@@ -74,6 +74,13 @@ impl FragmentBuffer {
     /// Maximum number of holes allowed in the reassembly buffer
     pub const MAX_HOLES: usize = 64;
 
+    /// Maximum fragments retained for one datagram. Each fragment pins a
+    /// received packet buffer, so the bound is on owners rather than bytes:
+    /// without it, minimum-size fragments could hold thousands of buffers for
+    /// a single datagram. 64 covers a maximum-size datagram over a 1280-byte
+    /// path MTU.
+    pub const MAX_FRAGMENTS: usize = 64;
+
     /// Fragment timeout in milliseconds (RFC 1122 recommends 60-120 seconds)
     pub const TIMEOUT_MS: u64 = 60_000;
 
@@ -216,6 +223,13 @@ impl FragmentBuffer {
         }
 
         if fragment_len > 0 {
+            if self.segments.len() >= Self::MAX_FRAGMENTS {
+                log::warn!(
+                    "[NET-IPV4] Fragment count limit ({}) exceeded, dropping datagram",
+                    Self::MAX_FRAGMENTS
+                );
+                return false;
+            }
             self.segments.push(FragmentSegment {
                 offset: fragment_offset,
                 payload: payload_packet,
@@ -356,6 +370,13 @@ impl FragmentBuffer {
     }
 }
 
+/// A datagram discarded by the reassembly timer, with the quote that the
+/// ICMP Time Exceeded message returns to its source.
+pub(crate) struct ExpiredDatagram {
+    pub source: Ipv4Address,
+    pub quoted: PacketPayload,
+}
+
 /// IP fragment reassembler
 pub struct FragmentReassembler {
     /// Active fragment buffers, keyed by fragment key
@@ -389,6 +410,11 @@ impl FragmentReassembler {
     /// Prevents a single attacker from monopolizing the entire buffer pool.
     const MAX_BUFFERS_PER_SOURCE: usize = 16;
 
+    /// Maximum fragments retained across all datagrams. A fragment that would
+    /// exceed it discards its own datagram, so the received-buffer pool keeps
+    /// capacity for non-fragmented traffic while reassembly is under load.
+    pub const MAX_HELD_FRAGMENTS: usize = 512;
+
     /// Create a new fragment reassembler
     pub fn new(max_buffers: usize) -> Self {
         FragmentReassembler {
@@ -403,22 +429,26 @@ impl FragmentReassembler {
         &self.stats
     }
 
-    /// Process an incoming fragment
+    /// Incorporate one fragment and return the datagram once it is complete.
     ///
-    /// Returns (reassembled_packet, expired_buffers)
-    /// Evict expired reassembly buffers
-    /// Returns a list of (src, full_header_plus_payload_prefix) for buffers that had the first fragment
+    /// Expiry is not driven from here: buffers are reclaimed by [`Self::expire`]
+    /// on the stack's periodic timeout pass even when no further fragment
+    /// arrives.
     pub(crate) fn process_fragment(
         &mut self,
         header: &Ipv4Header,
         header_packet: PacketPayload,
         payload_packet: PacketPayload,
         current_time: u64,
-    ) -> (Option<PacketPayload>, Vec<(Ipv4Address, PacketPayload)>) {
-        let expired = self.evict_expired(current_time);
+    ) -> Option<PacketPayload> {
         self.stats.fragments_received = self.stats.fragments_received.saturating_add(1);
 
         let key = FragmentKey::from_header(header);
+        if self.held_fragments() >= Self::MAX_HELD_FRAGMENTS {
+            self.stats.dropped_limit = self.stats.dropped_limit.saturating_add(1);
+            self.buffers.remove(&key);
+            return None;
+        }
         if !self.buffers.contains_key(&key) {
             if self.buffers.len() >= self.max_buffers
                 || self
@@ -429,15 +459,13 @@ impl FragmentReassembler {
                     >= Self::MAX_BUFFERS_PER_SOURCE
             {
                 self.stats.dropped_limit = self.stats.dropped_limit.saturating_add(1);
-                return (None, expired);
+                return None;
             }
             self.buffers.insert(key, FragmentBuffer::new(current_time));
         }
 
         let accepted = {
-            let Some(buffer) = self.buffers.get_mut(&key) else {
-                return (None, expired);
-            };
+            let buffer = self.buffers.get_mut(&key)?;
             buffer.store_first_header_if_needed(header_packet, header.fragment_offset());
             buffer.add_fragment(header, payload_packet, current_time)
         };
@@ -445,31 +473,39 @@ impl FragmentReassembler {
         if !accepted {
             self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
             self.buffers.remove(&key);
-            return (None, expired);
+            return None;
         }
 
-        let is_complete = self
+        if !self
             .buffers
             .get(&key)
-            .map(FragmentBuffer::is_complete)
-            .unwrap_or(false);
-        if !is_complete {
-            return (None, expired);
+            .is_some_and(FragmentBuffer::is_complete)
+        {
+            return None;
         }
 
-        let Some(buffer) = self.buffers.remove(&key) else {
-            return (None, expired);
-        };
-        let reassembled = buffer.get_reassembled();
+        let reassembled = self.buffers.remove(&key)?.get_reassembled();
         if reassembled.is_some() {
             self.stats.reassembled = self.stats.reassembled.saturating_add(1);
         } else {
             self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
         }
-        (reassembled, expired)
+        reassembled
     }
 
-    pub(super) fn evict_expired(&mut self, current_time: u64) -> Vec<(Ipv4Address, PacketPayload)> {
+    fn held_fragments(&self) -> usize {
+        self.buffers
+            .values()
+            .map(|buffer| buffer.segments.len())
+            .sum()
+    }
+
+    /// Discard every datagram whose reassembly timer has run out.
+    ///
+    /// Each discarded datagram whose first fragment arrived yields the quote
+    /// for an ICMP Time Exceeded (code 1, RFC 792 / RFC 1122 Section 3.3.2):
+    /// the first fragment's header and the first 8 payload octets.
+    pub(crate) fn expire(&mut self, current_time: u64) -> Vec<ExpiredDatagram> {
         let mut expired_with_first = Vec::new();
         let mut expired_keys = Vec::new();
 
@@ -480,6 +516,7 @@ impl FragmentReassembler {
         }
 
         for key in expired_keys {
+            self.stats.timeouts = self.stats.timeouts.saturating_add(1);
             if let Some(buffer) = self.buffers.remove(&key)
                 && let Some(header) = buffer.first_header
             {
@@ -505,9 +542,11 @@ impl FragmentReassembler {
                     };
                     quoted = combined;
                 }
-                expired_with_first.push((key.src, quoted));
+                expired_with_first.push(ExpiredDatagram {
+                    source: key.src,
+                    quoted,
+                });
             }
-            self.stats.timeouts += 1;
         }
 
         expired_with_first

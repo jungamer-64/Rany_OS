@@ -74,6 +74,16 @@ impl Ipv6FragmentHeader {
         })
     }
 
+    /// Wire encoding of this Fragment header (reserved fields zero).
+    pub fn to_bytes(self) -> [u8; 8] {
+        let mut bytes = [0u8; 8];
+        bytes[0] = self.next_header;
+        let off_and_flags = (self.fragment_offset << 3) | u16::from(self.more_fragments);
+        bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
+        bytes[4..8].copy_from_slice(&self.identification.to_be_bytes());
+        bytes
+    }
+
     /// Fragment offset in bytes (multiply 8-octet units by 8)
     #[inline]
     pub fn offset_bytes(&self) -> u32 {
@@ -120,6 +130,16 @@ struct FragmentSegment {
     payload: PacketPayload,
 }
 
+/// Headers captured from the fragment at offset 0.
+struct FirstFragment {
+    /// Unfragmentable part: IPv6 fixed header and the extension headers that
+    /// precede the Fragment header.
+    unfragmentable: PacketPayload,
+    /// The 8-byte Fragment header, which ICMPv6 errors quote so the source
+    /// can identify the datagram (RFC 8200 Section 4.5).
+    fragment_header: [u8; 8],
+}
+
 pub struct Ipv6FragmentBuffer {
     /// Hole list (unfilled regions)
     holes: Vec<Hole>,
@@ -127,12 +147,8 @@ pub struct Ipv6FragmentBuffer {
     total_len: Option<u32>,
     /// Next Header value from the fragment header (upper-layer protocol)
     next_header: Option<u8>,
-    /// Unfragmentable part (IPv6 fixed header + pre-fragment extension headers)
-    /// captured from the first fragment (offset == 0).
-    unfragmentable_part: Option<PacketPayload>,
-    /// 8-byte Fragment Header captured from the first fragment (offset == 0).
-    /// RFC 8200: Required for ICMPv6 error messages to identify the datagram.
-    first_frag_header: Option<[u8; 8]>,
+    /// Present once the fragment at offset 0 has been accepted.
+    first: Option<FirstFragment>,
     /// Timestamp of first fragment arrival
     created_at: u64,
     /// Original fragment ownership chain used to rebuild a packet-backed result.
@@ -165,6 +181,11 @@ impl Ipv6FragmentBuffer {
     /// Maximum number of holes allowed in the reassembly buffer
     const MAX_HOLES: usize = 64;
 
+    /// Maximum fragments retained for one datagram. Each fragment pins a
+    /// received packet buffer; 64 covers a maximum-size datagram at the
+    /// IPv6 minimum link MTU of 1280 octets.
+    pub const MAX_FRAGMENTS: usize = 64;
+
     /// Timeout for reassembly (RFC 8200 recommends 60 seconds)
     const TIMEOUT_MS: u64 = 60_000;
 
@@ -176,8 +197,7 @@ impl Ipv6FragmentBuffer {
             }],
             total_len: None,
             next_header: None,
-            unfragmentable_part: None,
-            first_frag_header: None,
+            first: None,
             created_at: timestamp,
             segments: Vec::new(),
         }
@@ -230,7 +250,8 @@ impl Ipv6FragmentBuffer {
         // RFC 8200: Reassembled packet size check (Payload Length field is 16 bits)
         // Reassembled Payload Length = (unfragmentable_part_len - 40) + total_payload_len
         // This MUST NOT exceed 65,535 octets.
-        if let Some(unfrag) = &self.unfragmentable_part {
+        if let Some(first) = &self.first {
+            let unfrag = &first.unfragmentable;
             let reassembled_payload_len = unfrag.total_len().saturating_sub(40) + end as usize;
             if reassembled_payload_len > 65535 {
                 log::warn!(
@@ -311,7 +332,7 @@ impl Ipv6FragmentBuffer {
         }
 
         // Capture unfragmentable part and fragment header from the first fragment
-        if frag.fragment_offset == 0 && self.unfragmentable_part.is_none() {
+        if frag.fragment_offset == 0 && self.first.is_none() {
             // RFC 8200/7112: The first fragment (offset 0) MUST contain the entire header chain
             // (all extension headers + upper-layer header).
             let payload_view = PacketPayloadView::new(&payload_packet);
@@ -338,17 +359,10 @@ impl Ipv6FragmentBuffer {
             let Some(header_packet) = unfragmentable_packet else {
                 return Err(Ipv6ReassemblyError::InvalidSize);
             };
-            self.unfragmentable_part = Some(header_packet);
-
-            // Store the 8-byte fragment header for ICMPv6 error messages (RFC 8200)
-            let mut frag_bytes = [0u8; 8];
-            frag_bytes[0] = frag.next_header;
-            frag_bytes[1] = 0; // Reserved
-            let off_and_flags =
-                (frag.fragment_offset << 3) | (if frag.more_fragments { 0x01 } else { 0 });
-            frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
-            frag_bytes[4..8].copy_from_slice(&frag.identification.to_be_bytes());
-            self.first_frag_header = Some(frag_bytes);
+            self.first = Some(FirstFragment {
+                unfragmentable: header_packet,
+                fragment_header: frag.to_bytes(),
+            });
         }
 
         // Last fragment determines total length
@@ -357,6 +371,13 @@ impl Ipv6FragmentBuffer {
         }
 
         if payload_len > 0 {
+            if self.segments.len() >= Self::MAX_FRAGMENTS {
+                log::warn!(
+                    "[NET-IPV6] Fragment count limit ({}) exceeded, discarding datagram",
+                    Self::MAX_FRAGMENTS
+                );
+                return Err(Ipv6ReassemblyError::ResourceLimit);
+            }
             self.segments.push(FragmentSegment {
                 offset,
                 payload: payload_packet,
@@ -368,7 +389,7 @@ impl Ipv6FragmentBuffer {
 
         // Check for hole list exhaustion attack
         if self.holes.len() > Self::MAX_HOLES {
-            return Err(Ipv6ReassemblyError::Overlap);
+            return Err(Ipv6ReassemblyError::ResourceLimit);
         }
 
         self.trim_holes();
@@ -427,7 +448,7 @@ impl Ipv6FragmentBuffer {
 
         let total = self.total_len? as usize;
         let nh = self.next_header?;
-        let mut unfrag = self.unfragmentable_part?;
+        let mut unfrag = self.first?.unfragmentable;
         let unfrag_len = unfrag.total_len();
 
         // Check if reassembled length fits in IPv6 Payload Length field (16 bits)
@@ -516,10 +537,18 @@ impl Ipv6FragmentBuffer {
 // IPv6 Fragment Reassembler
 // =====================================================
 
+/// A datagram discarded by the reassembly timer, with the quote that the
+/// ICMPv6 Time Exceeded message returns to its source.
+pub struct ExpiredIpv6Datagram {
+    pub source: Ipv6Address,
+    pub quoted: PacketPayload,
+}
+
 /// IPv6 fragment reassembler.
 ///
-/// Manages concurrent reassembly buffers keyed by (src, dst, id).
-/// Expired buffers are evicted lazily on incoming fragments.
+/// Manages concurrent reassembly buffers keyed by (src, dst, id). Expired
+/// buffers are reclaimed by [`Self::expire`] from the stack's periodic
+/// timeout pass.
 pub struct Ipv6FragmentReassembler {
     buffers: BTreeMap<Ipv6FragmentKey, Ipv6FragmentBuffer>,
     max_buffers: usize,
@@ -549,6 +578,11 @@ impl Ipv6FragmentReassembler {
     /// Prevents a single attacker from monopolizing the entire buffer pool.
     const MAX_BUFFERS_PER_SOURCE: usize = 8;
 
+    /// Maximum fragments retained across all datagrams. A fragment that would
+    /// exceed it discards its own datagram, so the received-buffer pool keeps
+    /// capacity for non-fragmented traffic while reassembly is under load.
+    pub const MAX_HELD_FRAGMENTS: usize = 512;
+
     /// Create a new reassembler
     pub fn new(max_buffers: usize) -> Self {
         Self {
@@ -571,14 +605,15 @@ impl Ipv6FragmentReassembler {
         frag: &Ipv6FragmentHeader,
         frag_payload: PacketPayload,
         current_time: u64,
-    ) -> (
-        Result<Option<PacketPayload>, Ipv6ReassemblyError>,
-        Vec<(Ipv6Address, Ipv6Address, PacketPayload, Option<[u8; 8]>)>,
-    ) {
-        let expired = self.evict_expired(current_time);
+    ) -> Result<Option<PacketPayload>, Ipv6ReassemblyError> {
         self.stats.fragments_received = self.stats.fragments_received.saturating_add(1);
 
         let key = Ipv6FragmentKey::new(src, dst, frag.identification);
+        if self.held_fragments() >= Self::MAX_HELD_FRAGMENTS {
+            self.stats.dropped_limit = self.stats.dropped_limit.saturating_add(1);
+            self.buffers.remove(&key);
+            return Ok(None);
+        }
         if !self.buffers.contains_key(&key) {
             if self.buffers.len() >= self.max_buffers
                 || self
@@ -589,36 +624,31 @@ impl Ipv6FragmentReassembler {
                     >= Self::MAX_BUFFERS_PER_SOURCE
             {
                 self.stats.dropped_limit = self.stats.dropped_limit.saturating_add(1);
-                return (Ok(None), expired);
+                return Ok(None);
             }
             self.buffers
                 .insert(key, Ipv6FragmentBuffer::new(current_time));
         }
 
-        let add_result = {
-            let Some(buffer) = self.buffers.get_mut(&key) else {
-                return (Ok(None), expired);
-            };
-            buffer.add_fragment(unfragmentable, frag, frag_payload)
+        let Some(buffer) = self.buffers.get_mut(&key) else {
+            return Ok(None);
         };
-
-        if let Err(error) = add_result {
+        if let Err(error) = buffer.add_fragment(unfragmentable, frag, frag_payload) {
             self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
             self.buffers.remove(&key);
-            return (Err(error), expired);
+            return Err(error);
         }
 
-        let is_complete = self
+        if !self
             .buffers
             .get(&key)
-            .map(Ipv6FragmentBuffer::is_complete)
-            .unwrap_or(false);
-        if !is_complete {
-            return (Ok(None), expired);
+            .is_some_and(Ipv6FragmentBuffer::is_complete)
+        {
+            return Ok(None);
         }
 
         let Some(buffer) = self.buffers.remove(&key) else {
-            return (Ok(None), expired);
+            return Ok(None);
         };
         let reassembled = buffer.reassemble();
         if reassembled.is_some() {
@@ -626,71 +656,54 @@ impl Ipv6FragmentReassembler {
         } else {
             self.stats.dropped_invalid = self.stats.dropped_invalid.saturating_add(1);
         }
-        (Ok(reassembled), expired)
+        Ok(reassembled)
     }
 
-    /// Process an incoming IPv6 packet that contains a fragment header.
+    fn held_fragments(&self) -> usize {
+        self.buffers
+            .values()
+            .map(|buffer| buffer.segments.len())
+            .sum()
+    }
+
+    /// Discard every datagram whose reassembly timer has run out.
     ///
-    /// Returns (Result<reassembled_packet, error>, expired_buffers).
-    /// Evict expired reassembly buffers.
-    /// Returns a list of (src, dst, unfragmentable_part, fragment_header) for buffers that had the first fragment.
-    pub fn evict_expired(
-        &mut self,
-        current_time: u64,
-    ) -> Vec<(Ipv6Address, Ipv6Address, PacketPayload, Option<[u8; 8]>)> {
+    /// Each discarded datagram whose first fragment arrived yields the quote
+    /// for an ICMPv6 Time Exceeded (code 1, RFC 8200 Section 4.5): the
+    /// unfragmentable part followed by the first fragment's Fragment header.
+    pub fn expire(&mut self, current_time: u64) -> Vec<ExpiredIpv6Datagram> {
+        let expired_keys: Vec<Ipv6FragmentKey> = self
+            .buffers
+            .iter()
+            .filter(|(_, buffer)| buffer.is_expired(current_time))
+            .map(|(key, _)| *key)
+            .collect();
+
         let mut expired_with_first = Vec::new();
-        let mut keys_to_remove = Vec::new();
-
-        for (key, buf) in self.buffers.iter() {
-            if buf.is_expired(current_time) {
-                keys_to_remove.push(*key);
-            }
+        for key in expired_keys {
+            self.stats.timeouts = self.stats.timeouts.saturating_add(1);
+            let Some(first) = self.buffers.remove(&key).and_then(|buffer| buffer.first) else {
+                continue;
+            };
+            let Some(mut header_writer) =
+                GeneratedPacketWriter::new(first.fragment_header.len(), DEFAULT_PACKET_HEADROOM)
+            else {
+                continue;
+            };
+            let Some(fragment_header) = header_writer
+                .write_generated_bytes(&first.fragment_header)
+                .and_then(|()| header_writer.finish())
+            else {
+                continue;
+            };
+            let Ok(quoted) = first.unfragmentable.try_append(fragment_header) else {
+                continue;
+            };
+            expired_with_first.push(ExpiredIpv6Datagram {
+                source: key.src,
+                quoted,
+            });
         }
-
-        for key in keys_to_remove {
-            if let Some(buffer) = self.buffers.remove(&key)
-                && let Some(unfrag) = buffer.unfragmentable_part
-            {
-                let mut quoted = unfrag;
-                if let Some(fragment_header) = buffer.first_frag_header {
-                    if let Some(mut header_writer) =
-                        GeneratedPacketWriter::new(fragment_header.len(), DEFAULT_PACKET_HEADROOM)
-                        && header_writer
-                            .write_generated_bytes(&fragment_header)
-                            .is_some()
-                        && let Some(header_payload) = header_writer.finish()
-                    {
-                        let Ok(combined) = quoted.try_append(header_payload) else {
-                            continue;
-                        };
-                        quoted = combined;
-                    }
-                } else if let Some(segment) = buffer
-                    .segments
-                    .into_iter()
-                    .find(|segment| segment.offset == 0)
-                {
-                    let Some(bounds) =
-                        crate::net::payload::OwnedPayloadBounds::checked(&segment.payload, 0, 8)
-                    else {
-                        continue;
-                    };
-                    let Some(prefix) = bounds
-                        .take_from(segment.payload)
-                        .and_then(|window| window.into_payload().ok())
-                    else {
-                        continue;
-                    };
-                    let Ok(combined) = quoted.try_append(prefix) else {
-                        continue;
-                    };
-                    quoted = combined;
-                }
-                expired_with_first.push((key.src, key.dst, quoted, None));
-            }
-            self.stats.timeouts += 1;
-        }
-
         expired_with_first
     }
 

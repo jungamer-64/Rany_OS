@@ -14,6 +14,8 @@ mod tcp_retransmit_tests;
 pub use tcp_retransmit_tests::*;
 mod tcp_ooo_tests;
 pub use tcp_ooo_tests::*;
+mod fragment_tests;
+pub use fragment_tests::*;
 mod tcp_response_tests;
 pub use tcp_response_tests::*;
 mod snapshot_tests;

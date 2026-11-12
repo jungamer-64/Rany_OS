@@ -306,7 +306,7 @@ impl Ipv6Processor {
             return Ipv6ProcessResult::Error;
         };
 
-        let (result, expired) = self.reassembler.process_fragment(
+        let result = self.reassembler.process_fragment(
             src,
             dst,
             unfragmentable_payload,
@@ -317,29 +317,12 @@ impl Ipv6Processor {
 
         match result {
             Ok(Some(payload)) => Ipv6ProcessResult::Reassembled(payload),
-            Ok(None) => {
-                if let Some((expired_src, expired_dst, quoted, frag_header)) =
-                    expired.into_iter().next()
-                {
-                    Ipv6ProcessResult::ReassemblyTimeout(
-                        expired_src,
-                        expired_dst,
-                        quoted,
-                        frag_header,
-                    )
-                } else {
-                    Ipv6ProcessResult::FragmentPending
-                }
-            }
+            Ok(None) => Ipv6ProcessResult::FragmentPending,
             Err(error) => {
                 let quoted = quoted_unfragmentable;
-                let mut frag_bytes = [0u8; 8];
-                frag_bytes[0] = frag_header.next_header;
-                let off_and_flags = (frag_header.fragment_offset << 3)
-                    | if frag_header.more_fragments { 0x01 } else { 0 };
-                frag_bytes[2..4].copy_from_slice(&off_and_flags.to_be_bytes());
-                frag_bytes[4..8].copy_from_slice(&frag_header.identification.to_be_bytes());
-                let Some(frag_header_payload) = generated_ipv6_header_payload(&frag_bytes) else {
+                let Some(frag_header_payload) =
+                    generated_ipv6_header_payload(&frag_header.to_bytes())
+                else {
                     self.stats.record_header_error();
                     return Ipv6ProcessResult::Error;
                 };
@@ -350,6 +333,15 @@ impl Ipv6Processor {
                 Ipv6ProcessResult::ReassemblyError(error, src, dst, quoted)
             }
         }
+    }
+
+    /// Run the reassembly timer: discard expired datagrams and return the
+    /// ICMPv6 Time Exceeded quotes for those whose first fragment arrived.
+    pub(crate) fn expire_reassembly(
+        &mut self,
+        current_time: u64,
+    ) -> alloc::vec::Vec<super::fragment::ExpiredIpv6Datagram> {
+        self.reassembler.expire(current_time)
     }
 
     /// Check if a destination address is for this interface
