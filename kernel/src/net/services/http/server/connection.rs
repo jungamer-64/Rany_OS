@@ -244,7 +244,7 @@ pub(super) async fn handle_client(runtime: NetRuntimeHandle, mut client: TcpConn
         }
     }
 
-    let _ = client.close();
+    client.close();
 }
 
 async fn write_response(

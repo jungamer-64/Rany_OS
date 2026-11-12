@@ -1073,39 +1073,63 @@ impl TcbTable {
     }
 
     pub fn tick(&self, runtime: NetRuntimeHandle) {
+        use super::termination::{TcpTermination, finish_connection_in};
+
         let tick = self.current_tick.fetch_add(1, Ordering::Relaxed);
         if tick.is_multiple_of(100) {
             super::retransmit::check_retransmit_timeouts(runtime);
             self.check_zero_window_probes(runtime, tick);
-            self.scavenge_syn_received(tick);
-            self.scavenge_time_wait(tick);
-            self.scavenge_fin_wait_2(tick);
+            for removed in self.scavenge_syn_received(tick) {
+                finish_connection_in(runtime, removed, TcpTermination::TimedOut);
+            }
+            for removed in self.scavenge_time_wait(tick) {
+                finish_connection_in(runtime, removed, TcpTermination::Completed);
+            }
+            for removed in self.scavenge_fin_wait_2(tick) {
+                finish_connection_in(runtime, removed, TcpTermination::Completed);
+            }
         }
     }
 
-    fn scavenge_fin_wait_2(&self, current_tick: u64) {
-        const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
-        const MAX_SCAVENGE_FIN_WAIT_2: usize = 128;
+    /// Remove up to `limit` TCBs selected by `expired`, keeping the table
+    /// counters consistent. The removed TCBs are returned so that the caller
+    /// finishes them outside the table lock.
+    fn remove_expired(
+        &self,
+        limit: usize,
+        expired: impl Fn(&TcpControlBlock) -> bool,
+    ) -> Vec<TcpControlBlock> {
         let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
         let Some(entries) = guard.as_mut() else {
-            return;
+            return Vec::new();
         };
-        let mut to_remove: Vec<TcpFlowKey> = Vec::new();
-        for bucket_entry in entries.entries.iter() {
-            let entry = &bucket_entry.entry;
-            if entry.is_state(TcpConnectionState::FinWait2)
-                && current_tick.saturating_sub(entry.last_send_tick()) > FIN_WAIT_2_TIMEOUT_TICKS
-            {
-                to_remove.push(bucket_entry.key);
-                if to_remove.len() >= MAX_SCAVENGE_FIN_WAIT_2 {
-                    break;
+        let keys: Vec<TcpFlowKey> = entries
+            .entries
+            .iter()
+            .filter(|bucket_entry| expired(&bucket_entry.entry))
+            .map(|bucket_entry| bucket_entry.key)
+            .take(limit)
+            .collect();
+        let mut removed = Vec::with_capacity(keys.len());
+        for key in keys {
+            if let Some(entry) = entries.remove(key) {
+                self.total_count.fetch_sub(1, Ordering::Relaxed);
+                if entry.is_syn_received() {
+                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
                 }
+                removed.push(entry);
             }
         }
-        for key in to_remove {
-            entries.remove(key);
-            self.total_count.fetch_sub(1, Ordering::Relaxed);
-        }
+        removed
+    }
+
+    fn scavenge_fin_wait_2(&self, current_tick: u64) -> Vec<TcpControlBlock> {
+        const FIN_WAIT_2_TIMEOUT_TICKS: u64 = 60_000;
+        const MAX_SCAVENGE_FIN_WAIT_2: usize = 128;
+        self.remove_expired(MAX_SCAVENGE_FIN_WAIT_2, |entry| {
+            entry.is_state(TcpConnectionState::FinWait2)
+                && current_tick.saturating_sub(entry.last_send_tick()) > FIN_WAIT_2_TIMEOUT_TICKS
+        })
     }
 
     fn check_zero_window_probes(&self, runtime: NetRuntimeHandle, current_tick: u64) {
@@ -1168,31 +1192,16 @@ impl TcbTable {
         }
     }
 
-    fn scavenge_time_wait(&self, current_tick: u64) {
+    fn scavenge_time_wait(&self, current_tick: u64) -> Vec<TcpControlBlock> {
         const TIME_WAIT_TIMEOUT_TICKS: u64 = 240_000;
         const MAX_SCAVENGE_TIME_WAIT: usize = 256;
-        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(entries) = guard.as_mut() else {
-            return;
-        };
-        let mut to_remove: Vec<TcpFlowKey> = Vec::new();
-        for bucket_entry in entries.entries.iter() {
-            let entry = &bucket_entry.entry;
-            if entry.is_state(TcpConnectionState::TimeWait)
+        self.remove_expired(MAX_SCAVENGE_TIME_WAIT, |entry| {
+            entry.is_state(TcpConnectionState::TimeWait)
                 && current_tick.saturating_sub(entry.last_send_tick()) > TIME_WAIT_TIMEOUT_TICKS
-            {
-                to_remove.push(bucket_entry.key);
-                if to_remove.len() >= MAX_SCAVENGE_TIME_WAIT {
-                    break;
-                }
-            }
-        }
-        for key in to_remove {
-            entries.remove(key);
-        }
+        })
     }
 
-    fn scavenge_syn_received(&self, current_tick: u64) {
+    fn scavenge_syn_received(&self, current_tick: u64) -> Vec<TcpControlBlock> {
         // 通常のタイムアウト: 3秒
         const SYN_RECV_TIMEOUT_TICKS: u64 = 3000;
         // 圧迫時のタイムアウト: 500ms
@@ -1200,7 +1209,7 @@ impl TcbTable {
 
         let count = self.syn_recv_count.load(Ordering::Relaxed);
         if count < MAX_SYN_RECEIVED_ENTRIES / 4 {
-            return;
+            return Vec::new();
         }
 
         // 負荷に応じてタイムアウトを短縮し、1回のスキャンで消去する数を増やす
@@ -1210,31 +1219,9 @@ impl TcbTable {
             (SYN_RECV_TIMEOUT_TICKS, 8) // 低・中負荷時
         };
 
-        let mut guard = self.storage.lock().unwrap_or_else(|e| e.into_inner());
-        let Some(entries) = guard.as_mut() else {
-            return;
-        };
-        let mut to_remove: alloc::vec::Vec<TcpFlowKey> =
-            alloc::vec::Vec::with_capacity(max_per_shard);
-        for bucket_entry in entries.entries.iter() {
-            let entry = &bucket_entry.entry;
-            if entry.is_syn_received()
-                && current_tick.saturating_sub(entry.last_send_tick()) > timeout
-            {
-                to_remove.push(bucket_entry.key);
-                if to_remove.len() >= max_per_shard {
-                    break;
-                }
-            }
-        }
-        for key in to_remove {
-            if let Some(entry) = entries.remove(key) {
-                self.total_count.fetch_sub(1, Ordering::Relaxed);
-                if entry.is_syn_received() {
-                    self.syn_recv_count.fetch_sub(1, Ordering::Relaxed);
-                }
-            }
-        }
+        self.remove_expired(max_per_shard, |entry| {
+            entry.is_syn_received() && current_tick.saturating_sub(entry.last_send_tick()) > timeout
+        })
     }
 
     pub fn get_current_tick(&self) -> u64 {
@@ -1601,17 +1588,6 @@ impl TcbTable {
         })
         .then_some(())?;
         failed_socket
-    }
-
-    pub(in crate::net::l4::tcp) fn close_for_reset(
-        &self,
-        if_id: NetIfId,
-        local: EndpointAddr,
-        remote: EndpointAddr,
-    ) -> bool {
-        self.mutate_entry(if_id, local, remote, |entry| {
-            entry.state = TcpTcbState::Closed;
-        })
     }
 
     /// Process an acceptable ACK and the close-state transitions it completes
@@ -2081,6 +2057,57 @@ pub mod tests {
             })
             .expect("closing tcb state");
         assert_eq!(state, TcpConnectionState::Closing);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub fn test_tcp_time_wait_expiry_hands_out_the_removed_tcb() {
+        let table = TcbTable::new();
+        let (local, remote) = test_endpoints();
+        let socket_id = SocketId::from_raw(6);
+        table
+            .insert(TcpControlBlock::start_connect(
+                socket_id, local, remote, 9000, false, TEST_IF,
+            ))
+            .expect("insert syn-sent tcb");
+        assert!(table.mark_syn_sent(TEST_IF, local, remote));
+        assert!(table.establish_from_syn_ack(
+            TEST_IF,
+            local,
+            remote,
+            ack_segment(4000, 9001, 65535),
+            TcpHandshakeOptions::default(),
+        ));
+        table
+            .begin_close(TEST_IF, local, remote)
+            .expect("established connection sends FIN");
+        let (remove, _) = table
+            .record_ack_and_close_progress(
+                TEST_IF,
+                local,
+                remote,
+                ack_segment(4001, 9002, 65535),
+                5,
+            )
+            .expect("FIN acknowledged");
+        assert!(!remove);
+        table
+            .record_fin_received(TEST_IF, local, remote, 4001, 10)
+            .expect("peer FIN in FIN-WAIT-2");
+        assert_eq!(
+            snapshot(&table, local, remote).state,
+            TcpConnectionState::TimeWait
+        );
+
+        assert!(table.scavenge_time_wait(10 + 240_000).is_empty());
+        let removed = table.scavenge_time_wait(10 + 240_001);
+        assert_eq!(removed.len(), 1);
+        assert_eq!(
+            TcpControlBlockSnapshot::from(&removed[0]).socket_id,
+            socket_id
+        );
+        assert!(table.read(TEST_IF, local, remote, |_| ()).is_none());
+        assert_eq!(table.total_count.load(Ordering::Relaxed), 0);
     }
 
     fn established_passive(

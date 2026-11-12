@@ -5,8 +5,7 @@ use super::device_registration::{
     unregister_nvme_namespace_for_current_subject,
 };
 use super::net::{
-    close_socket_handle, endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_socket,
-    stack_scope, tcp_error_to_kapi,
+    endpoint_addr_from_kapi, endpoint_error_to_kapi, lookup_socket, stack_scope, tcp_error_to_kapi,
 };
 use super::*;
 use kernel_api::abi::driver::{
@@ -247,16 +246,22 @@ impl KernelServices for KernelServiceHost {
         &self,
         stream: kernel_api::resource::net::TcpConnection,
     ) -> Result<(), KapiError> {
-        close_socket_handle(crate::net::l4::types::SocketId::from_raw(stream.id() as u32))
+        let socket = lookup_socket(crate::net::l4::types::SocketId::from_raw(stream.id() as u32))?;
+        crate::net::l4::tcp::TcpConnection::from_retained_socket(socket).close();
+        Ok(())
     }
 
     fn net_tcp_acceptor_close(
         &self,
         listener: kernel_api::resource::net::TcpAcceptor,
     ) -> Result<(), KapiError> {
-        close_socket_handle(crate::net::l4::types::SocketId::from_raw(
+        let socket = lookup_socket(crate::net::l4::types::SocketId::from_raw(
             listener.id() as u32
-        ))
+        ))?;
+        // The retained handle owns the listener; reclaiming it as an owning
+        // acceptor and dropping it releases the listener.
+        drop(crate::net::l4::tcp::TcpAcceptor::from_socket(socket));
+        Ok(())
     }
 
     fn net_tcp_connection_recv_payload(

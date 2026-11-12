@@ -280,11 +280,11 @@ impl HttpClient {
             send_over_plain_transport(&mut connection, request_payload, &mut parser).await?
         };
 
-        if let Some(response) = response {
-            return Ok(response);
+        connection.close();
+        match response {
+            Some(response) => Ok(response),
+            None => finalize_response_after_eof(&mut parser),
         }
-
-        finalize_response_after_eof(&mut parser)
     }
 }
 

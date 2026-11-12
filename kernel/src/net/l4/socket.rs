@@ -13,7 +13,7 @@ use crate::net::types::InterfaceScope;
 
 pub(crate) use self::entry::Socket;
 pub(crate) use self::registry::SocketRegistry;
-pub(crate) use self::state::TcpSocketState;
+pub(crate) use self::state::{TcpCloseRequest, TcpConnectionEnd, TcpSocketState};
 
 pub(crate) const DEFAULT_TCP_ACCEPT_BACKLOG: usize = self::state::SocketState::DEFAULT_BACKLOG;
 

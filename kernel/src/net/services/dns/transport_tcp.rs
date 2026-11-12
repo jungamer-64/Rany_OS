@@ -181,6 +181,7 @@ impl DnsClient {
             Ok(None) => return Err((name, "TCP read incomplete message")),
             Err(err) => return Err((name, err)),
         };
+        connection.close();
 
         let tick = crate::task::current_tick();
         match self.parse_response_payload_for_name(msg_data, tick, &name, qtype) {

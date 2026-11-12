@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::l4::socket::{Socket, TcpSocketState};
+use crate::net::l4::socket::{Socket, TcpCloseRequest, TcpSocketState};
 use crate::net::l4::types::{EndpointError, SocketId};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
@@ -46,13 +46,14 @@ impl TcpPayloadSendError {
     }
 }
 
-fn tcp_error_from_socket(error: EndpointError) -> TcpError {
+pub(crate) fn tcp_error_from_endpoint(error: EndpointError) -> TcpError {
     match error {
         EndpointError::NotConnected => TcpError::ConnectionClosed,
         EndpointError::ConnectionRefused => TcpError::ConnectionRefused,
+        EndpointError::ConnectionReset => TcpError::ConnectionReset,
         EndpointError::Timeout => TcpError::Timeout,
         EndpointError::Timer(cause) => TcpError::Timer(cause),
-        EndpointError::AddressInUse => TcpError::AddressInUse,
+        EndpointError::AddressInUse | EndpointError::PortInUse => TcpError::AddressInUse,
         EndpointError::BufferFull => TcpError::BufferFull,
         EndpointError::NetworkUnreachable => TcpError::NetworkUnreachable,
         EndpointError::PermissionDenied => TcpError::PermissionDenied,
@@ -78,44 +79,23 @@ fn on_recv_progress(runtime: NetRuntimeHandle, socket_id: SocketId, len: usize) 
     let _ = tcp_table_in(runtime).record_data_consumed_by_socket_id(socket_id, len as u32);
 }
 
-fn close_socket_abortively_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
-    let _ = tcp_table_in(runtime).remove_by_socket_id(socket_id);
-    if let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, socket_id) {
-        let _ = socket.with_inner_mut(|inner| {
-            inner.mark_closed();
-            inner.recv_waker.wake();
-            inner.send_waker.wake();
-            inner.connect_waker.wake();
-            inner.accept_waker.wake();
-        });
-    }
-    let _ = crate::net::l4::socket::unregister_socket_in(runtime, socket_id);
-}
-
-fn try_enqueue_close_socket_in(
+/// Hand a transport command to the runtime, running it in this context when
+/// the command queue rejects it, so that a handle-originated request is never
+/// lost.
+fn submit_transport_command_in(
     runtime: NetRuntimeHandle,
-    socket_id: SocketId,
-) -> Result<(), TcpError> {
-    try_enqueue_command_in(
-        runtime,
-        RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
-        ),
-    )
-    .map_err(|_| TcpError::BufferFull)
+    command: crate::net::runtime::command::TransportCommand,
+) {
+    if let Err(command) = try_enqueue_command_in(runtime, RuntimeCommand::Transport(command)) {
+        let _ = crate::net::runtime::command_handler::drive_command_in(runtime, command);
+    }
 }
 
 fn trigger_tcp_data_ready_in(runtime: NetRuntimeHandle, socket_id: SocketId) {
-    if try_enqueue_command_in(
+    submit_transport_command_in(
         runtime,
-        RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
-        ),
-    )
-    .is_err()
-    {
-        let _ = crate::net::runtime::command_handler::drive_tcp_data_ready_in(runtime, socket_id);
-    }
+        crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+    );
 }
 
 fn socket_inner_stats(socket: &Socket) -> TcpStats {
@@ -255,10 +235,24 @@ impl Future for TcpAcceptorBindDispatchFuture {
     }
 }
 
+/// Whether a handle value owns its socket or views a socket retained by a
+/// kernel resource handle, whose own close releases it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HandleRole {
+    Owner,
+    RetainedView,
+}
+
+/// An application handle on a TCP connection.
+///
+/// `close` releases the connection gracefully: queued data and the FIN are
+/// sent, and the runtime unregisters the socket when the TCB ends. Dropping an
+/// owning handle without `close` aborts the connection (RFC 9293 Section
+/// 3.10.5), resetting the peer where the connection is synchronized.
 pub struct TcpConnection {
     socket: Socket,
     runtime: NetRuntimeHandle,
-    close_on_drop: bool,
+    role: HandleRole,
 }
 
 impl core::fmt::Debug for TcpConnection {
@@ -277,7 +271,7 @@ impl TcpConnection {
         Self {
             runtime: socket.runtime(),
             socket,
-            close_on_drop: true,
+            role: HandleRole::Owner,
         }
     }
 
@@ -286,12 +280,12 @@ impl TcpConnection {
         Self {
             runtime: socket.runtime(),
             socket,
-            close_on_drop: false,
+            role: HandleRole::RetainedView,
         }
     }
 
     pub(crate) fn into_retained_handle(mut self) -> SocketId {
-        self.close_on_drop = false;
+        self.role = HandleRole::RetainedView;
         self.socket.socket_id()
     }
 
@@ -425,37 +419,47 @@ impl TcpConnection {
         DrainTxFuture { connection: self }.await
     }
 
-    pub fn close(&mut self) -> Result<(), TcpError> {
-        self.socket
-            .with_inner_mut(|inner| match inner.tcp_state() {
-                Some(TcpSocketState::Closed | TcpSocketState::Closing) => Ok(()),
-                Some(TcpSocketState::Connected | TcpSocketState::Connecting) => {
-                    let _ = inner.set_tcp_state(TcpSocketState::Closing);
-                    Ok(())
-                }
-                _ => Err(TcpError::InvalidState),
-            })
-            .unwrap_or(Err(TcpError::InvalidState))?;
-
-        try_enqueue_close_socket_in(self.runtime, self.socket.socket_id())?;
-        Ok(())
+    /// Release the connection gracefully, through the owning handle or the
+    /// view of a retained kernel handle being closed. Finishing the socket
+    /// passes to the runtime; a connection that already ended is released
+    /// here, and one still in its handshake is aborted.
+    pub fn close(self) {
+        let this = core::mem::ManuallyDrop::new(self);
+        let runtime = this.runtime;
+        let socket_id = this.socket.socket_id();
+        let request = this
+            .socket
+            .with_inner_mut(|inner| inner.request_tcp_close())
+            .unwrap_or(TcpCloseRequest::Release);
+        match request {
+            TcpCloseRequest::Graceful => submit_transport_command_in(
+                runtime,
+                crate::net::runtime::command::TransportCommand::CloseSocket { socket_id },
+            ),
+            TcpCloseRequest::Release => {
+                let _ = crate::net::l4::socket::unregister_socket_in(runtime, socket_id);
+            }
+            TcpCloseRequest::Abort => {
+                super::termination::abort_connection_handle_in(runtime, socket_id);
+            }
+        }
     }
 }
 
 impl Drop for TcpConnection {
     fn drop(&mut self) {
-        if !self.close_on_drop {
-            return;
+        if self.role == HandleRole::Owner {
+            super::termination::abort_connection_handle_in(self.runtime, self.socket.socket_id());
         }
-
-        close_socket_abortively_in(self.runtime, self.socket.socket_id());
     }
 }
 
+/// An application handle on a TCP listener. Dropping the owning handle
+/// releases the listener and aborts the connections it has not handed out.
 pub struct TcpAcceptor {
     socket: Socket,
     runtime: NetRuntimeHandle,
-    close_on_drop: bool,
+    role: HandleRole,
 }
 
 impl core::fmt::Debug for TcpAcceptor {
@@ -473,7 +477,7 @@ impl TcpAcceptor {
         Self {
             runtime: socket.runtime(),
             socket,
-            close_on_drop: true,
+            role: HandleRole::Owner,
         }
     }
 
@@ -482,12 +486,12 @@ impl TcpAcceptor {
         Self {
             runtime: socket.runtime(),
             socket,
-            close_on_drop: false,
+            role: HandleRole::RetainedView,
         }
     }
 
     pub(crate) fn into_retained_handle(mut self) -> SocketId {
-        self.close_on_drop = false;
+        self.role = HandleRole::RetainedView;
         self.socket.socket_id()
     }
 
@@ -527,11 +531,9 @@ impl TcpAcceptor {
 
 impl Drop for TcpAcceptor {
     fn drop(&mut self) {
-        if !self.close_on_drop {
-            return;
+        if self.role == HandleRole::Owner {
+            super::termination::close_listener_in(self.runtime, self.socket.socket_id());
         }
-
-        close_socket_abortively_in(self.runtime, self.socket.socket_id());
     }
 }
 
@@ -548,7 +550,7 @@ impl<'a> Future for ConnectFuture<'a> {
             .socket
             .with_inner_mut(|inner| {
                 if let Some(err) = inner.last_error.take() {
-                    return Poll::Ready(Err(tcp_error_from_socket(err)));
+                    return Poll::Ready(Err(tcp_error_from_endpoint(err)));
                 }
 
                 match inner.tcp_state() {
@@ -580,12 +582,11 @@ impl<'a> Future for ConnectTimeoutFuture<'a> {
         let this = self.get_mut();
         let now = crate::time::precise_time_nanos() / 1000;
         let timeout = now.saturating_sub(this.start_us) >= this.timeout_us;
-        let outcome = this
-            .connection
+        this.connection
             .socket
             .with_inner_mut(|inner| {
                 if let Some(err) = inner.last_error.take() {
-                    return Poll::Ready(Err(tcp_error_from_socket(err)));
+                    return Poll::Ready(Err(tcp_error_from_endpoint(err)));
                 }
 
                 match inner.tcp_state() {
@@ -603,12 +604,7 @@ impl<'a> Future for ConnectTimeoutFuture<'a> {
                     _ => Poll::Ready(Err(TcpError::InvalidState)),
                 }
             })
-            .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)));
-
-        if matches!(outcome, Poll::Ready(Err(TcpError::Timeout))) {
-            close_socket_abortively_in(this.connection.runtime, this.connection.socket.socket_id());
-        }
-        outcome
+            .unwrap_or(Poll::Ready(Err(TcpError::InvalidState)))
     }
 }
 
@@ -628,7 +624,7 @@ impl<'a> Future for AcceptFuture<'a> {
                 self.acceptor.socket.register_accept_waker(cx.waker());
                 Poll::Pending
             }
-            Err(err) => Poll::Ready(Err(tcp_error_from_socket(err))),
+            Err(err) => Poll::Ready(Err(tcp_error_from_endpoint(err))),
         }
     }
 }
@@ -676,7 +672,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
                 .socket
                 .with_inner_mut(|inner| {
                     if let Some(err) = inner.last_error.take() {
-                        return SendOutcome::Ready(tcp_error_from_socket(err));
+                        return SendOutcome::Ready(tcp_error_from_endpoint(err));
                     }
 
                     if inner.is_tcp_closing_or_closed() {
@@ -722,7 +718,7 @@ impl<'a> Future for SendPayloadFuture<'a> {
                         }
                         Err((err, payload)) => {
                             owner = Some(payload);
-                            SendOutcome::Ready(tcp_error_from_socket(err))
+                            SendOutcome::Ready(tcp_error_from_endpoint(err))
                         }
                     }
                 })
@@ -768,7 +764,7 @@ impl<'a> Future for DrainTxFuture<'a> {
         let this = self.get_mut();
         let has_send_data = match this.connection.socket.with_inner_mut(|inner| {
             if let Some(err) = inner.last_error.take() {
-                return Err(tcp_error_from_socket(err));
+                return Err(tcp_error_from_endpoint(err));
             }
 
             if !inner.has_send_data() {

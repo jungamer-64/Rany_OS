@@ -433,6 +433,7 @@ fn socket_error_to_network(err: EndpointError) -> NetworkError {
         | EndpointError::NotFound
         | EndpointError::AlreadyConnected
         | EndpointError::ConnectionRefused
+        | EndpointError::ConnectionReset
         | EndpointError::Interrupted => NetworkError::Unknown,
     }
 }

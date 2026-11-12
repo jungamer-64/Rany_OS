@@ -41,23 +41,6 @@ pub(super) fn endpoint_error_from_network(error: crate::net::types::NetworkError
 }
 
 #[inline]
-pub(super) fn tcp_error_from_endpoint_error(error: EndpointError) -> crate::net::l4::tcp::TcpError {
-    match error {
-        EndpointError::NotConnected => crate::net::l4::tcp::TcpError::ConnectionClosed,
-        EndpointError::ConnectionRefused => crate::net::l4::tcp::TcpError::ConnectionRefused,
-        EndpointError::Timeout => crate::net::l4::tcp::TcpError::Timeout,
-        EndpointError::Timer(cause) => crate::net::l4::tcp::TcpError::Timer(cause),
-        EndpointError::AddressInUse | EndpointError::PortInUse => {
-            crate::net::l4::tcp::TcpError::AddressInUse
-        }
-        EndpointError::BufferFull => crate::net::l4::tcp::TcpError::BufferFull,
-        EndpointError::NetworkUnreachable => crate::net::l4::tcp::TcpError::NetworkUnreachable,
-        EndpointError::PermissionDenied => crate::net::l4::tcp::TcpError::PermissionDenied,
-        _ => crate::net::l4::tcp::TcpError::InvalidState,
-    }
-}
-
-#[inline]
 pub(super) fn finish_command<T: CommandReplyPayload>(
     reply: CommandReplyTicket<T>,
     value: T,

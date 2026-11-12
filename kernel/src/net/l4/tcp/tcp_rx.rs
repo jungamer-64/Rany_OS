@@ -19,13 +19,13 @@ use super::congestion::CongestionAction;
 use super::ooo_queue;
 use super::retransmit::{
     get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_fast_retransmit,
-    retransmit_queue_remove,
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{
     AckSegment, TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions,
     tcp_flags,
 };
+use super::termination::{TcpTermination, abort_connection_in, terminate_connection_in};
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
     Socket, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
@@ -150,8 +150,13 @@ fn apply_acceptable_ack(
         retransmit_queue_fast_retransmit(runtime, tcb.if_id, tcb.local, tcb.remote);
     }
     if should_remove {
-        retransmit_queue_remove(runtime, tcb.if_id, tcb.local, tcb.remote);
-        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
+        terminate_connection_in(
+            runtime,
+            tcb.if_id,
+            tcb.local,
+            tcb.remote,
+            TcpTermination::Completed,
+        );
         return;
     }
     resume_closing_transmission(runtime, tcb.socket_id);
@@ -326,7 +331,7 @@ fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) 
     }
 }
 
-fn send_control_segment(
+pub(super) fn send_control_segment(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
     local: EndpointAddr,
@@ -899,8 +904,15 @@ fn handle_syn_sent_segment(
     // 2. Second, check the RST bit
     if is_rst {
         if ack_acceptable {
-            // RFC 9293: Acceptable ACK + RST resets the connection
-            handle_rst_received(runtime, tcb, seq_num);
+            // RFC 9293 Section 3.10.7.3: a RST with an acceptable ACK refuses
+            // the connection; its sequence number is not checked.
+            terminate_connection_in(
+                runtime,
+                tcb.if_id,
+                tcb.local,
+                tcb.remote,
+                TcpTermination::Refused,
+            );
         }
         // Unacceptable ACK or bare RST in SYN-SENT: drop segment
         return;
@@ -1741,21 +1753,14 @@ fn process_tcp_new_connection(
 /// ウィンドウ外の場合は黙って破棄する。
 fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, seq_num: u32) {
     if seq_num == tcb.rcv_nxt {
-        // RFC 5961: 完全一致 → 接続をリセット
-        tcp_table_in(runtime).close_for_reset(tcb.if_id, tcb.local, tcb.remote);
-
-        // ソケットにエラー通知
-        if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
-            let _ = socket.with_inner_mut(|inner| {
-                inner.last_error = Some(EndpointError::ConnectionRefused);
-                inner.connect_waker.wake();
-            });
-        }
-
-        // リソースクリーンアップ
-        retransmit_queue_remove(runtime, tcb.if_id, tcb.local, tcb.remote);
-        ooo_queue::remove_ooo_queue(runtime, tcb.if_id, tcb.local, tcb.remote);
-        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
+        // RFC 5961: 完全一致 → 接続をリセット。SYN-RECEIVED からのリセットは、
+        // passive open ならリスナーに影響せず、active open なら接続拒否となる。
+        let termination = if tcb.state == TcpConnectionState::SynReceived {
+            TcpTermination::Refused
+        } else {
+            TcpTermination::Reset
+        };
+        terminate_connection_in(runtime, tcb.if_id, tcb.local, tcb.remote, termination);
     } else {
         // RFC 5961: ウィンドウ内ならChallenge ACKを送信
         let rcv_wnd = tcb.effective_recv_window();
@@ -1819,19 +1824,8 @@ fn complete_passive_open(
         remote,
         local
     );
-    // Out-of-order permits are returned through the queue owner before the
-    // TCB that holds the queue is removed.
-    ooo_queue::remove_ooo_queue(runtime, if_id, local, remote);
-    if let Some(tcb) = tcp_table_in(runtime)
-        .remove(if_id, local, remote)
-        .map(|entry| TcpControlBlockSnapshot::from(&entry))
-    {
-        let builder = TcpSegmentBuilder::new(local.port(), remote.port())
-            .seq(tcb.snd_nxt)
-            .ack(tcb.rcv_nxt)
-            .rst()
-            .ack_flag();
-        send_control_segment(runtime, if_id, local, remote, builder);
+    if let Some(removed) = tcp_table_in(runtime).remove(if_id, local, remote) {
+        abort_connection_in(runtime, removed);
     }
     false
 }

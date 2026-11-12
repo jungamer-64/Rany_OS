@@ -305,15 +305,6 @@ where
         .unwrap_or((rcv_nxt, false))
 }
 
-pub fn remove_ooo_queue(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-    local: EndpointAddr,
-    remote: EndpointAddr,
-) {
-    let _ = tcp_table_in(runtime).mutate_ooo_queue(if_id, local, remote, ConnectionOooQueue::clear);
-}
-
 #[inline]
 pub fn has_ooo_segments(
     runtime: NetRuntimeHandle,

@@ -3,9 +3,7 @@
 // ============================================================================
 
 use crate::net::l4::socket::{Socket, TcpSocketState, unregister_socket_in};
-use crate::net::l4::tcp::ooo_queue::{
-    drain_ooo_contiguous, has_ooo_segments, insert_ooo_segment, remove_ooo_queue,
-};
+use crate::net::l4::tcp::ooo_queue::{drain_ooo_contiguous, has_ooo_segments, insert_ooo_segment};
 use crate::net::l4::tcp::tcb::TcpControlBlock;
 use crate::net::l4::types::EndpointAddr;
 use crate::net::runtime::NetRuntimeHandle;
@@ -98,15 +96,6 @@ pub fn tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
         sentinel,
         remote()
     ));
-    insert(runtime, sentinel, 200, 3);
-    remove_ooo_queue(runtime, TEST_INTERFACE, sentinel, remote());
-    assert!(!has_ooo_segments(
-        runtime,
-        TEST_INTERFACE,
-        sentinel,
-        remote()
-    ));
-
     for index in 0..CONNECTION_CAPACITY {
         insert(runtime, sentinel, 100 + index as u32 * 2, index as u8);
     }
@@ -128,7 +117,7 @@ pub fn tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
         remote()
     ));
 
-    // Fill the advertised aggregate capacity after overlap, clear, eviction,
+    // Fill the advertised aggregate capacity after overlap, eviction,
     // rejection and delivery. A leaked permit makes a later delivery missing.
     for (local, _) in &connections[1..] {
         for index in 0..CONNECTION_CAPACITY {

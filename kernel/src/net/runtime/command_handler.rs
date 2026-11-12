@@ -488,16 +488,13 @@ impl Default for RuntimeCommandHandler {
     }
 }
 
-pub(crate) fn drive_tcp_data_ready_in(
+/// Run a command in the calling context, for a command the runtime queue
+/// rejected.
+pub(crate) fn drive_command_in(
     runtime: NetRuntimeHandle,
-    socket_id: SocketId,
+    command: RuntimeCommand,
 ) -> EventHandleResult {
-    RuntimeCommandHandler::new().handle_event_in(
-        runtime,
-        RuntimeCommand::Transport(
-            crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
-        ),
-    )
+    RuntimeCommandHandler::new().handle_event_in(runtime, command)
 }
 
 /// ネットワークイベント処理の初期化

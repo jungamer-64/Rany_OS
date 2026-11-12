@@ -119,6 +119,8 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - 広告する受信窓は、合意した window scale でシフトしてから 16 bit に clamp する。SYN cookie から確立した接続は scale / SACK / timestamp を復元できないため、stateless な SYN-ACK ではこれらを提示しない。
 - passive open で確立した接続は listener の accept queue に受理された時点で接続用の socket id を得る。受理できない場合は RST で中止し、所有者のいない ESTABLISHED TCB を残さない。
 - FIN は close 要求後、送信バッファの全データを再送キューへ渡した後にだけ送り、データと同様に ACK されるまで再送する。
+- TCP 接続 socket の終了処理を行う所有者は常に一つである。`close` はハンドルを消費して終了処理を runtime へ移し、runtime は TCB が終わった時点で socket を unregister する。close せずにハンドルを破棄することは RFC 9293 の ABORT であり、SYN-RECEIVED、ESTABLISHED、FIN-WAIT-1/2、CLOSE-WAIT では `<SEQ=SND.NXT><CTL=RST>` を送り、TCB と socket を同時に解放する。handshake 中の接続に対する `close` も ABORT とする。listener の解放は、accept queue に残る接続と未確立の接続を ABORT する。
+- TCB の終了（LAST-ACK での FIN の ACK、TIME-WAIT / FIN-WAIT-2 / SYN-RECEIVED の期限切れ、RST の受理、再送の打ち切り）は、TCB をテーブルから取り除いた経路だけが処理する。その経路が再送キューを解放し、close 済みの socket は unregister する。ハンドルが保持している socket には閉じた状態と refused / reset / timeout の区別を記録し、ハンドルの解放時に unregister する。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 
 ### 4.3 Validation boundary

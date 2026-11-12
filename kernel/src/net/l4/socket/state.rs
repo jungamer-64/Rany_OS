@@ -14,6 +14,14 @@ use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
 use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketPayloadFront};
 
+/// Application-visible state of a TCP socket.
+///
+/// A connection socket is finished by exactly one owner. Until `Closing` the
+/// application handle owns it; `Closing` records that the handle released the
+/// connection through a graceful close, after which the runtime unregisters
+/// the socket when the connection's TCB ends. `Closed` records that the TCB
+/// ended while the handle still owned the socket, which the handle's release
+/// then unregisters.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TcpSocketState {
     Listening,
@@ -21,6 +29,33 @@ pub(crate) enum TcpSocketState {
     Connected,
     Closing,
     Closed,
+}
+
+/// What releasing a TCP connection handle through `close` must do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TcpCloseRequest {
+    /// The socket is now `Closing`: the runtime sends the queued data and the
+    /// FIN, and unregisters the socket when the TCB ends.
+    Graceful,
+    /// The connection already ended or was released; the handle unregisters
+    /// the socket.
+    Release,
+    /// The handshake has not completed, so there is no connection to close
+    /// gracefully; the handle aborts it.
+    Abort,
+}
+
+/// Who unregisters a TCP socket whose connection's TCB ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TcpConnectionEnd {
+    /// The handle had released the socket: the ending path unregisters it.
+    Unregister,
+    /// The handle still owns the socket, now `Closed`; its release unregisters
+    /// it.
+    HandleOwned,
+    /// The TCB belonged to a listener (an embryonic passive open), whose
+    /// socket is not affected by the TCB ending.
+    NotConnection,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -424,6 +459,44 @@ impl SocketState {
         }
     }
 
+    /// Release a connection handle through a graceful close. Queued send data
+    /// is kept for the runtime to transmit ahead of the FIN.
+    pub fn request_tcp_close(&mut self) -> TcpCloseRequest {
+        let Some(tcp) = self.tcp_mut() else {
+            return TcpCloseRequest::Release;
+        };
+        match tcp.state {
+            TcpSocketState::Connected => {
+                tcp.state = TcpSocketState::Closing;
+                TcpCloseRequest::Graceful
+            }
+            TcpSocketState::Connecting | TcpSocketState::Listening => TcpCloseRequest::Abort,
+            TcpSocketState::Closing | TcpSocketState::Closed => TcpCloseRequest::Release,
+        }
+    }
+
+    /// Record that the TCB of this socket's connection ended. A handle-owned
+    /// connection observes `error` and the closed state on its next operation;
+    /// all waiters are woken.
+    pub fn end_tcp_connection(&mut self, error: Option<EndpointError>) -> TcpConnectionEnd {
+        let end = match self.tcp_state() {
+            None | Some(TcpSocketState::Listening) => return TcpConnectionEnd::NotConnection,
+            Some(TcpSocketState::Closing) => TcpConnectionEnd::Unregister,
+            Some(TcpSocketState::Connecting | TcpSocketState::Connected) => {
+                if let Some(error) = error {
+                    self.last_error = Some(error);
+                }
+                TcpConnectionEnd::HandleOwned
+            }
+            Some(TcpSocketState::Closed) => TcpConnectionEnd::HandleOwned,
+        };
+        self.mark_closed();
+        self.recv_waker.wake();
+        self.send_waker.wake();
+        self.connect_waker.wake();
+        end
+    }
+
     #[inline]
     fn trim_empty_payloads(queue: &mut VecDeque<QueuedPayload>) {
         // LOOP_PROOF: mode=condition; reason=Each iteration removes an empty front payload from the finite exclusively borrowed receive deque.;
@@ -533,5 +606,52 @@ impl SocketState {
             self.recv_waker.wake();
         }
         len
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub fn closed_connection_is_unregistered_by_the_end_of_its_tcb() {
+        let mut socket = SocketState::new_tcp(TcpSocketState::Connected);
+        assert_eq!(socket.request_tcp_close(), TcpCloseRequest::Graceful);
+        assert_eq!(socket.tcp_state(), Some(TcpSocketState::Closing));
+        assert_eq!(
+            socket.end_tcp_connection(Some(EndpointError::ConnectionReset)),
+            TcpConnectionEnd::Unregister
+        );
+        assert_eq!(socket.tcp_state(), Some(TcpSocketState::Closed));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub fn connection_ended_under_its_handle_is_released_by_close() {
+        let mut socket = SocketState::new_tcp(TcpSocketState::Connected);
+        assert_eq!(
+            socket.end_tcp_connection(Some(EndpointError::ConnectionReset)),
+            TcpConnectionEnd::HandleOwned
+        );
+        assert_eq!(socket.last_error, Some(EndpointError::ConnectionReset));
+        assert_eq!(socket.tcp_state(), Some(TcpSocketState::Closed));
+        assert_eq!(socket.request_tcp_close(), TcpCloseRequest::Release);
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    pub fn handshake_close_aborts_and_listener_ignores_embryonic_ends() {
+        let mut connecting = SocketState::new_tcp(TcpSocketState::Connecting);
+        assert_eq!(connecting.request_tcp_close(), TcpCloseRequest::Abort);
+        assert_eq!(connecting.tcp_state(), Some(TcpSocketState::Connecting));
+
+        let mut listener = SocketState::new_tcp(TcpSocketState::Listening);
+        assert_eq!(
+            listener.end_tcp_connection(Some(EndpointError::ConnectionRefused)),
+            TcpConnectionEnd::NotConnection
+        );
+        assert_eq!(listener.tcp_state(), Some(TcpSocketState::Listening));
+        assert_eq!(listener.last_error, None);
     }
 }

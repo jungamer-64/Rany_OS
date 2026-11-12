@@ -431,8 +431,7 @@ async fn run_service_in(runtime: NetRuntimeHandle, acceptor: TcpAcceptor) -> Res
                         peer
                     );
                     // 接続を閉じて次を受け付ける
-                    let mut rejected = client;
-                    let _ = rejected.close();
+                    client.close();
                     continue;
                 };
 

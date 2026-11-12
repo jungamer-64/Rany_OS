@@ -11,6 +11,7 @@ pub(crate) mod retransmit;
 pub(crate) mod segment;
 pub(crate) mod tcb;
 pub(crate) mod tcp_rx;
+pub(crate) mod termination;
 pub(crate) mod timer_wheel;
 pub(crate) mod window_scale;
 

@@ -688,6 +688,7 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
         }
     };
 
+    let mut exhausted = Vec::new();
     for key in expired {
         let idx = retransmit_shard_index(key);
         let state = tcp_runtime_in(runtime).retransmit();
@@ -708,7 +709,7 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
                             key.remote
                         );
                         queues.remove(&key);
-                        tcp_table_in(runtime).remove(key.if_id, key.local, key.remote);
+                        exhausted.push(key);
                     }
                 }
             } else if !queue.is_empty() {
@@ -716,5 +717,16 @@ pub fn check_retransmit_timeouts(runtime: NetRuntimeHandle) {
                 schedule_retransmit_timer(runtime, key, deadline);
             }
         }
+    }
+    // The connection ends outside the retransmit shard lock, which its
+    // termination takes to release the queue.
+    for key in exhausted {
+        super::termination::terminate_connection_in(
+            runtime,
+            key.if_id,
+            key.local,
+            key.remote,
+            super::termination::TcpTermination::TimedOut,
+        );
     }
 }

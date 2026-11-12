@@ -253,6 +253,14 @@ pub fn net_peripheral_tcp_ooo_permits_and_bounded_queue_smoke() -> bool {
     crate::net::qemu_tests::tcp_ooo_permits_and_bounded_queue_smoke()
 }
 
+pub fn net_peripheral_tcp_close_hands_connection_to_runtime_until_fin_ack_smoke() -> bool {
+    crate::net::qemu_tests::tcp_close_hands_connection_to_runtime_until_fin_ack_smoke()
+}
+
+pub fn net_peripheral_tcp_drop_without_close_resets_connection_smoke() -> bool {
+    crate::net::qemu_tests::tcp_drop_without_close_resets_connection_smoke()
+}
+
 pub fn net_peripheral_snapshot_counter_deltas_and_events_smoke() -> bool {
     crate::net::qemu_tests::snapshot_counter_deltas_and_events_smoke()
 }

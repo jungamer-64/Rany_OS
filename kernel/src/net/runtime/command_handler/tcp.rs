@@ -3,10 +3,7 @@
 // ============================================================================
 //! RuntimeCommandHandler TCP系メソッド
 
-use super::common::{
-    endpoint_error_from_network, endpoint_ipv4_pair, endpoint_is_native_v6_pair,
-    tcp_error_from_endpoint_error,
-};
+use super::common::{endpoint_error_from_network, endpoint_ipv4_pair, endpoint_is_native_v6_pair};
 use super::*;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::socket::TcpSocketState;
@@ -234,12 +231,20 @@ impl RuntimeCommandHandler {
             EventHandleResult::Success => {
                 Ok(crate::net::l4::tcp::TcpConnection::from_socket(endpoint))
             }
+            // A failed open may already hold a SYN-SENT TCB; aborting it
+            // releases the TCB together with the socket.
             EventHandleResult::ProtocolError(err) => {
-                self.unregister_socket_in(runtime, endpoint.socket_id());
-                Err(tcp_error_from_endpoint_error(err))
+                crate::net::l4::tcp::termination::abort_connection_handle_in(
+                    runtime,
+                    endpoint.socket_id(),
+                );
+                Err(crate::net::l4::tcp::tcp_error_from_endpoint(err))
             }
             _ => {
-                self.unregister_socket_in(runtime, endpoint.socket_id());
+                crate::net::l4::tcp::termination::abort_connection_handle_in(
+                    runtime,
+                    endpoint.socket_id(),
+                );
                 Err(crate::net::l4::tcp::TcpError::InvalidState)
             }
         }
@@ -279,7 +284,7 @@ impl RuntimeCommandHandler {
             }
             EventHandleResult::ProtocolError(err) => {
                 self.unregister_socket_in(runtime, endpoint.socket_id());
-                Err(tcp_error_from_endpoint_error(err))
+                Err(crate::net::l4::tcp::tcp_error_from_endpoint(err))
             }
             _ => {
                 self.unregister_socket_in(runtime, endpoint.socket_id());
@@ -485,65 +490,30 @@ impl RuntimeCommandHandler {
         EventHandleResult::Success
     }
 
-    /// Closeイベント処理
-    /// 接続を終了
+    /// CloseSocket: finish a socket its owner released.
+    ///
+    /// A TCP connection released by a graceful close keeps its socket while
+    /// its TCB lives: from ESTABLISHED / CLOSE-WAIT the queued data and then
+    /// the FIN are sent, and once the FIN is out the path that ends the TCB
+    /// unregisters the socket. A socket with no TCB (UDP, RAW, or a
+    /// connection whose TCB already ended) is unregistered here.
     pub(super) fn handle_close_in(
         &self,
         runtime: NetRuntimeHandle,
         fd: SocketId,
     ) -> EventHandleResult {
-        let Some(socket) = crate::net::l4::socket::lookup_socket_in(runtime, fd) else {
+        if crate::net::l4::socket::lookup_socket_in(runtime, fd).is_none() {
             return EventHandleResult::SocketNotFound(fd);
-        };
-        let tcb_table = tcp_table_in(runtime);
-
-        let Some((local, remote)) =
-            socket.with_inner(|inner| (inner.local_addr, inner.remote_addr))
-        else {
-            return EventHandleResult::SocketNotFound(fd);
-        };
-        let local = match local {
-            Some(addr) => addr,
+        }
+        match tcp_table_in(runtime).read_by_socket_id(fd, |tcb| tcb.state()) {
+            Some(TcpConnectionState::Established | TcpConnectionState::CloseWait) => {
+                self.handle_data_ready_in(runtime, fd)
+            }
+            Some(_) => EventHandleResult::Success,
             None => {
-                log::info!("TCP: Close failed - no local address");
-                return EventHandleResult::ProtocolError(EndpointError::Internal);
-            }
-        };
-        let remote = match remote {
-            Some(addr) => addr,
-            None => {
-                // リモートアドレスがない場合（Listenソケットなど）は即時クローズ
-                tcb_table.remove_by_socket_id(fd);
                 self.close_socket_now_in(runtime, fd);
-                return EventHandleResult::Success;
-            }
-        };
-
-        // TCBエントリの状態を取得
-        let Some((if_id, state)) =
-            tcb_table.read_by_socket_id(fd, |tcb| (tcb.route_interface(), tcb.state()))
-        else {
-            self.close_socket_now_in(runtime, fd);
-            return EventHandleResult::Success;
-        };
-
-        match state {
-            TcpConnectionState::Established | TcpConnectionState::CloseWait => {
-                // Queued data is transmitted first; the FIN follows once the
-                // send buffer has drained, from this command or from the
-                // data-ready pass that empties it later.
-                return self.handle_data_ready_in(runtime, fd);
-            }
-            TcpConnectionState::Listen | TcpConnectionState::SynSent => {
-                // まだ接続が確立していない場合は即座にクローズ
-                tcb_table.remove(if_id, local, remote);
-                self.close_socket_now_in(runtime, fd);
-            }
-            _ => {
-                // 他の状態では何もしない（既にクローズ処理中など）
+                EventHandleResult::Success
             }
         }
-
-        EventHandleResult::Success
     }
 }
