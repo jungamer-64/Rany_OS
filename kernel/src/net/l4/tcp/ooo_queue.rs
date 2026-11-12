@@ -13,7 +13,7 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use kernel_api::resource::net::PacketPayload;
 
 const MAX_OOO_SEGMENTS: usize = 16;
-const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
+pub(crate) const GLOBAL_MAX_OOO_SEGMENTS: usize = 512;
 
 #[derive(Debug)]
 pub(in crate::net::l4::tcp) struct OooPermit {

@@ -54,13 +54,13 @@ pub fn socket_take_send_segment_window_splits_front_payload_smoke() -> bool {
             assert!(state.send_payload(payload_bytes(b"abcde")).is_ok());
 
             let prefix = state
-                .take_send_segment_window(4)
+                .take_send_segment_window(4, usize::MAX)
                 .expect("front payload should be sliced as a byte stream");
             assert_eq!(prefix.total_len(), 4);
             assert_eq!(state.send_payload_bytes(), 1);
 
             let payload = state
-                .take_send_segment_window(5)
+                .take_send_segment_window(5, usize::MAX)
                 .expect("remaining byte should stay queued");
             assert_eq!(payload.total_len(), 1);
             assert_eq!(state.send_payload_bytes(), 0);
@@ -75,10 +75,9 @@ pub fn socket_recv_payload_limit_does_not_split_front_payload_smoke() -> bool {
     let runtime = crate::net::runtime::default_runtime();
     let socket = Socket::new_tcp_in(runtime, TcpSocketState::Connected);
     assert!(runtime.context().sockets.get(socket.socket_id()).is_some());
+    assert_eq!(socket.push_payload(payload_bytes(b"abcde")), 5);
     socket
         .with_inner_mut(|state| {
-            assert_eq!(state.push_recv_payload(payload_bytes(b"abcde")), 5);
-
             assert!(state.recv_payload(Some(4)).is_none());
             assert_eq!(state.recv_payload_bytes(), 5);
 

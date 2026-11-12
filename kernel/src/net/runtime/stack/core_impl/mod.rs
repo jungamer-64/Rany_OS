@@ -790,7 +790,7 @@ impl NetworkStack {
 
         let mut remaining_body = Some(body.into_retained());
         let mut offset = 0usize;
-        // LOOP_PROOF: mode=bounded; reason=Each fragment consumes a positive prefix of the finite IPv4 payload, and invalid fragment geometry returns an error.;
+        // LOOP_PROOF: mode=condition; reason=Each iteration consumes the remaining body and keeps only a strictly shorter remainder, ending when the last fragment takes it whole.;
         while let Some(retained) = remaining_body.take() {
             let remaining = payload_len - offset;
             let more_fragments = remaining > unfragmented_payload_limit;

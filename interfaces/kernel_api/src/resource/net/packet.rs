@@ -108,6 +108,11 @@ impl PacketBackingLease {
     pub const fn capacity(&self) -> DmaByteCount {
         self.capacity
     }
+    /// Whether this lease is the backing's only remaining retention. Packet
+    /// headers retain their backing, so no window of it can exist then.
+    pub fn is_sole_retention(&self) -> bool {
+        Arc::strong_count(&self.allocation) == 1
+    }
 }
 impl fmt::Debug for PacketBackingLease {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {

@@ -486,9 +486,14 @@ pub(crate) struct SocketRegistry {
     udp_ports: PoisonRwLock<UdpBindings>,
     raw_scopes: PoisonRwLock<RawScopeTable>,
     next_socket_id: AtomicU32,
+    retention: super::retention::SocketRetentionBudget,
 }
 
 impl SocketRegistry {
+    pub(crate) const fn retention(&self) -> &super::retention::SocketRetentionBudget {
+        &self.retention
+    }
+
     pub const fn new() -> Self {
         Self {
             sockets: PoisonRwLock::new(SocketRecordTable::new()),
@@ -496,6 +501,7 @@ impl SocketRegistry {
             udp_ports: PoisonRwLock::new(UdpBindings::new()),
             raw_scopes: PoisonRwLock::new(RawScopeTable::new()),
             next_socket_id: AtomicU32::new(1),
+            retention: super::retention::SocketRetentionBudget::new(),
         }
     }
 

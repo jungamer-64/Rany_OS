@@ -770,7 +770,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     )
     .ok()?;
     log::info!(target: "qemu::net", "fake-port case runtime allocated");
-    crate::net::datapath::mempool::init_net_mempool_in(runtime, 128).ok()?;
+    crate::net::datapath::mempool::init_net_mempool_in(runtime).ok()?;
     let mut pending_stack = crate::net::runtime::stack::NetworkStack::new_in(runtime);
     pending_stack
         .primary_interface_state()

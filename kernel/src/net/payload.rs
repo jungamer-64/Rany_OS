@@ -851,12 +851,11 @@ fn allocate_packet_layout(
     layout: PacketAllocationLayout,
 ) -> Option<PacketRef> {
     let len = layout.payload_len.get();
-    if let Some(mut packet) = crate::net::datapath::mempool::alloc_packet_in(runtime) {
-        let available_headroom = packet.headroom();
-        if layout.headroom <= available_headroom && len <= packet.data_capacity() {
-            packet.try_resize(len).ok()?;
-            return Some(packet);
-        }
+    if let Some(mut packet) =
+        crate::net::datapath::mempool::alloc_fitting_packet_in(runtime, len, layout.headroom)
+    {
+        packet.try_resize(len).ok()?;
+        return Some(packet);
     }
 
     let mut packet = crate::net::datapath::mempool::allocate_packet_backing(

@@ -3,7 +3,7 @@
 // ============================================================================
 
 use crate::cpu::CpuId;
-use crate::net::datapath::mempool::Mempool;
+use crate::net::datapath::mempool::RuntimePacketPools;
 use crate::net::l4::socket::SocketRegistry;
 use crate::net::neighbor_wait::NeighborWaiters;
 use crate::net::obs::NetObservability;
@@ -134,7 +134,8 @@ pub struct NetRuntimeContext {
     pub(crate) observability: NetObservability,
     pub(crate) arp_waiters: NeighborWaiters<4>,
     pub(crate) ndp_waiters: NeighborWaiters<16>,
-    pub(crate) packet_pool: Mempool,
+    /// Created when the first port starts the network stack.
+    pub(crate) packet_pools: crate::sync::InitOnce<RuntimePacketPools>,
     pub(crate) device_manager: PoisonRwLock<NetDeviceManager>,
     pub(crate) stack_initialized: AtomicBool,
     pub(crate) network_background_tasks_started: AtomicBool,
@@ -166,8 +167,6 @@ impl NetRuntimeContext {
             };
             cpu_resources.push(Some(Arc::new(NetCpuResources::new(slot.id, admission))));
         }
-        let packet_pool = Mempool::new(id.0 as u32, cpu_snapshot)
-            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)?;
 
         Ok(Self {
             id,
@@ -183,7 +182,7 @@ impl NetRuntimeContext {
             observability: NetObservability::new(),
             arp_waiters: NeighborWaiters::new(),
             ndp_waiters: NeighborWaiters::new(),
-            packet_pool,
+            packet_pools: crate::sync::InitOnce::new(),
             device_manager: PoisonRwLock::new(NetDeviceManager::new()),
             stack_initialized: AtomicBool::new(false),
             network_background_tasks_started: AtomicBool::new(false),
@@ -276,9 +275,12 @@ impl NetRuntimeContext {
             ))));
         }
         drop(resources);
-        self.packet_pool
-            .provision_possible_cpus(cpu_snapshot)
-            .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed)
+        match self.packet_pools.get() {
+            Some(pools) => pools
+                .provision_possible_cpus(cpu_snapshot)
+                .map_err(|_| RuntimeAllocationError::CpuResourceAllocationFailed),
+            None => Ok(()),
+        }
     }
 }
 

@@ -1157,7 +1157,7 @@ impl TcbTable {
             }
             if let Some(socket) = lookup_socket_in(runtime, entry.socket_id)
                 && let Some(probe_payload) = socket
-                    .with_inner_mut(|inner| inner.take_send_segment_window(1))
+                    .with_inner_mut(|inner| inner.take_send_segment_window(1, 1))
                     .flatten()
             {
                 let seq = data.seq.snd_nxt;

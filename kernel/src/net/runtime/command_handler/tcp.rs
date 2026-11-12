@@ -68,6 +68,11 @@ impl RuntimeCommandHandler {
                         return None;
                     }
 
+                    // One descriptor carries the generated L2/L3 header with
+                    // the TCP header moved into it; the rest carry payload.
+                    let max_payload_segments =
+                        crate::net::runtime::device::port_max_tx_segments_in(runtime, tcb.if_id)
+                            .map_or(1, |max| max.saturating_sub(1).max(1));
                     let inner_result = socket.with_inner_mut(|inner| {
                         let pending_len = inner.send_payload_bytes().min(remaining);
                         if pending_len == 0 || tcb.should_delay_send(pending_len) {
@@ -87,7 +92,8 @@ impl RuntimeCommandHandler {
                             return None;
                         }
 
-                        let send_payload = inner.take_send_segment_window(len)?;
+                        let send_payload =
+                            inner.take_send_segment_window(len, max_payload_segments)?;
                         Some((tcb, send_payload))
                     });
                     inner_result.flatten()

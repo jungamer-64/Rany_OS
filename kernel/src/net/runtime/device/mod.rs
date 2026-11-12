@@ -41,6 +41,20 @@ use kernel_api::service::netdev::{
 
 const NET_DEVICE_EVENT_QUEUE_CAPACITY: usize = 256;
 
+/// RX buffers of one port. Protocol state may retain received buffers up to
+/// its own limits (IPv4 and IPv6 reassembly, TCP out-of-order segments and
+/// socket receive queues); the pool covers all of them together with the
+/// buffers a device keeps posted, so retention cannot starve reception.
+pub(crate) const RX_POOL_SLOTS: usize =
+    crate::net::l3::ipv4::FragmentReassembler::MAX_HELD_FRAGMENTS
+        + crate::net::l3::ipv6::fragment::Ipv6FragmentReassembler::MAX_HELD_FRAGMENTS
+        + crate::net::l4::tcp::ooo_queue::GLOBAL_MAX_OOO_SEGMENTS
+        + crate::net::l4::socket::RX_SOCKET_RETENTION_LIMIT
+        + RX_POSTED_RESERVE;
+
+/// Buffers kept for posting to the device while every retention limit is full.
+const RX_POSTED_RESERVE: usize = 256;
+
 fn runtime_context_for(runtime: NetRuntimeHandle) -> &'static NetRuntimeContext {
     runtime.context()
 }
@@ -206,9 +220,17 @@ fn current_if_for_port(
         .ok_or("device port not registered")
 }
 
-fn runtime_lease_rx_buffer(cookie: NetPortRuntimeCookie, _: NetPortId) -> Option<RxBuffer> {
+fn runtime_lease_rx_buffer(cookie: NetPortRuntimeCookie, port_id: NetPortId) -> Option<RxBuffer> {
     let context = runtime_context_from_cookie(cookie).ok()?;
-    let packet = crate::net::datapath::mempool::alloc_packet_in(context.handle())?;
+    let if_id = current_if_for_port(context, port_id).ok()?;
+    // Each port receives only into its own pool, so a device mapping for RX
+    // never covers buffers that another port has received into.
+    let packet = with_port_handle_in(context.handle(), if_id, |handle| {
+        handle
+            .rx_pool
+            .alloc(kernel_api::resource::net::DEFAULT_PACKET_HEADROOM)
+            .ok()
+    })??;
     RxBuffer::try_from_empty_packet(packet).ok()
 }
 
@@ -368,6 +390,7 @@ pub struct NetDeviceHandle {
     binding: PoisonLock<NetDeviceBinding>,
     runtime: NetPortRuntimeHandle,
     tx: NetPortTx,
+    rx_pool: crate::net::datapath::mempool::PacketPool,
     event_sink: Box<NetEventSink>,
     driver_gate: PoisonLock<()>,
     active: AtomicBool,
@@ -381,16 +404,30 @@ impl NetDeviceHandle {
         binding: NetDeviceBinding,
         context: &'static NetRuntimeContext,
     ) -> Result<Self, (Box<dyn NetDevicePort>, &'static str)> {
-        let max_segments = usize::from(driver.info().max_tx_segments.get());
-        let tx = match NetPortTx::new(max_segments) {
+        let info = driver.info();
+        let tx = match NetPortTx::new(usize::from(info.max_tx_segments.get())) {
             Ok(tx) => tx,
             Err(_) => return Err((driver, "TX lease storage allocation failed")),
+        };
+        let Some(rx_geometry) =
+            crate::net::datapath::mempool::PacketPoolGeometry::rx(info.mtu, RX_POOL_SLOTS)
+        else {
+            return Err((driver, "device MTU has no RX buffer geometry"));
+        };
+        let rx_pool = match crate::net::datapath::mempool::PacketPool::new(
+            binding.port_id.as_u64() as u32,
+            rx_geometry,
+            &crate::cpu::snapshot(),
+        ) {
+            Ok(pool) => pool,
+            Err(_) => return Err((driver, "RX buffer pool allocation failed")),
         };
         Ok(Self {
             driver,
             runtime: runtime_handle_for_port(context, binding.port_id),
             binding: PoisonLock::new(binding),
             tx,
+            rx_pool,
             event_sink: Box::new(NetEventSink::new()),
             driver_gate: PoisonLock::new(()),
             active: AtomicBool::new(true),
@@ -760,7 +797,7 @@ pub fn ensure_stack_initialized_in(runtime: NetRuntimeHandle) -> Result<(), &'st
         return Err("network secure entropy unavailable");
     }
 
-    if let Err(err) = crate::net::datapath::mempool::init_net_mempool_in(runtime, 1024) {
+    if let Err(err) = crate::net::datapath::mempool::init_net_mempool_in(runtime) {
         log::warn!(target: "net::device", "mempool init failed: {}", err);
     }
 
@@ -1113,6 +1150,23 @@ pub(crate) fn transmit_frame_in(
 
 pub(crate) fn port_tx_stats_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<TxLeaseStats> {
     with_port_handle_in(runtime, if_id, NetDeviceHandle::tx_stats)
+}
+
+/// Descriptors a frame may use on the port bound to `if_id`.
+pub(crate) fn port_max_tx_segments_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<usize> {
+    device_manager_in(runtime)
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .handles
+        .get(&if_id)
+        .map(|handle| handle.max_tx_segments())
+}
+
+pub(crate) fn port_rx_pool_stats_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+) -> Option<crate::net::datapath::mempool::MempoolStats> {
+    with_port_handle_in(runtime, if_id, |handle| handle.rx_pool.stats())
 }
 
 pub fn enqueue_event_in(

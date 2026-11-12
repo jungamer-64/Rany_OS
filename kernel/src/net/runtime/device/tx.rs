@@ -546,7 +546,7 @@ impl NetPortTx {
     pub(crate) fn close_and_release_queued(&self) {
         let mut slab = self.slab.lock().unwrap_or_else(|error| error.into_inner());
         slab.closed = true;
-        // LOOP_PROOF: mode=bounded; reason=Each iteration removes one index from the finite queued list.;
+        // LOOP_PROOF: mode=condition; reason=Each iteration removes one index from the finite queued list under the slab lock, which no producer holds.;
         while let Some(index) = slab.queued.pop_front() {
             slab.free_slot(index);
             self.counters

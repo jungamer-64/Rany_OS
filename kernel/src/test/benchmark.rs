@@ -490,8 +490,17 @@ fn runtime_pool_stats(
     runtime: NetRuntimeHandle,
 ) -> Result<crate::net::datapath::mempool::MempoolStats, &'static str> {
     crate::net::datapath::mempool::net_mempool_in(runtime)
-        .map(crate::net::datapath::mempool::Mempool::stats)
+        .map(crate::net::datapath::mempool::PacketPool::stats)
         .ok_or("benchmark packet pool unavailable")
+}
+
+/// RX buffers come from the receiving port's own pool.
+fn port_rx_pool_stats(
+    runtime: NetRuntimeHandle,
+    if_id: crate::net::runtime::manager::NetIfId,
+) -> Result<crate::net::datapath::mempool::MempoolStats, &'static str> {
+    crate::net::runtime::device::port_rx_pool_stats_in(runtime, if_id)
+        .ok_or("benchmark port RX pool unavailable")
 }
 
 fn payload_matches(payload: &PacketPayload, expected: &[u8]) -> bool {
@@ -674,7 +683,7 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
         }
         drop(warmup_payload);
 
-        let rx_pool_before = runtime_pool_stats(runtime)?;
+        let rx_pool_before = port_rx_pool_stats(runtime, if_id)?;
         let rx_heap_before = crate::profiler::profiler()
             .memory
             .stats()
@@ -697,7 +706,7 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
                 && payload_matches(&received, &payload_bytes);
             rx_cycles = rx_cycles.saturating_add(end.saturating_sub(start));
         }
-        let rx_pool_after = runtime_pool_stats(runtime)?;
+        let rx_pool_after = port_rx_pool_stats(runtime, if_id)?;
         let rx_heap_after = crate::profiler::profiler()
             .memory
             .stats()
@@ -942,7 +951,7 @@ fn bench_network() {
     packet.data_mut().fill(0x5a);
     let backing = packet.as_ptr();
     let pool_allocations_before = crate::net::datapath::mempool::net_mempool()
-        .map(crate::net::datapath::mempool::Mempool::stats)
+        .map(crate::net::datapath::mempool::PacketPool::stats)
         .map_or(0, |stats| stats.alloc_count);
     let mut packet_handoff = BenchmarkResult::new("packet_payload_owner_handoff_256b");
     let heap_before = crate::profiler::profiler()
@@ -961,7 +970,7 @@ fn bench_network() {
         packet_handoff.record(end - start);
     }
     let pool_allocations_after = crate::net::datapath::mempool::net_mempool()
-        .map(crate::net::datapath::mempool::Mempool::stats)
+        .map(crate::net::datapath::mempool::PacketPool::stats)
         .map_or(0, |stats| stats.alloc_count);
     let heap_after = crate::profiler::profiler()
         .memory

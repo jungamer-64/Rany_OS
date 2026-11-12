@@ -3,12 +3,12 @@
 // ============================================================================
 //! Internal socket state and protocol-specific entries.
 
+use super::retention::SocketRetention;
 use alloc::collections::VecDeque;
 use core::ops::{Deref, DerefMut};
 
 use crate::net::l4::tcp::TcpStats;
 use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketResult};
-use crate::net::payload::packet_payload_from_segments;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use crate::sync::atomic_waker::AtomicWaker;
@@ -118,6 +118,8 @@ pub(crate) struct TcpSocketEntry {
 
 pub(crate) struct QueuedPayload {
     payload: Option<PacketPayload>,
+    /// Charge of a received payload against the runtime retention budget.
+    _retention: Option<SocketRetention>,
 }
 
 pub(crate) struct TcpSendBuffer {
@@ -129,6 +131,14 @@ impl QueuedPayload {
     pub fn new(payload: PacketPayload) -> Self {
         Self {
             payload: Some(payload),
+            _retention: None,
+        }
+    }
+
+    pub(crate) fn received(payload: PacketPayload, retention: SocketRetention) -> Self {
+        Self {
+            payload: Some(payload),
+            _retention: Some(retention),
         }
     }
 
@@ -144,6 +154,7 @@ impl QueuedPayload {
         self.payload
     }
 
+    /// Split off the first `len` bytes. A failed split keeps every byte here.
     fn take_front(&mut self, len: usize) -> Option<PacketPayload> {
         if len == 0 || len > self.remaining_len() {
             return None;
@@ -151,11 +162,15 @@ impl QueuedPayload {
 
         let count = PacketByteCount::new(len)?;
         let payload = self.payload.take()?;
-        match payload.try_take_front(count).ok()? {
-            PacketPayloadFront::Whole(front) => Some(front),
-            PacketPayloadFront::Prefix { front, remainder } => {
+        match payload.try_take_front(count) {
+            Ok(PacketPayloadFront::Whole(front)) => Some(front),
+            Ok(PacketPayloadFront::Prefix { front, remainder }) => {
                 self.payload = Some(remainder);
                 Some(front)
+            }
+            Err(error) => {
+                self.payload = Some(error.into_owner());
+                None
             }
         }
     }
@@ -204,29 +219,68 @@ impl TcpSendBuffer {
         }
     }
 
-    fn take_segment_window(&mut self, max_len: usize) -> Option<PacketPayload> {
-        if max_len == 0 || self.len == 0 {
+    /// Take up to `max_len` leading bytes, spanning queued payloads, and at
+    /// most `max_segments` packet segments. Bytes that cannot be taken stay
+    /// queued in order, so the window may be shorter than requested.
+    fn take_segment_window(
+        &mut self,
+        max_len: usize,
+        max_segments: usize,
+    ) -> Option<PacketPayload> {
+        if max_len == 0 || max_segments == 0 || self.len == 0 {
             return None;
         }
         self.trim_empty();
-        let take = self.len.min(max_len);
-        let mut remaining = take;
-        let mut segments = alloc::vec::Vec::new();
+        let mut remaining = self.len.min(max_len);
+        let mut window: Option<PacketPayload> = None;
 
-        // LOOP_PROOF: mode=bounded; reason=A nonempty front window consumes remaining bytes, an empty window is removed or rejected, and no producer can extend the exclusively borrowed deque.;
+        // LOOP_PROOF: mode=bounded; reason=Each iteration moves a nonempty front window into the result or stops, and no producer can extend the exclusively borrowed deque.;
         while remaining > 0 {
-            let front = self.chunks.front_mut()?;
-            let front_take = remaining.min(front.remaining_len());
-            let payload = front.take_front(front_take)?;
-            segments.extend(payload.into_segments());
-            remaining -= front_take;
+            let used_segments = window.as_ref().map_or(0, |window| window.segments().len());
+            let Some(front) = self.chunks.front_mut() else {
+                break;
+            };
+            let Some(front_payload) = front.payload.as_ref() else {
+                break;
+            };
+            // Bytes of the front payload that fit the remaining segment budget.
+            let mut fitting = 0usize;
+            for segment in front_payload
+                .segments()
+                .iter()
+                .take(max_segments.saturating_sub(used_segments))
+            {
+                fitting += segment.len();
+            }
+            let front_take = remaining.min(fitting);
+            if front_take == 0 {
+                break;
+            }
+            let Some(part) = front.take_front(front_take) else {
+                break;
+            };
             if front.is_empty() {
                 self.chunks.pop_front();
             }
+            let part_len = part.total_len();
+            window = match window {
+                None => Some(part),
+                Some(window) => match window.try_append(part) {
+                    Ok(window) => Some(window),
+                    Err(error) => {
+                        let (window, part) = error.into_owner();
+                        self.chunks.push_front(QueuedPayload::new(part));
+                        self.len = self.len.saturating_sub(window.total_len());
+                        return Some(window);
+                    }
+                },
+            };
+            remaining -= part_len;
         }
 
-        self.len = self.len.saturating_sub(take);
-        packet_payload_from_segments(segments).ok()
+        let window = window?;
+        self.len = self.len.saturating_sub(window.total_len());
+        Some(window)
     }
 }
 
@@ -248,9 +302,18 @@ impl TcpSocketEntry {
     }
 }
 
+/// A received datagram waiting in a socket, with its retention charge.
+pub(crate) struct ReceivedDatagram {
+    pub if_id: NetIfId,
+    pub source: EndpointAddr,
+    pub ttl: u8,
+    pub payload: PacketPayload,
+    pub _retention: SocketRetention,
+}
+
 pub(crate) struct UdpSocketEntry {
     pub state: UdpSocketState,
-    pub pending_packets: VecDeque<(NetIfId, EndpointAddr, u8, PacketPayload)>,
+    pub pending_packets: VecDeque<ReceivedDatagram>,
     pub ttl: u8,
     pub grant: Option<crate::security::capability::TokenUse<'static>>,
 }
@@ -268,7 +331,7 @@ impl UdpSocketEntry {
 
 pub(crate) struct RawSocketEntry {
     pub state: RawSocketState,
-    pub pending_payloads: VecDeque<(NetIfId, PacketPayload)>,
+    pub pending_payloads: VecDeque<(NetIfId, PacketPayload, SocketRetention)>,
 }
 
 impl RawSocketEntry {
@@ -574,14 +637,24 @@ impl SocketState {
         tcp.send_buffer.push(payload, limit)
     }
 
+    /// Take the next send window of at most `max_len` bytes in at most
+    /// `max_segments` packet segments.
     #[inline]
-    pub fn take_send_segment_window(&mut self, max_len: usize) -> Option<PacketPayload> {
+    pub fn take_send_segment_window(
+        &mut self,
+        max_len: usize,
+        max_segments: usize,
+    ) -> Option<PacketPayload> {
         let tcp = self.tcp_mut()?;
-        tcp.send_buffer.take_segment_window(max_len)
+        tcp.send_buffer.take_segment_window(max_len, max_segments)
     }
 
     #[inline]
-    pub fn push_recv_payload(&mut self, payload: PacketPayload) -> usize {
+    pub fn push_recv_payload(
+        &mut self,
+        payload: PacketPayload,
+        retention: SocketRetention,
+    ) -> usize {
         let available = self
             .recv_buffer_limit
             .saturating_sub(self.recv_payload_bytes());
@@ -600,7 +673,8 @@ impl SocketState {
                 return 0;
             };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(len);
-            tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
+            tcp.recv_payload_queue
+                .push_back(QueuedPayload::received(queued, retention));
             Self::trim_empty_payloads(&mut tcp.recv_payload_queue);
 
             self.recv_waker.wake();

@@ -5,6 +5,7 @@
 
 mod entry;
 mod registry;
+mod retention;
 mod state;
 
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
@@ -13,6 +14,7 @@ use crate::net::types::InterfaceScope;
 
 pub(crate) use self::entry::Socket;
 pub(crate) use self::registry::SocketRegistry;
+pub(crate) use self::retention::RX_SOCKET_RETENTION_LIMIT;
 pub(crate) use self::state::{TcpCloseRequest, TcpConnectionEnd, TcpSocketState};
 
 pub(crate) const DEFAULT_TCP_ACCEPT_BACKLOG: usize = self::state::SocketState::DEFAULT_BACKLOG;
@@ -22,6 +24,10 @@ fn with_socket_registry_in<R>(
     f: impl FnOnce(&SocketRegistry) -> R,
 ) -> R {
     f(&runtime.context().sockets)
+}
+
+fn retention_budget_in(runtime: NetRuntimeHandle) -> &'static retention::SocketRetentionBudget {
+    runtime.context().sockets.retention()
 }
 
 pub(crate) fn lookup_socket_in(runtime: NetRuntimeHandle, socket_id: SocketId) -> Option<Socket> {

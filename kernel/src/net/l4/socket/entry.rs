@@ -10,7 +10,7 @@ use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
-use super::state::{QueuedPayload, SocketState, TcpSocketState};
+use super::state::{QueuedPayload, ReceivedDatagram, SocketState, TcpSocketState};
 
 fn register_socket(socket: Socket, state: SocketState) {
     socket.runtime.context().sockets.register(socket, state);
@@ -44,6 +44,7 @@ impl Socket {
     }
 
     fn split_and_queue_payload(
+        &self,
         inner: &mut SocketState,
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
@@ -64,11 +65,16 @@ impl Socket {
 
         let pushed = queued.total_len();
         if pushed > 0 {
+            let Some(retention) = super::retention_budget_in(self.runtime).try_charge(&queued)
+            else {
+                return (0, Some(queued));
+            };
             let Some(tcp) = inner.tcp_mut() else {
                 return (0, Some(queued));
             };
             tcp.recv_payload_bytes = tcp.recv_payload_bytes.saturating_add(pushed);
-            tcp.recv_payload_queue.push_back(QueuedPayload::new(queued));
+            tcp.recv_payload_queue
+                .push_back(QueuedPayload::received(queued, retention));
             // LOOP_PROOF: mode=condition; reason=Each iteration removes one empty front segment from the exclusively borrowed receive deque until a nonempty segment or end.;
             while matches!(tcp.recv_payload_queue.front(), Some(segment) if segment.is_empty()) {
                 tcp.recv_payload_queue.pop_front();
@@ -207,8 +213,11 @@ impl Socket {
     }
 
     pub fn push_payload(&self, payload: PacketPayload) -> usize {
+        let Some(retention) = super::retention_budget_in(self.runtime).try_charge(&payload) else {
+            return 0;
+        };
         let Some(pushed) = self.with_inner_mut(|inner| {
-            let pushed = inner.push_recv_payload(payload);
+            let pushed = inner.push_recv_payload(payload, retention);
             if pushed > 0
                 && let Some(tcp) = inner.tcp_mut()
             {
@@ -230,7 +239,7 @@ impl Socket {
         let mut owner = Some(payload);
         let result = self.with_inner_mut(|inner| {
             let payload = owner.take().expect("TCP receive payload owner is present");
-            let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
+            let (pushed, remainder) = self.split_and_queue_payload(inner, payload);
             if let Some(remainder) = remainder {
                 return Err(remainder);
             }
@@ -257,7 +266,7 @@ impl Socket {
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
         let Some((pushed, remainder)) = self.with_inner_mut(|inner| {
-            let (pushed, remainder) = Self::split_and_queue_payload(inner, payload);
+            let (pushed, remainder) = self.split_and_queue_payload(inner, payload);
             if pushed > 0 {
                 inner.recv_waker.wake();
             }
@@ -278,7 +287,11 @@ impl Socket {
         ttl: u8,
         payload: PacketPayload,
     ) -> Result<(), (EndpointError, PacketPayload)> {
+        let Some(retention) = super::retention_budget_in(self.runtime).try_charge(&payload) else {
+            return Err((EndpointError::BufferFull, payload));
+        };
         let mut owner = Some(payload);
+        let mut charge = Some(retention);
         let result = self
             .with_inner_mut(|inner| {
                 if !inner.is_udp_bound() {
@@ -288,12 +301,15 @@ impl Socket {
                     return Err(EndpointError::InvalidArgument);
                 };
                 udp.ttl = ttl;
-                udp.pending_packets.push_back((
+                udp.pending_packets.push_back(ReceivedDatagram {
                     if_id,
-                    addr,
+                    source: addr,
                     ttl,
-                    owner.take().expect("accepted UDP payload owner is present"),
-                ));
+                    payload: owner.take().expect("accepted UDP payload owner is present"),
+                    _retention: charge
+                        .take()
+                        .expect("accepted UDP payload charge is present"),
+                });
                 inner.recv_waker.wake();
                 Ok(())
             })
@@ -312,7 +328,7 @@ impl Socket {
                 return Err(EndpointError::NotConnected);
             }
 
-            if let Some((if_id, payload)) = inner
+            if let Some((if_id, payload, _retention)) = inner
                 .raw_mut()
                 .and_then(|raw| raw.pending_payloads.pop_front())
             {
@@ -325,6 +341,9 @@ impl Socket {
     }
 
     pub fn deliver_raw_payload(&self, if_id: NetIfId, payload: PacketPayload) -> SocketResult<()> {
+        let retention = super::retention_budget_in(self.runtime)
+            .try_charge(&payload)
+            .ok_or(EndpointError::BufferFull)?;
         self.with_inner_mut(|inner| {
             if !inner.is_raw_open() {
                 return Err(EndpointError::NotConnected);
@@ -332,7 +351,7 @@ impl Socket {
             let Some(raw) = inner.raw_mut() else {
                 return Err(EndpointError::InvalidArgument);
             };
-            raw.pending_payloads.push_back((if_id, payload));
+            raw.pending_payloads.push_back((if_id, payload, retention));
             inner.recv_waker.wake();
             Ok(())
         })
@@ -346,11 +365,16 @@ impl Socket {
                 return Err(EndpointError::NotConnected);
             }
 
-            if let Some((if_id, addr, ttl, payload)) = inner
+            if let Some(datagram) = inner
                 .udp_mut()
                 .and_then(|udp| udp.pending_packets.pop_front())
             {
-                return Ok((if_id, addr, ttl, payload));
+                return Ok((
+                    datagram.if_id,
+                    datagram.source,
+                    datagram.ttl,
+                    datagram.payload,
+                ));
             }
 
             Err(EndpointError::Timeout)
