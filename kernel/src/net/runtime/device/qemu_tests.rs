@@ -561,12 +561,12 @@ fn stopped_interface_rejects_rx_at_the_device_boundary(runtime: NetRuntimeHandle
 }
 
 fn port_tx(max_segments: usize) -> NetPortTx {
-    NetPortTx::new(max_segments).expect("test TX lease storage")
+    NetPortTx::new(max_segments, 1).expect("test TX lease storage")
 }
 
 /// Submit the oldest queued lease and let the fake device accept it.
 fn accept_next(tx: &NetPortTx, scratch: &mut Vec<PacketDmaRegion>) -> TxLeaseId {
-    let (lease_id, _) = tx.begin_submission(scratch).expect("queued lease");
+    let (lease_id, _) = tx.begin_submission(0, scratch).expect("queued lease");
     tx.finish_submission(lease_id, true, scratch);
     lease_id
 }
@@ -587,7 +587,7 @@ fn admitted_frame_regions_follow_header_then_body(_runtime: NetRuntimeHandle) {
     .ok()
     .expect("admitted frame");
     let mut scratch = Vec::new();
-    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    let (lease_id, _) = tx.begin_submission(0, &mut scratch).expect("queued lease");
     let regions: Vec<(u64, usize)> = scratch
         .iter()
         .map(|region| (region.physical_address().as_u64(), region.len().get()))
@@ -619,7 +619,7 @@ fn small_leading_body_segment_moves_into_header_to_fit_fanout(_runtime: NetRunti
     .ok()
     .expect("coalesced frame fits two descriptors");
     let mut scratch = Vec::new();
-    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    let (lease_id, _) = tx.begin_submission(0, &mut scratch).expect("queued lease");
     assert_eq!(scratch.len(), 2);
     assert_eq!(scratch[0].physical_address().as_u64(), 0x1000);
     assert_eq!(scratch[0].len().get(), 18);
@@ -647,7 +647,7 @@ fn frame_beyond_fanout_is_returned_unchanged(_runtime: NetRuntimeHandle) {
     let (header, body) = rejected.into_frame().into_parts();
     assert_eq!(header.as_ref().map(PacketRef::len), Some(14));
     assert_eq!(body.total_len(), 32);
-    assert!(tx.begin_submission(&mut Vec::new()).is_none());
+    assert!(tx.begin_submission(0, &mut Vec::new()).is_none());
     drop((header, body));
     assert_eq!(releases.load(Ordering::SeqCst), 2);
 }
@@ -681,7 +681,7 @@ fn synchronous_completion_releases_backing_after_the_descriptor_visit(_runtime: 
         .ok()
         .expect("admitted frame");
     let mut scratch = Vec::new();
-    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    let (lease_id, _) = tx.begin_submission(0, &mut scratch).expect("queued lease");
     tx.complete(lease_id, TxDeviceOutcome::Transmitted)
         .expect("completion during submission");
     assert_eq!(
@@ -707,7 +707,7 @@ fn driver_rejection_releases_backing_without_a_completion(_runtime: NetRuntimeHa
         .ok()
         .expect("admitted frame");
     let mut scratch = Vec::new();
-    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    let (lease_id, _) = tx.begin_submission(0, &mut scratch).expect("queued lease");
     assert_eq!(tx.complete(lease_id, TxDeviceOutcome::Transmitted), Ok(()));
     tx.finish_submission(lease_id, false, &mut scratch);
     assert_eq!(releases.load(Ordering::SeqCst), 1);

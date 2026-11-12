@@ -187,6 +187,12 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         };
         let total_payload_len = body.total_len();
+        let fold = |address: &Ipv6Address| {
+            address.octets().chunks_exact(4).fold(0u32, |folded, word| {
+                folded ^ u32::from_be_bytes([word[0], word[1], word[2], word[3]])
+            })
+        };
+        let flow_hash = super::l4_flow_hash(fold(&src), fold(&dst), next_header, &body);
         let header = Ipv6FrameHeader {
             src_mac,
             dst_mac,
@@ -225,7 +231,7 @@ impl NetworkStack {
                 }
             };
             return self
-                .transmit_frame_on(if_id, frame)
+                .transmit_frame_on(if_id, frame.in_flow(flow_hash))
                 .map_err(|_| crate::net::types::NetworkError::TransmitFailed);
         }
 
@@ -279,7 +285,7 @@ impl NetworkStack {
             // are discarded by the receiver's reassembly timeout.
             self.transmit_frame_on(
                 if_id,
-                TxFrame::with_header(packet, TxBody::Retained(fragment_body)),
+                TxFrame::with_header(packet, TxBody::Retained(fragment_body)).in_flow(flow_hash),
             )
             .map_err(|_| crate::net::types::NetworkError::TransmitFailed)?;
             offset += fragment_data_len;

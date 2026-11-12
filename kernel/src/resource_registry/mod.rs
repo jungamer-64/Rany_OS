@@ -988,7 +988,6 @@ struct NetdevPortAdapter {
     driver_name: &'static str,
     runtime_state: PoisonLock<Option<Box<NetRuntimeState>>>,
     max_tx_segments: NonZeroU16,
-    tx_abi_scratch: PoisonLock<Vec<AbiNetTxSegment>>,
     dma_mappings: Arc<NetPacketDmaMappings>,
 }
 
@@ -1005,17 +1004,12 @@ impl NetdevPortAdapter {
         let Some(max_tx_segments) = NonZeroU16::new(registration.info.max_tx_segments) else {
             return Err(AbiErrorCode::InvalidParam);
         };
-        let mut tx_abi_scratch = Vec::new();
-        tx_abi_scratch
-            .try_reserve_exact(usize::from(max_tx_segments.get()))
-            .map_err(|_| AbiErrorCode::OutOfMemory)?;
         Ok(Self {
             callbacks: CallbackOwner::acquire(owner).map_err(|_| AbiErrorCode::DeviceBusy)?,
             registration: *registration,
             driver_name,
             runtime_state: PoisonLock::new(None),
             max_tx_segments,
-            tx_abi_scratch: PoisonLock::new(tx_abi_scratch),
             dma_mappings: Arc::try_new(NetPacketDmaMappings::new(dma_device))
                 .map_err(|_| AbiErrorCode::OutOfMemory)?,
         })
@@ -1101,12 +1095,13 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
             .callbacks
             .enter(crate::domain::registry::ResourceInvocation::Operation)
             .map_err(|_| "network callback owner is not runnable")?;
-        let mut abi_segments = self
-            .tx_abi_scratch
-            .lock()
-            .unwrap_or_else(|error| error.into_inner());
-        abi_segments.clear();
-        if submission.regions().len() > abi_segments.capacity() {
+        // Submissions on different TX queues run concurrently; each builds
+        // its descriptors in its own bounded array.
+        let mut abi_segments = arrayvec::ArrayVec::<
+            AbiNetTxSegment,
+            { net_device_runtime::TX_FRAME_MAX_SEGMENTS },
+        >::new();
+        if submission.regions().len() > usize::from(self.max_tx_segments.get()) {
             return Err("standalone netdev TX segment limit exceeded");
         }
         for segment in submission.regions() {
@@ -1117,10 +1112,16 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
                     log::warn!("network packet DMA admission failed: {cause:?}");
                     cause.as_str()
                 })?;
-            abi_segments.push(
-                AbiNetTxSegment::from_checked_parts(segment.cpu_ptr(), device_addr, segment.len())
+            abi_segments
+                .try_push(
+                    AbiNetTxSegment::from_checked_parts(
+                        segment.cpu_ptr(),
+                        device_addr,
+                        segment.len(),
+                    )
                     .ok_or("mapped packet range is not representable in the driver ABI")?,
-            );
+                )
+                .map_err(|_| "standalone netdev TX segment limit exceeded")?;
         }
         let abi_submission = AbiNetTxSubmission::new(submission.lease_id(), &abi_segments)
             .ok_or("standalone netdev empty tx submission")?;

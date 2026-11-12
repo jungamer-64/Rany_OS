@@ -13,6 +13,10 @@
 //! Each lease moves through `Queued -> Submitting -> DeviceOwned -> Free` in
 //! one slab owned by its port. A synchronous completion during submission is
 //! recorded on the `Submitting` state and applied when the submission returns.
+//!
+//! A port with several TX queues keeps one FIFO and one worker per queue.
+//! A frame's flow hash selects its queue, so the frames of one flow, and the
+//! fragments of one datagram, stay in submission order.
 
 extern crate alloc;
 
@@ -38,6 +42,9 @@ pub(crate) const TX_FRAME_MAX_SEGMENTS: usize = 16;
 /// Leading body bytes that may be moved into a frame header to fit a device's
 /// descriptor fan-out. Only protocol headers held in their own segment fit.
 const TX_HEADER_COALESCE_MAX: usize = 64;
+
+/// Upper bound on the TX queues a port drives, independent of the device.
+pub(crate) const TX_MAX_QUEUES: usize = 8;
 
 /// L3 body of a frame.
 #[derive(Debug)]
@@ -104,6 +111,8 @@ impl TxBody {
 pub(crate) struct TxFrame {
     header: Option<PacketRef>,
     body: TxBody,
+    /// Selects the TX queue; frames without one use the port's first queue.
+    flow_hash: Option<u32>,
 }
 
 impl TxFrame {
@@ -112,6 +121,7 @@ impl TxFrame {
         Self {
             header: None,
             body: TxBody::Owned(payload),
+            flow_hash: None,
         }
     }
 
@@ -120,7 +130,14 @@ impl TxFrame {
         Self {
             header: (!header.is_empty()).then_some(header),
             body,
+            flow_hash: None,
         }
+    }
+
+    /// Keep this frame on the TX queue of `flow_hash`.
+    pub(crate) const fn in_flow(mut self, flow_hash: u32) -> Self {
+        self.flow_hash = Some(flow_hash);
+        self
     }
 
     pub(crate) fn total_len(&self) -> usize {
@@ -286,7 +303,8 @@ struct TxSlot {
 struct TxSlab {
     slots: Vec<TxSlot>,
     free: Vec<u32>,
-    queued: VecDeque<u32>,
+    /// Admitted leases of each TX queue, oldest first.
+    queued: Vec<VecDeque<u32>>,
     closed: bool,
 }
 
@@ -355,7 +373,8 @@ pub(crate) struct TxPortAllocationError;
 /// Transmit state of one port.
 pub(crate) struct NetPortTx {
     slab: PoisonLock<TxSlab>,
-    waker: AtomicWaker,
+    /// One per TX queue, woken when that queue gains a lease or the port closes.
+    wakers: Vec<AtomicWaker>,
     max_segments: usize,
     counters: TxLeaseCounters,
 }
@@ -363,7 +382,11 @@ pub(crate) struct NetPortTx {
 impl NetPortTx {
     /// # Errors
     /// Fails when the lease table cannot be reserved.
-    pub(crate) fn new(device_max_segments: usize) -> Result<Self, TxPortAllocationError> {
+    pub(crate) fn new(
+        device_max_segments: usize,
+        device_queues: usize,
+    ) -> Result<Self, TxPortAllocationError> {
+        let queues = device_queues.clamp(1, TX_MAX_QUEUES);
         let mut slots = Vec::new();
         slots
             .try_reserve_exact(TX_LEASE_CAPACITY)
@@ -371,10 +394,21 @@ impl NetPortTx {
         let mut free = Vec::new();
         free.try_reserve_exact(TX_LEASE_CAPACITY)
             .map_err(|_| TxPortAllocationError)?;
-        let mut queued = VecDeque::new();
+        let mut queued = Vec::new();
         queued
-            .try_reserve_exact(TX_LEASE_CAPACITY)
+            .try_reserve_exact(queues)
             .map_err(|_| TxPortAllocationError)?;
+        let mut wakers = Vec::new();
+        wakers
+            .try_reserve_exact(queues)
+            .map_err(|_| TxPortAllocationError)?;
+        for _ in 0..queues {
+            let mut fifo = VecDeque::new();
+            fifo.try_reserve_exact(TX_LEASE_CAPACITY)
+                .map_err(|_| TxPortAllocationError)?;
+            queued.push(fifo);
+            wakers.push(AtomicWaker::new());
+        }
         for index in (0..TX_LEASE_CAPACITY as u32).rev() {
             slots.push(TxSlot {
                 generation: 0,
@@ -391,7 +425,7 @@ impl NetPortTx {
                 queued,
                 closed: false,
             }),
-            waker: AtomicWaker::new(),
+            wakers,
             max_segments: device_max_segments.clamp(1, TX_FRAME_MAX_SEGMENTS),
             counters: TxLeaseCounters::default(),
         })
@@ -399,6 +433,10 @@ impl NetPortTx {
 
     pub(crate) const fn max_segments(&self) -> usize {
         self.max_segments
+    }
+
+    pub(crate) fn queue_count(&self) -> usize {
+        self.wakers.len()
     }
 
     pub(crate) fn stats(&self) -> TxLeaseStats {
@@ -421,6 +459,9 @@ impl NetPortTx {
     /// outstanding, the frame cannot fit the descriptor limit, or descriptor
     /// storage cannot be reserved.
     pub(crate) fn admit(&self, frame: TxFrame, meta: NetTxMeta) -> Result<(), TxAdmissionError> {
+        let queue = frame
+            .flow_hash
+            .map_or(0, |hash| hash as usize % self.queue_count());
         let frame = frame
             .fit_segments(self.max_segments)
             .map_err(|frame| TxAdmissionError::new(TxAdmissionCause::TooManySegments, frame))?;
@@ -444,24 +485,28 @@ impl NetPortTx {
             ));
         }
         frame.push_dma_regions(&mut slot.regions);
-        slot.meta = meta;
+        slot.meta = NetTxMeta {
+            queue_index: Some(queue as u16),
+            ..meta
+        };
         slot.state = TxSlotState::Queued;
         slab.free.pop();
-        slab.queued.push_back(index);
+        slab.queued[queue].push_back(index);
         drop(slab);
         self.counters.admitted.fetch_add(1, Ordering::Relaxed);
-        self.waker.wake();
+        self.wakers[queue].wake();
         Ok(())
     }
 
-    /// Move the oldest queued lease to `Submitting`, handing its regions to
-    /// `scratch` for the descriptor visit. `scratch` must be empty.
+    /// Move the oldest lease queued on `queue` to `Submitting`, handing its
+    /// regions to `scratch` for the descriptor visit. `scratch` must be empty.
     pub(crate) fn begin_submission(
         &self,
+        queue: usize,
         scratch: &mut Vec<PacketDmaRegion>,
     ) -> Option<(TxLeaseId, NetTxMeta)> {
         let mut slab = self.slab.lock().unwrap_or_else(|error| error.into_inner());
-        let index = slab.queued.pop_front()?;
+        let index = slab.queued.get_mut(queue)?.pop_front()?;
         let lease_id = slab.lease_id(index);
         let slot = &mut slab.slots[index as usize];
         core::mem::swap(scratch, &mut slot.regions);
@@ -546,15 +591,19 @@ impl NetPortTx {
     pub(crate) fn close_and_release_queued(&self) {
         let mut slab = self.slab.lock().unwrap_or_else(|error| error.into_inner());
         slab.closed = true;
-        // LOOP_PROOF: mode=condition; reason=Each iteration removes one index from the finite queued list under the slab lock, which no producer holds.;
-        while let Some(index) = slab.queued.pop_front() {
-            slab.free_slot(index);
-            self.counters
-                .released_unsubmitted
-                .fetch_add(1, Ordering::Relaxed);
+        for queue in 0..slab.queued.len() {
+            // LOOP_PROOF: mode=condition; reason=Each iteration removes one index from the finite queued list under the slab lock, which no producer holds.;
+            while let Some(index) = slab.queued[queue].pop_front() {
+                slab.free_slot(index);
+                self.counters
+                    .released_unsubmitted
+                    .fetch_add(1, Ordering::Relaxed);
+            }
         }
         drop(slab);
-        self.waker.wake();
+        for waker in &self.wakers {
+            waker.wake();
+        }
     }
 
     /// Release every accepted lease after the driver proved that device
@@ -572,16 +621,18 @@ impl NetPortTx {
         }
     }
 
-    pub(crate) fn has_queued(&self) -> bool {
-        !self
-            .slab
+    pub(crate) fn has_queued(&self, queue: usize) -> bool {
+        self.slab
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .queued
-            .is_empty()
+            .get(queue)
+            .is_some_and(|fifo| !fifo.is_empty())
     }
 
-    pub(crate) fn register_waker(&self, waker: &Waker) {
-        self.waker.register(waker);
+    pub(crate) fn register_waker(&self, queue: usize, waker: &Waker) {
+        if let Some(queue_waker) = self.wakers.get(queue) {
+            queue_waker.register(waker);
+        }
     }
 }

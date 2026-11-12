@@ -18,6 +18,27 @@ fn set_packet_visible_len(
         .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)
 }
 
+/// Flow hash of an L3 datagram, from its addresses, protocol and, for TCP and
+/// UDP, the ports at the start of its body. Every frame of the datagram gets
+/// it, so they share one TX queue.
+pub(super) fn l4_flow_hash(src: u32, dst: u32, protocol: IpProtocol, body: &TxBody) -> u32 {
+    let protocol = u8::from(protocol);
+    let (src_port, dst_port) = match protocol {
+        6 | 17 => PacketPayloadView::new(body.payload())
+            .read_array::<4>(0)
+            .map_or((0, 0), |ports| {
+                (
+                    u16::from_be_bytes([ports[0], ports[1]]),
+                    u16::from_be_bytes([ports[2], ports[3]]),
+                )
+            }),
+        _ => (0, 0),
+    };
+    crate::net::datapath::optimization::FlowAffinity::hash_5tuple(
+        src, dst, src_port, dst_port, protocol,
+    )
+}
+
 /// Ethernet and IPv4 header fields shared by every frame of one datagram.
 struct Ipv4FrameHeader {
     src_mac: MacAddress,
@@ -748,6 +769,12 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::NetworkUnreachable);
         };
         let identification = state.ipv4.next_id(dst_ip);
+        let flow_hash = l4_flow_hash(
+            u32::from_be_bytes(src_ip.octets()),
+            u32::from_be_bytes(dst_ip.octets()),
+            protocol,
+            &body,
+        );
         let header = Ipv4FrameHeader {
             src_mac,
             dst_mac,
@@ -779,7 +806,7 @@ impl NetworkStack {
                 }
             };
             return self
-                .transmit_frame_on(if_id, frame)
+                .transmit_frame_on(if_id, frame.in_flow(flow_hash))
                 .map_err(|_| crate::net::types::NetworkError::TransmitFailed);
         }
 
@@ -825,7 +852,7 @@ impl NetworkStack {
             // are discarded by the receiver's reassembly timeout.
             self.transmit_frame_on(
                 if_id,
-                TxFrame::with_header(packet, TxBody::Retained(fragment_body)),
+                TxFrame::with_header(packet, TxBody::Retained(fragment_body)).in_flow(flow_hash),
             )
             .map_err(|_| crate::net::types::NetworkError::TransmitFailed)?;
             offset += fragment_data_len;

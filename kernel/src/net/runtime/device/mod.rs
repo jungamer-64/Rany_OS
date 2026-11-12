@@ -11,7 +11,8 @@ extern crate alloc;
 mod tx;
 use tx::NetPortTx;
 pub(crate) use tx::{
-    TxAdmissionCause, TxAdmissionError, TxBody, TxCompletionError, TxFrame, TxLeaseStats,
+    TX_FRAME_MAX_SEGMENTS, TxAdmissionCause, TxAdmissionError, TxBody, TxCompletionError, TxFrame,
+    TxLeaseStats,
 };
 
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
@@ -392,7 +393,9 @@ pub struct NetDeviceHandle {
     tx: NetPortTx,
     rx_pool: crate::net::datapath::mempool::PacketPool,
     event_sink: Box<NetEventSink>,
-    driver_gate: PoisonLock<()>,
+    /// Driver calls hold it shared; stop holds it exclusively, so stop runs
+    /// only after every submission and event call has returned.
+    driver_gate: PoisonRwLock<()>,
     active: AtomicBool,
     tx_worker_started: AtomicBool,
     event_worker_started: AtomicBool,
@@ -405,7 +408,10 @@ impl NetDeviceHandle {
         context: &'static NetRuntimeContext,
     ) -> Result<Self, (Box<dyn NetDevicePort>, &'static str)> {
         let info = driver.info();
-        let tx = match NetPortTx::new(usize::from(info.max_tx_segments.get())) {
+        let tx = match NetPortTx::new(
+            usize::from(info.max_tx_segments.get()),
+            usize::from(info.queue_pairs),
+        ) {
             Ok(tx) => tx,
             Err(_) => return Err((driver, "TX lease storage allocation failed")),
         };
@@ -429,7 +435,7 @@ impl NetDeviceHandle {
             tx,
             rx_pool,
             event_sink: Box::new(NetEventSink::new()),
-            driver_gate: PoisonLock::new(()),
+            driver_gate: PoisonRwLock::new(()),
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
@@ -525,7 +531,7 @@ impl NetDeviceHandle {
         self.event_sink.wake();
         let _driver_guard = self
             .driver_gate
-            .lock()
+            .write()
             .unwrap_or_else(|error| error.into_inner());
         self.driver.stop()?;
         self.tx.release_after_stop();
@@ -561,11 +567,13 @@ fn start_workers_for_port_in(
         .cloned()
         .ok_or("device handle missing before worker startup")?;
     if !handle.tx_worker_started.swap(true, Ordering::AcqRel) {
-        crate::task::spawn(
-            tx_worker(Arc::clone(&handle)),
-            crate::task::TaskOptions::any(),
-        )
-        .map_err(|_| "failed to spawn network TX worker")?;
+        for queue in 0..handle.tx.queue_count() {
+            crate::task::spawn(
+                tx_worker(Arc::clone(&handle), queue),
+                crate::task::TaskOptions::any(),
+            )
+            .map_err(|_| "failed to spawn network TX worker")?;
+        }
     }
     if !handle.event_worker_started.swap(true, Ordering::AcqRel) {
         crate::task::spawn(event_worker(handle), crate::task::TaskOptions::any())
@@ -576,7 +584,7 @@ fn start_workers_for_port_in(
 
 #[derive(Clone, Copy)]
 enum DeviceQueueKind {
-    Tx,
+    Tx(usize),
     Event,
 }
 
@@ -592,7 +600,7 @@ impl DeviceQueueWaitFuture<'_> {
             return true;
         }
         match self.kind {
-            DeviceQueueKind::Tx => self.handle.tx.has_queued(),
+            DeviceQueueKind::Tx(queue) => self.handle.tx.has_queued(queue),
             DeviceQueueKind::Event => !self.handle.event_sink.is_empty(),
         }
     }
@@ -606,7 +614,7 @@ impl Future for DeviceQueueWaitFuture<'_> {
             return Poll::Ready(());
         }
         match self.kind {
-            DeviceQueueKind::Tx => self.handle.tx.register_waker(cx.waker()),
+            DeviceQueueKind::Tx(queue) => self.handle.tx.register_waker(queue, cx.waker()),
             DeviceQueueKind::Event => self.handle.event_sink.waker.register(cx.waker()),
         }
         if self.ready() {
@@ -617,7 +625,8 @@ impl Future for DeviceQueueWaitFuture<'_> {
     }
 }
 
-async fn tx_worker(handle: Arc<NetDeviceHandle>) {
+/// Submit the leases of one TX queue of a port, in admission order.
+async fn tx_worker(handle: Arc<NetDeviceHandle>, queue: usize) {
     let mut scratch = Vec::new();
     if scratch.try_reserve_exact(handle.max_tx_segments()).is_err() {
         log::error!(target: "net::device", "failed to reserve TX descriptor scratch");
@@ -628,17 +637,17 @@ async fn tx_worker(handle: Arc<NetDeviceHandle>) {
         if !handle.active.load(Ordering::Acquire) {
             return;
         }
-        let Some((lease_id, meta)) = handle.tx.begin_submission(&mut scratch) else {
+        let Some((lease_id, meta)) = handle.tx.begin_submission(queue, &mut scratch) else {
             DeviceQueueWaitFuture {
                 handle: &handle,
-                kind: DeviceQueueKind::Tx,
+                kind: DeviceQueueKind::Tx(queue),
             }
             .await;
             continue;
         };
         let _driver_guard = handle
             .driver_gate
-            .lock()
+            .read()
             .unwrap_or_else(|error| error.into_inner());
         let result = if handle.active.load(Ordering::Acquire) {
             // SAFETY: the regions come from consumed owners or frozen
@@ -683,7 +692,7 @@ async fn event_worker(handle: Arc<NetDeviceHandle>) {
         };
         let _driver_guard = handle
             .driver_gate
-            .lock()
+            .read()
             .unwrap_or_else(|error| error.into_inner());
         if !handle.active.load(Ordering::Acquire) {
             return;
