@@ -310,6 +310,45 @@ impl PacketRef {
         })
     }
 
+    /// Give up CPU access to the visible bytes and keep only a device-visible
+    /// region over them. The retained count moves into the region unchanged.
+    ///
+    /// # Errors
+    /// An empty window has no device-visible bytes and returns this owner.
+    pub fn into_dma_region(self) -> Result<PacketDmaRegion, Self> {
+        let Some(len) = PacketByteCount::new(self.len()) else {
+            return Err(self);
+        };
+        let packet = ManuallyDrop::new(self);
+        Ok(PacketDmaRegion {
+            memory: packet.memory,
+            offset: packet.window.offset,
+            len,
+        })
+    }
+
+    /// Retain a second handle over this same partition and window.
+    ///
+    /// # Safety
+    /// Both handles alias the partition. While either exists, no handle may
+    /// write its bytes, grow its window (`try_resize` beyond its length,
+    /// `try_retreat`) or expose it for RX DMA. Holders may only read, shrink or
+    /// split their own window, and convert into device regions.
+    ///
+    /// # Errors
+    /// A saturated retention count publishes no handle.
+    pub(crate) unsafe fn share(&self) -> Result<Self, PacketWindowError> {
+        if !self.backing().retain() {
+            return Err(PacketWindowError::ReferenceLimit);
+        }
+        Ok(Self {
+            memory: self.memory,
+            window: self.window,
+            meta: self.meta,
+            _not_sync: PhantomData,
+        })
+    }
+
     /// Observe an empty packet's writable capacity for RX admission. The owner
     /// remains inaccessible inside `RxBuffer` until hardware completion.
     pub(crate) fn rx_dma_region(&self) -> Option<PacketDmaRegion> {
@@ -496,6 +535,7 @@ impl fmt::Debug for PacketRef {
 
 #[cfg(test)]
 mod tests {
+    use super::super::{PacketPayloadError, RetainedPayloadFront};
     use super::*;
     use alloc::boxed::Box;
     use alloc::sync::Arc;
@@ -716,6 +756,68 @@ mod tests {
         drop(packet);
         assert_eq!(returns.load(Ordering::SeqCst), 1);
     }
+    #[test]
+    fn retained_payload_shares_bytes_and_releases_backing_after_its_last_handle() {
+        let (mut packet, returns) = packet(32, 8);
+        packet.try_resize(6).unwrap();
+        packet.data_mut().copy_from_slice(b"abcdef");
+        let retained = PacketPayload::try_single(packet).unwrap().into_retained();
+        let copy = retained.try_retain().unwrap();
+        assert_eq!(copy.payload().segments()[0].data(), b"abcdef");
+        assert_eq!(
+            copy.payload().segments()[0].as_ptr(),
+            retained.payload().segments()[0].as_ptr()
+        );
+        let RetainedPayloadFront::Prefix { front, remainder } = copy
+            .try_take_front(PacketByteCount::new(2).unwrap())
+            .unwrap()
+        else {
+            panic!("partial retained split");
+        };
+        assert_eq!(front.payload().segments()[0].data(), b"ab");
+        assert_eq!(remainder.payload().segments()[0].data(), b"cdef");
+        drop(retained);
+        drop(front);
+        let regions: alloc::vec::Vec<_> = remainder.into_dma_regions().collect();
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].physical_address().as_u64(), 0x1000 + 8 + 2);
+        assert_eq!(regions[0].len().get(), 4);
+        assert_eq!(returns.load(Ordering::SeqCst), 0);
+        drop(regions);
+        assert_eq!(returns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn owned_payload_becomes_device_regions_without_changing_retention() {
+        let (mut packet, returns) = packet(32, 8);
+        packet.try_resize(5).unwrap();
+        let regions: alloc::vec::Vec<_> = PacketPayload::try_single(packet)
+            .unwrap()
+            .into_dma_regions()
+            .collect();
+        assert_eq!(regions.len(), 1);
+        assert_eq!(regions[0].physical_address().as_u64(), 0x1008);
+        assert_eq!(returns.load(Ordering::SeqCst), 0);
+        drop(regions);
+        assert_eq!(returns.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn retention_saturation_publishes_no_retained_handle() {
+        let (mut packet, returns) = packet(32, 8);
+        packet.try_resize(4).unwrap();
+        let retained = PacketPayload::try_single(packet).unwrap().into_retained();
+        let backing = retained.payload().segments()[0].backing();
+        backing.references.store(usize::MAX, Ordering::Relaxed);
+        assert_eq!(
+            retained.try_retain().err(),
+            Some(PacketPayloadError::ReferenceLimit)
+        );
+        backing.references.store(1, Ordering::Relaxed);
+        drop(retained);
+        assert_eq!(returns.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn invalid_rx_layout_returns_the_completed_buffer_for_corrected_publication() {
         use crate::netdev::{NetRxFrameLayout, NetRxMeta, RxBuffer};

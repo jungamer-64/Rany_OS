@@ -10,7 +10,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
-use crate::resource::net::{PacketFront, PacketPayloadFront, PacketRef};
+use crate::resource::net::{PacketDmaRegion, PacketFront, PacketPayloadFront, PacketRef};
 
 /// Interface selection used by network-related KAPI calls.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -393,6 +393,20 @@ impl PacketPayload {
         PacketSegments { inner }
     }
 
+    /// Give up CPU access and keep one device-visible region per segment, in
+    /// order. Segments are non-empty by construction, so every one is kept.
+    pub fn into_dma_regions(self) -> impl ExactSizeIterator<Item = PacketDmaRegion> {
+        PacketDmaRegions {
+            segments: self.into_segments(),
+        }
+    }
+
+    /// Freeze this payload. From now on no CPU handle can write these bytes;
+    /// they stay readable and can be retained by further handles.
+    pub fn into_retained(self) -> RetainedPayload {
+        RetainedPayload { payload: self }
+    }
+
     /// # Errors
     /// Returns the unchanged packet and payload if the packet is empty, the total length overflows, or segment storage cannot be reserved.
     #[expect(
@@ -673,6 +687,141 @@ impl PacketPayload {
     }
 }
 
+struct PacketDmaRegions {
+    segments: PacketSegments,
+}
+
+impl Iterator for PacketDmaRegions {
+    type Item = PacketDmaRegion;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        // An empty segment cannot exist in a payload; skipping one would drop
+        // no device-visible byte.
+        self.segments
+            .by_ref()
+            .find_map(|packet| packet.into_dma_region().ok())
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.segments.size_hint()
+    }
+}
+
+impl ExactSizeIterator for PacketDmaRegions {}
+
+/// Immutable payload. Its handles and the device regions made from them are
+/// the only references to these bytes, and none of them can write: the bytes
+/// stay valid and unchanged until the last one is released, after which the
+/// backing returns to its allocator.
+///
+/// Further handles are retained without copying, so one payload can be read
+/// by a retransmission queue while copies of it wait for device transmission.
+#[derive(Debug)]
+pub struct RetainedPayload {
+    /// The contained packet handles may alias each other's partitions; this
+    /// type never writes through them, grows them or exposes them as owners.
+    payload: PacketPayload,
+}
+
+pub enum RetainedPayloadFront {
+    Whole(RetainedPayload),
+    Prefix {
+        front: RetainedPayload,
+        remainder: RetainedPayload,
+    },
+}
+
+impl RetainedPayload {
+    /// Read-only view of the frozen bytes.
+    pub const fn payload(&self) -> &PacketPayload {
+        &self.payload
+    }
+
+    pub const fn byte_len(&self) -> PacketByteCount {
+        self.payload.byte_len()
+    }
+
+    pub const fn total_len(&self) -> usize {
+        self.payload.total_len()
+    }
+
+    pub fn segment_count(&self) -> usize {
+        self.payload.segments().len()
+    }
+
+    /// Retain another handle over the same bytes.
+    ///
+    /// # Errors
+    /// `ReferenceLimit` reports a saturated backing count and
+    /// `AllocationFailed` missing segment storage. Neither retains anything.
+    pub fn try_retain(&self) -> Result<Self, PacketPayloadError> {
+        let storage = match &self.payload.storage {
+            PacketSegmentStorage::One(packet) => PacketSegmentStorage::One(share(packet)?),
+            PacketSegmentStorage::Pair([first, second]) => {
+                PacketSegmentStorage::Pair([share(first)?, share(second)?])
+            }
+            PacketSegmentStorage::Many(segments) => {
+                let mut shared = Vec::new();
+                shared
+                    .try_reserve_exact(segments.len())
+                    .map_err(|_| PacketPayloadError::AllocationFailed)?;
+                for packet in segments {
+                    shared.push(share(packet)?);
+                }
+                PacketSegmentStorage::Many(shared)
+            }
+        };
+        Ok(Self {
+            payload: PacketPayload {
+                storage,
+                total_len: self.payload.total_len,
+            },
+        })
+    }
+
+    /// Split off the first `len` bytes. Only the windows of these handles
+    /// change; the shared bytes do not.
+    ///
+    /// # Errors
+    /// Returns this unchanged payload when `len` is out of bounds, the
+    /// backing count is saturated, or prefix storage cannot be reserved.
+    #[expect(
+        clippy::result_large_err,
+        reason = "rejection returns the original inline handles without allocating an error"
+    )]
+    pub fn try_take_front(
+        self,
+        len: PacketByteCount,
+    ) -> Result<RetainedPayloadFront, PacketPayloadOwnershipError<Self>> {
+        match self.payload.try_take_front(len) {
+            Ok(PacketPayloadFront::Whole(payload)) => {
+                Ok(RetainedPayloadFront::Whole(Self { payload }))
+            }
+            Ok(PacketPayloadFront::Prefix { front, remainder }) => {
+                Ok(RetainedPayloadFront::Prefix {
+                    front: Self { payload: front },
+                    remainder: Self { payload: remainder },
+                })
+            }
+            Err(error) => {
+                let (cause, payload) = error.into_parts();
+                Err(PacketPayloadOwnershipError::new(cause, Self { payload }))
+            }
+        }
+    }
+
+    /// Keep one device-visible region per segment, in order.
+    pub fn into_dma_regions(self) -> impl ExactSizeIterator<Item = PacketDmaRegion> {
+        self.payload.into_dma_regions()
+    }
+}
+
+fn share(packet: &PacketRef) -> Result<PacketRef, PacketPayloadError> {
+    // SAFETY: the handle is stored only inside a `RetainedPayload`, which never
+    // writes, grows or exposes its handles; every alias is equally read-only.
+    unsafe { packet.share() }.map_err(map_window_error)
+}
+
 fn map_window_error(error: PacketWindowError) -> PacketPayloadError {
     match error {
         PacketWindowError::Empty => PacketPayloadError::EmptyPayload,
@@ -834,9 +983,10 @@ fn split_many(
                 prefix.push(segment);
             }
             Err(error) => {
-                segments.insert(split_index, error.into_owner());
+                let (cause, segment) = error.into_parts();
+                segments.insert(split_index, segment);
                 return Err(PacketPayloadOwnershipError::new(
-                    PacketPayloadError::ReferenceLimit,
+                    map_window_error(cause),
                     PacketPayload {
                         storage: PacketSegmentStorage::Many(segments),
                         total_len,

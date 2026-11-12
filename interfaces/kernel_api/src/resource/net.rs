@@ -14,7 +14,7 @@ use crate::{KapiError, KapiResult};
 pub use crate::types_impl::{
     DEFAULT_PACKET_HEADROOM, InterfaceScope, NetSocketAddr, PacketByteCount, PacketMeta,
     PacketOwnershipError, PacketPayload, PacketPayloadError, PacketPayloadOwnershipError,
-    PacketSegments, PacketType, PacketWindowError,
+    PacketSegments, PacketType, PacketWindowError, RetainedPayload, RetainedPayloadFront,
 };
 
 /// # Errors
