@@ -108,12 +108,17 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - DNS は parser / cache / record data まで packet-backed view を正規面とし、`String` / raw byte ownership への早期変換を baseline にしない。
 - DNS 応答の canonical ownership は `DnsResponseView { payload, records }` に置き、cache も response payload ownership + record metadata を保持する。
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
+- IPv4 / IPv6 の再構成では、各 fragment が受信 packet を保持する。そのため保持数を datagram あたり 64、reassembler 全体で 512 に制限し、上限を超える fragment はその datagram を破棄する。期限切れの回収は fragment の到着ではなく stack の周期処理で行い、先頭 fragment を受信済みの datagram ごとに Time Exceeded を返す。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
 - runtime / device / driver の TX 境界は `PacketRef` 単体ではなく `PacketPayload` を正規送信単位として扱う。
 - TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
 - TCP retransmit は同じ packet backing を `Ready` / `InFlight` 間で移動する。ACK が DMA completion より先に到着しても completion までは owner を保持し、未送信または outcome 不明の completion は再送可能な ownership へ戻す。
 - TCP の challenge ACK と stateless RST の送信予約は kernel 全体の時間窓で制限する。共有実行資源への負荷を抑えるため、system uptime を基準に期間更新と予約を直列化し、packet の構築・送信拒否後も予約を消費済みとして扱う。
 - 各 TCB の out-of-order queue は最大 16 segment とし、runtime 全体では 512 permit を admission 前に予約する。overlap、eviction、prune、connection close の全経路が permit を返す。
+- 送信窓 (SND.WND) は RFC 5961 の ACK 検証を通過したセグメントだけが、SND.WL1 / SND.WL2 より古くない場合に更新する。TS.Recent と SACK scoreboard も同じ検証の後で更新し、fast path も slow path と同じ timestamp admission を通す。
+- 広告する受信窓は、合意した window scale でシフトしてから 16 bit に clamp する。SYN cookie から確立した接続は scale / SACK / timestamp を復元できないため、stateless な SYN-ACK ではこれらを提示しない。
+- passive open で確立した接続は listener の accept queue に受理された時点で接続用の socket id を得る。受理できない場合は RST で中止し、所有者のいない ESTABLISHED TCB を残さない。
+- FIN は close 要求後、送信バッファの全データを再送キューへ渡した後にだけ送り、データと同様に ACK されるまで再送する。
 - core canonical docs は packet / endpoint / ownership vocabulary を前提に語彙を組み立てる。
 
 ### 4.3 Validation boundary
