@@ -3,10 +3,16 @@
 // ============================================================================
 //! Shared network port runtime.
 //!
-//! This layer owns port registration, interface binding, TX queuing, ISR-safe
+//! This layer owns port registration, interface binding, TX admission, ISR-safe
 //! event delivery, and the runtime object exposed to driver adapters.
 
 extern crate alloc;
+
+mod tx;
+use tx::NetPortTx;
+pub(crate) use tx::{
+    TxAdmissionCause, TxAdmissionError, TxBody, TxCompletionError, TxFrame, TxLeaseStats,
+};
 
 use crate::net::l2::ethernet::MacAddress as StackMacAddress;
 use crate::net::l3::ipv4::Ipv4Config;
@@ -22,22 +28,18 @@ use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::future::Future;
-use core::num::NonZeroUsize;
 use core::pin::Pin;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::task::{Context, Poll};
-use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
 use kernel_api::service::netdev::{
     MacAddress, NETDEV_FLAG_ADMIN_UP, NETDEV_FLAG_BOUND_PORT, NETDEV_FLAG_HEALTHY,
     NETDEV_FLAG_LINK_UP, NETDEV_FLAG_PRIMARY, NetDeviceInfo, NetDevicePort, NetDriverEvent,
     NetLogLevel, NetPortId, NetPortRegistration, NetPortRuntimeCookie, NetPortRuntimeHandle,
-    NetPortRuntimeOps, NetPortStats, NetRxMeta, NetTxMeta, PrimaryPortPolicy, ReceivedPacket,
-    RxBuffer, TxDeviceOutcome, TxLeaseId, TxPacketSubmission,
+    NetPortRuntimeOps, NetPortStats, NetTxMeta, PrimaryPortPolicy, ReceivedPacket, RxBuffer,
+    TxDeviceOutcome, TxLeaseId, TxPacketSubmission,
 };
 
-const NET_DEVICE_TX_QUEUE_CAPACITY: usize = 1024;
 const NET_DEVICE_EVENT_QUEUE_CAPACITY: usize = 256;
-
 
 fn runtime_context_for(runtime: NetRuntimeHandle) -> &'static NetRuntimeContext {
     runtime.context()
@@ -52,7 +54,6 @@ pub struct NetDeviceBinding {
     pub port_id: NetPortId,
     pub if_id: NetIfId,
 }
-
 
 pub struct NetEventSink {
     queue: MpmcRingBuffer<NetDriverEvent, NET_DEVICE_EVENT_QUEUE_CAPACITY>,
@@ -113,7 +114,6 @@ impl NetEventSink {
     }
 }
 
-
 pub struct NetEventWaitFuture<'a> {
     sink: &'a NetEventSink,
 }
@@ -133,7 +133,6 @@ impl Future for NetEventWaitFuture<'_> {
         }
     }
 }
-
 
 #[derive(Clone, Copy)]
 struct RuntimeHandleId {
@@ -242,16 +241,20 @@ fn runtime_submit_rx(
 
 fn runtime_complete_tx_lease(
     cookie: NetPortRuntimeCookie,
-    _port_id: NetPortId,
+    port_id: NetPortId,
     lease_id: TxLeaseId,
     outcome: TxDeviceOutcome,
 ) -> Result<(), &'static str> {
-    let runtime = runtime_context_from_cookie(cookie)?.handle();
-    if complete_tx_lease_in(runtime, lease_id, outcome) {
-        Ok(())
-    } else {
-        Err("tx lease not registered")
-    }
+    let context = runtime_context_from_cookie(cookie)?;
+    let if_id = current_if_for_port(context, port_id)?;
+    // Only the completing port's own leases are reachable from here.
+    with_port_handle_in(context.handle(), if_id, |handle| {
+        handle
+            .tx
+            .complete(lease_id, outcome)
+            .map_err(TxCompletionError::as_str)
+    })
+    .unwrap_or(Err("device port not registered"))
 }
 
 fn runtime_schedule_event(
@@ -363,9 +366,8 @@ static NET_PORT_RUNTIME_OPS: NetPortRuntimeOps = NetPortRuntimeOps::new(
 pub struct NetDeviceHandle {
     driver: Box<dyn NetDevicePort>,
     binding: PoisonLock<NetDeviceBinding>,
-    owner_runtime: NetRuntimeHandle,
     runtime: NetPortRuntimeHandle,
-    tx_queue: Box<NetTxQueue>,
+    tx: NetPortTx,
     event_sink: Box<NetEventSink>,
     driver_gate: PoisonLock<()>,
     active: AtomicBool,
@@ -378,19 +380,42 @@ impl NetDeviceHandle {
         driver: Box<dyn NetDevicePort>,
         binding: NetDeviceBinding,
         context: &'static NetRuntimeContext,
-    ) -> Self {
-        Self {
+    ) -> Result<Self, (Box<dyn NetDevicePort>, &'static str)> {
+        let max_segments = usize::from(driver.info().max_tx_segments.get());
+        let tx = match NetPortTx::new(max_segments) {
+            Ok(tx) => tx,
+            Err(_) => return Err((driver, "TX lease storage allocation failed")),
+        };
+        Ok(Self {
             driver,
-            owner_runtime: NetRuntimeHandle::new(context),
             runtime: runtime_handle_for_port(context, binding.port_id),
             binding: PoisonLock::new(binding),
-            tx_queue: Box::new(NetTxQueue::new()),
+            tx,
             event_sink: Box::new(NetEventSink::new()),
             driver_gate: PoisonLock::new(()),
             active: AtomicBool::new(true),
             tx_worker_started: AtomicBool::new(false),
             event_worker_started: AtomicBool::new(false),
+        })
+    }
+
+    /// Admit `frame` to this port's TX leases.
+    ///
+    /// # Errors
+    /// Returns the unchanged frame with the reason it was not admitted.
+    pub(crate) fn transmit(&self, frame: TxFrame, meta: NetTxMeta) -> Result<(), TxAdmissionError> {
+        if !self.active.load(Ordering::Acquire) {
+            return Err(TxAdmissionError::new(TxAdmissionCause::PortStopped, frame));
         }
+        self.tx.admit(frame, meta)
+    }
+
+    pub(crate) fn tx_stats(&self) -> TxLeaseStats {
+        self.tx.stats()
+    }
+
+    pub(crate) const fn max_tx_segments(&self) -> usize {
+        self.tx.max_segments()
     }
 
     pub fn binding(&self) -> NetDeviceBinding {
@@ -402,10 +427,6 @@ impl NetDeviceHandle {
 
     pub fn driver(&self) -> &dyn NetDevicePort {
         self.driver.as_ref()
-    }
-
-    pub fn info(&self) -> NetDeviceInfo {
-        self.info_in(self.owner_runtime)
     }
 
     fn info_in(&self, runtime: NetRuntimeHandle) -> NetDeviceInfo {
@@ -458,27 +479,19 @@ impl NetDeviceHandle {
         Ok(())
     }
 
+    /// Close admission, release leases the driver never saw, then stop the
+    /// driver. Accepted leases are released only after the driver proves
+    /// device access ended; a failed stop keeps them for the retry.
     fn stop(&self) -> kernel_api::error::KapiResult<()> {
         self.active.store(false, Ordering::Release);
-        self.tx_queue.wake();
+        self.tx.close_and_release_queued();
         self.event_sink.wake();
         let _driver_guard = self
             .driver_gate
             .lock()
             .unwrap_or_else(|error| error.into_inner());
-        release_interface_tx_leases_in(
-            self.owner_runtime,
-            self.binding().if_id,
-            TxLeaseReleaseScope::QueuedOnly,
-            TxDeviceOutcome::NotTransmitted,
-        );
         self.driver.stop()?;
-        release_interface_tx_leases_in(
-            self.owner_runtime,
-            self.binding().if_id,
-            TxLeaseReleaseScope::All,
-            TxDeviceOutcome::OutcomeUnknown,
-        );
+        self.tx.release_after_stop();
         Ok(())
     }
 }
@@ -497,33 +510,29 @@ fn with_port_handle_in<R>(
     Some(f(handle.as_ref()))
 }
 
-fn pop_driver_event_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<NetDriverEvent> {
-    with_port_handle_in(runtime, if_id, |handle| handle.event_sink.pop()).flatten()
-}
-
+/// Start the port's TX and event workers. Each worker owns a handle to its
+/// port until the port's stop closes admission and wakes it.
 fn start_workers_for_port_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
 ) -> Result<(), &'static str> {
-    let start = with_port_handle_in(runtime, if_id, |handle| {
-        (
-            !handle.tx_worker_started.swap(true, Ordering::AcqRel),
-            !handle.event_worker_started.swap(true, Ordering::AcqRel),
-        )
-    });
-    let Some((start_tx, start_event)) = start else {
-        return Err("device handle missing before worker startup");
-    };
-    if start_tx {
-        crate::task::spawn(tx_worker(runtime, if_id), crate::task::TaskOptions::any())
-            .map_err(|_| "failed to spawn network TX worker")?;
-    }
-    if start_event {
+    let handle = device_manager_in(runtime)
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .handles
+        .get(&if_id)
+        .cloned()
+        .ok_or("device handle missing before worker startup")?;
+    if !handle.tx_worker_started.swap(true, Ordering::AcqRel) {
         crate::task::spawn(
-            event_worker(runtime, if_id),
+            tx_worker(Arc::clone(&handle)),
             crate::task::TaskOptions::any(),
         )
-        .map_err(|_| "failed to spawn network event worker")?;
+        .map_err(|_| "failed to spawn network TX worker")?;
+    }
+    if !handle.event_worker_started.swap(true, Ordering::AcqRel) {
+        crate::task::spawn(event_worker(handle), crate::task::TaskOptions::any())
+            .map_err(|_| "failed to spawn network event worker")?;
     }
     Ok(())
 }
@@ -534,49 +543,36 @@ enum DeviceQueueKind {
     Event,
 }
 
-struct DeviceQueueWaitFuture {
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
+/// Wait until the port has work of `kind` or stops admitting it.
+struct DeviceQueueWaitFuture<'a> {
+    handle: &'a NetDeviceHandle,
     kind: DeviceQueueKind,
 }
 
-impl DeviceQueueWaitFuture {
-    const fn new(runtime: NetRuntimeHandle, if_id: NetIfId, kind: DeviceQueueKind) -> Self {
-        Self {
-            runtime,
-            if_id,
-            kind,
+impl DeviceQueueWaitFuture<'_> {
+    fn ready(&self) -> bool {
+        if !self.handle.active.load(Ordering::Acquire) {
+            return true;
+        }
+        match self.kind {
+            DeviceQueueKind::Tx => self.handle.tx.has_queued(),
+            DeviceQueueKind::Event => !self.handle.event_sink.is_empty(),
         }
     }
 }
 
-impl Future for DeviceQueueWaitFuture {
+impl Future for DeviceQueueWaitFuture<'_> {
     type Output = ();
 
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let ready = with_port_handle_in(self.runtime, self.if_id, |handle| {
-            if !handle.active.load(Ordering::Acquire) {
-                return true;
-            }
-            match self.kind {
-                DeviceQueueKind::Tx => {
-                    if !handle.tx_queue.is_empty() {
-                        return true;
-                    }
-                    handle.tx_queue.waker.register(cx.waker());
-                    !handle.tx_queue.is_empty()
-                }
-                DeviceQueueKind::Event => {
-                    if !handle.event_sink.is_empty() {
-                        return true;
-                    }
-                    handle.event_sink.waker.register(cx.waker());
-                    !handle.event_sink.is_empty()
-                }
-            }
-        })
-        .unwrap_or(true);
-        if ready {
+        if self.ready() {
+            return Poll::Ready(());
+        }
+        match self.kind {
+            DeviceQueueKind::Tx => self.handle.tx.register_waker(cx.waker()),
+            DeviceQueueKind::Event => self.handle.event_sink.waker.register(cx.waker()),
+        }
+        if self.ready() {
             Poll::Ready(())
         } else {
             Poll::Pending
@@ -584,62 +580,90 @@ impl Future for DeviceQueueWaitFuture {
     }
 }
 
-async fn event_worker(runtime: NetRuntimeHandle, if_id: NetIfId) {
-    // LOOP_PROOF: mode=event; reason=The port owner controls worker lifetime, an empty event queue is awaited, and closed admission terminates the worker.;
+async fn tx_worker(handle: Arc<NetDeviceHandle>) {
+    let mut scratch = Vec::new();
+    if scratch.try_reserve_exact(handle.max_tx_segments()).is_err() {
+        log::error!(target: "net::device", "failed to reserve TX descriptor scratch");
+        return;
+    }
+    // LOOP_PROOF: mode=event; reason=The worker awaits its port's lease queue when empty and returns once the port's stop closes admission.;
     loop {
-        if !with_port_handle_in(runtime, if_id, |handle| {
-            handle.active.load(Ordering::Acquire)
-        })
-        .unwrap_or(false)
-        {
-            break;
+        if !handle.active.load(Ordering::Acquire) {
+            return;
         }
-
-        let mut pending = pop_driver_event_in(runtime, if_id);
-        if pending.is_none() {
-            DeviceQueueWaitFuture::new(runtime, if_id, DeviceQueueKind::Event).await;
-            pending = pop_driver_event_in(runtime, if_id);
+        let Some((lease_id, meta)) = handle.tx.begin_submission(&mut scratch) else {
+            DeviceQueueWaitFuture {
+                handle: &handle,
+                kind: DeviceQueueKind::Tx,
+            }
+            .await;
+            continue;
+        };
+        let _driver_guard = handle
+            .driver_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        let result = if handle.active.load(Ordering::Acquire) {
+            // SAFETY: the regions come from consumed owners or frozen
+            // payloads, so no CPU handle can write them. The lease stays
+            // `Submitting` and `scratch` keeps the regions through any
+            // synchronous completion until `finish_submission` below.
+            match unsafe { TxPacketSubmission::new(lease_id, &scratch) } {
+                Some(submission) => handle.driver.submit_tx_chain(submission, meta),
+                None => Err("TX lease holds no descriptors"),
+            }
+        } else {
+            Err("device port stopped before submission")
+        };
+        // Finishing under the driver gate orders it before a concurrent stop.
+        handle
+            .tx
+            .finish_submission(lease_id, result.is_ok(), &mut scratch);
+        if let Err(cause) = result {
+            log::warn!(
+                target: "net::device",
+                "device port={} TX submission failed: {}",
+                handle.binding().port_id.as_u64(),
+                cause
+            );
         }
+    }
+}
 
-        // LOOP_PROOF: mode=condition; reason=Each handled event is removed from the bounded port queue, and queue exhaustion or closed admission ends this batch.;
-        while let Some(event) = pending {
-            if !with_port_handle_in(runtime, if_id, |handle| {
-                handle.active.load(Ordering::Acquire)
-            })
-            .unwrap_or(false)
-            {
-                return;
+async fn event_worker(handle: Arc<NetDeviceHandle>) {
+    // LOOP_PROOF: mode=event; reason=The worker awaits its port's event queue when empty and returns once the port's stop closes admission.;
+    loop {
+        if !handle.active.load(Ordering::Acquire) {
+            return;
+        }
+        let Some(event) = handle.event_sink.pop() else {
+            DeviceQueueWaitFuture {
+                handle: &handle,
+                kind: DeviceQueueKind::Event,
             }
-
-            let handled = with_port_handle_in(runtime, if_id, |handle| {
-                let _driver_guard = handle
-                    .driver_gate
-                    .lock()
-                    .unwrap_or_else(|error| error.into_inner());
-                if !handle.active.load(Ordering::Acquire) {
-                    return None;
-                }
-                let binding = handle.binding();
-                let result = match event {
-                    NetDriverEvent::Poll => handle.driver.poll(binding.if_id.0),
-                    _ => handle.driver.handle_event(binding.if_id.0, event),
-                };
-                Some((binding.port_id, result))
-            });
-            match handled {
-                Some(Some((port_id, Err(err)))) => {
-                    log::warn!(
-                        target: "net::device",
-                        "device port={} event {:?} failed: {}",
-                        port_id.as_u64(),
-                        event,
-                        err
-                    );
-                }
-                Some(Some((_, Ok(())))) => {}
-                Some(None) | None => return,
-            }
-            pending = pop_driver_event_in(runtime, if_id);
+            .await;
+            continue;
+        };
+        let _driver_guard = handle
+            .driver_gate
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        if !handle.active.load(Ordering::Acquire) {
+            return;
+        }
+        let binding = handle.binding();
+        let result = match event {
+            NetDriverEvent::Poll => handle.driver.poll(binding.if_id.0),
+            _ => handle.driver.handle_event(binding.if_id.0, event),
+        };
+        if let Err(err) = result {
+            log::warn!(
+                target: "net::device",
+                "device port={} event {:?} failed: {}",
+                binding.port_id.as_u64(),
+                event,
+                err
+            );
         }
     }
 }
@@ -900,11 +924,13 @@ pub fn register_port_in(
         port_id: info.port_id,
         if_id,
     };
-    let handle = Arc::new(NetDeviceHandle::new(
-        driver,
-        binding,
-        runtime_context_for(runtime),
-    ));
+    let handle = match NetDeviceHandle::new(driver, binding, runtime_context_for(runtime)) {
+        Ok(handle) => Arc::new(handle),
+        Err((_driver, cause)) => {
+            rollback_interface_registration_in(runtime, if_id);
+            return Err(NetPortRegistrationError::NotPublished(cause));
+        }
+    };
     if let Err(err) = handle.driver.bind(if_id.0) {
         rollback_interface_registration_in(runtime, if_id);
         return Err(NetPortRegistrationError::NotPublished(err));
@@ -1051,6 +1077,42 @@ pub fn list_port_ids_in(runtime: NetRuntimeHandle) -> Vec<NetPortId> {
         .keys()
         .copied()
         .collect()
+}
+
+/// Admit `frame` to the port bound to `if_id`.
+///
+/// Success means the port holds the frame's regions until the driver's
+/// completion; it does not report transmission.
+///
+/// # Errors
+/// Returns the unchanged frame when the interface is down, no port is bound,
+/// or the port rejects it.
+pub(crate) fn transmit_frame_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    frame: TxFrame,
+    meta: NetTxMeta,
+) -> Result<(), TxAdmissionError> {
+    if !manager::is_interface_operational_in(runtime, if_id) {
+        return Err(TxAdmissionError::new(
+            TxAdmissionCause::InterfaceDown,
+            frame,
+        ));
+    }
+    let manager = device_manager_in(runtime)
+        .read()
+        .unwrap_or_else(|e| e.into_inner());
+    match manager.handles.get(&if_id) {
+        Some(handle) => handle.transmit(frame, meta),
+        None => Err(TxAdmissionError::new(
+            TxAdmissionCause::PortUnavailable,
+            frame,
+        )),
+    }
+}
+
+pub(crate) fn port_tx_stats_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> Option<TxLeaseStats> {
+    with_port_handle_in(runtime, if_id, NetDeviceHandle::tx_stats)
 }
 
 pub fn enqueue_event_in(

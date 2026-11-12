@@ -1175,15 +1175,16 @@ impl TcbTable {
                 let Ok(segment) = builder.build_checked_packet(key.local, key.remote) else {
                     continue;
                 };
+                // The queued probe consumes its sequence number; its timer
+                // retransmits it if this attempt is not admitted.
                 retransmit_queue_push(runtime, key.if_id, key.local, key.remote, seq, 1, segment);
-                if super::retransmit::retransmit_queue_transmit_ready(
+                data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
+                data.flow_control.on_probe_sent(current_tick);
+                if !super::retransmit::retransmit_queue_transmit_ready(
                     runtime, key.if_id, key.local, key.remote, seq,
                 ) {
-                    data.seq.snd_nxt = data.seq.snd_nxt.wrapping_add(1);
-                    data.flow_control.on_probe_sent(current_tick);
-                } else {
-                    log::warn!(
-                        "[TCP] zero-window probe TX ownership transition failed for {} -> {}",
+                    log::debug!(
+                        "[TCP] zero-window probe for {} -> {} awaits retransmission",
                         key.local,
                         key.remote
                     );

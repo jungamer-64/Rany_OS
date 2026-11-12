@@ -121,24 +121,42 @@ async fn run_virtio_dma_roundtrip() -> bool {
         info!("[kernel-test][net] VirtIO probe packet allocation failed");
         return false;
     };
-    let (completion_id, completion) =
-        crate::net::runtime::device::register_tx_completion_in(runtime);
-    if crate::net::runtime::device::transmit_packet_observed_in(
+    let Some(tx_before) = crate::net::runtime::device::port_tx_stats_in(runtime, if_id) else {
+        return false;
+    };
+    if crate::net::runtime::device::transmit_frame_in(
         runtime,
         if_id,
-        payload,
+        crate::net::runtime::device::TxFrame::whole(payload),
         NetTxMeta::default(),
-        Some(completion_id),
     )
     .is_err()
     {
         info!("[kernel-test][net] VirtIO probe TX admission rejected");
         return false;
     }
-    // The normal completion owner observes the hardware used entry and returns
-    // this packet's ownership before notifying its registered observer.
-    match with_timeout(completion, 10_000).await {
-        TimeoutResult::Completed(Ok(())) => {}
+    // The port's lease is released only by the driver's completion of the
+    // hardware used entry; its outcome is counted on the port.
+    let completed = async {
+        // LOOP_PROOF: mode=event; reason=The completion observation waits on a real timer until the port counts an outcome or the enclosing deadline ends the operation.;
+        loop {
+            let Some(stats) = crate::net::runtime::device::port_tx_stats_in(runtime, if_id) else {
+                return Ok::<_, kernel_api::service::time::TimerError>(false);
+            };
+            if stats.transmitted > tx_before.transmitted {
+                return Ok(true);
+            }
+            if stats.not_transmitted > tx_before.not_transmitted
+                || stats.outcome_unknown > tx_before.outcome_unknown
+                || stats.driver_rejected > tx_before.driver_rejected
+            {
+                return Ok(false);
+            }
+            crate::task::sleep_ms(10).await?;
+        }
+    };
+    match with_timeout(completed, 10_000).await {
+        TimeoutResult::Completed(Ok(true)) => {}
         cause => {
             info!(
                 "[kernel-test][net] VirtIO TX completion failed: {cause:?}; before={before:?} after={:?}",

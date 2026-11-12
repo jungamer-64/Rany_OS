@@ -190,7 +190,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Udp,
             ttl,
-            udp_payload,
+            TxBody::Owned(udp_payload),
             path_mtu,
         )
         .is_ok()

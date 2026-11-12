@@ -96,34 +96,34 @@ fn record_stack_glue_if_rx_in(runtime: NetRuntimeHandle, if_id: NetIfId) {
 // Transmit Bridge
 // ============================================================================
 
-pub fn transmit_from_stack_in(
+pub(crate) fn transmit_from_stack_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
-    payload: kernel_api::resource::net::PacketPayload,
+    frame: device::TxFrame,
     meta: kernel_api::service::netdev::NetTxMeta,
-    completion_id: Option<u64>,
-) -> Result<(), kernel_api::resource::net::PacketPayload> {
-    let packet_len = payload.total_len();
-    let admitted =
-        device::transmit_packet_observed_in(runtime, if_id, payload, meta, completion_id);
+) -> Result<(), device::TxAdmissionError> {
+    let frame_len = frame.total_len();
+    let admitted = device::transmit_frame_in(runtime, if_id, frame, meta);
     let observability = observability_in(runtime);
 
-    if admitted.is_ok() {
-        record_stack_glue_if_tx_in(runtime, if_id);
-        observability.counters().record_tx(packet_len);
-        observability
-            .trace()
-            .push(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
-        admitted
-    } else {
-        observability.counters().record_error();
-        observability.trace().push(
-            NetLayer::Driver,
-            NetEventKind::Error,
-            "device tx enqueue failed",
-        );
-        admitted
+    match &admitted {
+        Ok(()) => {
+            record_stack_glue_if_tx_in(runtime, if_id);
+            observability.counters().record_tx(frame_len);
+            observability
+                .trace()
+                .push(NetLayer::Driver, NetEventKind::Tx, "device queued tx");
+        }
+        Err(error) => {
+            observability.counters().record_error();
+            observability.trace().push(
+                NetLayer::Driver,
+                NetEventKind::Error,
+                error.cause().as_str(),
+            );
+        }
     }
+    admitted
 }
 
 // ============================================================================

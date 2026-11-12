@@ -5,10 +5,8 @@
 use super::NetIfId;
 use super::*;
 use crate::net::payload::PacketPayloadView;
-use crate::net::runtime::device::{
-    TxOwnerGroupLeaseCount, TxPayloadLease, TxPayloadOwners, TxPayloadWindowBounds,
-};
-use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef};
+use crate::net::runtime::device::{TxAdmissionError, TxBody, TxFrame};
+use kernel_api::resource::net::{PacketByteCount, PacketPayload, PacketRef, RetainedPayloadFront};
 
 fn set_packet_visible_len(
     packet: &mut PacketRef,
@@ -20,16 +18,70 @@ fn set_packet_visible_len(
         .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)
 }
 
-fn raw_payload_from_rejected_ethernet_frame(frame: PacketPayload) -> PacketPayload {
-    let header_len = PacketByteCount::new(14).expect("Ethernet header length is non-zero");
-    match frame
-        .try_take_front(header_len)
-        .expect("raw frames are constructed as an Ethernet header followed by the caller payload")
-    {
-        kernel_api::resource::net::PacketPayloadFront::Prefix { remainder, .. } => remainder,
-        kernel_api::resource::net::PacketPayloadFront::Whole(_) => {
-            unreachable!("raw Ethernet frame always contains an IP payload")
+/// Ethernet and IPv4 header fields shared by every frame of one datagram.
+struct Ipv4FrameHeader {
+    src_mac: MacAddress,
+    dst_mac: MacAddress,
+    src_ip: Ipv4Address,
+    dst_ip: Ipv4Address,
+    protocol: IpProtocol,
+    ttl: u8,
+    identification: u16,
+}
+
+impl Ipv4FrameHeader {
+    const LEN: usize = EthernetHeader::SIZE + crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
+    const BYTE_LEN: PacketByteCount = match PacketByteCount::new(Self::LEN) {
+        Some(len) => len,
+        None => panic!("Ethernet and IPv4 headers are non-empty"),
+    };
+
+    /// Write the Ethernet and IPv4 headers of a frame carrying
+    /// `payload_len` IP payload bytes into `buffer` of exactly `LEN` bytes.
+    fn write(
+        &self,
+        buffer: &mut [u8],
+        payload_len: usize,
+        more_fragments: bool,
+        fragment_offset_units: u16,
+    ) -> Result<(), crate::net::types::NetworkError> {
+        const IPV4_HEADER_LEN: usize = crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
+        let total_len = IPV4_HEADER_LEN
+            .checked_add(payload_len)
+            .and_then(|len| u16::try_from(len).ok())
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        if buffer.len() != Self::LEN {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
+        let Some(mut frame) = EthernetFrameMut::new(buffer) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        frame
+            .set_destination(self.dst_mac)
+            .set_source(self.src_mac)
+            .set_ether_type(EtherType::Ipv4);
+        let Some(mut ip_packet) = Ipv4PacketMut::new(frame.payload_mut()) else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        ip_packet
+            .init_header()
+            .set_source(self.src_ip)
+            .set_destination(self.dst_ip)
+            .set_protocol(self.protocol)
+            .set_identification(self.identification)
+            .set_ttl(self.ttl);
+        let Some(header) = ip_packet.header_mut() else {
+            return Err(crate::net::types::NetworkError::BufferTooSmall);
+        };
+        header.set_total_length(total_len);
+        header.set_fragmentation(
+            !more_fragments && fragment_offset_units == 0,
+            more_fragments,
+            fragment_offset_units,
+        );
+        header.set_checksum(0);
+        ip_packet.update_checksum();
+        Ok(())
     }
 }
 
@@ -41,11 +93,6 @@ mod protocol_impl;
 mod receive;
 /// Send path — IPv6 / ICMPv6 / NDP / IGMP outgoing packet construction.
 mod send_v6;
-
-struct FragmentTxPacket {
-    lease: TxPayloadLease,
-    frame_len: usize,
-}
 
 impl NetworkStack {
     pub(crate) fn interface_config_or_runtime(&self, if_id: NetIfId) -> Option<NetworkConfig> {
@@ -334,31 +381,28 @@ impl NetworkStack {
                 ));
             }
         };
-        let frame_header = match kernel_api::resource::net::PacketPayload::try_single(packet) {
-            Ok(payload) => payload,
-            Err(_) => {
-                return Err(crate::net::types::NetworkPayloadError::new(
-                    crate::net::types::NetworkError::BufferTooSmall,
-                    raw_payload,
-                ));
-            }
-        };
-        let frame_payload = match frame_header.try_append(raw_payload) {
-            Ok(payload) => payload,
-            Err(error) => {
-                let (_header, raw_payload) = error.into_owner();
-                return Err(crate::net::types::NetworkPayloadError::new(
-                    crate::net::types::NetworkError::ResourceExhausted,
-                    raw_payload,
-                ));
-            }
-        };
-        match self.transmit_packet_on(if_id, frame_payload) {
+        match self.transmit_frame_on(
+            if_id,
+            TxFrame::with_header(packet, TxBody::Owned(raw_payload)),
+        ) {
             Ok(()) => Ok(()),
-            Err(frame_payload) => Err(crate::net::types::NetworkPayloadError::new(
-                crate::net::types::NetworkError::TransmitFailed,
-                raw_payload_from_rejected_ethernet_frame(frame_payload),
-            )),
+            Err(error) => {
+                let cause = match error.cause() {
+                    crate::net::runtime::device::TxAdmissionCause::TooManySegments => {
+                        crate::net::types::NetworkError::BufferTooSmall
+                    }
+                    _ => crate::net::types::NetworkError::TransmitFailed,
+                };
+                let (_header, body) = error.into_frame().into_parts();
+                match body {
+                    TxBody::Owned(payload) => {
+                        Err(crate::net::types::NetworkPayloadError::new(cause, payload))
+                    }
+                    TxBody::Retained(_) => {
+                        unreachable!("an owned raw payload is never frozen by a rejected admission")
+                    }
+                }
+            }
         }
     }
 
@@ -481,31 +525,25 @@ impl NetworkStack {
                 return Err(crate::net::types::NetworkPayloadError::new(cause, payload));
             }
         };
-        let frame_header = match kernel_api::resource::net::PacketPayload::try_single(packet) {
-            Ok(payload) => payload,
-            Err(_) => {
-                return Err(crate::net::types::NetworkPayloadError::new(
-                    crate::net::types::NetworkError::BufferTooSmall,
-                    payload,
-                ));
-            }
-        };
-        let frame_payload = match frame_header.try_append(payload) {
-            Ok(payload) => payload,
-            Err(error) => {
-                let (_header, raw_payload) = error.into_owner();
-                return Err(crate::net::types::NetworkPayloadError::new(
-                    crate::net::types::NetworkError::ResourceExhausted,
-                    raw_payload,
-                ));
-            }
-        };
-        match self.transmit_packet_on(if_id, frame_payload) {
+        match self.transmit_frame_on(if_id, TxFrame::with_header(packet, TxBody::Owned(payload))) {
             Ok(()) => Ok(()),
-            Err(frame_payload) => Err(crate::net::types::NetworkPayloadError::new(
-                crate::net::types::NetworkError::TransmitFailed,
-                raw_payload_from_rejected_ethernet_frame(frame_payload),
-            )),
+            Err(error) => {
+                let cause = match error.cause() {
+                    crate::net::runtime::device::TxAdmissionCause::TooManySegments => {
+                        crate::net::types::NetworkError::BufferTooSmall
+                    }
+                    _ => crate::net::types::NetworkError::TransmitFailed,
+                };
+                let (_header, body) = error.into_frame().into_parts();
+                match body {
+                    TxBody::Owned(payload) => {
+                        Err(crate::net::types::NetworkPayloadError::new(cause, payload))
+                    }
+                    TxBody::Retained(_) => {
+                        unreachable!("an owned raw payload is never frozen by a rejected admission")
+                    }
+                }
+            }
         }
     }
 
@@ -591,41 +629,29 @@ impl NetworkStack {
         }
     }
 
-    pub fn transmit_packet_on(
+    /// Hand `frame` to the device boundary of `if_id`.
+    ///
+    /// # Errors
+    /// Returns the unchanged frame with the reason the device did not admit it.
+    pub(crate) fn transmit_frame_on(
         &self,
         if_id: NetIfId,
-        payload: kernel_api::resource::net::PacketPayload,
-    ) -> Result<(), kernel_api::resource::net::PacketPayload> {
-        let packet_len = kernel_api::resource::net::PacketPayload::total_len(&payload);
+        frame: TxFrame,
+    ) -> Result<(), TxAdmissionError> {
+        let frame_len = frame.total_len();
         match (self.transmit_fn)(
             self.runtime,
             if_id,
-            payload,
+            frame,
             kernel_api::service::netdev::NetTxMeta::default(),
-            self.pending_tx_completion_id,
         ) {
             Ok(()) => {
-                self.record_tx_success_on(if_id, packet_len);
+                self.record_tx_success_on(if_id, frame_len);
                 Ok(())
             }
-            Err(payload) => {
+            Err(error) => {
                 self.record_tx_error_on(if_id);
-                let Some(completion_id) = self.pending_tx_completion_id else {
-                    return Err(payload);
-                };
-                let result = Err("device TX request was not admitted");
-                let _owner_returned = crate::net::l4::tcp::retransmit::complete_tx_owner(
-                    self.runtime,
-                    completion_id,
-                    payload,
-                    kernel_api::service::netdev::TxDeviceOutcome::NotTransmitted,
-                );
-                let _ = crate::net::runtime::device::complete_tx_request_in(
-                    self.runtime,
-                    completion_id,
-                    result,
-                );
-                Ok(())
+                Err(error)
             }
         }
     }
@@ -642,77 +668,16 @@ impl NetworkStack {
         }
     }
 
+    /// Allocate a packet for a complete generated frame, at least the minimum
+    /// Ethernet frame length long so short frames are padded with zeros.
     fn alloc_ethernet_frame_packet(&self, frame_len: usize) -> Option<PacketRef> {
         crate::net::payload::alloc_packet_with_headroom_in(self.runtime, frame_len.max(60), 0)
     }
 
-    fn transmit_fragment_packets_on(
-        &self,
-        if_id: NetIfId,
-        owners: TxPayloadOwners,
-        fragments: Vec<FragmentTxPacket>,
-    ) -> Result<(), crate::net::types::NetworkError> {
-        if fragments.is_empty() {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        }
-
-        let runtime = self.runtime;
-        let frame_len = fragments
-            .iter()
-            .try_fold(0usize, |acc, fragment| acc.checked_add(fragment.frame_len))
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let remaining_leases = TxOwnerGroupLeaseCount::new(fragments.len())
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let group_id = crate::net::runtime::device::register_tx_owner_group_in(
-            runtime,
-            owners,
-            remaining_leases,
-            self.pending_tx_completion_id,
-        );
-
-        let mut requests: Vec<crate::net::runtime::device::TxRequest> = Vec::new();
-        for fragment in fragments {
-            let Some(request) = crate::net::runtime::device::register_grouped_tx_payload_lease_in(
-                runtime,
-                if_id,
-                fragment.lease,
-                group_id,
-                kernel_api::service::netdev::NetTxMeta::default(),
-            ) else {
-                for request in requests {
-                    let _ = crate::net::runtime::device::reject_registered_tx_lease_in(
-                        runtime,
-                        request.lease_id,
-                        "fragment TX request registration failed",
-                    );
-                }
-                crate::net::runtime::device::unregister_tx_owner_group_in(runtime, group_id);
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            };
-            requests.push(request);
-        }
-
-        let mut pending = requests.into_iter();
-        // LOOP_PROOF: mode=condition; reason=Each next consumes one request from the finite owned fragment vector, and a failed submission ends the drain after cancelling the suffix.;
-        while let Some(request) = pending.next() {
-            if crate::net::runtime::device::transmit_registered_tx_request_in(
-                runtime, if_id, request,
-            ) {
-                continue;
-            }
-            for request in pending {
-                let _ = crate::net::runtime::device::reject_registered_tx_lease_in(
-                    runtime,
-                    request.lease_id,
-                    "fragment TX request cancelled",
-                );
-            }
-            self.record_tx_error_on(if_id);
-            return Err(crate::net::types::NetworkError::TransmitFailed);
-        }
-
-        self.record_tx_success_on(if_id, frame_len);
-        Ok(())
+    /// Allocate a generated-header packet of exactly `header_len` bytes. Its
+    /// tailroom lets the device boundary move a small leading body segment in.
+    pub(crate) fn alloc_header_packet(&self, header_len: usize) -> Option<PacketRef> {
+        crate::net::payload::alloc_packet_with_headroom_in(self.runtime, header_len, 0)
     }
 
     fn build_ethernet_header_packet(
@@ -722,7 +687,7 @@ impl NetworkStack {
         ether_type: EtherType,
     ) -> Result<PacketRef, crate::net::types::NetworkError> {
         let mut packet = self
-            .alloc_ethernet_frame_packet(EthernetHeader::SIZE)
+            .alloc_header_packet(EthernetHeader::SIZE)
             .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
         let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
@@ -731,71 +696,6 @@ impl NetworkStack {
             .set_destination(dst_mac)
             .set_source(src_mac)
             .set_ether_type(ether_type);
-        frame.set_payload_len(0);
-        let frame_len = frame.as_bytes().len();
-        drop(frame);
-        set_packet_visible_len(&mut packet, frame_len)?;
-        Ok(packet)
-    }
-
-    fn build_ipv4_ethernet_header_packet(
-        &self,
-        src_mac: MacAddress,
-        dst_mac: MacAddress,
-        src_ip: Ipv4Address,
-        dst_ip: Ipv4Address,
-        protocol: IpProtocol,
-        ttl: u8,
-        identification: u16,
-        payload_len: usize,
-        more_fragments: bool,
-        fragment_offset_units: u16,
-    ) -> Result<PacketRef, crate::net::types::NetworkError> {
-        const IPV4_HEADER_LEN: usize = crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
-        let total_len = IPV4_HEADER_LEN
-            .checked_add(payload_len)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let total_len_u16 = u16::try_from(total_len)
-            .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
-
-        let mut packet = self
-            .alloc_ethernet_frame_packet(EthernetHeader::SIZE + IPV4_HEADER_LEN)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let Some(mut frame) = EthernetFrameMut::new(packet.data_mut()) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        };
-        frame
-            .set_destination(dst_mac)
-            .set_source(src_mac)
-            .set_ether_type(EtherType::Ipv4);
-
-        let eth_payload = frame.payload_mut();
-        let Some(mut ip_packet) = Ipv4PacketMut::new(eth_payload) else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        };
-        ip_packet
-            .init_header()
-            .set_source(src_ip)
-            .set_destination(dst_ip)
-            .set_protocol(protocol)
-            .set_identification(identification)
-            .set_ttl(ttl);
-        let Some(header) = ip_packet.header_mut() else {
-            return Err(crate::net::types::NetworkError::BufferTooSmall);
-        };
-        header.set_total_length(total_len_u16);
-        header.set_fragmentation(
-            !more_fragments && fragment_offset_units == 0,
-            more_fragments,
-            fragment_offset_units,
-        );
-        header.set_checksum(0);
-        ip_packet.update_checksum();
-
-        frame.set_payload_len(IPV4_HEADER_LEN);
-        let frame_len = frame.as_bytes().len();
-        drop(frame);
-        set_packet_visible_len(&mut packet, frame_len)?;
         Ok(packet)
     }
 
@@ -817,6 +717,10 @@ impl NetworkStack {
             .unwrap_or(crate::net::runtime::stack::MTU)
     }
 
+    /// Send `body` in one IPv4 datagram, or in fragments when it exceeds the
+    /// path MTU. An owned body takes its headers in place when its headroom
+    /// allows; otherwise each frame carries its own generated header packet
+    /// followed by a retained window of the body.
     fn send_ipv4_l4_payload_with_pmtu(
         &mut self,
         if_id: NetIfId,
@@ -826,12 +730,12 @@ impl NetworkStack {
         dst_ip: Ipv4Address,
         protocol: IpProtocol,
         ttl: u8,
-        payload: PacketPayload,
+        body: TxBody,
         path_mtu: usize,
     ) -> Result<(), crate::net::types::NetworkError> {
         const IPV4_HEADER_LEN: usize = crate::net::l3::ipv4::Ipv4Header::MIN_SIZE;
         const MAX_IPV4_PAYLOAD_LEN: usize = (u16::MAX as usize) - IPV4_HEADER_LEN;
-        let payload_len = payload.total_len();
+        let payload_len = body.total_len();
 
         if payload_len > MAX_IPV4_PAYLOAD_LEN {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
@@ -844,30 +748,39 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::NetworkUnreachable);
         };
         let identification = state.ipv4.next_id(dst_ip);
+        let header = Ipv4FrameHeader {
+            src_mac,
+            dst_mac,
+            src_ip,
+            dst_ip,
+            protocol,
+            ttl,
+            identification,
+        };
 
         if payload_len <= unfragmented_payload_limit {
-            let packet = self.build_ipv4_ethernet_header_packet(
-                src_mac,
-                dst_mac,
-                src_ip,
-                dst_ip,
-                protocol,
-                ttl,
-                identification,
-                payload_len,
-                false,
-                0,
-            )?;
-            let frame_payload = kernel_api::resource::net::PacketPayload::try_single(packet)
-                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
-            let frame_payload = frame_payload
-                .try_append(payload)
-                .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
-
-            if self.transmit_packet_on(if_id, frame_payload).is_ok() {
-                return Ok(());
-            }
-            return Err(crate::net::types::NetworkError::TransmitFailed);
+            let frame = match body {
+                TxBody::Owned(mut payload) => {
+                    match payload.try_prepend_in_place(Ipv4FrameHeader::BYTE_LEN) {
+                        Ok(buffer) => {
+                            header.write(buffer, payload_len, false, 0)?;
+                            TxFrame::whole(payload)
+                        }
+                        Err(_) => {
+                            let packet =
+                                self.build_ipv4_header_packet(&header, payload_len, false, 0)?;
+                            TxFrame::with_header(packet, TxBody::Owned(payload))
+                        }
+                    }
+                }
+                retained @ TxBody::Retained(_) => {
+                    let packet = self.build_ipv4_header_packet(&header, payload_len, false, 0)?;
+                    TxFrame::with_header(packet, retained)
+                }
+            };
+            return self
+                .transmit_frame_on(if_id, frame)
+                .map_err(|_| crate::net::types::NetworkError::TransmitFailed);
         }
 
         let non_last_fragment_len = unfragmented_payload_limit & !0x7;
@@ -875,56 +788,68 @@ impl NetworkStack {
             return Err(crate::net::types::NetworkError::BufferTooSmall);
         }
 
-        let owners = TxPayloadOwners::from_payload(payload)
-            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-        let mut fragments = Vec::new();
+        let mut remaining_body = Some(body.into_retained());
         let mut offset = 0usize;
-        // LOOP_PROOF: mode=bounded; reason=The positive fragment length advances offset through the finite IPv4 payload, and invalid fragment geometry returns an error.;
-        while offset < payload_len {
+        // LOOP_PROOF: mode=bounded; reason=Each fragment consumes a positive prefix of the finite IPv4 payload, and invalid fragment geometry returns an error.;
+        while let Some(retained) = remaining_body.take() {
             let remaining = payload_len - offset;
-            let fragment_data_len = if remaining > unfragmented_payload_limit {
-                non_last_fragment_len.min(remaining)
+            let more_fragments = remaining > unfragmented_payload_limit;
+            let fragment_data_len = if more_fragments {
+                non_last_fragment_len
             } else {
                 remaining
             };
-            if fragment_data_len == 0 {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
-            let more_fragments = offset + fragment_data_len < payload_len;
-            if more_fragments && (fragment_data_len % 8 != 0) {
-                return Err(crate::net::types::NetworkError::BufferTooSmall);
-            }
             let fragment_offset_units = u16::try_from(offset / 8)
                 .map_err(|_| crate::net::types::NetworkError::BufferTooSmall)?;
-            let packet = self.build_ipv4_ethernet_header_packet(
-                src_mac,
-                dst_mac,
-                src_ip,
-                dst_ip,
-                protocol,
-                ttl,
-                identification,
+            let fragment_body = if more_fragments {
+                let fragment_len = PacketByteCount::new(fragment_data_len)
+                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+                match retained.try_take_front(fragment_len) {
+                    Ok(RetainedPayloadFront::Prefix { front, remainder }) => {
+                        remaining_body = Some(remainder);
+                        front
+                    }
+                    Ok(RetainedPayloadFront::Whole(front)) => front,
+                    Err(_) => return Err(crate::net::types::NetworkError::ResourceExhausted),
+                }
+            } else {
+                retained
+            };
+            let packet = self.build_ipv4_header_packet(
+                &header,
                 fragment_data_len,
                 more_fragments,
                 fragment_offset_units,
             )?;
-            let fragment_len = PacketByteCount::new(fragment_data_len)
-                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let payload_bounds = TxPayloadWindowBounds::checked(&owners, offset, fragment_len)
-                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let frame_len = packet
-                .len()
-                .checked_add(fragment_data_len)
-                .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            let lease =
-                TxPayloadLease::from_header_and_owner_window(packet, &owners, payload_bounds)
-                    .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
-            fragments.push(FragmentTxPacket { lease, frame_len });
-
+            // A rejected fragment ends the datagram; fragments already admitted
+            // are discarded by the receiver's reassembly timeout.
+            self.transmit_frame_on(
+                if_id,
+                TxFrame::with_header(packet, TxBody::Retained(fragment_body)),
+            )
+            .map_err(|_| crate::net::types::NetworkError::TransmitFailed)?;
             offset += fragment_data_len;
         }
+        Ok(())
+    }
 
-        self.transmit_fragment_packets_on(if_id, owners, fragments)
+    fn build_ipv4_header_packet(
+        &self,
+        header: &Ipv4FrameHeader,
+        payload_len: usize,
+        more_fragments: bool,
+        fragment_offset_units: u16,
+    ) -> Result<PacketRef, crate::net::types::NetworkError> {
+        let mut packet = self
+            .alloc_header_packet(Ipv4FrameHeader::LEN)
+            .ok_or(crate::net::types::NetworkError::BufferTooSmall)?;
+        header.write(
+            packet.data_mut(),
+            payload_len,
+            more_fragments,
+            fragment_offset_units,
+        )?;
+        Ok(packet)
     }
 
     fn send_tcp_raw_on_with_ttl_payload(
@@ -932,10 +857,10 @@ impl NetworkStack {
         if_id: NetIfId,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: PacketPayload,
+        tcp_segment: TxBody,
         ttl: u8,
     ) -> bool {
-        let tcp_segment_view = PacketPayloadView::new(&tcp_segment);
+        let tcp_segment_view = PacketPayloadView::new(tcp_segment.payload());
         let Some(header) = tcp_segment_view.read_array::<14>(0) else {
             return false;
         };
@@ -1000,12 +925,12 @@ impl NetworkStack {
         .is_ok()
     }
 
-    pub fn send_tcp_payload_on(
+    pub(crate) fn send_tcp_payload_on(
         &mut self,
         if_id: NetIfId,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: PacketPayload,
+        tcp_segment: TxBody,
     ) -> bool {
         self.send_tcp_raw_on_with_ttl_payload(if_id, src_ip, dst_ip, tcp_segment, 64)
     }
@@ -1015,7 +940,7 @@ impl NetworkStack {
         if_id: NetIfId,
         src_ip: Ipv4Address,
         dst_ip: Ipv4Address,
-        tcp_segment: PacketPayload,
+        tcp_segment: TxBody,
         ttl: u8,
     ) -> bool {
         self.send_tcp_raw_on_with_ttl_payload(if_id, src_ip, dst_ip, tcp_segment, ttl)

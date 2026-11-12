@@ -16,6 +16,7 @@ use super::tcb::TcpFlowKey;
 use super::timer_wheel::TimingWheel;
 use crate::net::l4::types::{EndpointAddr, conn_key_hash, seq_leq as seq_leq_fn};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::{tcp_runtime_in, tcp_table_in};
 
@@ -218,7 +219,9 @@ impl RetransmitQueue {
         let Ok(copy) = seg.data.try_retain() else {
             return false;
         };
-        if send_tcp_segment_payload_in(runtime, if_id, local, remote, copy).is_err() {
+        if send_tcp_segment_payload_in(runtime, if_id, local, remote, TxBody::Retained(copy))
+            .is_err()
+        {
             return false;
         }
         seg.send_tick = current_tick;
@@ -237,11 +240,7 @@ impl RetransmitQueue {
         current_tick: u64,
     ) -> RetransmitAttempt {
         // SACKされていない最古のセグメントを探す
-        if let Some(seg) = self
-            .unacked
-            .iter_mut()
-            .find(|s| !s.is_sacked)
-        {
+        if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
             if seg.retransmit_count >= self.max_retries {
                 // 最大再送回数超過
                 return RetransmitAttempt::MaxRetriesExceeded;
@@ -283,11 +282,7 @@ impl RetransmitQueue {
         current_tick: u64,
     ) -> RetransmitAttempt {
         // SACKされていない最古の未確認セグメントを即座に再送
-        if let Some(seg) = self
-            .unacked
-            .iter_mut()
-            .find(|s| !s.is_sacked)
-        {
+        if let Some(seg) = self.unacked.iter_mut().find(|s| !s.is_sacked) {
             if seg.retransmit_count >= self.max_retries {
                 return RetransmitAttempt::MaxRetriesExceeded;
             }

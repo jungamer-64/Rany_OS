@@ -37,16 +37,14 @@ fn closed_port_response(runtime: NetRuntimeHandle, ack: u32) -> bool {
                 RawSendCommand::Ipv4 {
                     scope,
                     dst,
-                    transport: RawIpv4Transport::Tcp { src },
-                    payload,
-                    ..
+                    transport: RawIpv4Transport::Tcp { src, segment },
                 },
             ..
         }) => {
             assert_eq!(scope, crate::net::types::InterfaceScope::Pinned(if_id));
             assert_eq!(src, [127, 0, 0, 1]);
             assert_eq!(dst, [127, 0, 0, 2]);
-            let view = PacketPayloadView::new(&payload);
+            let view = PacketPayloadView::new(segment.payload());
             assert_eq!(view.total_len(), 20);
             assert_eq!(view.read_array::<2>(0), Some(local.port().to_be_bytes()));
             assert_eq!(view.read_array::<2>(2), Some(remote.port().to_be_bytes()));

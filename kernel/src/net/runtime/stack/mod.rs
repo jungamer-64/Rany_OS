@@ -133,23 +133,17 @@ impl NetworkStats {
     }
 }
 
-/// Transmit callback function type
-/// Transmit callback invoked by the network stack when it needs to send
-/// an Ethernet frame out to the wire.
+/// Device boundary used by every core-local stack to send an Ethernet frame.
 ///
 /// The `NetIfId` parameter identifies the exact logical interface selected by
-/// routing before the frame crosses the device boundary.
-///
-/// The callback should return `true` if the packet was successfully queued
-/// for transmission; `false` indicates failure and will usually result in the
-/// stack dropping the packet and recording an error statistic.
-pub type TransmitFn = fn(
+/// routing before the frame crosses the device boundary. Success means the
+/// port admitted the frame; a rejected frame is returned with its cause.
+pub(crate) type TransmitFn = fn(
     NetRuntimeHandle,
     NetIfId,
-    PacketPayload,
+    crate::net::runtime::device::TxFrame,
     NetTxMeta,
-    Option<u64>,
-) -> Result<(), PacketPayload>;
+) -> Result<(), crate::net::runtime::device::TxAdmissionError>;
 
 // ICMP Redirect Cache Entry
 #[derive(Debug)]
@@ -427,7 +421,7 @@ pub(crate) enum PendingIpv6Payload {
         data: PacketPayload,
     },
     Tcp {
-        segment: PacketPayload,
+        segment: crate::net::runtime::device::TxBody,
     },
 }
 
@@ -505,7 +499,7 @@ impl NdpPendingQueue {
         &mut self,
         src: Ipv6Address,
         dst: Ipv6Address,
-        segment: PacketPayload,
+        segment: crate::net::runtime::device::TxBody,
         current_time: u64,
     ) {
         if self.packets.len() >= NDP_PENDING_QUEUE_SIZE {
@@ -560,7 +554,7 @@ pub(crate) enum PendingIpv4Payload {
     },
     Tcp {
         ttl: u8,
-        segment: PacketPayload,
+        segment: crate::net::runtime::device::TxBody,
     },
     Raw {
         protocol: IpProtocol,
@@ -626,7 +620,7 @@ impl ArpPendingQueue {
         src: Ipv4Address,
         dst: Ipv4Address,
         ttl: u8,
-        segment: PacketPayload,
+        segment: crate::net::runtime::device::TxBody,
         current_time: u64,
     ) {
         if self.packets.len() >= ARP_PENDING_QUEUE_SIZE {

@@ -164,7 +164,9 @@ impl NetworkStack {
                         first[EthernetHeader::SIZE + 20 + 2..EthernetHeader::SIZE + 20 + 4]
                             .copy_from_slice(&checksum.to_be_bytes());
                     }
-                    return self.transmit_packet_on(if_id, frame_payload).is_ok();
+                    return self
+                        .transmit_frame_on(if_id, TxFrame::whole(frame_payload))
+                        .is_ok();
                 }
             }
         }
@@ -232,7 +234,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Icmp,
             64,
-            icmp_payload,
+            TxBody::Owned(icmp_payload),
             path_mtu,
         );
     }
@@ -328,7 +330,7 @@ impl NetworkStack {
                         && let Ok(payload) =
                             kernel_api::resource::net::PacketPayload::try_single(packet)
                     {
-                        let _ = self.transmit_packet_on(if_id, payload);
+                        let _ = self.transmit_frame_on(if_id, TxFrame::whole(payload));
                     }
                 }
             }
@@ -475,7 +477,7 @@ impl NetworkStack {
             dst_ip,
             IpProtocol::Icmp,
             64,
-            icmp_payload,
+            TxBody::Owned(icmp_payload),
             path_mtu,
         )
         .is_ok()
@@ -891,7 +893,9 @@ impl NetworkStack {
                         if set_packet_visible_len(&mut packet, total_len).is_ok()
                             && let Ok(payload) =
                                 kernel_api::resource::net::PacketPayload::try_single(packet)
-                            && self.transmit_packet_on(if_id, payload).is_ok()
+                            && self
+                                .transmit_frame_on(if_id, TxFrame::whole(payload))
+                                .is_ok()
                         {
                             log::info!(
                                 "[NET-PING] Sent ICMP echo to {}.{}.{}.{} seq={}",

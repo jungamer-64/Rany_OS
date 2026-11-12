@@ -85,7 +85,7 @@ impl NetworkStack {
                         && let Ok(payload) =
                             kernel_api::resource::net::PacketPayload::try_single(packet)
                     {
-                        let _ = self.transmit_packet_on(if_id, payload);
+                        let _ = self.transmit_frame_on(if_id, TxFrame::whole(payload));
                     }
                 }
             }

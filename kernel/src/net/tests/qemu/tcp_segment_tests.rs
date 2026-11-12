@@ -6,6 +6,7 @@ use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload_i
 use crate::net::l4::tcp::tcb::tcp_flags;
 use crate::net::l4::types::EndpointAddr;
 use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
+use crate::net::runtime::device::TxBody;
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 use kernel_api::resource::net::PacketPayload;
 
@@ -33,8 +34,7 @@ fn send_test_segment(
         crate::net::runtime::manager::NetIfId(1),
         local,
         remote,
-        segment,
-        None,
+        TxBody::Owned(segment),
     )
     .is_ok()
 }
@@ -176,12 +176,11 @@ pub fn tcp_segment_mixed_family_rejection_smoke() -> bool {
         crate::net::runtime::manager::NetIfId(1),
         local,
         remote,
-        segment,
-        None,
+        TxBody::Owned(segment),
     )
     .expect_err("mixed TCP families must preserve rejected ownership");
     assert_eq!(cause, crate::net::l4::types::EndpointError::InvalidArgument);
-    assert_eq!(returned.segments()[0].data().as_ptr(), backing);
+    assert_eq!(returned.payload().segments()[0].data().as_ptr(), backing);
     let current = crate::cpu::CurrentCpu::acquire().expect("TCP rejection CPU");
     let resources =
         crate::net::runtime::command::command_resources_for_cpu_in(runtime, current.id())
@@ -213,9 +212,11 @@ pub fn tcp_segment_ipv4_queue_admission_smoke() -> bool {
                     crate::net::runtime::command::RawSendCommand::Ipv4 {
                         scope,
                         dst,
-                        transport: crate::net::runtime::command::RawIpv4Transport::Tcp { src },
-                        payload,
-                        completion_id,
+                        transport:
+                            crate::net::runtime::command::RawIpv4Transport::Tcp {
+                                src,
+                                segment: payload,
+                            },
                     },
                 ..
             },
@@ -227,8 +228,7 @@ pub fn tcp_segment_ipv4_queue_admission_smoke() -> bool {
             assert_eq!(src, [127, 0, 0, 1]);
             assert_eq!(dst, [127, 0, 0, 1]);
             assert_eq!(payload.total_len(), 20);
-            assert_eq!(payload.segments()[0].data().as_ptr(), backing);
-            assert_eq!(completion_id, None);
+            assert_eq!(payload.payload().segments()[0].data().as_ptr(), backing);
         }
         _ => panic!("TCP IPv4 queue contains the wrong owned command"),
     }
@@ -259,9 +259,11 @@ pub fn tcp_segment_ipv6_queue_admission_smoke() -> bool {
                     crate::net::runtime::command::RawSendCommand::Ipv6 {
                         scope,
                         dst,
-                        transport: crate::net::runtime::command::RawIpv6Transport::Tcp { src },
-                        payload,
-                        completion_id,
+                        transport:
+                            crate::net::runtime::command::RawIpv6Transport::Tcp {
+                                src,
+                                segment: payload,
+                            },
                     },
                 ..
             },
@@ -273,8 +275,7 @@ pub fn tcp_segment_ipv6_queue_admission_smoke() -> bool {
             assert_eq!(src, crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets());
             assert_eq!(dst, crate::net::l3::ipv6::Ipv6Address::LOOPBACK.octets());
             assert_eq!(payload.total_len(), 20);
-            assert_eq!(payload.segments()[0].data().as_ptr(), backing);
-            assert_eq!(completion_id, None);
+            assert_eq!(payload.payload().segments()[0].data().as_ptr(), backing);
         }
         _ => panic!("TCP IPv6 queue contains the wrong owned command"),
     }

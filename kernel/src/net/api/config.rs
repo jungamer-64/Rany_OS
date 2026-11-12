@@ -127,6 +127,14 @@ pub(crate) fn interface_stats_snapshot_with_stack_in(
         stack_snapshot.tx_packets = stack_snapshot.tx_packets.max(driver_stats.tx_packets);
         stack_snapshot.rx_errors = stack_snapshot.rx_errors.max(driver_stats.rx_errors);
         stack_snapshot.tx_errors = stack_snapshot.tx_errors.max(driver_stats.tx_errors);
+        // Admitted frames the device did not report as transmitted.
+        if let Some(leases) = device::port_tx_stats_in(runtime, if_id) {
+            let failed = leases
+                .not_transmitted
+                .saturating_add(leases.driver_rejected)
+                .saturating_add(leases.outcome_unknown);
+            stack_snapshot.tx_errors = stack_snapshot.tx_errors.max(failed);
+        }
         return Some(stack_snapshot);
     }
 

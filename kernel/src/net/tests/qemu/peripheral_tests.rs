@@ -1206,10 +1206,10 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
         },
     )?)
     .ok()?;
-    crate::net::runtime::device::transmit_packet_in(
+    crate::net::runtime::device::transmit_frame_in(
         runtime,
         if_a,
-        stopped_tx,
+        crate::net::runtime::device::TxFrame::whole(stopped_tx),
         NetTxMeta::default(),
     )
     .is_err()

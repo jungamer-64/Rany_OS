@@ -7,6 +7,7 @@
 
 use super::tcb::tcp_flags;
 use crate::net::l4::types::{EndpointAddr, EndpointError};
+use crate::net::runtime::device::TxBody;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketByteCount, PacketPayload};
 
 #[inline]
@@ -367,29 +368,24 @@ impl TcpSegmentBuilder {
     }
 }
 
-/// Transfers a TCP packet to the runtime command queue. Acceptance transfers
-/// ownership to the command consumer; it does not acknowledge device transmission.
+/// Transfers a TCP segment to the runtime command queue. Acceptance transfers
+/// the body to the command consumer; it does not acknowledge device transmission.
 ///
 /// # Errors
-/// Returns the unchanged packet with `InvalidArgument` for mixed address families,
+/// Returns the unchanged body with `InvalidArgument` for mixed address families,
 /// or `ResourceExhausted` when CPU command resources cannot accept the request.
 /// A rejected request has not been published and its owner may retry it.
 ///
 /// # Panics
 /// The command queue must return the original request on rejection. A different
 /// command variant indicates a violated queue ownership contract.
-#[expect(
-    clippy::result_large_err,
-    reason = "Rejection must return the inline packet owner without allocating on the exhausted command path or copying its backing"
-)]
-pub fn send_tcp_segment_payload_in(
+pub(crate) fn send_tcp_segment_payload_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
     if_id: crate::net::runtime::manager::NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
-    segment: PacketPayload,
-    completion_id: Option<u64>,
-) -> Result<(), (EndpointError, PacketPayload)> {
+    segment: TxBody,
+) -> Result<(), (EndpointError, TxBody)> {
     use crate::net::runtime::command::{
         RawIpv4Transport, RawIpv6Transport, RawSendCommand, RuntimeCommand, TransportCommand,
         new_detached_command_channel_in, try_enqueue_command_in,
@@ -400,9 +396,7 @@ pub fn send_tcp_segment_payload_in(
         RawSendCommand::Ipv4 {
             scope: InterfaceScope::Pinned(if_id),
             dst,
-            transport: RawIpv4Transport::Tcp { src },
-            payload: segment,
-            completion_id,
+            transport: RawIpv4Transport::Tcp { src, segment },
         }
     } else if endpoint_is_native_v6_pair(local, remote) {
         RawSendCommand::Ipv6 {
@@ -410,9 +404,8 @@ pub fn send_tcp_segment_payload_in(
             dst: remote.as_ipv6(),
             transport: RawIpv6Transport::Tcp {
                 src: local.as_ipv6(),
+                segment,
             },
-            payload: segment,
-            completion_id,
         }
     } else {
         return Err((EndpointError::InvalidArgument, segment));
@@ -423,14 +416,18 @@ pub fn send_tcp_segment_payload_in(
         RuntimeCommand::Transport(TransportCommand::RawSend { command, reply }),
     ) {
         Ok(()) => Ok(()),
-        Err(RuntimeCommand::Transport(TransportCommand::RawSend { command, .. })) => {
-            let payload = match command {
-                RawSendCommand::Ipv4 { payload, .. } | RawSendCommand::Ipv6 { payload, .. } => {
-                    payload
+        Err(RuntimeCommand::Transport(TransportCommand::RawSend {
+            command:
+                RawSendCommand::Ipv4 {
+                    transport: RawIpv4Transport::Tcp { segment, .. },
+                    ..
                 }
-            };
-            Err((EndpointError::ResourceExhausted, payload))
-        }
+                | RawSendCommand::Ipv6 {
+                    transport: RawIpv6Transport::Tcp { segment, .. },
+                    ..
+                },
+            ..
+        })) => Err((EndpointError::ResourceExhausted, segment)),
         Err(_) => unreachable!("network command rejection must return the original TCP request"),
     }
 }

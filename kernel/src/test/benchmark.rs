@@ -758,7 +758,15 @@ async fn benchmark_network_paths() -> Result<(), &'static str> {
                 .map_err(|_| "benchmark TX expectation lock poisoned")? =
                 Some(owner_addr..payload_end);
             let expected_packets = state.tx_packets.load(Ordering::Acquire).saturating_add(1);
-            if send_tcp_segment_payload_in(runtime, if_id, local, remote, segment, None).is_err() {
+            if send_tcp_segment_payload_in(
+                runtime,
+                if_id,
+                local,
+                remote,
+                crate::net::runtime::device::TxBody::Owned(segment),
+            )
+            .is_err()
+            {
                 return Err("network benchmark TCP send was not admitted");
             }
             drain_runtime_commands(runtime, &handler, &online)?;

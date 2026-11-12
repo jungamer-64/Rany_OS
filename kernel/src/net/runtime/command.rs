@@ -20,6 +20,7 @@ use core::task::{Context, Poll};
 use crate::net::datapath::mempool::PacketRef;
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId};
 use crate::net::l4::udp::UdpPorts;
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::types::InterfaceScope;
 use kernel_api::resource::net::PacketPayload;
@@ -78,19 +79,18 @@ pub(crate) enum TransportCommand {
     },
 }
 
+/// A transport datagram whose IP header the network stack generates.
 #[derive(Debug)]
 pub(crate) enum RawSendCommand {
     Ipv4 {
         scope: InterfaceScope,
         dst: [u8; 4],
         transport: RawIpv4Transport,
-        payload: PacketPayload,
     },
     Ipv6 {
         scope: InterfaceScope,
         dst: [u8; 16],
         transport: RawIpv6Transport,
-        payload: PacketPayload,
     },
 }
 
@@ -100,28 +100,30 @@ pub(crate) enum RawIpv4Source {
     Addr([u8; 4]),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum RawIpv4Transport {
+    /// UDP payload; the stack prepends the UDP header and checksum.
     Udp {
         src: RawIpv4Source,
         ports: UdpPorts,
         ttl: u8,
+        payload: PacketPayload,
     },
-    Tcp {
-        src: [u8; 4],
-    },
+    /// Complete TCP segment, header and checksum included.
+    Tcp { src: [u8; 4], segment: TxBody },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug)]
 pub(crate) enum RawIpv6Transport {
+    /// UDP payload; the stack prepends the UDP header and checksum.
     Udp {
         src: [u8; 16],
         ports: UdpPorts,
         ttl: u8,
+        payload: PacketPayload,
     },
-    Tcp {
-        src: [u8; 16],
-    },
+    /// Complete TCP segment, header and checksum included.
+    Tcp { src: [u8; 16], segment: TxBody },
 }
 
 fn enqueue_raw_send_in(runtime: NetRuntimeHandle, command: RawSendCommand) -> bool {
@@ -151,8 +153,8 @@ pub(crate) fn enqueue_udp_v6_send_scoped_in(
                 src: src_ip.octets(),
                 ports,
                 ttl,
+                payload,
             },
-            payload,
         },
     )
 }
@@ -175,8 +177,8 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
                 src: RawIpv4Source::Addr(*src_ip.as_bytes()),
                 ports,
                 ttl,
+                payload,
             },
-            payload,
         },
     )
 }

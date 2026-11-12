@@ -88,7 +88,7 @@ impl NetworkStack {
                 {
                     // Gratuitous ARP is best-effort; rejection only returns
                     // this freshly generated frame for immediate release.
-                    drop(self.transmit_packet_on(if_id, payload));
+                    drop(self.transmit_frame_on(if_id, TxFrame::whole(payload)));
                 }
             }
         }
@@ -128,7 +128,7 @@ impl NetworkStack {
                 {
                     // An ARP reply has no higher-layer retry owner; release
                     // a rejected generated frame at this boundary.
-                    drop(self.transmit_packet_on(if_id, payload));
+                    drop(self.transmit_frame_on(if_id, TxFrame::whole(payload)));
                 }
             }
         }
@@ -163,7 +163,9 @@ impl NetworkStack {
 
         if set_packet_visible_len(&mut packet, packet_len).is_ok()
             && let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet)
-            && self.transmit_packet_on(if_id, payload).is_ok()
+            && self
+                .transmit_frame_on(if_id, TxFrame::whole(payload))
+                .is_ok()
         {
             self.mark_arp_request_sent_on_interface(if_id, target_ip, current_time);
         }
@@ -239,7 +241,9 @@ impl NetworkStack {
                 if set_packet_visible_len(&mut packet, frame_len).is_ok()
                     && let Ok(payload) =
                         kernel_api::resource::net::PacketPayload::try_single(packet)
-                    && self.transmit_packet_on(if_id, payload).is_ok()
+                    && self
+                        .transmit_frame_on(if_id, TxFrame::whole(payload))
+                        .is_ok()
                 {
                     if let Some(state) = self.interfaces.get_mut(&if_id) {
                         state.arp.request_sent(target_ip, current_time);
@@ -345,7 +349,7 @@ impl NetworkStack {
                         pkt.dst,
                         protocol,
                         ttl,
-                        payload,
+                        TxBody::Owned(payload),
                         1500, // Default MTU
                     );
                 }

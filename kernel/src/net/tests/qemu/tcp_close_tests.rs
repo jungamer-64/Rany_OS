@@ -4,7 +4,7 @@
 
 use crate::net::l4::socket::{Socket, TcpSocketState, lookup_socket_in};
 use crate::net::l4::tcp::TcpConnection;
-use crate::net::l4::tcp::retransmit::{complete_tx_owner, get_or_create_retransmit_queue};
+use crate::net::l4::tcp::retransmit::get_or_create_retransmit_queue;
 use crate::net::l4::tcp::segment::TcpSegmentBuilder;
 use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlock, tcp_flags};
 use crate::net::l4::tcp::tcp_rx::process_tcp_segment_payload_on;
@@ -12,15 +12,16 @@ use crate::net::l4::types::EndpointAddr;
 use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
-    RawSendCommand, RuntimeCommand, TransportCommand, command_resources_for_cpu_in,
+    RawIpv4Transport, RawSendCommand, RuntimeCommand, TransportCommand,
+    command_resources_for_cpu_in,
 };
 use crate::net::runtime::context::NetCpuResources;
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
-use kernel_api::service::netdev::TxDeviceOutcome;
 
 const IF_ID: NetIfId = NetIfId(65_030);
 const LOCAL_IP: [u8; 4] = [127, 0, 0, 1];
@@ -37,27 +38,31 @@ struct Fixture {
 }
 
 struct SentSegment {
-    completion_id: Option<u64>,
-    payload: PacketPayload,
+    payload: TxBody,
 }
 
 impl SentSegment {
     fn seq(&self) -> u32 {
         u32::from_be_bytes(
-            PacketPayloadView::new(&self.payload)
+            PacketPayloadView::new(self.payload.payload())
                 .read_array::<4>(4)
                 .expect("TCP sequence number"),
         )
     }
 
     fn flags(&self) -> u8 {
-        PacketPayloadView::new(&self.payload)
+        PacketPayloadView::new(self.payload.payload())
             .read_array::<1>(13)
             .expect("TCP flags")[0]
     }
 
     fn data_len(&self) -> usize {
         self.payload.total_len() - 20
+    }
+
+    /// Retransmittable segments stay queued and are sent as retained copies.
+    fn retransmittable(&self) -> bool {
+        matches!(self.payload, TxBody::Retained(_))
     }
 }
 
@@ -124,15 +129,11 @@ impl Fixture {
                 RuntimeCommand::Transport(TransportCommand::RawSend {
                     command:
                         RawSendCommand::Ipv4 {
-                            payload,
-                            completion_id,
+                            transport: RawIpv4Transport::Tcp { segment, .. },
                             ..
                         },
                     ..
-                }) => segments.push(SentSegment {
-                    completion_id,
-                    payload,
-                }),
+                }) => segments.push(SentSegment { payload: segment }),
                 _ => panic!("the connection may only publish TCP segments here"),
             }
         }
@@ -212,14 +213,8 @@ pub fn tcp_close_hands_connection_to_runtime_until_fin_ack_smoke() -> bool {
     assert_eq!(sent[1].flags(), tcp_flags::FIN | tcp_flags::ACK);
     assert_eq!(fixture.tcb_state(), Some(TcpConnectionState::LastAck));
     assert!(fixture.socket_registered());
-    for segment in sent {
-        assert!(complete_tx_owner(
-            fixture.runtime,
-            segment.completion_id.expect("retransmittable segment"),
-            segment.payload,
-            TxDeviceOutcome::Transmitted,
-        ));
-    }
+    assert!(sent.iter().all(SentSegment::retransmittable));
+    drop(sent);
 
     fixture.peer_segment(PEER_ISN + 2, LOCAL_ISN + 6, false);
     assert_eq!(fixture.tcb_state(), None);
@@ -239,6 +234,6 @@ pub fn tcp_drop_without_close_resets_connection_smoke() -> bool {
     assert_eq!(sent.len(), 1);
     assert_eq!(sent[0].seq(), LOCAL_ISN + 1);
     assert_eq!(sent[0].flags(), tcp_flags::RST);
-    assert_eq!(sent[0].completion_id, None);
+    assert!(!sent[0].retransmittable());
     true
 }

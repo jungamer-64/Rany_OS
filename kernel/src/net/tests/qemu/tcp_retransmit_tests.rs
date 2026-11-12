@@ -1,36 +1,36 @@
 // ============================================================================
-// kernel/src/net/tests/qemu/tcp_retransmit_tests.rs - Queued TCP ownership returns
+// kernel/src/net/tests/qemu/tcp_retransmit_tests.rs - Retained TCP retransmission owners
 // ============================================================================
 
 use crate::net::l4::tcp::retransmit::{
-    complete_tx_owner, get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_push,
+    get_or_create_retransmit_queue, retransmit_queue_ack, retransmit_queue_push,
     retransmit_queue_remove, retransmit_queue_transmit_ready,
 };
 use crate::net::l4::tcp::segment::TcpSegmentBuilder;
 use crate::net::l4::types::EndpointAddr;
 use crate::net::runtime::command::{
-    ControlCommand, RawSendCommand, RuntimeCommand, RuntimeCommandQueue, TransportCommand,
-    command_resources_for_cpu_in, try_enqueue_command_in,
+    ControlCommand, RawIpv4Transport, RawSendCommand, RuntimeCommand, RuntimeCommandQueue,
+    TransportCommand, command_resources_for_cpu_in, try_enqueue_command_in,
 };
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
-use kernel_api::resource::net::PacketPayload;
-use kernel_api::service::netdev::TxDeviceOutcome;
 
-fn take_owned_tcp_packet(queue: &RuntimeCommandQueue) -> (u64, PacketPayload) {
+fn take_sent_segment(queue: &RuntimeCommandQueue) -> TxBody {
     match queue.recv().expect("accepted TCP request") {
         RuntimeCommand::Transport(TransportCommand::RawSend {
             command:
                 RawSendCommand::Ipv4 {
-                    payload,
-                    completion_id: Some(id),
+                    transport: RawIpv4Transport::Tcp { segment, .. },
                     ..
                 },
             ..
-        }) => (id, payload),
-        _ => panic!("tracked TCP command must retain its payload and completion identity"),
+        }) => segment,
+        _ => panic!("queued TCP transmission must carry its segment"),
     }
 }
 
+/// A rejected transmission leaves the queued segment ready; every accepted
+/// transmission sends a retained copy of the same backing.
 pub fn tcp_retransmit_queue_rejection_and_return_smoke() -> bool {
     let runtime = crate::net::runtime::create_runtime().expect("retransmit runtime");
     let current = crate::cpu::CurrentCpu::acquire().expect("retransmit CPU");
@@ -65,42 +65,33 @@ pub fn tcp_retransmit_queue_rejection_and_return_smoke() -> bool {
     ));
     // LOOP_PROOF: mode=condition; reason=The fixture is the sole consumer and no producer remains, so each receive removes one queued request until empty.;
     while resources.command_queue.recv().is_some() {}
-    assert!(retransmit_queue_transmit_ready(
-        runtime, if_id, local, remote, 100
-    ));
-    let (first_id, payload) = take_owned_tcp_packet(&resources.command_queue);
-    assert_eq!(payload.segments()[0].data().as_ptr(), backing);
-    assert!(!retransmit_queue_transmit_ready(
-        runtime, if_id, local, remote, 100
-    ));
-    assert!(resources.command_queue.recv().is_none());
-    assert!(complete_tx_owner(
-        runtime,
-        first_id,
-        payload,
-        TxDeviceOutcome::OutcomeUnknown
-    ));
 
     assert!(retransmit_queue_transmit_ready(
         runtime, if_id, local, remote, 100
     ));
-    let (second_id, payload) = take_owned_tcp_packet(&resources.command_queue);
-    assert_ne!(first_id, second_id);
-    assert_eq!(payload.segments()[0].data().as_ptr(), backing);
+    let first = take_sent_segment(&resources.command_queue);
+    assert!(matches!(first, TxBody::Retained(_)));
+    assert_eq!(first.payload().segments()[0].data().as_ptr(), backing);
+
+    // The queue still owns the segment while the first copy is outstanding.
+    assert!(retransmit_queue_transmit_ready(
+        runtime, if_id, local, remote, 100
+    ));
+    let second = take_sent_segment(&resources.command_queue);
+    assert_eq!(second.payload().segments()[0].data().as_ptr(), backing);
+    assert!(resources.command_queue.recv().is_none());
+
     retransmit_queue_ack(runtime, if_id, local, remote, 101);
-    assert!(complete_tx_owner(
-        runtime,
-        second_id,
-        payload,
-        TxDeviceOutcome::Transmitted
+    assert!(!retransmit_queue_transmit_ready(
+        runtime, if_id, local, remote, 100
     ));
-    assert!(get_or_create_retransmit_queue(
-        runtime, if_id, local, remote
-    ));
+    drop((first, second));
     retransmit_queue_remove(runtime, if_id, local, remote);
     true
 }
 
+/// An ACK releases the queue's owner at once; copies that are still waiting
+/// for the device keep the bytes readable until they are released.
 pub fn tcp_retransmit_ack_before_completion_smoke() -> bool {
     let runtime = crate::net::runtime::create_runtime().expect("ACK runtime");
     let current = crate::cpu::CurrentCpu::acquire().expect("ACK CPU");
@@ -121,23 +112,15 @@ pub fn tcp_retransmit_ack_before_completion_smoke() -> bool {
     assert!(retransmit_queue_transmit_ready(
         runtime, if_id, local, remote, 200
     ));
-    let (id, payload) = take_owned_tcp_packet(&resources.command_queue);
+    let copy = take_sent_segment(&resources.command_queue);
     retransmit_queue_ack(runtime, if_id, local, remote, 201);
     assert!(!retransmit_queue_transmit_ready(
         runtime, if_id, local, remote, 200
     ));
     assert!(resources.command_queue.recv().is_none());
-    assert_eq!(payload.segments()[0].data().as_ptr(), backing);
-    assert_eq!(payload.total_len(), 20);
-    assert!(complete_tx_owner(
-        runtime,
-        id,
-        payload,
-        TxDeviceOutcome::Transmitted
-    ));
-    assert!(get_or_create_retransmit_queue(
-        runtime, if_id, local, remote
-    ));
+    assert_eq!(copy.payload().segments()[0].data().as_ptr(), backing);
+    assert_eq!(copy.total_len(), 20);
+    drop(copy);
     retransmit_queue_remove(runtime, if_id, local, remote);
     true
 }

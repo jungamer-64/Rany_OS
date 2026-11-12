@@ -1,17 +1,9 @@
-fn complete_immediately<F: core::future::Future>(future: F) -> F::Output {
-    let mut future = core::pin::pin!(future);
-    let mut context = core::task::Context::from_waker(core::task::Waker::noop());
-    match future.as_mut().poll(&mut context) {
-        core::task::Poll::Ready(value) => value,
-        core::task::Poll::Pending => {
-            panic!("completed operation unexpectedly remained pending")
-        }
-    }
-}
-
+use super::tx::NetPortTx;
 use super::*;
 use crate::net::runtime::NetRuntimeHandle;
 use core::sync::atomic::{AtomicBool, AtomicU16, AtomicU64, AtomicUsize, Ordering};
+use kernel_api::resource::net::{PacketByteCount, PacketDmaRegion, PacketPayload, PacketRef};
+use kernel_api::service::netdev::NetRxMeta;
 
 struct FakeDriverState {
     bind_calls: AtomicUsize,
@@ -346,15 +338,26 @@ async fn schedule_event_from_interrupt_context_enqueues_successfully(runtime: Ne
     assert!(unregister_test_port(runtime, if_id));
 }
 
+fn unpublished_handle(
+    runtime: NetRuntimeHandle,
+    driver: Box<dyn NetDevicePort>,
+    binding: NetDeviceBinding,
+) -> NetDeviceHandle {
+    match NetDeviceHandle::new(driver, binding, runtime.context()) {
+        Ok(handle) => handle,
+        Err((_, cause)) => panic!("test device handle allocation failed: {cause}"),
+    }
+}
+
 fn device_handle_rebind_updates_binding_smoke(runtime: NetRuntimeHandle) {
     let (state, driver) = fake_driver();
-    let handle = NetDeviceHandle::new(
+    let handle = unpublished_handle(
+        runtime,
         driver,
         NetDeviceBinding {
             port_id: test_port_id(9),
             if_id: NetIfId(1),
         },
-        runtime.context(),
     );
 
     handle
@@ -494,7 +497,11 @@ fn primary_link_callback_promotes_secondary(runtime: NetRuntimeHandle) {
     assert!(manager::is_interface_operational_in(runtime, if_b));
     let payload =
         PacketPayload::try_single(packet_fixture(1, 0x4000)).expect("test payload is non-empty");
-    assert!(transmit_packet_in(runtime, if_a, payload, NetTxMeta::default(),).is_err());
+    let rejected = transmit_frame_in(runtime, if_a, TxFrame::whole(payload), NetTxMeta::default())
+        .err()
+        .expect("a down interface admits no frame");
+    assert_eq!(rejected.cause(), TxAdmissionCause::InterfaceDown);
+    assert_eq!(rejected.into_frame().total_len(), 1);
 
     assert!(unregister_test_port(runtime, if_b));
     assert!(unregister_test_port(runtime, if_a));
@@ -553,336 +560,250 @@ fn stopped_interface_rejects_rx_at_the_device_boundary(runtime: NetRuntimeHandle
     assert!(unregister_test_port(runtime, if_id));
 }
 
-fn tx_completion_future_resolves_success(runtime: NetRuntimeHandle) {
-    let (completion_id, future) = register_tx_completion_in(runtime);
-    assert!(complete_tx_request_in(runtime, completion_id, Ok(())));
-    assert_eq!(complete_immediately(future), Ok(()));
+fn port_tx(max_segments: usize) -> NetPortTx {
+    NetPortTx::new(max_segments).expect("test TX lease storage")
 }
 
-fn tx_completion_future_resolves_error(runtime: NetRuntimeHandle) {
-    let (completion_id, future) = register_tx_completion_in(runtime);
-    assert!(complete_tx_request_in(
-        runtime,
-        completion_id,
-        Err("submit failed")
-    ));
-    assert_eq!(complete_immediately(future), Err("submit failed"));
+/// Submit the oldest queued lease and let the fake device accept it.
+fn accept_next(tx: &NetPortTx, scratch: &mut Vec<PacketDmaRegion>) -> TxLeaseId {
+    let (lease_id, _) = tx.begin_submission(scratch).expect("queued lease");
+    tx.finish_submission(lease_id, true, scratch);
+    lease_id
 }
 
-fn tx_payload_lease_derives_descriptor_for_each_owner(runtime: NetRuntimeHandle) {
-    let first = packet_fixture(8, 0x1000);
-    let second = packet_fixture(16, 0x2000);
-    let payload = PacketPayload::try_pair(first, second).expect("non-empty test segments");
-
-    let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
-    let registered =
-        register_tx_payload_lease_in(runtime, NetIfId(1), lease, None, NetTxMeta::default())
-            .expect("registered test lease");
-    let request = registered.into_request();
-    let mut descriptors = Vec::new();
-    descriptors
-        .try_reserve_exact(2)
-        .expect("descriptor scratch");
-    assert!(build_tx_descriptors_in(runtime, request.lease_id, &mut descriptors, 2,).is_some());
-    assert_eq!(descriptors.len(), 2);
-    assert_eq!(descriptors[0].physical_address().as_u64(), 0x1000);
-    assert_eq!(descriptors[0].len().get(), 8);
-    assert_eq!(descriptors[1].physical_address().as_u64(), 0x2000);
-    assert_eq!(descriptors[1].len().get(), 16);
-    assert!(reject_registered_tx_lease_in(
-        runtime,
-        request.lease_id,
-        "test cleanup",
-    ));
-}
-
-fn tx_descriptor_plan_rejects_device_fanout_limit(runtime: NetRuntimeHandle) {
-    let payload = PacketPayload::try_pair(packet_fixture(8, 0x1000), packet_fixture(8, 0x2000))
-        .expect("two retained test packets");
-    let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
-    let registered =
-        register_tx_payload_lease_in(runtime, NetIfId(1), lease, None, NetTxMeta::default())
-            .expect("registered test lease");
-    let request = registered.into_request();
-    let mut descriptors = Vec::new();
-    descriptors
-        .try_reserve_exact(1)
-        .expect("descriptor scratch");
-    assert!(build_tx_descriptors_in(runtime, request.lease_id, &mut descriptors, 1,).is_none());
-    assert!(reject_registered_tx_lease_in(
-        runtime,
-        request.lease_id,
-        "test cleanup",
-    ));
-}
-
-fn packet_window_descriptors_reference_original_packet_range(runtime: NetRuntimeHandle) {
-    let mut packet = crate::net::datapath::mempool::alloc_packet_in(runtime).expect("packet");
-    packet.try_resize(32).expect("test packet resize succeeds");
-    let base_ptr = packet.data().as_ptr() as usize;
-    let base_physical = packet.phys_addr().as_u64();
-    let owners = TxPayloadOwners::from_packets(alloc::vec![packet]).expect("owners");
-    let header = packet_fixture(8, 0x40);
-
-    let bounds = TxPayloadWindowBounds::checked(
-        &owners,
-        8,
-        PacketByteCount::new(16).expect("non-empty window"),
+fn admitted_frame_regions_follow_header_then_body(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
+    let releases = Arc::new(AtomicUsize::new(0));
+    let header = counted_packet_fixture(14, 0x1000, &releases);
+    let body = PacketPayload::try_pair(
+        counted_packet_fixture(8, 0x2000, &releases),
+        counted_packet_fixture(16, 0x3000, &releases),
     )
-    .expect("owner-bound window");
-    let lease = TxPayloadLease::from_header_and_owner_window(header, &owners, bounds)
-        .expect("fragment lease");
-    let group_id = register_tx_owner_group_in(
-        runtime,
-        owners,
-        TxOwnerGroupLeaseCount::new(1).expect("one lease"),
-        None,
-    );
-    let request = register_grouped_tx_payload_lease_in(
-        runtime,
-        NetIfId(1),
-        lease,
-        group_id,
+    .expect("non-empty body segments");
+    tx.admit(
+        TxFrame::with_header(header, TxBody::Owned(body)),
         NetTxMeta::default(),
     )
-    .expect("registered fragment lease");
-    let mut descriptors = Vec::new();
-    descriptors
-        .try_reserve_exact(2)
-        .expect("descriptor scratch");
-    assert!(build_tx_descriptors_in(runtime, request.lease_id, &mut descriptors, 2,).is_some());
-    let payload_descriptor = &descriptors[1];
-
-    assert_eq!(descriptors.len(), 2);
-    assert_eq!(payload_descriptor.cpu_ptr(), (base_ptr + 8) as *const u8);
+    .ok()
+    .expect("admitted frame");
+    let mut scratch = Vec::new();
+    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    let regions: Vec<(u64, usize)> = scratch
+        .iter()
+        .map(|region| (region.physical_address().as_u64(), region.len().get()))
+        .collect();
     assert_eq!(
-        payload_descriptor.physical_address().as_u64(),
-        base_physical + 8
+        regions,
+        alloc::vec![(0x1000, 14), (0x2000, 8), (0x3000, 16)]
     );
-    assert_eq!(payload_descriptor.len().get(), 16);
-    assert!(reject_registered_tx_lease_in(
-        runtime,
-        request.lease_id,
-        "test cleanup",
-    ));
+    tx.finish_submission(lease_id, true, &mut scratch);
+    assert!(scratch.is_empty());
+    assert_eq!(releases.load(Ordering::SeqCst), 0);
+    tx.complete(lease_id, TxDeviceOutcome::Transmitted)
+        .expect("accepted lease completes");
+    assert_eq!(releases.load(Ordering::SeqCst), 3);
+    assert_eq!(tx.stats().transmitted, 1);
 }
 
-fn tx_owner_group_completes_after_all_fragment_leases(runtime: NetRuntimeHandle) {
-    let mut owner = crate::net::datapath::mempool::alloc_packet_in(runtime).expect("owner");
-    owner.try_resize(32).expect("test owner resize succeeds");
-    let mut header_a = crate::net::datapath::mempool::alloc_packet_in(runtime).expect("header a");
-    header_a
-        .try_resize(8)
-        .expect("first test header resize succeeds");
-    let mut header_b = crate::net::datapath::mempool::alloc_packet_in(runtime).expect("header b");
-    header_b
-        .try_resize(8)
-        .expect("second test header resize succeeds");
-    let (completion_id, future) = register_tx_completion_in(runtime);
-    let owners = TxPayloadOwners::from_packets(alloc::vec![owner]).expect("non-empty owner");
-    let group_id = register_tx_owner_group_in(
-        runtime,
-        owners,
-        TxOwnerGroupLeaseCount::new(2).expect("non-zero leases"),
-        Some(completion_id),
-    );
-    let request_a = register_grouped_tx_payload_lease_in(
-        runtime,
-        NetIfId(1),
-        TxPayloadLease::from_payload(
-            PacketPayload::try_single(header_a).expect("non-empty first header"),
-        )
-        .expect("request a lease"),
-        group_id,
+fn small_leading_body_segment_moves_into_header_to_fit_fanout(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(2);
+    let header = packet_fixture(14, 0x1000);
+    let mut small = packet_fixture(4, 0x2000);
+    small.data_mut().copy_from_slice(b"tcph");
+    let body = PacketPayload::try_pair(small, packet_fixture(16, 0x3000))
+        .expect("non-empty body segments");
+    tx.admit(
+        TxFrame::with_header(header, TxBody::Owned(body)),
         NetTxMeta::default(),
     )
-    .expect("request a");
-    let request_b = register_grouped_tx_payload_lease_in(
-        runtime,
-        NetIfId(1),
-        TxPayloadLease::from_payload(
-            PacketPayload::try_single(header_b).expect("non-empty second header"),
-        )
-        .expect("request b lease"),
-        group_id,
-        NetTxMeta::default(),
-    )
-    .expect("request b");
-
-    assert!(
-        runtime
-            .context()
-            .tx_owner_groups
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&group_id)
-    );
-    assert!(begin_tx_submission_in(runtime, request_a.lease_id));
-    assert!(complete_tx_lease_in(
-        runtime,
-        request_a.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
-    assert!(
-        runtime
-            .context()
-            .tx_owner_groups
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&group_id)
-    );
-    assert!(begin_tx_submission_in(runtime, request_b.lease_id));
-    assert!(complete_tx_lease_in(
-        runtime,
-        request_b.lease_id,
-        TxDeviceOutcome::NotTransmitted,
-    ));
-    assert!(
-        !runtime
-            .context()
-            .tx_owner_groups
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .contains_key(&group_id)
-    );
-    assert_eq!(
-        complete_immediately(future),
-        Err("device did not transmit packet")
-    );
+    .ok()
+    .expect("coalesced frame fits two descriptors");
+    let mut scratch = Vec::new();
+    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    assert_eq!(scratch.len(), 2);
+    assert_eq!(scratch[0].physical_address().as_u64(), 0x1000);
+    assert_eq!(scratch[0].len().get(), 18);
+    // SAFETY: the fixture region is initialized and no device accesses it.
+    let moved = unsafe { core::slice::from_raw_parts(scratch[0].cpu_ptr().add(14), 4) };
+    assert_eq!(moved, b"tcph");
+    assert_eq!(scratch[1].physical_address().as_u64(), 0x3000);
+    tx.finish_submission(lease_id, false, &mut scratch);
 }
 
-fn accepted_tx_lease_retains_backing_until_exactly_one_completion(runtime: NetRuntimeHandle) {
+fn frame_beyond_fanout_is_returned_unchanged(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(1);
+    let releases = Arc::new(AtomicUsize::new(0));
+    let header = counted_packet_fixture(14, 0x1000, &releases);
+    let body = PacketPayload::try_single(counted_packet_fixture(32, 0x2000, &releases))
+        .expect("non-empty body");
+    let rejected = tx
+        .admit(
+            TxFrame::with_header(header, TxBody::Owned(body)),
+            NetTxMeta::default(),
+        )
+        .err()
+        .expect("two descriptors exceed a one-descriptor device");
+    assert_eq!(rejected.cause(), TxAdmissionCause::TooManySegments);
+    let (header, body) = rejected.into_frame().into_parts();
+    assert_eq!(header.as_ref().map(PacketRef::len), Some(14));
+    assert_eq!(body.total_len(), 32);
+    assert!(tx.begin_submission(&mut Vec::new()).is_none());
+    drop((header, body));
+    assert_eq!(releases.load(Ordering::SeqCst), 2);
+}
+
+fn accepted_lease_retains_backing_until_exactly_one_completion(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
     let releases = Arc::new(AtomicUsize::new(0));
     let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9100, &releases))
         .expect("counted payload is non-empty");
-    let lease = TxPayloadLease::from_payload(payload).expect("payload lease");
-    let request =
-        register_tx_payload_lease_in(runtime, NetIfId(301), lease, None, NetTxMeta::default())
-            .expect("registered lease")
-            .into_request();
-
+    tx.admit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("admitted frame");
+    let lease_id = accept_next(&tx, &mut Vec::new());
     assert_eq!(releases.load(Ordering::SeqCst), 0);
-    assert!(begin_tx_submission_in(runtime, request.lease_id));
-    assert!(mark_tx_device_owned_in(runtime, request.lease_id));
-    assert_eq!(releases.load(Ordering::SeqCst), 0);
-
-    assert!(complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
+    tx.complete(lease_id, TxDeviceOutcome::OutcomeUnknown)
+        .expect("first completion");
     assert_eq!(releases.load(Ordering::SeqCst), 1);
-    assert!(!complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
-    assert_eq!(releases.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        tx.complete(lease_id, TxDeviceOutcome::Transmitted),
+        Err(TxCompletionError::UnknownLease)
+    );
+    assert_eq!(tx.stats().outcome_unknown, 1);
 }
 
-fn synchronous_completion_consumes_submitting_lease_without_recycling_early(
-    runtime: NetRuntimeHandle,
-) {
+fn synchronous_completion_releases_backing_after_the_descriptor_visit(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
     let releases = Arc::new(AtomicUsize::new(0));
     let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9200, &releases))
         .expect("counted payload is non-empty");
-    let request = register_tx_payload_lease_in(
-        runtime,
-        NetIfId(302),
-        TxPayloadLease::from_payload(payload).expect("payload lease"),
-        None,
-        NetTxMeta::default(),
-    )
-    .expect("registered lease")
-    .into_request();
-
-    let mut regions = Vec::new();
-    regions.try_reserve_exact(1).unwrap();
-    assert!(build_tx_descriptors_in(runtime, request.lease_id, &mut regions, 1).is_some());
-    assert!(begin_tx_submission_in(runtime, request.lease_id));
+    tx.admit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("admitted frame");
+    let mut scratch = Vec::new();
+    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    tx.complete(lease_id, TxDeviceOutcome::Transmitted)
+        .expect("completion during submission");
+    assert_eq!(
+        tx.complete(lease_id, TxDeviceOutcome::Transmitted),
+        Err(TxCompletionError::AlreadyCompleted)
+    );
     assert_eq!(releases.load(Ordering::SeqCst), 0);
-    assert!(complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
-    assert_eq!(releases.load(Ordering::SeqCst), 0);
-    regions.clear();
+    tx.finish_submission(lease_id, true, &mut scratch);
+    assert!(scratch.is_empty());
     assert_eq!(releases.load(Ordering::SeqCst), 1);
-    assert!(mark_tx_device_owned_in(runtime, request.lease_id));
-    assert!(!complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
+    assert_eq!(
+        tx.complete(lease_id, TxDeviceOutcome::Transmitted),
+        Err(TxCompletionError::UnknownLease)
+    );
 }
 
-fn rejected_tx_lease_returns_backing_without_device_ownership(runtime: NetRuntimeHandle) {
+fn driver_rejection_releases_backing_without_a_completion(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
     let releases = Arc::new(AtomicUsize::new(0));
     let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9300, &releases))
         .expect("counted payload is non-empty");
-    let request = register_tx_payload_lease_in(
-        runtime,
-        NetIfId(303),
-        TxPayloadLease::from_payload(payload).expect("payload lease"),
-        None,
+    tx.admit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("admitted frame");
+    let mut scratch = Vec::new();
+    let (lease_id, _) = tx.begin_submission(&mut scratch).expect("queued lease");
+    assert_eq!(tx.complete(lease_id, TxDeviceOutcome::Transmitted), Ok(()));
+    tx.finish_submission(lease_id, false, &mut scratch);
+    assert_eq!(releases.load(Ordering::SeqCst), 1);
+    assert_eq!(tx.stats().driver_rejected, 1);
+    assert_eq!(tx.stats().transmitted, 0);
+}
+
+fn queued_lease_cannot_be_completed_before_submission(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
+    let payload = PacketPayload::try_single(packet_fixture(8, 0x9350)).expect("payload");
+    tx.admit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("admitted frame");
+    // The first lease of a fresh table has generation 0 and the top index.
+    let queued = TxLeaseId::new(super::tx::TX_LEASE_CAPACITY as u64).expect("lease identifier");
+    assert_eq!(
+        tx.complete(queued, TxDeviceOutcome::Transmitted),
+        Err(TxCompletionError::NotSubmitted)
+    );
+    tx.close_and_release_queued();
+    assert_eq!(tx.stats().released_unsubmitted, 1);
+}
+
+fn completion_of_another_ports_lease_is_rejected(_runtime: NetRuntimeHandle) {
+    let port_a = port_tx(8);
+    let port_b = port_tx(8);
+    let releases = Arc::new(AtomicUsize::new(0));
+    let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9380, &releases))
+        .expect("counted payload is non-empty");
+    port_a
+        .admit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("admitted frame");
+    let lease_id = accept_next(&port_a, &mut Vec::new());
+    assert_eq!(
+        port_b.complete(lease_id, TxDeviceOutcome::Transmitted),
+        Err(TxCompletionError::UnknownLease)
+    );
+    assert_eq!(releases.load(Ordering::SeqCst), 0);
+    port_a
+        .complete(lease_id, TxDeviceOutcome::Transmitted)
+        .expect("owning port completes its lease");
+    assert_eq!(releases.load(Ordering::SeqCst), 1);
+}
+
+fn retained_body_outlives_its_owner_until_completion(_runtime: NetRuntimeHandle) {
+    let tx = port_tx(8);
+    let releases = Arc::new(AtomicUsize::new(0));
+    let retained = PacketPayload::try_single(counted_packet_fixture(24, 0x9400, &releases))
+        .expect("counted payload is non-empty")
+        .into_retained();
+    let copy = retained.try_retain().expect("retained copy");
+    tx.admit(
+        TxFrame::with_header(packet_fixture(14, 0x9480), TxBody::Retained(copy)),
         NetTxMeta::default(),
     )
-    .expect("registered lease")
-    .into_request();
-
+    .ok()
+    .expect("admitted frame");
+    let lease_id = accept_next(&tx, &mut Vec::new());
+    drop(retained);
     assert_eq!(releases.load(Ordering::SeqCst), 0);
-    assert!(reject_registered_tx_lease_in(
-        runtime,
-        request.lease_id,
-        "fake driver rejected request",
-    ));
+    tx.complete(lease_id, TxDeviceOutcome::Transmitted)
+        .expect("completion");
     assert_eq!(releases.load(Ordering::SeqCst), 1);
-    assert!(!complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::Transmitted,
-    ));
 }
 
 fn successful_stop_releases_queued_and_device_owned_leases_after_quiesce(
     runtime: NetRuntimeHandle,
 ) {
     let (state, driver) = fake_driver();
-    let if_id = NetIfId(304);
-    let handle = NetDeviceHandle::new(
+    let handle = unpublished_handle(
+        runtime,
         driver,
         NetDeviceBinding {
             port_id: test_port_id(304),
-            if_id,
+            if_id: NetIfId(304),
         },
-        runtime.context(),
     );
-    let queued_releases = Arc::new(AtomicUsize::new(0));
-    let queued_payload =
-        PacketPayload::try_single(counted_packet_fixture(8, 0x9400, &queued_releases))
-            .expect("queued payload is non-empty");
-    assert!(
-        handle
-            .enqueue_tx(queued_payload, NetTxMeta::default())
-            .is_ok()
-    );
-
     let owned_releases = Arc::new(AtomicUsize::new(0));
     let owned_payload =
         PacketPayload::try_single(counted_packet_fixture(8, 0x9500, &owned_releases))
             .expect("owned payload is non-empty");
-    let owned_request = register_tx_payload_lease_in(
-        runtime,
-        if_id,
-        TxPayloadLease::from_payload(owned_payload).expect("owned payload lease"),
-        None,
-        NetTxMeta::default(),
-    )
-    .expect("registered owned lease")
-    .into_request();
-    assert!(begin_tx_submission_in(runtime, owned_request.lease_id));
-    assert!(mark_tx_device_owned_in(runtime, owned_request.lease_id));
+    handle
+        .transmit(TxFrame::whole(owned_payload), NetTxMeta::default())
+        .ok()
+        .expect("first frame admitted");
+    let _device_owned = accept_next(&handle.tx, &mut Vec::new());
+
+    let queued_releases = Arc::new(AtomicUsize::new(0));
+    let queued_payload =
+        PacketPayload::try_single(counted_packet_fixture(8, 0x9600, &queued_releases))
+            .expect("queued payload is non-empty");
+    handle
+        .transmit(TxFrame::whole(queued_payload), NetTxMeta::default())
+        .ok()
+        .expect("second frame admitted");
 
     assert_eq!(queued_releases.load(Ordering::SeqCst), 0);
     assert_eq!(owned_releases.load(Ordering::SeqCst), 0);
@@ -890,30 +811,52 @@ fn successful_stop_releases_queued_and_device_owned_leases_after_quiesce(
     assert_eq!(state.stop_calls.load(Ordering::Relaxed), 1);
     assert_eq!(queued_releases.load(Ordering::SeqCst), 1);
     assert_eq!(owned_releases.load(Ordering::SeqCst), 1);
+    let rejected = handle
+        .transmit(
+            TxFrame::whole(PacketPayload::try_single(packet_fixture(8, 0x9680)).expect("payload")),
+            NetTxMeta::default(),
+        )
+        .err()
+        .expect("a stopped port admits no frame");
+    assert_eq!(rejected.cause(), TxAdmissionCause::PortStopped);
 }
 
-fn failed_stop_keeps_port_and_device_owned_lease_quarantined_until_completion(
-    runtime: NetRuntimeHandle,
-) {
+fn failed_stop_keeps_device_owned_lease_until_completion(runtime: NetRuntimeHandle) {
+    let (state, driver) =
+        fake_driver_with_stop_error("stop-fail", kernel_api::error::KapiError::Busy);
+    let handle = unpublished_handle(
+        runtime,
+        driver,
+        NetDeviceBinding {
+            port_id: test_port_id(305),
+            if_id: NetIfId(305),
+        },
+    );
+    let releases = Arc::new(AtomicUsize::new(0));
+    let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9700, &releases))
+        .expect("counted payload is non-empty");
+    handle
+        .transmit(TxFrame::whole(payload), NetTxMeta::default())
+        .ok()
+        .expect("frame admitted");
+    let lease_id = accept_next(&handle.tx, &mut Vec::new());
+
+    assert_eq!(handle.stop(), Err(kernel_api::error::KapiError::Busy));
+    assert_eq!(releases.load(Ordering::SeqCst), 0);
+    handle
+        .tx
+        .complete(lease_id, TxDeviceOutcome::OutcomeUnknown)
+        .expect("late completion of a retained lease");
+    assert_eq!(releases.load(Ordering::SeqCst), 1);
+    handle.stop().expect("retried stop quiesces");
+    assert_eq!(state.stop_calls.load(Ordering::Relaxed), 2);
+}
+
+fn failed_unregister_keeps_the_port_registered_for_retry(runtime: NetRuntimeHandle) {
     let (_state, driver) =
         fake_driver_with_stop_error("stop-fail", kernel_api::error::KapiError::Busy);
     let if_id = register_test_port(runtime, 85, driver, PrimaryPortPolicy::Never)
         .expect("register stop-failure port");
-    let releases = Arc::new(AtomicUsize::new(0));
-    let payload = PacketPayload::try_single(counted_packet_fixture(8, 0x9600, &releases))
-        .expect("counted payload is non-empty");
-    let request = register_tx_payload_lease_in(
-        runtime,
-        if_id,
-        TxPayloadLease::from_payload(payload).expect("payload lease"),
-        None,
-        NetTxMeta::default(),
-    )
-    .expect("registered lease")
-    .into_request();
-    assert!(begin_tx_submission_in(runtime, request.lease_id));
-    assert!(mark_tx_device_owned_in(runtime, request.lease_id));
-
     assert_eq!(
         unregister_port_in(runtime, if_id),
         Err(kernel_api::error::KapiError::Busy)
@@ -922,22 +865,6 @@ fn failed_stop_keeps_port_and_device_owned_lease_quarantined_until_completion(
         lookup_if_by_port_id_in(runtime, test_port_id(85)),
         Some(if_id)
     );
-    assert_eq!(releases.load(Ordering::SeqCst), 0);
-    assert!(
-        runtime
-            .context()
-            .tx_leases
-            .lock()
-            .unwrap_or_else(|error| error.into_inner())
-            .contains_key(&request.lease_id)
-    );
-
-    assert!(complete_tx_lease_in(
-        runtime,
-        request.lease_id,
-        TxDeviceOutcome::OutcomeUnknown,
-    ));
-    assert_eq!(releases.load(Ordering::SeqCst), 1);
     assert!(unregister_test_port(runtime, if_id));
     assert_eq!(lookup_if_by_port_id_in(runtime, test_port_id(85)), None);
 }
@@ -988,78 +915,58 @@ pub(crate) async fn device_ownership() -> bool {
             stopped_interface_rejects_rx_at_the_device_boundary,
         ),
         (
-            "tx_completion_future_resolves_success",
-            tx_completion_future_resolves_success,
+            "admitted_frame_regions_follow_header_then_body",
+            admitted_frame_regions_follow_header_then_body,
         ),
         (
-            "tx_completion_future_resolves_error",
-            tx_completion_future_resolves_error,
+            "small_leading_body_segment_moves_into_header_to_fit_fanout",
+            small_leading_body_segment_moves_into_header_to_fit_fanout,
         ),
         (
-            "tx_payload_lease_derives_descriptor_for_each_owner",
-            tx_payload_lease_derives_descriptor_for_each_owner,
+            "frame_beyond_fanout_is_returned_unchanged",
+            frame_beyond_fanout_is_returned_unchanged,
         ),
         (
-            "tx_descriptor_plan_rejects_device_fanout_limit",
-            tx_descriptor_plan_rejects_device_fanout_limit,
+            "accepted_lease_retains_backing_until_exactly_one_completion",
+            accepted_lease_retains_backing_until_exactly_one_completion,
         ),
         (
-            "packet_window_descriptors_reference_original_packet_range",
-            packet_window_descriptors_reference_original_packet_range,
+            "synchronous_completion_releases_backing_after_the_descriptor_visit",
+            synchronous_completion_releases_backing_after_the_descriptor_visit,
         ),
         (
-            "tx_owner_group_completes_after_all_fragment_leases",
-            tx_owner_group_completes_after_all_fragment_leases,
+            "driver_rejection_releases_backing_without_a_completion",
+            driver_rejection_releases_backing_without_a_completion,
         ),
         (
-            "accepted_tx_lease_retains_backing_until_exactly_one_completion",
-            accepted_tx_lease_retains_backing_until_exactly_one_completion,
+            "queued_lease_cannot_be_completed_before_submission",
+            queued_lease_cannot_be_completed_before_submission,
         ),
         (
-            "synchronous_completion_consumes_submitting_lease_without_recycling_early",
-            synchronous_completion_consumes_submitting_lease_without_recycling_early,
+            "completion_of_another_ports_lease_is_rejected",
+            completion_of_another_ports_lease_is_rejected,
         ),
         (
-            "rejected_tx_lease_returns_backing_without_device_ownership",
-            rejected_tx_lease_returns_backing_without_device_ownership,
+            "retained_body_outlives_its_owner_until_completion",
+            retained_body_outlives_its_owner_until_completion,
         ),
         (
             "successful_stop_releases_queued_and_device_owned_leases_after_quiesce",
             successful_stop_releases_queued_and_device_owned_leases_after_quiesce,
         ),
         (
-            "failed_stop_keeps_port_and_device_owned_lease_quarantined_until_completion",
-            failed_stop_keeps_port_and_device_owned_lease_quarantined_until_completion,
+            "failed_stop_keeps_device_owned_lease_until_completion",
+            failed_stop_keeps_device_owned_lease_until_completion,
+        ),
+        (
+            "failed_unregister_keeps_the_port_registered_for_retry",
+            failed_unregister_keeps_the_port_registered_for_retry,
         ),
     ];
     for (name, run) in cases {
         log::info!("[kernel-test][net][device] {name}");
         run(runtime);
         assert!(list_port_ids_in(runtime).is_empty());
-        assert!(
-            runtime
-                .context()
-                .tx_leases
-                .lock()
-                .unwrap_or_else(|_| panic!("lease registry poisoned"))
-                .is_empty()
-        );
-        assert!(
-            runtime
-                .context()
-                .tx_owner_groups
-                .lock()
-                .unwrap_or_else(|_| panic!("owner groups poisoned"))
-                .is_empty()
-        );
-        assert!(
-            runtime
-                .context()
-                .tx_completions
-                .read()
-                .unwrap_or_else(|_| panic!("completion registry poisoned"))
-                .is_empty()
-        );
         crate::task::yield_now().await;
     }
     true

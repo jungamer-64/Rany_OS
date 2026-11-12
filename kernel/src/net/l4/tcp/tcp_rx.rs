@@ -35,6 +35,7 @@ use crate::net::l4::types::{
 };
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::manager::NetIfId;
 use crate::net::runtime::transport::tcp_table_in;
 use crate::sync::PoisonLock;
@@ -324,9 +325,13 @@ fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) 
         return;
     };
     // Challenge ACKs are best effort; rejection returns the unsubmitted packet.
-    if let Err((cause, _returned)) =
-        send_tcp_segment_payload_in(runtime, tcb.if_id, tcb.local, tcb.remote, ack, None)
-    {
+    if let Err((cause, _returned)) = send_tcp_segment_payload_in(
+        runtime,
+        tcb.if_id,
+        tcb.local,
+        tcb.remote,
+        TxBody::Owned(ack),
+    ) {
         log::debug!("[TCP] Challenge ACK queue rejection: {:?}", cause);
     }
 }
@@ -342,7 +347,7 @@ pub(super) fn send_control_segment(
         return;
     };
     if let Err((cause, _returned)) =
-        send_tcp_segment_payload_in(runtime, if_id, local, remote, segment, None)
+        send_tcp_segment_payload_in(runtime, if_id, local, remote, TxBody::Owned(segment))
     {
         log::debug!("[TCP] Control segment queue rejection: {:?}", cause);
     }

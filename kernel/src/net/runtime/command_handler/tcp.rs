@@ -11,6 +11,7 @@ use crate::net::l4::tcp::segment::{TcpSegmentBuilder, send_tcp_segment_payload_i
 use crate::net::l4::tcp::tcb::{TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot};
 use crate::net::l4::types::{EndpointAddr, EndpointError, SocketId, SocketResult};
 use crate::net::runtime::NetRuntimeHandle;
+use crate::net::runtime::device::TxBody;
 use crate::net::runtime::transport::tcp_table_in;
 use kernel_api::resource::net::PacketPayload;
 
@@ -119,20 +120,23 @@ impl RuntimeCommandHandler {
                 Ok(segment) => segment,
                 Err(error) => return EventHandleResult::ProtocolError(error),
             };
+            // The retransmit queue now owns the segment and its timer, so the
+            // sequence space is consumed even if this first attempt is not
+            // admitted; the timer retransmits it.
             crate::net::l4::tcp::retransmit::retransmit_queue_push(
                 runtime, if_id, local, remote, seq, data_len, segment,
             );
-
-            if crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
+            let _ = tcb_table.mark_payload_sent(if_id, local, remote, data_len);
+            let _ = socket.with_inner_mut(|inner| {
+                inner.send_waker.wake();
+            });
+            if !crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
                 runtime, if_id, local, remote, seq,
             ) {
-                let _ = socket.with_inner_mut(|inner| {
-                    inner.send_waker.wake();
-                });
-
-                let _ = tcb_table.mark_payload_sent(if_id, local, remote, data_len);
-            } else {
-                return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+                log::debug!(
+                    "[TCP] segment {} awaits retransmission after rejection",
+                    seq
+                );
             }
         }
 
@@ -195,10 +199,11 @@ impl RuntimeCommandHandler {
             1,
             fin_segment,
         );
+        // The queued FIN is retransmitted by its timer if this attempt fails.
         if !crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
             runtime, if_id, local, remote, fin.seq,
         ) {
-            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+            log::debug!("TCP: FIN for {} -> {} awaits retransmission", local, remote);
         }
         log::info!("TCP: FIN sent {} -> {}", local, remote);
         EventHandleResult::Success
@@ -440,7 +445,7 @@ impl RuntimeCommandHandler {
         }
         // Delegate to the packet-backed module-level TCP sender.
         // This centralizes IP family handling and ARP/NDP queuing logic.
-        send_tcp_segment_payload_in(runtime, if_id, src, dst, segment, None)
+        send_tcp_segment_payload_in(runtime, if_id, src, dst, TxBody::Owned(segment))
             .map_err(|(cause, _returned)| cause)
     }
 

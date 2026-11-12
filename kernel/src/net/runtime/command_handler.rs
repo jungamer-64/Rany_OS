@@ -252,10 +252,9 @@ impl RuntimeCommandHandler {
             | query_event @ RuntimeCommand::Control(
                 crate::net::runtime::command::ControlCommand::GetTcpConnections { .. },
             ) => self.handle_query_event_with_stack(runtime, query_event),
-            RuntimeCommand::Transport(crate::net::runtime::command::TransportCommand::RawSend {
-                reply,
-                ..
-            }) => {
+            RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::RawSend { reply, .. },
+            ) => {
                 crate::net::runtime::command::complete_command(
                     reply,
                     Err(EndpointError::ResourceExhausted),
