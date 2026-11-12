@@ -338,7 +338,7 @@ impl FragmentBuffer {
         // Recalculate header checksum
         header_bytes[10] = 0;
         header_bytes[11] = 0;
-        let checksum = calculate_ip_checksum(&header_bytes[..header_len]);
+        let checksum = Ipv4Header::compute_checksum_static(&header_bytes[..header_len]);
         header_bytes[10] = (checksum >> 8) as u8;
         header_bytes[11] = (checksum & 0xff) as u8;
 
@@ -517,28 +517,4 @@ impl FragmentReassembler {
     pub fn active_buffers(&self) -> usize {
         self.buffers.len()
     }
-}
-
-/// Calculate IP header checksum
-pub(crate) fn calculate_ip_checksum(header: &[u8]) -> u16 {
-    let mut sum: u32 = 0;
-
-    for i in (0..header.len()).step_by(2) {
-        if i == 10 {
-            continue; // Skip checksum field
-        }
-        let word = if i + 1 < header.len() {
-            u16::from_be_bytes([header[i], header[i + 1]])
-        } else {
-            u16::from_be_bytes([header[i], 0])
-        };
-        sum += word as u32;
-    }
-
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while sum >> 16 != 0 {
-        sum = (sum & 0xFFFF) + (sum >> 16);
-    }
-
-    !(sum as u16)
 }

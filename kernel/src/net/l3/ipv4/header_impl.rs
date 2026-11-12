@@ -113,11 +113,6 @@ impl Ipv4Header {
         self.protocol = protocol.into();
     }
 
-    /// Get checksum
-    pub fn checksum(&self) -> u16 {
-        u16::from_be_bytes(self.checksum)
-    }
-
     /// Set checksum
     pub fn set_checksum(&mut self, checksum: u16) {
         self.checksum = checksum.to_be_bytes();
@@ -148,41 +143,39 @@ impl Ipv4Header {
         (self.total_length() as usize).saturating_sub(self.header_len())
     }
 
-    /// Calculate header checksum from a raw byte slice.
-    /// The slice MUST be at least as long as the header length specified in the first byte.
-    pub fn compute_checksum_static(header_bytes: &[u8]) -> u16 {
-        if header_bytes.is_empty() {
-            return 0;
-        }
-        let ihl = (header_bytes[0] & 0x0F) as usize;
-        let header_len = ihl * 4;
+    /// Header checksum to store in bytes 10-11 of `header` (RFC 791), computed
+    /// with the checksum field taken as zero. `header` is exactly the header,
+    /// options included.
+    ///
+    /// Unlike UDP, the IPv4 header has no "no checksum" encoding, so a result
+    /// of 0x0000 is transmitted as is.
+    pub fn compute_checksum_static(header: &[u8]) -> u16 {
+        !Self::ones_complement_sum(header, true)
+    }
 
-        if header_bytes.len() < header_len {
-            return 0; // Or panic? Returning 0 is safer for now.
-        }
+    /// Whether `header` (exactly the header, options included) carries a
+    /// valid checksum: the one's-complement sum over every word, the checksum
+    /// field included, is 0xFFFF (RFC 1071). This accepts both one's-complement
+    /// zero encodings that a sender may produce.
+    pub fn header_checksum_is_valid(header: &[u8]) -> bool {
+        Self::ones_complement_sum(header, false) == 0xFFFF
+    }
 
+    fn ones_complement_sum(header: &[u8], skip_checksum_field: bool) -> u16 {
         let mut sum: u32 = 0;
-
-        // Sum 16-bit words, skipping checksum field (bytes 10-11)
-        for i in (0..header_len).step_by(2) {
-            if i == 10 {
-                continue; // Skip checksum field
+        for (index, word) in header.chunks(2).enumerate() {
+            if skip_checksum_field && index == 5 {
+                continue;
             }
-            let word = if i + 1 < header_len {
-                u16::from_be_bytes([header_bytes[i], header_bytes[i + 1]])
-            } else {
-                u16::from_be_bytes([header_bytes[i], 0])
-            };
-            sum += word as u32;
+            let high = word[0];
+            let low = word.get(1).copied().unwrap_or(0);
+            sum += u32::from(u16::from_be_bytes([high, low]));
         }
 
-        // Fold 32-bit sum to 16 bits
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
+        // LOOP_PROOF: mode=condition; reason=Carry folding reduces the high half of this 32-bit checksum until the accumulator fits in 16 bits.;
         while sum >> 16 != 0 {
             sum = (sum & 0xFFFF) + (sum >> 16);
         }
-
-        let result = !(sum as u16);
-        if result == 0 { 0xFFFF } else { result }
+        sum as u16
     }
 }

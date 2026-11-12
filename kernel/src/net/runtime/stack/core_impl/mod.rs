@@ -226,9 +226,7 @@ impl NetworkStack {
             if total_len < ihl || total_len != payload_view.total_len() {
                 return Err(crate::net::types::NetworkError::InvalidAddress);
             }
-            if u16::from_be_bytes([header[10], header[11]])
-                != crate::net::l3::ipv4::calculate_ip_checksum(&header[..ihl])
-            {
+            if !crate::net::l3::ipv4::Ipv4Header::header_checksum_is_valid(&header[..ihl]) {
                 return Err(crate::net::types::NetworkError::InvalidAddress);
             }
             let src_ip = crate::net::l3::ipv4::Ipv4Address::new([

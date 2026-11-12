@@ -87,12 +87,9 @@ impl<'a> Ipv4Packet<'a> {
     /// Verify header checksum
     pub fn verify_checksum(&self) -> bool {
         let header_len = self.header().header_len();
-        if self.data.len() < header_len {
-            return false;
-        }
-        let expected = self.header().checksum();
-        let calculated = Ipv4Header::compute_checksum_static(&self.data[..header_len]);
-        expected == calculated
+        self.data
+            .get(..header_len)
+            .is_some_and(Ipv4Header::header_checksum_is_valid)
     }
 }
 
@@ -277,6 +274,42 @@ impl<'a> Ipv4PacketMut<'a> {
 #[cfg(test)]
 mod packet_mut_tests {
     use super::*;
+
+    fn header_bytes(identification: u16) -> [u8; 20] {
+        let mut header = [
+            0x45, 0, 0, 40, 0, 0, 0x40, 0, 64, 6, 0, 0, 192, 168, 1, 2, 192, 168, 1, 1,
+        ];
+        header[4..6].copy_from_slice(&identification.to_be_bytes());
+        header
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_ipv4_header_checksum_round_trip_and_corruption() {
+        let mut header = header_bytes(0x1c46);
+        let checksum = Ipv4Header::compute_checksum_static(&header);
+        header[10..12].copy_from_slice(&checksum.to_be_bytes());
+        assert!(Ipv4Header::header_checksum_is_valid(&header));
+        // The stored checksum does not affect the computed value.
+        assert_eq!(Ipv4Header::compute_checksum_static(&header), checksum);
+
+        header[8] ^= 0x01;
+        assert!(!Ipv4Header::header_checksum_is_valid(&header));
+    }
+
+    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
+    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
+    fn test_ipv4_header_checksum_accepts_both_zero_encodings() {
+        // A header whose words sum to 0xFFFF has the checksum 0x0000, which
+        // senders transmit as is; 0xFFFF is the equivalent negative zero.
+        let mut header = (0..=u16::MAX)
+            .map(header_bytes)
+            .find(|candidate| Ipv4Header::compute_checksum_static(candidate) == 0)
+            .expect("some identification yields a zero checksum");
+        assert!(Ipv4Header::header_checksum_is_valid(&header));
+        header[10..12].copy_from_slice(&0xFFFFu16.to_be_bytes());
+        assert!(Ipv4Header::header_checksum_is_valid(&header));
+    }
 
     #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
