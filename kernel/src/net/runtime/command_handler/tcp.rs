@@ -61,7 +61,12 @@ impl RuntimeCommandHandler {
             let send_params = tcb_table
                 .read_by_socket_id(fd, |entry| TcpControlBlockSnapshot::from(entry))
                 .and_then(|tcb| {
-                    if tcb.state != TcpConnectionState::Established {
+                    // Data may follow our receive side being closed by the
+                    // peer (CLOSE-WAIT) but never our own FIN.
+                    if !matches!(
+                        tcb.state,
+                        TcpConnectionState::Established | TcpConnectionState::CloseWait
+                    ) {
                         return None;
                     }
 
@@ -76,34 +81,41 @@ impl RuntimeCommandHandler {
                             return None;
                         }
 
-                        let len = (pending_len as u32).min(effective_wnd).min(tcb.mss) as usize;
+                        let len = (pending_len as u32)
+                            .min(effective_wnd)
+                            .min(tcb.max_segment_payload)
+                            as usize;
                         if len == 0 {
                             return None;
                         }
 
                         let send_payload = inner.take_send_segment_window(len)?;
-                        Some((
-                            tcb.if_id,
-                            send_payload,
-                            tcb.snd_nxt,
-                            tcb.rcv_nxt,
-                            tcb.advertised_recv_window(),
-                        ))
+                        Some((tcb, send_payload))
                     });
                     inner_result.flatten()
                 });
 
-            let Some((if_id, send_payload, seq, ack, advertised_wnd)) = send_params else {
+            let Some((tcb, send_payload)) = send_params else {
                 break;
             };
 
+            let if_id = tcb.if_id;
+            let seq = tcb.snd_nxt;
             let data_len = send_payload.total_len() as u32;
             remaining -= send_payload.total_len();
-            let segment = TcpSegmentBuilder::new(local.port(), remote.port())
+            let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
                 .seq(seq)
-                .ack(ack)
+                .ack(tcb.rcv_nxt)
+                .ack_flag()
                 .psh()
-                .window(advertised_wnd)
+                .window(tcb.advertised_recv_window());
+            if tcb.ts_enabled {
+                builder = builder.nop().nop().timestamp(
+                    crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
+                    tcb.ts_ecr,
+                );
+            }
+            let segment = builder
                 .payload_packet(send_payload)
                 .build_checked_packet(local, remote);
             let segment = match segment {
@@ -127,6 +139,71 @@ impl RuntimeCommandHandler {
             }
         }
 
+        self.send_fin_after_drain_in(runtime, &socket, local, remote)
+    }
+
+    /// Send our FIN once a close was requested and every queued byte has been
+    /// handed to the retransmit queue. The FIN occupies the sequence number
+    /// after the last data byte, so it is never sent while data is pending.
+    fn send_fin_after_drain_in(
+        &self,
+        runtime: NetRuntimeHandle,
+        socket: &crate::net::l4::socket::Socket,
+        local: EndpointAddr,
+        remote: EndpointAddr,
+    ) -> EventHandleResult {
+        let close_ready = socket
+            .with_inner(|inner| inner.is_tcp_closing_or_closed() && !inner.has_send_data())
+            .unwrap_or(false);
+        if !close_ready {
+            return EventHandleResult::Success;
+        }
+
+        let tcb_table = tcp_table_in(runtime);
+        let Some(if_id) =
+            tcb_table.read_by_socket_id(socket.socket_id(), |tcb| tcb.route_interface())
+        else {
+            return EventHandleResult::Success;
+        };
+        let Some(fin) = tcb_table.begin_close(if_id, local, remote) else {
+            // Not ESTABLISHED / CLOSE-WAIT: the FIN was already sent.
+            return EventHandleResult::Success;
+        };
+
+        let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
+            .seq(fin.seq)
+            .ack(fin.ack)
+            .ack_flag()
+            .fin()
+            .window(fin.window);
+        if let Some(ts_ecr) = fin.timestamp_echo {
+            builder = builder.nop().nop().timestamp(
+                crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(runtime),
+                ts_ecr,
+            );
+        }
+        let fin_segment = match builder.build_checked_packet(local, remote) {
+            Ok(segment) => segment,
+            Err(error) => return EventHandleResult::ProtocolError(error),
+        };
+
+        // The FIN consumes one sequence number and is retransmitted like data
+        // until it is acknowledged.
+        crate::net::l4::tcp::retransmit::retransmit_queue_push(
+            runtime,
+            if_id,
+            local,
+            remote,
+            fin.seq,
+            1,
+            fin_segment,
+        );
+        if !crate::net::l4::tcp::retransmit::retransmit_queue_transmit_ready(
+            runtime, if_id, local, remote, fin.seq,
+        ) {
+            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
+        }
+        log::info!("TCP: FIN sent {} -> {}", local, remote);
         EventHandleResult::Success
     }
 
@@ -315,7 +392,7 @@ impl RuntimeCommandHandler {
             .window(65535)
             .syn_options(
                 1460,
-                Some(7),
+                Some(crate::net::l4::tcp::window_scale::DEFAULT_WINDOW_SCALE),
                 true,
                 Some(crate::net::l4::tcp::tcp_rx::generate_tcp_timestamp_in(
                     runtime,
@@ -451,55 +528,11 @@ impl RuntimeCommandHandler {
         };
 
         match state {
-            TcpConnectionState::Established => {
-                // FINパケットを送信
-                let seq = tcb_table
-                    .begin_active_close(if_id, local, remote)
-                    .unwrap_or(0);
-
-                let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
-                    .seq(seq)
-                    .fin()
-                    .ack(0) // ACKは最新の受信シーケンス番号
-                    .window(65535)
-                    .build_checked_packet(local, remote);
-
-                let fin_segment = match fin_segment {
-                    Ok(segment) => segment,
-                    Err(e) => return EventHandleResult::ProtocolError(e),
-                };
-
-                if let Err(e) = self.send_tcp_segment(runtime, if_id, local, remote, fin_segment) {
-                    log::info!("TCP: Failed to send FIN: {:?}", e);
-                    return EventHandleResult::ProtocolError(match e {
-                        EndpointError::InvalidArgument => EndpointError::InvalidArgument,
-                        _ => EndpointError::Internal,
-                    });
-                }
-
-                log::info!("TCP: FIN sent for fd={}", fd.raw());
-            }
-            TcpConnectionState::CloseWait => {
-                // 相手からFINを受信済み、自分からFINを送信
-                let seq = tcb_table
-                    .begin_passive_close_ack(if_id, local, remote)
-                    .unwrap_or(0);
-
-                let fin_segment = TcpSegmentBuilder::new(local.port(), remote.port())
-                    .seq(seq)
-                    .fin()
-                    .ack(0)
-                    .window(65535)
-                    .build_checked_packet(local, remote);
-
-                let fin_segment = match fin_segment {
-                    Ok(segment) => segment,
-                    Err(e) => return EventHandleResult::ProtocolError(e),
-                };
-
-                if let Err(e) = self.send_tcp_segment(runtime, if_id, local, remote, fin_segment) {
-                    log::info!("TCP: Failed to send FIN (LastAck): {:?}", e);
-                }
+            TcpConnectionState::Established | TcpConnectionState::CloseWait => {
+                // Queued data is transmitted first; the FIN follows once the
+                // send buffer has drained, from this command or from the
+                // data-ready pass that empties it later.
+                return self.handle_data_ready_in(runtime, fd);
             }
             TcpConnectionState::Listen | TcpConnectionState::SynSent => {
                 // まだ接続が確立していない場合は即座にクローズ

@@ -23,13 +23,16 @@ use super::retransmit::{
 };
 use super::segment::{TcpSegmentBuilder, send_tcp_segment_payload_in};
 use super::tcb::{
-    TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions, tcp_flags,
+    AckSegment, TcpConnectionState, TcpControlBlock, TcpControlBlockSnapshot, TcpHandshakeOptions,
+    tcp_flags,
 };
 use super::window_scale::TcpOptionParser;
 use crate::net::l4::socket::{
     Socket, find_listening_tcp_socket_in, generate_socket_id_in, lookup_socket_in,
 };
-use crate::net::l4::types::{AcceptedConnection, EndpointAddr, EndpointError, SocketId};
+use crate::net::l4::types::{
+    AcceptedConnection, EndpointAddr, EndpointError, SocketId, seq_after, seq_before, seq_leq,
+};
 use crate::net::payload::PacketPayloadView;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
@@ -95,6 +98,85 @@ fn is_acceptable_sequence(tcb: &TcpControlBlockSnapshot, seq_num: u32, seg_len: 
                 .wrapping_sub(rcv_nxt);
             diff_start < rcv_wnd || diff_end < rcv_wnd
         }
+    }
+}
+
+/// RFC 7323 timestamp admission (Section 3.2 and PAWS, Section 5.3 R1).
+enum TimestampAdmission {
+    /// The segment may be processed; carries the peer TSval when present.
+    Admit(Option<u32>),
+    /// TSval is older than TS.Recent: drop and acknowledge.
+    PawsRejected,
+    /// A timestamp-enabled connection received a non-RST segment without
+    /// TSopt: drop silently.
+    MissingTimestamp,
+}
+
+fn admit_timestamp(tcb: &TcpControlBlockSnapshot, flags: u8, options: &[u8]) -> TimestampAdmission {
+    if !tcb.ts_enabled || (flags & tcp_flags::RST) != 0 {
+        return TimestampAdmission::Admit(None);
+    }
+    let timestamps = if options.is_empty() {
+        None
+    } else {
+        TcpOptionParser::new(options).find_timestamps()
+    };
+    match timestamps {
+        Some((peer_ts_val, _)) if seq_before(peer_ts_val, tcb.ts_ecr) => {
+            TimestampAdmission::PawsRejected
+        }
+        Some((peer_ts_val, _)) => TimestampAdmission::Admit(Some(peer_ts_val)),
+        None if tcb.state == TcpConnectionState::SynSent => TimestampAdmission::Admit(None),
+        None => TimestampAdmission::MissingTimestamp,
+    }
+}
+
+/// Apply an ACK that passed RFC 5961 validation: congestion state, the
+/// guarded window update, close-state progress, and retransmit queue release.
+fn apply_acceptable_ack(
+    runtime: NetRuntimeHandle,
+    tcb: &TcpControlBlockSnapshot,
+    segment: AckSegment,
+) {
+    let current_time_ms = tcp_table_in(runtime).get_current_tick();
+    let (should_remove, action) = tcp_table_in(runtime)
+        .record_ack_and_close_progress(tcb.if_id, tcb.local, tcb.remote, segment, current_time_ms)
+        .unwrap_or((false, CongestionAction::None));
+
+    // RFC 6582 Section 3.2: release the cumulatively acknowledged prefix
+    // before retransmitting the oldest unacknowledged segment.
+    retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, segment.ack);
+    if action == CongestionAction::FastRetransmit {
+        retransmit_queue_fast_retransmit(runtime, tcb.if_id, tcb.local, tcb.remote);
+    }
+    if should_remove {
+        retransmit_queue_remove(runtime, tcb.if_id, tcb.local, tcb.remote);
+        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
+        return;
+    }
+    resume_closing_transmission(runtime, tcb.socket_id);
+}
+
+/// A closing socket no longer has an application writer to drive the send
+/// path, so window progress from an ACK resumes it until the queued data and
+/// the deferred FIN are out. A full command queue leaves the retry to the next
+/// ACK, which retransmission and zero-window probing keep producing.
+fn resume_closing_transmission(runtime: NetRuntimeHandle, socket_id: SocketId) {
+    let pending = lookup_socket_in(runtime, socket_id)
+        .and_then(|socket| {
+            socket.with_inner(|inner| inner.is_tcp_closing_or_closed() && inner.has_send_data())
+        })
+        .unwrap_or(false);
+    if pending
+        && crate::net::runtime::command::try_enqueue_command_in(
+            runtime,
+            crate::net::runtime::command::RuntimeCommand::Transport(
+                crate::net::runtime::command::TransportCommand::TcpDataReady { socket_id },
+            ),
+        )
+        .is_err()
+    {
+        log::debug!("[TCP] closing transmission resume deferred to the next ACK");
     }
 }
 
@@ -224,7 +306,7 @@ fn send_challenge_ack(runtime: NetRuntimeHandle, tcb: &TcpControlBlockSnapshot) 
         .seq(tcb.snd_nxt)
         .ack(tcb.rcv_nxt)
         .ack_flag()
-        .window(u16::try_from(tcb.advertised_recv_window()).unwrap_or(u16::MAX));
+        .window(tcb.advertised_recv_window());
 
     if tcb.ts_enabled {
         builder = builder
@@ -421,25 +503,31 @@ fn process_parsed_tcp_segment(
     if let Some(tcb) = tcp_table_in(runtime).read(ingress_if_id, local, remote, |entry| {
         TcpControlBlockSnapshot::from(entry)
     }) {
-        tcp_table_in(runtime).update_peer_window(ingress_if_id, local, remote, header.window);
-
         let mut data_payload = data_payload;
         let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
 
-        // Sequence validation is performed in process_tcp_with_tcb (L1124) which
-        // correctly excludes SYN-SENT state. The fast-path below already requires
-        // seq_num == rcv_nxt && state == Established, providing equivalent protection.
-
+        // The fast path admits only in-order data on ESTABLISHED that passes
+        // the same timestamp admission as the slow path; every other segment
+        // goes through the full RFC 9293 pipeline in process_tcp_with_tcb.
         let base_flags = header.flags & !(tcp_flags::CWR | tcp_flags::ECE);
         let can_try_fast_path = tcb.state == TcpConnectionState::Established
             && header.seq_num == tcb.rcv_nxt
             && payload_len > 0
             && (base_flags == tcp_flags::ACK || base_flags == (tcp_flags::ACK | tcp_flags::PSH));
-        if can_try_fast_path {
+        if can_try_fast_path
+            && let TimestampAdmission::Admit(peer_timestamp) =
+                admit_timestamp(&tcb, header.flags, options)
+        {
             let payload = data_payload
                 .take()
                 .expect("fast path requires a non-empty TCP payload");
-            match try_fast_path(runtime, &tcb, header.ack_num, options, payload) {
+            let segment = AckSegment {
+                seq: header.seq_num,
+                ack: header.ack_num,
+                window: header.window,
+                occupies_sequence_space: true,
+            };
+            match try_fast_path(runtime, &tcb, segment, peer_timestamp, payload) {
                 Ok(()) => {
                     FAST_PATH_HITS.fetch_add(1, Ordering::Relaxed);
                     return;
@@ -503,8 +591,12 @@ fn process_parsed_tcp_segment(
                     socket.socket_id(),
                     local,
                     remote,
-                    header.ack_num,
-                    header.seq_num,
+                    AckSegment {
+                        seq: header.seq_num,
+                        ack: header.ack_num,
+                        window: header.window,
+                        occupies_sequence_space: data_payload.is_some(),
+                    },
                     mss,
                     ingress_if_id,
                 );
@@ -517,10 +609,8 @@ fn process_parsed_tcp_segment(
                     return;
                 }
 
-                if let Some(accepted) =
-                    create_accepted_socket(runtime, local, remote, ingress_if_id)
-                {
-                    let _ = push_to_accept_queue(runtime, local.port(), ingress_if_id, accepted);
+                if !complete_passive_open(runtime, ingress_if_id, local, remote) {
+                    return;
                 }
 
                 if let Some(data_payload) = data_payload
@@ -571,11 +661,17 @@ fn process_parsed_tcp_segment(
     }
 }
 
+/// Header-prediction path for in-order data on ESTABLISHED.
+///
+/// Rejection returns the untouched payload and leaves the connection state
+/// unchanged, so the slow path processes the same segment from scratch. The
+/// payload is admitted to the socket before the ACK is applied, and nothing
+/// after that point can reject the segment.
 fn try_fast_path(
     runtime: NetRuntimeHandle,
     tcb: &TcpControlBlockSnapshot,
-    ack_num: u32,
-    options: &[u8],
+    segment: AckSegment,
+    peer_timestamp: Option<u32>,
     data_payload: PacketPayload,
 ) -> Result<(), PacketPayload> {
     let payload_len = data_payload.total_len();
@@ -583,9 +679,7 @@ fn try_fast_path(
         return Err(data_payload);
     }
 
-    let ack_diff_una = ack_num.wrapping_sub(tcb.snd_una) as i32;
-    let ack_diff_nxt = tcb.snd_nxt.wrapping_sub(ack_num) as i32;
-    if ack_diff_una < 0 || ack_diff_nxt < 0 {
+    if seq_before(segment.ack, tcb.snd_una) || seq_after(segment.ack, tcb.snd_nxt) {
         return Err(data_payload);
     }
 
@@ -595,45 +689,26 @@ fn try_fast_path(
 
     let new_rcv_nxt = tcb.rcv_nxt.wrapping_add(payload_len as u32);
 
-    if ack_diff_una > 0 {
-        let current_time_ms = tcp_table_in(runtime).get_current_tick();
-        tcp_table_in(runtime).record_ack_received(
-            tcb.if_id,
-            tcb.local,
-            tcb.remote,
-            ack_num,
-            false,
-            current_time_ms,
-            0,
-        );
-        retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
-    }
-
-    if let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) {
-        let can_accept = socket
-            .with_inner(|inner| {
-                inner
-                    .recv_buffer_limit
-                    .saturating_sub(inner.recv_payload_bytes())
-                    >= payload_len
-            })
-            .unwrap_or(false);
-        if !can_accept {
-            return Err(data_payload);
-        }
-        socket.try_push_payload(data_payload)?;
-    } else {
+    let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) else {
+        return Err(data_payload);
+    };
+    let can_accept = socket
+        .with_inner(|inner| {
+            inner
+                .recv_buffer_limit
+                .saturating_sub(inner.recv_payload_bytes())
+                >= payload_len
+        })
+        .unwrap_or(false);
+    if !can_accept {
         return Err(data_payload);
     }
+    socket.try_push_payload(data_payload)?;
 
-    let timestamp_echo = if tcb.ts_enabled && !options.is_empty() {
-        let mut parser = TcpOptionParser::new(options);
-        parser
-            .find_timestamps()
-            .map(|(peer_ts_val, _)| (peer_ts_val, generate_tcp_timestamp_in(runtime)))
-    } else {
-        None
-    };
+    apply_acceptable_ack(runtime, tcb, segment);
+
+    let timestamp_echo =
+        peer_timestamp.map(|peer_ts_val| (peer_ts_val, generate_tcp_timestamp_in(runtime)));
     let should_ack_now = tcp_table_in(runtime)
         .record_receive_progress_with_delayed_ack(
             tcb.if_id,
@@ -797,6 +872,7 @@ fn handle_syn_sent_segment(
     flags: u8,
     seq_num: u32,
     ack_num: u32,
+    window: u16,
     options: &[u8],
 ) {
     let is_syn = (flags & tcp_flags::SYN) != 0;
@@ -834,7 +910,7 @@ fn handle_syn_sent_segment(
     if is_syn {
         if is_ack {
             // RFC 9293: SYN-ACK (3-way handshake completion)
-            handle_syn_ack_received(runtime, tcb, seq_num, ack_num, options);
+            handle_syn_ack_received(runtime, tcb, seq_num, ack_num, window, options);
         } else {
             // RFC 9293: Simultaneous Open (双方からSYNを送信した場合)
             // SYN-SENT -> SYN-RECEIVED 遷移し、SYN-ACKを返送する
@@ -918,6 +994,7 @@ fn handle_synchronized_segment(
     ack_num: u32,
     window: u16,
     urgent_ptr: u16,
+    peer_timestamp: Option<u32>,
     options: &[u8],
     data_payload: Option<PacketPayload>,
 ) {
@@ -927,43 +1004,6 @@ fn handle_synchronized_segment(
     let is_fin = (flags & tcp_flags::FIN) != 0;
     let is_urg = (flags & tcp_flags::URG) != 0;
     let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
-
-    // 0. Parse TCP Options (SACK / Timestamps)
-    if !options.is_empty() {
-        let mut parser = TcpOptionParser::new(options);
-
-        // 受信SACKオプション（送信側の再送キューに反映）
-        if tcb.sack_enabled
-            && let Some(blocks) = parser.find_sack_blocks()
-            && !blocks.is_empty()
-        {
-            crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
-                runtime, tcb.if_id, tcb.local, tcb.remote, &blocks,
-            );
-        }
-
-        // Timestamp (RFC 7323 Section 5.3)
-        if tcb.ts_enabled
-            && let Some((peer_ts_val, _peer_ts_ecr)) = parser.find_timestamps()
-        {
-            // RFC 7323: SEG.SEQ <= last.ACK.sent < SEG.SEQ + SEG.LEN の場合に更新。
-            // last.ACK.sent はここでは tcb.rcv_nxt。
-            let seg_len_u32 =
-                payload_len as u32 + (if is_syn { 1 } else { 0 }) + (if is_fin { 1 } else { 0 });
-            let is_in_window = (seq_num.wrapping_sub(tcb.rcv_nxt) as i32) <= 0
-                && (tcb.rcv_nxt.wrapping_sub(seq_num) as i32) < seg_len_u32 as i32;
-
-            if is_in_window || seq_num == tcb.rcv_nxt {
-                tcp_table_in(runtime).record_timestamp_echo(
-                    tcb.if_id,
-                    tcb.local,
-                    tcb.remote,
-                    peer_ts_val,
-                    generate_tcp_timestamp_in(runtime),
-                );
-            }
-        }
-    }
 
     // 1. Check RST bit (RFC 793 / RFC 5961 Section 3.2)
     if is_rst {
@@ -1009,8 +1049,47 @@ fn handle_synchronized_segment(
         return;
     }
 
+    // Only a segment that passed RST, SYN and ACK validation may move
+    // TS.Recent or the retransmit scoreboard.
+    //
+    // RFC 7323 Section 4.3: record TSval when SEG.SEQ <= Last.ACK.sent <
+    // SEG.SEQ + SEG.LEN (Last.ACK.sent is RCV.NXT here), or for a zero-length
+    // segment at RCV.NXT.
+    if let Some(peer_ts_val) = peer_timestamp {
+        let seg_len = payload_len as u32 + u32::from(is_fin);
+        let covers_last_ack =
+            seq_leq(seq_num, tcb.rcv_nxt) && seq_before(tcb.rcv_nxt, seq_num.wrapping_add(seg_len));
+        if covers_last_ack || seq_num == tcb.rcv_nxt {
+            tcp_table_in(runtime).record_timestamp_echo(
+                tcb.if_id,
+                tcb.local,
+                tcb.remote,
+                peer_ts_val,
+                generate_tcp_timestamp_in(runtime),
+            );
+        }
+    }
+    if tcb.sack_enabled
+        && !options.is_empty()
+        && let Some(blocks) = TcpOptionParser::new(options).find_sack_blocks()
+        && !blocks.is_empty()
+    {
+        crate::net::l4::tcp::retransmit::retransmit_queue_process_sack(
+            runtime, tcb.if_id, tcb.local, tcb.remote, &blocks,
+        );
+    }
+
     // Acceptable ACK: Process it
-    handle_ack_received(runtime, tcb, ack_num, payload_len, flags, window);
+    apply_acceptable_ack(
+        runtime,
+        &tcb,
+        AckSegment {
+            seq: seq_num,
+            ack: ack_num,
+            window,
+            occupies_sequence_space: payload_len > 0 || is_fin,
+        },
+    );
 
     // 4. Check URG bit (RFC 793 / RFC 6093)
     if is_urg && urgent_ptr > 0 {
@@ -1191,40 +1270,26 @@ fn process_tcp_with_tcb(
 ) {
     let payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len);
 
-    // RFC 7323 Section 3.2 & Section 5.8: Timestamps and PAWS
-    if tcb.ts_enabled && (flags & tcp_flags::RST) == 0 {
-        let ts_opt = if !options.is_empty() {
-            TcpOptionParser::new(options).find_timestamps()
-        } else {
-            None
-        };
-
-        match ts_opt {
-            Some((peer_ts_val, _peer_ts_ecr)) => {
-                if (peer_ts_val.wrapping_sub(tcb.ts_ecr) as i32) < 0 {
-                    log::warn!(
-                        "[TCP] PAWS check failed (TSval {} < TSrecent {}) for {} - dropping segment (RFC 7323)",
-                        peer_ts_val,
-                        tcb.ts_ecr,
-                        tcb.remote
-                    );
-                    send_challenge_ack(runtime, &tcb);
-                    return;
-                }
-            }
-            None => {
-                if tcb.state != TcpConnectionState::SynSent {
-                    // RFC 7323 Section 3.2: Once TSopt has been negotiated, a segment without
-                    // TSopt SHOULD be silently dropped (MUST NOT cause connection abort).
-                    log::warn!(
-                        "[TCP] Missing required Timestamp option on timestamp-enabled connection to {} - silently dropping (RFC 7323)",
-                        tcb.remote
-                    );
-                    return;
-                }
-            }
+    // RFC 7323 Section 3.2 & Section 5.3: Timestamps and PAWS
+    let peer_timestamp = match admit_timestamp(&tcb, flags, options) {
+        TimestampAdmission::Admit(peer_timestamp) => peer_timestamp,
+        TimestampAdmission::PawsRejected => {
+            log::warn!(
+                "[TCP] PAWS check failed (TSrecent {}) for {} - dropping segment (RFC 7323)",
+                tcb.ts_ecr,
+                tcb.remote
+            );
+            send_challenge_ack(runtime, &tcb);
+            return;
         }
-    }
+        TimestampAdmission::MissingTimestamp => {
+            log::warn!(
+                "[TCP] Missing required Timestamp option on timestamp-enabled connection to {} - silently dropping (RFC 7323)",
+                tcb.remote
+            );
+            return;
+        }
+    };
 
     // RFC 793 / 9293 Section 3.10.7.1: 受信セグメントのシーケンス番号妥当性を検証
     let mut seg_len = payload_len;
@@ -1250,16 +1315,28 @@ fn process_tcp_with_tcb(
 
     match tcb.state {
         TcpConnectionState::SynSent => {
-            handle_syn_sent_segment(runtime, tcb, flags, seq_num, ack_num, options);
+            handle_syn_sent_segment(runtime, tcb, flags, seq_num, ack_num, window, options);
         }
         TcpConnectionState::SynReceived => {
             // RFC 793: If ACK bit is set, check if acceptable and transition to Established
             if (flags & tcp_flags::ACK) != 0 {
-                if ack_num.wrapping_sub(tcb.snd_una) as i32 > 0
-                    && ack_num.wrapping_sub(tcb.snd_nxt) as i32 <= 0
-                {
-                    tcp_table_in(runtime)
-                        .establish_syn_received(tcb.if_id, tcb.local, tcb.remote, ack_num);
+                if seq_after(ack_num, tcb.snd_una) && seq_leq(ack_num, tcb.snd_nxt) {
+                    let established = tcp_table_in(runtime).establish_syn_received(
+                        tcb.if_id,
+                        tcb.local,
+                        tcb.remote,
+                        AckSegment {
+                            seq: seq_num,
+                            ack: ack_num,
+                            window,
+                            occupies_sequence_space: seg_len > 0,
+                        },
+                    );
+                    if !established
+                        || !complete_passive_open(runtime, tcb.if_id, tcb.local, tcb.remote)
+                    {
+                        return;
+                    }
 
                     // Continue processing in Established state
                     if let Some(established_tcb) =
@@ -1275,6 +1352,7 @@ fn process_tcp_with_tcb(
                             ack_num,
                             window,
                             urgent_ptr,
+                            peer_timestamp,
                             options,
                             data_payload,
                         );
@@ -1301,6 +1379,7 @@ fn process_tcp_with_tcb(
                 ack_num,
                 window,
                 urgent_ptr,
+                peer_timestamp,
                 options,
                 data_payload,
             );
@@ -1430,6 +1509,7 @@ fn handle_syn_ack_received(
     tcb: TcpControlBlockSnapshot,
     seq_num: u32,
     ack_num: u32,
+    window: u16,
     options: &[u8],
 ) {
     // ACK番号を検証 (RFC 793 / RFC 9293 Section 3.10.7.3)
@@ -1461,8 +1541,12 @@ fn handle_syn_ack_received(
         tcb.if_id,
         tcb.local,
         tcb.remote,
-        seq_num,
-        ack_num,
+        AckSegment {
+            seq: seq_num,
+            ack: ack_num,
+            window,
+            occupies_sequence_space: true,
+        },
         TcpHandshakeOptions {
             peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
             local_ts_val: peer_ts.map(|_| generate_tcp_timestamp_in(runtime)),
@@ -1475,22 +1559,15 @@ fn handle_syn_ack_received(
     if !updated {
         return;
     }
+    let Some(established) = tcp_table_in(runtime).read(tcb.if_id, tcb.local, tcb.remote, |entry| {
+        TcpControlBlockSnapshot::from(entry)
+    }) else {
+        return;
+    };
 
-    // ACKパケット送信
-    let mut builder = TcpSegmentBuilder::new(tcb.local.port(), tcb.remote.port())
-        .seq(ack_num)
-        .ack(seq_num.wrapping_add(1))
-        .ack_flag()
-        .window(65535);
-
-    // TCP Timestamps: 3ウェイハンドシェイクの最終ACKにもTSoptを付与
-    if let Some((peer_ts_val, _)) = peer_ts {
-        let our_ts = generate_tcp_timestamp_in(runtime);
-        builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
-    }
-
-    // パケット送信
-    send_control_segment(runtime, tcb.if_id, tcb.local, tcb.remote, builder);
+    // The handshake-completing ACK is the first segment whose window is
+    // scaled, and it carries TSopt when timestamps were negotiated.
+    send_ack_for_fast_path(runtime, &established, established.rcv_nxt);
     log::info!(
         "TCP: Connection established {} <-> {}",
         tcb.local,
@@ -1576,16 +1653,34 @@ fn process_tcp_new_connection(
     // SYN キューが半分以上埋まっている場合に発動
     let use_syncookies = tcp_table_in(runtime).syn_recv_count() > 2048;
 
-    let isn = if use_syncookies {
+    let (isn, handshake_options) = if use_syncookies {
         // MSS インデックスを選択 (簡易版: 相手の MSS を見て適切なものを選択)
         let mss_idx = match peer_mss {
             Some(m) if m >= 1460 => 2, // 1460 (Ethernet)
             Some(m) if m >= 536 => 1,  // 536 (Default)
             _ => 0,                    // 64
         };
-        tcp_table_in(runtime).generate_syncookie(local, remote, seq_num, mss_idx)
+        // The cookie encodes only the MSS index. Window scaling, SACK and
+        // timestamps cannot be reconstructed from the returning ACK, so the
+        // stateless SYN-ACK must not offer them.
+        (
+            tcp_table_in(runtime).generate_syncookie(local, remote, seq_num, mss_idx),
+            TcpHandshakeOptions {
+                peer_mss,
+                ..TcpHandshakeOptions::default()
+            },
+        )
     } else {
-        tcp_table_in(runtime).generate_isn(local, remote)
+        (
+            tcp_table_in(runtime).generate_isn(local, remote),
+            TcpHandshakeOptions {
+                peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
+                local_ts_val: peer_ts.map(|_| generate_tcp_timestamp_in(runtime)),
+                sack_permitted,
+                peer_mss,
+                peer_window_scale: peer_ws,
+            },
+        )
     };
 
     let tcb = TcpControlBlock::passive_open(
@@ -1596,17 +1691,13 @@ fn process_tcp_new_connection(
         seq_num,
         nodelay,
         ingress_if_id,
-        TcpHandshakeOptions {
-            peer_ts_val: peer_ts.map(|(peer_ts_val, _)| peer_ts_val),
-            local_ts_val: None,
-            sack_permitted,
-            peer_mss,
-            peer_window_scale: peer_ws,
-        },
+        handshake_options,
     );
 
     // SYN-ACK送信に必要な値をinsertの前にキャプチャ
-    let syn_ack = tcb.passive_open_syn_ack();
+    let Some(syn_ack) = tcb.passive_open_syn_ack() else {
+        return;
+    };
 
     // SYN Cookie 使用時は TCB をテーブルに挿入しない (Stateless)
     if !use_syncookies {
@@ -1625,28 +1716,16 @@ fn process_tcp_new_connection(
 
     // SYN-ACK送信 (TCPオプション付き)
     // MSS=1460 (標準的なイーサネットMTU 1500 - IPヘッダ20 - TCPヘッダ20)
-    let ws_opt = if syn_ack.window_scale_enabled {
-        Some(7)
-    } else {
-        None
-    };
-    let _ts_opt = if syn_ack.timestamp_enabled {
-        Some(generate_tcp_timestamp_in(runtime))
-    } else {
-        None
-    };
-
     let mut builder = TcpSegmentBuilder::new(local.port(), remote.port())
         .seq(syn_ack.isn)
         .ack(seq_num.wrapping_add(1))
         .syn()
         .ack_flag()
         .window(65535)
-        .syn_options(1460, ws_opt, syn_ack.sack_enabled, None);
+        .syn_options(1460, syn_ack.window_scale, syn_ack.sack_enabled, None);
 
     // TSopt付きSYN-ACK (RFC 7323 Section 3.2)
-    if let Some((peer_ts_val, _)) = peer_ts {
-        let our_ts = generate_tcp_timestamp_in(runtime);
+    if let Some((our_ts, peer_ts_val)) = syn_ack.timestamp {
         builder = builder.nop().nop().timestamp(our_ts, peer_ts_val);
     }
 
@@ -1693,130 +1772,67 @@ fn handle_rst_received(runtime: NetRuntimeHandle, tcb: TcpControlBlockSnapshot, 
     }
 }
 
-/// ACK受信処理（データ確認応答 + 輻輳制御 + 高速再送）
-fn handle_ack_received(
+/// Hand a connection that just reached ESTABLISHED through a passive open to
+/// its listener's accept queue.
+///
+/// The TCB is rebound from the listener's socket id to a fresh connection id
+/// only once the accept queue has admitted it. If the listener is gone or its
+/// backlog is full, the connection is aborted with RST and its TCB removed, so
+/// no established connection exists without an owner that can accept it.
+/// Returns whether the connection was admitted.
+fn complete_passive_open(
     runtime: NetRuntimeHandle,
-    tcb: TcpControlBlockSnapshot,
-    ack_num: u32,
-    payload_len: usize,
-    flags: u8,
-    window: u16,
-) {
-    // RFC 793 validation: SND.UNA < SEG.ACK =< SND.NXT
-    // ack_num > snd_nxt の場合、送信していないデータのACKなので不正。
-    let diff_nxt = ack_num.wrapping_sub(tcb.snd_nxt) as i32;
-    if diff_nxt > 0 {
-        log::warn!(
-            "[TCP] Received ACK for unsent data (ack={} > nxt={}), sending challenge ACK",
-            ack_num,
-            tcb.snd_nxt
-        );
-        send_challenge_ack(runtime, &tcb);
-        return;
-    }
-
-    // 現在時刻を取得（輻輳制御アルゴリズム用）
-    let current_time_ms = tcp_table_in(runtime).get_current_tick();
-
-    // RFC 5681 Section 2: Duplicate ACK 厳格判定
-    // 1. ack_num == snd_una (新データ未確認)
-    // 2. payload_len == 0 (データなし)
-    // 3. SYN / FIN フラグなし
-    // 4. advertised window が前回のACKから変化していない (window == tcb.snd_wnd)
-    // 5. 未確認データが存在する (snd_una < snd_nxt)
-    let has_unacked_data = (tcb.snd_nxt.wrapping_sub(tcb.snd_una) as i32) > 0;
-    let is_dup = ack_num == tcb.snd_una
-        && payload_len == 0
-        && (flags & (tcp_flags::SYN | tcp_flags::FIN)) == 0
-        && window == tcb.snd_wnd
-        && has_unacked_data;
-
-    let (should_remove, action) = tcp_table_in(runtime)
-        .record_ack_and_close_progress(
-            tcb.if_id,
-            tcb.local,
-            tcb.remote,
-            ack_num,
-            is_dup,
-            current_time_ms,
-        )
-        .unwrap_or((false, CongestionAction::None));
-
-    if should_remove {
-        tcp_table_in(runtime).remove(tcb.if_id, tcb.local, tcb.remote);
-    }
-
-    // RFC 6582 Section 3.2: まず届いた累積ACK（Partial ACK含む）で確認済みセグメントをキューから削除
-    retransmit_queue_ack(runtime, tcb.if_id, tcb.local, tcb.remote, ack_num);
-
-    // その後、3重複ACKまたはPartial ACKによる「現在最古の未確認セグメント」を即座に再送
-    if action == CongestionAction::FastRetransmit {
-        retransmit_queue_fast_retransmit(runtime, tcb.if_id, tcb.local, tcb.remote);
-    }
-}
-
-/// Accept用の新規ソケットを作成
-fn create_accepted_socket(
-    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
     local: EndpointAddr,
     remote: EndpointAddr,
-    ingress_if_id: NetIfId,
-) -> Option<AcceptedConnection> {
-    // 新しいFDを割り当て
-    let new_socket_id = generate_socket_id_in(runtime)?;
-
-    // TCB情報を更新してFDを紐付け
-    tcp_table_in(runtime).set_socket_id(ingress_if_id, local, remote, new_socket_id);
-
-    // 再送キューを作成
-    get_or_create_retransmit_queue(runtime, ingress_if_id, local, remote);
-
-    Some(AcceptedConnection::new(
-        new_socket_id,
-        local,
-        remote,
-        ingress_if_id,
-    ))
-}
-
-/// Listeningソケットを探してAcceptキューに追加
-fn push_to_accept_queue(
-    runtime: NetRuntimeHandle,
-    local_port: u16,
-    ingress_if_id: NetIfId,
-    conn: AcceptedConnection,
 ) -> bool {
-    // ローカルポートでリッスン中のソケットを検索
-    if let Some(socket) = find_listening_tcp_socket_in(runtime, conn.local_addr, ingress_if_id) {
-        return socket
-            .with_inner_mut(|inner| {
-                if !inner.is_tcp_listening() {
-                    return false;
-                }
+    let admitted = generate_socket_id_in(runtime).is_some_and(|socket_id| {
+        find_listening_tcp_socket_in(runtime, local, if_id).is_some_and(|listener| {
+            listener
+                .with_inner_mut(|inner| {
+                    if !inner.is_tcp_listening() {
+                        return false;
+                    }
+                    let Some(tcp) = inner.tcp_mut() else {
+                        return false;
+                    };
+                    if tcp.accept_queue.len() >= tcp.accept_backlog {
+                        return false;
+                    }
+                    tcp.accept_queue
+                        .push_back(AcceptedConnection::new(socket_id, local, remote, if_id));
+                    inner.accept_waker.wake();
+                    true
+                })
+                .unwrap_or(false)
+                && tcp_table_in(runtime).set_socket_id(if_id, local, remote, socket_id)
+        })
+    });
 
-                let tcp = match inner.tcp_mut() {
-                    Some(t) => t,
-                    None => return false,
-                };
-                if tcp.accept_queue.len() >= tcp.accept_backlog {
-                    log::info!("TCP: Accept queue full for port {}", local_port);
-                    return false;
-                }
-
-                tcp.accept_queue.push_back(conn);
-
-                inner.accept_waker.wake();
-
-                log::info!(
-                    "TCP: Pushed to accept queue (queue_len={})",
-                    inner.tcp().map_or(0, |t| t.accept_queue.len())
-                );
-
-                true
-            })
-            .unwrap_or(false);
+    if admitted {
+        get_or_create_retransmit_queue(runtime, if_id, local, remote);
+        return true;
     }
 
+    log::info!(
+        "[TCP] Accept queue rejected {} -> {}, resetting connection",
+        remote,
+        local
+    );
+    // Out-of-order permits are returned through the queue owner before the
+    // TCB that holds the queue is removed.
+    ooo_queue::remove_ooo_queue(runtime, if_id, local, remote);
+    if let Some(tcb) = tcp_table_in(runtime)
+        .remove(if_id, local, remote)
+        .map(|entry| TcpControlBlockSnapshot::from(&entry))
+    {
+        let builder = TcpSegmentBuilder::new(local.port(), remote.port())
+            .seq(tcb.snd_nxt)
+            .ack(tcb.rcv_nxt)
+            .rst()
+            .ack_flag();
+        send_control_segment(runtime, if_id, local, remote, builder);
+    }
     false
 }
 
