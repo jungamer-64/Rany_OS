@@ -502,9 +502,7 @@ fn case_time_service_wall_clock_consumers() -> Result<(), BootCaseError> {
     let original_ms = crate::drivers::time::unix_timestamp_ms();
     let run = || -> Result<(), BootCaseError> {
         let target_secs = crate::drivers::time::unix_timestamp().saturating_add(120);
-        let ntp_client =
-            crate::net::services::ntp::NtpClient::new(crate::net::runtime::default_runtime());
-        ntp_client.apply_synced_unix_time(target_secs);
+        crate::net::services::ntp::apply_synced_unix_time(target_secs);
 
         if crate::drivers::time::unix_timestamp() < target_secs {
             return Err(BootCaseError::failed(

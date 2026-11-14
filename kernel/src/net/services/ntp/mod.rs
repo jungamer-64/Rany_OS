@@ -8,7 +8,6 @@ use crate::net::l4::EndpointError;
 use crate::net::l4::udp::UdpAddr;
 use crate::net::payload::GeneratedPacketWriter;
 use crate::net::runtime::NetRuntimeHandle;
-use core::sync::atomic::{AtomicU64, Ordering};
 use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
 
 #[cfg(any(test, feature = "qemu-test-export"))]
@@ -149,132 +148,105 @@ impl NtpHeader {
     }
 }
 
-/// NTP Client State
-pub struct NtpClient {
-    runtime: NetRuntimeHandle,
-    server: Option<Ipv4Address>,
-    last_sync_uptime: AtomicU64,
+/// Applies a validated NTP transmit time to the system wall clock.
+pub(crate) fn apply_synced_unix_time(unix_time: u64) {
+    crate::drivers::time::set_unix_timestamp(unix_time);
 }
 
-impl NtpClient {
-    pub fn new(runtime: NetRuntimeHandle) -> Self {
-        Self {
-            runtime,
-            server: None,
-            last_sync_uptime: AtomicU64::new(0),
-        }
-    }
+/// Performs one SNTP exchange with `server` and applies the server time.
+///
+/// # Errors
+///
+/// Returns [`EndpointError::Timeout`] when no response arrives within the
+/// exchange deadline, [`EndpointError::Timer`] when the deadline timer cannot
+/// be admitted, and [`EndpointError::Internal`] when the socket cannot be used
+/// or the response fails source, origin, mode, version, leap, stratum, or era
+/// validation.
+pub async fn sync_time_in(
+    runtime: NetRuntimeHandle,
+    server: Ipv4Address,
+) -> Result<u64, EndpointError> {
+    let remote = UdpAddr::new(server, NTP_PORT);
 
-    pub fn set_server(&mut self, addr: Ipv4Address) {
-        self.server = Some(addr);
-    }
+    let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
+        runtime,
+        crate::net::types::InterfaceScope::Any,
+        0,
+        None,
+    )
+    .map_err(|_| EndpointError::Internal)?;
 
-    pub(crate) fn apply_synced_unix_time(&self, unix_time: u64) {
-        crate::drivers::time::set_unix_timestamp(unix_time);
-        self.last_sync_uptime
-            .store(crate::task::current_tick(), Ordering::Relaxed);
-    }
+    let mut req = NtpHeader::new_client_request();
 
-    /// Perform a single time synchronization query (Async)
-    pub async fn sync_time(&self) -> Result<u64, EndpointError> {
-        let server_ip = self.server.ok_or(EndpointError::InvalidArgument)?;
-        let remote = UdpAddr::new(server_ip, NTP_PORT);
+    // RFC 4330 Section 5: Set a unique transmit timestamp in the request.
+    // We use uptime nanoseconds as a nonce to prevent off-path spoofing.
+    let nonce = crate::time::precise_time_nanos();
+    let seconds = (nonce / 1_000_000_000) as u32;
+    let fraction = (nonce % 1_000_000_000) as u32;
+    req.transmit_timestamp.seconds = seconds.to_be_bytes();
+    req.transmit_timestamp.fraction = fraction.to_be_bytes();
+    let sent_ts = req.transmit_timestamp;
 
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
-            self.runtime,
-            crate::net::types::InterfaceScope::Any,
-            0,
-            None,
-        )
+    let mut writer = GeneratedPacketWriter::new(NtpHeader::SIZE, DEFAULT_PACKET_HEADROOM)
+        .ok_or(EndpointError::Internal)?;
+    writer
+        .write_generated_bytes(&req.encode())
+        .ok_or(EndpointError::Internal)?;
+
+    socket
+        .send(writer.finish().ok_or(EndpointError::Internal)?, remote)
+        .await
         .map_err(|_| EndpointError::Internal)?;
 
-        let mut req = NtpHeader::new_client_request();
+    use crate::task::{TimeoutResult, with_timeout};
+    const NTP_TIMEOUT_MS: u64 = 5_000;
 
-        // RFC 4330 Section 5: Set a unique transmit timestamp in the request.
-        // We use uptime nanoseconds as a nonce to prevent off-path spoofing.
-        let nonce = crate::time::precise_time_nanos();
-        let seconds = (nonce / 1_000_000_000) as u32;
-        let fraction = (nonce % 1_000_000_000) as u32;
-        req.transmit_timestamp.seconds = seconds.to_be_bytes();
-        req.transmit_timestamp.fraction = fraction.to_be_bytes();
-        let sent_ts = req.transmit_timestamp;
-
-        let mut writer = GeneratedPacketWriter::new(NtpHeader::SIZE, DEFAULT_PACKET_HEADROOM)
-            .ok_or(EndpointError::Internal)?;
-        writer
-            .write_generated_bytes(&req.encode())
-            .ok_or(EndpointError::Internal)?;
-
-        socket
-            .send(writer.finish().ok_or(EndpointError::Internal)?, remote)
-            .await
-            .map_err(|_| EndpointError::Internal)?;
-
-        // 非同期受信: UdpRecvFuture経由（タイムアウト付き）
-        use crate::task::{TimeoutResult, with_timeout};
-        const NTP_TIMEOUT_MS: u64 = 5_000;
-
-        match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
-            TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                let header = crate::net::payload::PacketPayloadView::new(&packet)
-                    .read_array::<{ NtpHeader::SIZE }>(0)
-                    .ok_or(EndpointError::Internal)?;
-                let resp = NtpHeader::decode(&header).ok_or(EndpointError::Internal)?;
-
-                // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
-                // in the response matches the transmit timestamp in the request.
-                if !resp.origin_timestamp.is_equal(&sent_ts) {
-                    log::warn!(
-                        "[NTP] Security: Originate timestamp mismatch! Dropping spoofed response."
-                    );
-                    return Err(EndpointError::Internal);
-                }
-
-                // Validation
-                if resp.mode() != 4 {
-                    // Server response mode
-                    return Err(EndpointError::Internal);
-                }
-
-                let transmit_ts = resp.transmit_timestamp;
-                let unix_time = transmit_ts
-                    .to_unix_seconds()
-                    .ok_or(EndpointError::Internal)?;
-
-                log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
-                self.apply_synced_unix_time(unix_time);
-                Ok(unix_time)
+    match with_timeout(socket.recv(), NTP_TIMEOUT_MS).await {
+        TimeoutResult::Completed(Some((_if_id, src, _ttl, packet))) => {
+            if src.ip_v4() != Some(server) || src.port() != NTP_PORT {
+                return Err(EndpointError::Internal);
             }
-            TimeoutResult::Completed(None) => {
-                log::warn!("[NTP] Socket closed during recv");
-                Err(EndpointError::Internal)
+            let header = crate::net::payload::PacketPayloadView::new(&packet)
+                .read_array::<{ NtpHeader::SIZE }>(0)
+                .ok_or(EndpointError::Internal)?;
+            let resp = NtpHeader::decode(&header).ok_or(EndpointError::Internal)?;
+
+            // RFC 4330 Section 5: The client SHOULD verify that the originate timestamp
+            // in the response matches the transmit timestamp in the request.
+            if !resp.origin_timestamp.is_equal(&sent_ts) {
+                log::warn!(
+                    "[NTP] Security: Originate timestamp mismatch! Dropping spoofed response."
+                );
+                return Err(EndpointError::Internal);
             }
-            TimeoutResult::TimerFailed(cause) => Err(EndpointError::Timer(cause)),
-            TimeoutResult::TimedOut => {
-                log::warn!("[NTP] Response timed out ({}ms)", NTP_TIMEOUT_MS);
-                Err(EndpointError::Timeout)
+
+            // RFC 4330 Section 5: accept only a synchronized (LI != 3) server-mode
+            // reply of the requested version; stratum 0 is a Kiss-o'-Death message.
+            if resp.mode() != 4
+                || resp.version() != req.version()
+                || resp.leap_indicator() == 3
+                || resp.stratum == 0
+            {
+                return Err(EndpointError::Internal);
             }
+
+            let unix_time = resp
+                .transmit_timestamp
+                .to_unix_seconds()
+                .ok_or(EndpointError::Internal)?;
+
+            log::info!("[NTP] Synced time: {} (UNIX)", unix_time);
+            apply_synced_unix_time(unix_time);
+            Ok(unix_time)
         }
-    }
-}
-
-/// NTP同期バックグラウンドタスク
-/// 1時間おきに時刻を同期する
-pub async fn ntp_sync_task(runtime: NetRuntimeHandle, server: Ipv4Address) {
-    let mut client = NtpClient::new(runtime);
-    client.set_server(server);
-
-    // LOOP_PROOF: mode=event; reason=Loop progress is controlled by explicit break or return on state transitions/events.;
-    loop {
-        match client.sync_time().await {
-            Ok(t) => log::info!("[NTP] Periodic sync successful: {}", t),
-            Err(e) => log::warn!("[NTP] Periodic sync failed: {:?}", e),
+        TimeoutResult::Completed(None) => {
+            log::warn!("[NTP] Socket closed during recv");
+            Err(EndpointError::Internal)
         }
-
-        // 1時間待機 (1 * 60 * 60 * 1000 ms)
-        if let Err(cause) = crate::task::sleep_ms(3600 * 1000).await {
-            log::error!("NTP sync timer failed: {cause}");
-            return;
+        TimeoutResult::TimerFailed(cause) => Err(EndpointError::Timer(cause)),
+        TimeoutResult::TimedOut => {
+            log::warn!("[NTP] Response timed out ({}ms)", NTP_TIMEOUT_MS);
+            Err(EndpointError::Timeout)
         }
     }
 }
