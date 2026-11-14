@@ -97,6 +97,27 @@ impl Future for HttpPollerSignalFuture<'_> {
     }
 }
 
+/// Observable state of the host HTTP service.
+#[derive(Debug, Clone, Copy)]
+pub struct HttpServiceStats {
+    pub running: bool,
+    pub active_connections: u32,
+    pub total_requests: u64,
+    pub bytes_rx: u64,
+    pub bytes_tx: u64,
+}
+
+pub fn stats_in(runtime: NetRuntimeHandle) -> HttpServiceStats {
+    let state = http_runtime_in(runtime);
+    HttpServiceStats {
+        running: state.started.load(Ordering::Acquire),
+        active_connections: state.active_connections.load(Ordering::Acquire),
+        total_requests: state.total_requests.load(Ordering::Relaxed),
+        bytes_rx: state.bytes_rx.load(Ordering::Relaxed),
+        bytes_tx: state.bytes_tx.load(Ordering::Relaxed),
+    }
+}
+
 fn http_runtime_in(runtime: NetRuntimeHandle) -> &'static HttpRuntimeState {
     &runtime.context().http
 }

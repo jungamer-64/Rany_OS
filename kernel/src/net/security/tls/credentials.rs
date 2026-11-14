@@ -19,6 +19,8 @@ pub struct Certificate {
 enum CertificateStorage {
     Bytes(Vec<u8>),
     Packet(PacketPayload),
+    /// Process-lifetime material such as the built-in root store.
+    Static(&'static [u8]),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -33,6 +35,19 @@ impl Certificate {
         Self {
             material: CertificateStorage::Packet(der),
         }
+    }
+
+    /// Borrows process-lifetime DER material without copying it.
+    ///
+    /// # Errors
+    /// Rejects empty material.
+    pub fn from_static_der(der: &'static [u8]) -> Result<Self, CertificateDataError> {
+        if der.is_empty() {
+            return Err(CertificateDataError::Empty);
+        }
+        Ok(Self {
+            material: CertificateStorage::Static(der),
+        })
     }
 
     /// Retains configured bytes in CPU-owned storage.
@@ -87,6 +102,7 @@ impl Certificate {
         match &self.material {
             CertificateStorage::Bytes(bytes) => CertificateSpan::from_bytes(bytes),
             CertificateStorage::Packet(payload) => CertificateSpan::from_payload(payload),
+            CertificateStorage::Static(bytes) => CertificateSpan::from_bytes(bytes),
         }
     }
 }

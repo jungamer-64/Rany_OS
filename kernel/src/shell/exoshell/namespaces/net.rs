@@ -1629,6 +1629,98 @@ impl NetNamespace {
         ExoValue::Array(values)
     }
 
+    /// HTTP(S) GET を実行する。HTTPS は内蔵 root store で検証する。
+    ///
+    /// usage: net.http_get(url [, timeout_ms])
+    pub async fn http_get(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        const BODY_PREVIEW_LIMIT: usize = 4096;
+        let url = match args.first() {
+            Some(ExoValue::String(url)) => url.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.http_get(url [, timeout_ms])")),
+        };
+        let Some(request) = crate::net::services::http::types::HttpRequest::get(url) else {
+            return ExoValue::Error(String::from("invalid absolute http(s) URL"));
+        };
+        let mut client = crate::net::services::http::client::HttpClient::new(
+            crate::net::runtime::default_runtime(),
+        );
+        match args.get(1) {
+            None => {}
+            Some(ExoValue::Int(ms)) if *ms > 0 => client = client.with_timeout(*ms as u64),
+            Some(_) => {
+                return ExoValue::Error(String::from("timeout_ms must be a positive integer"));
+            }
+        }
+        let response = match client.send(request).await {
+            Ok(response) => response,
+            Err(e) => return ExoValue::Error(format!("HTTP request failed: {:?}", e)),
+        };
+        let status = response.status_code.as_u16();
+        let body = response.into_body_payload();
+        let body_len = body.as_ref().map_or(0, |body| body.total_len());
+        let mut preview = String::new();
+        if let Some(body) = body.as_ref() {
+            let view = crate::net::payload::PacketPayloadView::new(body);
+            for index in 0..body_len.min(BODY_PREVIEW_LIMIT) {
+                let Some([byte]) = view.read_array::<1>(index) else {
+                    break;
+                };
+                preview.push(if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
+                    char::from(byte)
+                } else {
+                    '.'
+                });
+            }
+        }
+        let mut map = BTreeMap::new();
+        map.insert(String::from("status"), ExoValue::Int(i64::from(status)));
+        map.insert(String::from("body_len"), ExoValue::Int(body_len as i64));
+        map.insert(String::from("body"), ExoValue::String(Cow::Owned(preview)));
+        ExoValue::Map(map)
+    }
+
+    /// host HTTP service（0.0.0.0:80）を起動する（CAP_NET_ADMIN + CAP_NET_BIND）
+    pub async fn http_start() -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.http_start") {
+            return e;
+        }
+        if !manager().has_capability(Self::current_domain_id(), CAP_NET_BIND) {
+            return ExoValue::Error(String::from(
+                "Permission denied: net.http_start requires CAP_NET_BIND",
+            ));
+        }
+        match crate::net::services::http::server::start_once(crate::net::runtime::default_runtime())
+        {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(format!("HTTP service could not be scheduled: {:?}", e)),
+        }
+    }
+
+    /// host HTTP service の状態
+    pub async fn http_status() -> ExoValue<'static> {
+        let stats =
+            crate::net::services::http::server::stats_in(crate::net::runtime::default_runtime());
+        let mut map = BTreeMap::new();
+        map.insert(String::from("running"), ExoValue::Bool(stats.running));
+        map.insert(
+            String::from("active_connections"),
+            ExoValue::Int(i64::from(stats.active_connections)),
+        );
+        map.insert(
+            String::from("total_requests"),
+            ExoValue::Int(stats.total_requests as i64),
+        );
+        map.insert(
+            String::from("bytes_rx"),
+            ExoValue::Int(stats.bytes_rx as i64),
+        );
+        map.insert(
+            String::from("bytes_tx"),
+            ExoValue::Int(stats.bytes_tx as i64),
+        );
+        ExoValue::Map(map)
+    }
+
     /// SNTP で wall clock を同期する（CAP_NET_ADMIN）
     pub async fn ntp_sync(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         if let Err(e) = Self::require_net_admin("net.ntp_sync") {
@@ -1858,6 +1950,10 @@ impl ShellNamespace for NetNamespace {
                 "dns_add_server" => Self::dns_add_server(_args).await,
                 "dns_stats" => Self::dns_stats().await,
                 "mdns_hosts" => Self::mdns_hosts().await,
+                // HTTP
+                "http_get" => Self::http_get(_args).await,
+                "http_start" => Self::http_start().await,
+                "http_status" => Self::http_status().await,
                 // 時刻同期
                 "ntp_sync" => Self::ntp_sync(_args).await,
                 // 診断
@@ -1873,7 +1969,7 @@ impl ShellNamespace for NetNamespace {
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \
                      dns_servers, dns_add_server, dns_stats, mdns_hosts,\n  \
-                     ntp_sync, snapshot, events,\n  \
+                     http_get, http_start, http_status, ntp_sync, snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
                 )),

@@ -301,6 +301,21 @@ impl TlsTrustAnchors {
         Self(ArrayVec::new())
     }
 
+    /// The built-in root store (`security::root_certs`), borrowed without copying.
+    ///
+    /// # Errors
+    /// Returns [`TlsClientConfigError::TooManyTrustAnchors`] when the store
+    /// exceeds [`TLS_CA_CERTS_CAPACITY`].
+    pub fn system_roots() -> Result<Self, TlsClientConfigError> {
+        let mut anchors = Self::empty();
+        for (_, der) in security::root_certs::ROOT_CERTS {
+            if let Ok(cert) = Certificate::from_static_der(der) {
+                anchors.push(cert)?;
+            }
+        }
+        Ok(anchors)
+    }
+
     pub(crate) fn push(&mut self, cert: Certificate) -> Result<(), TlsClientConfigError> {
         self.0
             .try_push(cert)

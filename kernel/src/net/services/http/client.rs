@@ -133,7 +133,9 @@ async fn send_over_tls_transport(
     request_payload: PacketPayload,
     parser: &mut HttpParser,
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
-    let tls_config = TlsClientConfig::for_server_name(host, TlsTrustAnchors::empty())
+    let trust_anchors =
+        TlsTrustAnchors::system_roots().map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+    let tls_config = TlsClientConfig::for_server_name(host, trust_anchors)
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
     let (handshake, client_hello) =
         TlsHandshake::start(tls_config).map_err(|_| HttpClientError::TlsHandshakeFailed)?;
@@ -198,12 +200,17 @@ pub enum HttpClientError {
     WriteError,
     ReadError,
     ParseError(HttpParseError),
+    /// The exchange did not finish within the client timeout.
+    Timeout,
+    /// The timeout timer could not be admitted.
+    Timer(kernel_api::service::time::TimerError),
 }
 
 /// HTTP/HTTPS クライアント
 pub struct HttpClient {
     runtime: NetRuntimeHandle,
-    pub timeout_ms: u64,
+    /// Deadline for one complete exchange, from DNS resolution to the response.
+    timeout_ms: u64,
 }
 
 impl HttpClient {
@@ -268,7 +275,19 @@ impl HttpClient {
     }
 
     /// リクエストを非同期で送信し、レスポンスを取得する
+    ///
+    /// # Errors
+    /// Returns [`HttpClientError::Timeout`] when the exchange exceeds the
+    /// client timeout, and the exchange failure otherwise.
     pub async fn send(&self, req: HttpRequest) -> Result<HttpInboundResponse, HttpClientError> {
+        match crate::task::with_timeout(self.exchange(req), self.timeout_ms).await {
+            crate::task::TimeoutResult::Completed(result) => result,
+            crate::task::TimeoutResult::TimedOut => Err(HttpClientError::Timeout),
+            crate::task::TimeoutResult::TimerFailed(cause) => Err(HttpClientError::Timer(cause)),
+        }
+    }
+
+    async fn exchange(&self, req: HttpRequest) -> Result<HttpInboundResponse, HttpClientError> {
         let (req, host, port, is_https) = Self::prepare_request(req)?;
         let mut connection = self.connect(&host, port).await?;
         let request_payload = req.into_payload().ok_or(HttpClientError::WriteError)?;

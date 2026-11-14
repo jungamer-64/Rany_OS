@@ -170,6 +170,9 @@ impl ExoShell {
         net.dns_stats()       - DNS query and cache statistics
         net.mdns_hosts()      - .local hosts learned via mDNS
     net.ntp_sync("ip")    - Sync wall clock via SNTP (CAP_NET_ADMIN)
+    net.http_get("url" [, timeout_ms]) - HTTP/HTTPS GET (HTTPS verified by built-in roots)
+    net.http_start()      - Start host HTTP service on :80 (CAP_NET_ADMIN, CAP_NET_BIND)
+    net.http_status()     - Host HTTP service counters
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)
 
