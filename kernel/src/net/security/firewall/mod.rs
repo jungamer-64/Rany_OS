@@ -61,8 +61,8 @@ fn firewall_in(runtime: NetRuntimeHandle) -> &'static FirewallRuntimeState {
 /// - `src_ip`: 送信元 IP アドレス
 /// - `dst_ip`: 宛先 IP アドレス
 /// - `protocol`: IP プロトコル番号（6=TCP, 17=UDP, 1=ICMP）
-/// - `src_port`: 送信元ポート（ICMP の場合は 0）
-/// - `dst_port`: 宛先ポート（ICMP の場合は 0）
+/// - `src_port`: 送信元ポート（ICMP / ICMPv6 では message type）
+/// - `dst_port`: 宛先ポート（ICMP / ICMPv6 では code）
 /// - `tcp_flags`: TCP フラグ（TCP 以外の場合は 0）
 ///
 /// ## 戻り値

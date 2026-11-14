@@ -120,25 +120,44 @@ pub async fn firewall_add_rule_in(
     dst_port: &str,
     priority: u16,
     name: &str,
+    tcp_flags: &str,
 ) -> Result<u64, String> {
     let action = parse_action(action)?;
     let direction = parse_direction(direction)?;
     let src_ip = parse_ip_match(src_ip)?;
     let dst_ip = parse_ip_match(dst_ip)?;
     let protocol = parse_protocol(protocol)?;
-    let src_port = parse_port_match(src_port)?;
-    let dst_port = parse_port_match(dst_port)?;
-    let rule = FirewallRule::builder()
+    let builder = FirewallRule::builder()
         .name(name)
         .action(action)
         .direction(direction)
         .src_ip(src_ip)
         .dst_ip(dst_ip)
-        .protocol(protocol)
-        .src_port(src_port)
-        .dst_port(dst_port)
-        .priority(priority)
-        .build();
+        .priority(priority);
+    // ICMP rules carry the message type and code in the port positions.
+    let builder = if protocol == FirewallProtocol::Icmp {
+        match (parse_icmp_field(src_port)?, parse_icmp_field(dst_port)?) {
+            (None, None) => builder.icmp(),
+            (Some(icmp_type), None) => builder.icmp_type(icmp_type),
+            (Some(icmp_type), Some(code)) => builder.icmp_type_code(icmp_type, code),
+            (None, Some(_)) => return Err(String::from("ICMP code requires an ICMP type")),
+        }
+    } else {
+        builder
+            .protocol(protocol)
+            .src_port(parse_port_match(src_port)?)
+            .dst_port(parse_port_match(dst_port)?)
+    };
+    let builder = if tcp_flags.trim().is_empty() {
+        builder
+    } else {
+        if protocol != FirewallProtocol::Tcp {
+            return Err(String::from("tcp_flags requires protocol tcp"));
+        }
+        let (mask, value) = parse_tcp_flags(tcp_flags)?;
+        builder.tcp_flags(mask, value)
+    };
+    let rule = builder.build();
 
     let (reply, command_future) =
         crate::net::runtime::command::new_command_channel_in::<Result<u64, String>>(runtime);
@@ -231,35 +250,82 @@ fn parse_protocol(s: &str) -> Result<FirewallProtocol, String> {
     }
 }
 
-/// IPv4 アドレスまたは CIDR 表記をパースする
+/// IPv4 / IPv6 アドレスまたは CIDR 表記をパースする
 ///
 /// 例:
 /// - `"*"` → `IpMatch::Any`
 /// - `"10.0.2.15"` → `IpMatch::Exact([10, 0, 2, 15])`
 /// - `"192.168.1.0/24"` → `IpMatch::Cidr([192, 168, 1, 0], 24)`
+/// - `"2001:db8::/32"` → `IpMatch::CidrV6(..., 32)`
 fn parse_ip_match(s: &str) -> Result<IpMatch, String> {
     let s = s.trim();
-    if s == "*" || s == "any" || s == "0.0.0.0/0" {
+    if s == "*" || s == "any" || s == "0.0.0.0/0" || s == "::/0" {
         return Ok(IpMatch::Any);
     }
 
-    // CIDR 判定
-    if let Some(slash_pos) = s.find('/') {
-        let ip_str = &s[..slash_pos];
-        let prefix_str = &s[slash_pos + 1..];
-        let ip = parse_ipv4(ip_str)?;
-        let prefix: u8 = prefix_str
-            .parse::<u8>()
-            .map_err(|_| format!("invalid prefix length: '{}'", prefix_str))?;
-        if prefix > 32 {
-            return Err(format!("prefix length {} > 32", prefix));
-        }
-        return Ok(IpMatch::Cidr(ip, prefix));
-    }
+    let (ip_str, prefix_str) = match s.split_once('/') {
+        Some((ip, prefix)) => (ip, Some(prefix)),
+        None => (s, None),
+    };
+    let prefix = |max: u8| -> Result<Option<u8>, String> {
+        prefix_str
+            .map(|text| {
+                let prefix = text
+                    .parse::<u8>()
+                    .map_err(|_| format!("invalid prefix length: '{}'", text))?;
+                if prefix > max {
+                    return Err(format!("prefix length {} > {}", prefix, max));
+                }
+                Ok(prefix)
+            })
+            .transpose()
+    };
 
-    // 単一 IP
-    let ip = parse_ipv4(s)?;
-    Ok(IpMatch::Exact(ip))
+    if ip_str.contains(':') {
+        let ip = crate::net::l3::ipv6::Ipv6Address::parse_text(ip_str)
+            .ok_or_else(|| format!("invalid IPv6: '{}'", ip_str))?
+            .octets();
+        return Ok(match prefix(128)? {
+            Some(prefix) => IpMatch::CidrV6(ip, prefix),
+            None => IpMatch::ExactV6(ip),
+        });
+    }
+    let ip = parse_ipv4(ip_str)?;
+    Ok(match prefix(32)? {
+        Some(prefix) => IpMatch::Cidr(ip, prefix),
+        None => IpMatch::Exact(ip),
+    })
+}
+
+/// ICMP type または code。`*` は未指定。
+fn parse_icmp_field(s: &str) -> Result<Option<u8>, String> {
+    let s = s.trim();
+    if s == "*" || s == "any" || s.is_empty() {
+        return Ok(None);
+    }
+    s.parse::<u8>()
+        .map(Some)
+        .map_err(|_| format!("invalid ICMP type/code: '{}'", s))
+}
+
+/// `"mask:value"` 形式の TCP フラグ条件（10進または `0x` 付き16進）
+fn parse_tcp_flags(s: &str) -> Result<(u8, u8), String> {
+    fn byte(text: &str) -> Result<u8, String> {
+        let text = text.trim();
+        match text.strip_prefix("0x") {
+            Some(hex) => u8::from_str_radix(hex, 16),
+            None => text.parse::<u8>(),
+        }
+        .map_err(|_| format!("invalid TCP flag byte: '{}'", text))
+    }
+    let (mask, value) = s
+        .split_once(':')
+        .ok_or_else(|| format!("tcp_flags must be \"mask:value\": '{}'", s))?;
+    let (mask, value) = (byte(mask)?, byte(value)?);
+    if value & !mask != 0 {
+        return Err(String::from("tcp_flags value sets bits outside the mask"));
+    }
+    Ok((mask, value))
 }
 
 /// ドット区切り IPv4 をパースする

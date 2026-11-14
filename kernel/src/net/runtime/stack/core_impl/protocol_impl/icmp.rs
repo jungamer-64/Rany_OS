@@ -84,7 +84,7 @@ impl NetworkStack {
             config.ipv4.address.octets(),
             dst_ip.octets(),
             1,
-            0,
+            0, // Echo Reply (type/code ride in the port slots),
             0,
             0,
         ) {
@@ -201,8 +201,8 @@ impl NetworkStack {
             config.ipv4.address.octets(),
             dst_ip.octets(),
             1,
-            0,
-            0,
+            3, // Destination Unreachable,
+            code as u16,
             0,
         ) {
             self.record_dropped_on(if_id);
@@ -263,8 +263,8 @@ impl NetworkStack {
             self.runtime,
             config.ipv4.address.octets(),
             dst_ip.octets(),
-            1, // ICMP
-            0,
+            1,  // ICMP
+            14, // Timestamp Reply,
             0,
             0,
         ) {
@@ -445,9 +445,9 @@ impl NetworkStack {
             self.runtime,
             config.ipv4.address.octets(),
             dst_ip.octets(),
-            1, // ICMP
-            0,
-            0,
+            1,  // ICMP
+            11, // Time Exceeded,
+            code as u16,
             0,
         ) {
             self.record_dropped_on(if_id);

@@ -1118,7 +1118,8 @@ impl NetNamespace {
         }
         if args.len() < 8 {
             return ExoValue::Error(String::from(
-                "usage: net.firewall_add(action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority [, name])\n\
+                "usage: net.firewall_add(action, direction, src_ip, dst_ip, protocol, src_port, dst_port, priority [, name [, tcp_flags]])\n\
+                 IPv4/IPv6 addresses or CIDR; for icmp, src_port/dst_port are type/code; tcp_flags is \"mask:value\"\n\
                  例: net.firewall_add(\"deny\", \"in\", \"*\", \"*\", \"tcp\", \"*\", \"22\", 50, \"block-ssh\")",
             ));
         }
@@ -1168,6 +1169,11 @@ impl NetNamespace {
                 _ => None,
             })
             .unwrap_or("");
+        let tcp_flags = match args.get(9) {
+            None => "",
+            Some(ExoValue::String(s)) => s.as_ref(),
+            Some(_) => return ExoValue::Error(String::from("tcp_flags must be \"mask:value\"")),
+        };
 
         match crate::net::api::firewall::firewall_add_rule_in(
             crate::net::runtime::default_runtime(),
@@ -1180,6 +1186,7 @@ impl NetNamespace {
             dst_port,
             priority,
             name,
+            tcp_flags,
         )
         .await
         {
@@ -1850,69 +1857,12 @@ impl NetNamespace {
 
     /// ExoValueからIPv6アドレスをパースするヘルパー
     fn parse_ipv6_arg(val: &ExoValue<'_>) -> Result<[u8; 16], String> {
-        fn parse_hextets(part: &str, original: &str) -> Result<Vec<u16>, String> {
-            if part.is_empty() {
-                return Ok(Vec::new());
-            }
-
-            let mut out = Vec::new();
-            for segment in part.split(':') {
-                if segment.is_empty() || segment.contains('.') || segment.len() > 4 {
-                    return Err(format!("invalid IPv6: '{}'", original));
-                }
-                let word = u16::from_str_radix(segment, 16)
-                    .map_err(|_| format!("invalid IPv6: '{}'", original))?;
-                out.push(word);
-            }
-            Ok(out)
+        match val {
+            ExoValue::String(s) => crate::net::l3::ipv6::Ipv6Address::parse_text(s)
+                .map(|addr| addr.octets())
+                .ok_or_else(|| format!("invalid IPv6: '{}'", s)),
+            _ => Err(String::from("IPv6 address must be a string")),
         }
-
-        let s = match val {
-            ExoValue::String(s) => s.trim(),
-            _ => return Err(String::from("IPv6 address must be a string")),
-        };
-        if s.is_empty() {
-            return Err(String::from("invalid IPv6: empty"));
-        }
-
-        let mut double_colon_split = s.split("::");
-        let left_part = double_colon_split.next().unwrap_or_default();
-        let right_part = double_colon_split.next();
-        if double_colon_split.next().is_some() {
-            return Err(format!("invalid IPv6: '{}'", s));
-        }
-
-        let left = parse_hextets(left_part, s)?;
-        let words: Vec<u16> = if let Some(right_part) = right_part {
-            let right = parse_hextets(right_part, s)?;
-            if left.len() + right.len() >= 8 {
-                return Err(format!("invalid IPv6: '{}'", s));
-            }
-            let mut out = Vec::with_capacity(8);
-            out.extend_from_slice(&left);
-            for _ in 0..(8 - left.len() - right.len()) {
-                out.push(0);
-            }
-            out.extend_from_slice(&right);
-            out
-        } else {
-            if left.len() != 8 {
-                return Err(format!("invalid IPv6: '{}'", s));
-            }
-            left
-        };
-
-        if words.len() != 8 {
-            return Err(format!("invalid IPv6: '{}'", s));
-        }
-
-        let mut octets = [0u8; 16];
-        for (i, word) in words.iter().enumerate() {
-            let bytes = word.to_be_bytes();
-            octets[i * 2] = bytes[0];
-            octets[i * 2 + 1] = bytes[1];
-        }
-        Ok(octets)
     }
 
     /// 非同期版 handle_open: イベントキュー経由で UDP bind を実行

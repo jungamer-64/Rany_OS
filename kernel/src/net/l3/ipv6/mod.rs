@@ -31,6 +31,53 @@ pub use processor_impl::*;
 pub struct Ipv6Address([u8; 16]);
 
 impl Ipv6Address {
+    /// Parses the hexadecimal text forms of RFC 4291 Section 2.2 (full and
+    /// `::`-compressed). The embedded-IPv4 form is not accepted.
+    pub fn parse_text(text: &str) -> Option<Self> {
+        fn hextets(part: &str, out: &mut [u16; 8], at: usize) -> Option<usize> {
+            if part.is_empty() {
+                return Some(0);
+            }
+            let mut count = 0usize;
+            for segment in part.split(':') {
+                if segment.is_empty() || segment.len() > 4 || at + count >= 8 {
+                    return None;
+                }
+                out[at + count] = u16::from_str_radix(segment, 16).ok()?;
+                count += 1;
+            }
+            Some(count)
+        }
+
+        let text = text.trim();
+        let mut words = [0u16; 8];
+        match text.split_once("::") {
+            Some((left, right)) => {
+                if right.contains("::") {
+                    return None;
+                }
+                let mut right_words = [0u16; 8];
+                let left_len = hextets(left, &mut words, 0)?;
+                let right_len = hextets(right, &mut right_words, 0)?;
+                if left_len + right_len >= 8 {
+                    return None;
+                }
+                let start = 8 - right_len;
+                words[start..].copy_from_slice(&right_words[..right_len]);
+            }
+            None => {
+                if hextets(text, &mut words, 0)? != 8 {
+                    return None;
+                }
+            }
+        }
+        let mut octets = [0u8; 16];
+        for (index, word) in words.iter().enumerate() {
+            octets[index * 2..index * 2 + 2].copy_from_slice(&word.to_be_bytes());
+        }
+        Some(Self::new(octets))
+    }
+
     /// Unspecified address (::)
     pub const UNSPECIFIED: Self = Self([0; 16]);
 

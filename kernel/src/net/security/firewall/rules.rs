@@ -124,23 +124,7 @@ pub enum IpAddress {
     V6([u8; 16]),
 }
 
-impl IpAddress {
-    /// IPv4 アドレスとして取得（V4 の場合のみ）
-    pub fn as_v4(&self) -> Option<[u8; 4]> {
-        match self {
-            IpAddress::V4(ip) => Some(*ip),
-            _ => None,
-        }
-    }
-
-    /// IPv6 アドレスとして取得（V6 の場合のみ）
-    pub fn as_v6(&self) -> Option<[u8; 16]> {
-        match self {
-            IpAddress::V6(ip) => Some(*ip),
-            _ => None,
-        }
-    }
-}
+impl IpAddress {}
 
 impl From<[u8; 4]> for IpAddress {
     fn from(value: [u8; 4]) -> Self {

@@ -169,89 +169,9 @@ impl FirewallEngine {
         &self.rules
     }
 
-    /// ルール数を取得する
-    pub fn rule_count(&self) -> usize {
-        self.rules.len()
-    }
-
     /// 統計を取得する
     pub fn stats(&self) -> FirewallStats {
         self.stats_inner.to_stats()
-    }
-
-    /// パケットを評価する
-    ///
-    /// ルールを優先度順に走査し、最初にマッチしたルールのアクションを返す。
-    /// マッチしなかった場合はデフォルトポリシーが適用される。
-    pub fn evaluate(
-        &self,
-        direction: FirewallDirection,
-        src_ip: IpAddress,
-        dst_ip: IpAddress,
-        protocol: u8,
-        src_port: u16,
-        dst_port: u16,
-        tcp_flags: u8,
-    ) -> FirewallVerdict {
-        // 無効時は全て許可
-        if !self.enabled {
-            return FirewallVerdict::Allow;
-        }
-
-        // 統計を更新（&self なのでここでは更新しない — evaluate_mut を使用）
-        // evaluate は &self で呼ばれるため統計更新はできない
-        // グローバルAPI側で統計を別途記録するか、evaluate_mut を使用する
-
-        // ルールを優先度順に走査
-        for rule in &self.rules {
-            if rule.matches(
-                direction, src_ip, dst_ip, protocol, src_port, dst_port, tcp_flags,
-            ) {
-                if rule.action.is_log() {
-                    log::info!(
-                        "[FIREWALL] {} {} {} :{} -> {} :{} proto={} rule=#{}",
-                        if rule.action.is_allow() {
-                            "ALLOW"
-                        } else {
-                            "DENY"
-                        },
-                        direction,
-                        src_ip,
-                        src_port,
-                        dst_ip,
-                        dst_port,
-                        protocol,
-                        rule.id,
-                    );
-                }
-
-                return if rule.action.is_allow() {
-                    FirewallVerdict::Allow
-                } else {
-                    FirewallVerdict::Deny
-                };
-            }
-        }
-
-        // デフォルトポリシー
-        let default = match direction {
-            FirewallDirection::Ingress => &self.default_ingress,
-            FirewallDirection::Egress => &self.default_egress,
-            FirewallDirection::Both => {
-                // 両方向の場合は Ingress / Egress 双方が Allow なら Allow
-                if self.default_ingress.is_allow() && self.default_egress.is_allow() {
-                    &self.default_ingress
-                } else {
-                    &FirewallAction::Deny
-                }
-            }
-        };
-
-        if default.is_allow() {
-            FirewallVerdict::Allow
-        } else {
-            FirewallVerdict::Deny
-        }
     }
 
     /// パケットを評価し、統計を更新する（可変参照版）
