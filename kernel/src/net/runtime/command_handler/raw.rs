@@ -8,8 +8,8 @@ use crate::net::l3::ipv6::Ipv6Address;
 use crate::net::l4::types::EndpointError;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::command::{
-    CommandReplyTicket, RawIpv4Source, RawIpv4Transport, RawIpv6Transport, RawSendCommand,
-    RuntimeCommand, TransportCommand, complete_command,
+    CommandReplyTicket, RawIpv4Transport, RawIpv6Transport, RawSendCommand, RuntimeCommand,
+    TransportCommand, complete_command,
 };
 use crate::net::runtime::command_handler::{EventHandleResult, RuntimeCommandHandler};
 use crate::net::runtime::stack::NetworkStack;
@@ -50,20 +50,14 @@ impl RuntimeCommandHandler {
                             ttl,
                             payload,
                         } => {
-                            let sent = match src {
-                                RawIpv4Source::Auto => stack.send_udp_raw_payload_on_auto_ttl(
-                                    if_id, dst, ports, payload, ttl,
-                                ),
-                                RawIpv4Source::Addr(src_ip) => stack
-                                    .send_udp_raw_payload_on_with_src_ttl(
-                                        if_id,
-                                        Ipv4Address::new(src_ip),
-                                        dst,
-                                        ports,
-                                        payload,
-                                        ttl,
-                                    ),
-                            };
+                            let sent = stack.send_udp_raw_payload_on_with_src_ttl(
+                                if_id,
+                                Ipv4Address::new(src),
+                                dst,
+                                ports,
+                                payload,
+                                ttl,
+                            );
                             if sent {
                                 Ok(())
                             } else {

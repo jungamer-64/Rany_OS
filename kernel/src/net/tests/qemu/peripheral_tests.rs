@@ -656,7 +656,7 @@ fn process_runtime_commands(
                 crate::net::runtime::command::command_resources_for_cpu_in(runtime, cpu_id).ok()?;
             let mut stack_guard = resources.stack.lock().ok()?;
             let core_stack = stack_guard.as_mut()?;
-            let mut remaining = crate::net::runtime::command::RuntimeCommandQueue::CAPACITY;
+            let mut remaining = crate::net::runtime::command::NETWORK_EVENT_QUEUE_CAPACITY;
             // LOOP_PROOF: mode=bounded; reason=Each test pass consumes at most one queue capacity, leaving further handler-generated commands for one of the eight following passes.;
             while remaining != 0 {
                 let Some(command) = resources.command_queue.recv() else {
@@ -1150,7 +1150,7 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
             crate::net::runtime::command::command_resources_for_cpu_in(runtime, current.id())
                 .ok()?;
         let mut admitted_send = None;
-        for _ in 0..crate::net::runtime::command::RuntimeCommandQueue::CAPACITY {
+        for _ in 0..crate::net::runtime::command::NETWORK_EVENT_QUEUE_CAPACITY {
             let command = resources.command_queue.recv()?;
             let is_queued_send = match &command {
                 crate::net::runtime::command::RuntimeCommand::Transport(

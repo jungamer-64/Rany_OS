@@ -349,28 +349,10 @@ fn unpublished_handle(
     }
 }
 
-fn device_handle_rebind_updates_binding_smoke(runtime: NetRuntimeHandle) {
-    let (state, driver) = fake_driver();
-    let handle = unpublished_handle(
-        runtime,
-        driver,
-        NetDeviceBinding {
-            port_id: test_port_id(9),
-            if_id: NetIfId(1),
-        },
-    );
-
-    handle
-        .rebind(NetDeviceBinding {
-            port_id: test_port_id(9),
-            if_id: NetIfId(22),
-        })
-        .expect("rebind");
-
-    assert_eq!(handle.binding().if_id, NetIfId(22));
-    assert_eq!(state.bind_calls.load(Ordering::Relaxed), 1);
-    assert_eq!(state.last_if_id.load(Ordering::Acquire), 22);
-    handle.stop().expect("unpublished fake handle quiesces");
+fn port_info_for_test(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetDeviceInfo> {
+    list_port_infos_in(runtime)
+        .into_iter()
+        .find(|info| info.port_id == port_id)
 }
 
 fn register_port_exposes_snapshot_smoke(runtime: NetRuntimeHandle) {
@@ -380,7 +362,7 @@ fn register_port_exposes_snapshot_smoke(runtime: NetRuntimeHandle) {
     let if_id =
         register_test_port(runtime, 90, driver, PrimaryPortPolicy::Never).expect("register port");
 
-    let info = port_info_in(runtime, test_port_id(90)).expect("port info");
+    let info = port_info_for_test(runtime, test_port_id(90)).expect("port info");
     let stats = port_stats_in(runtime, test_port_id(90)).expect("port stats");
 
     assert_eq!(
@@ -468,7 +450,7 @@ fn register_port_prefer_primary_updates_primary_selection_smoke(runtime: NetRunt
 
     assert_eq!(manager::primary_interface_in(runtime), Some(if_b));
     assert!(
-        port_info_in(runtime, test_port_id(92))
+        port_info_for_test(runtime, test_port_id(92))
             .expect("primary info")
             .flags
             & NETDEV_FLAG_PRIMARY
@@ -874,10 +856,6 @@ pub(crate) async fn device_ownership() -> bool {
     log::info!("[kernel-test][net][device] ISR event delivery");
     schedule_event_from_interrupt_context_enqueues_successfully(runtime).await;
     let cases: &[(&str, fn(NetRuntimeHandle))] = &[
-        (
-            "device_handle_rebind_updates_binding_smoke",
-            device_handle_rebind_updates_binding_smoke,
-        ),
         (
             "register_port_exposes_snapshot_smoke",
             register_port_exposes_snapshot_smoke,

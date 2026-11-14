@@ -27,7 +27,6 @@ use crate::net::l3::ndp::{NdpProcessor, NdpResult};
 use crate::net::l4::udp::{UdpProcessor, UdpResult};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::runtime::manager::NetIfId;
-use crate::net::runtime::timeouts::TimeoutWheel; // required for new transmit callback signature
 
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -40,9 +39,6 @@ mod core_impl;
 pub(crate) use core_impl::*;
 
 extern crate alloc;
-
-/// Maximum packet size including Ethernet header
-pub const MAX_PACKET_SIZE: usize = 1518;
 
 /// Ethernet MTU
 pub const MTU: usize = 1500;
@@ -120,11 +116,6 @@ impl NetworkStats {
     /// Record transmit error
     pub fn record_tx_error(&self) {
         self.tx_errors.fetch_add(1, Ordering::Relaxed);
-    }
-
-    /// Record header parse error
-    pub fn record_header_error(&self) {
-        self.rx_errors.fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record dropped packet
@@ -274,8 +265,6 @@ pub struct NetworkStack {
     /// Primary interface copied only as part of an atomic topology reconciliation.
     reconciled_primary: Option<NetIfId>,
     /// Manager revision fully applied to this per-core stack.
-    /// Timeout wheel for periodic tasks
-    timeout_wheel: TimeoutWheel,
     /// Canonical device transmit boundary shared by every core-local stack.
     transmit_fn: TransmitFn,
     /// Current timestamp (ticks)

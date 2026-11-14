@@ -26,7 +26,7 @@ use alloc::boxed::Box;
 use alloc::collections::BTreeMap;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU64};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
 pub struct NetRuntimeId(pub u64);
@@ -93,10 +93,6 @@ impl NetRuntimeHandle {
 
     pub const fn id(self) -> NetRuntimeId {
         self.context.id
-    }
-
-    pub(crate) const fn generation(self) -> NetRuntimeGeneration {
-        self.context.generation
     }
 
     pub const fn context(self) -> &'static NetRuntimeContext {
@@ -349,10 +345,6 @@ pub fn default_runtime() -> NetRuntimeHandle {
     registry.default_runtime(&cpu_snapshot).handle()
 }
 
-pub fn default_runtime_context() -> &'static NetRuntimeContext {
-    default_runtime().context()
-}
-
 pub fn create_runtime() -> Result<NetRuntimeHandle, RuntimeAllocationError> {
     let mut registry = RUNTIME_REGISTRY.lock_for_init("[NET] runtime registry create");
     let cpu_snapshot = crate::cpu::try_runtime()
@@ -360,15 +352,6 @@ pub fn create_runtime() -> Result<NetRuntimeHandle, RuntimeAllocationError> {
         .snapshot();
     registry
         .allocate_runtime(&cpu_snapshot)
-        .map(NetRuntimeContext::handle)
-}
-
-pub fn runtime(id: NetRuntimeId) -> Option<NetRuntimeHandle> {
-    let registry = RUNTIME_REGISTRY.lock().ok()?;
-    registry
-        .runtimes
-        .get(&id)
-        .copied()
         .map(NetRuntimeContext::handle)
 }
 
@@ -467,21 +450,12 @@ pub(crate) fn publish_cpu_online(cpu_id: CpuId) {
     }
 }
 
-pub fn set_default_runtime(handle: NetRuntimeHandle) {
-    if let Ok(mut registry) = RUNTIME_REGISTRY.lock() {
-        registry.default = Some(handle.id());
-    }
-}
-
-pub fn stack_initialized(handle: NetRuntimeHandle) -> bool {
-    handle.context().stack_initialized.load(Ordering::Acquire)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::net::runtime::command::RuntimeCommand;
     use crate::net::runtime::manager;
+    use core::sync::atomic::Ordering;
 
     fn cpu_snapshot() -> alloc::sync::Arc<crate::cpu::CpuSnapshot> {
         crate::cpu::CpuRuntime::bootstrap(

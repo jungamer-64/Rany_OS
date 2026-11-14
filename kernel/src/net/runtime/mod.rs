@@ -16,7 +16,6 @@ pub(crate) mod entropy;
 pub(crate) mod icmp;
 pub mod manager;
 pub mod stack;
-pub mod timeouts;
 pub(crate) mod transport;
 
 pub use context::{NetRuntimeContext, NetRuntimeHandle, create_runtime, default_runtime};

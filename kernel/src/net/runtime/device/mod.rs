@@ -82,8 +82,6 @@ enum EventWakeContext {
 }
 
 impl NetEventSink {
-    pub const CAPACITY: usize = NET_DEVICE_EVENT_QUEUE_CAPACITY;
-
     pub fn new() -> Self {
         Self {
             queue: MpmcRingBuffer::new(),
@@ -108,44 +106,12 @@ impl NetEventSink {
         self.queue.pop()
     }
 
-    pub fn len(&self) -> usize {
-        self.queue.len()
-    }
-
-    pub const fn capacity(&self) -> usize {
-        Self::CAPACITY
-    }
-
     pub fn is_empty(&self) -> bool {
         self.queue.is_empty()
     }
 
     pub fn wake(&self) {
         self.waker.wake();
-    }
-
-    pub fn wait(&self) -> NetEventWaitFuture<'_> {
-        NetEventWaitFuture { sink: self }
-    }
-}
-
-pub struct NetEventWaitFuture<'a> {
-    sink: &'a NetEventSink,
-}
-
-impl Future for NetEventWaitFuture<'_> {
-    type Output = ();
-
-    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        if !self.sink.is_empty() {
-            return Poll::Ready(());
-        }
-        self.sink.waker.register(cx.waker());
-        if !self.sink.is_empty() {
-            Poll::Ready(())
-        } else {
-            Poll::Pending
-        }
     }
 }
 
@@ -507,19 +473,6 @@ impl NetDeviceHandle {
 
     pub fn enqueue_event_from_isr(&self, event: NetDriverEvent) -> bool {
         self.event_sink.push(event, EventWakeContext::Interrupt)
-    }
-
-    fn rebind(&self, binding: NetDeviceBinding) -> Result<(), &'static str> {
-        self.driver.bind(binding.if_id.0)?;
-        match self.binding.lock() {
-            Ok(mut guard) => {
-                *guard = binding;
-            }
-            Err(poisoned) => {
-                *poisoned.into_inner() = binding;
-            }
-        }
-        Ok(())
     }
 
     /// Close admission, release leases the driver never saw, then stop the
@@ -1099,11 +1052,6 @@ pub fn list_port_infos_in(runtime: NetRuntimeHandle) -> Vec<NetDeviceInfo> {
         .collect()
 }
 
-pub fn port_info_in(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetDeviceInfo> {
-    let if_id = lookup_if_by_port_id_in(runtime, port_id)?;
-    with_port_handle_in(runtime, if_id, |handle| handle.info_in(runtime))
-}
-
 pub fn port_stats_in(runtime: NetRuntimeHandle, port_id: NetPortId) -> Option<NetPortStats> {
     let if_id = lookup_if_by_port_id_in(runtime, port_id)?;
     port_stats_for_interface_in(runtime, if_id)
@@ -1215,18 +1163,17 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn event_sink_from_isr_roundtrip_smoke() {
         let sink = NetEventSink::new();
-        assert_eq!(sink.capacity(), NetEventSink::CAPACITY);
-        assert_eq!(sink.len(), 0);
+        assert!(sink.is_empty());
         assert!(sink.push(
             NetDriverEvent::QueueWake { queue_index: 7 },
             EventWakeContext::Task,
         ));
-        assert_eq!(sink.len(), 1);
+        assert!(!sink.is_empty());
         assert_eq!(
             sink.pop(),
             Some(NetDriverEvent::QueueWake { queue_index: 7 })
         );
         assert!(sink.pop().is_none());
-        assert_eq!(sink.len(), 0);
+        assert!(sink.is_empty());
     }
 }

@@ -149,13 +149,6 @@ impl NetworkStack {
             .map(|(_, state)| state.config())
     }
 
-    pub(crate) fn primary_interface_state_mut(
-        &mut self,
-    ) -> Option<(NetIfId, &mut InterfaceStackState)> {
-        let if_id = self.default_interface_id()?;
-        self.interfaces.get_mut(&if_id).map(|state| (if_id, state))
-    }
-
     fn select_ipv4_source(
         &self,
         config: NetworkConfig,
@@ -579,23 +572,32 @@ impl NetworkStack {
             applied_topology_revision:
                 crate::net::runtime::manager::InterfaceTopologyRevision::INITIAL,
             reconciled_primary: None,
-            timeout_wheel: TimeoutWheel::new(100), // 100ms resolution
             transmit_fn: crate::net::runtime::bridge::transmit_from_stack_in,
             current_time: AtomicU64::new(0),
         }
     }
 
     /// Register or refresh per-interface state.
+    ///
+    /// A newly assigned or changed IPv4 address is announced with a gratuitous
+    /// ARP (RFC 5227 Section 2.3) so neighbors replace stale cache entries.
     pub fn register_interface_state(&mut self, if_id: NetIfId, config: NetworkConfig) {
-        match self.interfaces.get_mut(&if_id) {
+        let previous_ip = match self.interfaces.get_mut(&if_id) {
             Some(state) if state.config != config => {
+                let previous_ip = state.config.ipv4.address;
                 state.set_config(config);
+                previous_ip
             }
-            Some(_) => {}
+            Some(_) => return,
             None => {
-                let state = InterfaceStackState::new(config);
-                self.interfaces.insert(if_id, state);
+                self.interfaces
+                    .insert(if_id, InterfaceStackState::new(config));
+                Ipv4Address::ANY
             }
+        };
+        let assigned_ip = config.ipv4.address;
+        if assigned_ip != Ipv4Address::ANY && assigned_ip != previous_ip {
+            self.send_arp_request_on(if_id, assigned_ip);
         }
     }
 
@@ -623,13 +625,6 @@ impl NetworkStack {
 
     pub fn interface_config(&self, if_id: NetIfId) -> Option<NetworkConfig> {
         self.interfaces.get(&if_id).map(|state| state.config)
-    }
-
-    pub fn list_interface_configs(&self) -> Vec<(NetIfId, NetworkConfig)> {
-        self.interfaces
-            .iter()
-            .map(|(if_id, state)| (*if_id, state.config))
-            .collect()
     }
 
     pub fn interface_stats(&self, if_id: NetIfId) -> Option<&NetworkStats> {
@@ -1033,65 +1028,6 @@ impl NetworkStack {
         self.expire_arp_pending();
         self.expire_ndp_pending();
         self.expire_fragment_reassembly(now);
-
-        // Runtime-owned TCP timers/retransmits are driven from the endpoint event
-        // task via the transport state's TCB table. The integrated stack keeps only generic
-        // timeout-wheel work here.
-        let expired = self.timeout_wheel.tick(now);
-
-        for timer in expired {
-            match timer.kind {
-                // Other timer kinds handled elsewhere or to be implemented
-                _ => {}
-            }
-        }
-    }
-
-    /// Get configuration (full clone - use sparingly)
-    pub fn config(&self) -> NetworkConfig {
-        self.primary_interface_state()
-            .map(|(_, state)| state.config)
-            .expect("network stack config requested without registered interface state")
-    }
-
-    /// ICMP echo が有効かチェック
-    #[inline]
-    pub fn icmp_echo_enabled(&self) -> bool {
-        self.primary_interface_state()
-            .is_some_and(|(_, state)| state.config.icmp_echo_enabled)
-    }
-
-    /// MAC アドレスを取得
-    #[inline]
-    pub fn mac_address(&self) -> MacAddress {
-        self.primary_interface_state()
-            .map(|(_, state)| state.config.mac)
-            .expect("network stack MAC requested without registered interface state")
-    }
-
-    /// IPv4 アドレスを取得
-    #[inline]
-    pub fn ipv4_address(&self) -> Ipv4Address {
-        self.primary_interface_state()
-            .map(|(_, state)| state.config.ipv4.address)
-            .expect("network stack IPv4 address requested without registered interface state")
-    }
-
-    /// Update configuration
-    pub fn set_config(&mut self, config: NetworkConfig) {
-        let Some((primary_if_id, state)) = self.primary_interface_state_mut() else {
-            return;
-        };
-        let old_ip = state.config.ipv4.address;
-        let new_ip = config.ipv4.address;
-
-        state.set_config(config);
-
-        // RFC 2131 Section 4.4.1: Send Gratuitous ARP when IP address is assigned or changed.
-        // This updates the ARP cache of other hosts on the network.
-        if new_ip != Ipv4Address::ANY && new_ip != old_ip {
-            self.send_arp_request_on(primary_if_id, new_ip);
-        }
     }
 
     /// Apply a DHCPv6-obtained global IPv6 address to the stack

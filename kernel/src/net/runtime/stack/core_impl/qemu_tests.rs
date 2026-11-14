@@ -167,7 +167,7 @@ fn timeout_retries_after_queue_loss_and_manager_contention() {
     .clone();
     // LOOP_PROOF: mode=condition; reason=This isolated fixture has no producers and each recv removes one command from the bounded queue until empty.;
     while queue.recv().is_some() {}
-    for _ in 0..crate::net::runtime::command::RuntimeCommandQueue::CAPACITY {
+    for _ in 0..crate::net::runtime::command::NETWORK_EVENT_QUEUE_CAPACITY {
         assert!(queue.send(RuntimeCommand::Control(
             ControlCommand::ProcessGlobalTimeouts,
         )));

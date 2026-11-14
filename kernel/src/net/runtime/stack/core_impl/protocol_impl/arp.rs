@@ -357,19 +357,6 @@ impl NetworkStack {
         }
     }
 
-    pub(crate) fn drain_arp_pending(&mut self, resolved_ip: &Ipv4Address) {
-        let mut drained = Vec::new();
-        for (if_id, state) in self.interfaces.iter_mut() {
-            let pending = state.arp_pending_queue.drain_for(resolved_ip);
-            if !pending.is_empty() {
-                drained.push((*if_id, pending));
-            }
-        }
-        for (if_id, pending) in drained {
-            self.drain_arp_pending_queue(if_id, resolved_ip, pending);
-        }
-    }
-
     pub(crate) fn drain_arp_pending_on(
         &mut self,
         if_id: super::NetIfId,

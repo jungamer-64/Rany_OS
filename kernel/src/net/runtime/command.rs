@@ -94,17 +94,11 @@ pub(crate) enum RawSendCommand {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum RawIpv4Source {
-    Auto,
-    Addr([u8; 4]),
-}
-
 #[derive(Debug)]
 pub(crate) enum RawIpv4Transport {
     /// UDP payload; the stack prepends the UDP header and checksum.
     Udp {
-        src: RawIpv4Source,
+        src: [u8; 4],
         ports: UdpPorts,
         ttl: u8,
         payload: PacketPayload,
@@ -174,7 +168,7 @@ pub(crate) fn enqueue_udp_send_on_with_src_in(
             scope: InterfaceScope::Pinned(if_id),
             dst: *dst_ip.as_bytes(),
             transport: RawIpv4Transport::Udp {
-                src: RawIpv4Source::Addr(*src_ip.as_bytes()),
+                src: *src_ip.as_bytes(),
                 ports,
                 ttl,
                 payload,
@@ -665,7 +659,7 @@ pub(crate) fn new_detached_command_channel_in<T: CommandReplyPayload>(
 // ロックフリー有界 MPSC イベントキュー
 // ============================================================================
 
-const NETWORK_EVENT_QUEUE_CAPACITY: usize = 256;
+pub(crate) const NETWORK_EVENT_QUEUE_CAPACITY: usize = 256;
 const NETWORK_EVENT_QUEUE_BACKING_CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY + 1;
 
 /// ロックフリー有界 MPSC イベントキュー
@@ -721,8 +715,6 @@ impl Drop for ProducerAdmission<'_> {
 }
 
 impl RuntimeCommandQueue {
-    pub(crate) const CAPACITY: usize = NETWORK_EVENT_QUEUE_CAPACITY;
-
     /// 新規作成
     pub const fn new(admission: CommandAdmissionState) -> Self {
         Self {
@@ -832,11 +824,6 @@ impl RuntimeCommandQueue {
     /// キュー満杯時は `false` を返す（バックプレッシャー）。
     pub(crate) fn send(&self, command: RuntimeCommand) -> bool {
         self.send_owned(command).is_ok()
-    }
-
-    /// イベント送信（プロデューサー側 — ISR コンテキストから安全に呼び出し可能）
-    pub(crate) fn try_send_from_isr(&self, command: RuntimeCommand) -> bool {
-        self.try_send_owned_from_isr(command).is_ok()
     }
 
     /// イベント受信（コンシューマー側 — マルチコンシューマー安全）
@@ -1134,7 +1121,7 @@ mod tests {
     #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
     fn runtime_command_queue_returns_the_unsent_command_at_capacity() {
         let queue = RuntimeCommandQueue::new(CommandAdmissionState::Open);
-        for _ in 0..RuntimeCommandQueue::CAPACITY {
+        for _ in 0..NETWORK_EVENT_QUEUE_CAPACITY {
             assert!(
                 queue
                     .send_owned(RuntimeCommand::Control(
@@ -1153,7 +1140,7 @@ mod tests {
             rejected,
             RuntimeCommand::Control(ControlCommand::ProcessGlobalTimeouts)
         ));
-        for _ in 0..RuntimeCommandQueue::CAPACITY {
+        for _ in 0..NETWORK_EVENT_QUEUE_CAPACITY {
             assert!(queue.recv().is_some());
         }
         assert!(queue.recv().is_none());
