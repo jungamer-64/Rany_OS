@@ -36,12 +36,7 @@ impl DnsClient {
         rdlength: usize,
         rdata_offset: usize,
     ) -> DnsRecordData {
-        let raw_span = || {
-            DnsRecordData::Raw(
-                PayloadRange::checked(payload, rdata_offset, rdlength)
-                    .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
-            )
-        };
+        let raw_span = || DnsRecordData::Raw;
 
         match DnsQueryType::from_u16(rtype) {
             Some(DnsQueryType::A) if rdlength == 4 => view

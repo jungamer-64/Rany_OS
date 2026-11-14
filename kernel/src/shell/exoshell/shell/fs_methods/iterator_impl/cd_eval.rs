@@ -160,6 +160,10 @@ impl ExoShell {
         net.dns_srv("name")   - Resolve SRV records
         net.dns_ptr("ipv4")   - Reverse lookup (PTR)
         net.dns_ptr6("ipv6")  - Reverse lookup (PTR6)
+        net.dns_servers()     - List configured DNS servers
+        net.dns_add_server("ip") - Add IPv4/IPv6 DNS server (CAP_NET_ADMIN)
+        net.dns_stats()       - DNS query and cache statistics
+    net.ntp_sync("ip")    - Sync wall clock via SNTP (CAP_NET_ADMIN)
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)
 

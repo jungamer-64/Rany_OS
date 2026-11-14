@@ -11,13 +11,10 @@ impl DnsClient {
             runtime,
             ipv4_servers: PoisonLock::new(Vec::new()),
             ipv6_servers: PoisonLock::new(Vec::new()),
-            cache: PoisonLock::new(DnsCache::new(tick_rate)),
+            ipv4_cache: PoisonLock::new(DnsCache::new(tick_rate)),
+            ipv6_cache: PoisonLock::new(DnsCache::new(tick_rate)),
             stats: DnsStats::new(),
             pending_ids: PoisonLock::new(BTreeMap::new()),
         }
-    }
-
-    pub fn runtime(&self) -> crate::net::runtime::NetRuntimeHandle {
-        self.runtime
     }
 }

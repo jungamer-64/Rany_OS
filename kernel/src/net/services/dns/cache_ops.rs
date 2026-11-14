@@ -34,128 +34,180 @@ fn dns_txt_view_to_string(payload: &PacketPayload, txt: &DnsTxtView) -> Option<S
     Some(out)
 }
 
-enum Ipv4CacheLookup {
-    Hit(Ipv4Address),
+enum CacheLookup<A> {
+    Hit(A),
     Negative,
     Miss,
 }
 
-enum Ipv6CacheLookup {
-    Hit(Ipv6Address),
-    Negative,
-    Miss,
+fn lookup_cached<A: Copy>(
+    cache: &PoisonLock<DnsCache<A>>,
+    key: &DnsCacheKey,
+    current_tick: u64,
+) -> CacheLookup<A> {
+    let Ok(cache) = cache.lock() else {
+        return CacheLookup::Miss;
+    };
+    match cache.lookup(key, current_tick) {
+        Some(DnsCachedAnswer::Positive(addresses)) => addresses
+            .first()
+            .copied()
+            .map_or(CacheLookup::Miss, CacheLookup::Hit),
+        Some(DnsCachedAnswer::Negative) => CacheLookup::Negative,
+        None => CacheLookup::Miss,
+    }
+}
+
+/// Owner name that the next answer record must carry.
+enum ChainOwner<'a> {
+    Query(&'a DnsNameOwned),
+    Alias(&'a DnsNameView),
+}
+
+impl ChainOwner<'_> {
+    fn owns(&self, payload: &PacketPayload, record: &DnsRecordMeta) -> bool {
+        let ordering = match self {
+            Self::Query(name) => compare_dns_name_view_to_owned(payload, &record.name, name),
+            Self::Alias(alias) => {
+                compare_dns_name_ranges(payload, record.name.labels(), payload, alias.labels())
+            }
+        };
+        ordering == CmpOrdering::Equal
+    }
+}
+
+/// Addresses of `qtype` reached from the query name through at most
+/// [`DNS_MAX_CNAME_DEPTH`] CNAME records (RFC 1034 Section 3.6.2), with the
+/// smallest TTL along the chain.
+fn chain_addresses<A>(
+    response: &DnsResponseView,
+    query: &DnsNameOwned,
+    qtype: DnsQueryType,
+    select: &impl Fn(&DnsRecordData) -> Option<A>,
+) -> (Vec<A>, u32) {
+    let payload = &response.payload;
+    let answers = || {
+        response
+            .records
+            .iter()
+            .filter(|record| record.rclass == DnsRecordClass::Known(DnsQueryClass::IN))
+    };
+    let mut owner = ChainOwner::Query(query);
+    let mut ttl = u32::MAX;
+    let mut addresses = Vec::new();
+    for _ in 0..=DNS_MAX_CNAME_DEPTH {
+        for record in
+            answers().filter(|record| record.rtype.is(qtype) && owner.owns(payload, record))
+        {
+            if let Some(address) = select(&record.data) {
+                if addresses.try_reserve(1).is_err() {
+                    break;
+                }
+                addresses.push(address);
+                ttl = ttl.min(record.ttl);
+            }
+        }
+        if !addresses.is_empty() {
+            return (addresses, ttl);
+        }
+        let alias = answers().find_map(|record| match &record.data {
+            DnsRecordData::Name(target)
+                if record.rtype.is(DnsQueryType::CNAME) && owner.owns(payload, record) =>
+            {
+                Some((target, record.ttl))
+            }
+            _ => None,
+        });
+        let Some((target, alias_ttl)) = alias else {
+            break;
+        };
+        ttl = ttl.min(alias_ttl);
+        owner = ChainOwner::Alias(target);
+    }
+    (addresses, ttl)
+}
+
+/// Caches the chained addresses of `response`, or NODATA when the chain
+/// reached none, and returns the first address.
+fn admit_answer<A: Copy>(
+    cache: &PoisonLock<DnsCache<A>>,
+    key: DnsCacheKey,
+    query: &DnsNameOwned,
+    qtype: DnsQueryType,
+    response: &DnsResponseView,
+    select: impl Fn(&DnsRecordData) -> Option<A>,
+    current_tick: u64,
+) -> Option<A> {
+    let (addresses, ttl) = chain_addresses(response, query, qtype, &select);
+    let first = addresses.first().copied();
+    let (answer, ttl) = if addresses.is_empty() {
+        (DnsCachedAnswer::Negative, DNS_NEGATIVE_CACHE_TTL_SECS)
+    } else {
+        (DnsCachedAnswer::Positive(addresses), ttl)
+    };
+    if let Ok(mut cache) = cache.lock() {
+        cache.insert(key, answer, ttl, current_tick);
+    }
+    first
 }
 
 impl DnsClient {
-    fn cached_ipv4_lookup(&self, name: &DnsNameOwned, current_tick: u64) -> Ipv4CacheLookup {
-        let Ok(cache) = self.cache.lock() else {
-            return Ipv4CacheLookup::Miss;
-        };
-        let Some(entry) = cache.lookup(name, current_tick) else {
-            return Ipv4CacheLookup::Miss;
-        };
-        if entry.negative {
-            return Ipv4CacheLookup::Negative;
-        }
-        entry
-            .records
-            .iter()
-            .find_map(|record| match record.data {
-                DnsRecordData::A(addr) => Some(Ipv4CacheLookup::Hit(addr)),
-                _ => None,
-            })
-            .unwrap_or(Ipv4CacheLookup::Miss)
-    }
-
-    fn cached_ipv6_lookup(&self, name: &DnsNameOwned, current_tick: u64) -> Ipv6CacheLookup {
-        let Ok(cache) = self.cache.lock() else {
-            return Ipv6CacheLookup::Miss;
-        };
-        let Some(entry) = cache.lookup(name, current_tick) else {
-            return Ipv6CacheLookup::Miss;
-        };
-        if entry.negative {
-            return Ipv6CacheLookup::Negative;
-        }
-        entry
-            .records
-            .iter()
-            .find_map(|record| match record.data {
-                DnsRecordData::AAAA(addr) => Some(Ipv6CacheLookup::Hit(addr)),
-                _ => None,
-            })
-            .unwrap_or(Ipv6CacheLookup::Miss)
-    }
-
-    pub fn resolve_cached(&self, name: &str, current_tick: u64) -> Option<Ipv4Address> {
-        let name = DnsNameOwned::parse_ascii(name).ok()?;
-        match self.cached_ipv4_lookup(&name, current_tick) {
-            Ipv4CacheLookup::Hit(addr) => {
+    async fn resolve_address<A: Copy>(
+        &self,
+        name_text: &str,
+        qtype: DnsQueryType,
+        cache: &PoisonLock<DnsCache<A>>,
+        select: impl Fn(&DnsRecordData) -> Option<A>,
+    ) -> Option<A> {
+        let current_tick = crate::task::current_tick();
+        let name = DnsNameOwned::parse_ascii(name_text).ok()?;
+        let key = DnsCacheKey::from_name(&name)?;
+        match lookup_cached(cache, &key, current_tick) {
+            CacheLookup::Hit(address) => {
                 self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                Some(addr)
+                return Some(address);
             }
-            Ipv4CacheLookup::Negative | Ipv4CacheLookup::Miss => {
+            CacheLookup::Negative => {
+                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
+                return None;
+            }
+            CacheLookup::Miss => {
                 self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-                None
             }
         }
+
+        let query = DnsNameOwned::parse_ascii(name_text).ok()?;
+        let response = self.query_internal_name(name, qtype).await.ok()?;
+        admit_answer(
+            cache,
+            key,
+            &query,
+            qtype,
+            &response,
+            select,
+            crate::task::current_tick(),
+        )
     }
 
     pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
-        let current_tick = crate::task::current_tick();
-        let name = DnsNameOwned::parse_ascii(name).ok()?;
-        match self.cached_ipv4_lookup(&name, current_tick) {
-            Ipv4CacheLookup::Hit(addr) => {
-                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                return Some(addr);
-            }
-            Ipv4CacheLookup::Negative => {
-                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            Ipv4CacheLookup::Miss => {
-                self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let response = self.query_internal_name(name, DnsQueryType::A).await.ok()?;
-        response
-            .records
-            .iter()
-            .find_map(|record| match record.data {
-                DnsRecordData::A(addr) => Some(addr),
-                _ => None,
-            })
+        self.resolve_address(name, DnsQueryType::A, &self.ipv4_cache, |data| match data {
+            DnsRecordData::A(addr) => Some(*addr),
+            _ => None,
+        })
+        .await
     }
 
     pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
-        let current_tick = crate::task::current_tick();
-        let name = DnsNameOwned::parse_ascii(name).ok()?;
-        match self.cached_ipv6_lookup(&name, current_tick) {
-            Ipv6CacheLookup::Hit(addr) => {
-                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                return Some(addr);
-            }
-            Ipv6CacheLookup::Negative => {
-                self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
-                return None;
-            }
-            Ipv6CacheLookup::Miss => {
-                self.stats.cache_misses.fetch_add(1, Ordering::Relaxed);
-            }
-        }
-
-        let response = self
-            .query_internal_name(name, DnsQueryType::AAAA)
-            .await
-            .ok()?;
-        response
-            .records
-            .iter()
-            .find_map(|record| match record.data {
-                DnsRecordData::AAAA(addr) => Some(addr),
+        self.resolve_address(
+            name,
+            DnsQueryType::AAAA,
+            &self.ipv6_cache,
+            |data| match data {
+                DnsRecordData::AAAA(addr) => Some(*addr),
                 _ => None,
-            })
+            },
+        )
+        .await
     }
 
     pub async fn resolve_txt(&self, name: &str) -> Option<Vec<String>> {
@@ -289,7 +341,10 @@ impl DnsClient {
                 .map_err(|_| "DNS cleanup timer failed")?;
 
             let now = crate::task::current_tick();
-            if let Ok(mut cache) = self.cache.lock() {
+            if let Ok(mut cache) = self.ipv4_cache.lock() {
+                cache.cleanup(now);
+            }
+            if let Ok(mut cache) = self.ipv6_cache.lock() {
                 cache.cleanup(now);
             }
             self.cleanup_stale_pending_ids(now);
@@ -350,7 +405,7 @@ impl DnsClient {
         }
     }
 
-    pub(super) fn ipv4_servers_snapshot(&self) -> Vec<Ipv4Address> {
+    pub(crate) fn ipv4_servers_snapshot(&self) -> Vec<Ipv4Address> {
         match self.ipv4_servers.lock() {
             Ok(servers) => servers.iter().take(DNS_MAX_SERVERS).copied().collect(),
             Err(_) => {
@@ -360,7 +415,7 @@ impl DnsClient {
         }
     }
 
-    pub(super) fn ipv6_servers_snapshot(&self) -> Vec<Ipv6Address> {
+    pub(crate) fn ipv6_servers_snapshot(&self) -> Vec<Ipv6Address> {
         match self.ipv6_servers.lock() {
             Ok(servers) => servers.iter().take(DNS_MAX_SERVERS).copied().collect(),
             Err(_) => {
@@ -370,23 +425,35 @@ impl DnsClient {
         }
     }
 
-    /// 期限切れキャッシュエントリをクリーンアップ
-    pub fn cleanup_cache(&self, current_tick: u64) {
-        match self.cache.lock() {
-            Ok(mut cache) => cache.cleanup(current_tick),
-            Err(_) => {
-                log::error!("[NET] DNS Cache lock poisoned (cleanup_cache) - operation skipped")
-            }
-        }
-    }
-
+    /// NXDOMAIN applies to every record type of the name (RFC 2308 Section 2.1).
     pub(super) fn cache_negative_response_for_name(
         &self,
         name: &DnsNameOwned,
         rcode: DnsResponseCode,
         current_tick: u64,
     ) {
-        let _ = (name, rcode, current_tick);
+        if rcode != DnsResponseCode::NameError {
+            return;
+        }
+        let Some(key) = DnsCacheKey::from_name(name) else {
+            return;
+        };
+        if let Ok(mut cache) = self.ipv4_cache.lock() {
+            cache.insert(
+                key.clone(),
+                DnsCachedAnswer::Negative,
+                DNS_NEGATIVE_CACHE_TTL_SECS,
+                current_tick,
+            );
+        }
+        if let Ok(mut cache) = self.ipv6_cache.lock() {
+            cache.insert(
+                key,
+                DnsCachedAnswer::Negative,
+                DNS_NEGATIVE_CACHE_TTL_SECS,
+                current_tick,
+            );
+        }
     }
 
     /// 統計情報を取得
@@ -394,25 +461,10 @@ impl DnsClient {
         &self.stats
     }
 
-    /// プライマリIPv4 DNSサーバーを取得
-    pub fn primary_ipv4_server(&self) -> Option<Ipv4Address> {
-        match self.ipv4_servers.lock() {
-            Ok(servers) => servers.first().copied(),
-            Err(_) => {
-                log::error!("[NET] DNS IPv4 Servers lock poisoned - returning None");
-                None
-            }
-        }
-    }
-
-    /// プライマリIPv6 DNSサーバーを取得
-    pub fn primary_ipv6_server(&self) -> Option<Ipv6Address> {
-        match self.ipv6_servers.lock() {
-            Ok(servers) => servers.first().copied(),
-            Err(_) => {
-                log::error!("[NET] DNS IPv6 Servers lock poisoned - returning None");
-                None
-            }
-        }
+    /// Number of live cache entries per address family `(A, AAAA)`.
+    pub fn cache_len(&self) -> (usize, usize) {
+        let v4 = self.ipv4_cache.lock().map_or(0, |cache| cache.len());
+        let v6 = self.ipv6_cache.lock().map_or(0, |cache| cache.len());
+        (v4, v6)
     }
 }

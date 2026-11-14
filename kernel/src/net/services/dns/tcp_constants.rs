@@ -76,23 +76,6 @@ pub fn add_ipv4_server_in(runtime: crate::net::runtime::NetRuntimeHandle, server
     }
 }
 
-/// キャッシュからIPアドレスを解決
-pub fn resolve_cached_in(
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    name: &str,
-    current_tick: u64,
-) -> Option<Ipv4Address> {
-    match super::shared_client_lock_in(runtime).lock() {
-        Ok(g) => g
-            .as_ref()
-            .and_then(|c| c.resolve_cached(name, current_tick)),
-        Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (resolve_cached) - treating as cache miss");
-            None
-        }
-    }
-}
-
 /// 非同期でIPv4アドレスを解決
 pub async fn resolve_ipv4_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
@@ -183,84 +166,4 @@ pub async fn resolve_ptr_ipv6_in(
     }?;
 
     client.resolve_ptr_ipv6(ip).await
-}
-
-/// Build a DNS query for TCP transport in the specified runtime.
-pub fn build_tcp_query_payload_in(
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    name: &str,
-    qtype: DnsQueryType,
-) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-    match super::shared_client_lock_in(runtime).lock() {
-        Ok(g) => {
-            if let Some(client) = g.as_ref() {
-                client.build_tcp_query_payload(name, qtype)
-            } else {
-                Err("DNS client not initialized")
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (build_tcp_query_payload)");
-            Err("DNS lock poisoned")
-        }
-    }
-}
-
-/// Parse a DNS response received over TCP in the specified runtime.
-pub fn parse_tcp_response_payload_in(
-    runtime: crate::net::runtime::NetRuntimeHandle,
-    payload: kernel_api::resource::net::PacketPayload,
-    current_tick: u64,
-    expected_name: &str,
-    expected_type: DnsQueryType,
-) -> Result<DnsResponseView, DnsResponseCode> {
-    match super::shared_client_lock_in(runtime).lock() {
-        Ok(g) => {
-            if let Some(client) = g.as_ref() {
-                client.parse_tcp_response_payload(
-                    payload,
-                    current_tick,
-                    expected_name,
-                    expected_type,
-                )
-            } else {
-                Err(DnsResponseCode::ServerFailure)
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (parse_tcp_response_payload)");
-            Err(DnsResponseCode::ServerFailure)
-        }
-    }
-}
-
-/// Check if a UDP response requires TCP fallback in the specified runtime.
-pub fn needs_tcp_fallback_in(runtime: crate::net::runtime::NetRuntimeHandle, data: &[u8]) -> bool {
-    match super::shared_client_lock_in(runtime).lock() {
-        Ok(g) => {
-            if let Some(client) = g.as_ref() {
-                client.needs_tcp_fallback(data)
-            } else {
-                false
-            }
-        }
-        Err(_) => {
-            log::error!("[NET] DNS Global lock poisoned (needs_tcp_fallback)");
-            false
-        }
-    }
-}
-
-/// 期限切れDNSキャッシュエントリを定期的にクリーンアップ
-///
-/// ネットワークスタックの`periodic()`から呼び出される。
-pub fn cleanup_cache_in(runtime: crate::net::runtime::NetRuntimeHandle, current_tick: u64) {
-    match super::shared_client_lock_in(runtime).lock() {
-        Ok(g) => {
-            if let Some(client) = g.as_ref() {
-                client.cleanup_cache(current_tick);
-            }
-        }
-        Err(_) => log::error!("[NET] DNS Global lock poisoned (cleanup_cache) - operation skipped"),
-    }
 }

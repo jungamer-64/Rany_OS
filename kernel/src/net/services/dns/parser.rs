@@ -3,7 +3,7 @@
 // ============================================================================
 
 use super::*;
-use crate::net::payload::{PayloadRange, PayloadSpanRef};
+use crate::net::payload::PayloadRange;
 
 struct DnsSectionCounts {
     qcount: usize,
@@ -267,17 +267,6 @@ impl DnsClient {
         Ok(self.finalize_response_payload(payload, expected_name, current_tick, records))
     }
 
-    pub fn parse_response_payload(
-        &self,
-        payload: kernel_api::resource::net::PacketPayload,
-        current_tick: u64,
-        expected_name: &str,
-        expected_type: DnsQueryType,
-    ) -> Option<Result<DnsResponseView, DnsResponseCode>> {
-        let expected_name = DnsNameOwned::parse_ascii(expected_name).ok()?;
-        self.parse_response_payload_for_name(payload, current_tick, &expected_name, expected_type)
-    }
-
     fn parse_name_pointer_payload(
         &self,
         view: &crate::net::payload::PacketPayloadView<'_>,
@@ -379,23 +368,14 @@ impl DnsClient {
         // LOOP_PROOF: mode=bounded; reason=Each TXT string consumes its length byte and checked value within the finite RDATA range, while malformed input returns the raw owner.;
         while offset < end {
             let Some(len) = view.read_u8(offset).map(usize::from) else {
-                return DnsRecordData::Raw(
-                    PayloadRange::checked(payload, rdata_offset, rdlength)
-                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
-                );
+                return DnsRecordData::Raw;
             };
             offset = offset.saturating_add(1);
             if offset.saturating_add(len) > end {
-                return DnsRecordData::Raw(
-                    PayloadRange::checked(payload, rdata_offset, rdlength)
-                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
-                );
+                return DnsRecordData::Raw;
             }
             let Some(span) = PayloadRange::checked(payload, offset, len) else {
-                return DnsRecordData::Raw(
-                    PayloadRange::checked(payload, rdata_offset, rdlength)
-                        .unwrap_or_else(|| PayloadSpanRef::from_payload(payload).range()),
-                );
+                return DnsRecordData::Raw;
             };
             text_len = text_len.saturating_add(len);
             spans.push(span);
@@ -500,14 +480,6 @@ impl DnsClient {
         }))
     }
 
-    fn record_class_from_u16(&self, rclass: u16) -> DnsQueryClass {
-        if rclass == DnsQueryClass::IN as u16 {
-            DnsQueryClass::IN
-        } else {
-            DnsQueryClass::IN
-        }
-    }
-
     fn build_record_meta_payload(
         &self,
         payload: &kernel_api::resource::net::PacketPayload,
@@ -525,7 +497,7 @@ impl DnsClient {
         DnsRecordMeta {
             name: header.name,
             rtype: DnsRecordType::from_u16(header.rtype),
-            rclass: self.record_class_from_u16(header.rclass),
+            rclass: DnsRecordClass::from_u16(header.rclass),
             ttl: header.ttl,
             data: record_data,
         }

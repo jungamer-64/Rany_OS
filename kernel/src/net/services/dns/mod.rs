@@ -6,7 +6,7 @@
 //! ドメイン名からIPアドレスへの解決を行うDNSリゾルバ。
 //! 簡易的なキャッシュ機能付き。
 
-use crate::net::payload::{GeneratedPacketWriter, PayloadRange, PayloadSpanRef};
+use crate::net::payload::{GeneratedPacketWriter, PayloadRange};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 use alloc::collections::BTreeMap;
@@ -97,25 +97,9 @@ impl DnsRecordType {
             .unwrap_or(Self::Unknown(value))
     }
 
-    /// 生の type 値を取得
-    pub fn as_u16(self) -> u16 {
-        match self {
-            Self::Known(kind) => kind as u16,
-            Self::Unknown(value) => value,
-        }
-    }
-
     /// 既知タイプかつ指定 `DnsQueryType` と一致するか
     pub fn is(self, expected: DnsQueryType) -> bool {
         matches!(self, Self::Known(kind) if kind == expected)
-    }
-
-    /// 既知タイプなら `DnsQueryType` を返す
-    pub fn as_known(self) -> Option<DnsQueryType> {
-        match self {
-            Self::Known(kind) => Some(kind),
-            Self::Unknown(_) => None,
-        }
     }
 }
 
@@ -125,6 +109,24 @@ impl DnsRecordType {
 pub enum DnsQueryClass {
     /// インターネット
     IN = 1,
+}
+
+/// Class of a received resource record; classes other than IN stay distinct
+/// so they never satisfy an IN query.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DnsRecordClass {
+    Known(DnsQueryClass),
+    Unknown(u16),
+}
+
+impl DnsRecordClass {
+    pub fn from_u16(value: u16) -> Self {
+        if value == DnsQueryClass::IN as u16 {
+            Self::Known(DnsQueryClass::IN)
+        } else {
+            Self::Unknown(value)
+        }
+    }
 }
 
 /// DNS応答コード
@@ -181,52 +183,6 @@ pub struct DnsHeader {
 impl DnsHeader {
     /// ヘッダサイズ
     pub const SIZE: usize = 12;
-
-    /// トランザクションIDを取得
-    pub fn id(&self) -> u16 {
-        u16::from_be_bytes(self.id)
-    }
-
-    /// フラグを取得
-    pub fn flags(&self) -> u16 {
-        u16::from_be_bytes(self.flags)
-    }
-
-    /// QRビット (応答かどうか)
-    pub fn is_response(&self) -> bool {
-        (self.flags() >> 15) & 1 == 1
-    }
-
-    /// 応答コードを取得
-    pub fn rcode(&self) -> DnsResponseCode {
-        DnsResponseCode::from_u8((self.flags() & 0x0F) as u8)
-    }
-
-    /// TC (Truncated) ビットを取得
-    /// 応答が512バイトを超えてUDPで切り捨てられた場合にtrue
-    pub fn is_truncated(&self) -> bool {
-        (self.flags() >> 9) & 1 == 1
-    }
-
-    /// RD (Recursion Desired) ビットを取得
-    pub fn recursion_desired(&self) -> bool {
-        (self.flags() >> 8) & 1 == 1
-    }
-
-    /// RA (Recursion Available) ビットを取得
-    pub fn recursion_available(&self) -> bool {
-        (self.flags() >> 7) & 1 == 1
-    }
-
-    /// 質問数を取得
-    pub fn question_count(&self) -> u16 {
-        u16::from_be_bytes(self.qdcount)
-    }
-
-    /// 回答数を取得
-    pub fn answer_count(&self) -> u16 {
-        u16::from_be_bytes(self.ancount)
-    }
 }
 
 #[derive(Debug)]
@@ -238,22 +194,6 @@ pub struct DnsNameView {
 impl DnsNameView {
     pub fn from_parsed_labels(labels: Vec<PayloadRange>, text_len: usize) -> Self {
         Self { labels, text_len }
-    }
-
-    pub fn eq_ignore_ascii_case_in(&self, payload: &PacketPayload, name: &str) -> bool {
-        let mut parts = name.split('.');
-        for label in &self.labels {
-            let Some(part) = parts.next() else {
-                return false;
-            };
-            let Some(span) = label.span(payload) else {
-                return false;
-            };
-            if !span.eq_ignore_ascii_case(part.as_bytes()) {
-                return false;
-            }
-        }
-        parts.next().is_none()
     }
 
     pub fn labels(&self) -> &[PayloadRange] {
@@ -354,16 +294,6 @@ impl DnsNameOwned {
         &self.payload
     }
 
-    pub fn label_span(&self, index: usize) -> Option<PayloadSpanRef<'_>> {
-        self.labels.get(index)?.span(&self.payload)
-    }
-
-    pub fn label_eq_ignore_ascii_case(&self, index: usize, bytes: &[u8]) -> bool {
-        self.label_span(index)
-            .map(|span| span.eq_ignore_ascii_case(bytes))
-            .unwrap_or(false)
-    }
-
     pub fn text_len(&self) -> usize {
         self.text_len
     }
@@ -417,7 +347,7 @@ pub struct DnsRecordMeta {
     /// レコードタイプ
     pub rtype: DnsRecordType,
     /// レコードクラス
-    pub rclass: DnsQueryClass,
+    pub rclass: DnsRecordClass,
     /// TTL (秒)
     pub ttl: u32,
     /// レコードデータ
@@ -475,156 +405,123 @@ pub enum DnsRecordData {
         port: u16,
         target: DnsNameView,
     },
-    /// その他/未解析
-    Raw(PayloadRange),
+    /// 未対応タイプ、または RDATA が不正なレコード
+    Raw,
 }
 
-/// DNSキャッシュエントリ
-#[derive(Debug)]
-pub struct DnsCacheEntry {
-    /// 応答 payload ownership
-    pub response: Option<PacketPayload>,
-    /// packet-backed レコード metadata
-    pub records: Vec<DnsRecordMeta>,
-    /// キャッシュ時刻 (tick)
-    pub cached_at: u64,
-    /// 最小TTL
-    pub min_ttl: u32,
-    /// ネガティブキャッシュか
-    pub negative: bool,
-    /// ネガティブ時の応答コード
-    pub rcode: Option<DnsResponseCode>,
-}
+/// Case-normalized DNS name used as a cache key.
+///
+/// The key owns plain bytes instead of a packet-backed name so that cached
+/// entries never pin packet pool slots.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct DnsCacheKey(String);
 
-impl DnsCacheEntry {
-    /// 期限切れか判定
-    pub fn is_expired(&self, current_tick: u64, tick_rate: u64) -> bool {
-        let elapsed_secs = (current_tick.saturating_sub(self.cached_at)) / tick_rate;
-        elapsed_secs >= self.min_ttl as u64
+impl DnsCacheKey {
+    /// Builds the key from a validated name, lowercasing ASCII labels.
+    pub fn from_name(name: &DnsNameOwned) -> Option<Self> {
+        let mut key = String::new();
+        key.try_reserve_exact(name.text_len()).ok()?;
+        for (index, label) in name.labels().iter().enumerate() {
+            if index > 0 {
+                key.push('.');
+            }
+            let span = label.span(name.payload())?;
+            for byte_index in 0..span.total_len() {
+                key.push(char::from(span.byte_at(byte_index)?.to_ascii_lowercase()));
+            }
+        }
+        Some(Self(key))
     }
 }
 
-/// DNSキャッシュ
-pub struct DnsCache {
-    /// キャッシュエントリ (ドメイン名 → エントリ)
-    entries: BTreeMap<DnsNameOwned, DnsCacheEntry>,
-    /// 最大エントリ数
-    max_entries: usize,
-    /// ティックレート
+/// Cached answer for one name and one address family.
+#[derive(Debug)]
+pub enum DnsCachedAnswer<A> {
+    /// The server returned these addresses.
+    Positive(Vec<A>),
+    /// NXDOMAIN, or NODATA for this family (RFC 2308 Sections 2.1 and 2.2).
+    Negative,
+}
+
+#[derive(Debug)]
+struct DnsCacheEntry<A> {
+    answer: DnsCachedAnswer<A>,
+    expires_at_tick: u64,
+}
+
+/// TTL-bounded cache of decoded DNS address answers.
+///
+/// Admission evicts expired entries first and then the entry closest to
+/// expiry, so the cache never exceeds [`DnsCache::MAX_ENTRIES`].
+pub struct DnsCache<A> {
+    entries: BTreeMap<DnsCacheKey, DnsCacheEntry<A>>,
     tick_rate: u64,
 }
 
-impl DnsCache {
-    /// デフォルトの最大エントリ数
-    pub const DEFAULT_MAX_ENTRIES: usize = 256;
+impl<A: Copy> DnsCache<A> {
+    /// Maximum number of cached names per address family.
+    pub const MAX_ENTRIES: usize = 256;
 
-    /// 新しいDNSキャッシュを作成
     pub const fn new(tick_rate: u64) -> Self {
         Self {
             entries: BTreeMap::new(),
-            max_entries: Self::DEFAULT_MAX_ENTRIES,
             tick_rate,
         }
     }
 
-    /// キャッシュを検索
-    pub fn lookup(&self, name: &DnsNameOwned, current_tick: u64) -> Option<&DnsCacheEntry> {
+    /// Returns the live answer for `key`, if any.
+    pub fn lookup(&self, key: &DnsCacheKey, current_tick: u64) -> Option<&DnsCachedAnswer<A>> {
         self.entries
-            .get(name)
-            .filter(|entry| !entry.is_expired(current_tick, self.tick_rate))
+            .get(key)
+            .filter(|entry| entry.expires_at_tick > current_tick)
+            .map(|entry| &entry.answer)
     }
 
-    pub fn lookup_view(
-        &self,
-        payload: &PacketPayload,
-        name: &DnsNameView,
-        current_tick: u64,
-    ) -> Option<&DnsCacheEntry> {
-        self.entries.iter().find_map(|(key, entry)| {
-            (compare_dns_name_view_to_owned(payload, name, key) == CmpOrdering::Equal
-                && !entry.is_expired(current_tick, self.tick_rate))
-            .then_some(entry)
-        })
-    }
-
-    /// キャッシュにエントリを追加
+    /// Stores `answer` for `ttl_secs`. A zero TTL is not cached (RFC 1035
+    /// Section 3.2.1).
     pub fn insert(
         &mut self,
-        name: DnsNameOwned,
-        response: PacketPayload,
-        records: Vec<DnsRecordMeta>,
+        key: DnsCacheKey,
+        answer: DnsCachedAnswer<A>,
+        ttl_secs: u32,
         current_tick: u64,
     ) {
-        // 最小TTLを計算
-        let min_ttl = records.iter().map(|r| r.ttl).min().unwrap_or(300); // デフォルト5分
-
-        // テーブルが満杯の場合、古いエントリを削除
-        if self.entries.len() >= self.max_entries {
+        if ttl_secs == 0 {
+            self.entries.remove(&key);
+            return;
+        }
+        let expires_at_tick =
+            current_tick.saturating_add(u64::from(ttl_secs).saturating_mul(self.tick_rate));
+        if !self.entries.contains_key(&key) && self.entries.len() >= Self::MAX_ENTRIES {
             self.cleanup(current_tick);
-
-            // それでも満杯の場合は、DoS攻撃を防ぐために最も古いエントリを強制削除
-            if self.entries.len() >= self.max_entries {
-                let mut dropped_oldest = false;
-                let old_entries = core::mem::take(&mut self.entries);
-                let oldest_tick = old_entries.values().map(|entry| entry.cached_at).min();
-                for (entry_key, entry_value) in old_entries {
-                    if !dropped_oldest && Some(entry_value.cached_at) == oldest_tick {
-                        dropped_oldest = true;
-                        continue;
-                    }
-                    self.entries.insert(entry_key, entry_value);
+            if self.entries.len() >= Self::MAX_ENTRIES {
+                let soonest = self
+                    .entries
+                    .iter()
+                    .min_by_key(|(_, entry)| entry.expires_at_tick)
+                    .map(|(key, _)| key.clone());
+                if let Some(soonest) = soonest {
+                    self.entries.remove(&soonest);
                 }
             }
         }
-
         self.entries.insert(
-            name,
+            key,
             DnsCacheEntry {
-                response: Some(response),
-                records,
-                cached_at: current_tick,
-                min_ttl,
-                negative: false,
-                rcode: None,
+                answer,
+                expires_at_tick,
             },
         );
     }
 
-    /// ネガティブキャッシュを追加
-    pub fn insert_negative(
-        &mut self,
-        name: DnsNameOwned,
-        rcode: DnsResponseCode,
-        current_tick: u64,
-        ttl_secs: u32,
-    ) {
-        self.entries.insert(
-            name,
-            DnsCacheEntry {
-                response: None,
-                records: Vec::new(),
-                cached_at: current_tick,
-                min_ttl: ttl_secs,
-                negative: true,
-                rcode: Some(rcode),
-            },
-        );
-    }
-
-    /// 期限切れエントリをクリーンアップ
+    /// Removes expired entries.
     pub fn cleanup(&mut self, current_tick: u64) {
         self.entries
-            .retain(|_, entry| !entry.is_expired(current_tick, self.tick_rate));
+            .retain(|_, entry| entry.expires_at_tick > current_tick);
     }
 
-    /// エントリを削除
-    pub fn remove(&mut self, name: &DnsNameOwned) {
-        self.entries.remove(name);
-    }
-
-    /// キャッシュをクリア
-    pub fn clear(&mut self) {
-        self.entries.clear();
+    pub fn len(&self) -> usize {
+        self.entries.len()
     }
 }
 
@@ -700,8 +597,10 @@ pub struct DnsClient {
     ipv4_servers: PoisonLock<Vec<Ipv4Address>>,
     /// IPv6 DNSサーバーアドレス
     ipv6_servers: PoisonLock<Vec<Ipv6Address>>,
-    /// DNSキャッシュ
-    cache: PoisonLock<DnsCache>,
+    /// A レコードキャッシュ
+    ipv4_cache: PoisonLock<DnsCache<Ipv4Address>>,
+    /// AAAA レコードキャッシュ
+    ipv6_cache: PoisonLock<DnsCache<Ipv6Address>>,
     /// 統計情報
     stats: DnsStats,
     /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)

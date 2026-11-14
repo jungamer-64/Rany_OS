@@ -72,26 +72,6 @@ impl DnsClient {
         Ok(())
     }
 
-    /// DNSクエリパケットを packet-backed payload として構築
-    pub fn build_query_payload(
-        &self,
-        name: &str,
-        qtype: DnsQueryType,
-    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let name = DnsNameOwned::parse_ascii(name).map_err(|_| "Invalid DNS name")?;
-        self.build_query_payload_for_name(&name, qtype)
-    }
-
-    pub fn build_query_payload_for_name(
-        &self,
-        name: &DnsNameOwned,
-        qtype: DnsQueryType,
-    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let id = self.next_query_id()?;
-        self.register_pending_query_id(id);
-        self.build_query_payload_for_name_with_id(name, qtype, id)
-    }
-
     pub fn build_query_payload_for_name_with_id(
         &self,
         name: &DnsNameOwned,
@@ -145,26 +125,6 @@ impl DnsClient {
         writer.finish().ok_or("Incomplete DNS query")
     }
 
-    /// Build a DNS query for TCP transport as a packet-backed payload.
-    pub fn build_tcp_query_payload(
-        &self,
-        name: &str,
-        qtype: DnsQueryType,
-    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let name = DnsNameOwned::parse_ascii(name).map_err(|_| "Invalid DNS name")?;
-        self.build_tcp_query_payload_for_name(&name, qtype)
-    }
-
-    pub fn build_tcp_query_payload_for_name(
-        &self,
-        name: &DnsNameOwned,
-        qtype: DnsQueryType,
-    ) -> Result<kernel_api::resource::net::PacketPayload, &'static str> {
-        let id = self.next_query_id()?;
-        self.register_pending_query_id(id);
-        self.build_tcp_query_payload_for_name_with_id(name, qtype, id)
-    }
-
     pub fn build_tcp_query_payload_for_name_with_id(
         &self,
         name: &DnsNameOwned,
@@ -182,11 +142,6 @@ impl DnsClient {
             .ok_or("Incomplete DNS TCP prefix")?
             .try_append(message)
             .map_err(|_| "DNS TCP payload allocation failed")
-    }
-
-    /// Check if a DNS query should be retried based on attempt count and elapsed time
-    pub fn should_retry(&self, attempt: u8, elapsed_ms: u64) -> bool {
-        attempt < DNS_MAX_RETRIES && elapsed_ms >= DNS_RETRY_TIMEOUT_MS
     }
 
     pub(super) fn cleanup_stale_pending_ids(&self, now_tick: u64) {

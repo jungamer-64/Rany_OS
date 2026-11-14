@@ -1324,6 +1324,109 @@ impl NetNamespace {
         }
     }
 
+    /// 設定済み DNS サーバー一覧
+    pub async fn dns_servers() -> ExoValue<'static> {
+        let Some(client) =
+            crate::net::services::dns::shared_client_in(crate::net::runtime::default_runtime())
+        else {
+            return ExoValue::Error(String::from("DNS client not initialized"));
+        };
+        let mut values = Vec::new();
+        for server in client.ipv4_servers_snapshot() {
+            let o = server.octets();
+            values.push(ExoValue::String(Cow::Owned(format!(
+                "{}.{}.{}.{}",
+                o[0], o[1], o[2], o[3]
+            ))));
+        }
+        for server in client.ipv6_servers_snapshot() {
+            values.push(ExoValue::String(Cow::Owned(Self::format_ipv6(
+                server.octets(),
+            ))));
+        }
+        ExoValue::Array(values)
+    }
+
+    /// DNS サーバーを追加する（CAP_NET_ADMIN）
+    pub async fn dns_add_server(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.dns_add_server") {
+            return e;
+        }
+        let Some(arg) = args.first() else {
+            return ExoValue::Error(String::from("usage: net.dns_add_server(ip)"));
+        };
+        let runtime = crate::net::runtime::default_runtime();
+        if crate::net::services::dns::shared_client_in(runtime).is_none() {
+            return ExoValue::Error(String::from("DNS client not initialized"));
+        }
+        if let Ok(octets) = Self::parse_ipv4_arg(arg) {
+            crate::net::services::dns::add_ipv4_server_in(
+                runtime,
+                crate::net::l3::ipv4::Ipv4Address::new(octets),
+            );
+            return ExoValue::Bool(true);
+        }
+        match Self::parse_ipv6_arg(arg) {
+            Ok(octets) => {
+                crate::net::services::dns::add_ipv6_server_in(
+                    runtime,
+                    crate::net::l3::ipv6::Ipv6Address::new(octets),
+                );
+                ExoValue::Bool(true)
+            }
+            Err(e) => ExoValue::Error(e),
+        }
+    }
+
+    /// DNS クライアント統計
+    pub async fn dns_stats() -> ExoValue<'static> {
+        use core::sync::atomic::Ordering;
+        let Some(client) =
+            crate::net::services::dns::shared_client_in(crate::net::runtime::default_runtime())
+        else {
+            return ExoValue::Error(String::from("DNS client not initialized"));
+        };
+        let stats = client.stats();
+        let (cached_v4, cached_v6) = client.cache_len();
+        let mut map = BTreeMap::new();
+        for (key, value) in [
+            ("queries_sent", stats.queries_sent.load(Ordering::Relaxed)),
+            (
+                "responses_received",
+                stats.responses_received.load(Ordering::Relaxed),
+            ),
+            ("cache_hits", stats.cache_hits.load(Ordering::Relaxed)),
+            ("cache_misses", stats.cache_misses.load(Ordering::Relaxed)),
+            ("errors", stats.errors.load(Ordering::Relaxed)),
+        ] {
+            map.insert(String::from(key), ExoValue::Int(value as i64));
+        }
+        map.insert(String::from("cached_a"), ExoValue::Int(cached_v4 as i64));
+        map.insert(String::from("cached_aaaa"), ExoValue::Int(cached_v6 as i64));
+        ExoValue::Map(map)
+    }
+
+    /// SNTP で wall clock を同期する（CAP_NET_ADMIN）
+    pub async fn ntp_sync(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.ntp_sync") {
+            return e;
+        }
+        let server = match args.first().map(Self::parse_ipv4_arg) {
+            Some(Ok(octets)) => crate::net::l3::ipv4::Ipv4Address::new(octets),
+            Some(Err(e)) => return ExoValue::Error(e),
+            None => return ExoValue::Error(String::from("usage: net.ntp_sync(server_ip)")),
+        };
+        match crate::net::services::ntp::sync_time_in(
+            crate::net::runtime::default_runtime(),
+            server,
+        )
+        .await
+        {
+            Ok(unix_time) => ExoValue::Int(unix_time as i64),
+            Err(e) => ExoValue::Error(format!("NTP sync failed: {:?}", e)),
+        }
+    }
+
     // ================================================================
     // ヘルパー
     // ================================================================
@@ -1524,6 +1627,11 @@ impl ShellNamespace for NetNamespace {
                 "dns_srv" => Self::dns_resolve_srv(_args).await,
                 "dns_ptr" => Self::dns_reverse_ipv4(_args).await,
                 "dns_ptr6" => Self::dns_reverse_ipv6(_args).await,
+                "dns_servers" => Self::dns_servers().await,
+                "dns_add_server" => Self::dns_add_server(_args).await,
+                "dns_stats" => Self::dns_stats().await,
+                // 時刻同期
+                "ntp_sync" => Self::ntp_sync(_args).await,
                 // 診断
                 "snapshot" => Self::snapshot().await,
                 "events" => Self::events(_args).await,
@@ -1536,7 +1644,8 @@ impl ShellNamespace for NetNamespace {
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \
-                     snapshot, events,\n  \
+                     dns_servers, dns_add_server, dns_stats,\n  \
+                     ntp_sync, snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
                 )),
