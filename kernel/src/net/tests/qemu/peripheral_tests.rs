@@ -205,7 +205,19 @@ pub async fn dhcp_v4_offer_probe_and_decline_flow_smoke() -> bool {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-    if client.process_response(&buf, 100).is_err() {
+    let Some(mut writer) = crate::net::payload::GeneratedPacketWriter::new(
+        buf.len(),
+        kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+    ) else {
+        return false;
+    };
+    let Some(response) = writer
+        .write_generated_bytes(&buf)
+        .and_then(|()| writer.finish())
+    else {
+        return false;
+    };
+    if client.process_response_payload(response, 100).is_err() {
         return false;
     }
     let _ = client.check_timeout(102, 1).await;

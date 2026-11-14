@@ -239,6 +239,10 @@ pub(crate) enum ControlCommand {
         if_id: NetIfId,
         config: crate::net::services::dhcp::DhcpV6AppliedConfig,
     },
+    /// The DHCPv4 lease of `if_id` ended; its address configuration is withdrawn.
+    DhcpLeaseCleared {
+        if_id: NetIfId,
+    },
     GetPrimaryInterfaceConfig {
         reply: CommandReplyTicket<Option<crate::net::api::config::InterfaceConfigSnapshot>>,
     },

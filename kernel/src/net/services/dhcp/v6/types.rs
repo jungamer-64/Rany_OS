@@ -19,13 +19,10 @@ pub enum DhcpV6MessageType {
     Solicit = 1,
     Advertise = 2,
     Request = 3,
-    Confirm = 4,
     Renew = 5,
     Rebind = 6,
     Reply = 7,
     Release = 8,
-    Decline = 9,
-    InformationRequest = 11,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -42,14 +39,15 @@ pub struct DhcpV6Lease {
 pub struct DhcpV6AppliedConfig {
     pub addr: Ipv6Address,
     pub dns_servers: Vec<Ipv6Address>,
-    pub domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+    /// Domain Search List option (RFC 3646 Section 4).
+    pub domain_search: Vec<crate::net::services::dns::DnsNormalizedName>,
 }
 
 impl DhcpV6AppliedConfig {
     pub fn new(
         addr: Ipv6Address,
         dns_servers: Vec<Ipv6Address>,
-        domain_search: Vec<crate::net::services::dns::DnsNameOwned>,
+        domain_search: Vec<crate::net::services::dns::DnsNormalizedName>,
     ) -> Self {
         Self {
             addr,

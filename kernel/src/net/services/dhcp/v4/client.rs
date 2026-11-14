@@ -3,14 +3,13 @@
 // ============================================================================
 
 use super::{
-    DHCP_CLIENT_PORT, DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DhcpClient, DhcpHeader, DhcpLease,
-    DhcpMessageType, DhcpOperation, DhcpOption, DhcpResponseResult, DhcpState, ParsedOptions,
+    DHCP_MAGIC_COOKIE, DHCP_MAX_MESSAGE_SIZE, DhcpClient, DhcpHeader, DhcpLease, DhcpMessageType,
+    DhcpOperation, DhcpOption, DhcpState, ParsedOptions,
 };
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::runtime::manager::NetIfId;
 use crate::sync::PoisonLock;
-use crate::task::{self, TimeoutResult};
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
@@ -41,85 +40,6 @@ impl DhcpClient {
             state_time: AtomicU64::new(0),
             retry_count: AtomicU32::new(0),
         }
-    }
-
-    /// DHCPクライアントのメインループ（非同期）
-    ///
-    /// 指定されたポートでUDPソケットをバインドし、DHCP状態機械を駆動します。
-    pub async fn run(&self) -> Result<(), &'static str> {
-        // DHCPクライアントポート(68)でバインド
-        let socket = crate::net::l4::udp::UdpEndpoint::bind_in(
-            self.runtime,
-            crate::net::types::InterfaceScope::Pinned(self.if_id),
-            DHCP_CLIENT_PORT,
-            None,
-        )
-        .map_err(|_| "Failed to bind DHCP socket")?;
-
-        log::info!("[NET] DHCPv4 client task started");
-
-        // LOOP_PROOF: mode=event; reason=Each DHCP state-machine step awaits a packet or its one-second timeout, and transport or timer failures terminate the client.;
-        loop {
-            let now = crate::task::current_tick();
-
-            // 状態機械を駆動（タイムアウトチェックと必要に応じたパケット送信）
-            self.drive(now, 1000).await?;
-
-            // パケット受信を待機。再送タイマーを考慮して1秒でタイムアウト。
-            match task::with_timeout(socket.recv(), 1000).await {
-                TimeoutResult::Completed(Some((_if_id, _src, _ttl, packet))) => {
-                    let now = crate::task::current_tick();
-                    let response = self.process_response_payload(packet, now);
-                    match response {
-                        Ok(DhcpResponseResult::Ack(result)) => {
-                            let crate::net::services::dhcp::DhcpAckResult { lease, applied } =
-                                result;
-                            log::info!("[NET] DHCPv4 ACK received: {:?}", lease.ip_address);
-                            // リースをイベントキュー経由でスタックに適用（デッドロック回避）
-                            let _ = crate::net::runtime::command::try_enqueue_command_in(
-                                self.runtime,
-                                crate::net::runtime::command::RuntimeCommand::Control(
-                                    crate::net::runtime::command::ControlCommand::DhcpApplyLease {
-                                        if_id: self.if_id,
-                                        config: applied,
-                                    },
-                                ),
-                            );
-                            crate::net::services::mdns::set_local_ip_in(
-                                self.runtime,
-                                lease.ip_address,
-                            );
-                        }
-                        Ok(DhcpResponseResult::Offer(lease)) => {
-                            log::info!(
-                                "[NET] DHCPv4 OFFER received: {:?} from {:?}",
-                                lease.ip_address,
-                                lease.server_ip
-                            );
-                        }
-                        Ok(DhcpResponseResult::Nak) => {
-                            log::warn!("[NET] DHCPv4 NAK received");
-                        }
-                        Err(e) => {
-                            log::warn!("[NET] DHCPv4 response error: {}", e);
-                        }
-                    }
-                }
-                TimeoutResult::TimerFailed(cause) => {
-                    log::error!("DHCPv4 receive timer failed: {cause}");
-                    return Err("DHCPv4 receive timer unavailable");
-                }
-                TimeoutResult::TimedOut => {
-                    // タイムアウトした場合はループの先頭に戻り、drive() で再送チェックが行われる
-                }
-                TimeoutResult::Completed(None) => {
-                    log::warn!("[NET] DHCPv4 socket closed unexpectedly");
-                    break;
-                }
-            }
-        }
-
-        Ok(())
     }
 
     /// 現在の状態を取得
@@ -249,28 +169,6 @@ impl DhcpClient {
         } else {
             Some(Ipv4Address::from_u32(v))
         }
-    }
-
-    pub fn matches_response(&self, data: &[u8]) -> bool {
-        if data.len() < DhcpHeader::SIZE + 4 {
-            return false;
-        }
-        let Some(header) = DhcpHeader::decode_from(data) else {
-            return false;
-        };
-        if header.op != DhcpOperation::Reply as u8 {
-            return false;
-        }
-        if header.xid() != self.xid.load(Ordering::SeqCst) {
-            return false;
-        }
-        if header.hlen < 6 {
-            return false;
-        }
-        if header.chaddr[0..6] != *self.mac_address.as_bytes() {
-            return false;
-        }
-        data[DhcpHeader::SIZE..DhcpHeader::SIZE + 4] == DHCP_MAGIC_COOKIE
     }
 
     pub fn matches_response_payload(
@@ -624,28 +522,6 @@ impl DhcpClient {
         Ok(offset)
     }
 
-    // ── Helper: parse a 4-byte IPv4 address from an option value ──
-    pub(super) fn parse_ipv4_option(opt_data: &[u8]) -> Option<Ipv4Address> {
-        if opt_data.len() >= 4 {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&opt_data[..4]);
-            Some(Ipv4Address::new(bytes))
-        } else {
-            None
-        }
-    }
-
-    // ── Helper: parse a 4-byte big-endian u32 from an option value ──
-    pub(super) fn parse_u32_option(opt_data: &[u8]) -> Option<u32> {
-        if opt_data.len() >= 4 {
-            let mut bytes = [0u8; 4];
-            bytes.copy_from_slice(&opt_data[..4]);
-            Some(u32::from_be_bytes(bytes))
-        } else {
-            None
-        }
-    }
-
     pub(super) fn parse_ipv4_option_ref(
         opt_data: crate::net::payload::PayloadSpanRef<'_>,
     ) -> Option<Ipv4Address> {
@@ -664,52 +540,6 @@ impl DhcpClient {
         }
         let bytes = opt_data.read_array::<4>(0)?;
         Some(u32::from_be_bytes(bytes))
-    }
-
-    /// ヘッダを検証し、参照を返す
-    pub(super) fn validate_header<'a>(
-        &self,
-        data: &'a [u8],
-    ) -> Result<&'a DhcpHeader, &'static str> {
-        if data.len() < DhcpHeader::SIZE + 4 {
-            return Err("Packet too small");
-        }
-
-        let header =
-            crate::util::get_ref::<DhcpHeader>(data, 0).ok_or("Dhcp header slice out of bounds")?;
-
-        if header.xid() != self.xid.load(Ordering::SeqCst) {
-            return Err("Transaction ID mismatch");
-        }
-
-        if header.op != DhcpOperation::Reply as u8 {
-            return Err("Not a DHCP reply");
-        }
-
-        let hlen = header.hlen as usize;
-        if hlen < 6 {
-            log::warn!("[NET] DHCP header hlen ({}) too small - rejecting", hlen);
-            return Err("Invalid hardware address length in DHCP header");
-        }
-        {
-            let mut mac_bytes = [0u8; 6];
-            mac_bytes.copy_from_slice(&header.chaddr[0..6]);
-            if mac_bytes != *self.mac_address.as_bytes() {
-                log::warn!(
-                    "[NET] DHCP CHADDR does not match client MAC - rejecting (chaddr={:?} expected={:?})",
-                    &header.chaddr[0..6],
-                    self.mac_address.as_bytes()
-                );
-                return Err("CHADDR does not match client MAC");
-            }
-        }
-
-        let options_start = DhcpHeader::SIZE;
-        if data[options_start..options_start + 4] != DHCP_MAGIC_COOKIE {
-            return Err("Invalid magic cookie");
-        }
-
-        Ok(header)
     }
 
     pub(super) fn validate_header_payload(
@@ -755,6 +585,21 @@ impl DhcpClient {
         Ok(header)
     }
 
+    /// Domain Name option text; a trailing NUL some servers append is ignored.
+    fn parse_domain_name_option(
+        opt_data: crate::net::payload::PayloadSpanRef<'_>,
+    ) -> Option<crate::net::services::dns::DnsNormalizedName> {
+        let mut text = alloc::string::String::new();
+        text.try_reserve_exact(opt_data.total_len()).ok()?;
+        for index in 0..opt_data.total_len() {
+            match opt_data.byte_at(index)? {
+                0 if index + 1 == opt_data.total_len() => {}
+                byte => text.push(char::from(byte)),
+            }
+        }
+        crate::net::services::dns::DnsNormalizedName::parse_ascii(&text)
+    }
+
     pub(super) fn apply_option_span_ref(
         opts: &mut ParsedOptions,
         opt: u8,
@@ -791,92 +636,9 @@ impl DhcpClient {
             58 => opts.renewal_time = Self::parse_u32_option_ref(opt_data),
             59 => opts.rebinding_time = Self::parse_u32_option_ref(opt_data),
             54 => opts.server_id = Self::parse_ipv4_option_ref(opt_data),
-            12 => opts.hostname = Some(opt_data.range()),
-            15 => opts.domain_name = Some(opt_data.range()),
+            15 => opts.domain_name = Self::parse_domain_name_option(opt_data),
             _ => {}
         }
-    }
-
-    /// オプション領域を解析して ParsedOptions を返す
-    pub(super) fn parse_options(data: &[u8]) -> ParsedOptions {
-        let mut opts = ParsedOptions {
-            message_type: None,
-            subnet_mask: None,
-            router: None,
-            dns_servers: Vec::new(),
-            lease_time: 86400u32, // デフォルト1日
-            renewal_time: None,
-            rebinding_time: None,
-            server_id: None,
-            metadata_payload: None,
-            hostname: None,
-            domain_name: None,
-        };
-
-        let mut offset = DhcpHeader::SIZE + 4;
-        // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-        while offset < data.len() {
-            let opt = data[offset];
-
-            if opt == DhcpOption::Pad as u8 {
-                offset += 1;
-                continue;
-            }
-
-            if opt == DhcpOption::End as u8 {
-                break;
-            }
-
-            if offset + 1 >= data.len() {
-                break;
-            }
-
-            let len = data[offset + 1] as usize;
-            if offset + 2 + len > data.len() {
-                log::warn!(
-                    "[NET] DHCP option length {} at offset {} overruns packet (len {}) - stopping parse",
-                    len,
-                    offset,
-                    data.len()
-                );
-                break;
-            }
-
-            let opt_data = &data[offset + 2..offset + 2 + len];
-            match opt {
-                53 => {
-                    if let Some(value) = opt_data.first() {
-                        opts.message_type = DhcpMessageType::from_u8(*value);
-                    }
-                }
-                1 => opts.subnet_mask = Self::parse_ipv4_option(opt_data),
-                3 => opts.router = Self::parse_ipv4_option(opt_data),
-                6 => {
-                    for chunk in opt_data
-                        .chunks_exact(4)
-                        .take(8usize.saturating_sub(opts.dns_servers.len()))
-                    {
-                        let mut bytes = [0u8; 4];
-                        bytes.copy_from_slice(chunk);
-                        opts.dns_servers.push(Ipv4Address::new(bytes));
-                    }
-                }
-                51 => {
-                    if let Some(value) = Self::parse_u32_option(opt_data) {
-                        opts.lease_time = value;
-                    }
-                }
-                58 => opts.renewal_time = Self::parse_u32_option(opt_data),
-                59 => opts.rebinding_time = Self::parse_u32_option(opt_data),
-                54 => opts.server_id = Self::parse_ipv4_option(opt_data),
-                12 => {}
-                15 => {}
-                _ => {}
-            }
-            offset += 2 + len;
-        }
-
-        opts
     }
 
     pub(super) fn parse_options_payload(
@@ -892,8 +654,6 @@ impl DhcpClient {
             renewal_time: None,
             rebinding_time: None,
             server_id: None,
-            metadata_payload: None,
-            hostname: None,
             domain_name: None,
         };
 
@@ -941,8 +701,6 @@ impl DhcpClient {
             Self::apply_option_span_ref(&mut opts, opt, opt_data);
             offset += 2 + len;
         }
-
-        opts.metadata_payload = Some(payload);
 
         opts
     }

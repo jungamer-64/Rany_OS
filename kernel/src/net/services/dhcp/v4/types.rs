@@ -4,12 +4,10 @@
 
 use crate::net::l2::ethernet::MacAddress;
 use crate::net::l3::ipv4::Ipv4Address;
-use crate::net::payload::{PayloadRange, PayloadSpanRef};
 use crate::net::runtime::NetRuntimeHandle;
 use crate::sync::PoisonLock;
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicU32, AtomicU64};
-use kernel_api::resource::net::PacketPayload;
 
 pub const DHCP_CLIENT_PORT: u16 = 68;
 pub const DHCP_SERVER_PORT: u16 = 67;
@@ -95,46 +93,6 @@ pub struct DhcpHeader {
 impl DhcpHeader {
     pub const SIZE: usize = 236;
 
-    pub fn encode_into(&self, dst: &mut [u8]) -> Result<(), &'static str> {
-        if dst.len() < Self::SIZE {
-            return Err("Buffer too small");
-        }
-
-        let mut off = 0usize;
-        dst[off] = self.op;
-        off += 1;
-        dst[off] = self.htype;
-        off += 1;
-        dst[off] = self.hlen;
-        off += 1;
-        dst[off] = self.hops;
-        off += 1;
-
-        dst[off..off + 4].copy_from_slice(&self.xid);
-        off += 4;
-        dst[off..off + 2].copy_from_slice(&self.secs);
-        off += 2;
-        dst[off..off + 2].copy_from_slice(&self.flags);
-        off += 2;
-        dst[off..off + 4].copy_from_slice(&self.ciaddr);
-        off += 4;
-        dst[off..off + 4].copy_from_slice(&self.yiaddr);
-        off += 4;
-        dst[off..off + 4].copy_from_slice(&self.siaddr);
-        off += 4;
-        dst[off..off + 4].copy_from_slice(&self.giaddr);
-        off += 4;
-        dst[off..off + 16].copy_from_slice(&self.chaddr);
-        off += 16;
-        dst[off..off + 64].copy_from_slice(&self.sname);
-        off += 64;
-        dst[off..off + 128].copy_from_slice(&self.file);
-        off += 128;
-
-        debug_assert_eq!(off, Self::SIZE);
-        Ok(())
-    }
-
     pub fn decode_from(src: &[u8]) -> Option<Self> {
         if src.len() < Self::SIZE {
             return None;
@@ -202,18 +160,6 @@ impl DhcpHeader {
         u32::from_be_bytes(self.xid)
     }
 
-    pub fn secs(&self) -> u16 {
-        u16::from_be_bytes(self.secs)
-    }
-
-    pub fn flags(&self) -> u16 {
-        u16::from_be_bytes(self.flags)
-    }
-
-    pub fn ciaddr(&self) -> Ipv4Address {
-        Ipv4Address::new(self.ciaddr)
-    }
-
     pub fn yiaddr(&self) -> Ipv4Address {
         Ipv4Address::new(self.yiaddr)
     }
@@ -232,9 +178,8 @@ pub struct DhcpV4AppliedConfig {
     pub subnet_mask: Ipv4Address,
     pub gateway: Option<Ipv4Address>,
     pub dns_servers: Vec<Ipv4Address>,
-    pub metadata_payload: Option<PacketPayload>,
-    pub hostname: Option<PayloadRange>,
-    pub domain_name: Option<PayloadRange>,
+    /// Domain Name option (RFC 2132 Section 3.17), used as the DNS search domain.
+    pub domain_name: Option<crate::net::services::dns::DnsNormalizedName>,
 }
 
 impl DhcpV4AppliedConfig {
@@ -243,35 +188,15 @@ impl DhcpV4AppliedConfig {
         subnet_mask: Ipv4Address,
         gateway: Option<Ipv4Address>,
         dns_servers: Vec<Ipv4Address>,
-        metadata_payload: Option<PacketPayload>,
-        hostname: Option<PayloadRange>,
-        domain_name: Option<PayloadRange>,
+        domain_name: Option<crate::net::services::dns::DnsNormalizedName>,
     ) -> Self {
         Self {
             ip_address,
             subnet_mask,
             gateway,
             dns_servers,
-            metadata_payload,
-            hostname,
             domain_name,
         }
-    }
-
-    pub fn hostname_span(&self) -> Option<PayloadSpanRef<'_>> {
-        self.hostname.and_then(|range| {
-            self.metadata_payload
-                .as_ref()
-                .and_then(|payload| range.span(payload))
-        })
-    }
-
-    pub fn domain_name_span(&self) -> Option<PayloadSpanRef<'_>> {
-        self.domain_name.and_then(|range| {
-            self.metadata_payload
-                .as_ref()
-                .and_then(|payload| range.span(payload))
-        })
     }
 }
 
@@ -352,7 +277,5 @@ pub(super) struct ParsedOptions {
     pub(super) renewal_time: Option<u32>,
     pub(super) rebinding_time: Option<u32>,
     pub(super) server_id: Option<Ipv4Address>,
-    pub(super) metadata_payload: Option<PacketPayload>,
-    pub(super) hostname: Option<PayloadRange>,
-    pub(super) domain_name: Option<PayloadRange>,
+    pub(super) domain_name: Option<crate::net::services::dns::DnsNormalizedName>,
 }

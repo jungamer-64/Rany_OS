@@ -35,9 +35,7 @@ impl RuntimeCommandHandler {
                     subnet_mask,
                     gateway,
                     dns_servers,
-                    metadata_payload: _,
-                    hostname: _,
-                    domain_name: _,
+                    domain_name,
                 } = config;
                 let lease = crate::net::services::dhcp::DhcpLease {
                     ip_address,
@@ -56,6 +54,9 @@ impl RuntimeCommandHandler {
                         // DNSサーバーを更新
                         if !dns_servers.is_empty() {
                             crate::net::services::dns::set_ipv4_servers_in(runtime, &dns_servers);
+                        }
+                        if let Some(domain) = domain_name {
+                            crate::net::services::dns::set_search_domains_in(runtime, &[domain]);
                         }
 
                         crate::net::services::mdns::set_local_ip_in(runtime, lease.ip_address);
@@ -80,7 +81,7 @@ impl RuntimeCommandHandler {
                 let crate::net::services::dhcp::DhcpV6AppliedConfig {
                     addr: ipv6_addr,
                     dns_servers,
-                    domain_search: _,
+                    domain_search,
                 } = config;
                 stack.apply_ipv6_global_address_on(if_id, ipv6_addr);
 
@@ -92,6 +93,9 @@ impl RuntimeCommandHandler {
                     if !dns_servers.is_empty() {
                         crate::net::services::dns::set_ipv6_servers_in(runtime, &dns_servers);
                     }
+                    if !domain_search.is_empty() {
+                        crate::net::services::dns::set_search_domains_in(runtime, &domain_search);
+                    }
                 }
 
                 log::info!(
@@ -99,6 +103,13 @@ impl RuntimeCommandHandler {
                     if_id.0,
                     ipv6_addr
                 );
+                EventHandleResult::Success
+            }
+            RuntimeCommand::Control(
+                crate::net::runtime::command::ControlCommand::DhcpLeaseCleared { if_id },
+            ) => {
+                stack.clear_dhcp_v4_lease_for_interface(if_id);
+                log::info!("[NET] DHCP lease cleared: if{}", if_id.0);
                 EventHandleResult::Success
             }
             RuntimeCommand::Control(

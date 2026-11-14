@@ -9,6 +9,10 @@ use crate::net::l3::ipv4::Ipv4Address;
 use alloc::vec::Vec;
 use core::sync::atomic::Ordering;
 
+fn response_payload(bytes: &[u8]) -> kernel_api::resource::net::PacketPayload {
+    super::state_machine::dhcpv4_generated_payload(bytes).expect("DHCP test payload")
+}
+
 fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
     let mut i = if opts_with_cookie.starts_with(&DHCP_MAGIC_COOKIE) {
         4
@@ -35,43 +39,6 @@ fn dhcp_options_contain(opts_with_cookie: &[u8], target: DhcpOption) -> bool {
         i = i.saturating_add(2 + len);
     }
     false
-}
-
-#[cfg(test)]
-#[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-#[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-pub fn test_dhcp_header_encode_into_serializes_network_order_bytes() {
-    let header = DhcpHeader {
-        op: DhcpOperation::Request as u8,
-        htype: 1,
-        hlen: 6,
-        hops: 0,
-        xid: 0x1122_3344u32.to_be_bytes(),
-        secs: 0x5566u16.to_be_bytes(),
-        flags: 0x7788u16.to_be_bytes(),
-        ciaddr: [1, 2, 3, 4],
-        yiaddr: [5, 6, 7, 8],
-        siaddr: [9, 10, 11, 12],
-        giaddr: [13, 14, 15, 16],
-        chaddr: [0xAA; 16],
-        sname: [0xBB; 64],
-        file: [0xCC; 128],
-    };
-
-    let mut buf = [0u8; DhcpHeader::SIZE];
-    header
-        .encode_into(&mut buf)
-        .expect("encode_into should succeed");
-
-    assert_eq!(buf.len(), DhcpHeader::SIZE);
-    assert_eq!(&buf[0..4], &[DhcpOperation::Request as u8, 1, 6, 0]);
-    assert_eq!(&buf[4..8], &0x1122_3344u32.to_be_bytes());
-    assert_eq!(&buf[8..10], &0x5566u16.to_be_bytes());
-    assert_eq!(&buf[10..12], &0x7788u16.to_be_bytes());
-    assert_eq!(&buf[12..16], &[1, 2, 3, 4]);
-    assert_eq!(&buf[28..44], &[0xAA; 16]);
-    assert_eq!(&buf[44..108], &[0xBB; 64]);
-    assert_eq!(&buf[108..236], &[0xCC; 128]);
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -219,7 +186,11 @@ pub fn test_process_response_chaddr_mismatch() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-    assert!(client.process_response(&buf, 100).is_err());
+    assert!(
+        client
+            .process_response_payload(response_payload(&buf), 100)
+            .is_err()
+    );
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -253,7 +224,11 @@ pub fn test_process_response_offer_missing_serverid_returns_err() {
     // No Server Identifier option
     buf[offset] = DhcpOption::End as u8;
 
-    assert!(client.process_response(&buf, 200).is_err());
+    assert!(
+        client
+            .process_response_payload(response_payload(&buf), 200)
+            .is_err()
+    );
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -312,7 +287,11 @@ pub fn test_process_response_ack_requesting_mismatch() {
     offset += 6;
     buf[offset] = DhcpOption::End as u8;
 
-    assert!(client.process_response(&buf, 400).is_err());
+    assert!(
+        client
+            .process_response_payload(response_payload(&buf), 400)
+            .is_err()
+    );
 }
 
 #[cfg(feature = "qemu-test-export")]
@@ -371,7 +350,7 @@ pub fn test_process_response_ack_renewal_success() {
     buf[offset] = DhcpOption::End as u8;
 
     let res = client
-        .process_response(&buf, 500)
+        .process_response_payload(response_payload(&buf), 500)
         .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(l) => {
@@ -554,7 +533,7 @@ pub async fn test_parse_t1_t2_and_timeout_transitions() {
     buf[offset] = DhcpOption::End as u8;
 
     let res = client
-        .process_response(&buf, 0)
+        .process_response_payload(response_payload(&buf), 0)
         .expect("ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(lease) => {
@@ -662,7 +641,7 @@ async fn assert_offer_probe_and_decline_flow() {
 
     // Process offer (should send ARP probe and set probe timestamp)
     let _ = client
-        .process_response(&buf, 100)
+        .process_response_payload(response_payload(&buf), 100)
         .expect("Offer should be processed");
     assert!(client.offered_lease.lock().unwrap().is_some());
     assert!(client.offered_probe_at.load(Ordering::SeqCst) != 0);
@@ -866,7 +845,7 @@ fn assert_process_response_ack_informing_accepts_zero_yiaddr() {
     buf[offset] = DhcpOption::End as u8;
 
     let res = client
-        .process_response(&buf, 999)
+        .process_response_payload(response_payload(&buf), 999)
         .expect("INFORM ACK should be accepted");
     match res {
         DhcpResponseResult::Ack(updated) => {

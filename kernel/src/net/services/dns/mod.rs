@@ -409,15 +409,39 @@ pub enum DnsRecordData {
     Raw,
 }
 
-/// Case-normalized DNS name used as a cache key.
+/// Validated, ASCII-lowercased DNS name without a trailing dot.
 ///
-/// The key owns plain bytes instead of a packet-backed name so that cached
-/// entries never pin packet pool slots.
+/// It owns plain bytes instead of a packet-backed name so that long-lived
+/// holders (the answer cache, the search list) never pin packet pool slots.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-pub struct DnsCacheKey(String);
+pub struct DnsNormalizedName(String);
 
-impl DnsCacheKey {
-    /// Builds the key from a validated name, lowercasing ASCII labels.
+impl DnsNormalizedName {
+    /// Validates `text` with the same label rules as [`DnsNameOwned`].
+    pub fn parse_ascii(text: &str) -> Option<Self> {
+        let trimmed = text.strip_suffix('.').unwrap_or(text);
+        if trimmed.is_empty() || trimmed.len() > 253 {
+            return None;
+        }
+        let valid = trimmed.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label.bytes().all(|byte| byte.is_ascii_graphic())
+        });
+        if !valid {
+            return None;
+        }
+        let mut name = String::new();
+        name.try_reserve_exact(trimmed.len()).ok()?;
+        name.extend(trimmed.chars().map(|ch| ch.to_ascii_lowercase()));
+        Some(Self(name))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+
+    /// Builds the normalized form of a validated packet-backed name.
     pub fn from_name(name: &DnsNameOwned) -> Option<Self> {
         let mut key = String::new();
         key.try_reserve_exact(name.text_len()).ok()?;
@@ -454,7 +478,7 @@ struct DnsCacheEntry<A> {
 /// Admission evicts expired entries first and then the entry closest to
 /// expiry, so the cache never exceeds [`DnsCache::MAX_ENTRIES`].
 pub struct DnsCache<A> {
-    entries: BTreeMap<DnsCacheKey, DnsCacheEntry<A>>,
+    entries: BTreeMap<DnsNormalizedName, DnsCacheEntry<A>>,
     tick_rate: u64,
 }
 
@@ -470,7 +494,11 @@ impl<A: Copy> DnsCache<A> {
     }
 
     /// Returns the live answer for `key`, if any.
-    pub fn lookup(&self, key: &DnsCacheKey, current_tick: u64) -> Option<&DnsCachedAnswer<A>> {
+    pub fn lookup(
+        &self,
+        key: &DnsNormalizedName,
+        current_tick: u64,
+    ) -> Option<&DnsCachedAnswer<A>> {
         self.entries
             .get(key)
             .filter(|entry| entry.expires_at_tick > current_tick)
@@ -481,7 +509,7 @@ impl<A: Copy> DnsCache<A> {
     /// Section 3.2.1).
     pub fn insert(
         &mut self,
-        key: DnsCacheKey,
+        key: DnsNormalizedName,
         answer: DnsCachedAnswer<A>,
         ttl_secs: u32,
         current_tick: u64,
@@ -601,6 +629,8 @@ pub struct DnsClient {
     ipv4_cache: PoisonLock<DnsCache<Ipv4Address>>,
     /// AAAA レコードキャッシュ
     ipv6_cache: PoisonLock<DnsCache<Ipv6Address>>,
+    /// 単一ラベル名に付加する検索ドメイン (RFC 1536 Section 6)
+    search_domains: PoisonLock<Vec<DnsNormalizedName>>,
     /// 統計情報
     stats: DnsStats,
     /// 保留中クエリのトランザクションIDセット (Security: RFC 5452 - キャッシュポイズニング防止)
@@ -620,6 +650,8 @@ pub enum DnsServerAddr {
 const DNS_MAX_ANSWER_COUNT: usize = 256;
 /// サーバー設定の最大件数
 pub const DNS_MAX_SERVERS: usize = 3;
+/// 検索ドメインの最大件数
+pub const DNS_MAX_SEARCH_DOMAINS: usize = 6;
 /// CNAME チェーン追跡の上限
 pub const DNS_MAX_CNAME_DEPTH: usize = 8;
 /// ネガティブキャッシュTTL（秒）

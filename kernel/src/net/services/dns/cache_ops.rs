@@ -42,7 +42,7 @@ enum CacheLookup<A> {
 
 fn lookup_cached<A: Copy>(
     cache: &PoisonLock<DnsCache<A>>,
-    key: &DnsCacheKey,
+    key: &DnsNormalizedName,
     current_tick: u64,
 ) -> CacheLookup<A> {
     let Ok(cache) = cache.lock() else {
@@ -131,7 +131,7 @@ fn chain_addresses<A>(
 /// reached none, and returns the first address.
 fn admit_answer<A: Copy>(
     cache: &PoisonLock<DnsCache<A>>,
-    key: DnsCacheKey,
+    key: DnsNormalizedName,
     query: &DnsNameOwned,
     qtype: DnsQueryType,
     response: &DnsResponseView,
@@ -161,7 +161,7 @@ impl DnsClient {
     ) -> Option<A> {
         let current_tick = crate::task::current_tick();
         let name = DnsNameOwned::parse_ascii(name_text).ok()?;
-        let key = DnsCacheKey::from_name(&name)?;
+        let key = DnsNormalizedName::from_name(&name)?;
         match lookup_cached(cache, &key, current_tick) {
             CacheLookup::Hit(address) => {
                 self.stats.cache_hits.fetch_add(1, Ordering::Relaxed);
@@ -189,8 +189,31 @@ impl DnsClient {
         )
     }
 
+    /// Resolves a single-label `name` under each search domain in order,
+    /// then `name` as given (RFC 1536 Section 6 limits the search list to
+    /// single-label names).
+    async fn resolve_searched<A: Copy>(
+        &self,
+        name: &str,
+        qtype: DnsQueryType,
+        cache: &PoisonLock<DnsCache<A>>,
+        select: impl Fn(&DnsRecordData) -> Option<A> + Copy,
+    ) -> Option<A> {
+        let trimmed = name.strip_suffix('.').unwrap_or(name);
+        if !trimmed.is_empty() && !name.ends_with('.') && !trimmed.contains('.') {
+            for domain in self.search_domains_snapshot() {
+                let candidate = alloc::format!("{}.{}", trimmed, domain.as_str());
+                if let Some(address) = self.resolve_address(&candidate, qtype, cache, select).await
+                {
+                    return Some(address);
+                }
+            }
+        }
+        self.resolve_address(name, qtype, cache, select).await
+    }
+
     pub async fn resolve_ipv4(&self, name: &str) -> Option<Ipv4Address> {
-        self.resolve_address(name, DnsQueryType::A, &self.ipv4_cache, |data| match data {
+        self.resolve_searched(name, DnsQueryType::A, &self.ipv4_cache, |data| match data {
             DnsRecordData::A(addr) => Some(*addr),
             _ => None,
         })
@@ -198,7 +221,7 @@ impl DnsClient {
     }
 
     pub async fn resolve_ipv6(&self, name: &str) -> Option<Ipv6Address> {
-        self.resolve_address(
+        self.resolve_searched(
             name,
             DnsQueryType::AAAA,
             &self.ipv6_cache,
@@ -405,6 +428,29 @@ impl DnsClient {
         }
     }
 
+    /// 検索ドメインを置き換える
+    pub fn set_search_domains(&self, domains: &[DnsNormalizedName]) {
+        match self.search_domains.lock() {
+            Ok(mut guard) => {
+                guard.clear();
+                guard.extend(domains.iter().take(DNS_MAX_SEARCH_DOMAINS).cloned());
+            }
+            Err(_) => log::error!(
+                "[NET] DNS search domain lock poisoned (set_search_domains) - operation skipped"
+            ),
+        }
+    }
+
+    pub(crate) fn search_domains_snapshot(&self) -> Vec<DnsNormalizedName> {
+        match self.search_domains.lock() {
+            Ok(domains) => domains.clone(),
+            Err(_) => {
+                log::error!("[NET] DNS search domain lock poisoned - no search domains applied");
+                Vec::new()
+            }
+        }
+    }
+
     pub(crate) fn ipv4_servers_snapshot(&self) -> Vec<Ipv4Address> {
         match self.ipv4_servers.lock() {
             Ok(servers) => servers.iter().take(DNS_MAX_SERVERS).copied().collect(),
@@ -435,7 +481,7 @@ impl DnsClient {
         if rcode != DnsResponseCode::NameError {
             return;
         }
-        let Some(key) = DnsCacheKey::from_name(name) else {
+        let Some(key) = DnsNormalizedName::from_name(name) else {
             return;
         };
         if let Ok(mut cache) = self.ipv4_cache.lock() {

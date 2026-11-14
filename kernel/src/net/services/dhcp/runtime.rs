@@ -167,17 +167,6 @@ pub(crate) fn interface_v4_client_in(
     interface_runtime_in(runtime, if_id).map(|runtime| &runtime.v4)
 }
 
-pub(crate) fn lease_for_interface_in(
-    runtime: NetRuntimeHandle,
-    if_id: NetIfId,
-) -> Option<super::DhcpLease> {
-    interface_v4_client_in(runtime, if_id).and_then(|client| client.lease())
-}
-
-pub(crate) fn has_bound_lease_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
-    lease_for_interface_in(runtime, if_id).is_some()
-}
-
 pub(crate) fn release_interface_in(runtime: NetRuntimeHandle, if_id: NetIfId) -> bool {
     let Some(interface_runtime) = interface_runtime_in(runtime, if_id) else {
         return false;
@@ -489,8 +478,4 @@ async fn dhcp_v6_dispatcher_task(runtime: NetRuntimeHandle) {
             }
         }
     }
-}
-
-pub fn update_runtime_mac(_mac_address: MacAddress) {
-    // TODO: Support dynamic MAC address update for all interface clients
 }

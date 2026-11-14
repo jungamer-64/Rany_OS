@@ -35,7 +35,7 @@ fn send_dhcpv4_packet_on(
     )
 }
 
-fn dhcpv4_generated_payload(bytes: &[u8]) -> Result<PacketPayload, &'static str> {
+pub(super) fn dhcpv4_generated_payload(bytes: &[u8]) -> Result<PacketPayload, &'static str> {
     let mut writer = GeneratedPacketWriter::new(bytes.len(), DEFAULT_PACKET_HEADROOM)
         .ok_or("Failed to allocate DHCPv4 payload")?;
     writer
@@ -116,45 +116,6 @@ impl DhcpClient {
         DhcpResponseResult::Nak
     }
 
-    /// DHCP応答を処理
-    pub fn process_response(
-        &self,
-        data: &[u8],
-        current_tick: u64,
-    ) -> Result<DhcpResponseResult, &'static str> {
-        let header = self.validate_header(data)?;
-        let opts = Self::parse_options(data);
-        let msg_type = opts.message_type.ok_or("No message type in response")?;
-        let current_state = self.state();
-
-        if matches!(msg_type, DhcpMessageType::Offer | DhcpMessageType::Ack) {
-            let sid = opts.server_id.ok_or("No server identifier in response")?;
-            self.validate_offer_ack(msg_type, header, sid)?;
-        }
-
-        match msg_type {
-            DhcpMessageType::Offer => {
-                let lease = Self::build_lease(header, &opts, current_tick);
-                Ok(self.apply_offer(lease, current_tick))
-            }
-            DhcpMessageType::Ack => {
-                let lease = self.build_ack_lease(current_state, header, &opts, current_tick)?;
-                let applied = crate::net::services::dhcp::DhcpV4AppliedConfig::new(
-                    lease.ip_address,
-                    lease.subnet_mask,
-                    lease.gateway,
-                    opts.dns_servers,
-                    opts.metadata_payload,
-                    opts.hostname,
-                    opts.domain_name,
-                );
-                Ok(self.apply_ack(lease, applied, current_tick))
-            }
-            DhcpMessageType::Nak => Ok(self.apply_nak()),
-            _ => Err("Unexpected message type"),
-        }
-    }
-
     pub fn process_response_payload(
         &self,
         payload: kernel_api::resource::net::PacketPayload,
@@ -182,8 +143,6 @@ impl DhcpClient {
                     lease.subnet_mask,
                     lease.gateway,
                     opts.dns_servers,
-                    opts.metadata_payload,
-                    opts.hostname,
                     opts.domain_name,
                 );
                 Ok(self.apply_ack(lease, applied, current_tick))
@@ -396,21 +355,8 @@ impl DhcpClient {
     /// リースを指定インターフェース上で解放
     fn release_bound(&self) -> bool {
         let released = self.send_release_packet();
-
-        match self.state.lock() {
-            Ok(mut g) => *g = DhcpState::Init,
-            Err(_) => log::error!("[NET] DHCP State lock poisoned (release) - state not updated"),
-        }
-        match self.lease.lock() {
-            Ok(mut g) => *g = None,
-            Err(_) => log::error!("[NET] DHCP Lease lock poisoned (release) - skipping clear"),
-        }
-        match self.offered_lease.lock() {
-            Ok(mut g) => *g = None,
-            Err(_) => log::error!("[NET] DHCP Offer lock poisoned (release) - skipping clear"),
-        }
-        // Reset probe timestamp
-        self.offered_probe_at.store(0, Ordering::SeqCst);
+        self.transition_state(DhcpState::Init);
+        self.clear_all_leases();
         released
     }
 
@@ -613,11 +559,31 @@ impl DhcpClient {
         }
     }
 
-    // --- check_timeout helper: clear all lease state ---
+    /// Drops the bound and offered leases and withdraws a bound address from
+    /// the interface (RFC 2131 Section 4.4.5).
     pub(super) fn clear_all_leases(&self) {
-        match self.lease.lock() {
-            Ok(mut g) => *g = None,
-            Err(_) => log::error!("[NET] DHCP Lease lock poisoned - cannot clear lease"),
+        let had_lease = match self.lease.lock() {
+            Ok(mut g) => g.take().is_some(),
+            Err(_) => {
+                log::error!("[NET] DHCP Lease lock poisoned - cannot clear lease");
+                false
+            }
+        };
+        if had_lease
+            && crate::net::runtime::command::try_enqueue_command_in(
+                self.runtime,
+                crate::net::runtime::command::RuntimeCommand::Control(
+                    crate::net::runtime::command::ControlCommand::DhcpLeaseCleared {
+                        if_id: self.if_id,
+                    },
+                ),
+            )
+            .is_err()
+        {
+            log::warn!(
+                "[NET] DHCP: if{} address withdrawal could not be queued",
+                self.if_id.0
+            );
         }
         match self.offered_lease.lock() {
             Ok(mut g) => *g = None,
@@ -833,7 +799,28 @@ impl DhcpClient {
     }
 
     // --- check_timeout helper: handle Rebinding state ---
-    pub(super) fn handle_rebinding_timeout(&self, elapsed_secs: u64) -> bool {
+    pub(super) fn handle_rebinding_timeout(
+        &self,
+        current_tick: u64,
+        tick_rate: u64,
+        elapsed_secs: u64,
+    ) -> bool {
+        // RFC 2131 Section 4.4.5: once the lease expires the address must not be used.
+        let expired = match self.lease.lock() {
+            Ok(guard) => guard
+                .as_ref()
+                .is_some_and(|lease| lease.is_expired(current_tick, tick_rate)),
+            Err(_) => false,
+        };
+        if expired {
+            log::warn!("[NET] DHCP lease expired while rebinding, restarting discovery");
+            self.transition_state(DhcpState::Init);
+            self.state_time.store(current_tick, Ordering::SeqCst);
+            self.retry_count.store(0, Ordering::SeqCst);
+            self.clear_all_leases();
+            return true;
+        }
+
         // RFC 2131: Retransmit rebind requests with exponential backoff.
         // If retried too many times, give up and start over.
         let retry = self.retry_count.load(Ordering::SeqCst);
@@ -891,7 +878,9 @@ impl DhcpClient {
             DhcpState::Renewing => {
                 self.handle_renewing_timeout(current_tick, tick_rate, elapsed_secs)
             }
-            DhcpState::Rebinding => self.handle_rebinding_timeout(elapsed_secs),
+            DhcpState::Rebinding => {
+                self.handle_rebinding_timeout(current_tick, tick_rate, elapsed_secs)
+            }
             _ => false,
         }
     }

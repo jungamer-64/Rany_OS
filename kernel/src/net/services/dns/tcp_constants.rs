@@ -48,6 +48,23 @@ pub fn set_ipv6_servers_in(
     }
 }
 
+/// 検索ドメインを設定
+pub fn set_search_domains_in(
+    runtime: crate::net::runtime::NetRuntimeHandle,
+    domains: &[DnsNormalizedName],
+) {
+    match super::shared_client_lock_in(runtime).lock() {
+        Ok(g) => {
+            if let Some(client) = g.as_ref() {
+                client.set_search_domains(domains);
+            }
+        }
+        Err(_) => {
+            log::error!("[NET] DNS Global lock poisoned (set_search_domains) - operation skipped")
+        }
+    }
+}
+
 /// IPv6 DNSサーバーを追加
 pub fn add_ipv6_server_in(runtime: crate::net::runtime::NetRuntimeHandle, server: Ipv6Address) {
     match super::shared_client_lock_in(runtime).lock() {
