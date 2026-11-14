@@ -14,14 +14,17 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use exorust_sync::IrqPoisonLock;
-use hal::port_io::PortU8;
+use hal::{IoPort, IoPortRange};
 
 // ============================================================================
 // RTC Constants
 // ============================================================================
 
-const CMOS_ADDRESS: u16 = 0x70;
-const CMOS_DATA: u16 = 0x71;
+/// CMOS index/data pair: the index port is offset 0 and the data port offset 1
+/// of the allocation (`0x70..=0x71` on PC-compatible platforms).
+const CMOS_PORT_COUNT: u16 = 2;
+const CMOS_INDEX: u16 = 0;
+const CMOS_DATA: u16 = 1;
 
 pub mod regs {
     pub const SECONDS: u8 = 0x00;
@@ -156,38 +159,46 @@ const fn is_leap_year(year: u16) -> bool {
 // RTC Driver
 // ============================================================================
 
+/// Failure while taking ownership of the CMOS port allocation.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RtcError {
+    /// The allocation does not contain exactly the CMOS index and data ports.
+    InvalidPortRange,
+}
+
+/// CMOS RTC owning its index/data port allocation.
+///
+/// Every register access is an index-then-data transaction, so operations that
+/// touch the device require `&mut self` to keep transactions exclusive.
 pub struct Rtc {
+    ports: IoPortRange,
     binary_mode: bool,
     hour_24: bool,
     century_register: Option<u8>,
     periodic_rate: u32,
 }
 
-impl Default for Rtc {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
 impl Rtc {
-    unsafe fn read_cmos(reg: u8) -> u8 {
-        let address = (reg & 0x7F) | 0x80;
-        let mut port_address = PortU8::new(CMOS_ADDRESS);
-        let mut port_data = PortU8::new(CMOS_DATA);
-        port_address.write(address);
-        port_data.read()
+    fn port_at(&self, offset: u16) -> IoPort<'_, u8> {
+        self.ports
+            .port(offset)
+            .expect("CMOS port offsets are contained in the two-port allocation")
     }
 
-    unsafe fn write_cmos(reg: u8, value: u8) {
+    fn read_cmos(&mut self, reg: u8) -> u8 {
         let address = (reg & 0x7F) | 0x80;
-        let mut port_address = PortU8::new(CMOS_ADDRESS);
-        let mut port_data = PortU8::new(CMOS_DATA);
-        port_address.write(address);
-        port_data.write(value);
+        self.port_at(CMOS_INDEX).write(address);
+        self.port_at(CMOS_DATA).read()
     }
 
-    unsafe fn is_update_in_progress() -> bool {
-        unsafe { (Self::read_cmos(regs::STATUS_A) & status_a::UPDATE_IN_PROGRESS) != 0 }
+    fn write_cmos(&mut self, reg: u8, value: u8) {
+        let address = (reg & 0x7F) | 0x80;
+        self.port_at(CMOS_INDEX).write(address);
+        self.port_at(CMOS_DATA).write(value);
+    }
+
+    fn is_update_in_progress(&mut self) -> bool {
+        (self.read_cmos(regs::STATUS_A) & status_a::UPDATE_IN_PROGRESS) != 0
     }
     const fn bcd_to_binary(bcd: u8) -> u8 {
         (bcd & 0x0F) + ((bcd >> 4) * 10)
@@ -196,167 +207,170 @@ impl Rtc {
         ((bin / 10) << 4) | (bin % 10)
     }
 
-    #[must_use]
-    pub fn new() -> Self {
-        let status_b = unsafe { Self::read_cmos(regs::STATUS_B) };
-        let status_a = unsafe { Self::read_cmos(regs::STATUS_A) };
+    /// Takes ownership of the CMOS index/data ports and samples the current
+    /// register format.
+    ///
+    /// # Errors
+    ///
+    /// Returns [`RtcError::InvalidPortRange`] unless the allocation contains
+    /// exactly the two CMOS ports. No port I/O occurs on failure.
+    pub fn new(ports: IoPortRange) -> Result<Self, RtcError> {
+        if ports.len() != CMOS_PORT_COUNT {
+            return Err(RtcError::InvalidPortRange);
+        }
+        let mut rtc = Self {
+            ports,
+            binary_mode: false,
+            hour_24: false,
+            century_register: None,
+            periodic_rate: 0,
+        };
+        let status_b = rtc.read_cmos(regs::STATUS_B);
+        let status_a = rtc.read_cmos(regs::STATUS_A);
         let rate_sel = status_a & status_a::RATE_MASK;
         let periodic_rate = if (3..=15).contains(&rate_sel) {
             32768 >> (rate_sel - 1)
         } else {
             0
         };
-        Self {
-            binary_mode: (status_b & status_b::BINARY_MODE) != 0,
-            hour_24: (status_b & status_b::HOUR_24) != 0,
-            century_register: None,
-            periodic_rate,
-        }
+        rtc.binary_mode = (status_b & status_b::BINARY_MODE) != 0;
+        rtc.hour_24 = (status_b & status_b::HOUR_24) != 0;
+        rtc.periodic_rate = periodic_rate;
+        Ok(rtc)
     }
 
     pub fn set_century_register(&mut self, reg: u8) {
         self.century_register = Some(reg);
     }
 
-    pub fn read_datetime(&self) -> DateTime {
-        unsafe {
-            // LOOP_PROOF: mode=condition; reason=Each observation rereads the RTC update flag and proceeds when hardware finishes its update cycle.;
-            while Self::is_update_in_progress() {}
-            let second = Self::read_cmos(regs::SECONDS);
-            let minute = Self::read_cmos(regs::MINUTES);
-            let hour = Self::read_cmos(regs::HOURS);
-            let day = Self::read_cmos(regs::DAY_OF_MONTH);
-            let month = Self::read_cmos(regs::MONTH);
-            let year = Self::read_cmos(regs::YEAR);
-            let day_of_week = Self::read_cmos(regs::DAY_OF_WEEK);
-            let century = if let Some(reg) = self.century_register {
-                Self::read_cmos(reg)
+    pub fn read_datetime(&mut self) -> DateTime {
+        // LOOP_PROOF: mode=condition; reason=Each observation rereads the RTC update flag and proceeds when hardware finishes its update cycle.;
+        while self.is_update_in_progress() {}
+        let second = self.read_cmos(regs::SECONDS);
+        let minute = self.read_cmos(regs::MINUTES);
+        let hour = self.read_cmos(regs::HOURS);
+        let day = self.read_cmos(regs::DAY_OF_MONTH);
+        let month = self.read_cmos(regs::MONTH);
+        let year = self.read_cmos(regs::YEAR);
+        let day_of_week = self.read_cmos(regs::DAY_OF_WEEK);
+        let century = if let Some(reg) = self.century_register {
+            self.read_cmos(reg)
+        } else {
+            0x20
+        };
+        let (second, minute, hour, day, month, year, century) = if !self.binary_mode {
+            (
+                Self::bcd_to_binary(second),
+                Self::bcd_to_binary(minute),
+                {
+                    let pm = (hour & 0x80) != 0;
+                    let h = Self::bcd_to_binary(hour & 0x7F);
+                    if !self.hour_24 && pm {
+                        (h % 12) + 12
+                    } else {
+                        h
+                    }
+                },
+                Self::bcd_to_binary(day),
+                Self::bcd_to_binary(month),
+                Self::bcd_to_binary(year),
+                Self::bcd_to_binary(century),
+            )
+        } else {
+            let pm = (hour & 0x80) != 0;
+            let h = hour & 0x7F;
+            let adjusted_hour = if !self.hour_24 && pm {
+                (h % 12) + 12
             } else {
-                0x20
+                h
             };
-            let (second, minute, hour, day, month, year, century) = if !self.binary_mode {
-                (
-                    Self::bcd_to_binary(second),
-                    Self::bcd_to_binary(minute),
-                    {
-                        let pm = (hour & 0x80) != 0;
-                        let h = Self::bcd_to_binary(hour & 0x7F);
-                        if !self.hour_24 && pm {
-                            (h % 12) + 12
-                        } else {
-                            h
-                        }
-                    },
-                    Self::bcd_to_binary(day),
-                    Self::bcd_to_binary(month),
-                    Self::bcd_to_binary(year),
-                    Self::bcd_to_binary(century),
-                )
-            } else {
-                let pm = (hour & 0x80) != 0;
-                let h = hour & 0x7F;
-                let adjusted_hour = if !self.hour_24 && pm {
-                    (h % 12) + 12
-                } else {
-                    h
-                };
-                (second, minute, adjusted_hour, day, month, year, century)
-            };
-            let full_year = century as u16 * 100 + year as u16;
-            DateTime {
-                year: full_year,
-                month,
-                day,
-                hour,
-                minute,
-                second,
-                day_of_week,
-            }
+            (second, minute, adjusted_hour, day, month, year, century)
+        };
+        let full_year = century as u16 * 100 + year as u16;
+        DateTime {
+            year: full_year,
+            month,
+            day,
+            hour,
+            minute,
+            second,
+            day_of_week,
         }
     }
 
-    pub fn write_datetime(&self, dt: &DateTime) {
-        unsafe {
-            let status_b = Self::read_cmos(regs::STATUS_B);
-            Self::write_cmos(regs::STATUS_B, status_b | status_b::SET);
-            let (second, minute, hour, day, month, year, century) = if !self.binary_mode {
-                (
-                    Self::binary_to_bcd(dt.second),
-                    Self::binary_to_bcd(dt.minute),
-                    Self::binary_to_bcd(dt.hour),
-                    Self::binary_to_bcd(dt.day),
-                    Self::binary_to_bcd(dt.month),
-                    Self::binary_to_bcd((dt.year % 100) as u8),
-                    Self::binary_to_bcd((dt.year / 100) as u8),
-                )
-            } else {
-                (
-                    dt.second,
-                    dt.minute,
-                    dt.hour,
-                    dt.day,
-                    dt.month,
-                    (dt.year % 100) as u8,
-                    (dt.year / 100) as u8,
-                )
-            };
-            Self::write_cmos(regs::SECONDS, second);
-            Self::write_cmos(regs::MINUTES, minute);
-            Self::write_cmos(regs::HOURS, hour);
-            Self::write_cmos(regs::DAY_OF_MONTH, day);
-            Self::write_cmos(regs::MONTH, month);
-            Self::write_cmos(regs::YEAR, year);
-            Self::write_cmos(regs::DAY_OF_WEEK, dt.day_of_week);
-            if let Some(reg) = self.century_register {
-                Self::write_cmos(reg, century);
-            }
-            Self::write_cmos(regs::STATUS_B, status_b);
+    pub fn write_datetime(&mut self, dt: &DateTime) {
+        let status_b = self.read_cmos(regs::STATUS_B);
+        self.write_cmos(regs::STATUS_B, status_b | status_b::SET);
+        let (second, minute, hour, day, month, year, century) = if !self.binary_mode {
+            (
+                Self::binary_to_bcd(dt.second),
+                Self::binary_to_bcd(dt.minute),
+                Self::binary_to_bcd(dt.hour),
+                Self::binary_to_bcd(dt.day),
+                Self::binary_to_bcd(dt.month),
+                Self::binary_to_bcd((dt.year % 100) as u8),
+                Self::binary_to_bcd((dt.year / 100) as u8),
+            )
+        } else {
+            (
+                dt.second,
+                dt.minute,
+                dt.hour,
+                dt.day,
+                dt.month,
+                (dt.year % 100) as u8,
+                (dt.year / 100) as u8,
+            )
+        };
+        self.write_cmos(regs::SECONDS, second);
+        self.write_cmos(regs::MINUTES, minute);
+        self.write_cmos(regs::HOURS, hour);
+        self.write_cmos(regs::DAY_OF_MONTH, day);
+        self.write_cmos(regs::MONTH, month);
+        self.write_cmos(regs::YEAR, year);
+        self.write_cmos(regs::DAY_OF_WEEK, dt.day_of_week);
+        if let Some(reg) = self.century_register {
+            self.write_cmos(reg, century);
         }
+        self.write_cmos(regs::STATUS_B, status_b);
     }
 
-    pub fn set_alarm(&self, hour: u8, minute: u8, second: u8) {
-        unsafe {
-            let (h, m, s) = if !self.binary_mode {
-                (
-                    Self::binary_to_bcd(hour),
-                    Self::binary_to_bcd(minute),
-                    Self::binary_to_bcd(second),
-                )
-            } else {
-                (hour, minute, second)
-            };
-            Self::write_cmos(regs::HOURS_ALARM, h);
-            Self::write_cmos(regs::MINUTES_ALARM, m);
-            Self::write_cmos(regs::SECONDS_ALARM, s);
-            let status_b = Self::read_cmos(regs::STATUS_B);
-            Self::write_cmos(regs::STATUS_B, status_b | status_b::ALARM_INT);
-        }
+    pub fn set_alarm(&mut self, hour: u8, minute: u8, second: u8) {
+        let (h, m, s) = if !self.binary_mode {
+            (
+                Self::binary_to_bcd(hour),
+                Self::binary_to_bcd(minute),
+                Self::binary_to_bcd(second),
+            )
+        } else {
+            (hour, minute, second)
+        };
+        self.write_cmos(regs::HOURS_ALARM, h);
+        self.write_cmos(regs::MINUTES_ALARM, m);
+        self.write_cmos(regs::SECONDS_ALARM, s);
+        let status_b = self.read_cmos(regs::STATUS_B);
+        self.write_cmos(regs::STATUS_B, status_b | status_b::ALARM_INT);
     }
 
     pub fn set_periodic_interrupt(&mut self, rate: u8) {
         let rate = rate.clamp(3, 15);
-        unsafe {
-            let status_a = Self::read_cmos(regs::STATUS_A);
-            Self::write_cmos(regs::STATUS_A, (status_a & !status_a::RATE_MASK) | rate);
-            let status_b = Self::read_cmos(regs::STATUS_B);
-            Self::write_cmos(regs::STATUS_B, status_b | status_b::PERIODIC_INT);
-        }
+        let status_a = self.read_cmos(regs::STATUS_A);
+        self.write_cmos(regs::STATUS_A, (status_a & !status_a::RATE_MASK) | rate);
+        let status_b = self.read_cmos(regs::STATUS_B);
+        self.write_cmos(regs::STATUS_B, status_b | status_b::PERIODIC_INT);
         self.periodic_rate = 32768 >> (rate - 1);
     }
 
-    pub fn disable_interrupts(&self) {
-        unsafe {
-            let status_b = Self::read_cmos(regs::STATUS_B);
-            Self::write_cmos(
-                regs::STATUS_B,
-                status_b
-                    & !(status_b::PERIODIC_INT | status_b::ALARM_INT | status_b::UPDATE_ENDED_INT),
-            );
-        }
+    pub fn disable_interrupts(&mut self) {
+        let status_b = self.read_cmos(regs::STATUS_B);
+        self.write_cmos(
+            regs::STATUS_B,
+            status_b & !(status_b::PERIODIC_INT | status_b::ALARM_INT | status_b::UPDATE_ENDED_INT),
+        );
     }
 
-    pub fn read_interrupt_status(&self) -> InterruptStatus {
-        let status_c = unsafe { Self::read_cmos(regs::STATUS_C) };
+    pub fn read_interrupt_status(&mut self) -> InterruptStatus {
+        let status_c = self.read_cmos(regs::STATUS_C);
         InterruptStatus {
             update_ended: (status_c & 0x10) != 0,
             alarm: (status_c & 0x20) != 0,
@@ -408,11 +422,9 @@ impl Rtc {
         Ok(())
     }
 
-    pub fn enable_update_interrupt(&self) {
-        unsafe {
-            let status_b = Self::read_cmos(regs::STATUS_B);
-            Self::write_cmos(regs::STATUS_B, status_b | status_b::UPDATE_ENDED_INT);
-        }
+    pub fn enable_update_interrupt(&mut self) {
+        let status_b = self.read_cmos(regs::STATUS_B);
+        self.write_cmos(regs::STATUS_B, status_b | status_b::UPDATE_ENDED_INT);
     }
 }
 
@@ -434,25 +446,33 @@ static BOOT_TIMESTAMP: AtomicU64 = AtomicU64::new(0);
 static TICKS: AtomicU64 = AtomicU64::new(0);
 static ALARM_TRIGGERED: AtomicBool = AtomicBool::new(false);
 
-pub fn init() {
-    let rtc = Rtc::new();
+/// Installs the system RTC from its CMOS port allocation and records the boot
+/// timestamp.
+///
+/// # Errors
+///
+/// Returns [`RtcError::InvalidPortRange`] unless `ports` contains exactly the
+/// two CMOS ports. No port I/O occurs on failure.
+pub fn init(ports: IoPortRange) -> Result<(), RtcError> {
+    let mut rtc = Rtc::new(ports)?;
     let datetime = rtc.read_datetime();
     let timestamp = datetime.to_unix_timestamp();
     if timestamp > 0 {
         BOOT_TIMESTAMP.store(timestamp as u64, Ordering::SeqCst);
     }
     *RTC.lock().unwrap_or_else(|e| e.into_inner()) = Some(rtc);
+    Ok(())
 }
 
 pub fn get_datetime() -> Option<DateTime> {
     RTC.lock()
         .unwrap_or_else(|e| e.into_inner())
-        .as_ref()
-        .map(|rtc| rtc.read_datetime())
+        .as_mut()
+        .map(Rtc::read_datetime)
 }
 
 pub fn set_datetime(dt: &DateTime) {
-    if let Some(ref rtc) = *RTC.lock().unwrap_or_else(|e| e.into_inner()) {
+    if let Some(ref mut rtc) = *RTC.lock().unwrap_or_else(|e| e.into_inner()) {
         rtc.write_datetime(dt);
     }
 }
@@ -486,7 +506,7 @@ pub fn check_and_clear_alarm() -> bool {
 }
 
 pub fn rtc_interrupt_handler() {
-    if let Some(ref rtc) = *RTC.lock().unwrap_or_else(|e| e.into_inner()) {
+    if let Some(ref mut rtc) = *RTC.lock().unwrap_or_else(|e| e.into_inner()) {
         let status = rtc.read_interrupt_status();
         if status.periodic {
             let ticks = TICKS.fetch_add(1, Ordering::Relaxed);
