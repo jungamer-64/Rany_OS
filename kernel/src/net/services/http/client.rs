@@ -135,7 +135,9 @@ async fn send_over_tls_transport(
 ) -> Result<Option<HttpInboundResponse>, HttpClientError> {
     let trust_anchors =
         TlsTrustAnchors::system_roots().map_err(|_| HttpClientError::TlsHandshakeFailed)?;
+    // RFC 7301: this client speaks only HTTP/1.1 over the protected stream.
     let tls_config = TlsClientConfig::for_server_name(host, trust_anchors)
+        .and_then(|config| config.with_alpn(&["http/1.1"]))
         .map_err(|_| HttpClientError::TlsHandshakeFailed)?;
     let (handshake, client_hello) =
         TlsHandshake::start(tls_config).map_err(|_| HttpClientError::TlsHandshakeFailed)?;
@@ -147,7 +149,13 @@ async fn send_over_tls_transport(
         .map_err(|_| HttpClientError::WriteError)?;
     send_payload(connection, encrypted_request).await?;
 
-    receive_tls_response(&mut tls, connection, parser).await
+    let response = receive_tls_response(&mut tls, connection, parser).await;
+    // RFC 8446 Section 6.1: announce the end of our writes before closing TCP.
+    // The response is already decided, so a failed alert only skips the notice.
+    if let Ok(close_notify) = tls.send_close_notify() {
+        let _ = send_payload(connection, close_notify).await;
+    }
+    response
 }
 
 fn finalize_response_after_eof(

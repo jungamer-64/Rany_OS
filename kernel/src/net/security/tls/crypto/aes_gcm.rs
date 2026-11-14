@@ -46,79 +46,6 @@ impl AesGcmKey {
         Some(AesGcmKey { schedule, h })
     }
 
-    /// Encrypt `plaintext` into `ciphertext_out` and produce `tag_out`.
-    /// `ciphertext_out` must be at least as long as `plaintext`.
-    pub fn encrypt_in_place(
-        &self,
-        nonce: &[u8],
-        aad: &[u8],
-        plaintext: &[u8],
-        ciphertext_out: &mut [u8],
-        tag_out: &mut [u8; 16],
-    ) -> Result<(), ()> {
-        if nonce.len() != 12 || ciphertext_out.len() < plaintext.len() {
-            return Err(());
-        }
-        // CTR encrypt
-        // SECURITY: data path での heap allocation を避ける。
-        ciphertext_out[..plaintext.len()].copy_from_slice(plaintext);
-        super::aes_core::aes_ctr_with_schedule_in_place(
-            &self.schedule,
-            nonce,
-            2,
-            &mut ciphertext_out[..plaintext.len()],
-        );
-
-        let s = ghash(&self.h, aad, &ciphertext_out[..plaintext.len()]);
-        let mut y0 = [0u8; 16];
-        y0[0..12].copy_from_slice(nonce);
-        y0[15] = 1;
-        let enc_y0 = aes_encrypt_block_with_schedule(&y0, &self.schedule);
-        for i in 0..16 {
-            tag_out[i] = s[i] ^ enc_y0[i];
-        }
-        Ok(())
-    }
-
-    /// Decrypt `ciphertext` into `plaintext_out` if `tag` matches.  Returns
-    /// `Ok(())` on success, `Err(())` if authentication failed or lengths are
-    /// incorrect.
-    pub fn decrypt_in_place(
-        &self,
-        nonce: &[u8],
-        aad: &[u8],
-        ciphertext: &[u8],
-        plaintext_out: &mut [u8],
-        tag: &[u8; 16],
-    ) -> Result<(), ()> {
-        if nonce.len() != 12 || plaintext_out.len() < ciphertext.len() {
-            return Err(());
-        }
-        let s = ghash(&self.h, aad, ciphertext);
-        let mut y0 = [0u8; 16];
-        y0[0..12].copy_from_slice(nonce);
-        y0[15] = 1;
-        let enc_y0 = aes_encrypt_block_with_schedule(&y0, &self.schedule);
-        let mut expected_tag = [0u8; 16];
-        for i in 0..16 {
-            expected_tag[i] = s[i] ^ enc_y0[i];
-        }
-        if !ct_eq_16(tag, &expected_tag) {
-            return Err(());
-        }
-
-        // perform decryption now that tag has been verified
-        // SECURITY: data path での heap allocation を避ける。
-        plaintext_out[..ciphertext.len()].copy_from_slice(ciphertext);
-        super::aes_core::aes_ctr_with_schedule_in_place(
-            &self.schedule,
-            nonce,
-            2,
-            &mut plaintext_out[..ciphertext.len()],
-        );
-        Ok(())
-    }
-
     pub(crate) fn xor_chunks_in_place(
         &self,
         nonce: &[u8],
@@ -188,47 +115,6 @@ impl AesGcmKey {
             self.tag_for_ciphertext_chunks(nonce, aad, ciphertext_len, for_each_chunk)?;
         ct_eq_16(tag, &expected).then_some(()).ok_or(())
     }
-}
-
-/// GCM GHASH演算
-fn ghash(h: &[u8; 16], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
-    let mut y = [0u8; 16];
-
-    // Process AAD
-    for chunk in aad.chunks(16) {
-        let mut block = [0u8; 16];
-        block[..chunk.len()].copy_from_slice(chunk);
-        for i in 0..16 {
-            y[i] ^= block[i];
-        }
-        y = gf128_mul(&y, h);
-    }
-
-    // Process ciphertext
-    for chunk in ciphertext.chunks(16) {
-        let mut block = [0u8; 16];
-        block[..chunk.len()].copy_from_slice(chunk);
-        for i in 0..16 {
-            y[i] ^= block[i];
-        }
-        y = gf128_mul(&y, h);
-    }
-
-    // Process length block
-    // SECURITY: length block の overflow を避けるため saturating / checked math を使う（RFC 5116）。
-    // NIST SP 800-38D: length of AAD and Ciphertext in bits.
-    let aad_bits = (aad.len() as u64).saturating_mul(8);
-    let ct_bits = (ciphertext.len() as u64).saturating_mul(8);
-    let mut len_block = [0u8; 16];
-    len_block[0..8].copy_from_slice(&aad_bits.to_be_bytes());
-    len_block[8..16].copy_from_slice(&ct_bits.to_be_bytes());
-
-    for i in 0..16 {
-        y[i] ^= len_block[i];
-    }
-    y = gf128_mul(&y, h);
-
-    y
 }
 
 fn ghash_feed(
@@ -333,28 +219,10 @@ pub(crate) fn gf128_mul(x: &[u8; 16], h: &[u8; 16]) -> [u8; 16] {
     z
 }
 
-/// AES-GCM convenience wrapper.  This allocates a temporary context on
-/// every call; use `AesGcmKey` directly for high‑volume cases to avoid
-/// recomputing the key schedule repeatedly.
-pub(crate) fn aes_gcm_encrypt_into(
-    key: &[u8],
-    nonce: &[u8],
-    aad: &[u8],
-    plaintext: &[u8],
-    ciphertext_out: &mut [u8],
-    tag_out: &mut [u8; 16],
-) -> Result<(), ()> {
-    if nonce.len() != 12 {
-        return Err(());
-    }
-
-    let ctx = AesGcmKey::new(key).ok_or(())?;
-    ctx.encrypt_in_place(nonce, aad, plaintext, ciphertext_out, tag_out)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{AesGcmKey, aes_gcm_decrypt_into, aes_gcm_encrypt_into, gf128_mul};
+    use super::super::test_support::{aes_gcm_decrypt_into, aes_gcm_encrypt_into};
+    use super::{AesGcmKey, gf128_mul};
 
     fn aes_gcm_encrypt_array<const N: usize>(
         key: &[u8],
@@ -526,21 +394,4 @@ mod tests {
         assert_eq!(&middle, &plaintext[13..30]);
         assert_eq!(&right, &plaintext[30..]);
     }
-}
-
-/// AES-GCM decryption convenience wrapper.  See `aes_gcm_encrypt`.
-pub(crate) fn aes_gcm_decrypt_into(
-    key: &[u8],
-    nonce: &[u8],
-    aad: &[u8],
-    ciphertext: &[u8],
-    plaintext_out: &mut [u8],
-    tag: &[u8; 16],
-) -> Result<(), ()> {
-    if nonce.len() != 12 {
-        return Err(());
-    }
-
-    let ctx = AesGcmKey::new(key).ok_or(())?;
-    ctx.decrypt_in_place(nonce, aad, ciphertext, plaintext_out, tag)
 }

@@ -198,31 +198,3 @@ pub(crate) fn aes_encrypt_block_with_schedule(
 
     state
 }
-
-/// AES-CTR with pre-expanded schedule (In-place, no allocation).
-pub(crate) fn aes_ctr_with_schedule_in_place(
-    schedule: &AesRoundKeySchedule,
-    nonce: &[u8],
-    initial_counter: u32,
-    data: &mut [u8],
-) {
-    if nonce.len() != 12 {
-        return;
-    }
-
-    let mut counter_block = [0u8; 16];
-    counter_block[0..12].copy_from_slice(nonce);
-
-    for (chunk_idx, chunk) in data.chunks_mut(16).enumerate() {
-        let counter = (chunk_idx as u32)
-            .wrapping_add(initial_counter)
-            .to_be_bytes();
-        counter_block[12..16].copy_from_slice(&counter);
-
-        let keystream = aes_encrypt_block_with_schedule(&counter_block, schedule);
-
-        for (i, byte) in chunk.iter_mut().enumerate() {
-            *byte ^= keystream[i];
-        }
-    }
-}

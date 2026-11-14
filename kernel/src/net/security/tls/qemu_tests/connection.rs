@@ -272,27 +272,35 @@ fn test_tls13_strip_content_type() {
     }
 
     assert_eq!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
-            0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17,
-        ]))
-        .map(|inner| (inner.content_type_wire(), inner.content_len())),
+        TlsConnectionCore::tls13_split_content_type_span(
+            crate::net::payload::PayloadSpanRef::from_payload(&payload(&[
+                0x48, 0x65, 0x6c, 0x6c, 0x6f, 0x17,
+            ]))
+        )
+        .map(|inner| (inner.content_type() as u8, inner.content_len())),
         Some((0x17, 5))
     );
     assert_eq!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[
-            0x48, 0x65, 0x17, 0x00, 0x00,
-        ]))
-        .map(|inner| (inner.content_type_wire(), inner.content_len())),
+        TlsConnectionCore::tls13_split_content_type_span(
+            crate::net::payload::PayloadSpanRef::from_payload(&payload(&[
+                0x48, 0x65, 0x17, 0x00, 0x00,
+            ]))
+        )
+        .map(|inner| (inner.content_type() as u8, inner.content_len())),
         Some((0x17, 2))
     );
     assert_eq!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x16]))
-            .map(|inner| (inner.content_type_wire(), inner.content_len())),
+        TlsConnectionCore::tls13_split_content_type_span(
+            crate::net::payload::PayloadSpanRef::from_payload(&payload(&[0x16]))
+        )
+        .map(|inner| (inner.content_type() as u8, inner.content_len())),
         Some((0x16, 0))
     );
     assert!(
-        TlsConnectionCore::tls13_split_content_type_payload(&payload(&[0x00, 0x00, 0x00]))
-            .is_none()
+        TlsConnectionCore::tls13_split_content_type_span(
+            crate::net::payload::PayloadSpanRef::from_payload(&payload(&[0x00, 0x00, 0x00]))
+        )
+        .is_none()
     );
 }
 

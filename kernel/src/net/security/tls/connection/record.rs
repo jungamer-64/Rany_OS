@@ -235,10 +235,6 @@ impl TlsRecordPacket {
         Ok(TlsRecordBody { span })
     }
 
-    fn into_payload(self) -> PacketPayload {
-        self.payload
-    }
-
     fn into_encrypted_payload(self) -> TlsResult<TlsEncryptedRecordPayload> {
         let body = TlsEncryptedRecordBody::from_record_body(
             &self.payload,
@@ -266,12 +262,8 @@ impl Tls13InnerPlaintext {
         }
     }
 
-    const fn content_type(self) -> ContentType {
+    pub(crate) const fn content_type(self) -> ContentType {
         self.content_type
-    }
-
-    pub(crate) const fn content_type_wire(self) -> u8 {
-        self.content_type as u8
     }
 
     pub(crate) const fn content_len(self) -> usize {
@@ -546,50 +538,6 @@ impl TlsConnectionCore {
         Ok(())
     }
 
-    pub(super) fn dispatch_tls13_inner_content(
-        &mut self,
-        decrypted: PacketPayload,
-        plaintext: &mut Option<PacketPayload>,
-    ) -> TlsResult<()> {
-        if let Some(inner) = Self::tls13_split_content_type_payload(&decrypted) {
-            match inner.content_type() {
-                ContentType::ApplicationData => {
-                    let bounds = OwnedPayloadBounds::checked(&decrypted, 0, inner.content_len())
-                        .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = bounds
-                        .take_from(decrypted)
-                        .and_then(|window| window.into_payload().ok())
-                        .ok_or(TlsError::DecodeError)?;
-                    append_plaintext(plaintext, inner_payload)?;
-                }
-                ContentType::Handshake => {
-                    let bounds = OwnedPayloadBounds::checked(&decrypted, 0, inner.content_len())
-                        .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = bounds
-                        .take_from(decrypted)
-                        .and_then(|window| window.into_payload().ok())
-                        .ok_or(TlsError::DecodeError)?;
-                    if self.negotiation.progress.is_established() {
-                        let inner_data = PayloadSpanRef::from_payload(&inner_payload);
-                        self.tls13_process_post_handshake(inner_data)?;
-                    } else {
-                        self.process_handshake(PayloadSpanRef::from_payload(&inner_payload))?;
-                    }
-                }
-                ContentType::Alert => {
-                    let bounds = OwnedPayloadBounds::checked(&decrypted, 0, inner.content_len())
-                        .ok_or(TlsError::DecodeError)?;
-                    let inner_payload = bounds
-                        .take_from(decrypted)
-                        .and_then(|window| window.into_payload().ok())
-                        .ok_or(TlsError::DecodeError)?;
-                    self.handle_alert_payload(PayloadSpanRef::from_payload(&inner_payload))?;
-                }
-            }
-        }
-        Ok(())
-    }
-
     pub(super) fn build_tls13_nonce_and_aad(
         iv: &[u8],
         seq: u64,
@@ -694,12 +642,6 @@ impl TlsConnectionCore {
             .try_append(content_type.finish().ok_or(TlsError::DecodeError)?)
             .map_err(|_| TlsError::DecodeError)?;
         self.tls13_encrypt_owned_inner(payload, TlsRecordEpoch::Application)
-    }
-
-    pub(crate) fn tls13_split_content_type_payload(
-        decrypted: &PacketPayload,
-    ) -> Option<Tls13InnerPlaintext> {
-        Self::tls13_split_content_type_span(PayloadSpanRef::from_payload(decrypted))
     }
 
     pub(crate) fn tls13_split_content_type_span(

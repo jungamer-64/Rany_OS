@@ -3,15 +3,16 @@
 // ============================================================================
 
 use super::super::crypto::aes_gcm::AesGcmKey;
-use super::super::crypto::chacha20::{
-    chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
-};
 use super::super::crypto::hkdf::{hkdf_expand, hkdf_expand_label, hkdf_extract};
 use super::super::crypto::hkdf::{
     tls13_derive_secret, tls13_derive_traffic_keys, tls13_early_secret, tls13_finished_key,
     tls13_handshake_secret, tls13_master_secret, tls13_verify_data,
 };
 use super::super::crypto::hmac::{hmac_sha256, hmac_sha384};
+use super::super::crypto::test_support::{
+    aes_gcm_key_decrypt, aes_gcm_key_encrypt, chacha20_poly1305_decrypt_in_place,
+    chacha20_poly1305_encrypt_in_place,
+};
 
 #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
 #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
@@ -127,10 +128,8 @@ fn test_aes_gcm_key_roundtrip() {
     let mut tag = [0u8; 16];
     let mut decrypted = [0u8; 23];
 
-    ctx.encrypt_in_place(&nonce, aad, plaintext, &mut ciphertext, &mut tag)
-        .expect("encrypt");
-    ctx.decrypt_in_place(&nonce, aad, &ciphertext, &mut decrypted, &tag)
-        .expect("decrypt");
+    aes_gcm_key_encrypt(&ctx, &nonce, aad, plaintext, &mut ciphertext, &mut tag).expect("encrypt");
+    aes_gcm_key_decrypt(&ctx, &nonce, aad, &ciphertext, &mut decrypted, &tag).expect("decrypt");
 
     assert_eq!(&decrypted, plaintext);
 }

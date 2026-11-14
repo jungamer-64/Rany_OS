@@ -2,30 +2,6 @@
 // kernel/src/net/security/tls/crypto/chacha20.rs - ChaCha20-Poly1305 AEAD (RFC 8439)
 // ============================================================================
 
-/// SECURITY: 16-byte tag を定時間で比較する。
-/// Uses read_volatile and #[inline(never)] to prevent compiler optimizations
-/// that could introduce timing side-channels.
-/// SECURITY: timing side-channel を防ぐため 16-byte tag を定時間で比較する。
-/// Always iterates through 16 bytes and uses bitwise logic for equality check.
-#[inline(never)]
-fn ct_eq_tag(a: &[u8], b: &[u8]) -> bool {
-    if a.len() < 16 || b.len() < 16 {
-        return false;
-    }
-    let mut diff = 0u8;
-    for i in 0..16 {
-        // Accumulate differences without branching
-        diff |= unsafe { core::ptr::read_volatile(a.as_ptr().add(i)) }
-            ^ unsafe { core::ptr::read_volatile(b.as_ptr().add(i)) };
-    }
-
-    // Constant-time check if diff == 0.
-    let diff_u32 = diff as u32;
-    let is_zero = ((diff_u32.wrapping_sub(1) >> 31) & 1) as u8;
-
-    unsafe { core::ptr::read_volatile(&is_zero) == 1 }
-}
-
 /// ChaCha20 quarter round operation (RFC 8439 Section 2.1)
 #[inline]
 fn quarter_round(state: &mut [u32; 16], a: usize, b: usize, c: usize, d: usize) {
@@ -112,22 +88,6 @@ pub(crate) fn chacha20_block(key: &[u8; 32], counter: u32, nonce: &[u8; 12]) -> 
     }
 
     result
-}
-
-/// ChaCha20 encryption/decryption (RFC 8439 Section 2.4)
-///
-/// XOR data with ChaCha20 keystream. Works for both encryption and decryption
-/// since ChaCha20 is a stream cipher.
-pub fn chacha20_xor_in_place(key: &[u8; 32], nonce: &[u8; 12], counter: u32, data: &mut [u8]) {
-    let mut block_counter = counter;
-
-    for chunk in data.chunks_mut(64) {
-        let keystream = chacha20_block(key, block_counter, nonce);
-        for (i, byte) in chunk.iter_mut().enumerate() {
-            *byte ^= keystream[i];
-        }
-        block_counter = block_counter.wrapping_add(1);
-    }
 }
 
 pub fn chacha20_xor_chunks_in_place(
@@ -313,37 +273,6 @@ fn poly1305_finalize(h: [u64; 5], key: &[u8; 32]) -> [u8; 16] {
     tag
 }
 
-/// Poly1305 MAC computation (RFC 8439 Section 2.5)
-///
-/// Computes a 16-byte authentication tag using the Poly1305 algorithm.
-/// The 32-byte key is split: r = key[0..16] (clamped), s = key[16..32].
-pub fn poly1305_mac(key: &[u8; 32], message: &[u8]) -> [u8; 16] {
-    let (r_limbs, r5_limbs) = poly1305_clamp_r(key);
-
-    let mut h = [0u64; 5];
-
-    let mut offset = 0usize;
-    // LOOP_PROOF: mode=condition; reason=Loop termination is governed by the while condition and exits when it becomes false.;
-    while offset < message.len() {
-        let block_len = (message.len() - offset).min(16);
-        let mut block = [0u8; 17];
-        block[..block_len].copy_from_slice(&message[offset..offset + block_len]);
-        block[block_len] = 1;
-        let m = poly1305_block_to_limbs(&block);
-
-        for i in 0..5 {
-            h[i] += m[i];
-        }
-
-        poly1305_multiply_reduce(&mut h, &r_limbs, &r5_limbs);
-
-        offset += block_len;
-    }
-
-    poly1305_final_reduce(&mut h);
-    poly1305_finalize(h, key)
-}
-
 /// Parse a Poly1305 block (16-byte chunk plus 0x01 pad byte) into 26-bit limbs.
 fn poly1305_block_to_limbs(block: &[u8; 17]) -> [u64; 5] {
     let lo = u64::from_le_bytes([
@@ -368,7 +297,7 @@ fn poly1305_block_to_limbs(block: &[u8; 17]) -> [u64; 5] {
 /// The MAC input for AEAD is:
 ///   AAD || pad16(AAD) || ciphertext || pad16(ciphertext) ||
 ///   le64(aad_len) || le64(ciphertext_len)
-struct Poly1305State {
+pub(super) struct Poly1305State {
     h: [u64; 5],
     r: [u64; 5],
     r5: [u64; 4],
@@ -378,7 +307,7 @@ struct Poly1305State {
 }
 
 impl Poly1305State {
-    fn new(key: &[u8; 32]) -> Self {
+    pub(super) fn new(key: &[u8; 32]) -> Self {
         let (r, r5) = poly1305_clamp_r(key);
         Self {
             h: [0u64; 5],
@@ -401,7 +330,7 @@ impl Poly1305State {
         poly1305_multiply_reduce(&mut self.h, &self.r, &self.r5);
     }
 
-    fn update(&mut self, data: &[u8]) {
+    pub(super) fn update(&mut self, data: &[u8]) {
         let mut offset = 0usize;
         if self.block_len > 0 {
             let take = (16 - self.block_len).min(data.len());
@@ -438,7 +367,7 @@ impl Poly1305State {
         self.update(&zeros[..len]);
     }
 
-    fn finalize(mut self) -> [u8; 16] {
+    pub(super) fn finalize(mut self) -> [u8; 16] {
         if self.block_len > 0 {
             let mut padded = [0u8; 17];
             padded[..self.block_len].copy_from_slice(&self.block[..self.block_len]);
@@ -452,19 +381,6 @@ impl Poly1305State {
         poly1305_final_reduce(&mut self.h);
         poly1305_finalize(self.h, &self.key)
     }
-}
-
-fn poly1305_aead_tag(poly_key: &[u8; 32], aad: &[u8], ciphertext: &[u8]) -> [u8; 16] {
-    let mut state = Poly1305State::new(poly_key);
-    state.update(aad);
-    state.update_zero_padding((16 - (aad.len() % 16)) % 16);
-    state.update(ciphertext);
-    state.update_zero_padding((16 - (ciphertext.len() % 16)) % 16);
-    let mut lengths = [0u8; 16];
-    lengths[..8].copy_from_slice(&(aad.len() as u64).to_le_bytes());
-    lengths[8..].copy_from_slice(&(ciphertext.len() as u64).to_le_bytes());
-    state.update(&lengths);
-    state.finalize()
 }
 
 pub fn chacha20_poly1305_tag_chunks(
@@ -492,166 +408,4 @@ pub fn chacha20_poly1305_tag_chunks(
     lengths[8..].copy_from_slice(&(ciphertext_len as u64).to_le_bytes());
     state.update(&lengths);
     Some(state.finalize())
-}
-
-/// ChaCha20-Poly1305 AEAD encryption (RFC 8439 Section 2.8)
-///
-/// # Returns
-/// (ciphertext, 16-byte authentication tag)
-pub fn chacha20_poly1305_encrypt_in_place(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    data: &mut [u8],
-    tag_out: &mut [u8; 16],
-) {
-    // Generate Poly1305 one-time key from first ChaCha20 block (counter=0)
-    let poly_key_block = chacha20_block(key, 0, nonce);
-    let mut poly_key = [0u8; 32];
-    poly_key.copy_from_slice(&poly_key_block[..32]);
-
-    // Encrypt payload starting from counter=1
-    chacha20_xor_in_place(key, nonce, 1, data);
-    *tag_out = poly1305_aead_tag(&poly_key, aad, data);
-}
-
-/// ChaCha20-Poly1305 AEAD decryption (RFC 8439 Section 2.8)
-///
-/// # Returns
-/// `Some(plaintext)` if authentication succeeds, `None` otherwise.
-/// Uses constant-time tag comparison to prevent timing attacks.
-pub fn chacha20_poly1305_decrypt_in_place(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    data: &mut [u8],
-    tag: &[u8; 16],
-) -> Result<(), ()> {
-    // Generate Poly1305 one-time key from first ChaCha20 block (counter=0)
-    let poly_key_block = chacha20_block(key, 0, nonce);
-    let mut poly_key = [0u8; 32];
-    poly_key.copy_from_slice(&poly_key_block[..32]);
-
-    // Compute expected authentication tag
-    let expected_tag = poly1305_aead_tag(&poly_key, aad, data);
-
-    // SECURITY: read_volatile による定時間 tag comparison で、timing side-channel を
-    // 生む compiler optimization を防ぐ。
-    if !ct_eq_tag(tag, &expected_tag) {
-        return Err(()); // Authentication failed
-    }
-
-    // Decrypt payload starting from counter=1
-    chacha20_xor_in_place(key, nonce, 1, data);
-    Ok(())
-}
-
-pub fn chacha20_poly1305_encrypt_chunks_in_place(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    ciphertext_len: usize,
-    for_each_chunk_mut: impl FnMut(&mut dyn FnMut(&mut [u8])),
-    for_each_chunk: impl FnMut(&mut dyn FnMut(&[u8])),
-    tag_out: &mut [u8; 16],
-) -> Result<(), ()> {
-    let poly_key_block = chacha20_block(key, 0, nonce);
-    let mut poly_key = [0u8; 32];
-    poly_key.copy_from_slice(&poly_key_block[..32]);
-
-    chacha20_xor_chunks_in_place(key, nonce, 1, for_each_chunk_mut);
-    *tag_out =
-        chacha20_poly1305_tag_chunks(&poly_key, aad, ciphertext_len, for_each_chunk).ok_or(())?;
-    Ok(())
-}
-
-pub fn chacha20_poly1305_decrypt_chunks_in_place(
-    key: &[u8; 32],
-    nonce: &[u8; 12],
-    aad: &[u8],
-    ciphertext_len: usize,
-    for_each_chunk: impl FnMut(&mut dyn FnMut(&[u8])),
-    for_each_chunk_mut: impl FnMut(&mut dyn FnMut(&mut [u8])),
-    tag: &[u8; 16],
-) -> Result<(), ()> {
-    let poly_key_block = chacha20_block(key, 0, nonce);
-    let mut poly_key = [0u8; 32];
-    poly_key.copy_from_slice(&poly_key_block[..32]);
-    let expected =
-        chacha20_poly1305_tag_chunks(&poly_key, aad, ciphertext_len, for_each_chunk).ok_or(())?;
-    if !ct_eq_tag(tag, &expected) {
-        return Err(());
-    }
-
-    chacha20_xor_chunks_in_place(key, nonce, 1, for_each_chunk_mut);
-    Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        chacha20_block, chacha20_poly1305_encrypt_in_place, chacha20_poly1305_tag_chunks,
-        chacha20_xor_chunks_in_place,
-    };
-
-    #[cfg_attr(all(test, any(feature = "std", target_os = "linux")), test)]
-    #[cfg_attr(all(test, not(any(feature = "std", target_os = "linux"))), test_case)]
-    fn test_chacha20_poly1305_chunk_in_place_matches_contiguous_encrypt_decrypt() {
-        let key = [0x37u8; 32];
-        let nonce = [0x91u8; 12];
-        let aad = b"tls-record-aad";
-        let mut plaintext = [0u8; 80];
-        for (index, byte) in plaintext.iter_mut().enumerate() {
-            *byte = (index as u8).wrapping_mul(11).wrapping_add(5);
-        }
-
-        let mut expected_ciphertext = plaintext;
-        let mut expected_tag = [0u8; 16];
-        chacha20_poly1305_encrypt_in_place(
-            &key,
-            &nonce,
-            aad,
-            &mut expected_ciphertext,
-            &mut expected_tag,
-        );
-
-        let mut left = [0u8; 31];
-        let mut right = [0u8; 49];
-        left.copy_from_slice(&plaintext[..31]);
-        right.copy_from_slice(&plaintext[31..]);
-
-        chacha20_xor_chunks_in_place(&key, &nonce, 1, |visitor| {
-            visitor(&mut left);
-            visitor(&mut right);
-        });
-
-        let poly_key_block = chacha20_block(&key, 0, &nonce);
-        let mut poly_key = [0u8; 32];
-        poly_key.copy_from_slice(&poly_key_block[..32]);
-        let tag = chacha20_poly1305_tag_chunks(&poly_key, aad, plaintext.len(), |visitor| {
-            visitor(&left);
-            visitor(&right);
-        })
-        .expect("chunk ChaCha20-Poly1305 tag succeeds");
-
-        assert_eq!(&left, &expected_ciphertext[..31]);
-        assert_eq!(&right, &expected_ciphertext[31..]);
-        assert_eq!(tag, expected_tag);
-
-        let verified_tag =
-            chacha20_poly1305_tag_chunks(&poly_key, aad, plaintext.len(), |visitor| {
-                visitor(&left);
-                visitor(&right);
-            })
-            .expect("chunk ChaCha20-Poly1305 verify tag succeeds");
-        assert_eq!(verified_tag, tag);
-
-        chacha20_xor_chunks_in_place(&key, &nonce, 1, |visitor| {
-            visitor(&mut left);
-            visitor(&mut right);
-        });
-
-        assert_eq!(&left, &plaintext[..31]);
-        assert_eq!(&right, &plaintext[31..]);
-    }
 }

@@ -2,14 +2,9 @@
 // kernel/src/net/security/tls/qemu_tests/crypto.rs - セキュリティ / TLS / QEMUテスト / 暗号
 // ============================================================================
 
-use super::super::crypto::aes_core::{
-    aes_ctr_with_schedule_in_place, aes_expand_key_schedule, gf_mul,
-};
+use super::super::crypto::aes_core::{aes_expand_key_schedule, gf_mul};
 use super::super::crypto::aes_gcm::{AesGcmKey, gf128_mul};
-use super::super::crypto::chacha20::{
-    chacha20_block, chacha20_poly1305_decrypt_in_place, chacha20_poly1305_encrypt_in_place,
-    chacha20_xor_in_place, poly1305_mac,
-};
+use super::super::crypto::chacha20::chacha20_block;
 use super::super::crypto::hkdf::{
     hkdf_expand as hkdf_expand_into, hkdf_expand_label as hkdf_expand_label_into, hkdf_extract,
     tls13_derive_secret, tls13_derive_traffic_keys as tls13_derive_traffic_keys_into,
@@ -17,9 +12,13 @@ use super::super::crypto::hkdf::{
     tls13_verify_data,
 };
 use super::super::crypto::hmac::{hmac_sha256, hmac_sha384};
+use super::super::crypto::test_support::{
+    aes_ctr_with_schedule_in_place, aes_gcm_decrypt_into, aes_gcm_encrypt_into,
+    aes_gcm_key_decrypt, aes_gcm_key_encrypt, chacha20_poly1305_decrypt_in_place,
+    chacha20_poly1305_encrypt_in_place, chacha20_xor_in_place, poly1305_mac,
+};
 use super::super::crypto::{
-    aes_gcm_decrypt_into, aes_gcm_encrypt_into, generate_random, qemu_test_clear_random_override,
-    qemu_test_set_random_override_seed,
+    generate_random, qemu_test_clear_random_override, qemu_test_set_random_override_seed,
 };
 fn hkdf_expand(prk: &[u8; 32], info: &[u8], output: &mut [u8]) -> bool {
     hkdf_expand_into(prk, info, output);
@@ -674,17 +673,29 @@ pub fn wave8_tls_aes_gcm_key_in_place_roundtrip_smoke() -> bool {
 
     let mut ciphertext = alloc::vec![0u8; plaintext.len()];
     let mut tag = [0u8; 16];
-    if ctx
-        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
-        .is_err()
+    if aes_gcm_key_encrypt(
+        &ctx,
+        nonce.as_slice(),
+        aad,
+        plaintext,
+        &mut ciphertext,
+        &mut tag,
+    )
+    .is_err()
     {
         return false;
     }
 
     let mut decrypted = alloc::vec![0u8; plaintext.len()];
-    if ctx
-        .decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut decrypted, &tag)
-        .is_err()
+    if aes_gcm_key_decrypt(
+        &ctx,
+        nonce.as_slice(),
+        aad,
+        &ciphertext,
+        &mut decrypted,
+        &tag,
+    )
+    .is_err()
     {
         return false;
     }
@@ -701,10 +712,10 @@ pub fn wave8_tls_aes_gcm_key_invalid_nonce_len_smoke() -> bool {
     let bad_nonce = [0x22u8; 11];
     let mut ciphertext = [0u8; 4];
     let mut tag = [0u8; 16];
-    let enc_err = ctx.encrypt_in_place(&bad_nonce, b"", b"test", &mut ciphertext, &mut tag);
+    let enc_err = aes_gcm_key_encrypt(&ctx, &bad_nonce, b"", b"test", &mut ciphertext, &mut tag);
 
     let mut plaintext = [0u8; 4];
-    let dec_err = ctx.decrypt_in_place(&bad_nonce, b"", &ciphertext, &mut plaintext, &tag);
+    let dec_err = aes_gcm_key_decrypt(&ctx, &bad_nonce, b"", &ciphertext, &mut plaintext, &tag);
 
     enc_err.is_err() && dec_err.is_err()
 }
@@ -721,9 +732,15 @@ pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> boo
 
     let mut ciphertext = alloc::vec![0u8; plaintext.len()];
     let mut tag = [0u8; 16];
-    if ctx
-        .encrypt_in_place(nonce.as_slice(), aad, plaintext, &mut ciphertext, &mut tag)
-        .is_err()
+    if aes_gcm_key_encrypt(
+        &ctx,
+        nonce.as_slice(),
+        aad,
+        plaintext,
+        &mut ciphertext,
+        &mut tag,
+    )
+    .is_err()
     {
         return false;
     }
@@ -732,8 +749,7 @@ pub fn wave8_tls_aes_gcm_key_auth_failure_preserves_output_buffer_smoke() -> boo
     let mut out = [0xa5u8; 6];
     let before = out;
 
-    ctx.decrypt_in_place(nonce.as_slice(), aad, &ciphertext, &mut out, &tag)
-        .is_err()
+    aes_gcm_key_decrypt(&ctx, nonce.as_slice(), aad, &ciphertext, &mut out, &tag).is_err()
         && bytes_eq(&out, &before)
 }
 
