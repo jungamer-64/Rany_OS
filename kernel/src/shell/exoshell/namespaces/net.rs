@@ -241,6 +241,62 @@ impl NetNamespace {
         ExoValue::Bool(true)
     }
 
+    fn format_mac(mac: crate::net::l2::ethernet::MacAddress) -> ExoValue<'static> {
+        let m = mac.as_bytes();
+        ExoValue::String(Cow::Owned(format!(
+            "{:02x}:{:02x}:{:02x}:{:02x}:{:02x}:{:02x}",
+            m[0], m[1], m[2], m[3], m[4], m[5]
+        )))
+    }
+
+    /// ARP で IPv4 neighbor を解決する
+    ///
+    /// usage: net.arp_resolve(if_id, ip)
+    pub async fn arp_resolve(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let (Some(if_id), Some(ip)) = (args.first().and_then(Self::parse_if_id_value), args.get(1))
+        else {
+            return ExoValue::Error(String::from("usage: net.arp_resolve(if_id, ip)"));
+        };
+        let ip = match Self::parse_ipv4_arg(ip) {
+            Ok(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
+            Err(e) => return ExoValue::Error(e),
+        };
+        match crate::net::l2::arp::ArpResolveFuture::new_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+            ip,
+        )
+        .await
+        {
+            Ok(mac) => Self::format_mac(mac),
+            Err(e) => ExoValue::Error(format!("ARP resolution failed: {:?}", e)),
+        }
+    }
+
+    /// NDP で IPv6 neighbor を解決する
+    ///
+    /// usage: net.ndp_resolve(if_id, ip6)
+    pub async fn ndp_resolve(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let (Some(if_id), Some(ip)) = (args.first().and_then(Self::parse_if_id_value), args.get(1))
+        else {
+            return ExoValue::Error(String::from("usage: net.ndp_resolve(if_id, ip6)"));
+        };
+        let ip = match Self::parse_ipv6_arg(ip) {
+            Ok(ip) => crate::net::l3::ipv6::Ipv6Address::new(ip),
+            Err(e) => return ExoValue::Error(e),
+        };
+        match crate::net::l3::ndp::NdpResolveFuture::new_on_in(
+            crate::net::runtime::default_runtime(),
+            if_id,
+            ip,
+        )
+        .await
+        {
+            Ok(mac) => Self::format_mac(mac),
+            Err(e) => ExoValue::Error(format!("NDP resolution failed: {:?}", e)),
+        }
+    }
+
     fn format_ipv6(addr: [u8; 16]) -> String {
         format!("{}", crate::net::l3::ipv6::Ipv6Address::new(addr))
     }
@@ -736,75 +792,121 @@ impl NetNamespace {
         ExoValue::Array(entries)
     }
 
-    /// IPv4ルート追加（管理権限必要）
+    fn parse_prefix_len(value: &ExoValue<'static>, max: u8) -> Result<u8, ExoValue<'static>> {
+        match value {
+            ExoValue::Int(n) => u8::try_from(*n)
+                .ok()
+                .filter(|len| *len <= max)
+                .ok_or_else(|| ExoValue::Error(format!("prefix_len must be 0..={}", max))),
+            _ => Err(ExoValue::Error(String::from("prefix_len must be integer"))),
+        }
+    }
+
+    fn parse_metric(value: Option<&ExoValue<'static>>) -> Result<u32, ExoValue<'static>> {
+        match value {
+            None => Ok(100),
+            Some(ExoValue::Int(n)) => u32::try_from(*n).map_err(|_| {
+                ExoValue::Error(String::from("metric must be a 32-bit unsigned integer"))
+            }),
+            Some(_) => Err(ExoValue::Error(String::from("metric must be integer"))),
+        }
+    }
+
+    fn is_no_gateway(value: &ExoValue<'static>) -> bool {
+        matches!(value, ExoValue::String(s) if s.as_ref() == "*" || s.as_ref() == "none")
+    }
+
+    /// ルート追加（管理権限必要）。宛先の表記で IPv4 / IPv6 を選ぶ。
     ///
-    /// usage: net.route_add("192.168.1.0", 24, "10.0.2.1", 0, 100)
-    ///        net.route_add(dest, prefix_len, gateway, if_id, metric)
+    /// usage: net.route_add(dest, prefix_len, gateway, if_id [, metric])
     pub async fn route_add(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = Self::current_domain_id();
-        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
-            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        if let Err(e) = Self::require_net_admin("net.route_add") {
+            return e;
         }
         if args.len() < 4 {
             return ExoValue::Error(String::from(
                 "usage: net.route_add(dest, prefix_len, gateway, if_id [, metric])\n\
-                 例: net.route_add(\"192.168.1.0\", 24, \"10.0.2.1\", 0)",
+                 例: net.route_add(\"192.168.1.0\", 24, \"10.0.2.1\", 0)\n\
+                     net.route_add(\"2001:db8::\", 32, \"fe80::1\", 0)",
             ));
         }
-        let dest = match Self::parse_ipv4_arg(&args[0]) {
-            Ok(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
-            Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+        let Some(if_id) = Self::parse_if_id_value(&args[3]) else {
+            return ExoValue::Error(String::from("if_id must be an unsigned 16-bit integer"));
         };
-        let prefix_len = match &args[1] {
-            ExoValue::Int(n) => *n as u8,
-            _ => return ExoValue::Error(String::from("prefix_len must be integer")),
+        let metric = match Self::parse_metric(args.get(4)) {
+            Ok(metric) => metric,
+            Err(e) => return e,
         };
-        let gateway = match &args[2] {
-            ExoValue::String(s) if s.as_ref() == "*" || s.as_ref() == "none" => None,
-            other => match Self::parse_ipv4_arg(other) {
-                Ok(ip) => Some(crate::net::l3::ipv4::Ipv4Address::new(ip)),
-                Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
-            },
+        let runtime = crate::net::runtime::default_runtime();
+        let result = if let Ok(dest) = Self::parse_ipv4_arg(&args[0]) {
+            let prefix_len = match Self::parse_prefix_len(&args[1], 32) {
+                Ok(len) => len,
+                Err(e) => return e,
+            };
+            let gateway = if Self::is_no_gateway(&args[2]) {
+                None
+            } else {
+                match Self::parse_ipv4_arg(&args[2]) {
+                    Ok(ip) => Some(crate::net::l3::ipv4::Ipv4Address::new(ip)),
+                    Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
+                }
+            };
+            crate::net::runtime::manager::add_ipv4_route_in(
+                runtime,
+                crate::net::runtime::manager::Ipv4Route {
+                    destination: crate::net::l3::ipv4::Ipv4Address::new(dest),
+                    prefix_len,
+                    gateway,
+                    if_id,
+                    metric,
+                    flags: crate::net::runtime::manager::RouteFlags::static_route(),
+                    admin_enabled: true,
+                    managed_by_interface: false,
+                },
+            )
+        } else {
+            let dest = match Self::parse_ipv6_arg(&args[0]) {
+                Ok(ip) => crate::net::l3::ipv6::Ipv6Address::new(ip),
+                Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+            };
+            let prefix_len = match Self::parse_prefix_len(&args[1], 128) {
+                Ok(len) => len,
+                Err(e) => return e,
+            };
+            let gateway = if Self::is_no_gateway(&args[2]) {
+                None
+            } else {
+                match Self::parse_ipv6_arg(&args[2]) {
+                    Ok(ip) => Some(crate::net::l3::ipv6::Ipv6Address::new(ip)),
+                    Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
+                }
+            };
+            crate::net::runtime::manager::add_ipv6_route_in(
+                runtime,
+                crate::net::runtime::manager::Ipv6Route {
+                    destination: dest,
+                    prefix_len,
+                    gateway,
+                    if_id,
+                    metric,
+                    flags: crate::net::runtime::manager::RouteFlags::static_route(),
+                    admin_enabled: true,
+                    managed_by_interface: false,
+                },
+            )
         };
-        let if_id = match Self::parse_if_id_value(&args[3]) {
-            Some(if_id) => if_id,
-            _ => return ExoValue::Error(String::from("if_id must be integer")),
-        };
-        let metric = args
-            .get(4)
-            .and_then(|v| match v {
-                ExoValue::Int(n) => Some(*n as u32),
-                _ => None,
-            })
-            .unwrap_or(100);
-
-        let route = crate::net::runtime::manager::Ipv4Route {
-            destination: dest,
-            prefix_len,
-            gateway,
-            if_id,
-            metric,
-            flags: crate::net::runtime::manager::RouteFlags::static_route(),
-            admin_enabled: true,
-            managed_by_interface: false,
-        };
-        match crate::net::runtime::manager::add_ipv4_route_in(
-            crate::net::runtime::default_runtime(),
-            route,
-        ) {
+        match result {
             Ok(()) => ExoValue::Bool(true),
             Err(e) => ExoValue::Error(format!("Failed to add route: {:?}", e)),
         }
     }
 
-    /// IPv4 ルート削除（管理権限必要）
+    /// 静的ルート削除（管理権限必要）
     ///
-    /// usage: net.route_del("192.168.1.0", 24, 0)
-    ///        net.route_del(dest, prefix_len, if_id)
+    /// usage: net.route_del(dest, prefix_len, if_id)
     pub async fn route_del(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        let domain_id = Self::current_domain_id();
-        if !manager().has_capability(domain_id, CAP_NET_ADMIN) {
-            return ExoValue::Error(String::from("Permission denied: CAP_NET_ADMIN required"));
+        if let Err(e) = Self::require_net_admin("net.route_del") {
+            return e;
         }
         if args.len() < 3 {
             return ExoValue::Error(String::from(
@@ -812,36 +914,135 @@ impl NetNamespace {
                  例: net.route_del(\"192.168.1.0\", 24, 0)",
             ));
         }
-        let dest = match Self::parse_ipv4_arg(&args[0]) {
-            Ok(ip) => crate::net::l3::ipv4::Ipv4Address::new(ip),
-            Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+        let Some(if_id) = Self::parse_if_id_value(&args[2]) else {
+            return ExoValue::Error(String::from("if_id must be an unsigned 16-bit integer"));
         };
-        let prefix_len = match &args[1] {
-            ExoValue::Int(n) => *n as u8,
-            _ => return ExoValue::Error(String::from("prefix_len must be integer")),
+        let runtime = crate::net::runtime::default_runtime();
+        let result = if let Ok(dest) = Self::parse_ipv4_arg(&args[0]) {
+            let prefix_len = match Self::parse_prefix_len(&args[1], 32) {
+                Ok(len) => len,
+                Err(e) => return e,
+            };
+            crate::net::runtime::manager::del_ipv4_route_in(
+                runtime,
+                crate::net::l3::ipv4::Ipv4Address::new(dest),
+                prefix_len,
+                if_id,
+            )
+        } else {
+            let dest = match Self::parse_ipv6_arg(&args[0]) {
+                Ok(ip) => crate::net::l3::ipv6::Ipv6Address::new(ip),
+                Err(e) => return ExoValue::Error(format!("dest: {}", e)),
+            };
+            let prefix_len = match Self::parse_prefix_len(&args[1], 128) {
+                Ok(len) => len,
+                Err(e) => return e,
+            };
+            crate::net::runtime::manager::del_ipv6_route_in(runtime, dest, prefix_len, if_id)
         };
-        let if_id = match Self::parse_if_id_value(&args[2]) {
-            Some(if_id) => if_id,
-            _ => return ExoValue::Error(String::from("if_id must be integer")),
-        };
-        // Build a route to match for deletion (gateway/metric/flags don't matter for retain comparison)
-        let route = crate::net::runtime::manager::Ipv4Route {
-            destination: dest,
-            prefix_len,
-            gateway: None,
-            if_id,
-            metric: 0,
-            flags: crate::net::runtime::manager::RouteFlags::static_route(),
-            admin_enabled: true,
-            managed_by_interface: false,
-        };
-        match crate::net::runtime::manager::del_ipv4_route_in(
-            crate::net::runtime::default_runtime(),
-            route,
-        ) {
+        match result {
             Ok(deleted) => ExoValue::Bool(deleted),
             Err(e) => ExoValue::Error(format!("Failed to delete route: {:?}", e)),
         }
+    }
+
+    /// 既定ルート設定（管理権限必要）
+    ///
+    /// usage: net.route_default(gateway, if_id [, metric])
+    pub async fn route_default(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        if let Err(e) = Self::require_net_admin("net.route_default") {
+            return e;
+        }
+        if args.len() < 2 {
+            return ExoValue::Error(String::from(
+                "usage: net.route_default(gateway, if_id [, metric])",
+            ));
+        }
+        let Some(if_id) = Self::parse_if_id_value(&args[1]) else {
+            return ExoValue::Error(String::from("if_id must be an unsigned 16-bit integer"));
+        };
+        let metric = match Self::parse_metric(args.get(2)) {
+            Ok(metric) => metric,
+            Err(e) => return e,
+        };
+        let runtime = crate::net::runtime::default_runtime();
+        let result = if let Ok(gateway) = Self::parse_ipv4_arg(&args[0]) {
+            crate::net::runtime::manager::set_default_route_v4_in(
+                runtime,
+                if_id,
+                crate::net::l3::ipv4::Ipv4Address::new(gateway),
+                metric,
+            )
+        } else {
+            match Self::parse_ipv6_arg(&args[0]) {
+                Ok(gateway) => crate::net::runtime::manager::set_default_route_v6_in(
+                    runtime,
+                    if_id,
+                    crate::net::l3::ipv6::Ipv6Address::new(gateway),
+                    metric,
+                ),
+                Err(e) => return ExoValue::Error(format!("gateway: {}", e)),
+            }
+        };
+        match result {
+            Ok(()) => ExoValue::Bool(true),
+            Err(e) => ExoValue::Error(format!("Failed to set default route: {:?}", e)),
+        }
+    }
+
+    /// 宛先に選ばれるルートを表示
+    ///
+    /// usage: net.route_lookup(ip)
+    pub async fn route_lookup(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let Some(arg) = args.first() else {
+            return ExoValue::Error(String::from("usage: net.route_lookup(ip)"));
+        };
+        let runtime = crate::net::runtime::default_runtime();
+        let (destination, gateway, if_id, metric) = if let Ok(ip) = Self::parse_ipv4_arg(arg) {
+            match crate::net::runtime::manager::lookup_ipv4_route_in(
+                runtime,
+                crate::net::l3::ipv4::Ipv4Address::new(ip),
+            ) {
+                Ok(Some(r)) => (
+                    format!("{}/{}", r.destination, r.prefix_len),
+                    r.gateway.map(|gw| format!("{}", gw)),
+                    r.if_id,
+                    r.metric,
+                ),
+                Ok(None) => return ExoValue::Nil,
+                Err(e) => return ExoValue::Error(format!("Route lookup failed: {:?}", e)),
+            }
+        } else {
+            let ip = match Self::parse_ipv6_arg(arg) {
+                Ok(ip) => crate::net::l3::ipv6::Ipv6Address::new(ip),
+                Err(e) => return ExoValue::Error(e),
+            };
+            match crate::net::runtime::manager::lookup_ipv6_route_in(runtime, ip) {
+                Ok(Some(r)) => (
+                    format!("{}/{}", r.destination, r.prefix_len),
+                    r.gateway.map(|gw| format!("{}", gw)),
+                    r.if_id,
+                    r.metric,
+                ),
+                Ok(None) => return ExoValue::Nil,
+                Err(e) => return ExoValue::Error(format!("Route lookup failed: {:?}", e)),
+            }
+        };
+        let mut map = BTreeMap::new();
+        map.insert(
+            String::from("destination"),
+            ExoValue::String(Cow::Owned(destination)),
+        );
+        map.insert(
+            String::from("gateway"),
+            match gateway {
+                Some(gw) => ExoValue::String(Cow::Owned(gw)),
+                None => ExoValue::String(Cow::Borrowed("*")),
+            },
+        );
+        map.insert(String::from("if_id"), ExoValue::Int(if_id.0 as i64));
+        map.insert(String::from("metric"), ExoValue::Int(metric as i64));
+        ExoValue::Map(map)
     }
 
     // ================================================================
@@ -1611,6 +1812,8 @@ impl ShellNamespace for NetNamespace {
                 "stats" => Self::stats(_args).await,
                 "arp" => Self::arp_cache().await,
                 "arp_insert" => Self::arp_insert(_args).await,
+                "arp_resolve" => Self::arp_resolve(_args).await,
+                "ndp_resolve" => Self::ndp_resolve(_args).await,
                 "dhcp_state" => Self::dhcp_state(_args).await,
                 "dhcp_renew" => Self::dhcp_renew().await,
                 "dhcp_discover" => Self::dhcp_discover().await,
@@ -1631,6 +1834,8 @@ impl ShellNamespace for NetNamespace {
                 "routes" => Self::routes().await,
                 "route_add" => Self::route_add(_args).await,
                 "route_del" => Self::route_del(_args).await,
+                "route_default" => Self::route_default(_args).await,
+                "route_lookup" => Self::route_lookup(_args).await,
                 // ファイアウォール
                 "firewall" => Self::firewall_status().await,
                 "firewall_enable" => Self::firewall_enable().await,
@@ -1660,10 +1865,10 @@ impl ShellNamespace for NetNamespace {
                 "events" => Self::events(_args).await,
                 _ => ExoValue::Error(format!(
                     "Unknown method 'net.{}'\nValid methods:\n  \
-                     config, stats, arp, arp_insert, ping, open,\n  \
+                     config, stats, arp, arp_insert, arp_resolve, ndp_resolve, ping, open,\n  \
                      connections/netstat, tcp, udp,\n  \
                      interfaces/ifaces, if_up, if_down,\n  \
-                     routes, route_add, route_del,\n  \
+                     routes, route_add, route_del, route_default, route_lookup,\n  \
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \

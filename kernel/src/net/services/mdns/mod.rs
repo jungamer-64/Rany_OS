@@ -180,6 +180,20 @@ impl MdnsService {
             self.hostname
         );
 
+        let result = self.serve(&socket).await;
+        // The responder no longer listens; report leaving the group (RFC 2236 Section 3).
+        if !socket.leave_multicast_group(MDNS_MULTICAST_GROUP).await {
+            log::warn!("[NET] mDNS: multicast leave was not delivered");
+        }
+        result
+    }
+
+    /// Responder loop over the joined socket; returns when the socket or the
+    /// receive timer can no longer provide service.
+    async fn serve(
+        &mut self,
+        socket: &crate::net::l4::udp::UdpEndpoint,
+    ) -> Result<(), &'static str> {
         // LOOP_PROOF: mode=event; reason=The retained responder awaits datagrams with a timer and returns when the socket or timer can no longer provide service.;
         loop {
             self.drain_runtime_commands();

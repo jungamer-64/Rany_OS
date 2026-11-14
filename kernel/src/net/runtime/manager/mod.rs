@@ -404,9 +404,14 @@ impl NetworkManager {
         Ok(())
     }
 
-    fn del_ipv4_route(&mut self, route: Ipv4Route) -> bool {
+    /// Removes the static routes for `destination/prefix_len` on `if_id`.
+    /// Interface-managed routes follow the interface configuration instead.
+    fn del_ipv4_route(&mut self, destination: Ipv4Address, prefix_len: u8, if_id: NetIfId) -> bool {
         let before = self.routes_v4.len();
-        self.routes_v4.retain(|r| *r != route);
+        self.routes_v4.retain(|r| {
+            r.managed_by_interface
+                || !(r.destination == destination && r.prefix_len == prefix_len && r.if_id == if_id)
+        });
         self.routes_v4.len() != before
     }
 
@@ -450,9 +455,14 @@ impl NetworkManager {
         Ok(())
     }
 
-    fn del_ipv6_route(&mut self, route: Ipv6Route) -> bool {
+    /// Removes the static routes for `destination/prefix_len` on `if_id`.
+    /// Interface-managed routes follow the interface configuration instead.
+    fn del_ipv6_route(&mut self, destination: Ipv6Address, prefix_len: u8, if_id: NetIfId) -> bool {
         let before = self.routes_v6.len();
-        self.routes_v6.retain(|r| *r != route);
+        self.routes_v6.retain(|r| {
+            r.managed_by_interface
+                || !(r.destination == destination && r.prefix_len == prefix_len && r.if_id == if_id)
+        });
         self.routes_v6.len() != before
     }
 
@@ -926,9 +936,13 @@ pub fn add_ipv4_route_in(runtime: NetRuntimeHandle, route: Ipv4Route) -> Result<
 
 pub fn del_ipv4_route_in(
     runtime: NetRuntimeHandle,
-    route: Ipv4Route,
+    destination: Ipv4Address,
+    prefix_len: u8,
+    if_id: NetIfId,
 ) -> Result<bool, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.del_ipv4_route(route))
+    with_manager_mut_in(runtime, |m| {
+        m.del_ipv4_route(destination, prefix_len, if_id)
+    })
 }
 
 pub fn lookup_ipv4_route_in(
@@ -967,9 +981,13 @@ pub fn add_ipv6_route_in(runtime: NetRuntimeHandle, route: Ipv6Route) -> Result<
 
 pub fn del_ipv6_route_in(
     runtime: NetRuntimeHandle,
-    route: Ipv6Route,
+    destination: Ipv6Address,
+    prefix_len: u8,
+    if_id: NetIfId,
 ) -> Result<bool, NetworkError> {
-    with_manager_mut_in(runtime, |m| m.del_ipv6_route(route))
+    with_manager_mut_in(runtime, |m| {
+        m.del_ipv6_route(destination, prefix_len, if_id)
+    })
 }
 
 pub fn lookup_ipv6_route_in(

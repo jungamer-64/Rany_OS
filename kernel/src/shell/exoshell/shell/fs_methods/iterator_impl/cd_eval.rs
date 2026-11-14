@@ -112,6 +112,8 @@ impl ExoShell {
     net.stats(if_id)      - Show TX/RX statistics
     net.arp()             - Show ARP cache
     net.arp_insert(ip,mac)- Insert ARP entry manually
+    net.arp_resolve(if_id, ip)  - Resolve IPv4 neighbor via ARP
+    net.ndp_resolve(if_id, ip6) - Resolve IPv6 neighbor via NDP
     net.ping("ip", count) - Send ICMP echo
     net.dhcp_state(if_id) - Show DHCPv4/DHCPv6 state
     net.dhcp_discover()   - Send DHCPDISCOVER and return any offer
@@ -134,9 +136,12 @@ impl ExoShell {
   net.* - Routing
     net.routes()          - Show IPv4/IPv6 routing table
     net.route_add(dest, prefix_len, gateway, if_id [, metric])
-                          - Add IPv4 static route (CAP_NET_ADMIN)
+                          - Add IPv4/IPv6 static route (CAP_NET_ADMIN)
     net.route_del(dest, prefix_len, if_id)
-                          - Delete IPv4 route (CAP_NET_ADMIN)
+                          - Delete IPv4/IPv6 static route (CAP_NET_ADMIN)
+    net.route_default(gateway, if_id [, metric])
+                          - Set IPv4/IPv6 default route (CAP_NET_ADMIN)
+    net.route_lookup(ip)  - Show the route selected for a destination
 
   net.* - Firewall
     net.firewall()        - Show firewall status
