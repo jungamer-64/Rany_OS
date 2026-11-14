@@ -1629,22 +1629,35 @@ impl NetNamespace {
         ExoValue::Array(values)
     }
 
-    /// HTTP(S) GET を実行する。HTTPS は内蔵 root store で検証する。
-    ///
-    /// usage: net.http_get(url [, timeout_ms])
-    pub async fn http_get(args: &[ExoValue<'static>]) -> ExoValue<'static> {
-        const BODY_PREVIEW_LIMIT: usize = 4096;
-        let url = match args.first() {
-            Some(ExoValue::String(url)) => url.as_ref(),
-            _ => return ExoValue::Error(String::from("usage: net.http_get(url [, timeout_ms])")),
-        };
-        let Some(request) = crate::net::services::http::types::HttpRequest::get(url) else {
-            return ExoValue::Error(String::from("invalid absolute http(s) URL"));
-        };
+    fn printable_span(
+        span: crate::net::payload::PayloadSpanRef<'_>,
+        limit: usize,
+        out: &mut String,
+    ) {
+        for index in 0..span.total_len() {
+            if out.len() >= limit {
+                return;
+            }
+            let Some(byte) = span.byte_at(index) else {
+                return;
+            };
+            out.push(if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
+                char::from(byte)
+            } else {
+                '.'
+            });
+        }
+    }
+
+    async fn http_exchange(
+        request: crate::net::services::http::types::HttpRequest,
+        timeout: Option<&ExoValue<'static>>,
+    ) -> ExoValue<'static> {
+        const PREVIEW_LIMIT: usize = 4096;
         let mut client = crate::net::services::http::client::HttpClient::new(
             crate::net::runtime::default_runtime(),
         );
-        match args.get(1) {
+        match timeout {
             None => {}
             Some(ExoValue::Int(ms)) if *ms > 0 => client = client.with_timeout(*ms as u64),
             Some(_) => {
@@ -1653,30 +1666,99 @@ impl NetNamespace {
         }
         let response = match client.send(request).await {
             Ok(response) => response,
-            Err(e) => return ExoValue::Error(format!("HTTP request failed: {:?}", e)),
+            Err(e) => return ExoValue::Error(format!("HTTP request failed: {}", e)),
         };
-        let status = response.status_code.as_u16();
-        let body = response.into_body_payload();
-        let body_len = body.as_ref().map_or(0, |body| body.total_len());
-        let mut preview = String::new();
-        if let Some(body) = body.as_ref() {
-            let view = crate::net::payload::PacketPayloadView::new(body);
-            for index in 0..body_len.min(BODY_PREVIEW_LIMIT) {
-                let Some([byte]) = view.read_array::<1>(index) else {
-                    break;
-                };
-                preview.push(if byte.is_ascii_graphic() || byte.is_ascii_whitespace() {
-                    char::from(byte)
-                } else {
-                    '.'
-                });
+        let mut headers = BTreeMap::new();
+        for header in &response.headers {
+            let (Some(name), Some(value)) = (
+                header.name_span(&response.payload),
+                header.value_span(&response.payload),
+            ) else {
+                continue;
+            };
+            let mut name_text = String::new();
+            Self::printable_span(name, PREVIEW_LIMIT, &mut name_text);
+            let mut value_text = String::new();
+            Self::printable_span(value, PREVIEW_LIMIT, &mut value_text);
+            headers.insert(name_text, ExoValue::String(Cow::Owned(value_text)));
+        }
+        let mut reason = String::new();
+        if let Some(span) = response.reason_phrase() {
+            Self::printable_span(span, PREVIEW_LIMIT, &mut reason);
+        }
+        let mut body = String::new();
+        let mut body_len = 0usize;
+        if let Some(view) = response.body.as_ref() {
+            for span in view.spans(&response.payload) {
+                body_len += span.total_len();
+                Self::printable_span(span, PREVIEW_LIMIT, &mut body);
             }
         }
         let mut map = BTreeMap::new();
-        map.insert(String::from("status"), ExoValue::Int(i64::from(status)));
+        map.insert(
+            String::from("version"),
+            ExoValue::String(Cow::Borrowed(response.version.as_str())),
+        );
+        map.insert(
+            String::from("status"),
+            ExoValue::Int(i64::from(response.status_code.as_u16())),
+        );
+        map.insert(String::from("reason"), ExoValue::String(Cow::Owned(reason)));
+        map.insert(String::from("headers"), ExoValue::Map(headers));
         map.insert(String::from("body_len"), ExoValue::Int(body_len as i64));
-        map.insert(String::from("body"), ExoValue::String(Cow::Owned(preview)));
+        map.insert(String::from("body"), ExoValue::String(Cow::Owned(body)));
         ExoValue::Map(map)
+    }
+
+    /// HTTP(S) GET を実行する。HTTPS は内蔵 root store で検証する。
+    ///
+    /// usage: net.http_get(url [, timeout_ms])
+    pub async fn http_get(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let url = match args.first() {
+            Some(ExoValue::String(url)) => url.as_ref(),
+            _ => return ExoValue::Error(String::from("usage: net.http_get(url [, timeout_ms])")),
+        };
+        let Some(request) = crate::net::services::http::types::HttpRequest::get(url) else {
+            return ExoValue::Error(String::from("invalid absolute http(s) URL"));
+        };
+        Self::http_exchange(request, args.get(1)).await
+    }
+
+    /// HTTP(S) POST を実行する。
+    ///
+    /// usage: net.http_post(url, body [, content_type [, timeout_ms]])
+    pub async fn http_post(args: &[ExoValue<'static>]) -> ExoValue<'static> {
+        let (Some(ExoValue::String(url)), Some(ExoValue::String(body))) =
+            (args.first(), args.get(1))
+        else {
+            return ExoValue::Error(String::from(
+                "usage: net.http_post(url, body [, content_type [, timeout_ms]])",
+            ));
+        };
+        let content_type = match args.get(2) {
+            None => "text/plain; charset=utf-8",
+            Some(ExoValue::String(value)) => value.as_ref(),
+            Some(_) => return ExoValue::Error(String::from("content_type must be a string")),
+        };
+        let Some(mut writer) = crate::net::payload::GeneratedPacketWriter::new(
+            body.len(),
+            kernel_api::resource::net::DEFAULT_PACKET_HEADROOM,
+        ) else {
+            return ExoValue::Error(String::from("request body allocation failed"));
+        };
+        let Some(payload) = writer
+            .write_generated_bytes(body.as_bytes())
+            .and_then(|()| writer.finish())
+        else {
+            return ExoValue::Error(String::from("request body allocation failed"));
+        };
+        let Some(request) = crate::net::services::http::types::HttpRequest::post(url.as_ref())
+            .and_then(|request| request.header("Content-Type", content_type))
+            .and_then(|request| request.body_payload(payload))
+        else {
+            return ExoValue::Error(String::from("invalid URL or Content-Type"));
+        };
+        Self::http_exchange(request, args.get(3)).await
     }
 
     /// host HTTP service（0.0.0.0:80）を起動する（CAP_NET_ADMIN + CAP_NET_BIND）
@@ -1952,6 +2034,7 @@ impl ShellNamespace for NetNamespace {
                 "mdns_hosts" => Self::mdns_hosts().await,
                 // HTTP
                 "http_get" => Self::http_get(_args).await,
+                "http_post" => Self::http_post(_args).await,
                 "http_start" => Self::http_start().await,
                 "http_status" => Self::http_status().await,
                 // 時刻同期
@@ -1969,7 +2052,7 @@ impl ShellNamespace for NetNamespace {
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \
                      dns_servers, dns_add_server, dns_stats, mdns_hosts,\n  \
-                     http_get, http_start, http_status, ntp_sync, snapshot, events,\n  \
+                     http_get, http_post, http_start, http_status, ntp_sync, snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
                 )),

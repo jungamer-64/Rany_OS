@@ -14,4 +14,4 @@ pub use message::{
 pub use primitives::{
     ConnectionDirective, HttpMethod, HttpPort, HttpScheme, HttpStatusCode, HttpVersion,
 };
-pub use uri::{HttpHost, HttpRequestTarget, HttpRequestUri};
+pub use uri::{HttpRequestTarget, HttpRequestUri};

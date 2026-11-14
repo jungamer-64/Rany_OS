@@ -214,6 +214,22 @@ pub enum HttpClientError {
     Timer(kernel_api::service::time::TimerError),
 }
 
+impl core::fmt::Display for HttpClientError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::DnsResolutionFailed => f.write_str("DNS resolution failed"),
+            Self::ConnectionFailed => f.write_str("TCP connection failed"),
+            Self::InvalidUrl => f.write_str("invalid URL"),
+            Self::TlsHandshakeFailed => f.write_str("TLS handshake failed"),
+            Self::WriteError => f.write_str("request write failed"),
+            Self::ReadError => f.write_str("response read failed"),
+            Self::ParseError(error) => write!(f, "response parse failed: {:?}", error),
+            Self::Timeout => f.write_str("exchange timed out"),
+            Self::Timer(cause) => write!(f, "timeout timer unavailable: {}", cause),
+        }
+    }
+}
+
 /// HTTP/HTTPS クライアント
 pub struct HttpClient {
     runtime: NetRuntimeHandle,
@@ -318,26 +334,14 @@ impl HttpClient {
 #[cfg(test)]
 mod tests {
     use super::HttpClient;
-    use crate::net::services::http::types::{HttpHost, HttpPort, HttpRequestTarget, HttpScheme};
 
     #[test]
     fn split_request_uri_accepts_absolute() {
-        let Some(host) = HttpHost::parse("example.com") else {
-            panic!("valid host must be parsed");
+        let Some(uri) = crate::net::services::http::types::HttpRequestUri::parse(
+            "https://example.com:443/v1/health",
+        ) else {
+            panic!("absolute URI must be parsed");
         };
-        let Some(port) = HttpPort::new(443) else {
-            panic!("443 must be a valid HTTP port");
-        };
-        let Some(target) = HttpRequestTarget::parse("/v1/health") else {
-            panic!("valid request target must be parsed");
-        };
-
-        let uri = crate::net::services::http::types::HttpRequestUri::absolute(
-            HttpScheme::Https,
-            host,
-            port,
-            target,
-        );
 
         let Some((host, port, target, is_https)) = HttpClient::split_request_uri(uri) else {
             panic!("absolute URI must be split");

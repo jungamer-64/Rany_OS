@@ -132,27 +132,12 @@ impl HttpRequest {
         Some(self)
     }
 
-    pub fn header_typed(mut self, name: HttpHeaderName, value: HttpHeaderValue) -> Self {
-        self.headers.push(HttpHeader::new(name, value));
-        self
-    }
-
     pub fn body_payload(mut self, payload: PacketPayload) -> Option<Self> {
         let value = HttpHeaderValue::from_string(payload.total_len().to_string())?;
         self.headers
             .push(HttpHeader::new(HttpHeaderName::ContentLength, value));
         self.body = Some(payload);
         Some(self)
-    }
-
-    pub fn get_header(&self, name: HttpHeaderName) -> Option<&HttpHeaderValue> {
-        self.headers.iter().find_map(|header| {
-            if header.name.eq_name(&name) {
-                Some(&header.value)
-            } else {
-                None
-            }
-        })
     }
 
     pub fn has_header_name(&self, name: HttpHeaderName) -> bool {
@@ -168,26 +153,20 @@ impl HttpRequest {
 #[derive(Debug)]
 pub struct HttpBodyView {
     pub ranges: Vec<PayloadRange>,
-    total_len: usize,
 }
 
 impl HttpBodyView {
     pub fn from_range(range: PayloadRange) -> Self {
         Self {
-            total_len: range.total_len(),
             ranges: alloc::vec![range],
         }
     }
 
     pub fn from_ranges(ranges: Vec<PayloadRange>) -> Self {
-        let total_len = ranges.iter().map(PayloadRange::total_len).sum();
-        Self { ranges, total_len }
+        Self { ranges }
     }
 
-    pub fn total_len(&self) -> usize {
-        self.total_len
-    }
-
+    /// Body bytes in order; a chunked body spans several ranges.
     pub fn spans<'a>(
         &'a self,
         payload: &'a PacketPayload,
@@ -240,22 +219,9 @@ impl HttpInboundRequest {
             .is_some_and(|request_uri| request_uri.eq_bytes(uri.as_bytes()))
     }
 
-    pub fn connection_is(&self, value: &str) -> bool {
-        if let Some(directive) = self.connection_directive() {
-            return directive.as_header_value().eq_ignore_ascii_case(value);
-        }
-
-        self.get_header("Connection")
-            .is_some_and(|span| span.eq_ignore_ascii_case(value.as_bytes()))
-    }
-
     pub fn connection_directive(&self) -> Option<ConnectionDirective> {
         self.get_header("Connection")
             .and_then(ConnectionDirective::parse_span_ref)
-    }
-
-    pub fn content_type(&self) -> Option<PayloadSpanRef<'_>> {
-        self.get_header("Content-Type")
     }
 
     pub fn into_body_payload(self) -> Option<PacketPayload> {
@@ -320,19 +286,5 @@ pub struct HttpInboundResponse {
 impl HttpInboundResponse {
     pub fn reason_phrase(&self) -> Option<PayloadSpanRef<'_>> {
         self.reason_phrase.span(&self.payload)
-    }
-
-    pub fn get_header(&self, name: &str) -> Option<PayloadSpanRef<'_>> {
-        self.headers.iter().find_map(|header| {
-            if header.name_eq(&self.payload, name) {
-                header.value_span(&self.payload)
-            } else {
-                None
-            }
-        })
-    }
-
-    pub fn into_body_payload(self) -> Option<PacketPayload> {
-        self.body.and_then(|body| body.into_payload(self.payload))
     }
 }

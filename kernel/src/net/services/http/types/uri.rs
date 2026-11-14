@@ -175,43 +175,10 @@ impl HttpRequestUri {
         Some(Self::OriginForm(HttpRequestTarget::parse(value)?))
     }
 
-    pub fn absolute(
-        scheme: HttpScheme,
-        host: HttpHost,
-        port: HttpPort,
-        target: HttpRequestTarget,
-    ) -> Self {
-        Self::Absolute {
-            scheme,
-            host,
-            port,
-            target,
-        }
-    }
-
     pub fn as_request_target(&self) -> &HttpRequestTarget {
         match self {
             Self::OriginForm(target) => target,
             Self::Absolute { target, .. } => target,
-        }
-    }
-
-    pub fn into_request_target(self) -> HttpRequestTarget {
-        match self {
-            Self::OriginForm(target) => target,
-            Self::Absolute { target, .. } => target,
-        }
-    }
-
-    pub fn as_absolute(&self) -> Option<(HttpScheme, &HttpHost, HttpPort, &HttpRequestTarget)> {
-        match self {
-            Self::Absolute {
-                scheme,
-                host,
-                port,
-                target,
-            } => Some((*scheme, host, *port, target)),
-            Self::OriginForm(_) => None,
         }
     }
 

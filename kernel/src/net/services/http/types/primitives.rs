@@ -133,11 +133,9 @@ pub struct HttpStatusCode(u16);
 
 impl HttpStatusCode {
     pub const OK: Self = Self(200);
-    pub const CREATED: Self = Self(201);
     pub const BAD_REQUEST: Self = Self(400);
     pub const NOT_FOUND: Self = Self(404);
     pub const REQUEST_TIMEOUT: Self = Self(408);
-    pub const INTERNAL_SERVER_ERROR: Self = Self(500);
     pub const SERVICE_UNAVAILABLE: Self = Self(503);
 
     pub fn new(code: u16) -> Option<Self> {
@@ -159,11 +157,9 @@ impl HttpStatusCode {
     pub const fn reason_phrase(self) -> &'static str {
         match self.0 {
             200 => "OK",
-            201 => "Created",
             400 => "Bad Request",
             404 => "Not Found",
             408 => "Request Timeout",
-            500 => "Internal Server Error",
             503 => "Service Unavailable",
             _ => "Unknown",
         }

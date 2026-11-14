@@ -2,14 +2,15 @@
 // kernel/src/net/services/http/server/router.rs - サービス / HTTP / サーバ / router
 // ============================================================================
 
-use alloc::string::{String, ToString};
+use alloc::string::String;
 use alloc::{format, vec};
 use core::sync::atomic::Ordering;
 
 use crate::net::payload::GeneratedPacketWriter;
 use crate::net::runtime::NetRuntimeHandle;
 use crate::net::services::http::types::{
-    ConnectionDirective, HttpInboundRequest, HttpMethod, HttpVersion,
+    ConnectionDirective, HttpHeaderName, HttpHeaderValue, HttpInboundRequest, HttpMethod,
+    HttpResponse, HttpStatusCode, HttpVersion,
 };
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
@@ -36,7 +37,7 @@ fn keep_alive_for_request(request: &HttpInboundRequest) -> bool {
 }
 
 fn build_json_response_or_log(
-    status: &str,
+    status: HttpStatusCode,
     body: &str,
     keep_alive: bool,
     context: &str,
@@ -56,7 +57,7 @@ fn build_json_response_or_log(
 
 pub(super) fn build_service_unavailable_response_or_log() -> Option<PacketPayload> {
     build_json_response_or_log(
-        "503 Service Unavailable",
+        HttpStatusCode::SERVICE_UNAVAILABLE,
         "{\"status\":\"service_unavailable\"}",
         false,
         "service_unavailable",
@@ -65,7 +66,7 @@ pub(super) fn build_service_unavailable_response_or_log() -> Option<PacketPayloa
 
 pub(super) fn build_bad_request_response_or_log() -> Option<PacketPayload> {
     build_json_response_or_log(
-        "400 Bad Request",
+        HttpStatusCode::BAD_REQUEST,
         "{\"status\":\"bad_request\"}",
         false,
         "bad_request",
@@ -74,7 +75,7 @@ pub(super) fn build_bad_request_response_or_log() -> Option<PacketPayload> {
 
 pub(super) fn build_timeout_response_or_log() -> Option<PacketPayload> {
     build_json_response_or_log(
-        "408 Request Timeout",
+        HttpStatusCode::REQUEST_TIMEOUT,
         "{\"status\":\"timeout\"}",
         false,
         "timeout",
@@ -148,7 +149,7 @@ fn build_health_response_in(
         tx_errors,
         rx_errors
     );
-    build_json_response("200 OK", &body, keep_alive)
+    build_json_response(HttpStatusCode::OK, &body, keep_alive)
 }
 
 fn build_response_for_request(
@@ -168,7 +169,11 @@ fn build_response_for_request(
         return build_echo_response(request, keep_alive);
     }
 
-    build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
+    build_json_response(
+        HttpStatusCode::NOT_FOUND,
+        "{\"status\":\"not_found\"}",
+        keep_alive,
+    )
 }
 
 fn build_get_response(
@@ -198,7 +203,11 @@ fn build_get_response(
         return build_memory_info_response(keep_alive);
     }
 
-    build_json_response("404 Not Found", "{\"status\":\"not_found\"}", keep_alive)
+    build_json_response(
+        HttpStatusCode::NOT_FOUND,
+        "{\"status\":\"not_found\"}",
+        keep_alive,
+    )
 }
 
 fn build_echo_response(
@@ -207,15 +216,15 @@ fn build_echo_response(
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     if let Some(body) = request.into_body_payload() {
         build_payload_response(
-            "200 OK",
-            HeaderValue::DefaultContentType,
+            HttpStatusCode::OK,
+            "application/octet-stream",
             body,
             keep_alive,
             &[],
         )
     } else {
         build_json_response(
-            "400 Bad Request",
+            HttpStatusCode::BAD_REQUEST,
             "{\"status\":\"missing_body\"}",
             keep_alive,
         )
@@ -223,7 +232,7 @@ fn build_echo_response(
 }
 
 fn build_index_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
-    build_html_response("200 OK", index_html::INDEX_HTML, keep_alive)
+    build_html_response(HttpStatusCode::OK, index_html::INDEX_HTML, keep_alive)
 }
 
 fn build_log_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
@@ -250,7 +259,7 @@ fn build_log_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBui
     };
 
     build_custom_response_with_headers(
-        "200 OK",
+        HttpStatusCode::OK,
         "text/plain; charset=utf-8",
         logs,
         keep_alive,
@@ -262,7 +271,7 @@ fn build_executor_stats_response(
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     let Some(snapshot) = crate::task::scheduler_snapshot() else {
-        return build_json_response("503 Service Unavailable", "[]", keep_alive);
+        return build_json_response(HttpStatusCode::SERVICE_UNAVAILABLE, "[]", keep_alive);
     };
 
     let mut json = String::from("[\n");
@@ -282,7 +291,7 @@ fn build_executor_stats_response(
     }
     json.push_str("\n]");
 
-    build_json_response("200 OK", &json, keep_alive)
+    build_json_response(HttpStatusCode::OK, &json, keep_alive)
 }
 
 fn build_memory_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
@@ -299,7 +308,7 @@ fn build_memory_info_response(keep_alive: bool) -> Result<PacketPayload, HttpRes
 "#,
         total_kb, free_kb, used_kb, heap_used, heap_free
     );
-    build_json_response("200 OK", &json, keep_alive)
+    build_json_response(HttpStatusCode::OK, &json, keep_alive)
 }
 
 fn build_stats_response(
@@ -334,7 +343,7 @@ fn build_stats_response(
         requests, bytes_rx, bytes_tx, connections, heap_used, heap_free, timer_ticks
     );
 
-    build_json_response("200 OK", &json, keep_alive)
+    build_json_response(HttpStatusCode::OK, &json, keep_alive)
 }
 
 fn build_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBuildError> {
@@ -379,11 +388,11 @@ fn build_info_response(keep_alive: bool) -> Result<PacketPayload, HttpResponseBu
         spectre.using_retpoline
     );
 
-    build_json_response("200 OK", &json, keep_alive)
+    build_json_response(HttpStatusCode::OK, &json, keep_alive)
 }
 
 fn build_json_response(
-    status: &str,
+    status: HttpStatusCode,
     body: &str,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
@@ -391,97 +400,54 @@ fn build_json_response(
 }
 
 fn build_html_response(
-    status: &str,
+    status: HttpStatusCode,
     body: &str,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
     build_custom_response(status, "text/html; charset=utf-8", body, keep_alive)
 }
 
-enum HeaderValue {
-    Text(String),
-    DefaultContentType,
-}
-
 #[derive(Debug, Clone, Copy)]
 enum HttpResponseBuildError {
     AllocationFailed,
-}
-
-fn write_content_type_header(
-    head: &mut String,
-    content_type: HeaderValue,
-) -> Result<(), HttpResponseBuildError> {
-    head.push_str("Content-Type: ");
-    match content_type {
-        HeaderValue::Text(value) => head.push_str(&value),
-        HeaderValue::DefaultContentType => head.push_str("application/octet-stream"),
-    }
-    Ok(())
-}
-
-fn write_additional_headers(head: &mut String, additional_headers: &[(&str, &str)]) {
-    for (name, value) in additional_headers {
-        head.push_str(name);
-        head.push_str(": ");
-        head.push_str(value);
-        head.push_str("\r\n");
-    }
-}
-
-const fn connection_header_value(keep_alive: bool) -> &'static str {
-    if keep_alive { "keep-alive" } else { "close" }
-}
-
-fn write_status_line(head: &mut String, status: &str) {
-    head.push_str("HTTP/1.1 ");
-    head.push_str(status);
-    head.push_str("\r\n");
-}
-
-fn write_connection_header(head: &mut String, keep_alive: bool) {
-    head.push_str("Connection: ");
-    head.push_str(connection_header_value(keep_alive));
-    head.push_str("\r\n");
-}
-
-fn write_content_length_header(head: &mut String, body_len: usize) {
-    head.push_str("Content-Length: ");
-    head.push_str(&format!("{}", body_len));
-    head.push_str("\r\n\r\n");
+    InvalidHeader,
 }
 
 fn build_payload_response(
-    status: &str,
-    content_type: HeaderValue,
+    status: HttpStatusCode,
+    content_type: &'static str,
     body: PacketPayload,
     keep_alive: bool,
     additional_headers: &[(&str, &str)],
 ) -> Result<PacketPayload, HttpResponseBuildError> {
-    let mut head = String::new();
-    write_status_line(&mut head, status);
-    write_content_type_header(&mut head, content_type)?;
-    head.push_str("\r\n");
-    write_additional_headers(&mut head, additional_headers);
-    write_connection_header(&mut head, keep_alive);
-    write_content_length_header(&mut head, body.total_len());
-
-    let mut writer = GeneratedPacketWriter::new(head.len(), DEFAULT_PACKET_HEADROOM)
-        .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    writer
-        .write_generated_bytes(head.as_bytes())
-        .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    let payload = writer
-        .finish()
-        .ok_or(HttpResponseBuildError::AllocationFailed)?;
-    payload
-        .try_append(body)
-        .map_err(|_| HttpResponseBuildError::AllocationFailed)
+    let connection = if keep_alive {
+        ConnectionDirective::KeepAlive
+    } else {
+        ConnectionDirective::Close
+    };
+    let mut response = HttpResponse::new(status, status.reason_phrase()).header_typed(
+        HttpHeaderName::ContentType,
+        HttpHeaderValue::from_static(content_type),
+    );
+    for (name, value) in additional_headers {
+        response = response
+            .header(name, value)
+            .ok_or(HttpResponseBuildError::InvalidHeader)?;
+    }
+    response
+        .header_typed(
+            HttpHeaderName::Connection,
+            HttpHeaderValue::from_static(connection.as_header_value()),
+        )
+        .body_payload(body)
+        .ok_or(HttpResponseBuildError::AllocationFailed)?
+        .into_payload()
+        .ok_or(HttpResponseBuildError::AllocationFailed)
 }
 
 fn build_custom_response_with_headers(
-    status: &str,
-    content_type: &str,
+    status: HttpStatusCode,
+    content_type: &'static str,
     body: &str,
     keep_alive: bool,
     additional_headers: &[(&str, &str)],
@@ -493,7 +459,7 @@ fn build_custom_response_with_headers(
         .ok_or(HttpResponseBuildError::AllocationFailed)?;
     build_payload_response(
         status,
-        HeaderValue::Text(content_type.to_string()),
+        content_type,
         writer
             .finish()
             .ok_or(HttpResponseBuildError::AllocationFailed)?,
@@ -503,8 +469,8 @@ fn build_custom_response_with_headers(
 }
 
 fn build_custom_response(
-    status: &str,
-    content_type: &str,
+    status: HttpStatusCode,
+    content_type: &'static str,
     body: &str,
     keep_alive: bool,
 ) -> Result<PacketPayload, HttpResponseBuildError> {
