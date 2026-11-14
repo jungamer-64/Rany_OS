@@ -23,13 +23,19 @@ pub fn test_echo_builder() {
 
     assert_eq!(len, IcmpEchoHeader::SIZE);
 
-    // Verify we can parse it back
-    let packet = IcmpPacket::parse(&buffer[..len]).unwrap();
-    assert_eq!(packet.icmp_type(), IcmpType::EchoRequest);
-    assert!(packet.verify_checksum());
-
-    let echo = packet.as_echo().unwrap();
-    assert_eq!(echo.identifier(), 1234);
-    assert_eq!(echo.sequence(), 1);
-    assert!(echo.data().is_empty());
+    // RFC 792 echo layout: type, code, checksum, identifier, sequence.
+    let wire = &buffer[..len];
+    assert_eq!(wire[0], u8::from(IcmpType::EchoRequest));
+    assert_eq!(wire[1], 0);
+    assert_eq!(&wire[4..6], &1234u16.to_be_bytes());
+    assert_eq!(&wire[6..8], &1u16.to_be_bytes());
+    // The one's-complement sum over a message with a valid checksum is 0xffff.
+    let mut sum = 0u32;
+    for word in wire.chunks(2) {
+        sum += u32::from(u16::from_be_bytes([word[0], *word.get(1).unwrap_or(&0)]));
+    }
+    while sum > 0xffff {
+        sum = (sum & 0xffff) + (sum >> 16);
+    }
+    assert_eq!(sum, 0xffff);
 }

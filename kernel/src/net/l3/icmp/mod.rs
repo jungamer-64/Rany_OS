@@ -9,7 +9,6 @@ use super::ipv4::{Ipv4Address, data_checksum};
 
 /// ICMP message type
 mod builder_impl;
-mod packet_impl;
 mod processor_build_impl;
 pub(crate) mod processor_impl;
 mod processor_payload_impl;
@@ -235,17 +234,6 @@ impl IcmpEchoHeader {
     pub fn set_sequence(&mut self, seq: u16) {
         self.sequence = seq.to_be_bytes();
     }
-}
-
-/// Zero-copy ICMP packet view
-pub struct IcmpPacket<'a> {
-    /// Raw packet data
-    data: &'a [u8],
-}
-
-/// ICMP Echo packet view
-pub struct IcmpEcho<'a> {
-    data: &'a [u8],
 }
 
 /// ICMP packet builder

@@ -158,43 +158,11 @@ impl Icmpv6Type {
 // ICMPv6 Header
 // =====================================================
 
-/// ICMPv6 header (4 bytes)
-#[derive(Debug, Clone, Copy)]
-#[repr(C, packed)]
-pub struct Icmpv6Header {
-    /// Message type
-    pub icmp_type: u8,
-    /// Message code
-    pub code: u8,
-    /// Checksum (mandatory, uses IPv6 pseudo-header)
-    pub checksum: [u8; 2],
-}
-
 /// ICMPv6 header size
 pub const ICMPV6_HEADER_SIZE: usize = 4;
 
 /// ICMPv6 Echo header size (type + code + checksum + identifier + sequence)
 pub const ICMPV6_ECHO_HEADER_SIZE: usize = 8;
-
-impl Icmpv6Header {
-    /// Get message type
-    #[inline]
-    pub fn msg_type(&self) -> Icmpv6Type {
-        Icmpv6Type::from(self.icmp_type)
-    }
-
-    /// Get code
-    #[inline]
-    pub fn code(&self) -> u8 {
-        self.code
-    }
-
-    /// Get checksum
-    #[inline]
-    pub fn checksum(&self) -> u16 {
-        u16::from_be_bytes(self.checksum)
-    }
-}
 
 // =====================================================
 // ICMPv6 Process Result

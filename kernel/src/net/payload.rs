@@ -449,8 +449,6 @@ pub struct OwnedPayloadWindow {
     range: PayloadRange,
 }
 
-pub type PayloadFront = PacketPayloadFront;
-
 pub struct GeneratedPacketWriter {
     packet: PacketRef,
     offset: usize,
