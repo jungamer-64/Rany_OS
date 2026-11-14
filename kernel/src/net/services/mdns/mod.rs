@@ -15,6 +15,7 @@
 
 // Building block: mDNS implementation
 
+use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
 
@@ -22,7 +23,7 @@ use crate::net::l3::ipv4::Ipv4Address;
 use crate::net::l4::udp::UdpAddr;
 use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView, PayloadRange};
 use crate::net::runtime::NetRuntimeHandle;
-use crate::net::services::dns::{DnsNameOwned, DnsNameView};
+use crate::net::services::dns::{DnsNameOwned, DnsNameView, DnsNormalizedName};
 use crate::sync::PoisonLock;
 use kernel_api::resource::net::{DEFAULT_PACKET_HEADROOM, PacketPayload};
 
@@ -78,22 +79,10 @@ const MDNS_MAX_CACHE_ENTRIES: usize = 64;
 /// mDNS処理結果
 #[derive(Debug)]
 pub enum MdnsResult {
-    /// クエリ送信が必要
-    SendQuery {
-        /// 解決対象のホスト名
-        target_name: DnsNameOwned,
-    },
     /// 応答送信が必要
     SendResponse {
         /// 送信する packet-backed DNS response
         payload: PacketPayload,
-    },
-    /// 名前解決に成功
-    Resolved {
-        /// 解決されたホスト名
-        name: DnsNameOwned,
-        /// 解決されたIPアドレス
-        ip: Ipv4Address,
     },
     /// キャッシュが更新された
     CacheUpdated,
@@ -103,35 +92,15 @@ pub enum MdnsResult {
     InvalidPacket,
 }
 
-/// mDNS送信レポート (送信待ちパケット情報)
-#[derive(Debug)]
-pub struct MdnsReport {
-    /// 送信先ホスト名
-    pub name: DnsNameOwned,
-    /// IPアドレス (応答の場合)
-    pub ip: Option<Ipv4Address>,
-    /// TTL (応答の場合)
-    pub ttl: u32,
-    /// クエリかレスポンスか
-    pub is_response: bool,
-    /// タイムスタンプ
-    pub timestamp: u64,
-}
-
 // ============================================================================
 // Structs
 // ============================================================================
 
-/// mDNSキャッシュエントリ
-#[derive(Debug)]
-pub struct MdnsCacheEntry {
-    /// DNS response packet that owns the cached name ranges.
-    pub response: PacketPayload,
-    /// Packet-backed cached host name.
-    pub name: DnsNameView,
-    /// 解決されたIPアドレス
+/// Address learned for a `.local` host from an mDNS answer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MdnsResolvedHost {
     pub ip: Ipv4Address,
-    /// 有効期限 (秒単位のタイムスタンプ)
+    /// 有効期限 (秒単位の uptime)
     pub expiry_time: u64,
 }
 
@@ -144,15 +113,14 @@ pub struct MdnsService {
     hostname: String,
     /// 自ホストのIPアドレス
     local_ip: Ipv4Address,
-    /// 名前解決キャッシュ (ホスト名 → キャッシュエントリ)
-    cache: Vec<MdnsCacheEntry>,
-    /// 送信待ちレポート
-    pending_reports: Vec<MdnsReport>,
+    /// 送信待ちの one-shot query (RFC 6762 Section 5.1)
+    pending_queries: Vec<DnsNormalizedName>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum MdnsCommand {
     SetLocalIp(Ipv4Address),
+    Query(DnsNormalizedName),
 }
 
 // ============================================================================
@@ -170,8 +138,7 @@ impl MdnsService {
             runtime,
             hostname,
             local_ip,
-            cache: Vec::new(),
-            pending_reports: Vec::new(),
+            pending_queries: Vec::new(),
         }
     }
 
@@ -216,6 +183,16 @@ impl MdnsService {
         // LOOP_PROOF: mode=event; reason=The retained responder awaits datagrams with a timer and returns when the socket or timer can no longer provide service.;
         loop {
             self.drain_runtime_commands();
+            for name in core::mem::take(&mut self.pending_queries) {
+                let Some(payload) = DnsNameOwned::parse_ascii(name.as_str())
+                    .ok()
+                    .and_then(|name| Self::build_query_payload(&name))
+                else {
+                    continue;
+                };
+                let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
+                let _ = socket.send(payload, dst).await;
+            }
             // パケット受信を待機
             match crate::task::with_timeout(socket.recv(), 100).await {
                 crate::task::TimeoutResult::Completed(Some((_if_id, src, ttl, packet))) => {
@@ -247,25 +224,6 @@ impl MdnsService {
                         }
                         _ => {}
                     }
-
-                    // 保留中のレポート（クエリなど）があれば送信
-                    let reports = self.take_pending_reports();
-                    for report in reports {
-                        if report.is_response {
-                            if let Some(ip) = report.ip
-                                && let Some(payload) =
-                                    Self::build_response_payload(&report.name, ip, report.ttl)
-                            {
-                                let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                let _ = socket.send(payload, dst).await;
-                            }
-                        } else {
-                            if let Some(payload) = Self::build_query_payload(&report.name) {
-                                let dst = UdpAddr::new(MDNS_MULTICAST_GROUP, MDNS_PORT);
-                                let _ = socket.send(payload, dst).await;
-                            }
-                        }
-                    }
                 }
                 crate::task::TimeoutResult::Completed(None) => {
                     return Err("mDNS socket closed");
@@ -279,18 +237,10 @@ impl MdnsService {
 
             // 定期的なキャッシュクリーンアップ
             let now = crate::task::current_tick() / 1000;
-            self.cleanup_expired(now);
+            if let Ok(mut hosts) = runtime_state_for(self.runtime).hosts.lock() {
+                hosts.retain(|_, host| now < host.expiry_time);
+            }
         }
-    }
-
-    /// ホスト名を取得
-    pub fn hostname(&self) -> &str {
-        &self.hostname
-    }
-
-    /// ローカルIPを取得
-    pub fn local_ip(&self) -> Ipv4Address {
-        self.local_ip
     }
 
     /// ローカルIPを設定
@@ -301,6 +251,11 @@ impl MdnsService {
     fn apply_command(&mut self, command: MdnsCommand) {
         match command {
             MdnsCommand::SetLocalIp(ip) => self.set_local_ip(ip),
+            MdnsCommand::Query(name) => {
+                if !self.pending_queries.contains(&name) {
+                    self.pending_queries.push(name);
+                }
+            }
         }
     }
 
@@ -312,16 +267,6 @@ impl MdnsService {
         for command in commands {
             self.apply_command(command);
         }
-    }
-
-    /// キャッシュエントリ数を取得
-    pub fn cache_len(&self) -> usize {
-        self.cache.len()
-    }
-
-    /// 送信待ちレポートを取得してクリア
-    pub fn take_pending_reports(&mut self) -> Vec<MdnsReport> {
-        core::mem::take(&mut self.pending_reports)
     }
 
     fn parse_a_record_view(
@@ -343,47 +288,46 @@ impl MdnsService {
         Ok(Some((name, ip, record.6)))
     }
 
-    /// Aレコードをキャッシュに追加・更新する。TTL=0のgoodbyeパケットはキャッシュ削除。
-    /// 正常にキャッシュ更新された場合trueを返す。
+    /// Aレコードを host table に追加・更新する。TTL=0 の goodbye は削除。
+    /// 正常に更新された場合 true を返す。
     fn cache_a_record_view(
         &mut self,
-        response: PacketPayload,
-        name: DnsNameView,
+        response: &PacketPayload,
+        name: &DnsNameView,
         ip: Ipv4Address,
         ttl: u32,
         current_time: u64,
     ) -> bool {
-        let Some(last_label_index) = name.labels().len().checked_sub(1) else {
+        let Some(key) = DnsNormalizedName::from_labels(response, name.labels()) else {
             return false;
         };
-        let Some(last_label) = name.labels()[last_label_index].span(&response) else {
-            return false;
-        };
-        if !last_label.eq_ignore_ascii_case(b"local") {
+        if !key.as_str().ends_with(".local") {
             log::warn!("[NET] mDNS: Ignoring non-local name");
             return false;
         }
-
+        let Ok(mut hosts) = runtime_state_for(self.runtime).hosts.lock() else {
+            return false;
+        };
         if ttl == 0 {
-            self.cache
-                .retain(|entry| !mdns_name_view_eq(&entry.response, &entry.name, &response, &name));
+            hosts.remove(&key);
             return false;
         }
-
-        let expiry = current_time + ttl as u64;
-
-        self.cache
-            .retain(|entry| !mdns_name_view_eq(&entry.response, &entry.name, &response, &name));
-        if self.cache.len() >= MDNS_MAX_CACHE_ENTRIES {
-            self.evict_oldest();
+        if !hosts.contains_key(&key) && hosts.len() >= MDNS_MAX_CACHE_ENTRIES {
+            let soonest = hosts
+                .iter()
+                .min_by_key(|(_, host)| host.expiry_time)
+                .map(|(key, _)| key.clone());
+            if let Some(soonest) = soonest {
+                hosts.remove(&soonest);
+            }
         }
-
-        self.cache.push(MdnsCacheEntry {
-            response,
-            name,
-            ip,
-            expiry_time: expiry,
-        });
+        hosts.insert(
+            key,
+            MdnsResolvedHost {
+                ip,
+                expiry_time: current_time.saturating_add(u64::from(ttl)),
+            },
+        );
         true
     }
 
@@ -428,26 +372,6 @@ impl MdnsService {
         writer.write_u16_be(4)?;
         writer.write_generated_bytes(ip.as_bytes())?;
         writer.finish()
-    }
-
-    /// 期限切れキャッシュエントリを削除
-    ///
-    /// # Arguments
-    /// - `current_time` - 現在時刻 (秒単位)
-    pub fn cleanup_expired(&mut self, current_time: u64) {
-        self.cache.retain(|entry| current_time < entry.expiry_time);
-    }
-
-    /// 最も古いキャッシュエントリを削除 (キャッシュが一杯の場合)
-    fn evict_oldest(&mut self) {
-        if let Some((oldest_index, _)) = self
-            .cache
-            .iter()
-            .enumerate()
-            .min_by_key(|(_, entry)| entry.expiry_time)
-        {
-            self.cache.remove(oldest_index);
-        }
     }
 
     /// Process a single mDNS payload in DNS wire format.
@@ -541,7 +465,7 @@ impl MdnsService {
         };
 
         if let Some((name, ip, ttl)) = parsed_answer {
-            if self.cache_a_record_view(packet, name, ip, ttl, current_time) {
+            if self.cache_a_record_view(&packet, &name, ip, ttl, current_time) {
                 MdnsResult::CacheUpdated
             } else {
                 MdnsResult::Ignored
@@ -578,53 +502,6 @@ impl MdnsService {
 // ============================================================================
 // Helper Functions
 // ============================================================================
-
-/// DNS名をエンコード
-///
-/// ドメイン名 (例: "foo.local") をDNSラベル形式にエンコードする。
-/// 各ラベルは長さバイト + データの形式で、末尾にゼロバイトが付く。
-///
-/// # Arguments
-/// - `buffer` - 出力バッファ
-/// - `offset` - 書き込み開始位置
-/// - `name` - エンコードするドメイン名
-///
-/// # Returns
-/// 書き込み後のオフセット。バッファが小さすぎる場合はNone。
-pub fn encode_dns_name(buffer: &mut [u8], mut offset: usize, name: &str) -> Option<usize> {
-    for label in name.split('.') {
-        if label.is_empty() {
-            continue;
-        }
-
-        let len = label.len();
-
-        // Each label must be 63 bytes or less
-        if len > DNS_LABEL_MAX_LEN {
-            return None;
-        }
-
-        // Need space for length byte + label data
-        if offset + 1 + len > buffer.len() {
-            return None;
-        }
-
-        buffer[offset] = len as u8;
-        offset += 1;
-
-        buffer[offset..offset + len].copy_from_slice(label.as_bytes());
-        offset += len;
-    }
-
-    // Null terminator
-    if offset >= buffer.len() {
-        return None;
-    }
-    buffer[offset] = 0;
-    offset += 1;
-
-    Some(offset)
-}
 
 fn dns_name_wire_len(name: &DnsNameOwned) -> Option<usize> {
     let mut total = 1usize;
@@ -691,73 +568,6 @@ fn handle_compression_pointer_view(
     }
     *jumped = true;
     Some(pointer)
-}
-
-pub fn decode_dns_name_view(
-    view: &PacketPayloadView<'_>,
-    offset: usize,
-) -> Option<(String, usize)> {
-    let mut name = String::new();
-    let mut current = offset;
-    let mut jumped = false;
-    let mut final_offset = offset;
-    let mut jump_count = 0;
-    let max_jumps = 128;
-
-    // LOOP_PROOF: mode=event; reason=Labels advance within the finite packet and compression pointers consume the jump budget, with termination or invalid encoding returning.;
-    loop {
-        if current >= view.total_len() {
-            return None;
-        }
-
-        let len_byte = view.read_array::<1>(current).map(|bytes| bytes[0])?;
-
-        if len_byte == 0 {
-            if !jumped {
-                final_offset = current + 1;
-            }
-            break;
-        }
-
-        if len_byte & DNS_COMPRESSION_MASK == DNS_COMPRESSION_MASK {
-            current = handle_compression_pointer_view(
-                view,
-                current,
-                &mut final_offset,
-                &mut jumped,
-                &mut jump_count,
-                max_jumps,
-            )?;
-            continue;
-        }
-
-        let label_len = len_byte as usize;
-        if label_len > DNS_LABEL_MAX_LEN {
-            return None;
-        }
-        current += 1;
-
-        if current + label_len > view.total_len() {
-            return None;
-        }
-
-        if !name.is_empty() {
-            name.push('.');
-        }
-
-        if name.len() + label_len > DNS_NAME_MAX_LEN {
-            return None;
-        }
-
-        let label = view.read_fixed_bytes::<DNS_LABEL_MAX_LEN>(current, label_len)?;
-        for &byte in label.as_slice() {
-            name.push(byte as char);
-        }
-
-        current += label_len;
-    }
-
-    Some((name, final_offset))
 }
 
 pub fn decode_dns_name_range_view(
@@ -827,52 +637,6 @@ pub fn decode_dns_name_range_view(
     ))
 }
 
-/// mDNSマルチキャストMACアドレスを取得
-///
-/// mDNSマルチキャストグループ 224.0.0.251 に対応するイーサネット
-/// マルチキャストMACアドレス (01:00:5E:00:00:FB) を返す。
-///
-/// IEEE 802.3マルチキャストMACマッピング:
-/// - プレフィックス: 01:00:5E
-/// - 下位23ビットにIPマルチキャストアドレスの下位23ビットをマッピング
-pub fn multicast_mac() -> [u8; 6] {
-    [0x01, 0x00, 0x5E, 0x00, 0x00, 0xFB]
-}
-
-fn mdns_name_view_eq(
-    lhs_payload: &PacketPayload,
-    lhs: &DnsNameView,
-    rhs_payload: &PacketPayload,
-    rhs: &DnsNameView,
-) -> bool {
-    if lhs.labels().len() != rhs.labels().len() {
-        return false;
-    }
-    lhs.labels()
-        .iter()
-        .zip(rhs.labels())
-        .all(|(lhs_label, rhs_label)| {
-            let Some(lhs_span) = lhs_label.span(lhs_payload) else {
-                return false;
-            };
-            let Some(rhs_span) = rhs_label.span(rhs_payload) else {
-                return false;
-            };
-            if lhs_span.total_len() != rhs_span.total_len() {
-                return false;
-            }
-            (0..lhs_span.total_len()).all(|index| {
-                let Some(lhs_byte) = lhs_span.byte_at(index) else {
-                    return false;
-                };
-                let Some(rhs_byte) = rhs_span.byte_at(index) else {
-                    return false;
-                };
-                lhs_byte.eq_ignore_ascii_case(&rhs_byte)
-            })
-        })
-}
-
 /// DNS応答レコードをパースする
 /// 返り値: (rtype, rclass_masked, rdlength, next_offset, rdata_start, name, ttl)
 fn parse_dns_answer_record_view(
@@ -918,6 +682,8 @@ fn is_inet_a_record(rtype: u16, rclass_masked: u16, rdlength: usize) -> bool {
 pub(crate) struct MdnsRuntimeState {
     service: PoisonLock<Option<MdnsService>>,
     commands: PoisonLock<Vec<MdnsCommand>>,
+    /// Authoritative `.local` host table; written by the service task only.
+    hosts: PoisonLock<BTreeMap<DnsNormalizedName, MdnsResolvedHost>>,
 }
 
 impl MdnsRuntimeState {
@@ -925,6 +691,7 @@ impl MdnsRuntimeState {
         Self {
             service: PoisonLock::new(None),
             commands: PoisonLock::new(Vec::new()),
+            hosts: PoisonLock::new(BTreeMap::new()),
         }
     }
 }
@@ -964,4 +731,53 @@ pub(crate) fn enqueue_command_in(runtime: NetRuntimeHandle, command: MdnsCommand
 
 pub(crate) fn set_local_ip_in(runtime: NetRuntimeHandle, ip: Ipv4Address) {
     enqueue_command_in(runtime, MdnsCommand::SetLocalIp(ip));
+}
+
+/// How long a one-shot `.local` query waits for an answer (RFC 6762 Section 5.1).
+const MDNS_RESOLVE_TIMEOUT_MS: u64 = 1_000;
+const MDNS_RESOLVE_POLL_MS: u64 = 100;
+
+fn lookup_host_in(runtime: NetRuntimeHandle, name: &DnsNormalizedName) -> Option<Ipv4Address> {
+    let now = crate::task::current_tick() / 1000;
+    runtime_state_for(runtime)
+        .hosts
+        .lock()
+        .ok()?
+        .get(name)
+        .filter(|host| now < host.expiry_time)
+        .map(|host| host.ip)
+}
+
+/// Resolves a `.local` name: the host table answers first, otherwise one
+/// query is multicast and the table is polled until the answer deadline.
+pub async fn resolve_ipv4_in(
+    runtime: NetRuntimeHandle,
+    name: &DnsNormalizedName,
+) -> Option<Ipv4Address> {
+    if let Some(ip) = lookup_host_in(runtime, name) {
+        return Some(ip);
+    }
+    enqueue_command_in(runtime, MdnsCommand::Query(name.clone()));
+    let mut waited = 0;
+    while waited < MDNS_RESOLVE_TIMEOUT_MS {
+        crate::task::sleep_ms(MDNS_RESOLVE_POLL_MS).await.ok()?;
+        waited += MDNS_RESOLVE_POLL_MS;
+        if let Some(ip) = lookup_host_in(runtime, name) {
+            return Some(ip);
+        }
+    }
+    None
+}
+
+/// Live `.local` hosts with their remaining TTL in seconds.
+pub fn hosts_in(runtime: NetRuntimeHandle) -> Vec<(DnsNormalizedName, Ipv4Address, u64)> {
+    let now = crate::task::current_tick() / 1000;
+    let Ok(hosts) = runtime_state_for(runtime).hosts.lock() else {
+        return Vec::new();
+    };
+    hosts
+        .iter()
+        .filter(|(_, host)| now < host.expiry_time)
+        .map(|(name, host)| (name.clone(), host.ip, host.expiry_time - now))
+        .collect()
 }

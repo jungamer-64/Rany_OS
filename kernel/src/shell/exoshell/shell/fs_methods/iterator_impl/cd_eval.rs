@@ -163,6 +163,7 @@ impl ExoShell {
         net.dns_servers()     - List configured DNS servers
         net.dns_add_server("ip") - Add IPv4/IPv6 DNS server (CAP_NET_ADMIN)
         net.dns_stats()       - DNS query and cache statistics
+        net.mdns_hosts()      - .local hosts learned via mDNS
     net.ntp_sync("ip")    - Sync wall clock via SNTP (CAP_NET_ADMIN)
     net.snapshot()        - Full network diagnostic snapshot
     net.events(limit?)    - Recent network events (default: 20)

@@ -94,10 +94,19 @@ pub fn add_ipv4_server_in(runtime: crate::net::runtime::NetRuntimeHandle, server
 }
 
 /// 非同期でIPv4アドレスを解決
+///
+/// Names under `local.` are link-local and resolved only by mDNS
+/// (RFC 6762 Section 3).
 pub async fn resolve_ipv4_in(
     runtime: crate::net::runtime::NetRuntimeHandle,
     name: &str,
 ) -> Option<Ipv4Address> {
+    if let Some(local) =
+        DnsNormalizedName::parse_ascii(name).filter(|name| name.as_str().ends_with(".local"))
+    {
+        return crate::net::services::mdns::resolve_ipv4_in(runtime, &local).await;
+    }
+
     let client = match super::shared_client_lock_in(runtime).lock() {
         Ok(g) => *g,
         Err(_) => None,

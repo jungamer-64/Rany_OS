@@ -197,6 +197,20 @@ pub async fn api_queries_preserve_runtime_ownership_smoke() -> bool {
     true
 }
 
+/// Address the responder puts in its answer to a query for `host`.
+fn mdns_answered_address(service: &mut mdns::MdnsService, host: &str) -> Option<Ipv4Address> {
+    let name = crate::net::services::dns::DnsNameOwned::parse_ascii(host).ok()?;
+    let query = mdns::MdnsService::build_query_payload(&name)?;
+    match service.process_packet_payload(query, Ipv4Address::ANY, 255, 0) {
+        mdns::MdnsResult::SendResponse { payload } => {
+            let view = crate::net::payload::PacketPayloadView::new(&payload);
+            view.read_array::<4>(view.total_len().checked_sub(4)?)
+                .map(Ipv4Address::new)
+        }
+        _ => None,
+    }
+}
+
 pub async fn mdns_configuration_commands_preserve_service_ownership_smoke() -> bool {
     let first = CommandRuntime::new();
     let second = CommandRuntime::new();
@@ -204,10 +218,16 @@ pub async fn mdns_configuration_commands_preserve_service_ownership_smoke() -> b
     mdns::init_in(second.runtime, "query-b".into(), Ipv4Address::ANY);
     let mut service = mdns::take_service_for_task_in(first.runtime).expect("mDNS owner");
     assert!(mdns::take_service_for_task_in(first.runtime).is_none());
-    assert_eq!(service.local_ip(), Ipv4Address::ANY);
+    assert_eq!(
+        mdns_answered_address(&mut service, "query-a.local"),
+        Some(Ipv4Address::ANY)
+    );
     let assigned = Ipv4Address::new([10, 0, 0, 42]);
     mdns::set_local_ip_in(first.runtime, assigned);
-    assert_eq!(service.local_ip(), Ipv4Address::ANY);
+    assert_eq!(
+        mdns_answered_address(&mut service, "query-a.local"),
+        Some(Ipv4Address::ANY)
+    );
 
     // Normal run drains configuration before binding/joining. This fixture has
     // no initialized IP stack: joining completes with a service failure,
@@ -219,9 +239,15 @@ pub async fn mdns_configuration_commands_preserve_service_ownership_smoke() -> b
         }
         TimeoutResult::TimerFailed(cause) => panic!("mDNS deadline: {cause:?}"),
     }
-    assert_eq!(service.local_ip(), assigned);
-    let other = mdns::take_service_for_task_in(second.runtime).expect("second mDNS owner");
-    assert_eq!(other.local_ip(), Ipv4Address::ANY);
+    assert_eq!(
+        mdns_answered_address(&mut service, "query-a.local"),
+        Some(assigned)
+    );
+    let mut other = mdns::take_service_for_task_in(second.runtime).expect("second mDNS owner");
+    assert_eq!(
+        mdns_answered_address(&mut other, "query-b.local"),
+        Some(Ipv4Address::ANY)
+    );
     first.drain().await;
     second.drain().await;
     true

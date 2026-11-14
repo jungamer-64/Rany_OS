@@ -218,22 +218,9 @@ pub enum DnsNameError {
 pub struct DnsNameOwned {
     payload: PacketPayload,
     labels: Vec<PayloadRange>,
-    text_len: usize,
 }
 
 impl DnsNameOwned {
-    pub(crate) fn from_payload_labels(
-        payload: PacketPayload,
-        labels: Vec<PayloadRange>,
-        text_len: usize,
-    ) -> Self {
-        Self {
-            payload,
-            labels,
-            text_len,
-        }
-    }
-
     pub fn parse_ascii(name: &str) -> Result<Self, DnsNameError> {
         let trimmed = name.strip_suffix('.').unwrap_or(name);
         if trimmed.is_empty() {
@@ -241,8 +228,7 @@ impl DnsNameOwned {
         }
 
         let mut payload_len = 0usize;
-        let mut text_len = 0usize;
-        for (index, label) in trimmed.split('.').enumerate() {
+        for label in trimmed.split('.') {
             if label.is_empty() {
                 return Err(DnsNameError::EmptyLabel);
             }
@@ -256,10 +242,6 @@ impl DnsNameOwned {
             }
 
             payload_len = payload_len.saturating_add(bytes.len());
-            text_len = text_len.saturating_add(bytes.len());
-            if index > 0 {
-                text_len = text_len.saturating_add(1);
-            }
         }
 
         let mut writer = GeneratedPacketWriter::new(payload_len, DEFAULT_PACKET_HEADROOM)
@@ -283,7 +265,7 @@ impl DnsNameOwned {
             );
         }
 
-        Ok(Self::from_payload_labels(payload, labels, text_len))
+        Ok(Self { payload, labels })
     }
 
     pub fn labels(&self) -> &[PayloadRange] {
@@ -292,10 +274,6 @@ impl DnsNameOwned {
 
     pub fn payload(&self) -> &PacketPayload {
         &self.payload
-    }
-
-    pub fn text_len(&self) -> usize {
-        self.text_len
     }
 }
 
@@ -443,18 +421,23 @@ impl DnsNormalizedName {
 
     /// Builds the normalized form of a validated packet-backed name.
     pub fn from_name(name: &DnsNameOwned) -> Option<Self> {
+        Self::from_labels(name.payload(), name.labels())
+    }
+
+    /// Builds the normalized form of labels held in `payload`.
+    pub fn from_labels(payload: &PacketPayload, labels: &[PayloadRange]) -> Option<Self> {
         let mut key = String::new();
-        key.try_reserve_exact(name.text_len()).ok()?;
-        for (index, label) in name.labels().iter().enumerate() {
+        for (index, label) in labels.iter().enumerate() {
+            let span = label.span(payload)?;
+            key.try_reserve(span.total_len() + 1).ok()?;
             if index > 0 {
                 key.push('.');
             }
-            let span = label.span(name.payload())?;
             for byte_index in 0..span.total_len() {
                 key.push(char::from(span.byte_at(byte_index)?.to_ascii_lowercase()));
             }
         }
-        Some(Self(key))
+        (!key.is_empty()).then_some(Self(key))
     }
 }
 

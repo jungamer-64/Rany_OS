@@ -1406,6 +1406,28 @@ impl NetNamespace {
         ExoValue::Map(map)
     }
 
+    /// mDNS で学習した `.local` ホスト一覧
+    pub async fn mdns_hosts() -> ExoValue<'static> {
+        let values = crate::net::services::mdns::hosts_in(crate::net::runtime::default_runtime())
+            .into_iter()
+            .map(|(name, ip, ttl)| {
+                let o = ip.octets();
+                let mut map = BTreeMap::new();
+                map.insert(
+                    String::from("name"),
+                    ExoValue::String(Cow::Owned(String::from(name.as_str()))),
+                );
+                map.insert(
+                    String::from("ip"),
+                    ExoValue::String(Cow::Owned(format!("{}.{}.{}.{}", o[0], o[1], o[2], o[3]))),
+                );
+                map.insert(String::from("ttl"), ExoValue::Int(ttl as i64));
+                ExoValue::Map(map)
+            })
+            .collect();
+        ExoValue::Array(values)
+    }
+
     /// SNTP で wall clock を同期する（CAP_NET_ADMIN）
     pub async fn ntp_sync(args: &[ExoValue<'static>]) -> ExoValue<'static> {
         if let Err(e) = Self::require_net_admin("net.ntp_sync") {
@@ -1630,6 +1652,7 @@ impl ShellNamespace for NetNamespace {
                 "dns_servers" => Self::dns_servers().await,
                 "dns_add_server" => Self::dns_add_server(_args).await,
                 "dns_stats" => Self::dns_stats().await,
+                "mdns_hosts" => Self::mdns_hosts().await,
                 // 時刻同期
                 "ntp_sync" => Self::ntp_sync(_args).await,
                 // 診断
@@ -1644,7 +1667,7 @@ impl ShellNamespace for NetNamespace {
                      firewall, firewall_enable, firewall_disable, firewall_rules, firewall_stats,\n  \
                      firewall_add, firewall_remove, firewall_clear, firewall_policy,\n  \
                      dns/dns4/resolve, dns6, dns_txt, dns_mx, dns_srv, dns_ptr, dns_ptr6,\n  \
-                     dns_servers, dns_add_server, dns_stats,\n  \
+                     dns_servers, dns_add_server, dns_stats, mdns_hosts,\n  \
                      ntp_sync, snapshot, events,\n  \
                      dhcp_state, dhcp_renew, dhcp_discover, dhcp_release, dhcp_inform, dhcp_last_declined, dhcp_last_released",
                     method
