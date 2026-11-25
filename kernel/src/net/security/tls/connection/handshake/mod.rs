@@ -89,44 +89,4 @@ impl TlsConnectionCore {
         Ok(())
     }
 
-    pub(crate) fn process_handshake(&mut self, handshake: PayloadSpanRef<'_>) -> TlsResult<()> {
-        if handshake.is_empty() {
-            return Err(TlsError::DecodeError);
-        }
-
-        let mut offset = 0usize;
-        // LOOP_PROOF: mode=condition; reason=Each valid handshake message advances offset by its four-byte header and body, while incomplete or rejected input returns an error.;
-        while offset < handshake.total_len() {
-            if handshake.total_len() - offset < 4 {
-                return Err(TlsError::DecodeError);
-            }
-
-            let msg_type = handshake.read_u8(offset).ok_or(TlsError::DecodeError)?;
-            let length = handshake
-                .read_u24_be(offset + 1)
-                .ok_or(TlsError::DecodeError)? as usize;
-
-            if length > 131_072 {
-                return Err(TlsError::DecodeError);
-            }
-
-            let body_start = offset + 4;
-            let body_end = body_start + length;
-            if body_end > handshake.total_len() {
-                return Err(TlsError::DecodeError);
-            }
-
-            let payload = handshake
-                .subspan(body_start, length)
-                .ok_or(TlsError::DecodeError)?;
-            let full_msg = handshake
-                .subspan(offset, body_end - offset)
-                .ok_or(TlsError::DecodeError)?;
-            self.dispatch_handshake_message(msg_type, payload)?;
-            self.record_and_update_handshake(full_msg, msg_type)?;
-            offset = body_end;
-        }
-
-        Ok(())
-    }
 }

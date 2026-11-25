@@ -105,20 +105,6 @@ impl HttpParser {
         }))
     }
 
-    pub fn try_parse(&mut self) -> Result<Option<HttpInboundResponse>, HttpParseError> {
-        self.try_parse_response_with_mode(false)
-    }
-
-    /// EOFでメッセージ終端が確定したレスポンスをパースする。
-    ///
-    /// Content-Length/Transfer-Encoding がない場合、ヘッダー終端以降の残り全体を
-    /// close-delimited body として扱う。
-    pub fn try_parse_response_on_eof(
-        &mut self,
-    ) -> Result<Option<HttpInboundResponse>, HttpParseError> {
-        self.try_parse_response_with_mode(true)
-    }
-
     fn try_parse_response_with_mode(
         &mut self,
         eof_terminates_body: bool,
