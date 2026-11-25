@@ -238,6 +238,7 @@ impl Socket {
                 tcp.stats.record_rx_segment(pushed);
             }
             if pushed > 0 {
+                Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
                 inner.recv_waker.wake();
             }
             pushed
@@ -245,7 +246,6 @@ impl Socket {
             return 0;
         };
 
-        Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
         pushed
     }
 
@@ -261,37 +261,15 @@ impl Socket {
                 if let Some(tcp) = inner.tcp_mut() {
                     tcp.stats.record_rx_segment(pushed);
                 }
+                Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
                 inner.recv_waker.wake();
             }
             Ok(pushed)
         });
-        let result = match result {
+        match result {
             Some(result) => result,
             None => Err(owner.expect("missing socket preserves the payload owner")),
-        };
-        if let Ok(pushed) = result {
-            Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
         }
-        result
-    }
-
-    pub fn push_payload_with_remainder(
-        &self,
-        payload: PacketPayload,
-    ) -> (usize, Option<PacketPayload>) {
-        let Some((pushed, remainder)) = self.with_inner_mut(|inner| {
-            let (pushed, remainder) = self.queue_tcp_receive(inner, payload);
-            if pushed > 0 {
-                inner.recv_waker.wake();
-            }
-            (pushed, remainder)
-        }) else {
-            return (0, None);
-        };
-
-        Self::notify_tcb_data_received(self.runtime, self.socket_id, pushed);
-
-        (pushed, remainder)
     }
 
     pub fn deliver_udp_payload(

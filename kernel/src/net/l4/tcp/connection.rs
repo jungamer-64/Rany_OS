@@ -72,13 +72,6 @@ fn socket_send_budget(
         .saturating_sub(queued_bytes)
 }
 
-fn on_recv_progress(runtime: NetRuntimeHandle, socket_id: SocketId, len: usize) {
-    if len == 0 {
-        return;
-    }
-    let _ = tcp_table_in(runtime).record_data_consumed_by_socket_id(socket_id, len as u32);
-}
-
 /// Hand a transport command to the runtime, running it in this context when
 /// the command queue rejects it, so that a handle-originated request is never
 /// lost.
@@ -361,7 +354,7 @@ impl TcpConnection {
         cx: &mut Context<'_>,
     ) -> Poll<Result<Option<PacketPayload>, TcpError>> {
         enum RecvOutcome {
-            Payload(PacketPayload, usize),
+            Payload(PacketPayload),
             EndOfStream,
             Failed(TcpError),
             Pending,
@@ -379,7 +372,9 @@ impl TcpConnection {
                     if let Some(tcp) = inner.tcp_mut() {
                         tcp.stats.record_rx_delivered(delivered_len);
                     }
-                    return RecvOutcome::Payload(payload, delivered_len);
+                    let _ = tcp_table_in(self.runtime)
+                        .record_data_consumed_by_socket_id(self.socket.socket_id(), delivered_len as u32);
+                    return RecvOutcome::Payload(payload);
                 }
 
                 if let Some(error) = inner.last_error {
@@ -395,10 +390,7 @@ impl TcpConnection {
             .unwrap_or(RecvOutcome::Failed(TcpError::InvalidState));
 
         match outcome {
-            RecvOutcome::Payload(payload, delivered_len) => {
-                on_recv_progress(self.runtime, self.socket.socket_id(), delivered_len);
-                Poll::Ready(Ok(Some(payload)))
-            }
+            RecvOutcome::Payload(payload) => Poll::Ready(Ok(Some(payload))),
             RecvOutcome::EndOfStream => Poll::Ready(Ok(None)),
             RecvOutcome::Failed(error) => Poll::Ready(Err(error)),
             RecvOutcome::Pending => Poll::Pending,

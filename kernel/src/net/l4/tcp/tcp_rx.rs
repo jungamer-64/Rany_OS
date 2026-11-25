@@ -689,7 +689,7 @@ fn try_fast_path(
     data_payload: PacketPayload,
 ) -> Result<(), PacketPayload> {
     let payload_len = data_payload.total_len();
-    if payload_len == 0 {
+    if payload_len > tcb.effective_recv_window() as usize {
         return Err(data_payload);
     }
 
@@ -706,17 +706,6 @@ fn try_fast_path(
     let Some(socket) = get_socket_by_socket_id(runtime, tcb.socket_id) else {
         return Err(data_payload);
     };
-    let can_accept = socket
-        .with_inner(|inner| {
-            inner
-                .recv_buffer_limit
-                .saturating_sub(inner.recv_payload_bytes())
-                >= payload_len
-        })
-        .unwrap_or(false);
-    if !can_accept {
-        return Err(data_payload);
-    }
     socket.try_push_payload(data_payload)?;
 
     apply_acceptable_ack(runtime, tcb, segment);
@@ -1132,66 +1121,61 @@ fn handle_synchronized_segment(
     }
 }
 
-/// Slow path データ受信処理 (Delayed ACK対応)
+/// Byte offsets within a segment's intersection with the receive window.
+fn receive_window_slice(
+    rcv_nxt: u32,
+    window: u32,
+    seq: u32,
+    len: usize,
+) -> core::ops::Range<usize> {
+    let start = i64::from(seq.wrapping_sub(rcv_nxt) as i32);
+    let limit = len as i64;
+    let first = (-start).clamp(0, limit) as usize;
+    let end = (i64::from(window) - start).clamp(first as i64, limit) as usize;
+    first..end
+}
+
+/// Admit the bytes and FIN covered by the current receive window.
 fn handle_data_received_with_delayed_ack(
     runtime: NetRuntimeHandle,
     tcb: TcpControlBlockSnapshot,
-    mut seq_num: u32,
-    mut data_payload: Option<PacketPayload>,
+    seq: u32,
+    data: Option<PacketPayload>,
     fin: bool,
 ) {
-    let mut payload_len = data_payload.as_ref().map_or(0, PacketPayload::total_len) as u32;
+    let segment_len = data.as_ref().map_or(0, PacketPayload::total_len);
+    let window = tcb.effective_recv_window();
     let fin_at = fin
-        .then(|| seq_num.wrapping_add(payload_len))
-        .filter(|seq| seq.wrapping_sub(tcb.rcv_nxt) < tcb.effective_recv_window());
-
-    // --- PARTIAL OVERLAP HANDLING (RFC 793) ---
-    // If the segment starts before rcv_nxt but contains new data after it,
-    // we trim the old part so it can be processed as in-order.
-    let diff = tcb.rcv_nxt.wrapping_sub(seq_num) as i32;
-    if diff > 0 {
-        let skip = diff as usize;
-        if skip >= payload_len as usize {
-            // All payload is old. Only FIN (if any) might be new.
-            if fin_at == Some(tcb.rcv_nxt) {
-                seq_num = tcb.rcv_nxt;
-                payload_len = 0;
-                data_payload = None;
-            } else {
-                // Entirely old, just send ACK
-                send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
-                return;
-            }
+        .then(|| seq.wrapping_add(segment_len as u32))
+        .filter(|seq| seq.wrapping_sub(tcb.rcv_nxt) < window);
+    let slice = receive_window_slice(tcb.rcv_nxt, window, seq, segment_len);
+    let payload_len = slice.len();
+    let (seq_num, mut data_payload) = if payload_len == 0 {
+        let Some(fin_seq) = fin_at else {
+            send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
+            return;
+        };
+        (fin_seq, None)
+    } else {
+        let payload = data.expect("nonempty receive window intersection has a payload");
+        let payload = if payload_len == segment_len {
+            payload
         } else {
-            // Trim prefix
-            let Some(payload) = data_payload.as_ref() else {
-                send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
-                return;
-            };
-            let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
-                payload,
-                skip,
-                payload_len as usize - skip,
-            ) else {
-                send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
-                return;
-            };
-            let Some(trimmed) = bounds
-                .take_from(
-                    data_payload
-                        .take()
-                        .expect("partial overlap requires a payload owner"),
-                )
-                .and_then(|window| window.into_payload().ok())
+            let Some(trimmed) = crate::net::payload::OwnedPayloadBounds::checked(
+                &payload,
+                slice.start,
+                payload_len,
+            )
+            .and_then(|bounds| bounds.take_from(payload))
+            .and_then(|window| window.into_payload().ok())
             else {
                 send_ack_for_fast_path(runtime, &tcb, tcb.rcv_nxt);
                 return;
             };
-            data_payload = Some(trimmed);
-            payload_len -= skip as u32;
-            seq_num = tcb.rcv_nxt;
-        }
-    }
+            trimmed
+        };
+        (seq.wrapping_add(slice.start as u32), Some(payload))
+    };
 
     if seq_num != tcb.rcv_nxt {
         // Out-of-order: OOOキューに追加して即座に重複ACKを送信 (RFC 5681)
@@ -1216,22 +1200,12 @@ fn handle_data_received_with_delayed_ack(
             let payload = data_payload
                 .take()
                 .expect("positive TCP payload length requires an owner");
-            let (pushed, _remainder) = socket.push_payload_with_remainder(payload);
-            new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32);
-
-            // RFC 1122: If some data could not be accepted, we MUST NOT advance
-            // rcv_nxt past the accepted data.
-            if (pushed as u32) < payload_len {
-                // Buffer full, some data dropped.
-                // we don't process OOO or FIN if we couldn't take all data.
-                tcp_table_in(runtime).record_receive_progress(
-                    tcb.if_id,
-                    tcb.local,
-                    tcb.remote,
-                    new_rcv_nxt,
-                );
-                send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
-                return;
+            match socket.try_push_payload(payload) {
+                Ok(pushed) => new_rcv_nxt = new_rcv_nxt.wrapping_add(pushed as u32),
+                Err(_) => {
+                    send_ack_for_fast_path(runtime, &tcb, new_rcv_nxt);
+                    return;
+                }
             }
         }
 
@@ -1995,4 +1969,14 @@ pub(crate) fn tcp_passive_queue_connection_lifetime_smoke() -> bool {
     }
     super::termination::close_listener_in(runtime, listener.socket_id());
     true
+}
+
+#[cfg(test)]
+#[test]
+fn receive_window_intersects_both_edges_and_wraps() {
+    assert_eq!(receive_window_slice(100, 10, 95, 20), 5..15);
+    assert_eq!(receive_window_slice(100, 10, 108, 20), 0..2);
+    assert_eq!(receive_window_slice(100, 10, 110, 20), 0..0);
+    assert_eq!(receive_window_slice(100, 0, 100, 1), 0..0);
+    assert_eq!(receive_window_slice(u32::MAX - 2, 5, 0, 4), 0..2);
 }
