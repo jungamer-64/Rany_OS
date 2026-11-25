@@ -625,7 +625,10 @@ pub enum DnsServerAddr {
     V4(Ipv4Address),
     /// IPv6 DNS サーバー
     ConfiguredV6(Ipv6Address),
-    AdvertisedV6 { address: Ipv6Address, if_id: crate::net::runtime::manager::NetIfId },
+    AdvertisedV6 {
+        address: Ipv6Address,
+        if_id: crate::net::runtime::manager::NetIfId,
+    },
 }
 
 /// DNS応答あたりの最大回答数 (DoS防止)

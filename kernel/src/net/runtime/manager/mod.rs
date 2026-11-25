@@ -9,7 +9,8 @@ use crate::net::runtime::stack::NetworkConfig;
 mod ipv6_discovery;
 use ipv6_discovery::Ipv6Discovery;
 pub(crate) use ipv6_discovery::{
-    DadEvent, learn_ipv6_ra_in, maintain_ipv6_in, stage_dhcp_ipv6_in, update_ipv6_dad_in,
+    DadEvent, learn_ipv6_ra_in, maintain_ipv6_in, rdnss_server_live_in, rdnss_servers_in,
+    stage_dhcp_ipv6_in, update_ipv6_dad_in,
 };
 
 use crate::net::types::{InterfaceScope, NetworkError};
@@ -375,7 +376,7 @@ impl NetworkManager {
         }
         iface.administrative_state = state;
         if !iface.is_operational() {
-            iface.ipv6_discovery.suspend_dad();
+            iface.ipv6_discovery.link_unavailable();
         }
         let first_operational = self.note_first_operational(if_id);
         self.reconcile_primary(first_operational);
@@ -396,7 +397,7 @@ impl NetworkManager {
         }
         iface.link_state = state;
         if !iface.is_operational() {
-            iface.ipv6_discovery.suspend_dad();
+            iface.ipv6_discovery.link_unavailable();
         }
         let first_operational = self.note_first_operational(if_id);
         self.reconcile_primary(first_operational);

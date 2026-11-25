@@ -764,7 +764,6 @@ impl NetworkStack {
                         return;
                     }
                 }
-
             }
             NdpResult::Redirect {
                 target,

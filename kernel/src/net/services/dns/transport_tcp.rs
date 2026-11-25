@@ -21,6 +21,9 @@ impl DnsClient {
             Err(error) => return Err((name, error)),
         };
         for _ in 0..DNS_MAX_RETRIES {
+            if !server.is_live(self.runtime) {
+                return Err((name, "DNS server advertisement expired"));
+            }
             let payload = match self.build_query_payload_for_name_with_id(&name, qtype, id) {
                 Ok(payload) => payload,
                 Err(error) => return Err((name, error)),
@@ -33,10 +36,13 @@ impl DnsClient {
             let reply = async move {
                 // LOOP_PROOF: mode=event; reason=Each receive awaits a datagram and unrelated traffic yields to the attempt deadline.;
                 loop {
-                    let Some((_if_id, src, _ttl, packet)) = socket.recv().await else {
+                    let Some((if_id, src, _ttl, packet)) = socket.recv().await else {
                         return None;
                     };
-                    if Self::source_matches_server(src, server) && src.port() == DNS_PORT {
+                    if Self::source_matches_server(src, server)
+                        && src.port() == DNS_PORT
+                        && !matches!(server.scope(), crate::net::types::InterfaceScope::Pinned(link) if link != if_id)
+                    {
                         let question = DnsQuestion {
                             id,
                             name: &*question_name,
@@ -128,7 +134,12 @@ impl DnsClient {
 
         let dest = Self::endpoint_addr_for_server(server);
 
-        let connection = crate::net::l4::tcp::TcpConnection::dial_in(self.runtime, dest).await;
+        if !server.is_live(self.runtime) {
+            return Err((name, "DNS server advertisement expired"));
+        }
+        let connection =
+            crate::net::l4::tcp::TcpConnection::dial_scoped_in(self.runtime, server.scope(), dest)
+                .await;
         let mut connection = match connection {
             Ok(connection) => connection,
             Err(_) => return Err((name, "TCP connection failed")),
@@ -202,14 +213,18 @@ impl DnsClient {
     fn udp_addr_for_server(server: DnsServerAddr) -> UdpAddr {
         match server {
             DnsServerAddr::V4(ip) => UdpAddr::new(ip, DNS_PORT),
-            DnsServerAddr::V6(ip) => UdpAddr::new_v6(ip, DNS_PORT),
+            DnsServerAddr::ConfiguredV6(ip) | DnsServerAddr::AdvertisedV6 { address: ip, .. } => {
+                UdpAddr::new_v6(ip, DNS_PORT)
+            }
         }
     }
 
     fn source_matches_server(src: UdpAddr, server: DnsServerAddr) -> bool {
         match server {
             DnsServerAddr::V4(ip) => src.ip_v4() == Some(ip),
-            DnsServerAddr::V6(ip) => src.ip_v6() == Some(ip),
+            DnsServerAddr::ConfiguredV6(ip) | DnsServerAddr::AdvertisedV6 { address: ip, .. } => {
+                src.ip_v6() == Some(ip)
+            }
         }
     }
 
@@ -218,7 +233,9 @@ impl DnsClient {
 
         match server {
             DnsServerAddr::V4(ip) => EndpointAddr::new(ip.octets(), DNS_PORT),
-            DnsServerAddr::V6(ip) => EndpointAddr::new_v6(ip.octets(), DNS_PORT),
+            DnsServerAddr::ConfiguredV6(ip) | DnsServerAddr::AdvertisedV6 { address: ip, .. } => {
+                EndpointAddr::new_v6(ip.octets(), DNS_PORT)
+            }
         }
     }
 }

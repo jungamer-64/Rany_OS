@@ -10,6 +10,13 @@ use crate::net::runtime::device::tx::TxReceipt;
 
 const MAX_ON_LINK_PREFIXES: usize = 8;
 const MAX_ADVERTISED_ROUTERS: usize = 4;
+const MAX_RDNSS_SERVERS_PER_LINK: usize = crate::net::services::dns::DNS_MAX_SERVERS;
+
+#[derive(Debug, Clone, Copy)]
+struct AdvertisedDns {
+    address: Ipv6Address,
+    expires_at: u64,
+}
 const MAX_LEARNED_ROUTES: usize = MAX_ON_LINK_PREFIXES + MAX_ADVERTISED_ROUTERS + 1;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,6 +37,7 @@ pub(super) struct Ipv6Discovery {
     addresses: [Option<LearnedIpv6Address>; MAX_IPV6_ADDRESSES],
     prefixes: [Option<OnLinkPrefix>; MAX_ON_LINK_PREFIXES],
     routers: [Option<AdvertisedRouter>; MAX_ADVERTISED_ROUTERS],
+    dns: [Option<AdvertisedDns>; MAX_RDNSS_SERVERS_PER_LINK],
     now: u64,
 }
 
@@ -68,7 +76,8 @@ impl Ipv6Discovery {
         discovery
     }
 
-    pub(super) fn suspend_dad(&mut self) {
+    pub(super) fn link_unavailable(&mut self) {
+        self.dns.fill(None);
         for address in self.addresses.iter_mut().flatten() {
             address.dad = DadState::AwaitingProbe;
         }
@@ -98,6 +107,11 @@ impl Ipv6Discovery {
         for prefix in &mut self.prefixes {
             if prefix.is_some_and(|entry| entry.expires_at <= self.now) {
                 *prefix = None;
+            }
+        }
+        for dns in &mut self.dns {
+            if dns.is_some_and(|entry| entry.expires_at <= self.now) {
+                *dns = None;
             }
         }
         for router in &mut self.routers {
@@ -168,6 +182,10 @@ impl Ipv6Discovery {
         )?;
 
         for option in options {
+            if let NdpOption::RecursiveDnsServer { lifetime, servers } = option {
+                self.update_dns(servers, now, *lifetime);
+                continue;
+            }
             let NdpOption::PrefixInfo {
                 prefix,
                 prefix_len,
@@ -206,6 +224,30 @@ impl Ipv6Discovery {
             }
         }
         Ok(())
+    }
+
+    fn update_dns(&mut self, servers: &[Ipv6Address], now: u64, lifetime: u32) {
+        let expires_at = expiration_at(now, lifetime);
+        for &address in servers {
+            if address.is_multicast() || address.is_unspecified() || address.is_loopback() {
+                continue;
+            }
+            let entry = (expires_at > self.now).then_some(AdvertisedDns {
+                address,
+                expires_at,
+            });
+            // Retain current entries when the per-link repository is full. A
+            // full resolver list does not invalidate the rest of the RA.
+            let _capacity = update_slot(&mut self.dns, |old| old.address == address, entry);
+        }
+    }
+
+    fn advertised_dns(&self, now: u64) -> impl Iterator<Item = Ipv6Address> + '_ {
+        self.dns
+            .iter()
+            .flatten()
+            .filter(move |entry| entry.expires_at > now)
+            .map(|entry| entry.address)
     }
 
     fn transition_dad(&mut self, address: Ipv6Address, event: DadEvent) -> bool {
@@ -390,6 +432,46 @@ impl NetworkManager {
     }
 }
 
+pub(crate) fn rdnss_servers_in(
+    runtime: NetRuntimeHandle,
+    now: u64,
+) -> Result<Vec<(NetIfId, Ipv6Address)>, NetworkError> {
+    with_manager_in(runtime, |manager| {
+        let mut servers = Vec::new();
+        for iface in manager
+            .interfaces
+            .values()
+            .filter(|iface| iface.is_operational())
+        {
+            for server in iface.ipv6_discovery.advertised_dns(now) {
+                servers
+                    .try_reserve(1)
+                    .map_err(|_| NetworkError::ResourceExhausted)?;
+                servers.push((iface.if_id, server));
+            }
+        }
+        Ok(servers)
+    })?
+}
+
+pub(crate) fn rdnss_server_live_in(
+    runtime: NetRuntimeHandle,
+    if_id: NetIfId,
+    server: Ipv6Address,
+    now: u64,
+) -> bool {
+    with_manager_in(runtime, |manager| {
+        manager.get_interface(if_id).is_some_and(|iface| {
+            iface.is_operational()
+                && iface
+                    .ipv6_discovery
+                    .advertised_dns(now)
+                    .any(|address| address == server)
+        })
+    })
+    .unwrap_or(false)
+}
+
 pub(crate) fn learn_ipv6_ra_in(
     runtime: NetRuntimeHandle,
     if_id: NetIfId,
@@ -552,6 +634,37 @@ mod tests {
         assert!(addresses(&manager).for_destination(address));
         manager.maintain_ipv6(5100);
         assert!(!addresses(&manager).for_destination(address));
+    }
+
+    #[test]
+    fn rdnss_lifetime_and_withdrawal_are_link_local() {
+        let server = Ipv6Address::from_eui64(&[2, 1, 2, 3, 4, 5]);
+        let router = Ipv6Address::from_eui64(&[4, 1, 2, 3, 4, 5]);
+        let mac = MacAddress::new([6, 1, 2, 3, 4, 5]);
+        let mut first = Ipv6Discovery::with_link_local(mac);
+        let mut second = Ipv6Discovery::with_link_local(mac);
+        let option = |lifetime| NdpOption::RecursiveDnsServer {
+            lifetime,
+            servers: alloc::vec![server],
+        };
+        first
+            .apply_advertisement(mac, router, 0, &[option(1)], 100)
+            .unwrap();
+        second
+            .apply_advertisement(mac, router, 0, &[option(10)], 100)
+            .unwrap();
+        assert_eq!(first.advertised_dns(1099).next(), Some(server));
+        assert_eq!(first.advertised_dns(1100).next(), None);
+        first
+            .apply_advertisement(mac, router, 0, &[option(10)], 1100)
+            .unwrap();
+        first
+            .apply_advertisement(mac, router, 0, &[option(0)], 1200)
+            .unwrap();
+        assert_eq!(first.advertised_dns(1200).next(), None);
+        assert_eq!(second.advertised_dns(1200).next(), Some(server));
+        second.link_unavailable();
+        assert_eq!(second.advertised_dns(1200).next(), None);
     }
 
     #[test]
