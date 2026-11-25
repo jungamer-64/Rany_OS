@@ -18,7 +18,7 @@ impl DnsClient {
         let port = view
             .read_array::<2>(rdata_offset + 4)
             .map(u16::from_be_bytes)?;
-        self.parse_name_payload(payload, view, rdata_offset + 6)
+        Self::parse_name_payload(payload, view, rdata_offset + 6)
             .ok()
             .map(|parsed_name| DnsRecordData::SRV {
                 priority,

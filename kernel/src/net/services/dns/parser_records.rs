@@ -11,7 +11,7 @@ impl DnsClient {
         view: &crate::net::payload::PacketPayloadView<'_>,
         rdata_offset: usize,
     ) -> Option<DnsRecordData> {
-        self.parse_name_payload(payload, view, rdata_offset)
+        Self::parse_name_payload(payload, view, rdata_offset)
             .ok()
             .map(|parsed_name| DnsRecordData::Name(parsed_name.name))
     }
@@ -23,7 +23,7 @@ impl DnsClient {
         rdata_offset: usize,
     ) -> Option<DnsRecordData> {
         let preference = view.read_array::<2>(rdata_offset).map(u16::from_be_bytes)?;
-        self.parse_name_payload(payload, view, rdata_offset + 2)
+        Self::parse_name_payload(payload, view, rdata_offset + 2)
             .ok()
             .map(|parsed_name| DnsRecordData::MX(preference, parsed_name.name))
     }

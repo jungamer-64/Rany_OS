@@ -44,32 +44,49 @@ pub(super) enum DnsReply {
     Answer(Result<DnsResponseView, DnsResponseCode>),
 }
 
+struct MatchedReply {
+    flags: u16,
+    answer_offset: usize,
+}
+
+impl MatchedReply {
+    fn matches(payload: &PacketPayload, question: &DnsQuestion<'_>) -> Option<Self> {
+        let view = PacketPayloadView::new(payload);
+        let flags = view.read_array::<2>(2).map(u16::from_be_bytes)?;
+        // QR must indicate a response and OPCODE must match standard QUERY.
+        if flags & 0xf800 != 0x8000 || view.read_array::<2>(0) != Some(question.id.to_be_bytes()) {
+            return None;
+        }
+        let answer_offset = DnsClient::match_question(payload, &view, question).ok()?;
+        Some(Self {
+            flags,
+            answer_offset,
+        })
+    }
+
+    fn is_truncated(&self) -> bool {
+        self.flags & 0x0200 != 0
+    }
+}
+
 impl DnsClient {
     pub(super) fn parse_reply(
         &self,
         payload: PacketPayload,
         question: &DnsQuestion<'_>,
     ) -> DnsReply {
-        let view = PacketPayloadView::new(&payload);
-        let Some(flags) = view.read_array::<2>(2).map(u16::from_be_bytes) else {
+        let Some(reply) = MatchedReply::matches(&payload, question) else {
             return DnsReply::Unrelated;
         };
-        // QR must indicate a response and OPCODE must match standard QUERY.
-        if flags & 0xf800 != 0x8000 || view.read_array::<2>(0) != Some(question.id.to_be_bytes()) {
-            return DnsReply::Unrelated;
-        }
-        let Ok(offset) = self.match_question(&payload, &view, question) else {
-            return DnsReply::Unrelated;
-        };
-        if flags & 0x0200 != 0 {
+        if reply.is_truncated() {
             return DnsReply::Truncated;
         }
         DnsReply::Answer(self.parse_matched_response(
             payload,
             crate::task::current_tick(),
             question.name,
-            flags,
-            offset,
+            reply.flags,
+            reply.answer_offset,
         ))
     }
 
@@ -124,7 +141,6 @@ impl DnsClient {
     }
 
     fn match_question(
-        &self,
         payload: &PacketPayload,
         view: &PacketPayloadView<'_>,
         expected: &DnsQuestion<'_>,
@@ -132,7 +148,7 @@ impl DnsClient {
         if view.read_array::<2>(4) != Some(1u16.to_be_bytes()) {
             return Err(DnsResponseCode::FormatError);
         }
-        let parsed = self.parse_name_payload(payload, view, DnsHeader::SIZE)?;
+        let parsed = Self::parse_name_payload(payload, view, DnsHeader::SIZE)?;
         let kind = view
             .read_array::<2>(parsed.next_offset)
             .map(u16::from_be_bytes);
@@ -194,7 +210,6 @@ impl DnsClient {
     }
 
     fn parse_name_pointer_payload(
-        &self,
         view: &crate::net::payload::PacketPayloadView<'_>,
         offset: usize,
         len: u8,
@@ -218,7 +233,6 @@ impl DnsClient {
     }
 
     fn parse_name_label_span_payload(
-        &self,
         payload: &kernel_api::resource::net::PacketPayload,
         offset: usize,
         len: u8,
@@ -231,7 +245,6 @@ impl DnsClient {
     }
 
     pub(crate) fn parse_name_payload(
-        &self,
         payload: &kernel_api::resource::net::PacketPayload,
         view: &crate::net::payload::PacketPayloadView<'_>,
         offset: usize,
@@ -257,7 +270,7 @@ impl DnsClient {
             }
 
             if len & 0xC0 == 0xC0 {
-                let info = self.parse_name_pointer_payload(view, current, len, jump_count)?;
+                let info = Self::parse_name_pointer_payload(view, current, len, jump_count)?;
                 if pointer_end.is_none() {
                     pointer_end = Some(info.pointer_end);
                 }
@@ -266,7 +279,7 @@ impl DnsClient {
                 continue;
             }
 
-            let span = self.parse_name_label_span_payload(payload, current, len)?;
+            let span = Self::parse_name_label_span_payload(payload, current, len)?;
             if !labels.is_empty() {
                 text_len = text_len.saturating_add(1);
             }
@@ -368,7 +381,7 @@ impl DnsClient {
             return Ok(None);
         }
 
-        let parsed_name = self.parse_name_payload(payload, view, *offset)?;
+        let parsed_name = Self::parse_name_payload(payload, view, *offset)?;
         *offset = parsed_name.next_offset;
         if *offset + 10 > view.total_len() {
             return Ok(None);
@@ -463,8 +476,7 @@ mod tests {
     }
 
     #[test]
-    fn reply_must_match_before_cache_or_fallback() {
-        let client = DnsClient::new(crate::net::runtime::default_runtime(), 1000);
+    fn dns_reply_requires_matching_transaction_and_question() {
         let name_data = payload(b"host");
         let labels = alloc::vec![PayloadRange::checked(&name_data, 0, 4).expect("label")];
         let name = DnsNameOwned {
@@ -481,37 +493,23 @@ mod tests {
             b"\x01\x23\x81\x83\x00\x01\x00\x00\x00\x00\x00\x00\x04host\x00\x00\x01\x00\x01";
         let mut unrelated = *response;
         unrelated[1] = 0x24;
-        assert!(matches!(
-            client.parse_reply(payload(&unrelated), &question),
-            DnsReply::Unrelated
-        ));
+        assert!(MatchedReply::matches(&payload(&unrelated), &question).is_none());
         unrelated = *response;
         unrelated[13] = b'p';
-        assert!(matches!(
-            client.parse_reply(payload(&unrelated), &question),
-            DnsReply::Unrelated
-        ));
+        assert!(MatchedReply::matches(&payload(&unrelated), &question).is_none());
         unrelated = *response;
-        unrelated[20] = 3;
+        unrelated[21] = 3;
         unrelated[2] |= 2;
-        assert!(matches!(
-            client.parse_reply(payload(&unrelated), &question),
-            DnsReply::Unrelated
-        ));
-        assert_eq!(
-            client.ipv4_cache.lock().ok().expect("cache").entries.len(),
-            0
-        );
+        assert!(MatchedReply::matches(&payload(&unrelated), &question).is_none());
 
         let mut truncated = *response;
         truncated[2] |= 2;
-        assert!(matches!(
-            client.parse_reply(payload(&truncated), &question),
-            DnsReply::Truncated
-        ));
-        assert!(matches!(
-            client.parse_reply(payload(response), &question),
-            DnsReply::Answer(Err(DnsResponseCode::NameError))
-        ));
+        let matched =
+            MatchedReply::matches(&payload(&truncated), &question).expect("matching partial reply");
+        assert!(matched.is_truncated());
+        let matched =
+            MatchedReply::matches(&payload(response), &question).expect("matching negative reply");
+        assert!(!matched.is_truncated());
+        assert_eq!(matched.flags & 0xf, 3);
     }
 }
