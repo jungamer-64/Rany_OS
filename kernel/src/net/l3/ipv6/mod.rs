@@ -789,8 +789,6 @@ pub fn is_header_chain_complete(mut next_header: u8, mut data: &[u8]) -> bool {
 /// IPv6 interface configuration
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Ipv6Config {
-    /// Link-local address (fe80::/10, auto-generated from MAC)
-    pub link_local: Ipv6Address,
     pub(crate) addresses: address_state::Ipv6AddressSet,
     /// Default gateway (link-local of router)
     pub gateway: Option<Ipv6Address>,
@@ -798,22 +796,9 @@ pub struct Ipv6Config {
     pub hop_limit: u8,
 }
 
-impl Ipv6Config {
-    /// Create from MAC address (auto-generates link-local via EUI-64)
-    pub fn from_mac(mac: &[u8; 6]) -> Self {
-        Self {
-            link_local: Ipv6Address::from_eui64(mac),
-            addresses: address_state::Ipv6AddressSet::default(),
-            gateway: None,
-            hop_limit: 64,
-        }
-    }
-}
-
 impl Default for Ipv6Config {
     fn default() -> Self {
         Self {
-            link_local: Ipv6Address::UNSPECIFIED,
             addresses: address_state::Ipv6AddressSet::default(),
             gateway: None,
             hop_limit: 64,

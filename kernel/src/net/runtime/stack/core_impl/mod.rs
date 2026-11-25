@@ -1075,16 +1075,7 @@ impl NetworkStack {
                 .ok_or(NetworkError::ResourceExhausted)?;
             if manager::update_ipv6_dad_in(self.runtime, if_id, address, DadEvent::Reserve(nonce))?
             {
-                let event = match self.send_ndp_multicast(
-                    if_id,
-                    Ipv6Address::UNSPECIFIED,
-                    address.solicited_node(),
-                    packet,
-                ) {
-                    Ok(()) => DadEvent::Submitted(now),
-                    Err(_) => DadEvent::Rejected,
-                };
-                manager::update_ipv6_dad_in(self.runtime, if_id, address, event)?;
+
             }
         }
         Ok(())
