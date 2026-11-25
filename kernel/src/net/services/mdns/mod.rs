@@ -773,6 +773,7 @@ pub async fn resolve_ipv4_in(
     }
     enqueue_command_in(runtime, MdnsCommand::Query(name.clone()));
     let mut waited = 0;
+    // LOOP_PROOF: mode=condition; reason=Each sleep advances waited by the fixed poll interval toward the resolve deadline.;
     while waited < MDNS_RESOLVE_TIMEOUT_MS {
         crate::task::sleep_ms(MDNS_RESOLVE_POLL_MS).await.ok()?;
         waited += MDNS_RESOLVE_POLL_MS;

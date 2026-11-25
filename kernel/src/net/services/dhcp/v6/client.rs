@@ -1255,6 +1255,7 @@ pub(crate) mod tests {
         // IA_NA option (code 3) follows the Client Identifier
         let mut found = false;
         let mut off = 4usize;
+        // LOOP_PROOF: mode=condition; reason=Each option advances by its header and declared length within the test buffer.;
         while off + 4 <= len {
             let code = u16::from_be_bytes([buf[off], buf[off + 1]]);
             let opt_len = u16::from_be_bytes([buf[off + 2], buf[off + 3]]) as usize;

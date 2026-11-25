@@ -34,6 +34,7 @@ pub fn test_echo_builder() {
     for word in wire.chunks(2) {
         sum += u32::from(u16::from_be_bytes([word[0], *word.get(1).unwrap_or(&0)]));
     }
+    // LOOP_PROOF: mode=condition; reason=Each carry fold decreases the sum until it fits in 16 bits.;
     while sum > 0xffff {
         sum = (sum & 0xffff) + (sum >> 16);
     }
