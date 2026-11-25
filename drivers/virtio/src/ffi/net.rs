@@ -125,9 +125,7 @@ impl NetCell {
     pub(super) async fn start(&mut self) -> KapiResult<()> {
         match self.registration {
             Some(Registration::Live(_)) => return Ok(()),
-            Some(Registration::Retained(handle)) => {
-                return Err(KapiError::NetRegistrationRetained { handle });
-            }
+            Some(Registration::Retained(_)) => return Err(KapiError::IoError),
             None => {}
         }
         let runtime = self.runtime.as_ref().ok_or(KapiError::NotFound)?;
@@ -136,7 +134,8 @@ impl NetCell {
             Ok(handle) => self.registration = Some(Registration::Live(handle)),
             Err(KapiError::NetRegistrationRetained { handle }) => {
                 self.registration = Some(Registration::Retained(handle));
-                return Err(KapiError::NetRegistrationRetained { handle });
+                // The handle is cleanup authority. Startup itself has ended.
+                return Err(KapiError::IoError);
             }
             Err(cause) => return Err(cause),
         }

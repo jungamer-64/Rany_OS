@@ -1065,7 +1065,12 @@ unsafe impl NetDevicePort for NetdevPortAdapter {
         // SAFETY: the callback admission/code guard retains the registered
         // opaque instance and every synchronous input/output borrow.
         let status = unsafe { (self.registration.start)(self.registration.opaque, table_ptr) };
-        if !AbiErrorCode::from_raw(status).is_success() {
+        let status = AbiErrorCode::from_raw(status);
+        if !status.is_success() {
+            log::error!(
+                "network port {} start callback failed: {status:?}",
+                self.registration.info.port_id
+            );
             return Err("standalone netdev start failed");
         }
         Ok(())
@@ -1320,7 +1325,8 @@ impl NetdevBridgeRegistry {
                 log::error!("network port admission for {owner} failed: {cause:?}");
                 return Err(kernel_api::error::KapiError::IoError);
             }
-            Err(net_device_runtime::NetPortRegistrationError::Retained { if_id, .. }) => {
+            Err(cause @ net_device_runtime::NetPortRegistrationError::Retained { if_id, .. }) => {
+                log::error!("network port admission for {owner} retained cleanup: {cause:?}");
                 (if_id, true)
             }
         };
