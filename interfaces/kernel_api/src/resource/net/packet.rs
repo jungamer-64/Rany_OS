@@ -23,7 +23,7 @@ pub struct PacketBufferMemory {
     capacity: DmaByteCount,
     physical: PhysicalAddress,
     references: AtomicUsize,
-    allocation: Arc<dyn Send + Sync>,
+    allocation: PacketBackingLease,
     owner: NonNull<()>,
     retire: unsafe fn(NonNull<()>),
 }
@@ -59,7 +59,7 @@ impl PacketBufferMemory {
         data: NonNull<u8>,
         capacity: DmaByteCount,
         physical: PhysicalAddress,
-        allocation: Arc<dyn Send + Sync>,
+        allocation: PacketBackingLease,
         owner: NonNull<()>,
         retire: unsafe fn(NonNull<()>),
     ) -> Self {
