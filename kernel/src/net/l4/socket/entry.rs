@@ -56,7 +56,7 @@ impl Socket {
         let _ = tcp_table_in(runtime).record_data_received_by_socket_id(socket_id, pushed as u32);
     }
 
-    fn split_and_queue_payload(
+    pub(in crate::net::l4) fn queue_tcp_receive(
         &self,
         inner: &mut SocketState,
         payload: PacketPayload,
@@ -253,7 +253,7 @@ impl Socket {
         let mut owner = Some(payload);
         let result = self.with_inner_mut(|inner| {
             let payload = owner.take().expect("TCP receive payload owner is present");
-            let (pushed, remainder) = self.split_and_queue_payload(inner, payload);
+            let (pushed, remainder) = self.queue_tcp_receive(inner, payload);
             if let Some(remainder) = remainder {
                 return Err(remainder);
             }
@@ -280,7 +280,7 @@ impl Socket {
         payload: PacketPayload,
     ) -> (usize, Option<PacketPayload>) {
         let Some((pushed, remainder)) = self.with_inner_mut(|inner| {
-            let (pushed, remainder) = self.split_and_queue_payload(inner, payload);
+            let (pushed, remainder) = self.queue_tcp_receive(inner, payload);
             if pushed > 0 {
                 inner.recv_waker.wake();
             }

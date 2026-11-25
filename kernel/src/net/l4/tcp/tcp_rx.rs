@@ -1241,14 +1241,27 @@ fn handle_data_received_with_delayed_ack(
         }
 
         // OOOキューから連続セグメントをドレインしてバッファに追加
-        let (drained_nxt, ooo_fin) = ooo_queue::drain_ooo_contiguous(
-            runtime,
-            tcb.if_id,
-            tcb.local,
-            tcb.remote,
-            new_rcv_nxt,
-            |_, seg_payload| socket.push_payload_with_remainder(seg_payload),
-        );
+        // Keep the socket-to-TCB lock order shared with send admission. The
+        // drain callback only touches the already borrowed receive queue.
+        let (drained_nxt, ooo_fin) = socket
+            .with_inner_mut(|inner| {
+                let (next, drained_fin) = ooo_queue::drain_ooo_contiguous(
+                    runtime,
+                    tcb.if_id,
+                    tcb.local,
+                    tcb.remote,
+                    new_rcv_nxt,
+                    |_, payload| socket.queue_tcp_receive(inner, payload),
+                );
+                let drained_bytes = next.wrapping_sub(new_rcv_nxt);
+                if drained_bytes != 0 {
+                    let _ = tcp_table_in(runtime)
+                        .record_data_received_by_socket_id(socket.socket_id(), drained_bytes);
+                    inner.recv_waker.wake();
+                }
+                (next, drained_fin)
+            })
+            .unwrap_or((new_rcv_nxt, false));
         new_rcv_nxt = drained_nxt;
         if ooo_fin {
             handle_fin_in_order(runtime, tcb, new_rcv_nxt);
