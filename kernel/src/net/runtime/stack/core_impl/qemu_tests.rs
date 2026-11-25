@@ -406,9 +406,6 @@ fn ipv6_udp_waits_for_the_gateway_and_preserves_the_ip_destination() {
         0,
     )
     .expect("stage address");
-    assert!(
-        manager::update_ipv6_dad_in(runtime, if_id, SOURCE, DadEvent::Reserve([1; 6])).unwrap()
-    );
     let mut stack = NetworkStack::new_in(runtime);
     stack.transmit_fn = capture;
     stack

@@ -415,7 +415,6 @@ impl NetworkStack {
         if !self.allow_icmpv6_egress(if_id, resolved_src, *dst, &icmpv6_payload) {
             return;
         }
-        let current_time = self.current_time.load(Ordering::Relaxed);
         let dst_mac = match self.resolve_ipv6_neighbor(path) {
             Ok(Some(mac)) => mac,
             Ok(None) => {
