@@ -137,7 +137,7 @@ struct FirstFragment {
     unfragmentable: PacketPayload,
     /// The 8-byte Fragment header, which ICMPv6 errors quote so the source
     /// can identify the datagram (RFC 8200 Section 4.5).
-    fragment_header: [u8; 8],
+    fragment_header: Ipv6FragmentHeader,
 }
 
 pub struct Ipv6FragmentBuffer {
@@ -145,8 +145,6 @@ pub struct Ipv6FragmentBuffer {
     holes: Vec<Hole>,
     /// Total payload length — known once the last fragment (M=0) arrives
     total_len: Option<u32>,
-    /// Next Header value from the fragment header (upper-layer protocol)
-    next_header: Option<u8>,
     /// Present once the fragment at offset 0 has been accepted.
     first: Option<FirstFragment>,
     /// Timestamp of first fragment arrival
@@ -196,7 +194,6 @@ impl Ipv6FragmentBuffer {
                 last: u32::MAX,
             }],
             total_len: None,
-            next_header: None,
             first: None,
             created_at: timestamp,
             segments: Vec::new(),
@@ -326,11 +323,6 @@ impl Ipv6FragmentBuffer {
             return Err(Ipv6ReassemblyError::Overlap);
         }
 
-        // Record Next Header (should be consistent across fragments of same datagram)
-        if self.next_header.is_none() {
-            self.next_header = Some(frag.next_header);
-        }
-
         // Capture unfragmentable part and fragment header from the first fragment
         if frag.fragment_offset == 0 && self.first.is_none() {
             // RFC 8200/7112: The first fragment (offset 0) MUST contain the entire header chain
@@ -361,7 +353,7 @@ impl Ipv6FragmentBuffer {
             };
             self.first = Some(FirstFragment {
                 unfragmentable: header_packet,
-                fragment_header: frag.to_bytes(),
+                fragment_header: *frag,
             });
         }
 
@@ -447,8 +439,9 @@ impl Ipv6FragmentBuffer {
         }
 
         let total = self.total_len? as usize;
-        let nh = self.next_header?;
-        let mut unfrag = self.first?.unfragmentable;
+        let first = self.first?;
+        let nh = first.fragment_header.next_header;
+        let mut unfrag = first.unfragmentable;
         let unfrag_len = unfrag.total_len();
 
         // Check if reassembled length fits in IPv6 Payload Length field (16 bits)
@@ -686,12 +679,12 @@ impl Ipv6FragmentReassembler {
                 continue;
             };
             let Some(mut header_writer) =
-                GeneratedPacketWriter::new(first.fragment_header.len(), DEFAULT_PACKET_HEADROOM)
+                GeneratedPacketWriter::new(Ipv6FragmentHeader::SIZE, DEFAULT_PACKET_HEADROOM)
             else {
                 continue;
             };
             let Some(fragment_header) = header_writer
-                .write_generated_bytes(&first.fragment_header)
+                .write_generated_bytes(&first.fragment_header.to_bytes())
                 .and_then(|()| header_writer.finish())
             else {
                 continue;

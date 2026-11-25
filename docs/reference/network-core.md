@@ -116,6 +116,7 @@ ExoRust のネットワークについて語彙・優先順位・性能モデル
 - DNS 応答の canonical ownership は `DnsResponseView { payload, records }` に置き、cache も response payload ownership + record metadata を保持する。
 - IPv4 は timeout / unknown-protocol / reassembled packet を含めて packet-backed quoted/original payload で扱う。
 - IPv4 / IPv6 の再構成では、各 fragment が受信 packet を保持する。そのため保持数を datagram あたり 64、reassembler 全体で 512 に制限し、上限を超える fragment はその datagram を破棄する。期限切れの回収は fragment の到着ではなく stack の周期処理で行い、先頭 fragment を受信済みの datagram ごとに Time Exceeded を返す。
+- 断片は IP ヘッダの情報で再構成への収容を判定する。ポート、TCP flags、ICMP type/code を含む受信ポリシーは再構成済みのデータグラムに適用し、RAW を含む endpoint への配送に先行する。
 - IPv6 は quoted packet、fragment reassembly、TX を含めて scatter-gather / packet-backed ownership で扱う。
 - TCP send の成功は send buffer admission の完了を意味する。admission 前の connection、budget、allocation、routing failure は payload owner を error で返し、receive の EOF は空 payload ではなく `EndOfStream` で表す。
 - TCP の再送キューは segment を retained payload として ACK まで保持し、送信のたびに同じ backing の handle を渡す。キューに入った segment は sequence 空間を消費済みであり、送信が受理されなかった場合は再送タイマーが再試行する。ACK はキューの handle を直ちに解放し、device が読み取り中の backing は region が completion まで保持する。

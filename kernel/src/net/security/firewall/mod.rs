@@ -122,6 +122,23 @@ pub fn check_ingress_in(
     }
 }
 
+/// This decision only admits storage for reassembly. A complete datagram
+/// still requires the usual ingress check before any endpoint can see it.
+pub(crate) fn admit_ingress_fragment_in(
+    runtime: NetRuntimeHandle,
+    src: impl Into<IpAddress>,
+    dst: impl Into<IpAddress>,
+    protocol: Option<u8>,
+) -> bool {
+    match firewall_in(runtime).engine.lock() {
+        Ok(firewall) => firewall.admits_fragment(src.into(), dst.into(), protocol),
+        Err(_) => {
+            log::error!("[FIREWALL] lock poisoned while admitting a fragment");
+            false
+        }
+    }
+}
+
 /// Egress パケットをファイアウォールルールに照合する
 pub fn check_egress_in(
     runtime: NetRuntimeHandle,

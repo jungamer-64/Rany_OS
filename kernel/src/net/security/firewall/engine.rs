@@ -192,6 +192,35 @@ impl FirewallEngine {
         self.stats_inner.to_stats()
     }
 
+    /// Admission to bounded reassembly uses only facts visible in every
+    /// fragment. Any potentially matching allow rule defers the decision to
+    /// the complete datagram, preserving the ordered policy.
+    pub(super) fn admits_fragment(
+        &self,
+        src: IpAddress,
+        dst: IpAddress,
+        protocol: Option<u8>,
+    ) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        for rule in &self.rules {
+            if !rule.matches_network(FirewallDirection::Ingress, src, dst, protocol) {
+                continue;
+            }
+            if rule.action.is_allow() {
+                return true;
+            }
+            if rule.matches_all_transports(protocol) {
+                return false;
+            }
+        }
+        match self.default_ingress {
+            IngressDefault::Fixed(action) => action.is_allow(),
+            IngressDefault::KnownTcpFlows => protocol.is_none_or(|number| number == 6),
+        }
+    }
+
     /// パケットを評価し、統計を更新する（可変参照版）
     pub fn evaluate_mut(
         &mut self,

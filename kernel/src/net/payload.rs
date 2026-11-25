@@ -882,6 +882,8 @@ pub fn alloc_packet_with_headroom(len: usize, headroom: usize) -> Option<PacketR
     allocate_packet_layout(crate::net::runtime::default_runtime(), layout)
 }
 
+/// Identify the transport in a packet quoted by an ICMPv6 error. The quote
+/// may contain only the beginning of the original IPv6 payload.
 pub fn ipv6_transport_payload(payload: &PacketPayload) -> Option<(IpProtocol, PayloadSpanRef<'_>)> {
     const IPV6_HEADER_SIZE: usize = 40;
     const EXT_HEADER_HOP_BY_HOP: u8 = 0;

@@ -28,10 +28,6 @@ impl NetworkStack {
         let Some(ingress_config) = self.interface_config(ingress_if_id) else {
             return;
         };
-        if !ingress_config.icmp_echo_enabled {
-            return;
-        }
-
         if dst_ip.is_broadcast()
             || dst_ip.is_multicast()
             || dst_ip == ingress_config.ipv4.broadcast_address()
@@ -56,6 +52,9 @@ impl NetworkStack {
                 data_offset,
                 data_len,
             } => {
+                if !ingress_config.icmp_echo_enabled {
+                    return;
+                }
                 let Some(bounds) = crate::net::payload::OwnedPayloadBounds::checked(
                     &payload,
                     data_offset,
@@ -150,29 +149,14 @@ impl NetworkStack {
         if_id: super::NetIfId,
         current_time: u64,
         src_mac: MacAddress,
-        _reassembled: bool,
-        ip_packet: PacketRef,
+        packet_ref: PacketRef,
+        headers: crate::net::l3::ipv6::Ipv6HeaderChain,
     ) {
-        let mut ip_packet = Some(ip_packet);
         let ingress_if_id = if_id;
-        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
-        if let Some(endpoint) = raw_endpoint.as_ref()
-            && let Some(packet) = ip_packet.take()
-        {
-            if let Ok(payload) = kernel_api::resource::net::PacketPayload::try_single(packet) {
-                let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
-            }
-            return;
-        }
-
-        let Some(packet_ref) = ip_packet.take() else {
-            self.record_rx_error_on(ingress_if_id);
-            return;
-        };
         let result = {
             if let Some(state) = self.interfaces.get_mut(&ingress_if_id) {
                 if let Some(ref mut ipv6) = state.ipv6 {
-                    ipv6.process_owned_packet(packet_ref, current_time)
+                    ipv6.process_owned_packet(packet_ref, headers, current_time)
                 } else {
                     return;
                 }

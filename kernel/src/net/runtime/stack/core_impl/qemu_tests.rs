@@ -199,9 +199,238 @@ fn timeout_retries_after_queue_loss_and_manager_contention() {
     assert_eq!(stack.interface_config(if_id), Some(changed));
 }
 
+fn ipv4_pmtu_remains_available_with_echo_disabled() {
+    use crate::net::l3::icmp::DestUnreachCode;
+    use crate::net::l3::ipv4::{IpProtocol, data_checksum};
+    use crate::net::l4::socket::{Socket, bind_udp_dual_stack_in};
+    use crate::net::payload::GeneratedPacketWriter;
+    use crate::net::types::InterfaceScope;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+
+    let runtime = crate::net::runtime::create_runtime().expect("isolated ICMP runtime");
+    crate::net::runtime::manager::init_network_manager_in(runtime);
+    let mut config = NetworkConfig::default();
+    config.icmp_echo_enabled = false;
+    let local = Ipv4Address::new([192, 0, 2, 2]);
+    let remote = Ipv4Address::new([198, 51, 100, 2]);
+    let router = Ipv4Address::new([192, 0, 2, 1]);
+    config.ipv4.address = local;
+    let if_id = register_operational_interface(
+        runtime,
+        "icmp-pmtu",
+        crate::net::runtime::manager::PrimaryPreference::Auto,
+        config,
+    );
+    let mut stack = NetworkStack::new_in(runtime);
+    stack.refresh_interface_topology();
+
+    let socket = Socket::new_udp_in(runtime);
+    let local_port = 50_000u16;
+    bind_udp_dual_stack_in(
+        runtime,
+        local_port,
+        InterfaceScope::Pinned(if_id),
+        socket.socket_id(),
+    )
+    .expect("bind quoted UDP flow");
+    let mut message = [0u8; 36];
+    message[0] = 3;
+    message[1] = DestUnreachCode::FragmentationNeeded as u8;
+    message[6..8].copy_from_slice(&1200u16.to_be_bytes());
+    message[8] = 0x45;
+    message[10..12].copy_from_slice(&1500u16.to_be_bytes());
+    message[14] = 0x40;
+    message[16] = 64;
+    message[17] = IpProtocol::Udp.into();
+    message[20..24].copy_from_slice(local.as_bytes());
+    message[24..28].copy_from_slice(remote.as_bytes());
+    message[28..30].copy_from_slice(&local_port.to_be_bytes());
+    let quoted_checksum = data_checksum(&message[8..28], 0);
+    message[18..20].copy_from_slice(&quoted_checksum.to_be_bytes());
+    let checksum = data_checksum(&message, 0);
+    message[2..4].copy_from_slice(&checksum.to_be_bytes());
+
+    let mut writer =
+        GeneratedPacketWriter::new(message.len(), DEFAULT_PACKET_HEADROOM).expect("ICMP packet");
+    writer.write_generated_bytes(&message).expect("ICMP bytes");
+    stack.process_icmp_payload(
+        runtime,
+        if_id,
+        writer.finish().expect("ICMP payload"),
+        router,
+        local,
+        64,
+        1,
+    );
+    assert_eq!(
+        stack
+            .interfaces
+            .get_mut(&if_id)
+            .expect("IPv4 interface")
+            .ipv4
+            .get_pmtu(remote, 1),
+        1200
+    );
+}
+
+fn ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks() {
+    use crate::net::l3::ipv6::Ipv6Config;
+    use crate::net::payload::GeneratedPacketWriter;
+    use crate::net::runtime::manager::{self, PrimaryPreference};
+    use crate::net::types::InterfaceScope;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+
+    let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 runtime");
+    manager::init_network_manager_in(runtime);
+    let mut config = NetworkConfig::default();
+    config.ipv6 = Some(Ipv6Config::from_mac(config.mac.as_bytes()));
+    let if_id = register_operational_interface(runtime, "slaac", PrimaryPreference::Auto, config);
+    let mut ingress = NetworkStack::new_in(runtime);
+    let mut peer_stack = NetworkStack::new_in(runtime);
+    ingress.refresh_interface_topology();
+    peer_stack.refresh_interface_topology();
+
+    let router = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let prefix = Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+    let remote = Ipv6Address::new([0x20, 1, 0x0d, 0xb8, 0, 2, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1]);
+    let mut advertisement = [0; 48];
+    advertisement[0] = Icmpv6Type::RouterAdvertisement.into();
+    advertisement[6..8].copy_from_slice(&30u16.to_be_bytes());
+    advertisement[16..20].copy_from_slice(&[3, 4, 64, 0xc0]);
+    advertisement[20..24].copy_from_slice(&120u32.to_be_bytes());
+    advertisement[24..28].copy_from_slice(&60u32.to_be_bytes());
+    advertisement[32..48].copy_from_slice(prefix.as_bytes());
+    let mut writer = GeneratedPacketWriter::new(advertisement.len(), DEFAULT_PACKET_HEADROOM)
+        .expect("RA packet");
+    writer
+        .write_generated_bytes(&advertisement)
+        .expect("RA bytes");
+    ingress.process_ndp_message(
+        runtime,
+        if_id,
+        Icmpv6Type::RouterAdvertisement,
+        writer.finish().expect("RA payload"),
+        router,
+        Ipv6Address::ALL_NODES_LINK_LOCAL,
+        MacAddress::ZERO,
+        255,
+        1000,
+    );
+
+    assert_eq!(
+        manager::resolve_ipv6_interface_in(runtime, InterfaceScope::Any, remote),
+        Ok(if_id)
+    );
+    peer_stack.refresh_interface_topology();
+    let learned = peer_stack
+        .interface_config(if_id)
+        .and_then(|config| config.ipv6)
+        .expect("peer stack IPv6 topology");
+    assert_eq!(learned.gateway, Some(router));
+    assert_eq!(
+        learned.global,
+        Some(Ipv6Address::from_prefix_eui64(
+            &prefix,
+            config.mac.as_bytes()
+        ))
+    );
+}
+
+fn reassembled_ipv6_uses_extension_header_transport_window() {
+    use crate::net::l3::ipv6::{Ipv6Config, ipv6_pseudo_header_checksum};
+    use crate::net::l4::socket::{Socket, bind_udp_dual_stack_in};
+    use crate::net::payload::{GeneratedPacketWriter, PacketPayloadView};
+    use crate::net::runtime::command::{IngressCommand, RuntimeCommand};
+    use crate::net::runtime::manager::{self, PrimaryPreference};
+    use crate::net::security::firewall::{
+        FirewallAction, FirewallDirection, FirewallRule, PortMatch, add_rule_in,
+        set_default_policy_in,
+    };
+    use crate::net::types::InterfaceScope;
+    use kernel_api::resource::net::DEFAULT_PACKET_HEADROOM;
+
+    let runtime = crate::net::runtime::create_runtime().expect("isolated IPv6 ingress runtime");
+    manager::init_network_manager_in(runtime);
+    let mut config = NetworkConfig::default();
+    let ipv6 = Ipv6Config::from_mac(config.mac.as_bytes());
+    config.ipv6 = Some(ipv6);
+    let if_id =
+        register_operational_interface(runtime, "ipv6-ingress", PrimaryPreference::Auto, config);
+    let mut stack = NetworkStack::new_in(runtime);
+    let socket = Socket::new_udp_in(runtime);
+    let dst_port = 30_001u16;
+    bind_udp_dual_stack_in(
+        runtime,
+        dst_port,
+        InterfaceScope::Pinned(if_id),
+        socket.socket_id(),
+    )
+    .expect("bind IPv6 destination port");
+    set_default_policy_in(runtime, FirewallDirection::Ingress, FirewallAction::Deny)
+        .expect("require an explicit allow rule");
+    add_rule_in(
+        runtime,
+        FirewallRule::builder()
+            .ingress()
+            .udp()
+            .dst_port(PortMatch::Exact(dst_port))
+            .allow()
+            .build(),
+    )
+    .expect("allow destination port");
+
+    let src = Ipv6Address::new([0xfe, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2]);
+    let dst = ipv6.link_local;
+    let mut packet = [0; 60];
+    packet[0] = 0x60;
+    packet[4..6].copy_from_slice(&20u16.to_be_bytes());
+    packet[6] = 60; // Destination Options
+    packet[7] = 64;
+    packet[8..24].copy_from_slice(src.as_bytes());
+    packet[24..40].copy_from_slice(dst.as_bytes());
+    packet[40] = 17;
+    packet[48..50].copy_from_slice(&30_000u16.to_be_bytes());
+    packet[50..52].copy_from_slice(&dst_port.to_be_bytes());
+    packet[52..54].copy_from_slice(&12u16.to_be_bytes());
+    packet[56..60].copy_from_slice(b"data");
+    let sum = ipv6_pseudo_header_checksum(&src, &dst, IpProtocol::Udp, 12);
+    let checksum = crate::net::l3::ipv4::data_checksum(&packet[48..], sum);
+    packet[54..56].copy_from_slice(&checksum.to_be_bytes());
+
+    let mut writer = GeneratedPacketWriter::new(packet.len(), DEFAULT_PACKET_HEADROOM)
+        .expect("reassembled IPv6 packet");
+    writer.write_generated_bytes(&packet).expect("IPv6 bytes");
+    let offset =
+        kernel_api::resource::net::PacketByteCount::new(41).expect("header segment offset");
+    let kernel_api::resource::net::PacketPayloadFront::Prefix { front, remainder } = writer
+        .finish()
+        .expect("IPv6 payload")
+        .try_take_front(offset)
+        .expect("split across Destination Options header")
+    else {
+        panic!("the extension header must cross packet segments");
+    };
+    let payload = front.try_append(remainder).expect("segmented IPv6 payload");
+    let handler = crate::net::runtime::command_handler::RuntimeCommandHandler::new();
+    let _ = handler.handle_event_with_stack_in(
+        runtime,
+        RuntimeCommand::Ingress(IngressCommand::Reassembled { if_id, payload }),
+        &mut stack,
+    );
+    let (received_if, _, _, payload) = socket.try_recv_udp_payload().expect("allowed UDP delivery");
+    assert_eq!(received_if, if_id);
+    assert_eq!(
+        PacketPayloadView::new(&payload).read_array::<4>(0),
+        Some(*b"data")
+    );
+}
+
 pub(crate) fn interface_topology() -> bool {
     production_stacks_converge_on_primary_and_remove_stopped_interfaces();
     identical_topology_snapshot_preserves_interface_protocol_state();
     timeout_retries_after_queue_loss_and_manager_contention();
+    ipv4_pmtu_remains_available_with_echo_disabled();
+    ipv6_router_advertisement_reaches_route_lookup_and_peer_stacks();
+    reassembled_ipv6_uses_extension_header_transport_window();
     true
 }

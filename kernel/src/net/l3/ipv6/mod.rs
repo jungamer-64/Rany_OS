@@ -24,6 +24,8 @@ use super::ipv4::IpProtocol;
 
 pub mod fragment;
 /// IPv6 address (16 bytes)
+mod header_chain;
+pub(crate) use header_chain::{Ipv6HeaderChain, Ipv6PacketBytes};
 mod processor_impl;
 pub use fragment::{Ipv6FragmentHeader, Ipv6FragmentReassembler};
 pub use processor_impl::*;
@@ -576,7 +578,6 @@ impl<'a> Ipv6Packet<'a> {
     pub fn total_length(&self) -> usize {
         IPV6_HEADER_SIZE + self.header().payload_length() as usize
     }
-
 }
 
 // =====================================================

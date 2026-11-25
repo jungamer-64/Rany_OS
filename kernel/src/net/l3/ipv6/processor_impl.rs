@@ -4,7 +4,6 @@
 
 use super::*;
 use crate::net::datapath::mempool::PacketRef;
-use crate::net::l3::ipv6::{ExtHeaderResult, Ipv6Packet, skip_extension_headers_fraginfo};
 use crate::net::payload::{GeneratedPacketWriter, OwnedPayloadBounds};
 use kernel_api::resource::net::PacketPayload;
 
@@ -57,6 +56,7 @@ impl Ipv6Processor {
     pub fn process_owned_packet(
         &mut self,
         packet_ref: PacketRef,
+        headers: Ipv6HeaderChain,
         current_time: u64,
     ) -> Ipv6ProcessResult {
         let ingress = {
@@ -101,31 +101,40 @@ impl Ipv6Processor {
                 return Ipv6ProcessResult::HopLimitExceeded(src, dst, payload);
             }
 
-            // Walk extension headers with fragment awareness.
-            match skip_extension_headers_fraginfo(data) {
-                ExtHeaderResult::NoFragment(final_protocol, upper_payload, next_header_ptr) => {
-                    let Some(payload_offset) = data.len().checked_sub(upper_payload.len()) else {
-                        self.stats.record_header_error();
-                        return Ipv6ProcessResult::Error;
-                    };
-                    Ipv6UpperLayerIngress {
-                        src,
-                        dst,
-                        protocol: final_protocol,
-                        hop_limit: packet.hop_limit(),
-                        next_header_ptr,
-                        payload_offset,
-                        payload_len: upper_payload.len(),
-                    }
+            match headers {
+                Ipv6HeaderChain::UpperLayer {
+                    protocol,
+                    offset,
+                    len,
+                    next_header_pointer,
+                } => Ipv6UpperLayerIngress {
+                    src,
+                    dst,
+                    protocol,
+                    hop_limit: packet.hop_limit(),
+                    next_header_ptr: next_header_pointer,
+                    payload_offset: offset,
+                    payload_len: len,
+                },
+                Ipv6HeaderChain::Fragment {
+                    header,
+                    header_offset,
+                    payload_len,
+                } => {
+                    return self.process_fragment_owned_packet(
+                        packet_ref,
+                        (src, dst),
+                        header,
+                        header_offset,
+                        payload_len,
+                        current_time,
+                    );
                 }
-                ExtHeaderResult::Fragment { .. } => {
-                    return self.process_fragment_owned_packet(packet_ref, current_time);
-                }
-                ExtHeaderResult::Discard => {
+                Ipv6HeaderChain::Discard => {
                     self.stats.record_dropped();
                     return Ipv6ProcessResult::Dropped;
                 }
-                ExtHeaderResult::ParameterProblem {
+                Ipv6HeaderChain::ParameterProblem {
                     code,
                     pointer,
                     allow_multicast_dst,
@@ -181,115 +190,35 @@ impl Ipv6Processor {
         }
     }
 
-    pub(crate) fn process_fragment_owned_packet(
+    fn process_fragment_owned_packet(
         &mut self,
         packet_ref: PacketRef,
+        (src, dst): (Ipv6Address, Ipv6Address),
+        frag_header: Ipv6FragmentHeader,
+        header_offset: usize,
+        frag_payload_len: usize,
         current_time: u64,
     ) -> Ipv6ProcessResult {
-        let fragment_info = {
-            let raw_packet = packet_ref.data();
-            let packet = match Ipv6Packet::parse(raw_packet) {
-                Some(packet) => packet,
-                None => {
-                    self.stats.record_header_error();
-                    return Ipv6ProcessResult::Error;
-                }
-            };
-
-            self.stats.record_rx();
-
-            let src = packet.source();
-            if src.is_multicast() || (src.is_loopback() && !self.config.link_local.is_loopback()) {
-                self.stats.record_dropped();
-                log::warn!("[NET-IPV6] Dropping Martian packet with source {}", src);
-                return Ipv6ProcessResult::Dropped;
-            }
-
-            let dst = packet.destination();
-            if !self.is_for_us(&dst) {
-                self.stats.record_dropped();
-                return Ipv6ProcessResult::Dropped;
-            }
-
-            if packet.hop_limit() == 0 {
-                let Ok(payload) = PacketPayload::try_single(packet_ref) else {
-                    self.stats.record_header_error();
-                    return Ipv6ProcessResult::Error;
-                };
-                return Ipv6ProcessResult::HopLimitExceeded(src, dst, payload);
-            }
-
-            match skip_extension_headers_fraginfo(raw_packet) {
-                ExtHeaderResult::Fragment {
-                    unfragmentable,
-                    frag_header,
-                    frag_payload,
-                } => {
-                    let unfrag_len = unfragmentable.len();
-                    let Some(quoted_unfragmentable) =
-                        generated_ipv6_header_payload(&raw_packet[..unfrag_len])
-                    else {
-                        self.stats.record_header_error();
-                        return Ipv6ProcessResult::Error;
-                    };
-                    let Some(reassembly_unfragmentable) =
-                        generated_ipv6_header_payload(&raw_packet[..unfrag_len])
-                    else {
-                        self.stats.record_header_error();
-                        return Ipv6ProcessResult::Error;
-                    };
-                    let Some(frag_payload_offset) =
-                        raw_packet.len().checked_sub(frag_payload.len())
-                    else {
-                        self.stats.record_header_error();
-                        return Ipv6ProcessResult::Error;
-                    };
-                    (
-                        src,
-                        dst,
-                        quoted_unfragmentable,
-                        Some(reassembly_unfragmentable),
-                        frag_payload_offset,
-                        frag_payload.len(),
-                        frag_header,
-                    )
-                }
-                ExtHeaderResult::Discard => {
-                    self.stats.record_dropped();
-                    return Ipv6ProcessResult::Dropped;
-                }
-                ExtHeaderResult::ParameterProblem {
-                    code,
-                    pointer,
-                    allow_multicast_dst,
-                } => {
-                    if !allow_multicast_dst && dst.is_multicast() {
-                        self.stats.record_dropped();
-                        return Ipv6ProcessResult::Dropped;
-                    }
-                    let Ok(payload) = PacketPayload::try_single(packet_ref) else {
-                        self.stats.record_header_error();
-                        return Ipv6ProcessResult::Error;
-                    };
-                    return Ipv6ProcessResult::ParameterProblem(code, pointer, src, dst, payload);
-                }
-                _ => return Ipv6ProcessResult::Error,
-            }
+        let unfragmentable_bytes = &packet_ref.data()[..header_offset];
+        let Some(quoted_unfragmentable) = generated_ipv6_header_payload(unfragmentable_bytes)
+        else {
+            self.stats.record_header_error();
+            return Ipv6ProcessResult::Error;
         };
-
+        let unfragmentable_payload = if frag_header.fragment_offset == 0 {
+            let Some(header) = generated_ipv6_header_payload(unfragmentable_bytes) else {
+                self.stats.record_header_error();
+                return Ipv6ProcessResult::Error;
+            };
+            Some(header)
+        } else {
+            None
+        };
         let Ok(original) = PacketPayload::try_single(packet_ref) else {
             self.stats.record_header_error();
             return Ipv6ProcessResult::Error;
         };
-        let (
-            src,
-            dst,
-            quoted_unfragmentable,
-            unfragmentable_payload,
-            frag_payload_offset,
-            frag_payload_len,
-            frag_header,
-        ) = fragment_info;
+        let frag_payload_offset = header_offset + Ipv6FragmentHeader::SIZE;
         let Some(bounds) =
             OwnedPayloadBounds::checked(&original, frag_payload_offset, frag_payload_len)
         else {

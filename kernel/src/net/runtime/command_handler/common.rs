@@ -48,23 +48,3 @@ pub(super) fn finish_command<T: CommandReplyPayload>(
     crate::net::runtime::command::complete_command(reply, value);
     EventHandleResult::Success
 }
-
-/// IPv4 ペイロードからトランスポート層の送信元/宛先ポートを抽出する。
-///
-/// TCP (proto=6) / UDP (proto=17) の場合、ヘッダ先頭 4 バイトに
-/// src_port(2) + dst_port(2) が格納されている。
-/// ICMP やその他のプロトコルではポート 0 を返す。
-#[inline]
-pub(super) fn extract_ports(ipv4_data: &[u8], ihl: usize, protocol: u8) -> (u16, u16) {
-    // TCP=6, UDP=17 のみポートを持つ
-    if (protocol == 6 || protocol == 17) && ipv4_data.len() >= ihl + 4 {
-        let src_port = u16::from_be_bytes([ipv4_data[ihl], ipv4_data[ihl + 1]]);
-        let dst_port = u16::from_be_bytes([ipv4_data[ihl + 2], ipv4_data[ihl + 3]]);
-        (src_port, dst_port)
-    } else if protocol == 1 && ipv4_data.len() >= ihl + 2 {
-        // ICMP: src_port = type, dst_port = code
-        (ipv4_data[ihl] as u16, ipv4_data[ihl + 1] as u16)
-    } else {
-        (0, 0)
-    }
-}

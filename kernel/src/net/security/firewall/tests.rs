@@ -31,6 +31,53 @@ mod tests {
 
     #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
     #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
+    fn fragment_admission_preserves_order_and_defers_port_decisions() {
+        let src = IpAddress::V4([192, 0, 2, 1]);
+        let dst = IpAddress::V4([192, 0, 2, 2]);
+        let ingress = FirewallDirection::Ingress;
+        let udp = u8::from(crate::net::l3::ipv4::IpProtocol::Udp);
+        let mut engine = FirewallEngine::new_const();
+        engine.set_default_policy(ingress, FirewallAction::Deny);
+        assert!(!engine.admits_fragment(src, dst, Some(udp)));
+        engine.add_rule(
+            FirewallRule::builder()
+                .ingress()
+                .udp()
+                .dst_port(PortMatch::Exact(1234))
+                .priority(10)
+                .allow()
+                .build(),
+        );
+        engine.add_rule(
+            FirewallRule::builder()
+                .ingress()
+                .udp()
+                .priority(20)
+                .deny()
+                .build(),
+        );
+        assert!(engine.admits_fragment(src, dst, Some(udp)));
+        assert_eq!(
+            engine.evaluate_mut(ingress, src, dst, udp, 4321, 1234, 0, || false),
+            FirewallVerdict::Allow
+        );
+        assert_eq!(
+            engine.evaluate_mut(ingress, src, dst, udp, 4321, 1235, 0, || false),
+            FirewallVerdict::Deny
+        );
+        engine.add_rule(
+            FirewallRule::builder()
+                .ingress()
+                .udp()
+                .priority(5)
+                .deny()
+                .build(),
+        );
+        assert!(!engine.admits_fragment(src, dst, Some(udp)));
+    }
+
+    #[cfg_attr(any(feature = "std", target_os = "linux"), test)]
+    #[cfg_attr(not(any(feature = "std", target_os = "linux")), test_case)]
     fn explicit_rules_precede_known_tcp_flow_default() {
         let mut engine = FirewallEngine::new_const();
         engine.allow_known_tcp_flows_by_default();

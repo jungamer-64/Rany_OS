@@ -4,8 +4,34 @@
 //! RuntimeCommandHandler Ingress系メソッド
 
 use super::*;
-use crate::net::runtime::command_handler::common::extract_ports;
+use crate::net::l3::ipv4::{IpProtocol, Ipv4Packet};
+use crate::net::l3::ipv6::{Ipv6HeaderChain, Ipv6Packet, Ipv6PacketBytes};
+use crate::net::payload::{PacketPayloadView, PayloadSpanRef};
+use crate::net::security::firewall::{admit_ingress_fragment_in, check_ingress_in};
 use kernel_api::resource::net::PacketPayload;
+
+fn ingress_transport_fields(protocol: IpProtocol, header: &[u8]) -> (u16, u16, u8) {
+    let (src, dst) = match protocol {
+        IpProtocol::Tcp if header.len() >= 20 => (
+            u16::from_be_bytes([header[0], header[1]]),
+            u16::from_be_bytes([header[2], header[3]]),
+        ),
+        IpProtocol::Udp if header.len() >= 8 => (
+            u16::from_be_bytes([header[0], header[1]]),
+            u16::from_be_bytes([header[2], header[3]]),
+        ),
+        IpProtocol::Icmp | IpProtocol::Icmpv6 if header.len() >= 2 => {
+            (u16::from(header[0]), u16::from(header[1]))
+        }
+        _ => (0, 0),
+    };
+    let flags = if protocol == IpProtocol::Tcp && header.len() >= 20 {
+        header[13]
+    } else {
+        0
+    };
+    (src, dst, flags)
+}
 
 impl RuntimeCommandHandler {
     /// IngressPacketイベント処理（スタック保持）
@@ -65,110 +91,82 @@ impl RuntimeCommandHandler {
                 packet: ip_packet,
                 src_mac,
             } => {
-                let ipv6_enabled = stack
+                if !stack
                     .interface_state_for_ingress(selected_if_id)
-                    .is_some_and(|(_, state)| state.has_ipv6());
-                if ipv6_enabled {
-                    let ip_data = ip_packet.data();
-                    // ── ファイアウォール Ingress チェック (IPv6) ──
-                    if ip_data.len() >= 40 {
-                        let src_ip = [
-                            ip_data[8],
-                            ip_data[9],
-                            ip_data[10],
-                            ip_data[11],
-                            ip_data[12],
-                            ip_data[13],
-                            ip_data[14],
-                            ip_data[15],
-                            ip_data[16],
-                            ip_data[17],
-                            ip_data[18],
-                            ip_data[19],
-                            ip_data[20],
-                            ip_data[21],
-                            ip_data[22],
-                            ip_data[23],
-                        ];
-                        let dst_ip = [
-                            ip_data[24],
-                            ip_data[25],
-                            ip_data[26],
-                            ip_data[27],
-                            ip_data[28],
-                            ip_data[29],
-                            ip_data[30],
-                            ip_data[31],
-                            ip_data[32],
-                            ip_data[33],
-                            ip_data[34],
-                            ip_data[35],
-                            ip_data[36],
-                            ip_data[37],
-                            ip_data[38],
-                            ip_data[39],
-                        ];
-                        let next_header = ip_data[6];
-                        let (protocol, transport_data) =
-                            crate::net::l3::ipv6::skip_extension_headers(
-                                crate::net::l3::ipv4::IpProtocol::from(next_header),
-                                &ip_data[40..],
-                            );
-
-                        let (src_port, dst_port) = if (u8::from(protocol) == 6
-                            || u8::from(protocol) == 17)
-                            && transport_data.len() >= 4
-                        {
-                            let sp = u16::from_be_bytes([transport_data[0], transport_data[1]]);
-                            let dp = u16::from_be_bytes([transport_data[2], transport_data[3]]);
-                            (sp, dp)
-                        } else if u8::from(protocol) == 58 && transport_data.len() >= 2 {
-                            // ICMPv6: src_port = type, dst_port = code
-                            (transport_data[0] as u16, transport_data[1] as u16)
-                        } else {
-                            (0, 0)
-                        };
-
-                        let tcp_flags = if u8::from(protocol) == 6 && transport_data.len() >= 14 {
-                            transport_data[13]
-                        } else {
-                            0
-                        };
-
-                        // SECURITY: firewall check には完全な IPv6 address を使う。
-                        if !crate::net::security::firewall::check_ingress_in(
-                            runtime,
-                            selected_if_id,
-                            crate::net::security::firewall::IpAddress::V6(src_ip),
-                            crate::net::security::firewall::IpAddress::V6(dst_ip),
-                            u8::from(protocol),
-                            src_port,
-                            dst_port,
-                            tcp_flags,
-                        ) {
-                            if let Some(stats) = stack.interface_stats(selected_if_id) {
-                                stats.record_dropped();
-                            }
-                            return EventHandleResult::Success;
-                        }
-                    }
-
-                    stack.process_ipv6_data(
-                        runtime,
-                        selected_if_id,
-                        current_time,
-                        src_mac,
-                        false,
-                        ip_packet,
-                    );
-                    if let Some(stats) = stack.interface_stats(selected_if_id) {
-                        stats.record_rx(pkt_len);
-                    }
-                } else {
+                    .is_some_and(|(_, state)| state.has_ipv6())
+                {
                     if let Some(stats) = stack.interface_stats(selected_if_id) {
                         stats.record_dropped();
                     }
+                    return EventHandleResult::Success;
                 }
+
+                let data = ip_packet.data();
+                let Some(packet) = Ipv6Packet::parse(data) else {
+                    if let Some(stats) = stack.interface_stats(selected_if_id) {
+                        stats.record_rx_error();
+                    }
+                    return EventHandleResult::Success;
+                };
+                let src = packet.source().octets();
+                let dst = packet.destination().octets();
+                let headers = Ipv6HeaderChain::parse(Ipv6PacketBytes::Contiguous(data));
+                let allowed = match headers {
+                    Ipv6HeaderChain::UpperLayer {
+                        protocol,
+                        offset,
+                        len,
+                        ..
+                    } => {
+                        let (src_port, dst_port, flags) =
+                            ingress_transport_fields(protocol, &data[offset..offset + len]);
+                        check_ingress_in(
+                            runtime,
+                            selected_if_id,
+                            src,
+                            dst,
+                            protocol.into(),
+                            src_port,
+                            dst_port,
+                            flags,
+                        )
+                    }
+                    Ipv6HeaderChain::Fragment { .. } => {
+                        admit_ingress_fragment_in(runtime, src, dst, None)
+                    }
+                    Ipv6HeaderChain::ParameterProblem { .. } => {
+                        admit_ingress_fragment_in(runtime, src, dst, None)
+                    }
+                    Ipv6HeaderChain::Discard => false,
+                };
+
+                if let Some(stats) = stack.interface_stats(selected_if_id) {
+                    if allowed {
+                        stats.record_rx(pkt_len);
+                    } else {
+                        stats.record_dropped();
+                    }
+                }
+                if !allowed {
+                    return EventHandleResult::Success;
+                }
+                if matches!(headers, Ipv6HeaderChain::UpperLayer { .. })
+                    && let Some(endpoint) =
+                        crate::net::l4::socket::find_raw_by_scope_in(runtime, selected_if_id)
+                {
+                    if let Ok(payload) = PacketPayload::try_single(ip_packet) {
+                        let _ = endpoint.deliver_raw_payload(selected_if_id, payload);
+                    }
+                    return EventHandleResult::Success;
+                }
+                stack.process_ipv6_data(
+                    runtime,
+                    selected_if_id,
+                    current_time,
+                    src_mac,
+                    ip_packet,
+                    headers,
+                );
                 EventHandleResult::Success
             }
             _ => EventHandleResult::Success,
@@ -218,27 +216,9 @@ impl RuntimeCommandHandler {
             let prefix = prefix_storage.as_slice();
             let ttl = header[8];
 
-            let (src_port, dst_port, tcp_flags) = match protocol {
-                crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
-                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                    prefix[13],
-                ),
-                crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
-                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                    0,
-                ),
-                crate::net::l3::ipv4::IpProtocol::Icmp
-                | crate::net::l3::ipv4::IpProtocol::Icmpv6
-                    if prefix.len() >= 2 =>
-                {
-                    (prefix[0] as u16, prefix[1] as u16, 0)
-                }
-                _ => (0, 0, 0),
-            };
+            let (src_port, dst_port, tcp_flags) = ingress_transport_fields(protocol, prefix);
 
-            if !crate::net::security::firewall::check_ingress_in(
+            if !check_ingress_in(
                 runtime,
                 ingress_if_id,
                 src_ip.octets(),
@@ -358,41 +338,42 @@ impl RuntimeCommandHandler {
                 header[31], header[32], header[33], header[34], header[35], header[36], header[37],
                 header[38], header[39],
             ]);
-            let (protocol, _) = crate::net::l3::ipv6::skip_extension_headers(
-                crate::net::l3::ipv4::IpProtocol::from(header[6]),
-                &header[40..],
-            );
-            let payload_offset = header.len();
-            let transport_len = view.total_len().saturating_sub(payload_offset);
-            let prefix_len = transport_len.min(20);
-            let Some(prefix_storage) = view.read_fixed_bytes::<20>(payload_offset, prefix_len)
+            let headers = Ipv6HeaderChain::parse(Ipv6PacketBytes::Segmented(
+                PayloadSpanRef::from_payload(&payload),
+            ));
+            let Ipv6HeaderChain::UpperLayer {
+                protocol,
+                offset: payload_offset,
+                len: transport_len,
+                ..
+            } = headers
             else {
+                if let Ipv6HeaderChain::ParameterProblem {
+                    code,
+                    pointer,
+                    allow_multicast_dst,
+                } = headers
+                    && (allow_multicast_dst || !dst.is_multicast())
+                {
+                    stack.send_icmpv6_parameter_problem_payload(
+                        ingress_if_id,
+                        src,
+                        code,
+                        pointer,
+                        payload,
+                    );
+                }
                 return EventHandleResult::Success;
             };
-            let prefix = prefix_storage.as_slice();
-            let hop_limit = header[7];
-
-            let (src_port, dst_port, tcp_flags) = match protocol {
-                crate::net::l3::ipv4::IpProtocol::Tcp if prefix.len() >= 20 => (
-                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                    prefix[13],
-                ),
-                crate::net::l3::ipv4::IpProtocol::Udp if prefix.len() >= 8 => (
-                    u16::from_be_bytes([prefix[0], prefix[1]]),
-                    u16::from_be_bytes([prefix[2], prefix[3]]),
-                    0,
-                ),
-                crate::net::l3::ipv4::IpProtocol::Icmp
-                | crate::net::l3::ipv4::IpProtocol::Icmpv6
-                    if prefix.len() >= 2 =>
-                {
-                    (prefix[0] as u16, prefix[1] as u16, 0)
-                }
-                _ => (0, 0, 0),
+            let prefix_len = transport_len.min(20);
+            let Some(prefix) = view.read_fixed_bytes::<20>(payload_offset, prefix_len) else {
+                return EventHandleResult::Success;
             };
+            let hop_limit = header[7];
+            let (src_port, dst_port, tcp_flags) =
+                ingress_transport_fields(protocol, prefix.as_slice());
 
-            if !crate::net::security::firewall::check_ingress_in(
+            if !check_ingress_in(
                 runtime,
                 ingress_if_id,
                 crate::net::security::firewall::IpAddress::V6(src.octets()),
@@ -488,81 +469,55 @@ impl RuntimeCommandHandler {
         current_time: u64,
         stack: &mut crate::net::runtime::stack::NetworkStack,
     ) -> EventHandleResult {
-        let mut ip_packet = Some(ip_packet);
         if !crate::net::runtime::manager::is_interface_operational_in(runtime, if_id) {
             return EventHandleResult::Success;
         }
         let ingress_if_id = if_id;
-        {
-            let data = ip_packet.as_ref().map_or(&[][..], PacketRef::data);
-            if data.len() >= 20 {
-                let protocol = data[9];
-                let src_ip: [u8; 4] = [data[12], data[13], data[14], data[15]];
-                let dst_ip: [u8; 4] = [data[16], data[17], data[18], data[19]];
-                let ihl = ((data[0] & 0x0F) as usize) * 4;
-                let fragment_offset = (u16::from_be_bytes([data[6], data[7]]) & 0x1FFF) * 8;
-                let more_fragments = (data[6] & 0x20) != 0;
-
-                if fragment_offset == 0 && more_fragments {
-                    let min_l4_len = match protocol {
-                        6 => 20,
-                        17 => 8,
-                        _ => 0,
-                    };
-                    if data.len() < ihl + min_l4_len {
-                        if let Some(stats) = stack.interface_stats(ingress_if_id) {
-                            stats.record_dropped();
-                        }
-                        return EventHandleResult::Success;
-                    }
-                }
-
-                let tcp_flags = if protocol == 6 && data.len() >= ihl + 14 {
-                    data[ihl + 13]
-                } else {
-                    0
-                };
-                let (src_port, dst_port) = if fragment_offset == 0 {
-                    extract_ports(data, ihl, protocol)
-                } else {
-                    (0, 0)
-                };
-
-                if !crate::net::security::firewall::check_ingress_in(
-                    runtime,
-                    ingress_if_id,
-                    src_ip,
-                    dst_ip,
-                    protocol,
-                    src_port,
-                    dst_port,
-                    tcp_flags,
-                ) {
-                    if let Some(stats) = stack.interface_stats(ingress_if_id) {
-                        stats.record_dropped();
-                    }
-                    return EventHandleResult::Success;
-                }
+        let Some(packet) = Ipv4Packet::parse(ip_packet.data()) else {
+            if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                stats.record_rx_error();
             }
+            return EventHandleResult::Success;
+        };
+        let protocol = packet.protocol();
+        let src = packet.source().octets();
+        let dst = packet.destination().octets();
+        let fragmented = packet.header().more_fragments() || packet.header().fragment_offset() != 0;
+        let allowed = if fragmented {
+            admit_ingress_fragment_in(runtime, src, dst, Some(protocol.into()))
+        } else {
+            let (src_port, dst_port, flags) = ingress_transport_fields(protocol, packet.payload());
+            check_ingress_in(
+                runtime,
+                ingress_if_id,
+                src,
+                dst,
+                protocol.into(),
+                src_port,
+                dst_port,
+                flags,
+            )
+        };
+        if !allowed {
+            if let Some(stats) = stack.interface_stats(ingress_if_id) {
+                stats.record_dropped();
+            }
+            return EventHandleResult::Success;
         }
 
-        let raw_endpoint = crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id);
-        if let Some(endpoint) = raw_endpoint.as_ref()
-            && let Some(packet) = ip_packet.take()
+        if !fragmented
+            && let Some(endpoint) =
+                crate::net::l4::socket::find_raw_by_scope_in(runtime, ingress_if_id)
         {
-            if let Ok(payload) = PacketPayload::try_single(packet) {
+            if let Ok(payload) = PacketPayload::try_single(ip_packet) {
                 let _ = endpoint.deliver_raw_payload(ingress_if_id, payload);
             }
             return EventHandleResult::Success;
         }
-
-        let Some(packet_ref) = ip_packet.take() else {
-            return EventHandleResult::ProtocolError(EndpointError::ResourceExhausted);
-        };
         let Some((_, state)) = stack.interface_state_for_ingress_mut(ingress_if_id) else {
             return EventHandleResult::Success;
         };
-        let result = state.process_ipv4_owned_packet(packet_ref, current_time);
+        let result = state.process_ipv4_owned_packet(ip_packet, current_time);
 
         match result {
             crate::net::l3::ipv4::Ipv4ProcessResult::Icmp(packet, src_ip, dst_ip, ttl) => {

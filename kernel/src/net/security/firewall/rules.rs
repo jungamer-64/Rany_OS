@@ -347,6 +347,37 @@ impl FirewallRule {
     }
 
     /// このルールが指定されたパケットに一致するかどうか
+    pub(super) fn matches_network(
+        &self,
+        direction: FirewallDirection,
+        src_ip: IpAddress,
+        dst_ip: IpAddress,
+        protocol: Option<u8>,
+    ) -> bool {
+        (self.direction == FirewallDirection::Both || self.direction == direction)
+            && self.src_ip.matches(src_ip)
+            && self.dst_ip.matches(dst_ip)
+            && protocol.is_none_or(|number| self.protocol.matches(number))
+    }
+
+    /// A partial-header decision can conclude a deny only when no remaining
+    /// protocol or transport fields can change this rule's match.
+    pub(super) fn matches_all_transports(&self, protocol: Option<u8>) -> bool {
+        let ports_unrestricted = self.src_port == PortMatch::Any && self.dst_port == PortMatch::Any;
+        match protocol {
+            Some(6) => ports_unrestricted && self.tcp_flags_mask == 0,
+            Some(17) => ports_unrestricted,
+            Some(1 | 58) => self.icmp_match == IcmpMatch::Any,
+            Some(_) => true,
+            None => {
+                self.protocol == FirewallProtocol::Any
+                    && ports_unrestricted
+                    && self.tcp_flags_mask == 0
+                    && self.icmp_match == IcmpMatch::Any
+            }
+        }
+    }
+
     pub fn matches(
         &self,
         direction: FirewallDirection,
@@ -357,17 +388,7 @@ impl FirewallRule {
         dst_port: u16,
         tcp_flags: u8,
     ) -> bool {
-        // 方向チェック
-        let dir_match = self.direction == FirewallDirection::Both || self.direction == direction;
-        if !dir_match {
-            return false;
-        }
-
-        let ip_match = self.src_ip.matches(src_ip)
-            && self.dst_ip.matches(dst_ip)
-            && self.protocol.matches(protocol);
-
-        if !ip_match {
+        if !self.matches_network(direction, src_ip, dst_ip, Some(protocol)) {
             return false;
         }
 

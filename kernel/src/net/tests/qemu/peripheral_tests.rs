@@ -870,6 +870,22 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     .ok()?;
     log::info!(target: "qemu::net", "interface-scoped sockets bound");
 
+    use crate::net::security::firewall::{
+        FirewallAction, FirewallDirection, FirewallRule, PortMatch, add_rule_in,
+        set_default_policy_in,
+    };
+    set_default_policy_in(runtime, FirewallDirection::Ingress, FirewallAction::Deny).ok()?;
+    let allow_udp = add_rule_in(
+        runtime,
+        FirewallRule::builder()
+            .ingress()
+            .udp()
+            .dst_port(PortMatch::Exact(destination_port))
+            .allow()
+            .build(),
+    )
+    .ok()?;
+
     let udp_header = udp_datagram(40_000, destination_port, &[0; 8])?;
     let first_fragment = &udp_header[..8];
     let payload_a = b"port-A!!";
@@ -949,6 +965,8 @@ fn run_fake_ports_smp_flow_failover() -> Option<()> {
     let (rx_if_b, _, _, received_b) = received_b.ok()?;
     (rx_if_a == if_a && packet_payload_eq(&received_a, payload_a)).then_some(())?;
     (rx_if_b == if_b && packet_payload_eq(&received_b, payload_b)).then_some(())?;
+    set_default_policy_in(runtime, FirewallDirection::Ingress, FirewallAction::Allow).ok()?;
+    crate::net::security::firewall::remove_rule_in(runtime, allow_udp).ok()?;
     log::info!(target: "qemu::net", "fragment interface isolation verified");
 
     let src_ip_u32 = u32::from_be_bytes(remote_ip.octets());
