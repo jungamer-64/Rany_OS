@@ -77,7 +77,7 @@ impl Fixture {
             command_resources_for_cpu_in(runtime, current.id()).expect("command resources");
         let local = EndpointAddr::new(LOCAL_IP, local_port);
         let remote = EndpointAddr::new(REMOTE_IP, 58_200);
-        let socket = Socket::new_registered_tcp_in(runtime, TcpSocketState::Connected);
+        let socket = Socket::new_registered_tcp_in(runtime, TcpSocketState::Connecting);
         socket
             .with_inner_mut(|inner| {
                 inner.local_addr = Some(local);
